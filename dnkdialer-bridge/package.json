@@ -1,0 +1,24 @@
+{
+  "name": "dnkdialer-bridge",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.dnkdialer.bridge",
+    "productName": "DNK Dialer Bridge",
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico"
+    }
+  }
+}

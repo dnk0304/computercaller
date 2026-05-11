@@ -1,0 +1,38 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.dnkdialer.companion.app-mergeDebugResources-30:/values-v16/values-v16.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\D\\.gradle\\caches\\9.0-milestone-1\\transforms\\ac6cbd3c45dd47a7855473ffb914ff88\\transformed\\core-1.12.0\\res\\values-v16\\values-v16.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "65",
+                        "endOffsets": "116"
+                    }
+                },
+                {
+                    "source": "C:\\Users\\D\\.gradle\\caches\\9.0-milestone-1\\transforms\\ca1575f132865d02d4ef8a21e52754ff\\transformed\\appcompat-1.6.1\\res\\values-v16\\values-v16.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endLines": "5",
+                        "endColumns": "12",
+                        "endOffsets": "223"
+                    },
+                    "to": {
+                        "startLines": "3",
+                        "startColumns": "4",
+                        "startOffsets": "121",
+                        "endLines": "6",
+                        "endColumns": "12",
+                        "endOffsets": "289"
+                    }
+                }
+            ]
+        }
+    ]
+}

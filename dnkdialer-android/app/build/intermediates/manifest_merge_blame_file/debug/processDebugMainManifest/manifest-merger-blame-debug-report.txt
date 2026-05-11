@@ -1,0 +1,304 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.dnkdialer.companion"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="34" />
+10
+11    <!-- Phone permissions -->
+12    <uses-permission android:name="android.permission.CALL_PHONE" />
+12-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:6:5-68
+12-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:6:22-66
+13    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+13-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:7:5-74
+13-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:7:22-72
+14    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+14-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:8:5-76
+14-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:8:22-74
+15    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+15-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:9:5-71
+15-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:9:22-69
+16
+17    <!-- SMS permissions -->
+18    <uses-permission android:name="android.permission.SEND_SMS" />
+18-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:12:5-66
+18-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:12:22-64
+19    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+19-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:13:5-69
+19-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:13:22-67
+20    <uses-permission android:name="android.permission.READ_SMS" />
+20-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:14:5-66
+20-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:14:22-64
+21
+22    <!-- Contacts permission -->
+23    <uses-permission android:name="android.permission.READ_CONTACTS" />
+23-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:17:5-71
+23-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:17:22-69
+24
+25    <!-- Camera permission for QR scanning -->
+26    <uses-permission android:name="android.permission.CAMERA" />
+26-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:20:5-65
+26-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:20:22-62
+27
+28    <!-- Network permission -->
+29    <uses-permission android:name="android.permission.INTERNET" />
+29-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:23:5-66
+29-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:23:22-64
+30    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+30-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:24:5-78
+30-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:24:22-76
+31    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+31-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:25:5-75
+31-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:25:22-73
+32
+33    <!-- Foreground service permissions -->
+34    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+34-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:28:5-76
+34-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:28:22-74
+35    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+35-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:29:5-88
+35-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:29:22-86
+36    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+36-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:30:5-93
+36-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:30:22-91
+37    <uses-permission android:name="android.permission.WAKE_LOCK" />
+37-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:31:5-67
+37-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:31:22-65
+38    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+38-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:32:5-76
+38-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:32:22-74
+39
+40    <!-- Battery optimization exclusion -->
+41    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+41-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:35:5-94
+41-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:35:22-92
+42
+43    <permission
+43-->[androidx.core:core:1.12.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\ac6cbd3c45dd47a7855473ffb914ff88\transformed\core-1.12.0\AndroidManifest.xml:22:5-24:47
+44        android:name="com.dnkdialer.companion.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+44-->[androidx.core:core:1.12.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\ac6cbd3c45dd47a7855473ffb914ff88\transformed\core-1.12.0\AndroidManifest.xml:23:9-81
+45        android:protectionLevel="signature" />
+45-->[androidx.core:core:1.12.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\ac6cbd3c45dd47a7855473ffb914ff88\transformed\core-1.12.0\AndroidManifest.xml:24:9-44
+46
+47    <uses-permission android:name="com.dnkdialer.companion.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" /> <!-- Don't require camera, as this requires a rear camera. This allows it to work on the Nexus 7 -->
+47-->[androidx.core:core:1.12.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\ac6cbd3c45dd47a7855473ffb914ff88\transformed\core-1.12.0\AndroidManifest.xml:26:5-97
+47-->[androidx.core:core:1.12.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\ac6cbd3c45dd47a7855473ffb914ff88\transformed\core-1.12.0\AndroidManifest.xml:26:22-94
+48    <uses-feature
+48-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:25:5-27:36
+49        android:name="android.hardware.camera"
+49-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:26:9-47
+50        android:required="false" />
+50-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:27:9-33
+51    <uses-feature
+51-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:28:5-30:36
+52        android:name="android.hardware.camera.front"
+52-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:29:9-53
+53        android:required="false" /> <!-- TODO replace above two with next line after Android 4.2 -->
+53-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:30:9-33
+54    <!-- <uses-feature android:name="android.hardware.camera.any"/> -->
+55    <uses-feature
+55-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:33:5-35:36
+56        android:name="android.hardware.camera.autofocus"
+56-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:34:9-57
+57        android:required="false" />
+57-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:35:9-33
+58    <uses-feature
+58-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:36:5-38:36
+59        android:name="android.hardware.camera.flash"
+59-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:37:9-53
+60        android:required="false" />
+60-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:38:9-33
+61    <uses-feature
+61-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:39:5-41:36
+62        android:name="android.hardware.screen.landscape"
+62-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:40:9-57
+63        android:required="false" />
+63-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:41:9-33
+64    <uses-feature
+64-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:42:5-44:36
+65        android:name="android.hardware.wifi"
+65-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:43:9-45
+66        android:required="false" />
+66-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:44:9-33
+67
+68    <application
+68-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:37:5-89:19
+69        android:allowBackup="true"
+69-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:38:9-35
+70        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+70-->[androidx.core:core:1.12.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\ac6cbd3c45dd47a7855473ffb914ff88\transformed\core-1.12.0\AndroidManifest.xml:28:18-86
+71        android:debuggable="true"
+72        android:extractNativeLibs="false"
+73        android:icon="@mipmap/ic_launcher"
+73-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:39:9-43
+74        android:label="DNK Dialer"
+74-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:40:9-35
+75        android:roundIcon="@mipmap/ic_launcher_round"
+75-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:41:9-54
+76        android:supportsRtl="true"
+76-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:42:9-35
+77        android:theme="@style/Theme.DNKDialerCompanion"
+77-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:43:9-56
+78        android:usesCleartextTraffic="true" >
+78-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:44:9-44
+79        <activity
+79-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:47:9-54:20
+80            android:name="com.dnkdialer.companion.MainActivity"
+80-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:48:13-41
+81            android:exported="true" >
+81-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:49:13-36
+82            <intent-filter>
+82-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:50:13-53:29
+83                <action android:name="android.intent.action.MAIN" />
+83-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:51:17-69
+83-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:51:25-66
+84
+85                <category android:name="android.intent.category.LAUNCHER" />
+85-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:52:17-77
+85-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:52:27-74
+86            </intent-filter>
+87        </activity>
+88
+89        <receiver
+89-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:56:9-63:20
+90            android:name="com.dnkdialer.companion.SmsReceiver"
+90-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:57:13-40
+91            android:exported="true"
+91-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:58:13-36
+92            android:permission="android.permission.BROADCAST_SMS" >
+92-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:59:13-66
+93            <intent-filter>
+93-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:60:13-62:29
+94                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+94-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:61:17-81
+94-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:61:25-79
+95            </intent-filter>
+96        </receiver>
+97        <receiver
+97-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:65:9-67:40
+98            android:name="com.dnkdialer.companion.SmsStatusReceiver"
+98-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:66:13-46
+99            android:exported="false" />
+99-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:67:13-37
+100
+101        <service
+101-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:69:9-77:19
+102            android:name="com.dnkdialer.companion.PhoneService"
+102-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:70:13-41
+103            android:enabled="true"
+103-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:71:13-35
+104            android:exported="false"
+104-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:72:13-37
+105            android:foregroundServiceType="specialUse" >
+105-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:73:13-55
+106            <property
+106-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:74:13-76:75
+107                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+107-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:75:17-76
+108                android:value="Phone call and messaging bridge service" />
+108-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:76:17-72
+109        </service>
+110        <service
+110-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:79:9-87:19
+111            android:name="com.dnkdialer.companion.DnkNotificationListenerService"
+111-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:80:13-59
+112            android:exported="true"
+112-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:82:13-36
+113            android:label="DNK Dialer Notifications"
+113-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:81:13-53
+114            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" >
+114-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:83:13-87
+115            <intent-filter>
+115-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:84:13-86:29
+116                <action android:name="android.service.notification.NotificationListenerService" />
+116-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:85:17-99
+116-->C:\Users\D\Desktop\dnkdialer\dnkdialer-android\app\src\main\AndroidManifest.xml:85:25-96
+117            </intent-filter>
+118        </service>
+119
+120        <provider
+120-->[androidx.emoji2:emoji2:1.2.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\16b6876af99ca49acb2008b87c269479\transformed\jetified-emoji2-1.2.0\AndroidManifest.xml:24:9-32:20
+121            android:name="androidx.startup.InitializationProvider"
+121-->[androidx.emoji2:emoji2:1.2.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\16b6876af99ca49acb2008b87c269479\transformed\jetified-emoji2-1.2.0\AndroidManifest.xml:25:13-67
+122            android:authorities="com.dnkdialer.companion.androidx-startup"
+122-->[androidx.emoji2:emoji2:1.2.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\16b6876af99ca49acb2008b87c269479\transformed\jetified-emoji2-1.2.0\AndroidManifest.xml:26:13-68
+123            android:exported="false" >
+123-->[androidx.emoji2:emoji2:1.2.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\16b6876af99ca49acb2008b87c269479\transformed\jetified-emoji2-1.2.0\AndroidManifest.xml:27:13-37
+124            <meta-data
+124-->[androidx.emoji2:emoji2:1.2.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\16b6876af99ca49acb2008b87c269479\transformed\jetified-emoji2-1.2.0\AndroidManifest.xml:29:13-31:52
+125                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+125-->[androidx.emoji2:emoji2:1.2.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\16b6876af99ca49acb2008b87c269479\transformed\jetified-emoji2-1.2.0\AndroidManifest.xml:30:17-75
+126                android:value="androidx.startup" />
+126-->[androidx.emoji2:emoji2:1.2.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\16b6876af99ca49acb2008b87c269479\transformed\jetified-emoji2-1.2.0\AndroidManifest.xml:31:17-49
+127            <meta-data
+127-->[androidx.lifecycle:lifecycle-process:2.6.1] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\41a272af9e1ff2fbddf36e09d8269549\transformed\jetified-lifecycle-process-2.6.1\AndroidManifest.xml:29:13-31:52
+128                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+128-->[androidx.lifecycle:lifecycle-process:2.6.1] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\41a272af9e1ff2fbddf36e09d8269549\transformed\jetified-lifecycle-process-2.6.1\AndroidManifest.xml:30:17-78
+129                android:value="androidx.startup" />
+129-->[androidx.lifecycle:lifecycle-process:2.6.1] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\41a272af9e1ff2fbddf36e09d8269549\transformed\jetified-lifecycle-process-2.6.1\AndroidManifest.xml:31:17-49
+130            <meta-data
+130-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:29:13-31:52
+131                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+131-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:30:17-85
+132                android:value="androidx.startup" />
+132-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:31:17-49
+133        </provider>
+134
+135        <receiver
+135-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:34:9-52:20
+136            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+136-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:35:13-76
+137            android:directBootAware="false"
+137-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:36:13-44
+138            android:enabled="true"
+138-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:37:13-35
+139            android:exported="true"
+139-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:38:13-36
+140            android:permission="android.permission.DUMP" >
+140-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:39:13-57
+141            <intent-filter>
+141-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:40:13-42:29
+142                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+142-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:41:17-91
+142-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:41:25-88
+143            </intent-filter>
+144            <intent-filter>
+144-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:43:13-45:29
+145                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+145-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:44:17-85
+145-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:44:25-82
+146            </intent-filter>
+147            <intent-filter>
+147-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:46:13-48:29
+148                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+148-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:47:17-88
+148-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:47:25-85
+149            </intent-filter>
+150            <intent-filter>
+150-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:49:13-51:29
+151                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+151-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:50:17-95
+151-->[androidx.profileinstaller:profileinstaller:1.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\b9eaf87f1d48276dbcb13d097a612412\transformed\jetified-profileinstaller-1.3.0\AndroidManifest.xml:50:25-92
+152            </intent-filter>
+153        </receiver>
+154
+155        <activity
+155-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:47:9-53:63
+156            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+156-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:48:13-74
+157            android:clearTaskOnLaunch="true"
+157-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:49:13-45
+158            android:screenOrientation="sensorLandscape"
+158-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:50:13-56
+159            android:stateNotNeeded="true"
+159-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:51:13-42
+160            android:theme="@style/zxing_CaptureTheme"
+160-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:52:13-54
+161            android:windowSoftInputMode="stateAlwaysHidden" />
+161-->[com.journeyapps:zxing-android-embedded:4.3.0] C:\Users\D\.gradle\caches\9.0-milestone-1\transforms\09fbbc876c2977363163d5e725c02723\transformed\jetified-zxing-android-embedded-4.3.0\AndroidManifest.xml:53:13-60
+162    </application>
+163
+164</manifest>

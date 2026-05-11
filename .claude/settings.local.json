@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(./gradlew assembleDebug:*)",
+      "Bash(xargs ls:*)",
+      "Bash(npx next:*)",
+      "Bash(npm install:*)",
+      "Bash(npx playwright:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}
