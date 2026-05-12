@@ -2,12 +2,10 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type {
-  PhoneState,
   PhoneEventType,
   Contact,
   CallInfo,
   SmsMessage,
-  CallState,
   CallLogEntry
 } from './phoneTypes';
 
@@ -73,16 +71,16 @@ export function getNotificationIcon(packageName: string): string | undefined {
 }
 
 export function usePhoneBridge() {
-  // State
-  const [state, setState] = useState<PhoneState>({
-    isConnected: false,
-    isBridgeConnected: false,
-    phoneName: null,
-    currentCall: null,
-    contacts: [],
-    messages: [],
-    callLogs: []
-  });
+  // State — split into individual useState calls so each update only re-renders
+  // components that consume the changed slice (e.g. call-timer ticks don't
+  // repaint the message thread or contact list).
+  const [isConnected, setIsConnected] = useState(false);
+  const [isBridgeConnected, setIsBridgeConnected] = useState(false);
+  const [phoneName, setPhoneName] = useState<string | null>(null);
+  const [currentCall, setCurrentCall] = useState<CallInfo | null>(null);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [messages, setMessages] = useState<SmsMessage[]>([]);
+  const [callLogs, setCallLogs] = useState<CallLogEntry[]>([]);
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [isRelayConnection, setIsRelayConnection] = useState<boolean>(true);
@@ -226,20 +224,10 @@ export function usePhoneBridge() {
 
   // Update call duration
   const updateCallDuration = useCallback(() => {
-    setState(prev => {
-      if (!prev.currentCall || prev.currentCall.state === 'idle') {
-        return prev;
-      }
-
-      const duration = Math.floor((Date.now() - prev.currentCall.startTime) / 1000);
-      
-      return {
-        ...prev,
-        currentCall: {
-          ...prev.currentCall,
-          duration
-        }
-      };
+    setCurrentCall(prev => {
+      if (!prev || prev.state === 'idle') return prev;
+      const duration = Math.floor((Date.now() - prev.startTime) / 1000);
+      return { ...prev, duration };
     });
   }, []);
 
@@ -317,10 +305,7 @@ export function usePhoneBridge() {
         break;
 
       case 'DEVICE_INFO':
-        setState(prev => ({
-          ...prev,
-          phoneName: payload.deviceName || null
-        }));
+        setPhoneName(payload.deviceName || null);
         break;
 
       case 'NOTIFICATION_PERMISSION': {
@@ -346,7 +331,7 @@ export function usePhoneBridge() {
           callStatusTimeoutRef.current = setTimeout(() => {
             console.warn('[PhoneBridge] Call heartbeat timeout — clearing stale call state');
             stopCallTimer();
-            setState(prev => ({ ...prev, currentCall: null }));
+            setCurrentCall(null);
           }, 12000);
         }
         break;
@@ -365,16 +350,13 @@ export function usePhoneBridge() {
             setConnectionError(null);
             // Keep phoneName if the DEVICE_INFO broadcast already set it
             if (payload.deviceName) {
-              setState(prev => ({ ...prev, phoneName: payload.deviceName }));
+              setPhoneName(payload.deviceName);
             }
           } else {
             // Outbound connection (CONNECT_TO) — full auto-connect path.
             setDiscoveredPhoneIp(null); // clear any prior QR-discovered IP
-            setState(prev => ({
-              ...prev,
-              isConnected: true,
-              phoneName: payload.deviceName ?? prev.phoneName
-            }));
+            setIsConnected(true);
+            setPhoneName(prev => payload.deviceName ?? prev);
             setConnectionError(null);
             // First-ever connect: show the sync panel so user can do the initial full sync.
             // Subsequent reconnects (phone pong / relay restart): auto-quicksync instead
@@ -418,11 +400,8 @@ export function usePhoneBridge() {
           // re-show the sync panel. Only explicit user disconnect() clears it.
           estimateRequestedRef.current = false;
           quickSyncScheduledRef.current = false;
-          setState(prev => ({
-            ...prev,
-            isConnected: false,
-            phoneName: null
-          }));
+          setIsConnected(false);
+          setPhoneName(null);
           setConnectionError('Phone not connected — scan QR code on your phone');
           setShowSyncPanel(false);
           setSyncEstimate(null);
@@ -439,29 +418,23 @@ export function usePhoneBridge() {
         lastCallWasAnsweredRef.current = false;
         callStartTimeRef.current = Date.now();
         stopCallTimer();
-        setState(prev => ({
-          ...prev,
-          currentCall: {
-            number: payload.number,
-            name: payload.name,
-            isIncoming: true,
-            startTime: Date.now(),
-            duration: 0,
-            state: 'ringing'
-          }
-        }));
+        setCurrentCall({
+          number: payload.number,
+          name: payload.name,
+          isIncoming: true,
+          startTime: Date.now(),
+          duration: 0,
+          state: 'ringing'
+        });
         break;
 
       case 'CALL_ANSWERED':
         console.log('[PhoneBridge] Call answered');
         lastCallWasAnsweredRef.current = true;
         if (!callStartTimeRef.current) callStartTimeRef.current = Date.now();
-        setState(prev => ({
-          ...prev,
-          currentCall: prev.currentCall
-            ? { ...prev.currentCall, startTime: Date.now(), state: 'active', duration: 0 }
-            : null
-        }));
+        setCurrentCall(prev =>
+          prev ? { ...prev, startTime: Date.now(), state: 'active', duration: 0 } : null
+        );
         startCallTimer();
         break;
 
@@ -474,15 +447,15 @@ export function usePhoneBridge() {
           clearTimeout(callStatusTimeoutRef.current);
           callStatusTimeoutRef.current = null;
         }
-        setState(prev => {
+        setCurrentCall(prev => {
           // If the call that just ended was incoming and was never answered,
           // count it as a missed call. Schedule the bump outside the setState
           // callback to avoid nesting state updates.
-          if (prev.currentCall?.isIncoming && !lastCallWasAnsweredRef.current) {
+          if (prev?.isIncoming && !lastCallWasAnsweredRef.current) {
             setTimeout(() => setMissedCallCount(c => c + 1), 0);
           }
           lastCallWasAnsweredRef.current = false;
-          return { ...prev, currentCall: null };
+          return null;
         });
         // Auto-refresh call log so the just-ended call appears immediately.
         // Use callStartTimeRef so long calls (>30 min) are also captured —
@@ -521,14 +494,14 @@ export function usePhoneBridge() {
           // omit it, in which case the field stays undefined.
           simId: typeof payload.simId === 'number' ? payload.simId : undefined,
         };
-        setState(prev => {
+        setMessages(prev => {
           // Dedupe by ID (fast path) OR by content.
           // Address comparison uses digit-suffix matching because:
           // - SmsReceiver / ContentObserver may use different formats (+4745… vs 4745…)
           // - New messages typed by user may not include the country-code prefix
           const digTail = (n: string) => (n || '').replace(/\D/g, '').slice(-10);
           const newTail = digTail(newSms.address);
-          const isDuplicate = prev.messages.some(m =>
+          const isDuplicate = prev.some(m =>
             m.id === newSms.id ||
             (m.body === newSms.body &&
              (newTail
@@ -538,7 +511,7 @@ export function usePhoneBridge() {
              Math.abs(m.date - newSms.date) < 10000) // same message ≤10s apart
           );
           if (isDuplicate) return prev;
-          return { ...prev, messages: [newSms, ...prev.messages] };
+          return [newSms, ...prev];
         });
         break;
       }
@@ -557,13 +530,10 @@ export function usePhoneBridge() {
           // the platform didn't tag this entry with a SIM.
           simId: typeof payload.simId === 'string' && payload.simId ? payload.simId : undefined,
         };
-        setState(prev => {
+        setCallLogs(prev => {
           // Avoid duplicates — observer can fire multiple times for the same write.
-          if (prev.callLogs.some(e => e.id === entry.id)) return prev;
-          return {
-            ...prev,
-            callLogs: [entry, ...prev.callLogs].sort((a, b) => b.date - a.date),
-          };
+          if (prev.some(e => e.id === entry.id)) return prev;
+          return [entry, ...prev].sort((a, b) => b.date - a.date);
         });
         // Bump missed-call badge if this entry is a missed call.
         if (entry.type === 'missed') {
@@ -581,42 +551,30 @@ export function usePhoneBridge() {
         // that's expected, not a bug.
         const { clientMsgId, status } = payload;
         if (!clientMsgId) break;
-        setState(prev => ({
-          ...prev,
-          messages: prev.messages.map(m =>
-            m.id === clientMsgId
-              ? { ...m, status: status as SmsMessage['status'] }
-              : m
-          )
-        }));
+        setMessages(prev => prev.map(m =>
+          m.id === clientMsgId
+            ? { ...m, status: status as SmsMessage['status'] }
+            : m
+        ));
         break;
       }
 
       case 'CONTACTS':
         console.log('[PhoneBridge] Received contacts:', payload.contacts?.length || 0);
-        setState(prev => ({
-          ...prev,
-          contacts: payload.contacts || [],
-          isConnected: true // Mark as connected when we receive data
-        }));
+        setContacts(payload.contacts || []);
+        setIsConnected(true); // Mark as connected when we receive data
         break;
 
       case 'MESSAGES':
         console.log('[PhoneBridge] Received messages:', payload.messages?.length || 0);
-        setState(prev => ({
-          ...prev,
-          messages: payload.messages || [],
-          isConnected: true // Mark as connected when we receive data
-        }));
+        setMessages(payload.messages || []);
+        setIsConnected(true); // Mark as connected when we receive data
         break;
 
       case 'CALL_LOGS':
         console.log('[PhoneBridge] Received call logs:', payload.callLogs?.length || 0);
-        setState(prev => ({
-          ...prev,
-          callLogs: payload.callLogs || [],
-          isConnected: true // Mark as connected when we receive data
-        }));
+        setCallLogs(payload.callLogs || []);
+        setIsConnected(true); // Mark as connected when we receive data
         break;
 
       case 'CONTACTS_CHUNK': {
@@ -643,7 +601,8 @@ export function usePhoneBridge() {
         }
         if (isComplete) {
           const finalContacts = contactsBufferRef.current;
-          setState(prev => ({ ...prev, contacts: finalContacts, isConnected: true }));
+          setContacts(finalContacts);
+          setIsConnected(true);
           contactsBufferRef.current = [];
         }
         break;
@@ -676,17 +635,15 @@ export function usePhoneBridge() {
         if (isComplete) {
           const incoming = messagesBufferRef.current;
           messagesBufferRef.current = [];
-          setState(prev => {
-            if (syncModeRef.current === 'replace') {
-              return { ...prev, messages: incoming, isConnected: true };
-            }
+          setIsConnected(true);
+          setMessages(prev => {
+            if (syncModeRef.current === 'replace') return incoming;
             // Merge: incoming wins on id conflict (newer data), keep existing otherwise
             const incomingIds = new Set(incoming.map(m => m.id));
-            const merged = [
-              ...prev.messages.filter(m => !incomingIds.has(m.id)),
+            return [
+              ...prev.filter(m => !incomingIds.has(m.id)),
               ...incoming,
             ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
-            return { ...prev, messages: merged, isConnected: true };
           });
         }
         break;
@@ -719,16 +676,14 @@ export function usePhoneBridge() {
         if (isComplete) {
           const incoming = callLogsBufferRef.current;
           callLogsBufferRef.current = [];
-          setState(prev => {
-            if (syncModeRef.current === 'replace') {
-              return { ...prev, callLogs: incoming, isConnected: true };
-            }
+          setIsConnected(true);
+          setCallLogs(prev => {
+            if (syncModeRef.current === 'replace') return incoming;
             const incomingIds = new Set(incoming.map(l => l.id));
-            const merged = [
-              ...prev.callLogs.filter(l => !incomingIds.has(l.id)),
+            return [
+              ...prev.filter(l => !incomingIds.has(l.id)),
               ...incoming,
             ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
-            return { ...prev, callLogs: merged, isConnected: true };
           });
         }
         break;
@@ -866,10 +821,7 @@ export function usePhoneBridge() {
         if (wsUrl === RELAY_URL) {
           setIsRelayOffline(false);
         }
-        setState(prev => ({
-          ...prev,
-          isBridgeConnected: true
-        }));
+        setIsBridgeConnected(true);
 
         // Store URL for future reconnection
         if (url) {
@@ -882,18 +834,14 @@ export function usePhoneBridge() {
       };
 
       ws.onmessage = (event) => {
-        console.log('[PhoneBridge] Received message:', event.data);
         handleMessage(event.data);
       };
 
       ws.onclose = () => {
         console.log('[PhoneBridge] WebSocket disconnected');
-        setState(prev => ({
-          ...prev,
-          isBridgeConnected: false,
-          isConnected: false,
-          phoneName: null
-        }));
+        setIsBridgeConnected(false);
+        setIsConnected(false);
+        setPhoneName(null);
         // If the socket we just lost was the relay, mark relay offline.
         if (wsUrl === RELAY_URL) {
           setIsRelayOffline(true);
@@ -1028,17 +976,14 @@ export function usePhoneBridge() {
     console.log('[PhoneBridge] Initiating call to:', number, 'speaker:', speaker, 'simId:', selectedSimId);
 
     // Set state to dialing immediately
-    setState(prev => ({
-      ...prev,
-      currentCall: {
-        number,
-        name: undefined,
-        isIncoming: false,
-        startTime: Date.now(),
-        duration: 0,
-        state: 'dialing'
-      }
-    }));
+    setCurrentCall({
+      number,
+      name: undefined,
+      isIncoming: false,
+      startTime: Date.now(),
+      duration: 0,
+      state: 'dialing'
+    });
 
     // Send the command and log success. The Android side reads `speaker` and
     // routes audio through the loudspeaker as soon as the call goes active.
@@ -1072,10 +1017,7 @@ export function usePhoneBridge() {
   const endCall = useCallback(() => {
     stopCallTimer();
     sendCommand('END_CALL', {});
-    setState(prev => ({
-      ...prev,
-      currentCall: null
-    }));
+    setCurrentCall(null);
   }, [sendCommand, stopCallTimer]);
 
   const sendSms = useCallback((to: string, body: string) => {
@@ -1100,10 +1042,7 @@ export function usePhoneBridge() {
       status: 'pending',
       simId: selectedSimId ?? undefined,
     };
-    setState(prev => ({
-      ...prev,
-      messages: [newMsg, ...prev.messages]
-    }));
+    setMessages(prev => [newMsg, ...prev]);
   }, [sendCommand, selectedSimId]);
 
   const getContacts = useCallback(() => {
@@ -1436,14 +1375,11 @@ export function usePhoneBridge() {
     setSimList([]);
     setSelectedSimId(null);
     setPhoneNotifications([]);
-    setState(prev => ({
-      ...prev,
-      isConnected: false,
-      phoneName: null,
-      contacts: [],
-      messages: [],
-      callLogs: [],
-    }));
+    setIsConnected(false);
+    setPhoneName(null);
+    setContacts([]);
+    setMessages([]);
+    setCallLogs([]);
   }, []);
 
   // Connect on mount — connect to relay only.
@@ -1499,13 +1435,13 @@ export function usePhoneBridge() {
 
   return {
     // State
-    isConnected: state.isConnected,
-    isBridgeConnected: state.isBridgeConnected,
-    phoneName: state.phoneName,
-    currentCall: state.currentCall,
-    contacts: state.contacts,
-    messages: state.messages,
-    callLogs: state.callLogs,
+    isConnected,
+    isBridgeConnected,
+    phoneName,
+    currentCall,
+    contacts,
+    messages,
+    callLogs,
     connectionError,
     isRelayConnection,
     isRelayOffline,

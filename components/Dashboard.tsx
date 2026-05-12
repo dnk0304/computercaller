@@ -2181,7 +2181,7 @@ interface ThreadViewProps {
   onGetContactMessages?: (address: string) => void;
 }
 
-const ThreadView: React.FC<ThreadViewProps> = ({
+const ThreadView = React.memo(function ThreadView({
   address,
   contact,
   messages,
@@ -2196,7 +2196,7 @@ const ThreadView: React.FC<ThreadViewProps> = ({
   getMmsMedia,
   simList,
   onGetContactMessages,
-}) => {
+}: ThreadViewProps) {
   const displayName = contact?.name || address;
   const colorClass = getAvatarColor(displayName);
 
@@ -2606,7 +2606,7 @@ const ThreadView: React.FC<ThreadViewProps> = ({
       </div>
     </>
   );
-};
+});
 
 // ----- New message view (column 3 inner) -----------------------------------
 
@@ -2634,7 +2634,7 @@ interface NewMessageViewProps {
  * the user picks a suggestion we substitute in the contact's number directly
  * because that's what `sendSms` ultimately needs.
  */
-const NewMessageView: React.FC<NewMessageViewProps> = ({
+const NewMessageView = React.memo(function NewMessageView({
   recipient,
   setRecipient,
   body,
@@ -2645,7 +2645,7 @@ const NewMessageView: React.FC<NewMessageViewProps> = ({
   onSend,
   isConnected,
   onRecipientConfirmed,
-}) => {
+}: NewMessageViewProps) {
   const canSend = isConnected && recipient.trim().length > 0 && body.trim().length > 0;
 
   return (
@@ -2802,7 +2802,7 @@ const NewMessageView: React.FC<NewMessageViewProps> = ({
       </div>
     </div>
   );
-};
+});
 
 // ----- Call history detail panel -------------------------------------------
 
@@ -2840,7 +2840,7 @@ interface CallHistoryPanelProps {
  * `motion-reduce:animate-none` so the transition disappears for users who
  * have requested reduced motion.
  */
-const CallHistoryPanel: React.FC<CallHistoryPanelProps> = ({
+const CallHistoryPanel = React.memo(function CallHistoryPanel({
   number,
   displayName,
   entries,
@@ -2851,7 +2851,7 @@ const CallHistoryPanel: React.FC<CallHistoryPanelProps> = ({
   isConnected,
   currentCallActive,
   simList,
-}) => {
+}: CallHistoryPanelProps) {
   // Show the raw number under the name only when we actually have a friendlier
   // name to display — otherwise the header would repeat itself.
   const showNumberSubtitle = displayName !== number && Boolean(number.trim());
@@ -2989,7 +2989,7 @@ const CallHistoryPanel: React.FC<CallHistoryPanelProps> = ({
       )}
     </div>
   );
-};
+});
 
 // ----- Empty state ----------------------------------------------------------
 
