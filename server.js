@@ -29,6 +29,12 @@ const RELAY_PORT = 3001;
 const HOSTNAME = os.hostname();
 const dev = process.env.NODE_ENV !== 'production';
 
+// Verbose relay logging — off by default to avoid blocking the Node.js event
+// loop with synchronous console.log on every WS event. Set RELAY_VERBOSE=1
+// in env to re-enable for debugging.
+const RELAY_VERBOSE = process.env.RELAY_VERBOSE === '1';
+const rlog = (...args) => { if (RELAY_VERBOSE) console.log(...args); };
+
 // ---------------------------------------------------------------------------
 // LAN discovery helpers — used by the SCAN_FOR_PHONE relay command so the
 // browser can ask the relay to find the Android app on the local subnet
@@ -236,7 +242,7 @@ function startRelay() {
 
       outbound.on('message', (data) => {
         const msg = data.toString();
-        console.log(`[Relay][${room.token}] Phone ->`, msg.substring(0, 60));
+        rlog(`[Relay][${room.token}] Phone ->`, msg.substring(0, 60));
         if (msg.startsWith('DEVICE_INFO:')) {
           try {
             const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
@@ -274,7 +280,7 @@ function startRelay() {
 
       outbound.on('pong', () => {
         if (room.outboundPhoneWs) room.outboundPhoneWs.isAlive = true;
-        console.log(`[Relay][${room.token}] Phone pong received`);
+        rlog(`[Relay][${room.token}] Phone pong received`);
       });
     } catch (err) {
       console.log(`[Relay][${room.token}] Failed to connect outbound: ${err.message}`);
@@ -330,7 +336,7 @@ function startRelay() {
 
       ws.on('message', (data) => {
         const msg = data.toString();
-        console.log(`[Relay][${token}] Phone ->`, msg.substring(0, 60));
+        rlog(`[Relay][${token}] Phone ->`, msg.substring(0, 60));
         if (msg.startsWith('DEVICE_INFO:')) {
           try {
             const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
@@ -354,7 +360,7 @@ function startRelay() {
 
       ws.on('pong', () => {
         ws.isAlive = true;
-        console.log(`[Relay][${token}] Phone pong received`);
+        rlog(`[Relay][${token}] Phone pong received`);
       });
 
       return;
@@ -372,7 +378,7 @@ function startRelay() {
 
     ws.on('message', (data) => {
       const msg = data.toString();
-      console.log(`[Relay][${token}] Browser ->`, msg.substring(0, 60));
+      rlog(`[Relay][${token}] Browser ->`, msg.substring(0, 60));
 
       if (msg.startsWith('SCAN_FOR_PHONE:')) {
         console.log(`[Relay][${token}] Browser requested phone scan...`);

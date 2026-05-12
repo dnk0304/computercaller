@@ -241,7 +241,7 @@ function CallSessionView({
         {isRinging && (
           <span
             aria-hidden="true"
-            className="absolute inset-0 rounded-full ring-4 ring-emerald-400/40 animate-ping"
+            className="absolute inset-0 rounded-full ring-4 ring-emerald-400/40 animate-pulse"
           />
         )}
         <div

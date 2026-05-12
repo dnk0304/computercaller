@@ -66,7 +66,7 @@ export const PhoneStatusButton = () => {
         )}
       >
         {isRinging && (
-          <span className="absolute inset-0 rounded-full ring-2 ring-rose-400 animate-ping" />
+          <span className="absolute inset-0 rounded-full ring-2 ring-rose-400 animate-pulse" />
         )}
         {isRinging ? (
           <PhoneIncoming className="relative w-3.5 h-3.5" />
