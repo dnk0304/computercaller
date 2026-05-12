@@ -319,17 +319,15 @@ const MessengerBar: React.FC<MessengerBarProps> = ({ notifications }) => {
     return counts;
   }, [notifications]);
 
-  // Toggle messenger popup visibility.
+  // Toggle messenger popup visibility — retract or restore, never close.
   //
-  // Click when closed/never opened → opens popup in a new window
-  // Click when visible             → retracts (hides behind dialer)
-  // Click when hidden              → brings popup back to front
+  // Click when open    → retracts (popup stays alive, goes behind the dialer)
+  // Click when hidden  → restores (brings popup back to front)
+  // OS ✕ button        → closes popup; next click opens a fresh one
   //
-  // We track open/hidden ourselves (_messengerOpen) because popup.closed is
-  // unreliable for cross-origin windows after the splash page redirects to
-  // WhatsApp/Telegram. When the user manually X's the popup, our state drifts
-  // — first click after X will try to "retract" a gone window (no-op), second
-  // click will open a fresh popup. Acceptable trade-off vs. blank-tab creation.
+  // Uses the stored popup ref's focus() for bring-to-front rather than
+  // window.open('', name), because some apps (Discord) clear window.name after
+  // loading — the named-window lookup would fail and create a blank tab instead.
   const openMessenger = useCallback((app: typeof MESSENGERS[number]) => {
     const windowName = `dnk_${app.id}`;
     const pw = 460;
@@ -338,19 +336,30 @@ const MessengerBar: React.FC<MessengerBarProps> = ({ notifications }) => {
     const top  = Math.floor((window.screen.height - ph) / 2);
     const features = `width=${pw},height=${ph},left=${left},top=${top},resizable=yes,scrollbars=yes`;
 
-    if (_messengerOpen[app.id]) {
+    const existingWin = _messengerPopups[app.id];
+
+    if (_messengerOpen[app.id] && existingWin && !existingWin.closed) {
       // Popup is visible — retract it behind the dialer.
-      // window.focus() on the current window reliably brings it to front
-      // (focus-stealing prevention doesn't apply to a window focusing itself).
+      // window.focus() on the opener is allowed cross-origin and reliably
+      // brings the dialer to front without closing the popup.
       window.focus();
       _messengerOpen[app.id] = false;
       setOpenApps(prev => { const s = new Set(prev); s.delete(app.id); return s; });
       return;
     }
 
-    // Popup is hidden or not yet opened — open or bring to front.
-    // window.open with a named target: if the window exists (cross-origin),
-    // Chrome focuses it without navigating. If it doesn't exist, creates it.
+    if (existingWin && !existingWin.closed) {
+      // Popup exists but is retracted — bring it back to front using the
+      // stored ref directly (avoids window.name lookup which Discord clears).
+      try { existingWin.focus(); } catch { /* cross-origin focus blocked */ }
+      _messengerOpen[app.id] = true;
+      setOpenApps(prev => prev.has(app.id) ? prev : new Set([...prev, app.id]));
+      return;
+    }
+
+    // No live popup — open a fresh one (first open or after OS ✕).
+    _messengerPopups[app.id] = null;
+    _messengerOpen[app.id] = false;
     const popup = window.open(`/messenger/${app.id}`, windowName, features);
     if (popup) {
       _messengerPopups[app.id] = popup;
