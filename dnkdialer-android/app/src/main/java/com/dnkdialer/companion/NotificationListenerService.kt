@@ -228,9 +228,22 @@ class DnkNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        // Forward dismissals to the web client so the in-app notification strip
-        // stays in sync with the actual Android state — e.g. user swipes the
-        // notification away on the phone, the webapp row also disappears.
+        // Apply the same filter as onNotificationPosted — only forward removals
+        // for apps we actually posted to the web client. Background/system apps
+        // (e.g. ongoing notification updaters) fire onNotificationRemoved
+        // repeatedly and cause unnecessary relay churn if not filtered.
+        val pkg = sbn.packageName ?: return
+        val notification = sbn.notification ?: return
+        val category = notification.category
+
+        // Skip ongoing notifications (progress bars, media players, etc.)
+        if (notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return
+
+        // Only forward removal if this package would have been posted
+        val isAllowedCategory = category in ALLOWED_CATEGORIES
+        val isAllowedPackage = pkg in ALWAYS_ALLOW_PACKAGES
+        if (!isAllowedCategory && !isAllowedPackage) return
+
         val key = sbn.key ?: return
         onNotificationRemovedCb?.invoke(key)
     }
