@@ -24,6 +24,31 @@ class DnkNotificationListenerService : NotificationListenerService() {
         private var instance: DnkNotificationListenerService? = null
         fun getInstance(): DnkNotificationListenerService? = instance
 
+        // Categories we forward to the web client. Anything outside this set
+        // is dropped unless the package is in ALWAYS_ALLOW_PACKAGES — keeps
+        // the notification strip focused on communication and silences the
+        // long tail of system/promo/transactional noise.
+        private val ALLOWED_CATEGORIES = setOf(
+            Notification.CATEGORY_MESSAGE,   // WhatsApp, Telegram, SMS, RCS, Discord, Messenger
+            Notification.CATEGORY_SOCIAL,    // Instagram, Twitter/X, Snapchat, LinkedIn
+            Notification.CATEGORY_EMAIL,     // Gmail, Outlook
+            Notification.CATEGORY_CALL,      // Call notifications from any app
+        )
+
+        // Package allowlist for apps that frequently post messaging-style
+        // notifications without setting a CATEGORY_* value. Bypasses the
+        // category filter — if the package matches, we forward regardless.
+        private val ALWAYS_ALLOW_PACKAGES = setOf(
+            "com.whatsapp",
+            "org.telegram.messenger",
+            "com.viber.voip",
+            "com.discord",
+            "com.facebook.orca",                  // Messenger
+            "com.instagram.android",              // Instagram DMs
+            "com.google.android.apps.messaging",  // Google Messages (SMS/RCS)
+            "com.samsung.android.messaging",      // Samsung Messages
+        )
+
         // Per-package icon cache. Keyed by packageName; value is a base64-encoded
         // PNG of the app's launcher icon scaled to 48x48. Lives for the process
         // lifetime — drawables don't change without a reinstall, so caching here
@@ -74,6 +99,20 @@ class DnkNotificationListenerService : NotificationListenerService() {
 
         val notification = sbn.notification ?: return
         val extras: Bundle = notification.extras ?: return
+
+        // Skip ongoing/persistent notifications (progress bars, media players,
+        // navigation, downloads, foreground-service stickies). These are state
+        // displays, not events — forwarding them would spam the web client
+        // every time the player updates a progress tick.
+        if (notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return
+
+        // Only forward communication-relevant notifications. Either the
+        // category is one we care about, OR the package is on the allowlist
+        // for apps that don't reliably set a category.
+        val category = notification.category
+        val isAllowedCategory = category in ALLOWED_CATEGORIES
+        val isAllowedPackage = pkg in ALWAYS_ALLOW_PACKAGES
+        if (!isAllowedCategory && !isAllowedPackage) return
 
         val title = extractTitle(extras) ?: return
         val body = extractBody(extras)

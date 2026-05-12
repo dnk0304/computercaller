@@ -32,9 +32,10 @@ import React, {
   useMemo,
   useRef,
   useState,
+  startTransition,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { usePhone } from '@/hooks';
+import { usePhone, getNotificationIcon } from '@/hooks';
 import type { Contact, SmsMessage } from '@/hooks';
 import type { CallLogEntry } from '@/hooks/phoneTypes';
 import {
@@ -445,6 +446,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const openSyncPanel: (() => void) | undefined = (phone as any).openSyncPanel;
   const quickSync: (() => void) | undefined = (phone as any).quickSync;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const getContactMessages = (phone as any).getContactMessages as ((address: string) => void) | undefined;
   // MMS full-media fetcher. The parallel bridge agent ships this on the hook
   // — keep the read defensive so the UI degrades gracefully (thumbnail-only)
   // when the field isn't there yet at runtime.
@@ -630,12 +633,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
   const handleOpenCallHistory = useCallback((number: string) => {
     if (!number) return;
-    // Toggle: clicking the same number again collapses it
-    setCallHistoryNumber(prev => prev === number ? null : number);
+    // startTransition marks this as a non-urgent update — React keeps the UI
+    // responsive while processing the Dashboard re-render in the background.
+    // Without this, clicking a number freezes the UI for the full re-render
+    // duration of the entire Dashboard tree.
+    startTransition(() => {
+      setCallHistoryNumber(prev => prev === number ? null : number);
+    });
   }, []);
 
   const handleCloseCallHistory = useCallback(() => {
-    setCallHistoryNumber(null);
+    startTransition(() => setCallHistoryNumber(null));
   }, []);
 
   // ---------- Threads (group messages by address) ---------------------------
@@ -808,6 +816,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     setNewMsgRecipient('');
     setNewMsgBody('');
   }, []);
+
+  const handleConfirmNewRecipient = useCallback((address: string) => {
+    const trimmed = address.trim();
+    if (!trimmed) return;
+    // Switch directly to this thread — same as clicking an existing contact
+    setSelectedThread(trimmed);
+    setComposingNew(false);
+    setNewMsgRecipient('');
+    // Fetch history for this contact in the background
+    if (getContactMessages) getContactMessages(trimmed);
+  }, [getContactMessages]);
 
   const handleSendToNew = useCallback(() => {
     const recipient = newMsgRecipient.trim();
@@ -1449,10 +1468,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             body={newMsgBody}
             setBody={setNewMsgBody}
             suggestions={newMsgContactSuggestions}
-            onPickSuggestion={(c) => setNewMsgRecipient(c.number)}
+            onPickSuggestion={(c) => handleConfirmNewRecipient(c.number)}
             onCancel={handleCancelNewMessage}
             onSend={handleSendToNew}
             isConnected={isConnected}
+            onRecipientConfirmed={handleConfirmNewRecipient}
           />
         ) : selectedThread ? (
           <ThreadView
@@ -1469,6 +1489,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             messageListRef={messageListRef}
             getMmsMedia={getMmsMedia}
             simList={simList}
+            onGetContactMessages={getContactMessages}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 gap-3">
@@ -2154,6 +2175,10 @@ interface ThreadViewProps {
    *  chip below each bubble on multi-SIM phones. Empty / single-element list
    *  hides the chip — single-SIM phones don't need it. */
   simList: Array<{ id: number; slot: number; name: string; number: string }>;
+  /** On-demand contact history fetcher. When provided, ThreadView auto-fires
+   *  this when the thread has fewer than 10 messages — silently fills sparse
+   *  history in the background without any loading UI. */
+  onGetContactMessages?: (address: string) => void;
 }
 
 const ThreadView: React.FC<ThreadViewProps> = ({
@@ -2170,6 +2195,7 @@ const ThreadView: React.FC<ThreadViewProps> = ({
   messageListRef,
   getMmsMedia,
   simList,
+  onGetContactMessages,
 }) => {
   const displayName = contact?.name || address;
   const colorClass = getAvatarColor(displayName);
@@ -2225,6 +2251,22 @@ const ThreadView: React.FC<ThreadViewProps> = ({
       document.removeEventListener('keydown', onKey);
     };
   }, [templatesOpen]);
+
+  // Auto-fetch contact history when opening a sparse thread.
+  // Fires when the thread changes if fewer than 10 messages are loaded —
+  // silently fetches the full conversation in the background.
+  useEffect(() => {
+    if (!address || !onGetContactMessages) return;
+    const threadCount = messages.length; // messages is already filtered to this thread
+    if (threadCount < 10) {
+      // Small delay so the thread renders first, then data flows in
+      const id = setTimeout(() => {
+        onGetContactMessages(address);
+      }, 500);
+      return () => clearTimeout(id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address]); // only re-run when thread changes, not on every message update
 
   const handleInsertTemplate = useCallback(
     (template: Template) => {
@@ -2578,6 +2620,8 @@ interface NewMessageViewProps {
   onCancel: () => void;
   onSend: () => void;
   isConnected: boolean;
+  /** Called when the recipient is confirmed (Enter key or suggestion pick) — fetches message history. */
+  onRecipientConfirmed?: (address: string) => void;
 }
 
 /**
@@ -2600,6 +2644,7 @@ const NewMessageView: React.FC<NewMessageViewProps> = ({
   onCancel,
   onSend,
   isConnected,
+  onRecipientConfirmed,
 }) => {
   const canSend = isConnected && recipient.trim().length > 0 && body.trim().length > 0;
 
@@ -2633,6 +2678,8 @@ const NewMessageView: React.FC<NewMessageViewProps> = ({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && recipient.trim()) {
               e.preventDefault();
+              // Fetch history for this number before the user starts typing
+              onRecipientConfirmed?.(recipient.trim());
               // Move focus to the message body so user can type and send
               document.getElementById('new-msg-body')?.focus();
             }
@@ -2659,7 +2706,7 @@ const NewMessageView: React.FC<NewMessageViewProps> = ({
                     type="button"
                     role="option"
                     aria-selected={false}
-                    onClick={() => onPickSuggestion(contact)}
+                    onClick={() => { onPickSuggestion(contact); onRecipientConfirmed?.(contact.number); }}
                     className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50 focus-visible:ring-2 focus-visible:ring-blue-500/40 transition-colors"
                   >
                     <span
@@ -3066,7 +3113,7 @@ interface NotificationStripProps {
  * of recent app-icon chips. Click anywhere on the rail to raise the floating
  * NotificationOverlay. Inspired by Windows Phone Link's collapsed sidebar.
  *
- * Icons prefer the base64 PNG `notif.icon` shipped from Android; falls back
+ * Icons prefer the base64 PNG from the module-level icon cache (keyed by packageName); falls back
  * to a stable per-package emoji when no icon is available.
  */
 const NotificationStrip: React.FC<NotificationStripProps> = ({
@@ -3114,9 +3161,9 @@ const NotificationStrip: React.FC<NotificationStripProps> = ({
       {/* App icon chips — newest first, with an unread dot for unread items */}
       {recent.map((notif) => (
         <div key={notif.id} className="relative flex-shrink-0">
-          {notif.icon ? (
+          {getNotificationIcon(notif.packageName) ? (
             <img
-              src={`data:image/png;base64,${notif.icon}`}
+              src={`data:image/png;base64,${getNotificationIcon(notif.packageName)}`}
               alt={notif.appName ?? 'notification'}
               className="w-9 h-9 rounded-full object-cover border border-slate-100 shadow-sm"
             />
@@ -3271,9 +3318,9 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
                   >
                     {/* App icon */}
                     <div className="flex-shrink-0 mt-0.5">
-                      {notif.icon ? (
+                      {getNotificationIcon(notif.packageName) ? (
                         <img
-                          src={`data:image/png;base64,${notif.icon}`}
+                          src={`data:image/png;base64,${getNotificationIcon(notif.packageName)}`}
                           alt={notif.appName ?? 'notification'}
                           className="w-9 h-9 rounded-xl object-cover"
                         />

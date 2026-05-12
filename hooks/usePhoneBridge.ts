@@ -61,7 +61,15 @@ export interface PhoneNotification {
   replyKey: string;
   notificationKey: string;
   read: boolean;
-  icon?: string; // base64 PNG from Android packageManager.getApplicationIcon(), optional
+}
+
+// Module-level icon cache — keyed by packageName, outside React state so
+// icon updates never trigger notification list re-renders.
+const _notifIconCache = new Map<string, string>();
+
+/** Read an app icon (base64 PNG) by Android package name. Returns undefined if not cached. */
+export function getNotificationIcon(packageName: string): string | undefined {
+  return _notifIconCache.get(packageName);
 }
 
 export function usePhoneBridge() {
@@ -138,6 +146,13 @@ export function usePhoneBridge() {
   // Newest first, capped at 50, deduped by notificationKey. Reset on phone
   // disconnect so stale notifications don't linger across phone sessions.
   const [phoneNotifications, setPhoneNotifications] = useState<PhoneNotification[]>([]);
+
+  // Notification event buffer — flushed to React state every 200ms to batch
+  // re-renders instead of re-rendering on every WebSocket notification event.
+  const notifPendingRef = useRef<Array<
+    | { type: 'add'; notif: PhoneNotification }
+    | { type: 'remove'; key: string }
+  >>([]);
 
   // WebSocket ref
   const wsRef = useRef<WebSocket | null>(null);
@@ -783,6 +798,10 @@ export function usePhoneBridge() {
       }
 
       case 'PHONE_NOTIFICATION': {
+        // Cache the icon by packageName (outside state — avoids re-renders)
+        if (payload.icon && payload.packageName) {
+          _notifIconCache.set(payload.packageName, payload.icon);
+        }
         const notif: PhoneNotification = {
           id: payload.id ?? `notif_${Date.now()}`,
           appName: payload.appName ?? payload.packageName ?? 'Unknown',
@@ -794,14 +813,8 @@ export function usePhoneBridge() {
           replyKey: payload.replyKey ?? '',
           notificationKey: payload.notificationKey ?? '',
           read: false,
-          icon: payload.icon ?? undefined,
         };
-        setPhoneNotifications(prev => {
-          // Avoid duplicates by notificationKey
-          const deduped = prev.filter(n => n.notificationKey !== notif.notificationKey);
-          // Keep max 50, newest first
-          return [notif, ...deduped].slice(0, 50);
-        });
+        notifPendingRef.current.push({ type: 'add', notif });
         break;
       }
 
@@ -811,9 +824,7 @@ export function usePhoneBridge() {
         // PHONE_NOTIFICATION was originally received).
         const { notificationKey } = payload;
         if (notificationKey) {
-          setPhoneNotifications(prev =>
-            prev.filter(n => n.notificationKey !== notificationKey)
-          );
+          notifPendingRef.current.push({ type: 'remove', key: notificationKey });
         }
         break;
       }
@@ -1096,54 +1107,14 @@ export function usePhoneBridge() {
   }, [sendCommand, selectedSimId]);
 
   const getContacts = useCallback(() => {
-    // Reset buffer and progress so chunked reassembly starts clean.
+    // Silent incremental sync — no progress bar. Clears buffer for clean reassembly.
     contactsBufferRef.current = [];
-    setSyncProgress(prev => ({
-      contacts: { done: 0, total: 0, complete: false },
-      messages: prev?.messages ?? { done: 0, total: 0, complete: true },
-      callLogs: prev?.callLogs ?? { done: 0, total: 0, complete: true },
-    }));
-    setIsSyncing(true);
-
-    // Clear any previous timeout
-    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-    setSyncTimedOut(false);
-
-    // If no chunk arrives in 45s, mark as timed out
-    syncTimeoutRef.current = setTimeout(() => {
-      setSyncTimedOut(true);
-      setIsSyncing(false);
-      console.warn('[PhoneBridge] Sync timed out — no response from phone');
-    }, 45000);
-
     sendCommand('GET_CONTACTS', {});
   }, [sendCommand]);
 
   const getMessages = useCallback(() => {
+    // Silent incremental sync — no progress bar.
     messagesBufferRef.current = [];
-    setSyncProgress(prev => ({
-      contacts: prev?.contacts ?? { done: 0, total: 0, complete: true },
-      messages: { done: 0, total: 0, complete: false },
-      callLogs: prev?.callLogs ?? { done: 0, total: 0, complete: true },
-    }));
-    setIsSyncing(true);
-
-    // Clear any previous timeout
-    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-    setSyncTimedOut(false);
-
-    // If no chunk arrives in 45s, mark as timed out
-    syncTimeoutRef.current = setTimeout(() => {
-      setSyncTimedOut(true);
-      setIsSyncing(false);
-      console.warn('[PhoneBridge] Sync timed out — no response from phone');
-    }, 45000);
-
-    // Always include `since` so Android uses an indexed query instead of
-    // scanning the full SMS table — full scans time out on large databases.
-    // Android enforces its own row cap, so no `limit` is sent from the client.
-    // Use 30-minute since — standalone resync should be lightweight.
-    // The Full Sync panel handles intentional large syncs with user-chosen ranges.
     const since = Date.now() - 30 * 60 * 1000;
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since })}`);
@@ -1151,57 +1122,35 @@ export function usePhoneBridge() {
   }, [sendCommand]);
 
   const getCallLogs = useCallback(() => {
+    // Silent incremental sync — no progress bar.
     callLogsBufferRef.current = [];
-    setSyncProgress(prev => ({
-      contacts: prev?.contacts ?? { done: 0, total: 0, complete: true },
-      messages: prev?.messages ?? { done: 0, total: 0, complete: true },
-      callLogs: { done: 0, total: 0, complete: false },
-    }));
-    setIsSyncing(true);
-
-    // Clear any previous timeout
-    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-    setSyncTimedOut(false);
-
-    // If no chunk arrives in 45s, mark as timed out
-    syncTimeoutRef.current = setTimeout(() => {
-      setSyncTimedOut(true);
-      setIsSyncing(false);
-      console.warn('[PhoneBridge] Sync timed out — no response from phone');
-    }, 45000);
-
-    // 30-minute window — lightweight catch-up.
     const since = Date.now() - 30 * 60 * 1000;
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since })}`);
     }
   }, [sendCommand]);
 
+  /**
+   * Fetch all messages for a specific contact (phone number) on demand.
+   * Used when opening a thread with sparse history — silently loads the full
+   * conversation without re-syncing the entire message database.
+   * Results are merged into existing state (no replace).
+   */
+  const getContactMessages = useCallback((address: string) => {
+    if (!address || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    messagesBufferRef.current = [];
+    // Send with address filter — Android will run WHERE address = ? (fast indexed query)
+    // No `since` filter so we get the full conversation history.
+    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address })}`);
+  }, []);
+
   const syncAll = useCallback(() => {
-    // syncAll is called by legacy UI; use 30-minute since to avoid
-    // triggering a full table scan. Large syncs go through syncData()
-    // via the Full Sync panel with user-chosen time ranges.
+    // syncAll is a silent incremental sync — no progress bar.
+    // Large syncs go through syncData() via the Full Sync panel.
     const since30 = Date.now() - 30 * 60 * 1000;
     contactsBufferRef.current = [];
     messagesBufferRef.current = [];
     callLogsBufferRef.current = [];
-    setSyncProgress({
-      contacts: { done: 0, total: 0, complete: false },
-      messages: { done: 0, total: 0, complete: false },
-      callLogs: { done: 0, total: 0, complete: false },
-    });
-    setIsSyncing(true);
-
-    // Clear any previous timeout
-    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-    setSyncTimedOut(false);
-
-    // If no chunk arrives in 45s, mark as timed out
-    syncTimeoutRef.current = setTimeout(() => {
-      setSyncTimedOut(true);
-      setIsSyncing(false);
-      console.warn('[PhoneBridge] Sync timed out — no response from phone');
-    }, 45000);
 
     if (wsRef.current?.readyState !== WebSocket.OPEN) return;
     wsRef.current.send('GET_CONTACTS:{}');
@@ -1525,6 +1474,29 @@ export function usePhoneBridge() {
     };
   }, [connect]);
 
+  // Flush buffered notification events to React state every 200ms.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const pending = notifPendingRef.current;
+      if (pending.length === 0) return;
+      notifPendingRef.current = [];
+      setPhoneNotifications(prev => {
+        let result = [...prev];
+        for (const event of pending) {
+          if (event.type === 'add') {
+            // Dedup by notificationKey (remove old, prepend new)
+            result = result.filter(n => n.notificationKey !== event.notif.notificationKey);
+            result = [event.notif, ...result];
+          } else {
+            result = result.filter(n => n.notificationKey !== event.key);
+          }
+        }
+        return result.slice(0, 50);
+      });
+    }, 200);
+    return () => window.clearInterval(id);
+  }, []); // stable — no deps needed, setPhoneNotifications is a stable useState setter
+
   return {
     // State
     isConnected: state.isConnected,
@@ -1562,6 +1534,7 @@ export function usePhoneBridge() {
     getContacts,
     getMessages,
     getCallLogs,
+    getContactMessages,
     syncAll,
     syncData,
     dismissSyncPanel,

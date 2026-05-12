@@ -65,12 +65,17 @@ class SmsHandler(private val context: Context) {
         }
     }
 
-    fun getMessages(limit: Int = 2500, since: Long = 0): List<SmsMessage> {
+    fun getMessages(limit: Int = 2500, since: Long = 0, address: String? = null): List<SmsMessage> {
         val messages = mutableListOf<SmsMessage>()
 
         // When `since == 0L` ("All time"), do not cap results — return everything.
         // Otherwise honor the caller-provided limit.
         val effectiveLimit = if (limit <= 0) Int.MAX_VALUE else limit
+
+        // When an address filter is supplied the caller wants ALL history for that
+        // contact, regardless of the default "recent only" `since` window — clear
+        // the time filter so we don't accidentally drop older messages.
+        val effectiveSince = if (!address.isNullOrBlank()) 0L else since
 
         // Query SMS content provider
         val uri = Uri.parse("content://sms")
@@ -86,10 +91,28 @@ class SmsHandler(private val context: Context) {
             "sub_id"
         )
 
-        // Optional time-range filter — only return messages newer than `since` (epoch ms).
-        // Parameterized to avoid SQL injection.
-        val selection = if (since > 0) "${Telephony.Sms.DATE} > ?" else null
-        val selectionArgs = if (since > 0) arrayOf(since.toString()) else null
+        // Build WHERE clause from optional filters. Both branches stay
+        // parameterized — no string concatenation of caller-supplied values
+        // into the SQL itself, so SQL injection is impossible.
+        //  - `since`   : only messages newer than this epoch-ms timestamp
+        //  - `address` : exact match against the SMS provider's ADDRESS column.
+        //                The provider may store numbers with or without country
+        //                code prefix, so callers that need broader matching
+        //                should normalize on their end before calling. Exact
+        //                match is sufficient for the common "open this thread"
+        //                use case the web client drives.
+        val whereParts = mutableListOf<String>()
+        val argsList = mutableListOf<String>()
+        if (effectiveSince > 0) {
+            whereParts.add("${Telephony.Sms.DATE} > ?")
+            argsList.add(effectiveSince.toString())
+        }
+        if (!address.isNullOrBlank()) {
+            whereParts.add("${Telephony.Sms.ADDRESS} = ?")
+            argsList.add(address)
+        }
+        val selection = if (whereParts.isEmpty()) null else whereParts.joinToString(" AND ")
+        val selectionArgs = if (argsList.isEmpty()) null else argsList.toTypedArray()
 
         try {
             // Note: passing "LIMIT N" inside sortOrder is unreliable across Android versions
@@ -115,7 +138,10 @@ class SmsHandler(private val context: Context) {
                     if (messages.size >= effectiveLimit) break
 
                     val id = cursor.getString(idIndex)
-                    val address = cursor.getString(addressIndex) ?: ""
+                    // Renamed from `address` to `rowAddress` to avoid shadowing the
+                    // function parameter of the same name (the filter we may have
+                    // applied to the query above).
+                    val rowAddress = cursor.getString(addressIndex) ?: ""
                     val body = cursor.getString(bodyIndex) ?: ""
                     val date = cursor.getLong(dateIndex)
                     val typeInt = cursor.getInt(typeIndex)
@@ -134,7 +160,7 @@ class SmsHandler(private val context: Context) {
                     // Skip sent messages where address = own SIM number (Samsung MSISDN quirk)
                     if (typeInt == Telephony.Sms.MESSAGE_TYPE_SENT) {
                         val ownNumbers = getOwnSimNumbers()
-                        val cleanAddr = address.replace(Regex("[^0-9+]"), "")
+                        val cleanAddr = rowAddress.replace(Regex("[^0-9+]"), "")
                         val isSelf = ownNumbers.any { own ->
                             val cleanOwn = own.replace(Regex("[^0-9+]"), "")
                             cleanOwn.isNotEmpty() && (cleanOwn == cleanAddr || cleanOwn.endsWith(cleanAddr.takeLast(8)) || cleanAddr.endsWith(cleanOwn.takeLast(8)))
@@ -142,7 +168,7 @@ class SmsHandler(private val context: Context) {
                         if (isSelf) continue
                     }
 
-                    messages.add(SmsMessage(id, address, body, date, type, simId = simId))
+                    messages.add(SmsMessage(id, rowAddress, body, date, type, simId = simId))
                 }
             }
         } catch (e: SecurityException) {
@@ -176,14 +202,27 @@ class SmsHandler(private val context: Context) {
     fun getMessagesWithMms(
         context: Context,
         limit: Int = 2500,
-        since: Long = 0
+        since: Long = 0,
+        address: String? = null
     ): List<SmsMessage> {
-        // Get SMS messages
-        val smsMessages = getMessages(limit, since)
+        // Get SMS messages — pass the optional address filter through so the SQL
+        // WHERE clause runs in the provider (fast, indexed) instead of us
+        // post-filtering in Kotlin.
+        val smsMessages = getMessages(limit, since, address)
 
-        // Get MMS messages
+        // Get MMS messages. The MMS provider stores recipient addresses in a
+        // separate `addr` sub-table keyed by message id, so an exact "address
+        // equals X" filter requires a join we don't currently support in
+        // MmsHandler. When an address filter is active we skip MMS entirely —
+        // the typical "open thread" flow on the web client wants SMS history
+        // for that contact; MMS for the same contact will arrive via the
+        // normal sync path. This keeps the change minimal and safe.
         val mmsHandler = MmsHandler(context)
-        val mmsMessages = mmsHandler.getMessages(limit, since)
+        val mmsMessages = if (!address.isNullOrBlank()) {
+            emptyList()
+        } else {
+            mmsHandler.getMessages(limit, since)
+        }
 
         // Convert MMS to SmsMessage format (reuse existing type so the web client
         // does not need a new shape). For media MMS we prefix the body with a

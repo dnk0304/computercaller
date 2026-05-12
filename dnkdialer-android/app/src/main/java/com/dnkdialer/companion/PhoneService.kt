@@ -992,11 +992,18 @@ class PhoneService : Service() {
                     }
                     val since = (payload?.get("since") as? Double)?.toLong() ?: 0L
                     val limit = (payload?.get("limit") as? Double)?.toInt() ?: 2500
+                    // Optional per-contact filter. When set, SmsHandler clears the
+                    // time window internally so the web client gets the FULL thread
+                    // history for that address (typical use: user opens a thread
+                    // with sparse cached history and wants the complete backlog).
+                    // Blank strings are treated as "no filter" to be defensive
+                    // against the web client serialising an empty input.
+                    val address = (payload?.get("address") as? String)?.takeIf { it.isNotBlank() }
                     // Combined SMS + MMS so group texts, picture messages, and voice
                     // notes all show up in the unified timeline. The merge happens
                     // on-device, so the web client sees a single sorted list.
-                    val messages = smsHandler.getMessagesWithMms(this, limit = limit, since = since)
-                    android.util.Log.d("PhoneService", "Got ${messages.size} messages (SMS+MMS, since=$since, limit=$limit), sending in chunks...")
+                    val messages = smsHandler.getMessagesWithMms(this, limit = limit, since = since, address = address)
+                    android.util.Log.d("PhoneService", "Got ${messages.size} messages (SMS+MMS, since=$since, limit=$limit, address=${address ?: "all"}), sending in chunks...")
                     sendChunked("MESSAGES", messages, 25, viaClient, "messages")
                 }
                 "GET_MMS_FULL" -> {
