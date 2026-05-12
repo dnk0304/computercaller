@@ -155,7 +155,7 @@ export function usePhoneBridge() {
   // WebSocket ref
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // callTimerRef removed — duration is computed locally in display components
   const phoneUrlRef = useRef<string | null>(null);
 
   // Watchdog timer for the CALL_STATUS heartbeat. Reset every time a heartbeat
@@ -222,30 +222,13 @@ export function usePhoneBridge() {
   // on explicit user disconnect so the panel re-appears the NEXT time they
   // connect from scratch.
 
-  // Update call duration
-  const updateCallDuration = useCallback(() => {
-    setCurrentCall(prev => {
-      if (!prev || prev.state === 'idle') return prev;
-      const duration = Math.floor((Date.now() - prev.startTime) / 1000);
-      return { ...prev, duration };
-    });
-  }, []);
-
-  // Start call timer
-  const startCallTimer = useCallback(() => {
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current);
-    }
-    callTimerRef.current = setInterval(updateCallDuration, 1000);
-  }, [updateCallDuration]);
-
-  // Stop call timer
-  const stopCallTimer = useCallback(() => {
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current);
-      callTimerRef.current = null;
-    }
-  }, []);
+  // Call duration is no longer tracked in shared state. Keeping it in the
+  // PhoneContext caused every usePhone() consumer to re-render every second
+  // during a call (the context value object changed → all subscribers fired).
+  // Instead, components that display a live duration compute it locally from
+  // currentCall.startTime via their own private setInterval.
+  const startCallTimer = useCallback(() => { /* no-op — local timers used */ }, []);
+  const stopCallTimer  = useCallback(() => { /* no-op — local timers used */ }, []);
 
   // Parse incoming message
   const parseMessage = (data: string): { type: PhoneEventType; payload: any } | null => {
@@ -423,7 +406,7 @@ export function usePhoneBridge() {
           name: payload.name,
           isIncoming: true,
           startTime: Date.now(),
-          duration: 0,
+          // duration omitted — computed locally in display components
           state: 'ringing'
         });
         break;
@@ -1400,9 +1383,6 @@ export function usePhoneBridge() {
       // so the user can reconnect in one click without re-scanning the QR.
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send('DISCONNECT_PHONE:{}');
-      }
-      if (callTimerRef.current) {
-        clearInterval(callTimerRef.current);
       }
       if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
       if (callStatusTimeoutRef.current) clearTimeout(callStatusTimeoutRef.current);

@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Phone, PhoneCall, PhoneIncoming } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
@@ -24,6 +24,20 @@ function formatDuration(seconds: number = 0): string {
 export const PhoneStatusButton = () => {
   const { isConnected, currentCall } = usePhone();
   const { isOpen, toggle } = useDialerOpen();
+
+  // Local duration timer — isolated here so the 1s tick doesn't re-render
+  // every usePhone() consumer across the app.
+  const [liveDuration, setLiveDuration] = useState(0);
+  const callStartTime = currentCall?.startTime ?? null;
+  const callIsActive = currentCall?.state === 'active';
+  useEffect(() => {
+    if (!callIsActive || !callStartTime) { setLiveDuration(0); return; }
+    setLiveDuration(Math.floor((Date.now() - callStartTime) / 1000));
+    const id = setInterval(() => {
+      setLiveDuration(Math.floor((Date.now() - callStartTime) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [callIsActive, callStartTime]);
 
   if (!isConnected) return null;
 
@@ -90,7 +104,7 @@ export const PhoneStatusButton = () => {
             isOpen ? 'text-emerald-300' : 'text-emerald-700'
           )}
         >
-          {formatDuration(currentCall?.duration)}
+          {formatDuration(liveDuration)}
         </span>
       ) : isDialing ? (
         <span className={clsx('text-xs font-semibold', isOpen ? 'text-blue-300' : 'text-blue-700')}>

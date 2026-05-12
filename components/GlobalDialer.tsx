@@ -49,6 +49,21 @@ export const GlobalDialer = () => {
   const [smsTo, setSmsTo] = useState('');
   const [smsBody, setSmsBody] = useState('');
 
+  // Local call duration — computed here, NOT from shared context state.
+  // This isolates the 1s tick to GlobalDialer only, preventing the entire
+  // app from re-rendering every second during an active call.
+  const [liveDuration, setLiveDuration] = useState(0);
+  const callStartTime = currentCall?.startTime ?? null;
+  const callIsActive = currentCall?.state === 'active';
+  React.useEffect(() => {
+    if (!callIsActive || !callStartTime) { setLiveDuration(0); return; }
+    setLiveDuration(Math.floor((Date.now() - callStartTime) / 1000));
+    const id = setInterval(() => {
+      setLiveDuration(Math.floor((Date.now() - callStartTime) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [callIsActive, callStartTime]);
+
   // SSR portal guard — derived, not stateful, so React 19's set-state-in-effect
   // rule stays happy. createPortal needs document, which only exists client-side.
   const mounted = typeof document !== 'undefined';
@@ -145,7 +160,7 @@ export const GlobalDialer = () => {
               state={callState!}
               number={currentCall?.number ?? ''}
               name={currentCall?.name}
-              duration={currentCall?.duration ?? 0}
+              duration={liveDuration}
               onAnswer={answerCall}
               onEnd={endCall}
             />
