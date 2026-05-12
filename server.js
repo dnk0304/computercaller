@@ -6,6 +6,15 @@
  * brittle — the relay could fail silently and users wouldn't notice until the QR scan
  * stopped working. Embedding the relay here means a single `npm run dev` always brings
  * both up together, with one set of logs.
+ *
+ * Multi-tenant rooms:
+ *   The relay used to maintain a single (phone, browsers) pair globally — fine for the
+ *   single-user dev flow, but broken for SaaS. Now every connection is routed into a
+ *   `rooms` Map keyed by `phoneToken` (User.phoneToken in Prisma). Browser opens
+ *   `ws://host:3001?token=<phoneToken>`; phone opens `ws://host:3001/phone?token=<phoneToken>`.
+ *   Each room has its own phoneWs, browsers Set, outbound state, fail counter and device
+ *   name — completely isolated. Connections without a token fall into a `'default'` room
+ *   so the existing single-user dev flow keeps working without auth.
  */
 
 const next = require('next');
@@ -104,56 +113,86 @@ function getLocalSubnet() {
 }
 
 // ---------------------------------------------------------------------------
-// Relay server (extracted from relay-server.js, identical behavior)
+// Relay server — multi-tenant rooms.
+// One Room per phoneToken. Connections with no token go to the 'default' room
+// so the legacy single-user dev flow keeps working.
 // ---------------------------------------------------------------------------
+
+const MAX_OUTBOUND_FAILURES = 3;
 
 function startRelay() {
   const wss = new WebSocketServer({ port: RELAY_PORT });
 
-  // State
-  let phoneWs = null;
-  let phoneConnected = false;
-  const browsers = new Set();
-  let outboundPhoneWs = null;
-  let outboundReconnectTimeout = null;
-  let outboundTargetUrl = null;
-  let phoneDeviceName = null;
+  // token -> Room
+  const rooms = new Map();
 
-  function broadcastToBrowsers(msg) {
-    browsers.forEach(ws => {
+  function getRoom(token) {
+    let room = rooms.get(token);
+    if (!room) {
+      room = {
+        token,
+        phoneWs: null,
+        phoneConnected: false,
+        phoneDeviceName: null,
+        browsers: new Set(),
+        outboundPhoneWs: null,
+        outboundReconnectTimeout: null,
+        outboundTargetUrl: null,
+        outboundFailCount: 0,
+      };
+      rooms.set(token, room);
+    }
+    return room;
+  }
+
+  // Drop empty rooms so the Map does not grow forever. Default room is never
+  // garbage-collected because it is the fallback for unauth dev.
+  function maybeReapRoom(room) {
+    if (room.token === 'default') return;
+    if (room.phoneWs) return;
+    if (room.outboundPhoneWs) return;
+    if (room.outboundReconnectTimeout) return;
+    if (room.browsers.size > 0) return;
+    rooms.delete(room.token);
+    console.log(`[Relay] Reaped empty room ${room.token}`);
+  }
+
+  function broadcastToBrowsers(room, msg) {
+    room.browsers.forEach(ws => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(typeof msg === 'string' ? msg : msg.toString());
       }
     });
   }
 
-  function setPhone(ws, source, inboundIp = null) {
-    if (phoneWs && phoneWs !== ws) {
-      try { phoneWs.close(); } catch (e) {}
+  function setPhone(room, ws, source, inboundIp = null) {
+    if (room.phoneWs && room.phoneWs !== ws) {
+      try { room.phoneWs.close(); } catch (e) {}
     }
-    phoneWs = ws;
-    phoneWs.isAlive = true; // mark alive on connect so the first tick doesn't immediately terminate
-    phoneConnected = true;
-    phoneDeviceName = null;
-    console.log(`[Relay] Phone connected (${source})`);
+    room.phoneWs = ws;
+    room.phoneWs.isAlive = true; // mark alive on connect so the first tick doesn't immediately terminate
+    room.phoneConnected = true;
+    room.phoneDeviceName = null;
+    console.log(`[Relay][${room.token}] Phone connected (${source})`);
     // Include phoneIp only for inbound QR connections so the web app can pre-fill
     // the connect field and let the user confirm manually.
     const statusPayload = inboundIp
       ? { connected: true, phoneIp: inboundIp }
       : { connected: true };
-    broadcastToBrowsers(`STATUS:${JSON.stringify(statusPayload)}`);
+    broadcastToBrowsers(room, `STATUS:${JSON.stringify(statusPayload)}`);
   }
 
-  function clearPhone(source) {
-    phoneWs = null;
-    phoneConnected = false;
-    phoneDeviceName = null;
-    console.log(`[Relay] Phone disconnected (${source})`);
-    broadcastToBrowsers('STATUS:{"connected":false}');
+  function clearPhone(room, source) {
+    room.phoneWs = null;
+    room.phoneConnected = false;
+    room.phoneDeviceName = null;
+    console.log(`[Relay][${room.token}] Phone disconnected (${source})`);
+    broadcastToBrowsers(room, 'STATUS:{"connected":false}');
+    maybeReapRoom(room);
   }
 
-  function forwardToPhone(msg) {
-    const active = phoneWs;
+  function forwardToPhone(room, msg) {
+    const active = room.phoneWs;
     if (active && active.readyState === WebSocket.OPEN) {
       active.send(msg);
       return true;
@@ -161,173 +200,194 @@ function startRelay() {
     return false;
   }
 
-  // Track consecutive ECONNREFUSED failures so we stop retrying after 3 strikes.
-  let outboundFailCount = 0;
-  const MAX_OUTBOUND_FAILURES = 3;
-
-  function connectOutboundToPhone(url) {
-    if (outboundReconnectTimeout) {
-      clearTimeout(outboundReconnectTimeout);
-      outboundReconnectTimeout = null;
+  function connectOutboundToPhone(room, url) {
+    if (room.outboundReconnectTimeout) {
+      clearTimeout(room.outboundReconnectTimeout);
+      room.outboundReconnectTimeout = null;
     }
-    if (outboundPhoneWs) {
-      try { outboundPhoneWs.removeAllListeners(); outboundPhoneWs.close(); } catch (e) {}
-      outboundPhoneWs = null;
+    if (room.outboundPhoneWs) {
+      try { room.outboundPhoneWs.removeAllListeners(); room.outboundPhoneWs.close(); } catch (e) {}
+      room.outboundPhoneWs = null;
     }
 
     // Stop retrying after MAX_OUTBOUND_FAILURES consecutive ECONNREFUSED.
     // The phone server is not reachable — continuing to retry just spams logs
     // and wastes resources. A fresh CONNECT_TO from the browser resets the counter.
-    if (outboundFailCount >= MAX_OUTBOUND_FAILURES) {
-      console.log(`[Relay] Giving up outbound connection to ${url} after ${MAX_OUTBOUND_FAILURES} failures. Browser must reconnect manually.`);
-      outboundTargetUrl = null;
-      outboundFailCount = 0;
+    if (room.outboundFailCount >= MAX_OUTBOUND_FAILURES) {
+      console.log(`[Relay][${room.token}] Giving up outbound connection to ${url} after ${MAX_OUTBOUND_FAILURES} failures. Browser must reconnect manually.`);
+      room.outboundTargetUrl = null;
+      room.outboundFailCount = 0;
+      maybeReapRoom(room);
       return;
     }
 
-    outboundTargetUrl = url;
-    console.log(`[Relay] Connecting outbound to phone at ${url}... (attempt ${outboundFailCount + 1}/${MAX_OUTBOUND_FAILURES})`);
+    room.outboundTargetUrl = url;
+    console.log(`[Relay][${room.token}] Connecting outbound to phone at ${url}... (attempt ${room.outboundFailCount + 1}/${MAX_OUTBOUND_FAILURES})`);
 
     try {
-      outboundPhoneWs = new WebSocket(url);
+      const outbound = new WebSocket(url);
+      room.outboundPhoneWs = outbound;
 
-      outboundPhoneWs.on('open', () => {
-        outboundFailCount = 0; // reset on success
-        setPhone(outboundPhoneWs, `outbound to ${url}`);
-        outboundPhoneWs.send(`HELLO:{"hostname":"${HOSTNAME}"}`);
+      outbound.on('open', () => {
+        room.outboundFailCount = 0; // reset on success
+        setPhone(room, outbound, `outbound to ${url}`);
+        outbound.send(`HELLO:{"hostname":"${HOSTNAME}"}`);
       });
 
-      outboundPhoneWs.on('message', (data) => {
+      outbound.on('message', (data) => {
         const msg = data.toString();
-        console.log('[Relay] Phone ->', msg.substring(0, 60));
+        console.log(`[Relay][${room.token}] Phone ->`, msg.substring(0, 60));
         if (msg.startsWith('DEVICE_INFO:')) {
           try {
             const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
-            phoneDeviceName = payload.deviceName || null;
-            console.log(`[Relay] Phone device name: ${phoneDeviceName}`);
-            broadcastToBrowsers(`STATUS:${JSON.stringify({ connected: true, deviceName: phoneDeviceName })}`);
+            room.phoneDeviceName = payload.deviceName || null;
+            console.log(`[Relay][${room.token}] Phone device name: ${room.phoneDeviceName}`);
+            broadcastToBrowsers(room, `STATUS:${JSON.stringify({ connected: true, deviceName: room.phoneDeviceName })}`);
           } catch (e) {}
         }
-        broadcastToBrowsers(msg);
+        broadcastToBrowsers(room, msg);
       });
 
-      outboundPhoneWs.on('close', () => {
-        if (phoneWs === outboundPhoneWs) {
-          clearPhone('outbound closed');
+      outbound.on('close', () => {
+        if (room.phoneWs === outbound) {
+          clearPhone(room, 'outbound closed');
         }
-        outboundPhoneWs = null;
-        if (browsers.size > 0 && outboundTargetUrl) {
-          outboundReconnectTimeout = setTimeout(() => connectOutboundToPhone(outboundTargetUrl), 5000);
-        }
-      });
-
-      outboundPhoneWs.on('error', (err) => {
-        if (err.message.includes('ECONNREFUSED')) {
-          outboundFailCount++;
-          console.log(`[Relay] Outbound phone error: ${err.message} (failure ${outboundFailCount}/${MAX_OUTBOUND_FAILURES})`);
+        room.outboundPhoneWs = null;
+        if (room.browsers.size > 0 && room.outboundTargetUrl) {
+          room.outboundReconnectTimeout = setTimeout(
+            () => connectOutboundToPhone(room, room.outboundTargetUrl),
+            5000
+          );
         } else {
-          console.log(`[Relay] Outbound phone error: ${err.message}`);
+          maybeReapRoom(room);
         }
       });
 
-      outboundPhoneWs.on('pong', () => {
-        if (outboundPhoneWs) outboundPhoneWs.isAlive = true;
-        console.log('[Relay] Phone pong received');
+      outbound.on('error', (err) => {
+        if (err.message.includes('ECONNREFUSED')) {
+          room.outboundFailCount++;
+          console.log(`[Relay][${room.token}] Outbound phone error: ${err.message} (failure ${room.outboundFailCount}/${MAX_OUTBOUND_FAILURES})`);
+        } else {
+          console.log(`[Relay][${room.token}] Outbound phone error: ${err.message}`);
+        }
+      });
+
+      outbound.on('pong', () => {
+        if (room.outboundPhoneWs) room.outboundPhoneWs.isAlive = true;
+        console.log(`[Relay][${room.token}] Phone pong received`);
       });
     } catch (err) {
-      console.log(`[Relay] Failed to connect outbound: ${err.message}`);
-      if (browsers.size > 0) {
-        outboundReconnectTimeout = setTimeout(() => connectOutboundToPhone(url), 5000);
+      console.log(`[Relay][${room.token}] Failed to connect outbound: ${err.message}`);
+      if (room.browsers.size > 0) {
+        room.outboundReconnectTimeout = setTimeout(() => connectOutboundToPhone(room, url), 5000);
       }
     }
   }
 
-  wss.on('connection', (ws, req) => {
-    const path = req.url || '/';
+  /**
+   * Extract phoneToken from the connection request URL.
+   * Browser:  ws://host:3001/?token=XYZ      → ('XYZ', '/')
+   * Phone:    ws://host:3001/phone?token=XYZ → ('XYZ', '/phone')
+   * Missing token falls back to 'default' (legacy unauth dev mode).
+   */
+  function parseConnection(req) {
+    const parsed = parse(req.url || '/', true);
+    const pathname = parsed.pathname || '/';
+    const rawToken = parsed.query?.token;
+    const token = (typeof rawToken === 'string' && rawToken.trim().length > 0)
+      ? rawToken.trim()
+      : 'default';
+    return { pathname, token };
+  }
 
-    if (path === '/phone') {
-      console.log('[Relay] Phone connected as client (QR scan mode)');
+  wss.on('connection', (ws, req) => {
+    const { pathname, token } = parseConnection(req);
+    const room = getRoom(token);
+
+    if (pathname === '/phone') {
+      console.log(`[Relay][${token}] Phone connected as client (QR scan mode)`);
 
       // Extract the phone's LAN IP so the web app can pre-fill it for manual connect.
       // req.socket.remoteAddress may be IPv6-mapped (::ffff:192.168.x.x) — strip the prefix.
       const rawPhoneIp = req.socket?.remoteAddress || '';
       const phoneInboundIp = rawPhoneIp.replace(/^::ffff:/, '').trim();
-      console.log(`[Relay] Phone inbound IP: ${phoneInboundIp}`);
+      console.log(`[Relay][${token}] Phone inbound IP: ${phoneInboundIp}`);
 
-      if (outboundReconnectTimeout) {
-        clearTimeout(outboundReconnectTimeout);
-        outboundReconnectTimeout = null;
+      // Inbound QR overrides any pending outbound attempt for this room.
+      if (room.outboundReconnectTimeout) {
+        clearTimeout(room.outboundReconnectTimeout);
+        room.outboundReconnectTimeout = null;
       }
-      if (outboundPhoneWs) {
-        try { outboundPhoneWs.removeAllListeners(); outboundPhoneWs.close(); } catch (e) {}
-        outboundPhoneWs = null;
-        outboundTargetUrl = null;
+      if (room.outboundPhoneWs) {
+        try { room.outboundPhoneWs.removeAllListeners(); room.outboundPhoneWs.close(); } catch (e) {}
+        room.outboundPhoneWs = null;
+        room.outboundTargetUrl = null;
       }
 
       // Pass phoneInboundIp so setPhone includes it in the STATUS broadcast.
-      setPhone(ws, 'inbound QR', phoneInboundIp);
+      setPhone(room, ws, 'inbound QR', phoneInboundIp);
       ws.send(`HELLO:{"hostname":"${HOSTNAME}"}`);
 
       ws.on('message', (data) => {
         const msg = data.toString();
-        console.log('[Relay] Phone ->', msg.substring(0, 60));
+        console.log(`[Relay][${token}] Phone ->`, msg.substring(0, 60));
         if (msg.startsWith('DEVICE_INFO:')) {
           try {
             const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
-            phoneDeviceName = payload.deviceName || null;
-            console.log(`[Relay] Phone device name: ${phoneDeviceName}`);
-            broadcastToBrowsers(`STATUS:${JSON.stringify({ connected: true, deviceName: phoneDeviceName, phoneIp: phoneInboundIp })}`);
+            room.phoneDeviceName = payload.deviceName || null;
+            console.log(`[Relay][${token}] Phone device name: ${room.phoneDeviceName}`);
+            broadcastToBrowsers(room, `STATUS:${JSON.stringify({ connected: true, deviceName: room.phoneDeviceName, phoneIp: phoneInboundIp })}`);
           } catch (e) {}
         }
-        broadcastToBrowsers(msg);
+        broadcastToBrowsers(room, msg);
       });
 
       ws.on('close', () => {
-        if (phoneWs === ws) {
-          clearPhone('inbound QR closed');
+        if (room.phoneWs === ws) {
+          clearPhone(room, 'inbound QR closed');
         }
       });
 
       ws.on('error', (err) => {
-        console.log(`[Relay] Phone (inbound) error: ${err.message}`);
+        console.log(`[Relay][${token}] Phone (inbound) error: ${err.message}`);
       });
 
       ws.on('pong', () => {
         ws.isAlive = true;
-        console.log('[Relay] Phone pong received');
+        console.log(`[Relay][${token}] Phone pong received`);
       });
 
       return;
     }
 
-    // Browser connection (default)
-    console.log(`[Relay] Browser connected (${browsers.size + 1} total)`);
-    browsers.add(ws);
+    // Browser connection (default path)
+    console.log(`[Relay][${token}] Browser connected (${room.browsers.size + 1} total in room)`);
+    room.browsers.add(ws);
 
-    if (phoneConnected) {
-      ws.send(`STATUS:${JSON.stringify({ connected: true, deviceName: phoneDeviceName })}`);
+    if (room.phoneConnected) {
+      ws.send(`STATUS:${JSON.stringify({ connected: true, deviceName: room.phoneDeviceName })}`);
     } else {
       ws.send('STATUS:{"connected":false}');
     }
 
     ws.on('message', (data) => {
       const msg = data.toString();
-      console.log('[Relay] Browser ->', msg.substring(0, 60));
+      console.log(`[Relay][${token}] Browser ->`, msg.substring(0, 60));
 
       if (msg.startsWith('SCAN_FOR_PHONE:')) {
-        console.log('[Relay] Browser requested phone scan...');
+        console.log(`[Relay][${token}] Browser requested phone scan...`);
         // Tell browser we're scanning
         ws.send('SCAN_STATUS:{"scanning":true}');
 
         const subnet = getLocalSubnet();
-        console.log(`[Relay] Scanning subnet ${subnet}.0/24 for port 8765...`);
+        console.log(`[Relay][${token}] Scanning subnet ${subnet}.0/24 for port 8765...`);
 
         scanForPhone(subnet, 8765).then(ip => {
           if (ip) {
-            console.log(`[Relay] Found phone at ${ip}:8765`);
+            console.log(`[Relay][${token}] Found phone at ${ip}:8765`);
             ws.send(`SCAN_STATUS:{"scanning":false,"found":true,"phoneIp":"${ip}"}`);
           } else {
-            console.log('[Relay] No phone found on subnet');
+            console.log(`[Relay][${token}] No phone found on subnet`);
             ws.send('SCAN_STATUS:{"scanning":false,"found":false}');
           }
         });
@@ -336,9 +396,9 @@ function startRelay() {
 
       if (msg.startsWith('CONNECT_TO:')) {
         const url = msg.substring('CONNECT_TO:'.length).trim();
-        console.log(`[Relay] Browser requested outbound connection to: ${url}`);
-        outboundFailCount = 0; // fresh user-initiated attempt resets failure counter
-        connectOutboundToPhone(url);
+        console.log(`[Relay][${token}] Browser requested outbound connection to: ${url}`);
+        room.outboundFailCount = 0; // fresh user-initiated attempt resets failure counter
+        connectOutboundToPhone(room, url);
         return;
       }
 
@@ -346,65 +406,71 @@ function startRelay() {
         // Browser clicked "Disconnect" — close the phone connection but keep
         // the relay alive and the browser WS open. The relay server stays up
         // so the browser can reconnect a new phone without reloading the page.
-        console.log('[Relay] Browser requested phone disconnect');
-        if (outboundReconnectTimeout) {
-          clearTimeout(outboundReconnectTimeout);
-          outboundReconnectTimeout = null;
+        console.log(`[Relay][${token}] Browser requested phone disconnect`);
+        if (room.outboundReconnectTimeout) {
+          clearTimeout(room.outboundReconnectTimeout);
+          room.outboundReconnectTimeout = null;
         }
-        if (outboundPhoneWs) {
-          try { outboundPhoneWs.removeAllListeners(); outboundPhoneWs.close(); } catch (e) {}
-          outboundPhoneWs = null;
-          outboundTargetUrl = null;
+        if (room.outboundPhoneWs) {
+          try { room.outboundPhoneWs.removeAllListeners(); room.outboundPhoneWs.close(); } catch (e) {}
+          room.outboundPhoneWs = null;
+          room.outboundTargetUrl = null;
         }
-        if (phoneWs) {
-          try { phoneWs.close(); } catch (e) {}
+        if (room.phoneWs) {
+          try { room.phoneWs.close(); } catch (e) {}
           // clearPhone will be called by the close event handler
         }
         return;
       }
 
-      if (!forwardToPhone(msg)) {
-        console.log('[Relay] No phone connected, message dropped');
+      if (!forwardToPhone(room, msg)) {
+        console.log(`[Relay][${token}] No phone connected, message dropped`);
       }
     });
 
     ws.on('close', () => {
-      browsers.delete(ws);
-      console.log(`[Relay] Browser disconnected (${browsers.size} remaining)`);
-      if (browsers.size === 0 && outboundReconnectTimeout) {
-        clearTimeout(outboundReconnectTimeout);
-        outboundReconnectTimeout = null;
-        console.log('[Relay] No browsers connected, stopped outbound reconnect');
+      room.browsers.delete(ws);
+      console.log(`[Relay][${token}] Browser disconnected (${room.browsers.size} remaining in room)`);
+      if (room.browsers.size === 0 && room.outboundReconnectTimeout) {
+        clearTimeout(room.outboundReconnectTimeout);
+        room.outboundReconnectTimeout = null;
+        console.log(`[Relay][${token}] No browsers connected, stopped outbound reconnect`);
+      }
+      if (room.browsers.size === 0) {
+        maybeReapRoom(room);
       }
     });
 
     ws.on('error', (err) => {
-      console.log(`[Relay] Browser error: ${err.message}`);
+      console.log(`[Relay][${token}] Browser error: ${err.message}`);
     });
   });
 
   wss.on('listening', () => {
-    console.log(`[Relay] Ready on ws://localhost:${RELAY_PORT} — accepts browser (/) and phone (/phone) connections`);
+    console.log(`[Relay] Ready on ws://localhost:${RELAY_PORT} — accepts browser (/) and phone (/phone) connections with optional ?token=<phoneToken>`);
   });
 
-  // Keep phone connection alive and detect silent disconnects.
+  // Keep every active phone connection alive and detect silent disconnects.
   //
-  // Before each ping we mark the phone as "presumed dead". If a pong comes back
+  // Before each ping we mark each phone as "presumed dead". If a pong comes back
   // before the next tick, isAlive is flipped back to true. If we reach the next
   // tick and isAlive is still false the phone vanished without a TCP close —
   // terminate() fires the 'close' event → clearPhone() → STATUS:false broadcast.
   // This catches: killed Android app, phone rebooted, WiFi dropped mid-session.
   const phoneKeepaliveInterval = setInterval(() => {
-    if (!phoneWs || phoneWs.readyState !== WebSocket.OPEN) return;
+    rooms.forEach((room) => {
+      const phoneWs = room.phoneWs;
+      if (!phoneWs || phoneWs.readyState !== WebSocket.OPEN) return;
 
-    if (phoneWs.isAlive === false) {
-      console.log('[Relay] Phone missed heartbeat — terminating stale connection');
-      phoneWs.terminate(); // fires 'close' → clearPhone() → browsers get STATUS:false
-      return;
-    }
+      if (phoneWs.isAlive === false) {
+        console.log(`[Relay][${room.token}] Phone missed heartbeat — terminating stale connection`);
+        phoneWs.terminate(); // fires 'close' → clearPhone() → browsers get STATUS:false
+        return;
+      }
 
-    phoneWs.isAlive = false; // presume dead until pong arrives
-    phoneWs.ping();
+      phoneWs.isAlive = false; // presume dead until pong arrives
+      phoneWs.ping();
+    });
   }, 15000);
 
   wss.on('close', () => {
