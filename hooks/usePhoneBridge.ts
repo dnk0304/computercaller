@@ -478,20 +478,20 @@ export function usePhoneBridge() {
           simId: typeof payload.simId === 'number' ? payload.simId : undefined,
         };
         setMessages(prev => {
-          // Dedupe by ID (fast path) OR by content.
-          // Address comparison uses digit-suffix matching because:
-          // - SmsReceiver / ContentObserver may use different formats (+4745… vs 4745…)
-          // - New messages typed by user may not include the country-code prefix
+          // Dedupe by ID (fast path) OR by content — only scan the 200 most
+          // recent messages. Duplicates from SmsReceiver/ContentObserver always
+          // arrive within seconds of each other, never years apart, so scanning
+          // the full array (potentially 10,000+) is wasteful and causes lag.
           const digTail = (n: string) => (n || '').replace(/\D/g, '').slice(-10);
           const newTail = digTail(newSms.address);
-          const isDuplicate = prev.some(m =>
+          const window = prev.length > 200 ? prev.slice(0, 200) : prev;
+          const isDuplicate = window.some(m =>
             m.id === newSms.id ||
             (m.body === newSms.body &&
              (newTail
-               ? digTail(m.address) === newTail                         // numeric — digit-suffix
-               : (m.address ?? '').toLowerCase() === (newSms.address ?? '').toLowerCase()) // alphanumeric
-             &&
-             Math.abs(m.date - newSms.date) < 10000) // same message ≤10s apart
+               ? digTail(m.address) === newTail
+               : (m.address ?? '').toLowerCase() === (newSms.address ?? '').toLowerCase())
+             && Math.abs(m.date - newSms.date) < 10000)
           );
           if (isDuplicate) return prev;
           return [newSms, ...prev];

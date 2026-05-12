@@ -450,11 +450,30 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   } = phone;
 
   // Defer expensive thread/callLog computations so they run in the background
-  // without blocking the UI when messages or callLogs update. The deferred
-  // value trails behind the real one — React processes urgent work (button
-  // press, input, call state change) first, then catches up the list render.
+  // without blocking the UI when messages or callLogs update.
   const deferredMessages = useDeferredValue(messages);
   const deferredCallLogs = useDeferredValue(callLogs);
+
+  // O(1) contact lookup — keyed by last-7-digit tail so findContactByNumber's
+  // O(n) linear scan doesn't run 500× contacts per render (500 threads × 2000
+  // contacts = 1,000,000 regex calls = main thread lockup).
+  const contactByTail = useMemo(() => {
+    const map = new Map<string, Contact>();
+    for (const c of contacts) {
+      const norm = (c.number || '').replace(/\D/g, '');
+      if (!norm) continue;
+      const tail = norm.slice(-7);
+      if (!map.has(tail)) map.set(tail, c);
+    }
+    return map;
+  }, [contacts]);
+
+  function findContactFast(number: string): Contact | undefined {
+    const norm = (number || '').replace(/\D/g, '');
+    if (!norm) return undefined;
+    const min = Math.min(norm.length, 7);
+    return contactByTail.get(norm.slice(-min));
+  }
   // Spec: read missed-call badge + sync opener via a loose cast so Dashboard
   // works whether or not the hook field is in place yet. Falls back to safe
   // defaults so this never explodes at render time.
@@ -696,7 +715,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
       );
       result.push({
         address: lastMsg.address,
-        contact: findContactByNumber(lastMsg.address, contacts),
+        contact: findContactFast(lastMsg.address),
         lastMessage: lastMsg,
         unreadCount,
       });
