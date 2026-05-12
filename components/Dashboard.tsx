@@ -484,6 +484,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   const quickSync: (() => void) | undefined = (phone as any).quickSync;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const getContactMessages = (phone as any).getContactMessages as ((address: string) => void) | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const getContactFullHistory = (phone as any).getContactFullHistory as ((address: string) => void) | undefined;
   // MMS full-media fetcher. The parallel bridge agent ships this on the hook
   // — keep the read defensive so the UI degrades gracefully (thumbnail-only)
   // when the field isn't there yet at runtime.
@@ -1520,6 +1522,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             getMmsMedia={getMmsMedia}
             simList={simList}
             onGetContactMessages={getContactMessages}
+            onGetContactFullHistory={getContactFullHistory}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 gap-3">
@@ -2209,6 +2212,8 @@ interface ThreadViewProps {
    *  this when the thread has fewer than 10 messages — silently fills sparse
    *  history in the background without any loading UI. */
   onGetContactMessages?: (address: string) => void;
+  /** Called when user requests full message history (older than 6 months). */
+  onGetContactFullHistory?: (address: string) => void;
 }
 
 const ThreadView = React.memo(function ThreadView({
@@ -2226,6 +2231,7 @@ const ThreadView = React.memo(function ThreadView({
   getMmsMedia,
   simList,
   onGetContactMessages,
+  onGetContactFullHistory,
 }: ThreadViewProps) {
   const displayName = contact?.name || address;
   const colorClass = getAvatarColor(displayName);
@@ -2358,9 +2364,32 @@ const ThreadView = React.memo(function ThreadView({
             }
           />
         ) : (
-          messages.map((m, idx) => {
-            const isSent = m.type === 'sent';
-            const prev = idx > 0 ? messages[idx - 1] : null;
+          (() => {
+            // "Load older messages" affordance. Contact history fetches are
+            // capped to 6 months on demand — when the oldest visible message
+            // is older than that cap, surface an explicit way for the user to
+            // pull the rest. `messages` is sorted newest-first, so the oldest
+            // visible bubble sits at the tail.
+            const SIX_MONTHS_MS = 180 * 24 * 60 * 60 * 1000;
+            const oldestVisibleMsg = messages[messages.length - 1];
+            const hasOlderHistory =
+              oldestVisibleMsg && Date.now() - oldestVisibleMsg.date > SIX_MONTHS_MS;
+            return (
+              <>
+                {hasOlderHistory && onGetContactFullHistory && (
+                  <div className="flex justify-center py-3">
+                    <button
+                      type="button"
+                      onClick={() => onGetContactFullHistory(address)}
+                      className="px-4 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full transition-colors"
+                    >
+                      Load older messages
+                    </button>
+                  </div>
+                )}
+                {messages.map((m, idx) => {
+                  const isSent = m.type === 'sent';
+                  const prev = idx > 0 ? messages[idx - 1] : null;
             // Show timestamp once per ~10-min cluster — keeps the column clean.
             const showTimestamp =
               !prev || m.date - prev.date > 10 * 60 * 1000 || prev.type !== m.type;
@@ -2481,7 +2510,10 @@ const ThreadView = React.memo(function ThreadView({
                 </div>
               </React.Fragment>
             );
-          })
+                })}
+              </>
+            );
+          })()
         )}
       </div>
 

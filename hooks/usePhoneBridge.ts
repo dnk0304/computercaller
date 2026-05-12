@@ -213,11 +213,6 @@ export function usePhoneBridge() {
   // arrives). Without this flag both fire a 2s quicksync → double GET_MESSAGES
   // + double GET_CALL_LOGS arriving simultaneously → freeze/crash.
   const quickSyncScheduledRef = useRef<boolean>(false);
-  // Blocks STATUS:connected quicksync for 10s after a call ends.
-  // CALL_ENDED already fires GET_CALL_LOGS — if the phone briefly reconnects
-  // right after (Android background service restart, cellular handoff), we
-  // don't want to stack a second GET_MESSAGES + GET_CALL_LOGS on top of it.
-  const callEndedRecentlyRef = useRef<boolean>(false);
 
   // After a successful sync, don't auto-show the sync panel on reconnect —
   // the user can still open it manually via the Sync button. Persisted to
@@ -353,7 +348,7 @@ export function usePhoneBridge() {
               // Already synced — silent quick catch-up after a 2s delay.
               // Guard: relay sends STATUS:connected twice (open + DEVICE_INFO),
               // so only schedule one sync per connection event.
-              if (!quickSyncScheduledRef.current && !callEndedRecentlyRef.current) {
+              if (!quickSyncScheduledRef.current) {
                 quickSyncScheduledRef.current = true;
                 setTimeout(() => {
                   quickSyncScheduledRef.current = false;
@@ -445,29 +440,7 @@ export function usePhoneBridge() {
           lastCallWasAnsweredRef.current = false;
           return null;
         });
-        // Auto-refresh call log so the just-ended call appears immediately.
-        // Use callStartTimeRef so long calls (>30 min) are also captured —
-        // a fixed 30-min window would miss a call that started 45 min ago.
-        {
-          const capturedStartTime = callStartTimeRef.current;
-          callStartTimeRef.current = null;
-          // Block STATUS:connected quicksync for 10s — if the phone's WS
-          // briefly reconnects right after the call (Android OEM restart,
-          // cellular handoff), the reconnect quicksync would stack GET_MESSAGES
-          // + GET_CALL_LOGS on top of this CALL_ENDED refresh, causing a burst.
-          callEndedRecentlyRef.current = true;
-          setTimeout(() => { callEndedRecentlyRef.current = false; }, 10000);
-          setTimeout(() => {
-            if (wsRef.current?.readyState === WebSocket.OPEN) {
-              callLogsBufferRef.current = [];
-              // 5s buffer before call start to catch the DB write-time variance
-              const since = capturedStartTime
-                ? capturedStartTime - 5000
-                : Date.now() - 30 * 60 * 1000;
-              wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since })}`);
-            }
-          }, 1000);
-        }
+        callStartTimeRef.current = null;
         break;
 
       case 'SMS_RECEIVED': {
@@ -1072,16 +1045,29 @@ export function usePhoneBridge() {
   }, [sendCommand]);
 
   /**
-   * Fetch all messages for a specific contact (phone number) on demand.
-   * Used when opening a thread with sparse history — silently loads the full
-   * conversation without re-syncing the entire message database.
-   * Results are merged into existing state (no replace).
+   * Fetch the last 6 months of messages for a specific contact (phone number)
+   * on demand. Used when opening a thread with sparse history — silently loads
+   * the recent conversation without re-syncing the entire message database.
+   * Results are merged into existing state (no replace). For full unbounded
+   * history use getContactFullHistory().
    */
   const getContactMessages = useCallback((address: string) => {
     if (!address || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     messagesBufferRef.current = [];
-    // Send with address filter — Android will run WHERE address = ? (fast indexed query)
-    // No `since` filter so we get the full conversation history.
+    const since6mo = Date.now() - 180 * 24 * 60 * 60 * 1000;
+    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address, since: since6mo })}`);
+  }, []);
+
+  /**
+   * Fetch the complete message history for a contact with no time limit.
+   * Used when the user explicitly requests older messages via the
+   * "Load older messages" button in the thread view. Results are merged
+   * into existing state so already-loaded messages are not duplicated.
+   */
+  const getContactFullHistory = useCallback((address: string) => {
+    if (!address || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    messagesBufferRef.current = [];
+    // No `since` filter — fetches all history for this contact.
     wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address })}`);
   }, []);
 
@@ -1470,6 +1456,7 @@ export function usePhoneBridge() {
     getMessages,
     getCallLogs,
     getContactMessages,
+    getContactFullHistory,
     syncAll,
     syncData,
     dismissSyncPanel,
