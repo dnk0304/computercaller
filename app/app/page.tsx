@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
+import { SubscriptionPill } from '@/components/SubscriptionPill';
 import { Dialpad } from '@/components/Dialpad';
 import { SMSInterface } from '@/components/SMSInterface';
 import { Templates } from '@/components/Templates';
@@ -652,6 +653,7 @@ export default function Home() {
             )}
 
             <ConnectionStatus />
+            <SubscriptionPill />
           </div>
         </header>
 
