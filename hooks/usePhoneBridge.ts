@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, startTransition } from 'react';
 import type {
   PhoneEventType,
   Contact,
@@ -619,14 +619,17 @@ export function usePhoneBridge() {
           const incoming = messagesBufferRef.current;
           messagesBufferRef.current = [];
           setIsConnected(true);
-          setMessages(prev => {
-            if (syncModeRef.current === 'replace') return incoming;
-            // Merge: incoming wins on id conflict (newer data), keep existing otherwise
-            const incomingIds = new Set(incoming.map(m => m.id));
-            return [
-              ...prev.filter(m => !incomingIds.has(m.id)),
-              ...incoming,
-            ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+          // Non-urgent: the list re-render can yield to user interactions.
+          startTransition(() => {
+            setMessages(prev => {
+              if (syncModeRef.current === 'replace') return incoming;
+              // Merge: incoming wins on id conflict (newer data), keep existing otherwise
+              const incomingIds = new Set(incoming.map(m => m.id));
+              return [
+                ...prev.filter(m => !incomingIds.has(m.id)),
+                ...incoming,
+              ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+            });
           });
         }
         break;
@@ -660,13 +663,18 @@ export function usePhoneBridge() {
           const incoming = callLogsBufferRef.current;
           callLogsBufferRef.current = [];
           setIsConnected(true);
-          setCallLogs(prev => {
-            if (syncModeRef.current === 'replace') return incoming;
-            const incomingIds = new Set(incoming.map(l => l.id));
-            return [
-              ...prev.filter(l => !incomingIds.has(l.id)),
-              ...incoming,
-            ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+          // Non-urgent: call log list update yields to user interactions.
+          // Critical for CALL_ENDED — the call card clears immediately,
+          // the log list updates in background without blocking the UI.
+          startTransition(() => {
+            setCallLogs(prev => {
+              if (syncModeRef.current === 'replace') return incoming;
+              const incomingIds = new Set(incoming.map(l => l.id));
+              return [
+                ...prev.filter(l => !incomingIds.has(l.id)),
+                ...incoming,
+              ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+            });
           });
         }
         break;

@@ -33,6 +33,7 @@ import React, {
   useRef,
   useState,
   startTransition,
+  useDeferredValue,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { usePhone, getNotificationIcon } from '@/hooks';
@@ -447,6 +448,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     endCall,
     sendSms,
   } = phone;
+
+  // Defer expensive thread/callLog computations so they run in the background
+  // without blocking the UI when messages or callLogs update. The deferred
+  // value trails behind the real one — React processes urgent work (button
+  // press, input, call state change) first, then catches up the list render.
+  const deferredMessages = useDeferredValue(messages);
+  const deferredCallLogs = useDeferredValue(callLogs);
   // Spec: read missed-call badge + sync opener via a loose cast so Dashboard
   // works whether or not the hook field is in place yet. Falls back to safe
   // defaults so this never explodes at render time.
@@ -587,7 +595,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // overflow-y-auto container so it scrolls independently of the rest of
   // column 1. Order is whatever the bridge ships (already newest-first).
 
-  const recentCalls = callLogs;
+  const recentCalls = deferredCallLogs;
 
   // Call-history detail panel — when a number is selected, the call log list
   // is replaced with a back-able panel showing every call with that number.
@@ -615,13 +623,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     if (!targetDigits) {
       // Alphanumeric sender — exact case-insensitive compare.
       const lower = callHistoryNumber.toLowerCase();
-      return callLogs
+      return deferredCallLogs
         .filter((l) => (l.number ?? '').toLowerCase() === lower)
         .sort((a, b) => b.date - a.date);
     }
     const matchLen = Math.min(targetDigits.length, 10);
     const targetTail = targetDigits.slice(-matchLen);
-    return callLogs
+    return deferredCallLogs
       .filter((l) => {
         const ld = digits(l.number);
         if (!ld) {
@@ -630,7 +638,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         return ld.slice(-matchLen) === targetTail;
       })
       .sort((a, b) => b.date - a.date);
-  }, [callLogs, callHistoryNumber]);
+  }, [deferredCallLogs, callHistoryNumber]);
 
   // Display name for the history panel header — prefer the contact name, then
   // any name on a matching log entry, then the raw number.
@@ -666,11 +674,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
   const threads: Thread[] = useMemo(() => {
     // Group all messages by normalised address first, then derive the per-group
-    // summary in one pass. Computing lastMessage explicitly via reduce makes the
-    // "newest message" guarantee obvious and removes any ordering assumption
-    // about the input array.
+    // summary in one pass. Uses deferredMessages so this expensive O(n) scan
+    // runs in background without blocking urgent UI updates (send button, etc.).
     const groups = new Map<string, SmsMessage[]>();
-    for (const m of messages) {
+    for (const m of deferredMessages) {
       const key = normalizeNumber(m.address) || m.address || 'Unknown';
       const bucket = groups.get(key);
       if (bucket) bucket.push(m);
@@ -695,7 +702,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
       });
     }
     return result.sort((a, b) => b.lastMessage.date - a.lastMessage.date);
-  }, [messages, contacts]);
+  }, [deferredMessages, contacts]);
 
   const totalUnread = useMemo(
     () => threads.reduce((sum, t) => sum + t.unreadCount, 0),
