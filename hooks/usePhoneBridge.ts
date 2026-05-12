@@ -213,6 +213,11 @@ export function usePhoneBridge() {
   // arrives). Without this flag both fire a 2s quicksync → double GET_MESSAGES
   // + double GET_CALL_LOGS arriving simultaneously → freeze/crash.
   const quickSyncScheduledRef = useRef<boolean>(false);
+  // Blocks STATUS:connected quicksync for 10s after a call ends.
+  // CALL_ENDED already fires GET_CALL_LOGS — if the phone briefly reconnects
+  // right after (Android background service restart, cellular handoff), we
+  // don't want to stack a second GET_MESSAGES + GET_CALL_LOGS on top of it.
+  const callEndedRecentlyRef = useRef<boolean>(false);
 
   // After a successful sync, don't auto-show the sync panel on reconnect —
   // the user can still open it manually via the Sync button. Persisted to
@@ -348,7 +353,7 @@ export function usePhoneBridge() {
               // Already synced — silent quick catch-up after a 2s delay.
               // Guard: relay sends STATUS:connected twice (open + DEVICE_INFO),
               // so only schedule one sync per connection event.
-              if (!quickSyncScheduledRef.current) {
+              if (!quickSyncScheduledRef.current && !callEndedRecentlyRef.current) {
                 quickSyncScheduledRef.current = true;
                 setTimeout(() => {
                   quickSyncScheduledRef.current = false;
@@ -446,6 +451,12 @@ export function usePhoneBridge() {
         {
           const capturedStartTime = callStartTimeRef.current;
           callStartTimeRef.current = null;
+          // Block STATUS:connected quicksync for 10s — if the phone's WS
+          // briefly reconnects right after the call (Android OEM restart,
+          // cellular handoff), the reconnect quicksync would stack GET_MESSAGES
+          // + GET_CALL_LOGS on top of this CALL_ENDED refresh, causing a burst.
+          callEndedRecentlyRef.current = true;
+          setTimeout(() => { callEndedRecentlyRef.current = false; }, 10000);
           setTimeout(() => {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               callLogsBufferRef.current = [];
