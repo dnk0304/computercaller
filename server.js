@@ -504,7 +504,9 @@ async function main() {
 
   // Then start Next.js.
   console.log(`[Server] Launching Next.js on port ${NEXT_PORT}...`);
-  const app = next({ dev });
+  // turbopack: false — Turbopack panics on Windows when trying to create Prisma
+  // symlinks (requires Developer Mode or admin rights). Webpack is stable.
+  const app = next({ dev, turbopack: false });
   const handle = app.getRequestHandler();
   await app.prepare();
 
