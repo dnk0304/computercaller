@@ -551,20 +551,23 @@ export function usePhoneBridge() {
         const isComplete = page >= total_pages;
         // Clear timeout on first response and on completion
         if (syncTimeoutRef.current) { clearTimeout(syncTimeoutRef.current); syncTimeoutRef.current = null; }
-        setSyncTimedOut(false);
-        // Rate-limited progress update: every 300ms or on final chunk
-        const now = Date.now();
-        if (isComplete || now - lastProgressFlushRef.current > 300) {
-          lastProgressFlushRef.current = now;
-          setSyncProgress(prev => {
-            const next: SyncProgress = {
-              contacts: { done, total: total_count, complete: isComplete },
-              messages: prev?.messages ?? { done: 0, total: 0, complete: false },
-              callLogs: prev?.callLogs ?? { done: 0, total: 0, complete: false },
-            };
-            if (isComplete) checkAllComplete(next);
-            return next;
-          });
+        // Only update sync progress UI during a full replace sync.
+        // Merge/incremental syncs run silently — no banner, no completion toast.
+        if (syncModeRef.current === 'replace') {
+          setSyncTimedOut(false);
+          const now = Date.now();
+          if (isComplete || now - lastProgressFlushRef.current > 300) {
+            lastProgressFlushRef.current = now;
+            setSyncProgress(prev => {
+              const next: SyncProgress = {
+                contacts: { done, total: total_count, complete: isComplete },
+                messages: prev?.messages ?? { done: 0, total: 0, complete: false },
+                callLogs: prev?.callLogs ?? { done: 0, total: 0, complete: false },
+              };
+              if (isComplete) checkAllComplete(next);
+              return next;
+            });
+          }
         }
         if (isComplete) {
           const finalContacts = contactsBufferRef.current;
@@ -1073,22 +1076,18 @@ export function usePhoneBridge() {
 
   const syncAll = useCallback(() => {
     // syncAll is a silent incremental sync — no progress bar.
+    // Contacts are excluded: they change rarely and are only fetched via full syncData().
     // Large syncs go through syncData() via the Full Sync panel.
     const since30 = Date.now() - 30 * 60 * 1000;
-    contactsBufferRef.current = [];
     messagesBufferRef.current = [];
     callLogsBufferRef.current = [];
 
     if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send('GET_CONTACTS:{}');
-    setTimeout(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN)
-        wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since30 })}`);
-    }, 300);
+    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since30 })}`);
     setTimeout(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN)
         wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since30 })}`);
-    }, 600);
+    }, 300);
   }, [sendCommand]);
 
   /**
@@ -1200,22 +1199,8 @@ export function usePhoneBridge() {
   const quickSync = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     const since30min = Date.now() - 30 * 60 * 1000;
-    // Reset only the message and call-log buffers
     messagesBufferRef.current = [];
     callLogsBufferRef.current = [];
-    setSyncProgress({
-      contacts: { done: 0, total: 0, complete: true },   // skip contacts
-      messages: { done: 0, total: 0, complete: false },
-      callLogs: { done: 0, total: 0, complete: false },
-    });
-    setIsSyncing(true);
-    setSyncTimedOut(false);
-    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-    syncTimeoutRef.current = setTimeout(() => {
-      setSyncTimedOut(true);
-      setIsSyncing(false);
-    }, 30000);
-    // Stagger requests to avoid overwhelming Android
     wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since30min })}`);
     setTimeout(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {

@@ -36,7 +36,7 @@ import React, {
   useDeferredValue,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { usePhone, getNotificationIcon } from '@/hooks';
+import { usePhone, useNotifications, getNotificationIcon } from '@/hooks';
 import type { Contact, SmsMessage } from '@/hooks';
 import type { CallLogEntry } from '@/hooks/phoneTypes';
 import {
@@ -511,21 +511,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   const setSim: ((simId: number | null) => void) | undefined = (phone as any).setSim;
 
   // ---- Phone notifications ----------------------------------------------
-  // Mirror of the Android notification shade, exposed by the parallel bridge
-  // agent. Reads are defensive (loose `any` cast) so this UI degrades to an
-  // empty list when the hook hasn't shipped the field yet at runtime.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const phoneNotifications = (phone as any).phoneNotifications ?? [] as any[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sendNotificationReply = (phone as any).sendNotificationReply as ((k: string, rk: string, t: string) => void) | undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const clearNotification = (phone as any).clearNotification as ((id: string) => void) | undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const markAllNotificationsRead = (phone as any).markAllNotificationsRead as (() => void) | undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const clearAllNotifications = (phone as any).clearAllNotifications as (() => void) | undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const unreadCount = phoneNotifications.filter((n: any) => !n.read).length;
+  // Read from a dedicated NotificationContext so notification updates (200ms
+  // flush of buffered phone notifications) don't re-render the whole
+  // Dashboard via PhoneContext.
+  const {
+    phoneNotifications,
+    sendNotificationReply,
+    clearNotification,
+    markAllNotificationsRead,
+    clearAllNotifications,
+  } = useNotifications();
+  const unreadCount = phoneNotifications.filter((n) => !n.read).length;
 
   // Notification overlay open/closed. Closed by default — the thin strip is
   // always visible and clicking it raises the floating panel.
