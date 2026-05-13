@@ -266,11 +266,13 @@ export function usePhoneBridge() {
         localStorage.setItem(HAS_SYNCED_KEY, 'true'); // suppress auto-panel on next reconnect
         setIsSyncing(false);
         syncModeRef.current = 'merge'; // restore merge mode after full sync
-        setSyncCompleteNotification({
+        // Completion toast is non-urgent — defer so the heavy post-sync re-renders
+        // (contactByTail rebuild, threads recompute) don't compete with it.
+        startTransition(() => setSyncCompleteNotification({
           contacts: progress.contacts.total,
           messages: progress.messages.total,
           callLogs: progress.callLogs.total,
-        });
+        }));
       }
     };
 
@@ -571,9 +573,12 @@ export function usePhoneBridge() {
         }
         if (isComplete) {
           const finalContacts = contactsBufferRef.current;
-          setContacts(finalContacts);
-          setIsConnected(true);
           contactsBufferRef.current = [];
+          setIsConnected(true);
+          // Non-urgent: contactByTail Map rebuild + threads recompute can yield to interactions.
+          startTransition(() => {
+            setContacts(finalContacts);
+          });
         }
         break;
       }

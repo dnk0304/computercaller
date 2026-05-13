@@ -714,7 +714,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     return Array.from(result.values()).sort(
       (a, b) => b.lastMessage.date - a.lastMessage.date
     );
-  }, [deferredMessages, findContactFast, contactByTail]); // contactByTail ensures recompute on contact load
+  // findContactFast intentionally omitted from deps — it's an inline function (new ref
+  // every render). Including it defeats the memo. contactByTail covers the same dependency.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deferredMessages, contactByTail]);
 
   const totalUnread = useMemo(
     () => threads.reduce((sum, t) => sum + t.unreadCount, 0),
