@@ -14,12 +14,13 @@ import {
   Hash,
   ArrowDownLeft,
   ArrowUpRight,
+  ArrowLeft,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
 import type { CallLogEntry, SmsMessage } from '@/hooks/phoneTypes';
 
-type Tab = 'dial' | 'calls' | 'texts';
+type Tab = 'calls' | 'texts';
 
 // Persists drag position across open/close cycles for the page lifetime.
 // Cleared on page refresh — intentional per spec.
@@ -76,8 +77,16 @@ export const GlobalDialer = () => {
   } = usePhone();
   const { isOpen, open, close } = useDialerOpen();
 
-  const [tab, setTab] = useState<Tab>('dial');
+  const [tab, setTab] = useState<Tab>('calls');
   const [number, setNumber] = useState('');
+
+  // Dialpad overlay inside the Calls tab. When true the dialpad replaces the
+  // call log list. Hidden whenever a call session is active.
+  const [showDialpad, setShowDialpad] = useState(false);
+
+  // Address handed off from a "message this number" tap in the call log.
+  // The Texts tab highlights the matching thread row when set.
+  const [textTarget, setTextTarget] = useState<string | null>(null);
 
   // Local call duration — computed here, NOT from shared context state.
   // This isolates the 1s tick to GlobalDialer only, preventing the entire
@@ -107,7 +116,8 @@ export const GlobalDialer = () => {
     setPrevCallState(callState);
     if (callState === 'ringing') {
       open();
-      setTab('dial');
+      setTab('calls');
+      setShowDialpad(false);
     }
     // Auto-close panel when call ends (active/ringing/dialing → null)
     if (
@@ -194,9 +204,10 @@ export const GlobalDialer = () => {
     return Array.from(seen.values());
   }, [messages]);
 
-  const handleSelectFromHistory = (n: string) => {
-    setNumber(n);
-    setTab('dial');
+  const handleMessageFromCall = (num: string) => {
+    setTab('texts');
+    setShowDialpad(false);
+    setTextTarget(num);
   };
 
   if (!mounted || !isConnected) return null;
@@ -221,14 +232,14 @@ export const GlobalDialer = () => {
       )}
     >
       {/* Header — drag handle + close button. Tab bar lives below so the
-          three pills can stretch full-width. */}
+          two pills can stretch full-width. */}
       <div
         onMouseDown={handleDragStart}
         className="flex items-center justify-between px-2 py-1 border-b border-slate-100 bg-slate-50/80 cursor-grab active:cursor-grabbing select-none"
       >
         <span
           aria-hidden="true"
-          className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 pl-1"
+          className="text-[9px] font-semibold uppercase tracking-wider text-slate-400 pl-1"
         >
           {hasActiveSession ? 'Call' : 'Phone'}
         </span>
@@ -238,38 +249,32 @@ export const GlobalDialer = () => {
           aria-label="Minimize dialer"
           className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition-colors"
         >
-          <X className="w-3.5 h-3.5" />
+          <X className="w-3 h-3" />
         </button>
       </div>
 
       {/* Tab bar — hidden during an active call session to keep focus on the
-          call UI. Three equal-width icon+label pills with a border-bottom
+          call UI. Two equal-width icon+label pills with a border-bottom
           active indicator. */}
       {!hasActiveSession && (
         <div role="tablist" aria-label="Dialer sections" className="flex border-b border-slate-100">
           <MiniTab
-            active={tab === 'dial'}
-            onClick={() => setTab('dial')}
-            icon={<Hash className="w-3.5 h-3.5" />}
-            label="Dial"
-          />
-          <MiniTab
             active={tab === 'calls'}
-            onClick={() => setTab('calls')}
-            icon={<PhoneCall className="w-3.5 h-3.5" />}
+            onClick={() => { setTab('calls'); }}
+            icon={<PhoneCall className="w-3 h-3" />}
             label="Calls"
           />
           <MiniTab
             active={tab === 'texts'}
-            onClick={() => setTab('texts')}
-            icon={<MessageSquare className="w-3.5 h-3.5" />}
+            onClick={() => { setTab('texts'); }}
+            icon={<MessageSquare className="w-3 h-3" />}
             label="Texts"
           />
         </div>
       )}
 
       {/* Body */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {hasActiveSession ? (
           <CallSessionView
             state={callState!}
@@ -279,18 +284,51 @@ export const GlobalDialer = () => {
             onAnswer={answerCall}
             onEnd={endCall}
           />
-        ) : tab === 'dial' ? (
-          <DialView
-            number={number}
-            onChange={setNumber}
-            onDigit={handleDigit}
-            onBackspace={handleBackspace}
-            onCall={handleCall}
-          />
         ) : tab === 'calls' ? (
-          <CallsView entries={recentCalls} onSelect={handleSelectFromHistory} />
+          <>
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {showDialpad ? (
+                <DialView
+                  number={number}
+                  onChange={setNumber}
+                  onDigit={handleDigit}
+                  onBackspace={handleBackspace}
+                  onCall={handleCall}
+                />
+              ) : (
+                <CallsView
+                  entries={recentCalls}
+                  onSelect={(n) => { setNumber(n); setShowDialpad(true); }}
+                  onMessage={handleMessageFromCall}
+                />
+              )}
+            </div>
+            {/* Dialpad toggle pill — pinned to the bottom of the Calls tab. */}
+            <div className="flex justify-center py-1.5 border-t border-slate-100 bg-white">
+              <button
+                type="button"
+                onClick={() => setShowDialpad((v) => !v)}
+                className="flex items-center gap-1 px-3 py-1 text-[10px] font-medium text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full transition-colors"
+                aria-label={showDialpad ? 'Back to call log' : 'Open dialpad'}
+              >
+                {showDialpad ? (
+                  <>
+                    <ArrowLeft className="w-3 h-3" />
+                    Back to calls
+                  </>
+                ) : (
+                  <>
+                    <Hash className="w-3 h-3" />
+                    Dialpad
+                  </>
+                )}
+              </button>
+            </div>
+          </>
         ) : (
-          <TextsView threads={recentThreads} />
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <TextsView threads={recentThreads} highlightAddress={textTarget} />
+          </div>
         )}
       </div>
     </div>
@@ -318,7 +356,7 @@ function MiniTab({ active, onClick, icon, label }: MiniTabProps) {
       aria-selected={active}
       onClick={onClick}
       className={clsx(
-        'flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] font-semibold',
+        'flex-1 flex flex-col items-center justify-center gap-0.5 py-1 text-[9px] font-semibold',
         'border-b-2 transition-colors',
         active
           ? 'border-blue-600 text-blue-600'
@@ -365,9 +403,9 @@ function CallSessionView({
     : 'text-blue-600';
 
   return (
-    <div className="px-3 py-4 flex flex-col items-center text-center">
+    <div className="px-2.5 py-3 flex flex-col items-center text-center">
       {/* Avatar with pulsing ring while ringing */}
-      <div className="relative mb-3">
+      <div className="relative mb-2.5">
         {isRinging && (
           <span
             aria-hidden="true"
@@ -376,7 +414,7 @@ function CallSessionView({
         )}
         <div
           className={clsx(
-            'relative w-14 h-14 rounded-full flex items-center justify-center',
+            'relative w-12 h-12 rounded-full flex items-center justify-center',
             isRinging
               ? 'bg-emerald-50 ring-4 ring-emerald-200'
               : isActive
@@ -385,50 +423,50 @@ function CallSessionView({
           )}
         >
           {isRinging ? (
-            <PhoneIncoming className="w-6 h-6 text-emerald-600" />
+            <PhoneIncoming className="w-5 h-5 text-emerald-600" />
           ) : isActive ? (
-            <PhoneCall className="w-6 h-6 text-emerald-600" />
+            <PhoneCall className="w-5 h-5 text-emerald-600" />
           ) : (
-            <PhoneCall className="w-6 h-6 text-blue-600" />
+            <PhoneCall className="w-5 h-5 text-blue-600" />
           )}
         </div>
       </div>
 
-      <p className={clsx('text-[10px] font-semibold uppercase tracking-wide mb-0.5', statusColor)}>
+      <p className={clsx('text-[9px] font-semibold uppercase tracking-wide mb-0.5', statusColor)}>
         {statusLabel}
       </p>
-      <h3 className="text-sm font-bold text-slate-900 truncate max-w-full">
+      <h3 className="text-xs font-bold text-slate-900 truncate max-w-full">
         {name || number || 'Unknown'}
       </h3>
       {name && (
-        <p className="text-xs text-slate-500 mt-0.5 truncate max-w-full">{number}</p>
+        <p className="text-[10px] text-slate-500 mt-0.5 truncate max-w-full">{number}</p>
       )}
 
       {isActive && (
-        <p className="mt-1.5 text-lg font-bold text-slate-800 tabular-nums">
+        <p className="mt-1.5 text-base font-bold text-slate-800 tabular-nums">
           {formatDuration(duration)}
         </p>
       )}
 
-      <div className="flex items-center justify-center gap-3 mt-4">
+      <div className="flex items-center justify-center gap-2.5 mt-3">
         {isRinging && (
           <button
             type="button"
             onClick={onAnswer}
-            className="w-11 h-11 rounded-full bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-emerald-500/30 transition-all"
+            className="w-9 h-9 rounded-full bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-emerald-500/30 transition-all"
             aria-label="Answer call"
           >
-            <Phone className="w-5 h-5" />
+            <Phone className="w-4 h-4" />
           </button>
         )}
 
         <button
           type="button"
           onClick={onEnd}
-          className="w-11 h-11 rounded-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-rose-500/30 transition-all"
+          className="w-9 h-9 rounded-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-rose-500/30 transition-all"
           aria-label={isRinging ? 'Decline call' : isDialing ? 'Cancel call' : 'End call'}
         >
-          <PhoneOff className="w-5 h-5" />
+          <PhoneOff className="w-4 h-4" />
         </button>
       </div>
     </div>
@@ -458,9 +496,9 @@ function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewPr
   };
 
   return (
-    <div className="px-2 py-2 flex flex-col">
+    <div className="px-2 py-1.5 flex flex-col">
       {/* Number display */}
-      <div className="mb-2">
+      <div className="mb-1.5">
         <input
           type="text"
           value={number}
@@ -470,17 +508,17 @@ function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewPr
           inputMode="tel"
           aria-label="Phone number"
           className={clsx(
-            'w-full text-center font-semibold tracking-wider bg-slate-50 rounded-lg py-1.5 px-2',
+            'w-full text-center font-semibold tracking-wider bg-slate-50 rounded-lg py-1 px-2',
             'border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300',
             'transition-all',
-            number.length > 10 ? 'text-sm' : 'text-base',
+            number.length > 10 ? 'text-xs' : 'text-sm',
             'text-slate-800 placeholder:text-slate-300'
           )}
         />
       </div>
 
       {/* Dialpad — fills container width, each cell is a square. */}
-      <div className="grid grid-cols-3 gap-1 mb-2">
+      <div className="grid grid-cols-3 gap-0.5 mb-1.5">
         {DIAL_KEYS.map((key) => (
           <button
             key={key.digit}
@@ -494,11 +532,11 @@ function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewPr
             )}
             aria-label={`Dial ${key.digit}`}
           >
-            <span className="text-sm font-semibold text-slate-700 group-active:text-blue-600 transition-colors leading-none">
+            <span className="text-xs font-semibold text-slate-700 group-active:text-blue-600 transition-colors leading-none">
               {key.digit}
             </span>
             {key.letters && (
-              <span className="text-[8px] font-bold text-slate-400 tracking-widest mt-0.5 leading-none">
+              <span className="text-[7px] font-bold text-slate-400 tracking-widest mt-0.5 leading-none">
                 {key.letters}
               </span>
             )}
@@ -507,35 +545,35 @@ function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewPr
       </div>
 
       {/* Action row */}
-      <div className="flex items-center justify-between gap-2">
-        <span className="w-7" aria-hidden="true" />
+      <div className="flex items-center justify-between gap-1.5">
+        <span className="w-6" aria-hidden="true" />
         <button
           type="button"
           onClick={onCall}
           disabled={!number}
           className={clsx(
-            'w-10 h-10 rounded-full text-white flex items-center justify-center transition-all shadow-lg',
+            'w-8 h-8 rounded-full text-white flex items-center justify-center transition-all shadow-lg',
             number
               ? 'bg-emerald-500 hover:bg-emerald-600 active:scale-95 shadow-emerald-500/30'
               : 'bg-slate-300 cursor-not-allowed shadow-none'
           )}
           aria-label="Make call"
         >
-          <Phone className="w-4 h-4 fill-current" />
+          <Phone className="w-3.5 h-3.5 fill-current" />
         </button>
         <button
           type="button"
           onClick={onBackspace}
           disabled={!number}
           className={clsx(
-            'w-7 h-7 rounded-full flex items-center justify-center transition-all',
+            'w-6 h-6 rounded-full flex items-center justify-center transition-all',
             number
               ? 'text-slate-500 hover:text-rose-600 hover:bg-rose-50 active:scale-95'
               : 'text-slate-300 cursor-not-allowed'
           )}
           aria-label="Delete last digit"
         >
-          <Delete className="w-3.5 h-3.5" />
+          <Delete className="w-3 h-3" />
         </button>
       </div>
     </div>
@@ -546,28 +584,29 @@ function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewPr
 interface CallsViewProps {
   entries: CallLogEntry[];
   onSelect: (number: string) => void;
+  onMessage: (number: string) => void;
 }
 
-function CallsView({ entries, onSelect }: CallsViewProps) {
+function CallsView({ entries, onSelect, onMessage }: CallsViewProps) {
   if (entries.length === 0) {
     return (
-      <div className="px-3 py-8 text-center text-xs text-slate-400">
+      <div className="px-2.5 py-6 text-center text-[10px] text-slate-400">
         No recent calls
       </div>
     );
   }
 
   return (
-    <ul className="max-h-48 overflow-y-auto divide-y divide-slate-100">
+    <ul className="divide-y divide-slate-100">
       {entries.map((log) => (
         <li key={log.id}>
-          <div className="flex items-center gap-2 px-2.5 py-2 hover:bg-slate-50 transition-colors">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-slate-50 transition-colors">
             <CallTypeIcon type={log.type} />
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-slate-800 truncate">
+              <p className="text-[10px] font-medium text-slate-800 truncate">
                 {log.name || log.number || 'Unknown'}
               </p>
-              <p className="text-[10px] text-slate-500">{relativeTime(log.date)}</p>
+              <p className="text-[9px] text-slate-500">{relativeTime(log.date)}</p>
             </div>
             <button
               type="button"
@@ -575,7 +614,15 @@ function CallsView({ entries, onSelect }: CallsViewProps) {
               className="p-1 rounded-md text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-colors flex-shrink-0"
               aria-label={`Call ${log.name || log.number}`}
             >
-              <Phone className="w-3.5 h-3.5" />
+              <Phone className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onMessage(log.number)}
+              className="p-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
+              aria-label={`Message ${log.name || log.number}`}
+            >
+              <MessageSquare className="w-3 h-3" />
             </button>
           </div>
         </li>
@@ -589,7 +636,7 @@ interface CallTypeIconProps {
 }
 
 function CallTypeIcon({ type }: CallTypeIconProps) {
-  const iconClass = 'w-3.5 h-3.5 flex-shrink-0';
+  const iconClass = 'w-3 h-3 flex-shrink-0';
   switch (type) {
     case 'incoming':
       return <ArrowDownLeft className={clsx(iconClass, 'text-emerald-600')} aria-label="Incoming" />;
@@ -607,34 +654,43 @@ function CallTypeIcon({ type }: CallTypeIconProps) {
 // ----- Recent texts list -----
 interface TextsViewProps {
   threads: SmsMessage[];
+  highlightAddress?: string | null;
 }
 
-function TextsView({ threads }: TextsViewProps) {
+function TextsView({ threads, highlightAddress }: TextsViewProps) {
   if (threads.length === 0) {
     return (
-      <div className="px-3 py-8 text-center text-xs text-slate-400">
+      <div className="px-2.5 py-6 text-center text-[10px] text-slate-400">
         No messages
       </div>
     );
   }
 
   return (
-    <ul className="max-h-48 overflow-y-auto divide-y divide-slate-100">
-      {threads.map((thread) => (
-        <li key={thread.id}>
-          <div className="flex items-center gap-2 px-2.5 py-2 hover:bg-slate-50 transition-colors">
-            <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center flex-shrink-0">
-              <span className="text-[10px] font-bold text-slate-600">
-                {miniInitials(thread.address)}
-              </span>
+    <ul className="divide-y divide-slate-100">
+      {threads.map((thread) => {
+        const isHighlighted = !!highlightAddress && thread.address === highlightAddress;
+        return (
+          <li key={thread.id}>
+            <div
+              className={clsx(
+                'flex items-center gap-1.5 px-2.5 py-1.5 transition-colors',
+                isHighlighted ? 'bg-blue-50 hover:bg-blue-100' : 'hover:bg-slate-50'
+              )}
+            >
+              <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center flex-shrink-0">
+                <span className="text-[9px] font-bold text-slate-600">
+                  {miniInitials(thread.address)}
+                </span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-medium text-slate-800 truncate">{thread.address}</p>
+                <p className="text-[9px] text-slate-500 truncate">{thread.body}</p>
+              </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-slate-800 truncate">{thread.address}</p>
-              <p className="text-[10px] text-slate-500 truncate">{thread.body}</p>
-            </div>
-          </div>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }
