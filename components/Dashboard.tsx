@@ -935,7 +935,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // ---------- Render --------------------------------------------------------
 
   return (
-    <div className="flex h-full w-full overflow-hidden gap-2 animate-in fade-in duration-500">
+    <div className="flex h-full w-full overflow-hidden gap-2 animate-in fade-in duration-500 min-w-[640px]">
       {/* ============================================================ */}
       {/* Thin notification strip — fixed width, always visible.        */}
       {/* Click to raise the floating overlay (rendered via portal).    */}
@@ -961,7 +961,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         <div
           className={clsx(
             'flex-1 min-h-0 grid gap-2 overflow-hidden',
-            'grid-cols-1 xl:grid-cols-[1.1fr_1.1fr_2fr]'
+            'grid-cols-[1.1fr_1.1fr_2fr]'
           )}
         >
       {/* ============================================================ */}
