@@ -961,7 +961,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         <div
           className={clsx(
             'flex-1 min-h-0 grid gap-2 overflow-hidden',
-            'grid-cols-1 xl:grid-cols-[1.4fr_1.1fr_2fr]'
+            'grid-cols-1 xl:grid-cols-[1.1fr_1.1fr_2fr]'
           )}
         >
       {/* ============================================================ */}
