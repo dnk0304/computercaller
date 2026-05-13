@@ -614,7 +614,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
   // Cap at 50 — prevents evaluating 2,000 React elements on every Dashboard
   // re-render. Full history is available in the call history detail panel.
-  const recentCalls = useMemo(() => deferredCallLogs.slice(0, 50), [deferredCallLogs]);
+  // Paginated call log — starts at 25, user loads 25 more at a time.
+  // Only the displayed slice is rendered; loading more is additive, not a full re-render.
+  const [callLogDisplayCount, setCallLogDisplayCount] = useState(25);
+  const recentCalls = useMemo(
+    () => deferredCallLogs.slice(0, callLogDisplayCount),
+    [deferredCallLogs, callLogDisplayCount]
+  );
+  const hasMoreCalls = deferredCallLogs.length > callLogDisplayCount;
 
   // Call-history detail panel — when a number is selected, the call log list
   // is replaced with a back-able panel showing every call with that number.
@@ -1305,6 +1312,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               title="No recent calls"
               hint={isConnected ? 'Calls will appear here as they come in.' : 'Connect your phone to sync call history.'}
             />
+          )}
+          {/* Load more — only renders 25 more items, no full re-render */}
+          {hasMoreCalls && (
+            <button
+              type="button"
+              onClick={() => setCallLogDisplayCount(prev => prev + 25)}
+              className="w-full py-2 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-xl transition-colors mt-1"
+            >
+              Load 25 more ({deferredCallLogs.length - callLogDisplayCount} remaining)
+            </button>
           )}
         </div>
       </section>
