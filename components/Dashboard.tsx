@@ -612,7 +612,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // overflow-y-auto container so it scrolls independently of the rest of
   // column 1. Order is whatever the bridge ships (already newest-first).
 
-  const recentCalls = deferredCallLogs;
+  // Cap at 50 — prevents evaluating 2,000 React elements on every Dashboard
+  // re-render. Full history is available in the call history detail panel.
+  const recentCalls = useMemo(() => deferredCallLogs.slice(0, 50), [deferredCallLogs]);
 
   // Call-history detail panel — when a number is selected, the call log list
   // is replaced with a back-able panel showing every call with that number.
@@ -758,14 +760,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     // Android stores these as-is — match by case-insensitive exact address.
     if (!targetDigits) {
       const lowerTarget = selectedThread.toLowerCase();
-      return messages
+      return deferredMessages
         .filter((m) => (m.address ?? '').toLowerCase() === lowerTarget)
         .sort((a, b) => a.date - b.date);
     }
 
     const matchLen = Math.min(targetDigits.length, 10);
     const targetTail = targetDigits.slice(-matchLen);
-    return messages
+    return deferredMessages
       .filter((m) => {
         const addrDigits = digits(m.address);
         // If the stored address is also non-numeric, try exact match
@@ -774,7 +776,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         return addrTail === targetTail;
       })
       .sort((a, b) => a.date - b.date); // oldest first, newest at bottom
-  }, [messages, selectedThread]);
+  // deferredMessages: O(n) filter runs in background, not blocking main thread.
+  // New messages appear within ~1 frame — acceptable tradeoff vs main thread jank.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deferredMessages, selectedThread]);
 
   const selectedContact = useMemo(
     () => (selectedThread ? findContactByNumber(selectedThread, contacts) : undefined),
