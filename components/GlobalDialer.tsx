@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Phone,
@@ -17,6 +17,10 @@ import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
 
 type Tab = 'dial' | 'sms';
+
+// Persists drag position across open/close cycles for the page lifetime.
+// Cleared on page refresh — intentional per spec.
+let _savedDialerPos: { top: number; right: number } | null = null;
 
 const DIAL_KEYS: ReadonlyArray<{ digit: string; letters: string }> = [
   { digit: '1', letters: '' },
@@ -79,7 +83,57 @@ export const GlobalDialer = () => {
       open();
       setTab('dial');
     }
+    // Auto-close panel when call ends (active/ringing/dialing → null)
+    if (
+      callState === null &&
+      (prevCallState === 'active' || prevCallState === 'ringing' || prevCallState === 'dialing')
+    ) {
+      close();
+    }
   }
+
+  // ----- Drag state -----
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(_savedDialerPos);
+  const dragging = useRef(false);
+  const dragOffset = useRef({ x: 0, y: 0 });
+
+  const handleDragStart = (e: React.MouseEvent<HTMLDivElement>) => {
+    // Only drag from the header area, not interactive elements
+    if ((e.target as HTMLElement).closest('button')) return;
+    dragging.current = true;
+    const rect = (e.currentTarget.closest('[data-dialer-panel]') as HTMLElement)?.getBoundingClientRect();
+    if (rect) {
+      dragOffset.current = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      };
+    }
+    e.preventDefault();
+  };
+
+  const handleDragMove = useCallback((e: MouseEvent) => {
+    if (!dragging.current) return;
+    const newTop = e.clientY - dragOffset.current.y;
+    const newRight = window.innerWidth - e.clientX - (300 - dragOffset.current.x); // 300 = panel width
+    const clampedTop = Math.max(0, Math.min(newTop, window.innerHeight - 100));
+    const clampedRight = Math.max(0, Math.min(newRight, window.innerWidth - 100));
+    const newPos = { top: clampedTop, right: clampedRight };
+    setPos(newPos);
+    _savedDialerPos = newPos;
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    dragging.current = false;
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', handleDragMove);
+    window.addEventListener('mouseup', handleDragEnd);
+    return () => {
+      window.removeEventListener('mousemove', handleDragMove);
+      window.removeEventListener('mouseup', handleDragEnd);
+    };
+  }, [handleDragMove, handleDragEnd]);
 
   // When SMS is sent successfully, clear the form
   const handleSendSms = () => {
@@ -117,18 +171,24 @@ export const GlobalDialer = () => {
   // ----- Expanded panel -----
   const panel = isOpen ? (
     <div
+      data-dialer-panel
       role="dialog"
       aria-label="Dialer panel"
+      style={pos ? { position: 'fixed', top: pos.top, right: pos.right, zIndex: 50 } : undefined}
       className={clsx(
-        'fixed top-16 right-4 w-80 z-50',
+        !pos && 'fixed top-16 right-4',
+        'w-80 z-50',
         'bg-white rounded-2xl shadow-2xl shadow-slate-900/20 border border-slate-200',
         'overflow-hidden flex flex-col',
         'animate-in fade-in slide-in-from-top-4 duration-200',
-        'max-h-[calc(100vh-8rem)]'
+        'max-h-[32rem]'
       )}
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 bg-slate-50/80">
+      <div
+        onMouseDown={handleDragStart}
+        className="flex items-center justify-between px-3 py-2 border-b border-slate-100 bg-slate-50/80 cursor-grab active:cursor-grabbing select-none"
+      >
         {!hasActiveSession ? (
           <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-0.5 shadow-sm">
             <TabButton active={tab === 'dial'} onClick={() => setTab('dial')}>
@@ -347,9 +407,9 @@ function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewPr
   };
 
   return (
-    <div className="px-4 py-4 flex flex-col">
+    <div className="px-3 py-3 flex flex-col">
       {/* Number display */}
-      <div className="mb-3">
+      <div className="mb-2">
         <input
           type="text"
           value={number}
@@ -359,35 +419,35 @@ function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewPr
           inputMode="tel"
           aria-label="Phone number"
           className={clsx(
-            'w-full text-center font-semibold tracking-wider bg-slate-50 rounded-xl py-3 px-4',
+            'w-full text-center font-semibold tracking-wider bg-slate-50 rounded-lg py-2 px-3',
             'border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300',
             'transition-all',
-            number.length > 12 ? 'text-xl' : 'text-2xl',
+            number.length > 12 ? 'text-base' : 'text-xl',
             'text-slate-800 placeholder:text-slate-300'
           )}
         />
       </div>
 
       {/* Dialpad */}
-      <div className="grid grid-cols-3 gap-2 mb-3">
+      <div className="grid grid-cols-3 gap-1.5 mb-2 mx-auto w-fit">
         {DIAL_KEYS.map((key) => (
           <button
             key={key.digit}
             type="button"
             onClick={() => onDigit(key.digit)}
             className={clsx(
-              'aspect-square rounded-xl bg-slate-50 hover:bg-slate-100 active:bg-blue-50 active:scale-95',
+              'w-11 h-11 rounded-lg bg-slate-50 hover:bg-slate-100 active:bg-blue-50 active:scale-95',
               'border border-slate-100 hover:border-slate-200',
               'flex flex-col items-center justify-center transition-all',
               'group'
             )}
             aria-label={`Dial ${key.digit}`}
           >
-            <span className="text-xl font-semibold text-slate-700 group-active:text-blue-600 transition-colors leading-none">
+            <span className="text-base font-semibold text-slate-700 group-active:text-blue-600 transition-colors leading-none">
               {key.digit}
             </span>
             {key.letters && (
-              <span className="text-[9px] font-bold text-slate-400 tracking-widest mt-0.5">
+              <span className="text-[9px] font-bold text-slate-400 tracking-widest mt-0.5 leading-none">
                 {key.letters}
               </span>
             )}
@@ -396,35 +456,35 @@ function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewPr
       </div>
 
       {/* Action row */}
-      <div className="flex items-center justify-between gap-3">
-        <span className="w-10" aria-hidden="true" />
+      <div className="flex items-center justify-between gap-2">
+        <span className="w-8" aria-hidden="true" />
         <button
           type="button"
           onClick={onCall}
           disabled={!number}
           className={clsx(
-            'w-14 h-14 rounded-full text-white flex items-center justify-center transition-all shadow-lg',
+            'w-11 h-11 rounded-full text-white flex items-center justify-center transition-all shadow-lg',
             number
               ? 'bg-emerald-500 hover:bg-emerald-600 active:scale-95 shadow-emerald-500/30'
               : 'bg-slate-300 cursor-not-allowed shadow-none'
           )}
           aria-label="Make call"
         >
-          <Phone className="w-6 h-6 fill-current" />
+          <Phone className="w-5 h-5 fill-current" />
         </button>
         <button
           type="button"
           onClick={onBackspace}
           disabled={!number}
           className={clsx(
-            'w-10 h-10 rounded-full flex items-center justify-center transition-all',
+            'w-8 h-8 rounded-full flex items-center justify-center transition-all',
             number
               ? 'text-slate-500 hover:text-rose-600 hover:bg-rose-50 active:scale-95'
               : 'text-slate-300 cursor-not-allowed'
           )}
           aria-label="Delete last digit"
         >
-          <Delete className="w-5 h-5" />
+          <Delete className="w-4 h-4" />
         </button>
       </div>
     </div>
