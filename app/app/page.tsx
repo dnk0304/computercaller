@@ -658,7 +658,7 @@ export default function Home() {
         </header>
 
         {/* Content Area */}
-        <div className="flex-1 p-6 overflow-hidden relative">
+        <div className="flex-1 p-6 overflow-x-auto overflow-y-hidden relative min-w-[640px]">
           <div className="absolute inset-0 bg-gradient-to-tr from-blue-50/50 via-indigo-50/30 to-purple-50/50 pointer-events-none" />
           <div className="relative h-full z-0">
              {renderContent()}

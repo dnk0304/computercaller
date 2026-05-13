@@ -14,7 +14,6 @@ import {
   Hash,
   ArrowDownLeft,
   ArrowUpRight,
-  ArrowLeft,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
@@ -26,19 +25,12 @@ type Tab = 'calls' | 'texts';
 // Cleared on page refresh — intentional per spec.
 let _savedDialerPos: { top: number; right: number } | null = null;
 
-const DIAL_KEYS: ReadonlyArray<{ digit: string; letters: string }> = [
-  { digit: '1', letters: '' },
-  { digit: '2', letters: 'ABC' },
-  { digit: '3', letters: 'DEF' },
-  { digit: '4', letters: 'GHI' },
-  { digit: '5', letters: 'JKL' },
-  { digit: '6', letters: 'MNO' },
-  { digit: '7', letters: 'PQRS' },
-  { digit: '8', letters: 'TUV' },
-  { digit: '9', letters: 'WXYZ' },
-  { digit: '*', letters: '' },
-  { digit: '0', letters: '+' },
-  { digit: '#', letters: '' },
+// Digits laid out left-to-right, top-to-bottom for the 3×4 dialpad grid.
+const DIAL_DIGITS: ReadonlyArray<string> = [
+  '1', '2', '3',
+  '4', '5', '6',
+  '7', '8', '9',
+  '*', '0', '#',
 ];
 
 // Panel width in px — must match the `w-52` Tailwind class on the panel.
@@ -80,8 +72,9 @@ export const GlobalDialer = () => {
   const [tab, setTab] = useState<Tab>('calls');
   const [number, setNumber] = useState('');
 
-  // Dialpad overlay inside the Calls tab. When true the dialpad replaces the
-  // call log list. Hidden whenever a call session is active.
+  // Inline dialpad toggle. When true the dialpad replaces the tab body
+  // entirely (calls/texts list hidden). Hidden whenever a call session
+  // is active.
   const [showDialpad, setShowDialpad] = useState(false);
 
   // Address handed off from a "message this number" tap in the call log.
@@ -171,19 +164,6 @@ export const GlobalDialer = () => {
     };
   }, [handleDragMove, handleDragEnd]);
 
-  const handleDigit = (digit: string) => {
-    setNumber((prev) => (prev.length < 20 ? prev + digit : prev));
-  };
-
-  const handleBackspace = () => {
-    setNumber((prev) => prev.slice(0, -1));
-  };
-
-  const handleCall = () => {
-    if (!number) return;
-    makeCall(number);
-  };
-
   // Recent call log entries — newest 10. callLogs is already ordered newest-first
   // by the bridge (prepend on CALL_LOG_ENTRY), so slice is enough.
   const recentCalls = useMemo<CallLogEntry[]>(
@@ -204,10 +184,26 @@ export const GlobalDialer = () => {
     return Array.from(seen.values());
   }, [messages]);
 
+  const handleTabChange = (newTab: Tab) => {
+    setTab(newTab);
+    setShowDialpad(false);
+  };
+
   const handleMessageFromCall = (num: string) => {
     setTab('texts');
     setShowDialpad(false);
     setTextTarget(num);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNumber(e.target.value.replace(/[^0-9+*#]/g, '').slice(0, 20));
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && number) {
+      e.preventDefault();
+      makeCall(number);
+    }
   };
 
   if (!mounted || !isConnected) return null;
@@ -231,11 +227,10 @@ export const GlobalDialer = () => {
         'max-h-72'
       )}
     >
-      {/* Header — drag handle + close button. Tab bar lives below so the
-          two pills can stretch full-width. */}
+      {/* Header — drag handle + close button. */}
       <div
         onMouseDown={handleDragStart}
-        className="flex items-center justify-between px-2 py-1 border-b border-slate-100 bg-slate-50/80 cursor-grab active:cursor-grabbing select-none"
+        className="flex items-center justify-between px-2 py-1 border-b border-slate-100 bg-slate-50/80 cursor-grab active:cursor-grabbing select-none flex-shrink-0"
       >
         <span
           aria-hidden="true"
@@ -253,84 +248,105 @@ export const GlobalDialer = () => {
         </button>
       </div>
 
-      {/* Tab bar — hidden during an active call session to keep focus on the
-          call UI. Two equal-width icon+label pills with a border-bottom
-          active indicator. */}
-      {!hasActiveSession && (
-        <div role="tablist" aria-label="Dialer sections" className="flex border-b border-slate-100">
-          <MiniTab
-            active={tab === 'calls'}
-            onClick={() => { setTab('calls'); }}
-            icon={<PhoneCall className="w-3 h-3" />}
-            label="Calls"
-          />
-          <MiniTab
-            active={tab === 'texts'}
-            onClick={() => { setTab('texts'); }}
-            icon={<MessageSquare className="w-3 h-3" />}
-            label="Texts"
-          />
-        </div>
-      )}
-
-      {/* Body */}
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        {hasActiveSession ? (
-          <CallSessionView
-            state={callState!}
-            number={currentCall?.number ?? ''}
-            name={currentCall?.name}
-            duration={liveDuration}
-            onAnswer={answerCall}
-            onEnd={endCall}
-          />
-        ) : tab === 'calls' ? (
-          <>
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              {showDialpad ? (
-                <DialView
-                  number={number}
-                  onChange={setNumber}
-                  onDigit={handleDigit}
-                  onBackspace={handleBackspace}
-                  onCall={handleCall}
-                />
-              ) : (
-                <CallsView
-                  entries={recentCalls}
-                  onSelect={(n) => { setNumber(n); setShowDialpad(true); }}
-                  onMessage={handleMessageFromCall}
-                />
+      {hasActiveSession ? (
+        <CallSessionView
+          state={callState!}
+          number={currentCall?.number ?? ''}
+          name={currentCall?.name}
+          duration={liveDuration}
+          onAnswer={answerCall}
+          onEnd={endCall}
+        />
+      ) : (
+        <>
+          {/* Pinned dial input — always visible above the tabs. */}
+          <div className="flex items-center gap-1 px-2 py-1.5 border-b border-slate-100 flex-shrink-0">
+            <input
+              type="tel"
+              value={number}
+              onChange={handleInputChange}
+              onKeyDown={handleInputKeyDown}
+              placeholder="+47..."
+              inputMode="tel"
+              aria-label="Phone number"
+              className="flex-1 min-w-0 text-xs px-2 py-1 bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-300 font-mono text-slate-800 placeholder:text-slate-300"
+            />
+            <button
+              type="button"
+              onClick={() => setShowDialpad((v) => !v)}
+              aria-label={showDialpad ? 'Close dialpad' : 'Open dialpad'}
+              aria-pressed={showDialpad}
+              className={clsx(
+                'w-6 h-6 rounded flex items-center justify-center flex-shrink-0 transition-colors',
+                showDialpad
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
               )}
-            </div>
-            {/* Dialpad toggle pill — pinned to the bottom of the Calls tab. */}
-            <div className="flex justify-center py-1.5 border-t border-slate-100 bg-white">
+            >
+              <Hash className="w-3 h-3" />
+            </button>
+            {number && (
               <button
                 type="button"
-                onClick={() => setShowDialpad((v) => !v)}
-                className="flex items-center gap-1 px-3 py-1 text-[10px] font-medium text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full transition-colors"
-                aria-label={showDialpad ? 'Back to call log' : 'Open dialpad'}
+                onClick={() => makeCall(number)}
+                aria-label="Call"
+                className="w-6 h-6 rounded bg-emerald-500 hover:bg-emerald-600 active:scale-95 flex items-center justify-center flex-shrink-0 transition-all shadow-sm shadow-emerald-500/30"
               >
-                {showDialpad ? (
-                  <>
-                    <ArrowLeft className="w-3 h-3" />
-                    Back to calls
-                  </>
-                ) : (
-                  <>
-                    <Hash className="w-3 h-3" />
-                    Dialpad
-                  </>
-                )}
+                <Phone className="w-3 h-3 text-white" />
               </button>
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            <TextsView threads={recentThreads} highlightAddress={textTarget} />
+            )}
           </div>
-        )}
-      </div>
+
+          {/* Tab bar — Calls / Texts. Disabled visual state when dialpad is open
+              so the user can still see which tab they'll return to. */}
+          <div
+            role="tablist"
+            aria-label="Dialer sections"
+            className="flex border-b border-slate-100 flex-shrink-0"
+          >
+            <MiniTab
+              active={tab === 'calls'}
+              dimmed={showDialpad}
+              onClick={() => handleTabChange('calls')}
+              icon={<PhoneCall className="w-3 h-3" />}
+              label="Calls"
+            />
+            <MiniTab
+              active={tab === 'texts'}
+              dimmed={showDialpad}
+              onClick={() => handleTabChange('texts')}
+              icon={<MessageSquare className="w-3 h-3" />}
+              label="Texts"
+            />
+          </div>
+
+          {/* Body — dialpad takes over, otherwise the active tab renders. */}
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {showDialpad ? (
+              <InlineDialpad
+                number={number}
+                onDigit={(d) =>
+                  setNumber((p) => (p.length < 20 ? p + d : p))
+                }
+                onBackspace={() => setNumber((p) => p.slice(0, -1))}
+                onCall={() => number && makeCall(number)}
+              />
+            ) : tab === 'calls' ? (
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                <CallsView
+                  entries={recentCalls}
+                  onSelect={(n) => setNumber(n)}
+                  onMessage={handleMessageFromCall}
+                />
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                <TextsView threads={recentThreads} highlightAddress={textTarget} />
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   ) : null;
 
@@ -343,12 +359,13 @@ export const GlobalDialer = () => {
 
 interface MiniTabProps {
   active: boolean;
+  dimmed?: boolean;
   onClick: () => void;
   icon: React.ReactNode;
   label: string;
 }
 
-function MiniTab({ active, onClick, icon, label }: MiniTabProps) {
+function MiniTab({ active, dimmed, onClick, icon, label }: MiniTabProps) {
   return (
     <button
       type="button"
@@ -359,8 +376,12 @@ function MiniTab({ active, onClick, icon, label }: MiniTabProps) {
         'flex-1 flex flex-col items-center justify-center gap-0.5 py-1 text-[9px] font-semibold',
         'border-b-2 transition-colors',
         active
-          ? 'border-blue-600 text-blue-600'
-          : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+          ? dimmed
+            ? 'border-slate-300 text-slate-400'
+            : 'border-blue-600 text-blue-600'
+          : dimmed
+            ? 'border-transparent text-slate-300 hover:text-slate-500 hover:bg-slate-50'
+            : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50'
       )}
     >
       {icon}
@@ -473,107 +494,63 @@ function CallSessionView({
   );
 }
 
-// ----- Idle dial view: number + dialpad -----
-interface DialViewProps {
+// ----- Inline dialpad: fills the body area when toggled on -----
+interface InlineDialpadProps {
   number: string;
-  onChange: (v: string) => void;
   onDigit: (d: string) => void;
   onBackspace: () => void;
   onCall: () => void;
 }
 
-function DialView({ number, onChange, onDigit, onBackspace, onCall }: DialViewProps) {
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const filtered = e.target.value.replace(/[^0-9+*#]/g, '').slice(0, 20);
-    onChange(filtered);
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && number) {
-      e.preventDefault();
-      onCall();
-    }
-  };
-
+function InlineDialpad({ number, onDigit, onBackspace, onCall }: InlineDialpadProps) {
   return (
-    <div className="px-2 py-1.5 flex flex-col">
-      {/* Number display */}
-      <div className="mb-1.5">
-        <input
-          type="text"
-          value={number}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          placeholder="Enter number"
-          inputMode="tel"
-          aria-label="Phone number"
-          className={clsx(
-            'w-full text-center font-semibold tracking-wider bg-slate-50 rounded-lg py-1 px-2',
-            'border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300',
-            'transition-all',
-            number.length > 10 ? 'text-xs' : 'text-sm',
-            'text-slate-800 placeholder:text-slate-300'
-          )}
-        />
-      </div>
-
-      {/* Dialpad — fills container width, each cell is a square. */}
-      <div className="grid grid-cols-3 gap-0.5 mb-1.5">
-        {DIAL_KEYS.map((key) => (
+    <div className="flex flex-col gap-1 px-2 py-1.5 flex-1 min-h-0">
+      <div className="grid grid-cols-3 gap-1 flex-1 min-h-0">
+        {DIAL_DIGITS.map((d) => (
           <button
-            key={key.digit}
+            key={d}
             type="button"
-            onClick={() => onDigit(key.digit)}
+            onClick={() => onDigit(d)}
+            aria-label={`Dial ${d}`}
             className={clsx(
-              'aspect-square rounded-lg bg-slate-50 hover:bg-slate-100 active:bg-blue-50 active:scale-95',
-              'border border-slate-100 hover:border-slate-200',
-              'flex flex-col items-center justify-center transition-all',
-              'group'
+              'h-8 rounded text-xs font-semibold transition-colors',
+              'bg-slate-100 hover:bg-slate-200 active:bg-slate-300',
+              'text-slate-800'
             )}
-            aria-label={`Dial ${key.digit}`}
           >
-            <span className="text-xs font-semibold text-slate-700 group-active:text-blue-600 transition-colors leading-none">
-              {key.digit}
-            </span>
-            {key.letters && (
-              <span className="text-[7px] font-bold text-slate-400 tracking-widest mt-0.5 leading-none">
-                {key.letters}
-              </span>
-            )}
+            {d}
           </button>
         ))}
       </div>
-
-      {/* Action row */}
-      <div className="flex items-center justify-between gap-1.5">
-        <span className="w-6" aria-hidden="true" />
-        <button
-          type="button"
-          onClick={onCall}
-          disabled={!number}
-          className={clsx(
-            'w-8 h-8 rounded-full text-white flex items-center justify-center transition-all shadow-lg',
-            number
-              ? 'bg-emerald-500 hover:bg-emerald-600 active:scale-95 shadow-emerald-500/30'
-              : 'bg-slate-300 cursor-not-allowed shadow-none'
-          )}
-          aria-label="Make call"
-        >
-          <Phone className="w-3.5 h-3.5 fill-current" />
-        </button>
+      <div className="flex items-center gap-1">
         <button
           type="button"
           onClick={onBackspace}
           disabled={!number}
+          aria-label="Delete last digit"
           className={clsx(
-            'w-6 h-6 rounded-full flex items-center justify-center transition-all',
+            'w-8 h-7 rounded flex items-center justify-center transition-colors',
             number
-              ? 'text-slate-500 hover:text-rose-600 hover:bg-rose-50 active:scale-95'
+              ? 'text-slate-500 hover:text-rose-600 hover:bg-rose-50'
               : 'text-slate-300 cursor-not-allowed'
           )}
-          aria-label="Delete last digit"
         >
-          <Delete className="w-3 h-3" />
+          <Delete className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={onCall}
+          disabled={!number}
+          aria-label="Call"
+          className={clsx(
+            'flex-1 h-7 rounded text-xs font-semibold flex items-center justify-center gap-1 transition-colors',
+            number
+              ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm shadow-emerald-500/30'
+              : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+          )}
+        >
+          <Phone className="w-3 h-3" />
+          Call
         </button>
       </div>
     </div>
@@ -612,7 +589,7 @@ function CallsView({ entries, onSelect, onMessage }: CallsViewProps) {
               type="button"
               onClick={() => onSelect(log.number)}
               className="p-1 rounded-md text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-colors flex-shrink-0"
-              aria-label={`Call ${log.name || log.number}`}
+              aria-label={`Use ${log.name || log.number}`}
             >
               <Phone className="w-3 h-3" />
             </button>

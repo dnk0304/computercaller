@@ -935,7 +935,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // ---------- Render --------------------------------------------------------
 
   return (
-    <div className="flex h-full w-full overflow-hidden gap-2 animate-in fade-in duration-500 min-w-[640px]">
+    <div className="flex h-full w-full gap-2">
       {/* ============================================================ */}
       {/* Thin notification strip — fixed width, always visible.        */}
       {/* Click to raise the floating overlay (rendered via portal).    */}
@@ -956,7 +956,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
       {/* Single stacked column below xl so the columns don't collapse  */}
       {/* to unusable widths on tablet/mobile.                          */}
       {/* ============================================================ */}
-      <div className="flex-1 min-w-0 flex flex-col gap-2 h-full overflow-hidden min-h-0">
+      <div className="flex-1 min-w-0 flex flex-col gap-2 h-full min-h-0">
         <MessengerBar notifications={phoneNotifications} />
         <div
           className={clsx(
@@ -973,9 +973,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
       >
         {/* Header — Quick Dial. The keyboard toggle lives here so it's
             persistently reachable and never crowds the dial input. */}
-        <header className="px-5 py-3 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2 flex-shrink-0">
-          <Phone className="w-4 h-4 text-slate-400" aria-hidden="true" />
-          <h2 className="font-semibold text-slate-800 text-sm">Quick Dial</h2>
+        <header className="px-3 py-1.5 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2 flex-shrink-0">
+          <Phone className="w-3 h-3 text-slate-400" aria-hidden="true" />
+          <h2 className="text-xs font-semibold text-slate-800">Quick Dial</h2>
           <button
             type="button"
             onClick={() => setShowDialpad((v) => !v)}
@@ -983,7 +983,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             aria-label={showDialpad ? 'Hide dialpad' : 'Show dialpad'}
             title={showDialpad ? 'Hide dialpad' : 'Show dialpad'}
             className={clsx(
-              'ml-auto inline-flex items-center justify-center w-7 h-7 rounded-lg',
+              'ml-auto inline-flex items-center justify-center w-5 h-5 rounded-lg',
               'transition-colors',
               'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
               showDialpad
@@ -991,12 +991,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                 : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
             )}
           >
-            <Keyboard className="w-4 h-4" aria-hidden="true" />
+            <Keyboard className="w-3 h-3" aria-hidden="true" />
           </button>
         </header>
 
         {/* Quick dial input + Call button + Active call card (fixed height) */}
-        <div className="px-5 pt-4 pb-3 space-y-3 flex-shrink-0">
+        <div className="px-3 pt-2 pb-2 space-y-1.5 flex-shrink-0">
           <label htmlFor="dashboard-dial-input" className="sr-only">
             Phone number to call
           </label>
@@ -1016,7 +1016,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             }}
             placeholder="+47 ..."
             className={clsx(
-              'w-full px-4 py-3 rounded-xl text-lg font-medium tabular-nums tracking-wide',
+              'w-full px-3 py-1.5 rounded-lg text-xs font-medium tabular-nums tracking-wide',
               'bg-slate-50 border border-slate-200',
               'placeholder:text-slate-300 text-slate-800',
               'focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-300',
@@ -1092,7 +1092,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             onClick={handleDialCall}
             disabled={!isConnected || !dialNumber.trim() || Boolean(currentCall)}
             className={clsx(
-              'w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold',
+              'w-full flex items-center justify-center gap-2 px-4 py-1.5 h-8 rounded-xl text-xs font-semibold',
               'transition-all',
               isConnected && dialNumber.trim() && !currentCall
                 ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md shadow-emerald-200/50 hover:-translate-y-0.5 active:translate-y-0'
@@ -1100,7 +1100,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             )}
             aria-label="Place call"
           >
-            <Phone className="w-5 h-5" aria-hidden="true" />
+            <Phone className="w-3.5 h-3.5" aria-hidden="true" />
             Call
           </button>
           {!isConnected && (
@@ -1118,25 +1118,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               phone={phone}
             />
           )}
-        </div>
-
-        {/* Favorites row (compact, fixed height) */}
-        <div className="px-5 pb-4 flex-shrink-0">
-          <FavoritesPanel
-            favorites={favorites}
-            contacts={contacts}
-            picker={showFavoritePicker}
-            setPicker={setShowFavoritePicker}
-            search={favoriteSearch}
-            setSearch={setFavoriteSearch}
-            onCall={handleFavoriteClick}
-            onAdd={handleAddFavorite}
-            onRemove={handleRemoveFavorite}
-            startLongPress={startLongPress}
-            cancelLongPress={cancelLongPress}
-            longPressTriggeredRef={longPressTriggeredRef}
-            maxFavorites={MAX_FAVORITES}
-          />
         </div>
 
         {/* Recent Calls header — sits above the scrolling list. */}
