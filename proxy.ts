@@ -4,7 +4,7 @@ import { verifyAccessToken } from '@/lib/auth';
 const PROTECTED = ['/app'];
 const AUTH_PAGES = ['/auth/login', '/auth/register', '/auth/verify-email', '/auth/forgot-password', '/auth/reset-password'];
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // ── Development bypass ──────────────────────────────────────────────────
