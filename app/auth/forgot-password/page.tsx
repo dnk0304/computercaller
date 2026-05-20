@@ -10,10 +10,10 @@ export default function ForgotPasswordPage() {
         <p className="text-slate-400 text-sm mb-6">
           Password reset emails are handled by support. Contact us at{' '}
           <a
-            href="mailto:support@dnkdialer.com"
+            href="mailto:support@computercaller.com"
             className="text-blue-400 hover:text-blue-300 transition-colors"
           >
-            support@dnkdialer.com
+            support@computercaller.com
           </a>
         </p>
         <Link
