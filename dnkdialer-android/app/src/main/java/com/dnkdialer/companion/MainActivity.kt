@@ -15,10 +15,12 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.LayoutInflater
+import android.view.View
 import android.widget.Button
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
-import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -59,6 +61,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var qrCodeImage: ImageView
     private lateinit var enableNotificationsButton: Button
 
+    // Hoisted to a field so handleRelayPhaseChanged() can flip
+    // isEnabled / setText without re-findViewById'ing on every phase
+    // transition. The button is labelled "Connect" (R5+) — enabled
+    // when the relay socket is IDLE / WAITING / FAILED, disabled
+    // while LIVE (already connected) or CONNECTING (handshake in
+    // flight — don't let the user spam reconnects).
+    private lateinit var reconnectButton: Button
+
     // Diagnostic surfacing for the LAN flow.
     // Target line + failure line stay GONE in steady-state; only the
     // CONNECTING / FAILED phases populate them. Useful when the user
@@ -78,6 +88,36 @@ class MainActivity : AppCompatActivity() {
 
     private var statusUpdateRunnable: Runnable? = null
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /**
+     * Round 6 — Samsung One UI auto-revoke defense.
+     *
+     * When true, the Activity is showing the permissions-required pane
+     * (R.layout.activity_permissions_required) instead of the main pane.
+     * In this state we:
+     *   - Do NOT bind to PhoneService (it can't function without
+     *     permissions, and binding would crash on a missing-permission
+     *     SecurityException inside the service init path).
+     *   - Do NOT start the foreground service.
+     *   - Do NOT run the 2-second status polling loop.
+     *   - Re-check permissions on every onResume — when the list goes
+     *     empty, run the success animation and swap to the main pane.
+     *
+     * The flag is set in [renderPermissionsRequiredPane] and cleared in
+     * [renderMainPane]. Treat as the canonical source of truth — guards
+     * around it prevent the service-start logic from firing while the
+     * user is mid-grant flow.
+     */
+    private var inPermissionsRequiredPane: Boolean = false
+
+    /**
+     * Tracks whether the main pane's onCreate-time service-start logic
+     * has run. We defer that logic until the first time we transition
+     * INTO the main pane — if the app opens with permissions missing,
+     * we render the permissions pane in onCreate and only run the
+     * normal auto-start flow once the user finishes granting.
+     */
+    private var mainPaneInitialized: Boolean = false
 
     private val requiredPermissions = arrayOf(
         Manifest.permission.CALL_PHONE,
@@ -131,6 +171,38 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Samsung One UI auto-revoke defense — see [inPermissionsRequiredPane]
+        // kdoc. We audit permissions BEFORE inflating the main layout so
+        // findViewById calls below never try to resolve ids that aren't
+        // present yet. If any are missing, we render the blocking pane
+        // and bail out of onCreate without touching the service.
+        val missing = PermissionChecker.checkAll(this)
+        if (missing.isNotEmpty()) {
+            android.util.Log.d("MainActivity", "onCreate: ${missing.size} permissions missing — showing blocking pane")
+            renderPermissionsRequiredPane(missing)
+            return
+        }
+
+        initializeMainPane()
+    }
+
+    /**
+     * Sets up the main control pane. Extracted from the original onCreate
+     * body so it can be called either directly (when permissions are
+     * already granted at launch) OR deferred (when the user opens the
+     * app with permissions revoked, grants them, then comes back).
+     *
+     * Guarded by [mainPaneInitialized] so we never re-bind the service
+     * or re-register listeners if onResume calls us a second time.
+     */
+    private fun initializeMainPane() {
+        if (mainPaneInitialized) {
+            android.util.Log.d("MainActivity", "initializeMainPane: already initialized, skipping")
+            return
+        }
+        mainPaneInitialized = true
+        inPermissionsRequiredPane = false
         setContentView(R.layout.activity_main)
 
         statusText = findViewById(R.id.statusText)
@@ -139,6 +211,7 @@ class MainActivity : AppCompatActivity() {
         ipText = findViewById(R.id.ipText)
         qrCodeImage = findViewById(R.id.qrCodeImage)
         enableNotificationsButton = findViewById(R.id.enable_notifications_button)
+        reconnectButton = findViewById(R.id.reconnectButton)
 
         // Diagnostic surface for LAN reconnect attempts that hang or fail.
         connectionTargetText = findViewById(R.id.connectionTargetText)
@@ -146,6 +219,13 @@ class MainActivity : AppCompatActivity() {
 
         // Initial visual: idle. Real state arrives once the service binds.
         setStatusVisual(ConnState.IDLE)
+
+        // Initial Connect-button state. latestRelayPhase starts as IDLE,
+        // so the button is enabled out of the gate — the user can tap
+        // it the moment the service binds. The phase callback will
+        // override this once a real RelayPhase arrives.
+        reconnectButton.isEnabled = true
+        reconnectButton.text = getString(R.string.action_reconnect)
 
         // Enable Notifications button - opens system settings
         enableNotificationsButton.setOnClickListener {
@@ -161,12 +241,15 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.toast_copied, Toast.LENGTH_SHORT).show()
         }
 
-        // Reconnect button — re-opens the relay against the LAN URL the
+        // Connect button — re-opens the relay against the LAN URL the
         // service was previously bound to. LAN flow only: the phone is
         // the WS server, the webapp connects in via the IP shown above.
-        val reconnectButton: Button = findViewById(R.id.reconnectButton)
+        // The handler still routes through reconnectToRelay() because
+        // that's the force-close+reopen path; the label says "Connect"
+        // because from the user's POV they're establishing a session,
+        // not recovering one.
         reconnectButton.setOnClickListener {
-            android.util.Log.d("MainActivity", "Reconnect button pressed")
+            android.util.Log.d("MainActivity", "Connect button pressed")
             phoneService?.reconnectToRelay()
         }
 
@@ -193,6 +276,10 @@ class MainActivity : AppCompatActivity() {
             setStatusVisual(ConnState.IDLE)
             disconnectButton.visibility = android.view.View.GONE
             reconnectButton.visibility = android.view.View.GONE
+            // Reset the Connect button copy in case it was mid-"Connecting…"
+            // when the user pulled the plug.
+            reconnectButton.text = getString(R.string.action_reconnect)
+            reconnectButton.isEnabled = true
             qrCodeImage.setImageBitmap(null)
 
             handler.postDelayed({
@@ -408,7 +495,6 @@ class MainActivity : AppCompatActivity() {
             // Reset / Cancel.
             val disconnectButton: Button = findViewById(R.id.disconnectButton)
             disconnectButton.visibility = View.VISIBLE
-            val reconnectButton: Button = findViewById(R.id.reconnectButton)
             reconnectButton.visibility = View.VISIBLE
             return
         }
@@ -462,10 +548,9 @@ class MainActivity : AppCompatActivity() {
             statusText.text = text
             setStatusVisual(conn)
 
-            // Show disconnect + reconnect buttons when service is running
+            // Show disconnect + connect buttons when service is running
             val disconnectButton: Button = findViewById(R.id.disconnectButton)
             disconnectButton.visibility = android.view.View.VISIBLE
-            val reconnectButton: Button = findViewById(R.id.reconnectButton)
             reconnectButton.visibility = android.view.View.VISIBLE
 
             android.util.Log.d("MainActivity", "Status updated: ${statusText.text}")
@@ -475,7 +560,6 @@ class MainActivity : AppCompatActivity() {
             setStatusVisual(ConnState.IDLE)
             val disconnectButton: Button = findViewById(R.id.disconnectButton)
             disconnectButton.visibility = android.view.View.GONE
-            val reconnectButton: Button = findViewById(R.id.reconnectButton)
             reconnectButton.visibility = android.view.View.GONE
             android.util.Log.d("MainActivity", "Status updated: Service not running")
         }
@@ -544,6 +628,35 @@ class MainActivity : AppCompatActivity() {
         val service = phoneService
         val targetUrl = service?.lastRelayUrlAttempt
         val error = service?.lastConnectionError
+
+        // Drive the Connect button's enabled state + label off the relay
+        // phase. The button reads as "Connect" in every state the user
+        // can tap it, and "Connecting…" while the handshake is in flight
+        // so the tap registers visually even though the button is
+        // disabled (prevents spam taps).
+        //
+        // Phase → button:
+        //   LIVE       → disabled, "Connect"      (already connected)
+        //   OPEN       → disabled, "Connect"      (socket up, treat as live;
+        //                                          the polling loop will refine)
+        //   CONNECTING → disabled, "Connecting…"  (handshake in flight)
+        //   IDLE       → enabled,  "Connect"      (ready to tap)
+        //   FAILED     → enabled,  "Connect"      (let the user retry)
+        //
+        // PhoneService.RelayPhase only exposes the four members above
+        // (LIVE doesn't exist on RelayPhase — that's ConnState's
+        // higher-level abstraction). OPEN is the relay-socket-up state.
+        reconnectButton.isEnabled = when (phase) {
+            PhoneService.RelayPhase.OPEN -> false        // socket open — nothing to do
+            PhoneService.RelayPhase.CONNECTING -> false  // handshake in progress — don't spam
+            else -> true                                 // IDLE / FAILED → enabled
+        }
+        reconnectButton.text = if (phase == PhoneService.RelayPhase.CONNECTING) {
+            getString(R.string.action_connecting)
+        } else {
+            getString(R.string.action_reconnect)
+        }
+
         when (phase) {
             PhoneService.RelayPhase.CONNECTING -> {
                 statusText.text = getString(R.string.status_connecting_relay)
@@ -716,10 +829,65 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         android.util.Log.d("MainActivity", "onResume called")
-        
+
+        // Samsung One UI auto-revoke defense — re-check on EVERY resume.
+        // This catches two cases:
+        //   1. User opened the app, was shown the permissions pane, went
+        //      to Settings to grant something, and returned. onResume
+        //      fires; if the list is now empty we transition to main.
+        //   2. App was already on the main pane, user backgrounded it,
+        //      Android revoked a permission while we were gone, user
+        //      brings the app back. We catch the revocation here and
+        //      switch INTO the permissions pane before they can interact.
+        //
+        // This is the load-bearing piece of the auto-revoke defense — it's
+        // why the user gets caught immediately instead of silently failing
+        // when they try to use the app days/weeks later.
+        val missing = PermissionChecker.checkAll(this)
+        if (missing.isNotEmpty()) {
+            android.util.Log.d("MainActivity", "onResume: ${missing.size} permissions missing")
+            if (!inPermissionsRequiredPane) {
+                // We were on the main pane — Android revoked something
+                // in the background. Tear down the service-bound state
+                // and switch to the blocking pane.
+                handleRevocationMidSession()
+            }
+            renderPermissionsRequiredPane(missing)
+            return
+        }
+
+        // All permissions granted. If we were on the permissions pane,
+        // play the success animation, then initialize the main pane.
+        // Otherwise (already on main pane), continue with the normal
+        // onResume flow that was here before.
+        if (inPermissionsRequiredPane) {
+            android.util.Log.d("MainActivity", "onResume: all permissions granted — playing success animation")
+            playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+            return
+        }
+
+        runMainPaneOnResume()
+    }
+
+    /**
+     * The pre-existing onResume body, extracted so it can be invoked
+     * either directly (when we resume into the main pane) or deferred
+     * (after the success animation transitions us out of the
+     * permissions pane).
+     *
+     * Defensive guard: the lateinit views below assume the main pane
+     * layout is current. If we're called while the permissions pane is
+     * still up (shouldn't happen, but Android lifecycle reordering on
+     * config-change has surprised us before), bail rather than NPE.
+     */
+    private fun runMainPaneOnResume() {
+        if (inPermissionsRequiredPane || !mainPaneInitialized) {
+            android.util.Log.w("MainActivity", "runMainPaneOnResume called while not on main pane — skipping")
+            return
+        }
         // Check notification status on resume (user might have changed it in settings)
         checkNotificationStatus()
-        
+
         // Check if user granted battery optimization exemption
         if (hasPermissions() && isBatteryOptimizationDisabled() && !serviceBound) {
             android.util.Log.d("MainActivity", "Battery exemption granted, starting service")
@@ -727,15 +895,163 @@ class MainActivity : AppCompatActivity() {
             ipText.text = getString(R.string.status_connecting)
             startPhoneService()
         }
-        
+
         // Try to rebind to service if it's running
         if (!serviceBound) {
             val intent = Intent(this, PhoneService::class.java)
             bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
         }
-        
+
         // Always update status when resuming
         updateStatus()
+    }
+
+    /**
+     * Handle the "user revoked a permission while the app was in the
+     * background" case. PhoneService can't function without its
+     * permissions, so we tear down the binding + stop the status loop
+     * before switching panes. The service itself will SIGSEGV / throw
+     * SecurityException the next time it tries to read a revoked
+     * surface (CallLog, SMS), so stopping it here is the responsible
+     * thing — we'll restart it cleanly once the user re-grants.
+     */
+    private fun handleRevocationMidSession() {
+        android.util.Log.w("MainActivity", "Detected permission revocation mid-session — tearing down service")
+        stopStatusUpdates()
+        if (serviceBound) {
+            try {
+                unbindService(serviceConnection)
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "unbindService threw on revocation teardown: ${e.message}")
+            }
+            serviceBound = false
+        }
+        // Stop the foreground service so it can't keep throwing on the
+        // revoked permission. It'll be restarted by the normal auto-start
+        // flow once the user re-grants and we transition back to the
+        // main pane.
+        try {
+            val stopIntent = Intent(this, PhoneService::class.java).apply {
+                action = PhoneService.ACTION_STOP
+            }
+            stopService(stopIntent)
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "stopService threw on revocation teardown: ${e.message}")
+        }
+        phoneService = null
+        // Force the main pane to re-initialize next time we transition
+        // into it — otherwise mainPaneInitialized=true would short-circuit
+        // initializeMainPane() and leave the service unbound.
+        mainPaneInitialized = false
+    }
+
+    /**
+     * Inflate / refresh the permissions-required pane. Idempotent — safe
+     * to call repeatedly (e.g. user grants one of three permissions and
+     * comes back; we re-render the now-2-item list).
+     *
+     * Side effect: sets [inPermissionsRequiredPane] to true.
+     */
+    private fun renderPermissionsRequiredPane(missing: List<PermissionChecker.MissingPermission>) {
+        if (!inPermissionsRequiredPane) {
+            setContentView(R.layout.activity_permissions_required)
+            inPermissionsRequiredPane = true
+        }
+
+        val listContainer: LinearLayout = findViewById(R.id.missingPermissionsList)
+        listContainer.removeAllViews()
+        val inflater = LayoutInflater.from(this)
+        for (perm in missing) {
+            val card = inflater.inflate(R.layout.item_missing_permission, listContainer, false)
+            card.findViewById<TextView>(R.id.permTitle).text = perm.displayName
+            card.findViewById<TextView>(R.id.permWhy).text = perm.why
+            // contentDescription on the Grant button gets the permission
+            // name appended so TalkBack reads "Grant, Notifications" rather
+            // than just "Grant" eleven times in a row.
+            val grantButton: Button = card.findViewById(R.id.permGrantButton)
+            grantButton.contentDescription = getString(R.string.perms_grant) + ", " + perm.displayName
+            grantButton.setOnClickListener {
+                try {
+                    startActivity(perm.intent)
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Failed to launch grant intent for ${perm.id}", e)
+                    // Defensive fallback: if a special-access intent
+                    // isn't resolvable on this OEM build (rare), drop
+                    // the user on the app-details screen so they have
+                    // somewhere to land.
+                    try {
+                        val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", packageName, null)
+                        }
+                        startActivity(fallback)
+                    } catch (_: Exception) { /* genuinely nothing we can do */ }
+                }
+            }
+            listContainer.addView(card)
+        }
+
+        // Refresh button — re-runs the check without leaving the Activity.
+        // Useful when the user grants something via a flow that doesn't
+        // resume our Activity (some OEM battery settings drop you on
+        // Home rather than coming back).
+        findViewById<Button>(R.id.permsRefreshButton).setOnClickListener {
+            android.util.Log.d("MainActivity", "Refresh tapped — re-checking permissions")
+            val now = PermissionChecker.checkAll(this)
+            if (now.isEmpty()) {
+                playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+            } else {
+                renderPermissionsRequiredPane(now)
+            }
+        }
+    }
+
+    /**
+     * Brief "All set" beat before the main pane appears. Fades the
+     * success overlay in (240ms), holds (320ms), fades out (240ms) —
+     * total ~800ms. Honors prefers-reduced-motion via the system
+     * animator duration scale; if the user has animations disabled
+     * (Settings → Developer options → Animator duration scale = Off),
+     * the overlay is shown without animation and dismissed after the
+     * hold beat, so the success state still registers.
+     *
+     * Calls [onComplete] on the main thread once the overlay is fully
+     * gone. The caller is responsible for swapping setContentView.
+     */
+    private fun playSuccessAnimationThen(onComplete: () -> Unit) {
+        val overlay: View = findViewById(R.id.permsSuccessOverlay)
+        overlay.visibility = View.VISIBLE
+        overlay.alpha = 0f
+
+        val animScale = try {
+            Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+        } catch (e: Exception) { 1f }
+
+        if (animScale == 0f) {
+            // Reduced motion: show + hold + hide without easing.
+            overlay.alpha = 1f
+            handler.postDelayed({
+                overlay.visibility = View.GONE
+                onComplete()
+            }, 600)
+            return
+        }
+
+        overlay.animate()
+            .alpha(1f)
+            .setDuration(240)
+            .withEndAction {
+                handler.postDelayed({
+                    overlay.animate()
+                        .alpha(0f)
+                        .setDuration(240)
+                        .withEndAction {
+                            overlay.visibility = View.GONE
+                            onComplete()
+                        }
+                        .start()
+                }, 320)
+            }
+            .start()
     }
 
     override fun onDestroy() {

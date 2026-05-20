@@ -38,7 +38,16 @@
     <!-- Buttons -->
     <string name="action_copy">Copy</string>
     <string name="action_copy_long">Copy address to clipboard</string>
-    <string name="action_reconnect">Reconnect</string>
+    <!-- User-facing label is "Connect" (R5+). Resource key kept as
+         action_reconnect to avoid an XML refactor — the underlying
+         action still routes through PhoneService.reconnectToRelay()
+         (which force-closes + reopens the socket against the
+         last-known relay target). -->
+    <string name="action_reconnect">Connect</string>
+    <!-- Shown on the same button during a CONNECTING phase. Trailing
+         ellipsis is a real horizontal-ellipsis char (U+2026), not three
+         dots — keeps kerning even on narrow phones. -->
+    <string name="action_connecting">Connecting…</string>
     <string name="action_disconnect">Disconnect and stop</string>
     <string name="action_enable_notifications">Enable notifications</string>
     <string name="action_open_app_settings">Open app settings</string>
@@ -77,4 +86,53 @@
     <string name="status_perms_denied_count">%1$d permissions required</string>
     <string name="status_cannot_start_without_perms">Cannot start without permissions</string>
     <string name="status_failed_to_start">Failed to start</string>
+
+    <!-- =================================================== -->
+    <!-- Permissions-required pane (Samsung One UI auto-revoke -->
+    <!-- defense). Shown by MainActivity when                  -->
+    <!-- PermissionChecker.checkAll() returns a non-empty list. -->
+    <!-- =================================================== -->
+    <string name="perms_title">Permissions needed</string>
+    <string name="perms_subtitle">Some required permissions are missing — Android may have revoked them in the background. Tap each one to re-grant.</string>
+    <string name="perms_grant">Grant</string>
+    <string name="perms_refresh">I\'ve granted everything — re-check</string>
+    <string name="perms_all_set">All set</string>
+
+    <!-- Per-permission rows. Display name on top of each card,
+         single-line "why we need this" below. -->
+    <string name="perm_name_notifications">Notifications</string>
+    <string name="perm_why_notifications">Show incoming-call alerts on your phone.</string>
+
+    <string name="perm_name_notif_listener">Notification access</string>
+    <string name="perm_why_notif_listener">Mirror messaging app notifications to the web app.</string>
+
+    <string name="perm_name_phone">Phone</string>
+    <string name="perm_why_phone">Place calls dialed from the web app.</string>
+
+    <string name="perm_name_phone_state">Phone state</string>
+    <string name="perm_why_phone_state">Detect when a call connects or ends.</string>
+
+    <string name="perm_name_answer">Answer calls</string>
+    <string name="perm_why_answer">Accept incoming calls from the web app UI.</string>
+
+    <string name="perm_name_contacts">Contacts</string>
+    <string name="perm_why_contacts">Match incoming callers to your saved names.</string>
+
+    <string name="perm_name_call_log">Call logs</string>
+    <string name="perm_why_call_log">Sync recent calls to the web app.</string>
+
+    <string name="perm_name_read_sms">Read SMS</string>
+    <string name="perm_why_read_sms">Show your SMS threads in the web app.</string>
+
+    <string name="perm_name_send_sms">Send SMS</string>
+    <string name="perm_why_send_sms">Send SMS from your computer.</string>
+
+    <string name="perm_name_receive_sms">Receive SMS</string>
+    <string name="perm_why_receive_sms">Forward incoming SMS to the web app.</string>
+
+    <string name="perm_name_camera">Camera</string>
+    <string name="perm_why_camera">Scan QR codes for pairing.</string>
+
+    <string name="perm_name_battery">Battery — don\'t optimize</string>
+    <string name="perm_why_battery">Samsung-specific. Keeps the connection alive when the screen is off.</string>
 </resources>

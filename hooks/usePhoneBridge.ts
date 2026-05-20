@@ -519,34 +519,37 @@ export function usePhoneBridge() {
         lastCallWasAnsweredRef.current = false;
         callStartTimeRef.current = Date.now();
         stopCallTimer();
-        // Fallback contact-name resolution. The Android bridge does its own
-        // contact lookup, but it can fail (permission revoked, number stored
-        // only in the webapp, or the bridge just echoed the raw number into
-        // `name`). When that happens, resolve the name against our local
-        // contacts list before the UI ever sees "Unknown". See findContactByNumber
-        // for the digit-suffix matching that tolerates country-code differences.
-        const rawName: unknown = payload.name;
+        // Name resolution: lookup-first. The webapp's contacts list is the
+        // source of truth — the user manages those names directly. The phone's
+        // CACHED_NAME (which populates payload.name) is often stale, formatted
+        // differently than the number, or simply echoes the number itself.
+        //
+        // Priority:
+        //   1. contacts list match (authoritative — user manages this)
+        //   2. payload.name, IF it's a non-empty string that doesn't look like
+        //      a phone number (regex catches "12 34 56 78", "+47 12345678",
+        //      "(555) 123-4567", etc.)
+        //   3. undefined → UI falls through to displaying the raw number, which
+        //      is strictly better than showing a reformatted version of that
+        //      same number as a fake "name".
         const incomingNumber: string = payload.number ?? '';
-        const nameIsMissing =
-          typeof rawName !== 'string' ||
-          rawName.trim() === '' ||
-          rawName.trim() === incomingNumber.trim();
-        const fallbackContact = nameIsMissing
-          ? findContactByNumber(incomingNumber, contactsRef.current)
-          : null;
-        const resolvedName = nameIsMissing
-          ? fallbackContact?.name
-          : (rawName as string);
-        // Diagnostic — added 2026-05-20 to investigate why some incoming calls
-        // still show "Unknown" in the UI. Paste this whole line from the browser
-        // console to Niki on the next incoming call. Remove once the cause is
-        // identified and the resolution is correct.
+        const rawName = typeof payload.name === 'string' ? payload.name.trim() : '';
+        // Matches strings that contain ONLY phone-number characters: digits,
+        // leading '+', spaces, hyphens, parentheses. A real contact name like
+        // "Mom" or "John Doe" contains letters and will not match.
+        const looksLikeNumber = rawName !== '' && /^[+\d\s\-()]+$/.test(rawName);
+        const contactMatch = findContactByNumber(incomingNumber, contactsRef.current);
+        const resolvedName =
+          contactMatch?.name ?? (rawName && !looksLikeNumber ? rawName : undefined);
+        // Diagnostic — added 2026-05-20, updated for lookup-first refactor.
+        // Paste this whole line from the browser console to Niki on the next
+        // incoming-call repro. Remove once the cause is identified.
         console.log('[PhoneBridge][diag CALL_INCOMING]', {
           rawName,
           incomingNumber,
-          nameIsMissing,
+          looksLikeNumber,
           contactsCount: contactsRef.current.length,
-          fallbackMatchedContact: fallbackContact?.name ?? null,
+          contactMatchedName: contactMatch?.name ?? null,
           resolvedName,
         });
         setCurrentCall({
@@ -648,18 +651,18 @@ export function usePhoneBridge() {
         });
         // Real-time call log entry pushed from phone's ContentObserver.
         // Prepend to the callLogs array if not already present.
-        // Same name-resolution fallback as CALL_INCOMING — if the bridge didn't
-        // include a resolved name (or echoed the raw number into the name
-        // field), look the number up in our local contacts before storing.
+        // Same lookup-first name resolution as CALL_INCOMING — contacts list
+        // is authoritative; payload.name is fallback only when it looks like
+        // a real name (contains letters, not just phone-number formatting).
         const entryNumber: string = payload.number ?? '';
-        const entryRawName: unknown = payload.name;
-        const entryNameMissing =
-          typeof entryRawName !== 'string' ||
-          entryRawName.trim() === '' ||
-          entryRawName.trim() === entryNumber.trim();
-        const entryResolvedName = entryNameMissing
-          ? findContactByNumber(entryNumber, contactsRef.current)?.name
-          : (entryRawName as string);
+        const entryRawName =
+          typeof payload.name === 'string' ? payload.name.trim() : '';
+        const entryLooksLikeNumber =
+          entryRawName !== '' && /^[+\d\s\-()]+$/.test(entryRawName);
+        const entryContactMatch = findContactByNumber(entryNumber, contactsRef.current);
+        const entryResolvedName =
+          entryContactMatch?.name
+          ?? (entryRawName && !entryLooksLikeNumber ? entryRawName : undefined);
         const entry: CallLogEntry = {
           id: String(payload.id ?? Date.now()),
           number: entryNumber,
@@ -1000,6 +1003,17 @@ export function usePhoneBridge() {
       ws.onopen = () => {
         console.log('[PhoneBridge] WebSocket connected, requesting initial data...');
         setConnectionError(null); // Clear any previous errors
+        // Belt-and-braces: clear stale Accept-flow flags on every fresh WS
+        // open. The STATUS handler clears them too once the relay broadcasts
+        // {connected:true}, but doing it here as well means an in-flight
+        // "phone declined" pill from the previous session can't bleed into
+        // a fresh socket and confuse the user mid-pairing.
+        setIsAwaitingPhoneAccept(false);
+        setPhoneAcceptDeclined(false);
+        if (awaitingAcceptTimeoutRef.current) {
+          clearTimeout(awaitingAcceptTimeoutRef.current);
+          awaitingAcceptTimeoutRef.current = null;
+        }
         // If we just opened the relay socket, the relay is by definition not offline.
         if (wsUrl === RELAY_URL) {
           setIsRelayOffline(false);
@@ -1119,68 +1133,94 @@ export function usePhoneBridge() {
   }, []);
 
   // Public actions
+  //
+  // connectPhone — idempotent, clean-slate. Every call ALWAYS starts by
+  // actively closing any prior relay WS handle (not just `if open` — also
+  // CONNECTING, and even CLOSING/CLOSED handles get nulled out so a half-dead
+  // socket can't linger and intercept the next phase). After the close
+  // propagates we open a fresh WS, which causes the relay to see a brand-new
+  // session and the phone to raise a fresh Accept/Decline prompt on the next
+  // CONNECT_TO — that's the "fresh Accept on every connect" discipline.
+  //
+  // Note: we intentionally tear down the relay WS even when the user just
+  // wants to swap phone IP (`urlOrIp` provided). The cost is ~1 round-trip on
+  // re-pair; the benefit is that "zombie" sockets (open in the browser, dead
+  // in the relay's view, or vice-versa) can never persist across a Connect
+  // click — which was the bug class the user kept hitting.
   const connectPhone = useCallback((urlOrIp?: string) => {
-    if (!urlOrIp || urlOrIp.trim() === '') {
-      // No IP — connect to relay (default)
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-      connect(RELAY_URL);
-      return;
-    }
-
-    console.log('[PhoneBridge] connectPhone called with:', urlOrIp);
-
     // Clear stale Accept-on-phone error states so the retry attempt
     // starts with a fresh "waiting…" → "accepted/declined" cycle. Without
     // this, hitting Connect right after a Decline would briefly show
     // both "declined" and "waiting for phone to accept" at the same time.
     setPhoneAcceptDeclined(false);
+    setIsAwaitingPhoneAccept(false);
     setConnectionError(null);
     if (awaitingAcceptTimeoutRef.current) {
       clearTimeout(awaitingAcceptTimeoutRef.current);
       awaitingAcceptTimeoutRef.current = null;
     }
-
-    let phoneUrl: string;
-    if (urlOrIp.startsWith('ws://') || urlOrIp.startsWith('wss://')) {
-      phoneUrl = urlOrIp;
-    } else if (urlOrIp.includes(':')) {
-      phoneUrl = `ws://${urlOrIp}`;
-    } else {
-      phoneUrl = `ws://${urlOrIp}:8765`;
+    // Cancel any pending reconnect from a prior onclose — we are about to
+    // open a new socket explicitly and don't want a stale timer firing on top.
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
 
-    console.log('[PhoneBridge] Telling relay to connect to phone at:', phoneUrl);
-    
-    // Make sure we're connected to relay first
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      // Connect to relay, then send CONNECT_TO
-      const savedPhoneUrl = phoneUrl;
-      
-      // Connect to relay
-      connect(RELAY_URL);
-      
-      // Wait for connection, then send CONNECT_TO
-      const checkInterval = setInterval(() => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          clearInterval(checkInterval);
-          wsRef.current.send(`CONNECT_TO:${savedPhoneUrl}`);
-          // Save the phone URL for reconnection
-          phoneUrlRef.current = savedPhoneUrl;
-          localStorage.setItem(PHONE_URL_KEY, savedPhoneUrl);
+    // Hard-close any existing relay handle, regardless of readyState. OPEN
+    // and CONNECTING get an explicit close(1000, 'reconnect'); CLOSING/CLOSED
+    // just get nulled so the new socket isn't shadowed by a dead reference.
+    const existing = wsRef.current;
+    if (existing) {
+      const rs = existing.readyState;
+      if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) {
+        // Best-effort goodbye — relay tears down the outbound phone WS on
+        // either the explicit DISCONNECT_PHONE OR the WS close itself, so
+        // the send is belt-and-braces but won't cause double-teardown.
+        if (rs === WebSocket.OPEN) {
+          try { existing.send('DISCONNECT_PHONE:{}'); } catch { /* socket may have flipped to CLOSING mid-send */ }
         }
-      }, 200);
-      
-      // Timeout after 5 seconds
-      setTimeout(() => clearInterval(checkInterval), 5000);
-    } else {
-      // Already connected to relay, just send CONNECT_TO
-      wsRef.current.send(`CONNECT_TO:${phoneUrl}`);
-      phoneUrlRef.current = phoneUrl;
-      localStorage.setItem(PHONE_URL_KEY, phoneUrl);
+        try { existing.close(1000, 'reconnect'); } catch { /* safari throws on close while CONNECTING — ignore */ }
+      }
+      wsRef.current = null;
     }
-    
+
+    // Resolve the phone URL we'll ask the relay to dial (only used when an
+    // IP was supplied — bare relay-connect path skips this).
+    let phoneUrl: string | null = null;
+    if (urlOrIp && urlOrIp.trim() !== '') {
+      console.log('[PhoneBridge] connectPhone called with:', urlOrIp);
+      if (urlOrIp.startsWith('ws://') || urlOrIp.startsWith('wss://')) {
+        phoneUrl = urlOrIp;
+      } else if (urlOrIp.includes(':')) {
+        phoneUrl = `ws://${urlOrIp}`;
+      } else {
+        phoneUrl = `ws://${urlOrIp}:8765`;
+      }
+      console.log('[PhoneBridge] Telling relay to connect to phone at:', phoneUrl);
+    }
+
+    // Small delay so the close above can propagate through the runtime's
+    // socket queue before we open a fresh one — without this, some browsers
+    // race and the new WS inherits the same underlying TCP socket state.
+    setTimeout(() => {
+      connect(RELAY_URL);
+
+      if (phoneUrl) {
+        // Wait for the new relay WS to reach OPEN, then send CONNECT_TO.
+        // Capped at 5s so a relay that never opens doesn't leave a runaway timer.
+        const savedPhoneUrl = phoneUrl;
+        const checkInterval = setInterval(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            clearInterval(checkInterval);
+            wsRef.current.send(`CONNECT_TO:${savedPhoneUrl}`);
+            phoneUrlRef.current = savedPhoneUrl;
+            localStorage.setItem(PHONE_URL_KEY, savedPhoneUrl);
+          }
+        }, 200);
+        setTimeout(() => clearInterval(checkInterval), 5000);
+      }
+    }, 100);
+
     setIsRelayConnection(true);
   }, [connect]);
 
@@ -1598,23 +1638,35 @@ export function usePhoneBridge() {
   );
 
   const disconnect = useCallback(() => {
-    console.log('[PhoneBridge] Manual disconnect — keeping relay alive, dropping phone only');
-    // Send a command to the relay to close the phone connection.
-    // The relay WS (wsRef) stays open — the relay server keeps running and the
-    // browser stays connected to it, ready for the next phone connection.
-    // The relay's DISCONNECT_PHONE handler tears down the outbound phone WS
-    // AND clears outboundTargetUrl so the 5s auto-reconnect loop doesn't
-    // immediately re-establish — see relay-server.js teardownOutboundPhone().
-    // On the phone side, PhoneService.handleCommand("DISCONNECT_PHONE")
-    // calls server.disconnectAllClients() so the LAN-side WS state ends up
-    // clean and ready for the next pairing (this was the missing piece
-    // that previously forced users to reinstall the APK).
+    console.log('[PhoneBridge] Manual disconnect — full WS teardown');
+    // Hardened lifecycle: send DISCONNECT_PHONE (best-effort, relay forwards
+    // it to the phone so the LAN-side WS state resets) then close the relay
+    // WS itself with code 1000 + reason 'user_disconnect'. Previously this
+    // kept the relay WS alive to "stay ready for the next phone connection",
+    // but that left a class of zombie-socket bugs where the next Connect
+    // re-used a half-dead session and the phone never raised a fresh
+    // Accept/Decline prompt. Closing the WS forces the relay to drop the
+    // browser-side session entirely — next connectPhone() opens a brand-new
+    // socket and the phone's Accept flow fires from scratch.
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send('DISCONNECT_PHONE:{}');
+      try { wsRef.current.send('DISCONNECT_PHONE:{}'); } catch { /* socket may have flipped to CLOSING — ignore */ }
     }
+    if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+      try { wsRef.current.close(1000, 'user_disconnect'); } catch { /* close() can throw on CONNECTING in some browsers — ignore */ }
+    }
+    wsRef.current = null;
+
+    // Cancel any pending auto-reconnect timer from ws.onclose so we don't
+    // immediately re-establish what the user just tore down.
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
     phoneUrlRef.current = null;
     localStorage.removeItem(PHONE_URL_KEY);
     estimateRequestedRef.current = false;
+    quickSyncScheduledRef.current = false;
     localStorage.removeItem(HAS_SYNCED_KEY);
     // Clear Accept-on-phone state — a fresh Connect should start clean,
     // and any in-flight client-side awaiting-accept timeout should not
@@ -1647,6 +1699,8 @@ export function usePhoneBridge() {
     setSelectedSimId(null);
     setPhoneNotifications([]);
     setIsConnected(false);
+    setIsBridgeConnected(false);
+    setCurrentCall(null);
     setPhoneName(null);
     setContacts([]);
     setMessages([]);
@@ -1673,17 +1727,56 @@ export function usePhoneBridge() {
     console.log('[PhoneBridge] Auto-connecting to relay server');
     connect(RELAY_URL);
 
+    // Page-unload teardown. Fires on F5 / Ctrl+R, tab close, browser close,
+    // and same-tab navigation away. We do BOTH a best-effort
+    // DISCONNECT_PHONE send AND an explicit close(1000) so the relay sees
+    // the session terminate cleanly — its websocket close handler then
+    // tears down the outbound phone WS and forces a fresh Accept prompt
+    // on the next pairing. Without the explicit close(), browsers may
+    // hold the socket open for several seconds during the unload,
+    // creating a "zombie" window where the relay still thinks we're
+    // around. Local React state is reset too — strictly redundant on
+    // unmount but cheap insurance in case the page comes back via
+    // bfcache (Safari, modern Chrome) and the hook is re-entered without
+    // a full mount.
+    const handleBeforeUnload = () => {
+      console.log('[PhoneBridge] beforeunload — tearing down relay WS');
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        try { wsRef.current.send('DISCONNECT_PHONE:{}'); } catch { /* unload-window send may race — ignore */ }
+      }
+      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+        try { wsRef.current.close(1000, 'page_unload'); } catch { /* CONNECTING-state close throws in some browsers — ignore */ }
+      }
+      wsRef.current = null;
+      setIsConnected(false);
+      setIsBridgeConnected(false);
+      setCurrentCall(null);
+      setIsAwaitingPhoneAccept(false);
+      setPhoneAcceptDeclined(false);
+    };
+    // pagehide covers the bfcache case where beforeunload doesn't fire
+    // (iOS Safari, modern Chrome with back/forward cache). Registering
+    // both is safe — only one will fire per unload, and the handler is
+    // idempotent (re-running it on an already-null wsRef is a no-op).
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
+
     return () => {
       console.log('[PhoneBridge] Cleaning up — disconnecting phone on page unload');
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
       // Disconnect the phone from the relay so a page refresh always returns
       // to the "disconnected" state. The saved phone URL stays in localStorage
       // so the user can reconnect in one click without re-scanning the QR.
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send('DISCONNECT_PHONE:{}');
+        try { wsRef.current.send('DISCONNECT_PHONE:{}'); } catch { /* socket race — ignore */ }
       }
       if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
       if (callStatusTimeoutRef.current) clearTimeout(callStatusTimeoutRef.current);
-      wsRef.current?.close();
+      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+        try { wsRef.current.close(1000, 'unmount'); } catch { /* ignore */ }
+      }
+      wsRef.current = null;
     };
   }, [connect]);
 

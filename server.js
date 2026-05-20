@@ -232,6 +232,69 @@ function startRelay() {
     maybeReapRoom(room);
   }
 
+  /**
+   * Full teardown of the phone side of a room. Called when:
+   *   - Browser sends DISCONNECT_PHONE (explicit user click).
+   *   - Last browser WS closes (tab closed / refresh / beforeunload race).
+   *     We treat this as an implicit DISCONNECT_PHONE so the relay doesn't
+   *     keep an orphan phone connection alive when no one is listening.
+   *
+   * Order matters: clean room state FIRST so any close events that race
+   * back through the listeners see a room that already knows the WS is
+   * gone (no auto-reconnect re-arm, no stale phoneWs). THEN forward
+   * DISCONNECT_PHONE:{} to the phone so PhoneService can call
+   * disconnectAllClients() on its end. THEN physically close.
+   */
+  function teardownPhoneConnection(room, reasonForLog) {
+    console.log(`[Relay][${room.token}] teardownPhoneConnection: ${reasonForLog}`);
+
+    // Snapshot refs before clearing — we still need to send the polite
+    // DISCONNECT_PHONE frame to the phone after room state is wiped.
+    const outbound = room.outboundPhoneWs;
+    const phone = room.phoneWs;
+
+    // 1. Cancel any pending auto-reconnect — must happen before we drop
+    //    listeners so a racing close can't re-arm a fresh timer.
+    if (room.outboundReconnectTimeout) {
+      clearTimeout(room.outboundReconnectTimeout);
+      room.outboundReconnectTimeout = null;
+    }
+
+    // 2. Wipe room state so callbacks that still fire see a clean slate.
+    room.outboundPhoneWs = null;
+    room.outboundTargetUrl = null;
+    room.outboundFailCount = 0;
+    room.phoneWs = null;
+    room.phoneConnected = false;
+    room.phoneDeviceName = null;
+
+    // 3. Broadcast disconnected immediately so any remaining browsers
+    //    update — don't wait for the WS close event, which may race.
+    broadcastToBrowsers(room, 'STATUS:{"connected":false}');
+
+    // 4. Politely tell the phone we're tearing down (best-effort).
+    //    Prefer the outbound WS since that's the relay-initiated channel;
+    //    fall back to whichever WS the room had as phone.
+    const phoneWsForNotify = (outbound && outbound.readyState === WebSocket.OPEN)
+      ? outbound
+      : (phone && phone.readyState === WebSocket.OPEN ? phone : null);
+    if (phoneWsForNotify) {
+      try { phoneWsForNotify.send('DISCONNECT_PHONE:{}'); } catch (e) {}
+    }
+
+    // 5. Detach listeners + close. removeAllListeners prevents the close
+    //    handler (which would otherwise call clearPhone again and try to
+    //    reschedule a reconnect) from firing — we've already cleaned up.
+    if (outbound) {
+      try { outbound.removeAllListeners(); outbound.close(1000, 'user_disconnect'); } catch (e) {}
+    }
+    if (phone && phone !== outbound) {
+      try { phone.removeAllListeners(); phone.close(1000, 'user_disconnect'); } catch (e) {}
+    }
+
+    maybeReapRoom(room);
+  }
+
   function forwardToPhone(room, msg) {
     const active = room.phoneWs;
     if (active && active.readyState === WebSocket.OPEN) {
@@ -501,24 +564,15 @@ function startRelay() {
         return;
       }
 
-      if (msg.startsWith('DISCONNECT_PHONE:')) {
+      // Match both `DISCONNECT_PHONE:{...}` (current webapp) and a bare
+      // `DISCONNECT_PHONE` (defensive — the prefix without payload should
+      // also tear down, otherwise it'd fall through to forwardToPhone and
+      // get silently dropped on the phone side).
+      if (msg.startsWith('DISCONNECT_PHONE')) {
         // Browser clicked "Disconnect" — close the phone connection but keep
         // the relay alive and the browser WS open. The relay server stays up
         // so the browser can reconnect a new phone without reloading the page.
-        console.log(`[Relay][${token}] Browser requested phone disconnect`);
-        if (room.outboundReconnectTimeout) {
-          clearTimeout(room.outboundReconnectTimeout);
-          room.outboundReconnectTimeout = null;
-        }
-        if (room.outboundPhoneWs) {
-          try { room.outboundPhoneWs.removeAllListeners(); room.outboundPhoneWs.close(); } catch (e) {}
-          room.outboundPhoneWs = null;
-          room.outboundTargetUrl = null;
-        }
-        if (room.phoneWs) {
-          try { room.phoneWs.close(); } catch (e) {}
-          // clearPhone will be called by the close event handler
-        }
+        teardownPhoneConnection(room, 'browser DISCONNECT_PHONE');
         return;
       }
 
@@ -533,13 +587,20 @@ function startRelay() {
       // Tell the phone the count dropped (could be 0 → phone surfaces "no
       // browser paired" UI; could be 2→1 → phone keeps showing paired).
       sendBrowserStatusToPhone(room);
-      if (room.browsers.size === 0 && room.outboundReconnectTimeout) {
-        clearTimeout(room.outboundReconnectTimeout);
-        room.outboundReconnectTimeout = null;
-        console.log(`[Relay][${token}] No browsers connected, stopped outbound reconnect`);
-      }
+      // When the last browser leaves, treat it as an implicit DISCONNECT_PHONE.
+      // Reason: the webapp's beforeunload handler tries to send DISCONNECT_PHONE
+      // but the WS may close before the frame is flushed. The relay must NOT
+      // depend on that message arriving — if no one is listening, the phone
+      // connection is orphaned: outboundTargetUrl persists, the keepalive
+      // ping loop keeps probing, and a subsequent reconnect-from-browser may
+      // collide with the stale connection. Converging both teardown paths
+      // through the same helper guarantees no stale state.
       if (room.browsers.size === 0) {
-        maybeReapRoom(room);
+        if (room.phoneWs || room.outboundPhoneWs || room.outboundReconnectTimeout) {
+          teardownPhoneConnection(room, 'last browser closed');
+        } else {
+          maybeReapRoom(room);
+        }
       }
     });
 

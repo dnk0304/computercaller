@@ -1217,7 +1217,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               tickKey={callTick}
               onAnswer={answerCall}
               onEnd={endCall}
-              phone={phone}
             />
           )}
         </div>
@@ -1835,9 +1834,6 @@ interface ActiveCallCardProps {
   tickKey: number; // forces re-render every second so the timer updates
   onAnswer: () => void;
   onEnd: () => void;
-  // Phone bridge — used to call setSpeaker live during the call. Loose-typed
-  // so this keeps compiling while usePhoneBridge's published surface catches up.
-  phone: ReturnType<typeof usePhone>;
 }
 
 const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
@@ -1845,38 +1841,22 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
   tickKey,
   onAnswer,
   onEnd,
-  phone,
 }) => {
   // Mute is a placeholder per spec — local-only state, not wired to the bridge.
   const [muted, setMuted] = useState(false);
 
-  // Audio source — replaces the legacy single Speaker toggle (2026-05-18).
-  // Seeded from localStorage so the last-chosen default carries across calls
-  // and reloads. When the call identity changes (new call started) we re-seed
-  // from localStorage rather than resetting to a hardcoded value — the user
-  // already expressed a preference, honor it. Every change is persisted back
-  // so the Quick Dial read-only pill and the settings page stay in sync.
-  const [audioSource, setAudioSource] = useState<AudioSource>(() => readAudioSourceDefault());
-  useEffect(() => {
-    setAudioSource(readAudioSourceDefault());
-  }, [call]);
-
-  const handleAudioSourceChange = (next: AudioSource) => {
-    setAudioSource(next);
-    writeAudioSourceDefault(next);
-    // Notify same-tab listeners (the storage event only fires cross-tab).
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('dnkdialer:audio-source-changed'));
-    }
-    // Wire the two phone-routed options to the existing SET_SPEAKER bridge.
-    // PC audio is a UI stub — see AudioSourceToggle for the no-op rationale.
-    if (next === 'earpiece') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (phone as any).setSpeaker?.(false);
-    } else if (next === 'speaker') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (phone as any).setSpeaker?.(true);
-    }
+  // Send-SMS shortcut during a live call. Routes to the Messages tab with the
+  // caller's number pre-selected, mirroring the Quick Dial header SMS button
+  // pattern. ActiveCallCard is a child component but hooks compose fine here —
+  // calling useDashboardTab() directly keeps the prop surface lean and avoids
+  // drilling another callback through the parent.
+  const { setSelectedMessageNumber, setActiveTab } = useDashboardTab();
+  const smsTarget = call.number?.trim() ?? '';
+  const canSendSms = smsTarget.length > 0;
+  const handleSendSms = () => {
+    if (!canSendSms) return;
+    setSelectedMessageNumber(smsTarget);
+    setActiveTab('messages');
   };
 
   // Re-read time only via tickKey re-renders; avoids spurious renders elsewhere.
@@ -1986,14 +1966,28 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
         </button>
       </div>
 
-      {/* Audio source — three-pill segmented control replacing the legacy
-          Speaker button (2026-05-18). The in-call instance is the only
-          interactive surface for the audio route; persists the choice to
-          localStorage so the Quick Dial header pill and the next call both
-          pick up the latest preference. */}
-      <div className="mt-3">
-        <AudioSourceToggle value={audioSource} onChange={handleAudioSourceChange} />
-      </div>
+      {/* Send SMS — primary side-action during a live call (2026-05-20).
+          Routes the user to the Messages tab with the caller's number
+          pre-selected so they can text the person they're talking to without
+          retyping. Full-width to read as the dominant secondary action below
+          the Answer/Mute/End row. Disabled when the caller number was withheld
+          / unavailable — the button still renders so the layout stays stable. */}
+      <button
+        type="button"
+        onClick={handleSendSms}
+        disabled={!canSendSms}
+        className={clsx(
+          'mt-3 w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-semibold text-xs shadow-sm transition-colors',
+          canSendSms
+            ? 'bg-blue-600 hover:bg-blue-700 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white'
+            : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+        )}
+        aria-label={canSendSms ? `Send SMS to ${displayName}` : 'Send SMS (unavailable)'}
+        title={canSendSms ? undefined : 'Caller number not available.'}
+      >
+        <MessageSquare className="w-4 h-4" aria-hidden="true" />
+        Send SMS
+      </button>
     </div>
   );
 };
