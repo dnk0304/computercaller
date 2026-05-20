@@ -39,3 +39,20 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Android build artifacts — must never be committed
+dnkdialer-android/.gradle/
+dnkdialer-android/app/build/
+dnkdialer-android/local.properties
+dnkdialer-android/.idea/
+*.iml
+*.hprof
+
+# IDE / editor caches
+.vscode/.last-target
+.idea/
+
+# misc local
+work/
+dk-partner-work/
+*.xlsx
