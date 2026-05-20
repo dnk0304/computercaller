@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 const BASE = 'http://localhost:3777';
 
-test.describe('DNK Dialer UI Audit', () => {
+test.describe('ComputerCaller UI Audit', () => {
 
   test('Dashboard tab loads with sync controls', async ({ page }) => {
     await page.goto(BASE);

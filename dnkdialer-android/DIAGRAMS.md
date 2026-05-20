@@ -1,4 +1,4 @@
-# 📊 DNK Dialer - System Diagrams
+# 📊 ComputerCaller - System Diagrams
 
 Visual representation of how the system works and how the fix prevents the app chooser.
 
@@ -15,7 +15,7 @@ Visual representation of how the system works and how the fix prevents the app c
 │  │                 http://localhost:3000                   │        │
 │  │                                                         │        │
 │  │  ┌──────────────────────────────────────────────┐     │        │
-│  │  │          DNK Dialer Web App                   │     │        │
+│  │  │          ComputerCaller Web App                   │     │        │
 │  │  │                                               │     │        │
 │  │  │   ┌──────────┐    ┌──────────┐              │     │        │
 │  │  │   │ Dialpad  │    │   SMS    │              │     │        │
@@ -57,7 +57,7 @@ Visual representation of how the system works and how the fix prevents the app c
 │                      ANDROID PHONE                                 │
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────┐    │
-│  │           DNK Dialer Companion App                        │    │
+│  │           ComputerCaller Companion App                        │    │
 │  │                                                           │    │
 │  │  ┌─────────────────────────────────────────────────┐    │    │
 │  │  │   WebSocket Server (Port 8765)                  │    │    │

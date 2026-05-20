@@ -81,7 +81,7 @@ export default function MessengerSplashPage({ params }: Props) {
         />
       </div>
 
-      <p className="absolute bottom-4 text-[11px] text-slate-300">DNK Dialer</p>
+      <p className="absolute bottom-4 text-[11px] text-slate-300">ComputerCaller</p>
     </div>
   );
 }

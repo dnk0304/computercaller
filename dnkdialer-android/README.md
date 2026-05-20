@@ -1,6 +1,6 @@
-# DNK Dialer - Android Companion App
+# ComputerCaller - Android Companion App
 
-This Android app acts as a bridge between the DNK Dialer web interface and your Android phone, allowing you to make calls and send SMS messages from your computer.
+This Android app acts as a bridge between the ComputerCaller web interface and your Android phone, allowing you to make calls and send SMS messages from your computer.
 
 ## 🎯 Key Feature: Uses Default Phone App Automatically
 
@@ -209,7 +209,7 @@ If the app chooser still shows up:
 ### Permission Denied
 
 1. **Reinstall the app** and grant all permissions
-2. Go to **Settings → Apps → DNK Dialer → Permissions**
+2. Go to **Settings → Apps → ComputerCaller → Permissions**
 3. Enable all permissions manually
 
 ---

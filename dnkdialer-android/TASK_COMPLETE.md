@@ -2,7 +2,7 @@
 
 ## 🎯 Mission Accomplished!
 
-The DNK Dialer Android app has been **fully implemented** with the fix to automatically use the default phone calling app without showing the app chooser dialog.
+The ComputerCaller Android app has been **fully implemented** with the fix to automatically use the default phone calling app without showing the app chooser dialog.
 
 ---
 
@@ -385,7 +385,7 @@ implementation 'org.java-websocket:Java-WebSocket:1.5.4'
 ---
 
 **Created:** December 20, 2025  
-**Project:** DNK Dialer Android Companion  
+**Project:** ComputerCaller Android Companion  
 **Fix:** TelecomManager + setPackage()  
 **Result:** No more app chooser dialogs!  
 **Status:** ✅ COMPLETE AND READY TO BUILD  

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!--
-      DNK Dialer companion theme (Round 2).
+      ComputerCaller companion theme (Round 2).
 
       Parent: NoActionBar — the layout owns its own wordmark header.
       Background is FLAT now (was a gradient in round 1) — flat reads

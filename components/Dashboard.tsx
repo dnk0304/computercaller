@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Dashboard — 3-column cockpit for DNK Dialer.
+ * Dashboard — 3-column cockpit for ComputerCaller.
  *
  * Column 1 (~28%)  Quick Dial + Active Call card / Favorites row +
  *                  Recent Calls (scrollable, fills remaining height).

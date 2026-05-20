@@ -49,7 +49,7 @@ function LoginForm() {
         </div>
       </div>
       <h1 className="text-2xl font-bold text-white text-center mb-2">Sign in</h1>
-      <p className="text-slate-400 text-center text-sm mb-8">Welcome back to DNK Dialer</p>
+      <p className="text-slate-400 text-center text-sm mb-8">Welcome back to ComputerCaller</p>
 
       {verified && (
         <div

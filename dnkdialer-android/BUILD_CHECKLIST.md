@@ -1,6 +1,6 @@
 # ✅ Build Checklist
 
-Use this checklist to build and deploy the DNK Dialer Android app.
+Use this checklist to build and deploy the ComputerCaller Android app.
 
 ---
 
@@ -49,7 +49,7 @@ When app launches on phone:
 - [ ] Tap **Allow** for Call Log permission
 
 ### Step 6: Verify Installation
-- [ ] App should show "DNK Dialer Companion" screen
+- [ ] App should show "ComputerCaller Companion" screen
 - [ ] Status should show "Status: Active"
 - [ ] WebSocket server should show "Port: 8765"
 
@@ -144,7 +144,7 @@ In Android Studio:
 - [ ] Uninstall app from phone
 - [ ] Rebuild and install from Android Studio
 - [ ] Grant all permissions when prompted
-- [ ] Or: Settings → Apps → DNK Dialer → Permissions → Enable all
+- [ ] Or: Settings → Apps → ComputerCaller → Permissions → Enable all
 
 ### Issue: Cannot Connect from Web App
 **Fix:**
@@ -221,7 +221,7 @@ For installing on other devices:
 
 ## 🎉 Complete!
 
-If all checkboxes are marked, congratulations! Your DNK Dialer system is fully operational with the default dialer fix implemented.
+If all checkboxes are marked, congratulations! Your ComputerCaller system is fully operational with the default dialer fix implemented.
 
 **Key Achievement:** Calls now go directly to your default phone app without showing the annoying app chooser dialog! 🎯
 

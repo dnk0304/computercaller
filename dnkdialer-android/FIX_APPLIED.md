@@ -2,7 +2,7 @@
 
 ## 🎯 What Was Done
 
-The DNK Dialer Android app has been **updated** with the fix to automatically use the default phone calling app without showing the app chooser dialog.
+The ComputerCaller Android app has been **updated** with the fix to automatically use the default phone calling app without showing the app chooser dialog.
 
 ---
 
@@ -253,7 +253,7 @@ if (defaultDialerPackage != null) {
 ---
 
 **Applied:** December 20, 2025  
-**Project:** DNK Dialer Android Companion  
+**Project:** ComputerCaller Android Companion  
 **Location:** `C:\Users\D\Desktop\dnkdialer-android`  
 **Fix:** `TelecomManager.getDefaultDialerPackage()` + `Intent.setPackage()`  
 **Result:** No more app chooser dialogs! 🎯✨

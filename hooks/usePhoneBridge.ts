@@ -1092,7 +1092,7 @@ export function usePhoneBridge() {
           setConnectionError(
             'Cannot connect to phone. Please check:\n' +
             '• Both devices are on the same WiFi network\n' +
-            '• DNK Dialer Android app is running\n' +
+            '• ComputerCaller Android app is running\n' +
             '• Phone IP address is correct\n' +
             '• Firewall is not blocking port 8765'
           );

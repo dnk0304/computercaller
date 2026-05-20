@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">DNK Dialer</string>
-    <string name="wordmark_dnk">DNK</string>
-    <string name="wordmark_dialer">Dialer</string>
+    <string name="app_name">ComputerCaller</string>
+    <string name="wordmark_dnk">Computer</string>
+    <string name="wordmark_dialer">Caller</string>
     <string name="tagline">A companion for the web app — your phone, on your screen.</string>
 
     <!-- Step labels (status section) -->

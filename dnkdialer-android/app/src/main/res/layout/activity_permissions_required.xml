@@ -6,7 +6,7 @@
 
   Design language matches the rest of the app:
     - Wordmark + warm-accent underline at the top so the user knows
-      they're still in DNK Dialer (not Settings).
+      they're still in ComputerCaller (not Settings).
     - Title + subtitle pair under the wordmark.
     - Scrollable list of cards (recessed bg_url_block surface with the
       warm left bar — same visual treatment as the URL block on main,

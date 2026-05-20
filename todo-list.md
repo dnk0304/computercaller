@@ -1,4 +1,4 @@
-# DNK Dialer — UI Audit Results
+# ComputerCaller — UI Audit Results
 
 Found via Playwright testing on 2026-03-05. All issues fixed.
 

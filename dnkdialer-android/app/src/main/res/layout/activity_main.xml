@@ -45,7 +45,7 @@
 
         <!-- ============ 1. Wordmark + status row ============
              R3 puts the brand and the status on adjacent lines so the
-             user's eye lands on "DNK Dialer · [GREEN DOT] Connected"
+             user's eye lands on "ComputerCaller · [GREEN DOT] Connected"
              in one scan — no scrolling, no checklist to read. -->
         <TextView
             android:layout_width="wrap_content"

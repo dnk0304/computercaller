@@ -56,3 +56,5 @@ dnkdialer-android/.idea/
 work/
 dk-partner-work/
 *.xlsx
+*.apk
+dnkdialer-android/dnkdialer-v*.apk

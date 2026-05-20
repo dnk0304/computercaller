@@ -1,4 +1,4 @@
-# 🚀 Quick Start Guide - DNK Dialer Android App
+# 🚀 Quick Start Guide - ComputerCaller Android App
 
 ## What This Fix Does
 
@@ -170,7 +170,7 @@ Test these scenarios to ensure everything works:
 ## 🚨 Common Issues
 
 ### "Permission Denied"
-**Fix:** Go to Settings → Apps → DNK Dialer → Permissions → Enable all
+**Fix:** Go to Settings → Apps → ComputerCaller → Permissions → Enable all
 
 ### "Connection Refused"
 **Fix:** Ensure phone and PC are on the same Wi-Fi network

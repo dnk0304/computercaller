@@ -12,7 +12,7 @@ export default function LandingPage() {
           <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
             <Phone className="w-4 h-4 text-white" />
           </div>
-          <span className="font-bold text-lg">DNK Dialer</span>
+          <span className="font-bold text-lg">ComputerCaller</span>
         </div>
         <div className="flex items-center gap-3">
           <Link href="/auth/login" className="text-slate-400 hover:text-white text-sm transition-colors">
@@ -112,7 +112,7 @@ export default function LandingPage() {
 
       {/* Footer */}
       <footer className="border-t border-slate-800 px-6 py-8 text-center text-slate-500 text-sm">
-        © {new Date().getFullYear()} DNK Dialer
+        © {new Date().getFullYear()} ComputerCaller
       </footer>
     </div>
   );

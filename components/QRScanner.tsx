@@ -79,7 +79,7 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
             </div>
             
             <p className="text-sm text-slate-500 mb-4">
-              Open DNK Dialer on your phone and scan this QR code
+              Open ComputerCaller on your phone and scan this QR code
             </p>
 
             {/* QR Code — responsive sizing */}
@@ -105,7 +105,7 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
             <div className="text-left bg-blue-50 rounded-xl p-3">
               <p className="text-[10px] font-semibold text-blue-800 mb-1.5">How to connect:</p>
               <ol className="text-[11px] text-blue-700 space-y-1">
-                <li>1. Open <strong>DNK Dialer</strong> on your phone</li>
+                <li>1. Open <strong>ComputerCaller</strong> on your phone</li>
                 <li>2. Tap <strong>&quot;Scan QR&quot;</strong></li>
                 <li>3. Point camera at this code</li>
               </ol>

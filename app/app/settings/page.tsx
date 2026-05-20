@@ -155,7 +155,7 @@ export default function SettingsPage() {
           Phone connection
         </h2>
         <p className="text-xs text-slate-500 leading-relaxed">
-          Connect your phone by entering the IP shown in the DNK Dialer Android
+          Connect your phone by entering the IP shown in the ComputerCaller Android
           app on the{' '}
           <Link
             href="/app"

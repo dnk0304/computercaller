@@ -15,7 +15,7 @@
   },
   "build": {
     "appId": "com.dnkdialer.bridge",
-    "productName": "DNK Dialer Bridge",
+    "productName": "ComputerCaller Bridge",
     "win": {
       "target": "nsis",
       "icon": "icon.ico"

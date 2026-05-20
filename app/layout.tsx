@@ -20,7 +20,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DNK Dialer",
+  title: "ComputerCaller",
   description: "Phone integration web app",
 };
 

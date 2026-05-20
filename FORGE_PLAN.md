@@ -1,4 +1,4 @@
-# FORGE_PLAN.md — DNK Dialer SaaS Backend
+# FORGE_PLAN.md — ComputerCaller SaaS Backend
 
 ## Goal
 Layer multi-tenant SaaS infrastructure (auth, subscriptions, per-user WebSocket rooms) onto the existing Next.js 16 / TypeScript single-user dialer at `C:\Users\D\Desktop\dnkdialer` on branch `feature/saas-multiuser`. No existing component, hook, or route may be modified — only `server.js` (for room scoping) plus new files. Spec is fully specified by the user; the plan is execution-shaped, not design-shaped.

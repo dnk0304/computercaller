@@ -652,7 +652,7 @@ function startRelay() {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  console.log('[Server] Starting DNK Dialer...');
+  console.log('[Server] Starting ComputerCaller...');
   console.log(`[Server] Mode: ${dev ? 'development' : 'production'}`);
 
   // Start the relay first so it is ready by the time the browser loads the page.

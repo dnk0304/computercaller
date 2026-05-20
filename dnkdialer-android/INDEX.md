@@ -1,6 +1,6 @@
 # 📚 Documentation Index
 
-Welcome to the DNK Dialer Android App! This index will help you navigate all the documentation.
+Welcome to the ComputerCaller Android App! This index will help you navigate all the documentation.
 
 ---
 
@@ -299,7 +299,7 @@ After building the app:
 **Happy Building!** 🚀
 
 *Documentation created: December 20, 2025*  
-*Project: DNK Dialer Android Companion*  
+*Project: ComputerCaller Android Companion*  
 *Fix: Uses TelecomManager.getDefaultDialerPackage() + Intent.setPackage()*  
 *Result: No more app chooser dialogs!* 🎯✨
 

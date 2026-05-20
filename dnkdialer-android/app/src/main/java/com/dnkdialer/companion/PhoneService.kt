@@ -609,7 +609,7 @@ class PhoneService : Service() {
                 )
 
                 val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("DNK Dialer")
+                    .setContentTitle("ComputerCaller")
                     .setContentText("Phone bridge is active")
                     .setSmallIcon(android.R.drawable.stat_sys_phone_call)
                     .setContentIntent(pendingIntent)
@@ -636,7 +636,7 @@ class PhoneService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "DNK Dialer Service",
+                "ComputerCaller Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps the phone bridge active"
@@ -839,7 +839,7 @@ class PhoneService : Service() {
             this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("DNK Dialer")
+            .setContentTitle("ComputerCaller")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .setContentIntent(pendingIntent)
