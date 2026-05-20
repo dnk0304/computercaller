@@ -1,16 +1,17 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Sidebar } from '@/components/Sidebar';
-import { ConnectionStatus } from '@/components/ConnectionStatus';
-import { PhoneStatusButton } from '@/components/PhoneStatusButton';
-import { SubscriptionPill } from '@/components/SubscriptionPill';
+import Link from 'next/link';
+// Sidebar + ConnectionStatus + PhoneStatusButton + SubscriptionPill + header
+// chrome have moved into components/AppShell.tsx, mounted from
+// app/app/layout.tsx so /app/settings inherits them too. This page now
+// renders ONLY the tab content; the shell is the layout's responsibility.
 import { Dialpad } from '@/components/Dialpad';
 import { SMSInterface } from '@/components/SMSInterface';
 import { Templates } from '@/components/Templates';
 import { Dashboard } from '@/components/Dashboard';
-import { usePhone } from '@/hooks';
-import { Settings, User, Bell, LogOut, Phone, MessageSquare, Search, Volume2, Smartphone, Monitor, Info, RefreshCw, ArrowDownLeft, ArrowUpRight, PhoneMissed, PhoneOff, PhoneIncoming, Clock } from 'lucide-react';
+import { usePhone, useDashboardTab } from '@/hooks';
+import { User, Bell, LogOut, Phone, MessageSquare, Search, Volume2, Smartphone, Monitor, Info, RefreshCw, ArrowDownLeft, ArrowUpRight, PhoneMissed, PhoneOff, PhoneIncoming, Clock, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
 
 // Call mode type
@@ -19,6 +20,42 @@ const CALL_MODE_KEY = 'dnkdialer_call_mode';
 // Default audio output for new calls — earpiece (false) or speakerphone (true).
 // Persisted so the user's preference survives reloads.
 const SPEAKER_KEY = 'dnkdialer_call_speaker';
+
+// Sync timestamps — written by usePhoneBridge on completion, read here for
+// the "Last sync" display inside the inline Settings panel. Must stay in
+// lockstep with the /app/settings route page and the hook.
+const LAST_FULL_SYNC_KEY = 'dnkdialer_last_full_sync_at';
+const LAST_QUICK_SYNC_KEY = 'dnkdialer_last_quick_sync_at';
+
+// Compact relative formatter for sync timestamps. Returns "Never" for null/0,
+// "Just now" within 45s, then m/h/d ago, falling back to a locale date for
+// anything older than 30 days. Mirrors the helper in /app/settings/page.tsx.
+function formatSyncRelative(ts: number | null, now: number): string {
+  if (!ts || !Number.isFinite(ts) || ts <= 0) return 'Never';
+  const diffMs = now - ts;
+  if (diffMs < 0) return 'Just now';
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 45) return 'Just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+function readSyncTs(key: string): number | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 // Format a call duration in seconds as a compact string (e.g. "2m 34s", "45s", "1h 12m").
 // Hoisted out of the component so React's "no impure calls during render" rule doesn't
@@ -74,21 +111,46 @@ function callTypeStyle(type: string): CallTypeStyle {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [selectedMessageNumber, setSelectedMessageNumber] = useState<string | null>(null);
+  // Active tab + selected message thread live in DashboardTabContext (see
+  // hooks/dashboardTabContext.tsx) so the Sidebar — now rendered by AppShell
+  // in app/app/layout.tsx — can drive them from any /app/* route. Reading
+  // them here instead of useState keeps this page in sync when the user
+  // clicks Sidebar from /app/settings and routes back.
+  const { activeTab, setActiveTab, selectedMessageNumber, setSelectedMessageNumber } = useDashboardTab();
   const [callMode, setCallMode] = useState<CallMode>('phone');
   // Default speakerphone preference applied to every outbound call.
   // false → earpiece (default), true → loudspeaker. Hydrated from localStorage
   // in the same effect that loads callMode.
   const [callSpeaker, setCallSpeaker] = useState<boolean>(false);
   const phone = usePhone();
-  const { isConnected, contacts, callLogs, makeCall, disconnect, getContacts, getCallLogs } = phone;
-  // openSyncPanel may not be present on the official hook type yet — keep a
-  // loose cast so this compiles cleanly while the hook surface stabilises.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const phoneAny = phone as any;
-  const openSyncPanel: (() => void) | undefined = phoneAny.openSyncPanel;
-  const quickSync: (() => void) | undefined = phoneAny.quickSync;
+  const { isConnected, contacts, callLogs, messages, makeCall, disconnect, getContacts, getCallLogs } = phone;
+  // quickSync + openSyncPanel may not be on the published hook type yet —
+  // loose cast so this compiles cleanly while the bridge surface stabilises.
+  // Header button + inline Settings buttons only render if the function exists.
+  const quickSync = (phone as unknown as { quickSync?: () => void }).quickSync;
+  const openSyncPanel = (phone as unknown as { openSyncPanel?: () => void }).openSyncPanel;
+
+  // Sync history timestamps for the inline Settings panel's Sync card.
+  // Refreshed on mount, every 30s, and on cross-tab storage events.
+  const [lastFullSyncAt, setLastFullSyncAt] = useState<number | null>(null);
+  const [lastQuickSyncAt, setLastQuickSyncAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const refresh = () => {
+      setLastFullSyncAt(readSyncTs(LAST_FULL_SYNC_KEY));
+      setLastQuickSyncAt(readSyncTs(LAST_QUICK_SYNC_KEY));
+    };
+    refresh();
+    const tick = window.setInterval(() => { refresh(); setNowTick(Date.now()); }, 30000);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === LAST_FULL_SYNC_KEY || e.key === LAST_QUICK_SYNC_KEY) refresh();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.clearInterval(tick);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
   const [contactSearch, setContactSearch] = useState('');
   const [contactsSyncing, setContactsSyncing] = useState(false);
   const [callsSyncing, setCallsSyncing] = useState(false);
@@ -129,18 +191,20 @@ export default function Home() {
     window.setTimeout(() => setCallsSyncing(false), 1500);
   };
 
-  // Helper to navigate to messages with a specific number
+  // Helper to navigate to messages with a specific number. Context's
+  // setActiveTab also clears the selected message number when leaving
+  // messages, so we just set the number and switch tabs.
   const navigateToMessage = (number: string) => {
     setSelectedMessageNumber(number);
     setActiveTab('messages');
   };
 
-  // Clear selected message number when tab changes away from messages
+  // Tab switching is owned by the Sidebar + AppShell now; we keep this
+  // helper for in-page navigations (e.g. Dashboard's "see all calls" CTAs)
+  // so callsites stay readable. The context handles the "clear message
+  // selection on leave" rule.
   const handleTabChange = (tab: string) => {
-    if (tab !== 'messages') {
-      setSelectedMessageNumber(null);
-    }
-    setActiveTab(tab);
+    setActiveTab(tab as Parameters<typeof setActiveTab>[0]);
   };
 
   // Tick "now" so relative timestamps refresh without forcing impure Date.now() calls
@@ -434,9 +498,39 @@ export default function Home() {
         );
       case 'settings':
         return (
-          <div className="max-w-2xl mx-auto py-8 animate-in fade-in duration-500">
+          // h-full + overflow-y-auto so the panel scrolls inside the dashboard's
+          // `h-screen overflow-hidden` shell when content exceeds viewport height.
+          // Inner max-w-2xl gives the reading width without blocking the scroll.
+          <div className="h-full overflow-y-auto animate-in fade-in duration-500">
+            <div className="max-w-2xl mx-auto py-8 px-4">
             <h2 className="text-2xl font-bold text-slate-800 mb-6">Settings</h2>
             <div className="space-y-6">
+              {/* Account & Subscription — promoted to the top of the inline
+                  Settings panel as the hand-off to the full settings route.
+                  The full /app/settings route pulls the authenticated user
+                  record from /api/auth/me and renders subscription state +
+                  sync history outside the dashboard chrome. */}
+              <Link
+                href="/app/settings"
+                className="group flex items-center gap-4 p-5 bg-white rounded-2xl border border-slate-200 hover:border-blue-300 hover:shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                <div className="w-11 h-11 rounded-xl bg-blue-50 group-hover:bg-blue-100 flex items-center justify-center flex-shrink-0 transition-colors">
+                  <User className="w-5 h-5 text-blue-600" aria-hidden="true" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold text-slate-800 text-sm">
+                    Account &amp; Subscription
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                    Manage your subscription, see sync history, sign out.
+                  </p>
+                </div>
+                <ChevronRight
+                  className="w-5 h-5 text-slate-400 group-hover:text-blue-600 flex-shrink-0 transition-colors"
+                  aria-hidden="true"
+                />
+              </Link>
+
               {/* Call Mode Settings */}
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                 <h3 className="font-semibold text-slate-800 mb-2 flex items-center gap-2">
@@ -595,12 +689,61 @@ export default function Home() {
                 </div>
               </div>
 
+              {/* Sync — full and quick re-sync controls + last-sync timestamps.
+                  Same actions as the standalone /app/settings route page; surfaced
+                  here so users who click the Sidebar Settings tab find them too. */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
+                  <RefreshCw className="w-5 h-5 text-blue-500" />
+                  Sync
+                </h3>
+
+                <dl className="grid grid-cols-2 gap-3 text-xs mb-4" aria-live="polite">
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+                    <dt className="text-slate-500 uppercase tracking-wide text-[10px] font-medium">Last full sync</dt>
+                    <dd className="text-slate-800 font-medium mt-0.5">{formatSyncRelative(lastFullSyncAt, nowTick)}</dd>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+                    <dt className="text-slate-500 uppercase tracking-wide text-[10px] font-medium">Last quick resync</dt>
+                    <dd className="text-slate-800 font-medium mt-0.5">{formatSyncRelative(lastQuickSyncAt, nowTick)}</dd>
+                  </div>
+                </dl>
+
+                <p className="text-xs text-slate-500 mb-4">
+                  {messages?.length ?? 0} messages · {contacts?.length ?? 0} contacts · {callLogs?.length ?? 0} call logs loaded
+                </p>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openSyncPanel?.()}
+                    disabled={!isConnected || typeof openSyncPanel !== 'function'}
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+                    title={isConnected ? 'Open the full-sync setup panel' : 'Connect a phone first'}
+                  >
+                    <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                    Run Full Sync
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => quickSync?.()}
+                    disabled={!isConnected || typeof quickSync !== 'function'}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-700 text-sm font-medium rounded-lg transition-colors border border-slate-200"
+                    title={isConnected ? 'Quick catch-up of the last 6 hours' : 'Connect a phone first'}
+                  >
+                    <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                    Quick Resync (6h)
+                  </button>
+                </div>
+              </div>
+
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                  <button onClick={disconnect} className="w-full flex items-center gap-3 text-rose-600 font-medium p-2 hover:bg-rose-50 rounded-lg transition-colors">
                     <LogOut className="w-5 h-5" />
                     Disconnect Device
                  </button>
               </div>
+            </div>
             </div>
           </div>
         );
@@ -609,62 +752,9 @@ export default function Home() {
     }
   };
 
-  return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
-      <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
-
-      <main className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <header className="h-20 px-8 flex items-center justify-between bg-white/50 backdrop-blur-sm border-b border-slate-200/50 z-10 sticky top-0">
-          <div className="flex flex-col">
-            <h2 className="text-xl font-bold text-slate-800 capitalize">{activeTab}</h2>
-            <p className="text-xs text-slate-500">Manage your communication</p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <PhoneStatusButton />
-
-            {/* Sync buttons — only when connected */}
-            {isConnected && (
-              <div className="flex items-center gap-1">
-                {typeof quickSync === 'function' && (
-                  <button
-                    onClick={quickSync}
-                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors border border-slate-200"
-                    title="Quick sync — last 30 minutes"
-                    aria-label="Quick sync"
-                  >
-                    <RefreshCw className="w-3 h-3" aria-hidden="true" />
-                    Quick
-                  </button>
-                )}
-                {typeof openSyncPanel === 'function' && (
-                  <button
-                    onClick={openSyncPanel}
-                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors border border-slate-200"
-                    title="Full sync — choose time range"
-                    aria-label="Full sync"
-                  >
-                    <RefreshCw className="w-3 h-3" aria-hidden="true" />
-                    Full
-                  </button>
-                )}
-              </div>
-            )}
-
-            <ConnectionStatus />
-            <SubscriptionPill />
-          </div>
-        </header>
-
-        {/* Content Area */}
-        <div className="flex-1 p-6 overflow-x-auto overflow-y-hidden relative min-w-[640px]">
-          <div className="absolute inset-0 bg-gradient-to-tr from-blue-50/50 via-indigo-50/30 to-purple-50/50 pointer-events-none" />
-          <div className="relative h-full z-0">
-             {renderContent()}
-          </div>
-        </div>
-      </main>
-    </div>
-  );
+  // The page renders ONLY the tab content. The outer shell (Sidebar, header,
+  // gradient background, `flex h-screen overflow-hidden` wrapper) is owned
+  // by components/AppShell.tsx via app/app/layout.tsx. Returning the bare
+  // renderContent() lets the shell drop our content into its slot.
+  return renderContent();
 }

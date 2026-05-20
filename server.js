@@ -23,11 +23,18 @@ const { parse } = require('url');
 const { WebSocketServer, WebSocket } = require('ws');
 const os = require('os');
 const net = require('net');
+const { PrismaClient } = require('@prisma/client');
 
 const NEXT_PORT = parseInt(process.env.PORT || '3000', 10);
-const RELAY_PORT = 3001;
+const RELAY_PORT = parseInt(process.env.RELAY_PORT || '3001', 10);
 const HOSTNAME = os.hostname();
 const dev = process.env.NODE_ENV !== 'production';
+
+// One Prisma client for the whole relay process. server.js is a long-lived
+// custom server (not Next.js runtime), so it can't import the TS singleton from
+// lib/db.ts directly — instantiating here is fine because we never hot-reload
+// this file. Connection pool is per-process so a single client is enough.
+const db = new PrismaClient({ log: dev ? ['error'] : [] });
 
 // Verbose relay logging — off by default to avoid blocking the Node.js event
 // loop with synchronous console.log on every WS event. Set RELAY_VERBOSE=1
@@ -171,6 +178,34 @@ function startRelay() {
     });
   }
 
+  /**
+   * Notify the phone how many browsers are currently in its room.
+   *
+   * Wire format: `BROWSER_STATUS:{"count": N, "ts": <unix-ms>}`
+   *
+   * The Android agent uses this as the inverse of STATUS:{connected:true}:
+   * when count > 0, the phone knows at least one browser is paired and stops
+   * showing "waiting for web app". When count == 0, the phone can decide to
+   * surface a "no browser connected" state in its own UI.
+   *
+   * Always uses the live room.browsers.size at call time — callers must add
+   * the new ws to room.browsers (on join) or remove it (on leave) BEFORE
+   * invoking this helper so the count is correct.
+   *
+   * No-op if no phone in the room or its WS is not open — the phone will
+   * receive a fresh count when it next connects (we don't queue).
+   */
+  function sendBrowserStatusToPhone(room) {
+    const phone = room.phoneWs;
+    if (!phone || phone.readyState !== WebSocket.OPEN) return;
+    const payload = JSON.stringify({ count: room.browsers.size, ts: Date.now() });
+    try {
+      phone.send(`BROWSER_STATUS:${payload}`);
+    } catch (e) {
+      console.log(`[Relay][${room.token}] Failed to send BROWSER_STATUS: ${e.message}`);
+    }
+  }
+
   function setPhone(room, ws, source, inboundIp = null) {
     if (room.phoneWs && room.phoneWs !== ws) {
       try { room.phoneWs.close(); } catch (e) {}
@@ -238,6 +273,10 @@ function startRelay() {
         room.outboundFailCount = 0; // reset on success
         setPhone(room, outbound, `outbound to ${url}`);
         outbound.send(`HELLO:{"hostname":"${HOSTNAME}"}`);
+        // Same reason as the inbound path: tell the freshly-connected phone
+        // how many browsers are already paired so its UI doesn't sit at
+        // "waiting for web app" when there's actually a browser here.
+        sendBrowserStatusToPhone(room);
       });
 
       outbound.on('message', (data) => {
@@ -302,12 +341,53 @@ function startRelay() {
     const rawToken = parsed.query?.token;
     const token = (typeof rawToken === 'string' && rawToken.trim().length > 0)
       ? rawToken.trim()
-      : 'default';
+      : null;
     return { pathname, token };
   }
 
-  wss.on('connection', (ws, req) => {
-    const { pathname, token } = parseConnection(req);
+  /**
+   * Validate a phoneToken against the User table.
+   * Returns the userId on success, null on miss. Errors are logged and surface
+   * as null so a transient DB blip doesn't crash the relay; the caller closes
+   * the socket and the client retries.
+   */
+  async function validateToken(token) {
+    try {
+      const user = await db.user.findUnique({
+        where: { phoneToken: token },
+        select: { id: true },
+      });
+      return user ? user.id : null;
+    } catch (err) {
+      console.error(`[Relay] Token lookup failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  wss.on('connection', async (ws, req) => {
+    const { pathname, token: rawToken } = parseConnection(req);
+
+    // Backwards-compat: no token in query → legacy single-user LAN-IP mode.
+    // Everything funnels into the 'default' room; no DB lookup, no userId.
+    // Remove this branch once all clients (web + Android) are sending tokens.
+    let token = rawToken;
+    let userId = null;
+    if (!token) {
+      token = 'default';
+    } else {
+      userId = await validateToken(token);
+      if (!userId) {
+        console.log(`[Relay] Rejecting connection — invalid token: ${token.substring(0, 8)}...`);
+        // 4401 = our custom "unauthorized" close code (4xxx is application range).
+        try { ws.close(4401, 'invalid_token'); } catch (e) {}
+        return;
+      }
+      // Stash on the socket so message handlers / future audit logging can read it
+      // without another DB hit. Auth happens once, here, on connect.
+      ws.userId = userId;
+      ws.phoneToken = token;
+    }
+
     const room = getRoom(token);
 
     if (pathname === '/phone') {
@@ -333,6 +413,11 @@ function startRelay() {
       // Pass phoneInboundIp so setPhone includes it in the STATUS broadcast.
       setPhone(room, ws, 'inbound QR', phoneInboundIp);
       ws.send(`HELLO:{"hostname":"${HOSTNAME}"}`);
+
+      // Phone just joined — tell it whether any browsers are already in the room.
+      // Without this, a phone that connects AFTER a browser would never receive
+      // the initial count and would sit in "waiting for web app" forever.
+      sendBrowserStatusToPhone(room);
 
       ws.on('message', (data) => {
         const msg = data.toString();
@@ -375,6 +460,14 @@ function startRelay() {
     } else {
       ws.send('STATUS:{"connected":false}');
     }
+
+    // Tell the phone how many browsers are in this room. This is the inverse
+    // half of the false-connection fix: webapp gets STATUS:{connected:true}
+    // the moment the phone is in the room; the Android agent needs the
+    // symmetric signal so it stops showing "waiting for web app" when a
+    // browser actually is paired. Sent on join AND on leave so the phone's
+    // count is always current.
+    sendBrowserStatusToPhone(room);
 
     ws.on('message', (data) => {
       const msg = data.toString();
@@ -437,6 +530,9 @@ function startRelay() {
     ws.on('close', () => {
       room.browsers.delete(ws);
       console.log(`[Relay][${token}] Browser disconnected (${room.browsers.size} remaining in room)`);
+      // Tell the phone the count dropped (could be 0 → phone surfaces "no
+      // browser paired" UI; could be 2→1 → phone keeps showing paired).
+      sendBrowserStatusToPhone(room);
       if (room.browsers.size === 0 && room.outboundReconnectTimeout) {
         clearTimeout(room.outboundReconnectTimeout);
         room.outboundReconnectTimeout = null;
@@ -453,7 +549,7 @@ function startRelay() {
   });
 
   wss.on('listening', () => {
-    console.log(`[Relay] Ready on ws://localhost:${RELAY_PORT} — accepts browser (/) and phone (/phone) connections with optional ?token=<phoneToken>`);
+    console.log(`[Relay] Ready on ws://localhost:${RELAY_PORT} — accepts browser (/) and phone (/phone) connections with ?token=<phoneToken> (validated against User.phoneToken; missing token falls back to legacy 'default' room)`);
   });
 
   // Keep every active phone connection alive and detect silent disconnects.
@@ -499,14 +595,20 @@ async function main() {
   console.log(`[Server] Mode: ${dev ? 'development' : 'production'}`);
 
   // Start the relay first so it is ready by the time the browser loads the page.
-  console.log('[Server] Launching relay WebSocket server on port 3001...');
+  console.log(`[Server] Launching relay WebSocket server on port ${RELAY_PORT}...`);
   startRelay();
 
   // Then start Next.js.
   console.log(`[Server] Launching Next.js on port ${NEXT_PORT}...`);
-  // turbopack: false — Turbopack panics on Windows when trying to create Prisma
-  // symlinks (requires Developer Mode or admin rights). Webpack is stable.
-  const app = next({ dev, turbopack: false });
+  // webpack: true — Turbopack panics on Windows when bundling Prisma's
+  // native client (tries to symlink `@prisma/client` into the build chunks;
+  // hits `os error 1314 / SeCreateSymbolicLinkPrivilege` for non-admin users).
+  // IMPORTANT: Next 16's `next()` factory silently ignores `turbopack: false`
+  // (only checks truthy). To actually opt OUT of Turbopack you must pass
+  // `webpack: true`. Verified 2026-05-19 in the saas-test rig — without this
+  // flag Turbopack runs regardless of any other config and every Prisma-
+  // importing API route 500s.
+  const app = next({ dev, webpack: true });
   const handle = app.getRequestHandler();
   await app.prepare();
 
@@ -518,7 +620,7 @@ async function main() {
   httpServer.listen(NEXT_PORT, (err) => {
     if (err) throw err;
     console.log(`[Server] Next.js ready on http://localhost:${NEXT_PORT}`);
-    console.log('[Server] Both Next.js (3000) and Relay (3001) are running in this process.');
+    console.log(`[Server] Both Next.js (${NEXT_PORT}) and Relay (${RELAY_PORT}) are running in this process.`);
   });
 }
 

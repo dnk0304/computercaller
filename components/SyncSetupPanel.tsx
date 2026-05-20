@@ -156,11 +156,12 @@ export const SyncSetupPanel = () => {
   const [contacts, setContacts] = useState(true);
   const [messages, setMessages] = useState(true);
   const [callLogs, setCallLogs] = useState(true);
-  // Default to "Last 6 months" — wide enough to cover the typical user's
-  // recent history without pulling years of dormant data on first sync.
-  // "All time" is one click away.
-  const [messageRange, setMessageRange] = useState<RangeKey>('6mo');
-  const [callLogRange, setCallLogRange] = useState<RangeKey>('6mo');
+  // Default to "Last 3 months" — covers the typical user's recent communication
+  // without pulling years of dormant data on first sync. Contacts is always
+  // a full sync (no range — see contactsNote below). "All time" is one click
+  // away if the user wants deeper history.
+  const [messageRange, setMessageRange] = useState<RangeKey>('3mo');
+  const [callLogRange, setCallLogRange] = useState<RangeKey>('3mo');
 
   // Portal guard — derived, not stateful, so React 19's set-state-in-effect
   // rule stays happy. document only exists client-side.

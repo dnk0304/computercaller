@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Primary action button — warm-accent filled. Single accent, pressed
+  state slightly darker via overlay. No rounded-pill: subtle 8dp
+  square-ish radius reads as deliberate, not decorative.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/accent_warm_pressed" />
+            <corners android:radius="@dimen/radius_button" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/accent_warm" />
+            <corners android:radius="@dimen/radius_button" />
+        </shape>
+    </item>
+</selector>

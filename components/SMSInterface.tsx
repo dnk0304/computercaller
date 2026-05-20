@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react';
 import { Send, Image, Smile, Search, MoreVertical, Phone, Plus, X, Save, Settings, Edit2, Trash2, ChevronDown, ChevronUp, RefreshCw, Inbox } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
@@ -15,6 +15,45 @@ interface Conversation {
   unread: number;
   avatar: string;
   messages: SmsMessage[];
+}
+
+// ---------- Module-scope helpers (hoisted out of component) -----------------
+// These were previously declared inside SMSInterface, which meant every render
+// produced a fresh function reference and invalidated the `conversations`
+// useMemo on every keystroke. Pure functions of their inputs — safe at module
+// scope.
+
+// Format timestamp for display
+function formatTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  const hours = diff / (1000 * 60 * 60);
+
+  if (hours < 24) {
+    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  } else if (hours < 48) {
+    return 'Yesterday';
+  } else {
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+}
+
+// Get avatar color based on name
+const AVATAR_COLORS = [
+  'bg-pink-100 text-pink-600',
+  'bg-blue-100 text-blue-600',
+  'bg-purple-100 text-purple-600',
+  'bg-orange-100 text-orange-600',
+  'bg-emerald-100 text-emerald-600',
+  'bg-cyan-100 text-cyan-600',
+  'bg-rose-100 text-rose-600',
+  'bg-amber-100 text-amber-600',
+] as const;
+
+function getAvatarColor(name: string): string {
+  const index = name.charCodeAt(0) % AVATAR_COLORS.length;
+  return AVATAR_COLORS[index];
 }
 
 // ---------- SMS delivery status --------------------------------------------
@@ -57,13 +96,171 @@ function isMmsBody(body: string | undefined | null): boolean {
   return (MMS_EMOJI_PREFIXES as readonly string[]).includes(firstCodePoint);
 }
 
+// ---------- MessageBubble (memoized) ---------------------------------------
+// Extracted from the inline `currentConversation.messages.map(...)` in the
+// chat area. Each bubble was previously re-rendering on every keystroke in
+// the compose textarea because the parent re-rendered for every character.
+// With React.memo + stable primitive props, bubbles only re-render when
+// their own data actually changes.
+
+interface MessageBubbleProps {
+  id: string;
+  body: string;
+  date: number;
+  address: string;
+  type: SmsMessage['type'];
+  status: MessageStatus;
+  onRetry: (address: string, body: string) => void;
+}
+
+const MessageBubble = memo(function MessageBubble({
+  body,
+  date,
+  address,
+  type,
+  status,
+  onRetry,
+}: MessageBubbleProps) {
+  const isSent = type === 'sent';
+  const isFailed = status === 'failed';
+  const isMms = isMmsBody(body);
+
+  return (
+    <div
+      className={clsx(
+        'flex flex-col gap-1 max-w-[80%]',
+        isSent ? 'items-end self-end' : 'items-start'
+      )}
+    >
+      <div
+        className={clsx(
+          'px-4 py-3 rounded-2xl shadow-sm',
+          isSent
+            ? isFailed
+              ? 'bg-red-500 text-white rounded-tr-none shadow-md shadow-red-200'
+              : isMms
+                ? 'bg-blue-500 text-white rounded-tr-none shadow-md shadow-blue-200 ring-1 ring-inset ring-blue-400/40'
+                : 'bg-blue-600 text-white rounded-tr-none shadow-md shadow-blue-200'
+            : isMms
+              ? 'bg-slate-50 border border-slate-200 rounded-tl-none text-slate-700'
+              : 'bg-white border border-slate-200 rounded-tl-none text-slate-700'
+        )}
+      >
+        <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{body}</span>
+      </div>
+      {isSent && status && (
+        <div className="flex justify-end w-full">
+          <span
+            className={clsx('text-[10px] tabular-nums leading-none pr-1', statusColor(status))}
+            aria-live="polite"
+          >
+            {statusIcon(status)}
+          </span>
+        </div>
+      )}
+      {isSent && isFailed && (
+        <div className="flex justify-end w-full">
+          <button
+            type="button"
+            onClick={() => onRetry(address, body)}
+            className={clsx(
+              'text-[10px] font-medium underline underline-offset-2 pr-1',
+              'text-rose-500 hover:text-rose-700',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/40 rounded-sm'
+            )}
+            aria-label={`Retry sending message: ${body.slice(0, 40)}${body.length > 40 ? '…' : ''}`}
+          >
+            Tap to retry
+          </button>
+        </div>
+      )}
+      <span className={clsx('text-xs text-slate-400', isSent ? 'pr-1' : 'pl-1')}>
+        {formatTime(date)}
+      </span>
+    </div>
+  );
+});
+
+// ---------- ComposeBar (isolated textarea state) ---------------------------
+// The compose textarea + its `messageText` state used to live in
+// SMSInterface. That meant every keystroke re-rendered the entire parent
+// (sidebar, thread, template ribbon, all message bubbles). Now state lives
+// here and only this component re-renders while the user types. The parent
+// receives a finished string via the stable `onSend` callback.
+
+interface ComposeBarProps {
+  onSend: (text: string) => void;
+  disabled: boolean;
+}
+
+const ComposeBar = memo(function ComposeBar({ onSend, disabled }: ComposeBarProps) {
+  const [messageText, setMessageText] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const send = useCallback(() => {
+    const trimmed = messageText.trim();
+    if (!trimmed) return;
+    onSend(messageText);
+    setMessageText('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  }, [messageText, onSend]);
+
+  return (
+    <div className="p-4 border-t border-slate-100 bg-white">
+      <div className="flex items-end gap-2 bg-slate-50 p-2 rounded-2xl border border-slate-200 focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-400 transition-all">
+        <button className="p-2 text-slate-400 hover:text-slate-600 transition-colors self-end" aria-label="Insert emoji">
+          <Smile className="w-5 h-5" aria-hidden="true" />
+        </button>
+        <button className="p-2 text-slate-400 hover:text-slate-600 transition-colors self-end" aria-label="Attach image">
+          <Image className="w-5 h-5" aria-hidden="true" />
+        </button>
+        <textarea
+          id="sms-compose"
+          name="sms-compose"
+          ref={textareaRef}
+          value={messageText}
+          onChange={(e) => {
+            setMessageText(e.target.value);
+            // Auto-resize: reset to 'auto' so scrollHeight reflects new content, then cap at 200px.
+            e.target.style.height = 'auto';
+            e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+          }}
+          onKeyDown={(e) => {
+            // Shift+Enter inserts a newline; Enter alone sends.
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          placeholder="Type a message... (Shift+Enter for new line)"
+          rows={1}
+          style={{ resize: 'none', overflow: 'hidden', minHeight: '40px', maxHeight: '200px' }}
+          className="flex-1 bg-transparent border-none focus:ring-0 focus:outline-none py-2 text-sm text-slate-800 placeholder-slate-400 leading-relaxed"
+        />
+        <button
+          onClick={send}
+          disabled={!messageText.trim() || disabled}
+          className="p-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-sm shadow-blue-200 transition-all hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 self-end"
+          aria-label="Send message"
+        >
+          <Send className="w-5 h-5" aria-hidden="true" />
+        </button>
+      </div>
+      <p className="text-[10px] text-slate-400 mt-1.5 px-1">
+        Shift+Enter for new line • Enter to send
+      </p>
+    </div>
+  );
+});
+
 interface SMSInterfaceProps {
   initialNumber?: string | null;
 }
 
 export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
   const { sendSms, messages: phoneMessages, contacts, isConnected, getMessages } = usePhone();
-  const [messageText, setMessageText] = useState('');
   const [recipientNumber, setRecipientNumber] = useState('');
   const [showTemplateManager, setShowTemplateManager] = useState(false);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
@@ -71,54 +268,22 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
   const [isNewMessage, setIsNewMessage] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Format timestamp for display
-  const formatTime = (timestamp: number) => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const hours = diff / (1000 * 60 * 60);
-
-    if (hours < 24) {
-      return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-    } else if (hours < 48) {
-      return 'Yesterday';
-    } else {
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    }
-  };
-
-  // Get avatar color based on name
-  const getAvatarColor = (name: string) => {
-    const colors = [
-      'bg-pink-100 text-pink-600',
-      'bg-blue-100 text-blue-600',
-      'bg-purple-100 text-purple-600',
-      'bg-orange-100 text-orange-600',
-      'bg-emerald-100 text-emerald-600',
-      'bg-cyan-100 text-cyan-600',
-      'bg-rose-100 text-rose-600',
-      'bg-amber-100 text-amber-600'
-    ];
-    const index = name.charCodeAt(0) % colors.length;
-    return colors[index];
-  };
-
   // Group messages by phone number into conversations
   const conversations = useMemo(() => {
     const grouped = new Map<string, SmsMessage[]>();
-    
+
     phoneMessages.forEach(msg => {
       const key = msg.address;
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key)!.push(msg);
     });
-    
+
     // Convert to conversation objects with last message, etc.
     return Array.from(grouped.entries()).map(([number, msgs]) => {
       const sortedMsgs = msgs.sort((a, b) => b.date - a.date);
       const lastMsg = sortedMsgs[0];
       const contact = contacts.find(c => c.number === number);
-      
+
       return {
         id: number,
         number,
@@ -130,14 +295,14 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
         avatar: getAvatarColor(contact?.name || number)
       } as Conversation;
     }).sort((a, b) => b.messages[0].date - a.messages[0].date);
-  }, [phoneMessages, contacts, formatTime, getAvatarColor]);
+  }, [phoneMessages, contacts]);
 
   // Filter conversations based on search query
   const filteredConversations = useMemo(() => {
     if (!searchQuery) return conversations;
     const query = searchQuery.toLowerCase();
-    return conversations.filter(c => 
-      c.name.toLowerCase().includes(query) || 
+    return conversations.filter(c =>
+      c.name.toLowerCase().includes(query) ||
       c.number.includes(query) ||
       c.lastMessage.toLowerCase().includes(query)
     );
@@ -182,23 +347,31 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
     setActiveConversation(null);
   };
 
-  // Get current conversation
-  const currentConversation = conversations.find(c => c.id === activeConversation);
+  // Get current conversation (memoized — was a plain .find() running every render,
+  // which compounded with the message bubble re-render cost on every keystroke).
+  const currentConversation = useMemo(
+    () => conversations.find(c => c.id === activeConversation),
+    [conversations, activeConversation]
+  );
 
-  // Compose textarea — ref drives auto-expand by mutating element height directly.
-  // Mutating a DOM style is fine in onChange; we don't read ref.current during render.
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Stable send callback handed to ComposeBar. Wrapped in useCallback so the
+  // memoized child doesn't re-render when the parent re-renders for unrelated
+  // reasons (e.g. new SMS arrives in the thread).
+  const handleSend = useCallback(
+    (text: string) => {
+      if (!recipientNumber) return;
+      sendSms(recipientNumber, text);
+    },
+    [recipientNumber, sendSms]
+  );
 
-  // Reset textarea height after sending so it collapses back to the min height.
-  const handleSend = () => {
-    const trimmed = messageText.trim();
-    if (!trimmed || !recipientNumber) return;
-    sendSms(recipientNumber, messageText);
-    setMessageText('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
-  };
+  // Stable retry handler for failed-message bubbles.
+  const handleRetry = useCallback(
+    (address: string, body: string) => {
+      sendSms(address, body);
+    },
+    [sendSms]
+  );
 
   return (
     <div className="flex h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden relative">
@@ -257,8 +430,8 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
         <div className="flex-1 overflow-y-auto">
           {filteredConversations.length > 0 ? (
             filteredConversations.map((conv) => (
-              <div 
-                key={conv.id} 
+              <div
+                key={conv.id}
                 onClick={() => handleConversationClick(conv)}
                 className={clsx(
                   "p-4 flex items-start gap-3 cursor-pointer transition-colors hover:bg-white border-l-4",
@@ -391,70 +564,24 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
               <p className="text-sm text-slate-500">Type a phone number above to start a new conversation</p>
             </div>
           ) : currentConversation ? (
-            // Display messages from current conversation
+            // Display messages from current conversation. Each bubble is a
+            // memoized child so typing in the compose box doesn't re-render
+            // the whole thread. The defensive `status` read happens here
+            // because that field is owned by the parallel `usePhoneBridge`
+            // agent and lands on SmsMessage asynchronously.
             currentConversation.messages.map((msg) => {
-              const isSent = msg.type === 'sent';
-              // Defensive read of the parallel-agent-owned `status` field.
               const status = (msg as unknown as { status?: MessageStatus }).status;
-              const isFailed = status === 'failed';
-              // MMS visual hint — subtle ring on sent bubbles, lighter bg on
-              // received. The emoji prefix in msg.body remains the primary
-              // indicator. TODO: swap this for the full MmsBubble component
-              // once it's lifted from Dashboard.tsx into a shared module so we
-              // get inline thumbnails + audio playback here too.
-              const isMms = isMmsBody(msg.body);
               return (
-                <div
+                <MessageBubble
                   key={msg.id}
-                  className={clsx(
-                    "flex flex-col gap-1 max-w-[80%]",
-                    isSent ? "items-end self-end" : "items-start"
-                  )}
-                >
-                  <div className={clsx(
-                    "px-4 py-3 rounded-2xl shadow-sm",
-                    isSent
-                      ? isFailed
-                        ? "bg-red-500 text-white rounded-tr-none shadow-md shadow-red-200"
-                        : isMms
-                          ? "bg-blue-500 text-white rounded-tr-none shadow-md shadow-blue-200 ring-1 ring-inset ring-blue-400/40"
-                          : "bg-blue-600 text-white rounded-tr-none shadow-md shadow-blue-200"
-                      : isMms
-                        ? "bg-slate-50 border border-slate-200 rounded-tl-none text-slate-700"
-                        : "bg-white border border-slate-200 rounded-tl-none text-slate-700"
-                  )}>
-                    <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msg.body}</span>
-                  </div>
-                  {isSent && status && (
-                    <div className="flex justify-end w-full">
-                      <span
-                        className={clsx('text-[10px] tabular-nums leading-none pr-1', statusColor(status))}
-                        aria-live="polite"
-                      >
-                        {statusIcon(status)}
-                      </span>
-                    </div>
-                  )}
-                  {isSent && isFailed && (
-                    <div className="flex justify-end w-full">
-                      <button
-                        type="button"
-                        onClick={() => sendSms(msg.address, msg.body)}
-                        className={clsx(
-                          'text-[10px] font-medium underline underline-offset-2 pr-1',
-                          'text-rose-500 hover:text-rose-700',
-                          'focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/40 rounded-sm'
-                        )}
-                        aria-label={`Retry sending message: ${msg.body.slice(0, 40)}${msg.body.length > 40 ? '…' : ''}`}
-                      >
-                        Tap to retry
-                      </button>
-                    </div>
-                  )}
-                  <span className={clsx("text-xs text-slate-400", isSent ? "pr-1" : "pl-1")}>
-                    {formatTime(msg.date)}
-                  </span>
-                </div>
+                  id={msg.id}
+                  body={msg.body}
+                  date={msg.date}
+                  address={msg.address}
+                  type={msg.type}
+                  status={status}
+                  onRetry={handleRetry}
+                />
               );
             })
           ) : (
@@ -481,7 +608,7 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            
+
             <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50">
               {/* Add New Section */}
               <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
@@ -520,8 +647,8 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
                     {templates.map((template) => {
                         const isExpanded = expandedTemplate === template.id;
                         return (
-                            <div 
-                                key={template.id} 
+                            <div
+                                key={template.id}
                                 onClick={() => setExpandedTemplate(isExpanded ? null : template.id)}
                                 className={clsx(
                                     "bg-white border rounded-xl p-4 cursor-pointer transition-all hover:shadow-md hover:border-blue-300 relative group",
@@ -557,12 +684,12 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
         {/* Quick Templates Ribbon */}
         <div className="px-6 py-2 bg-white border-t border-slate-100 overflow-x-auto no-scrollbar">
            <div className="flex gap-2 items-center">
-              <button 
+              <button
                 onClick={() => setShowTemplateManager(!showTemplateManager)}
                 className={clsx(
                   "flex items-center gap-1 whitespace-nowrap px-3 py-1.5 text-xs font-bold rounded-full transition-colors border",
-                  showTemplateManager 
-                    ? "bg-slate-800 text-white border-slate-800" 
+                  showTemplateManager
+                    ? "bg-slate-800 text-white border-slate-800"
                     : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
                 )}
               >
@@ -578,51 +705,9 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
            </div>
         </div>
 
-        {/* Input Area */}
-        <div className="p-4 border-t border-slate-100 bg-white">
-          <div className="flex items-end gap-2 bg-slate-50 p-2 rounded-2xl border border-slate-200 focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-400 transition-all">
-            <button className="p-2 text-slate-400 hover:text-slate-600 transition-colors self-end" aria-label="Insert emoji">
-              <Smile className="w-5 h-5" aria-hidden="true" />
-            </button>
-            <button className="p-2 text-slate-400 hover:text-slate-600 transition-colors self-end" aria-label="Attach image">
-              <Image className="w-5 h-5" aria-hidden="true" />
-            </button>
-            <textarea
-              id="sms-compose"
-              name="sms-compose"
-              ref={textareaRef}
-              value={messageText}
-              onChange={(e) => {
-                setMessageText(e.target.value);
-                // Auto-resize: reset to 'auto' so scrollHeight reflects new content, then cap at 200px.
-                e.target.style.height = 'auto';
-                e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
-              }}
-              onKeyDown={(e) => {
-                // Shift+Enter inserts a newline; Enter alone sends.
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder="Type a message... (Shift+Enter for new line)"
-              rows={1}
-              style={{ resize: 'none', overflow: 'hidden', minHeight: '40px', maxHeight: '200px' }}
-              className="flex-1 bg-transparent border-none focus:ring-0 focus:outline-none py-2 text-sm text-slate-800 placeholder-slate-400 leading-relaxed"
-            />
-            <button
-              onClick={handleSend}
-              disabled={!messageText.trim() || !recipientNumber}
-              className="p-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-sm shadow-blue-200 transition-all hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 self-end"
-              aria-label="Send message"
-            >
-              <Send className="w-5 h-5" aria-hidden="true" />
-            </button>
-          </div>
-          <p className="text-[10px] text-slate-400 mt-1.5 px-1">
-            Shift+Enter for new line • Enter to send
-          </p>
-        </div>
+        {/* Input Area — owns its own textarea state so typing doesn't
+            re-render the parent (sidebar, thread, template ribbon, bubbles). */}
+        <ComposeBar onSend={handleSend} disabled={!recipientNumber} />
       </div>
     </div>
   );

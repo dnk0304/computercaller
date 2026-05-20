@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Legacy Android Material defaults (kept so Theme.AppCompat fallbacks resolve) -->
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>
     <color name="purple_700">#FF3700B3</color>
@@ -7,5 +8,64 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-</resources>
 
+    <!-- =================================================== -->
+    <!-- DNK Dialer — Round 2 tokens                         -->
+    <!--                                                     -->
+    <!-- Departures from round 1:                            -->
+    <!--   - Flat warm near-black surface (no gradient)      -->
+    <!--   - One accent color, not three. The status hue     -->
+    <!--     differentiation moved to step-numbers + dot     -->
+    <!--   - Warm bias throughout (slightly red-shifted      -->
+    <!--     greys) so the surface reads as paper-under-     -->
+    <!--     lamp, not spaceship-console                     -->
+    <!-- =================================================== -->
+
+    <!-- Surface scale (warm grays — slight red bias, NOT slate-blue) -->
+    <color name="surface_base">#0A0A0B</color>          <!-- app background, flat -->
+    <color name="surface_raised">#141416</color>        <!-- subtle elevation -->
+    <color name="surface_inset">#1A1A1D</color>         <!-- recessed (url block) -->
+    <color name="surface_border">#26262A</color>        <!-- hairline divider -->
+    <color name="surface_qr">#F5F1EA</color>            <!-- warm off-white for QR plate -->
+
+    <!-- Text scale -->
+    <color name="text_primary">#F4F1EA</color>          <!-- warm off-white -->
+    <color name="text_secondary">#9C968A</color>        <!-- mid warm gray -->
+    <color name="text_tertiary">#5E5A52</color>         <!-- dim warm gray -->
+    <color name="text_label">#6E6A60</color>            <!-- eyebrow / step number -->
+
+    <!-- Single accent — warm orange. Used SPARINGLY: wordmark underline,
+         URL-block left bar, primary CTA, dot in LIVE state.
+         Reference: a designer who picked one and committed. -->
+    <color name="accent_warm">#E8763A</color>           <!-- terracotta / burnt orange -->
+    <color name="accent_warm_pressed">#C75F26</color>
+    <color name="accent_warm_dim">#7A4220</color>       <!-- for muted/inactive states -->
+
+    <!-- Status semantic — the dot is the PRIMARY signal now. Status
+         text is reduced to 1–2 words, so the dot carries the meaning
+         and must read at a glance.
+
+         Round 3: emerald GREEN for LIVE (the universal "healthy /
+         active service" signal — emerald-500 from Tailwind). Amber
+         for WAITING, slate for IDLE. The brand warm-terracotta stays
+         reserved for chrome (wordmark underline, primary CTA, URL
+         block bar), so the dot's green pops against the warm surface
+         instead of competing with the brand accent. -->
+    <color name="dot_live">#10B981</color>              <!-- emerald-500; connected -->
+    <color name="dot_live_soft">#10B98133</color>       <!-- 20% emerald — soft halo / fill -->
+    <color name="dot_waiting">#F59E0B</color>           <!-- amber-500; pending -->
+    <color name="dot_idle">#3A3A3E</color>              <!-- dim warm gray; offline -->
+    <!-- Round 4 — new ConnState entries for the explicit Connect flow.
+         CONNECTING uses a slate-blue distinct from amber WAITING so the
+         user can tell "we're mid-handshake on the relay" apart from
+         "browser-side hasn't joined yet". FAILED is red-500 — universal
+         signal for an error the user must act on. -->
+    <color name="dot_connecting">#60A5FA</color>        <!-- blue-400; relay handshake in flight -->
+    <color name="dot_failed">#EF4444</color>            <!-- red-500; last attempt errored -->
+
+    <!-- Token-input chrome — recessed field surface + a subtle focused border.
+         Sits next to the URL block visually but is editable, not reference. -->
+    <color name="field_surface">#141416</color>
+    <color name="field_border">#2E2E32</color>
+    <color name="field_border_focused">#E8763A</color>
+</resources>

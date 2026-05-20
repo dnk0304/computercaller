@@ -1,5 +1,80 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">DNK Dialer</string>
-</resources>
+    <string name="wordmark_dnk">DNK</string>
+    <string name="wordmark_dialer">Dialer</string>
+    <string name="tagline">A companion for the web app — your phone, on your screen.</string>
 
+    <!-- Step labels (status section) -->
+    <string name="step_01">01</string>
+    <string name="step_02">02</string>
+    <string name="step_03">03</string>
+
+    <!-- Section eyebrows — kept minimal. Round 3 cut "Current state"
+         entirely (the giant dot + word IS the state). -->
+    <string name="label_address">Listening at</string>
+    <string name="label_scan">Scan to pair</string>
+
+    <!-- Status copy — the dot is the PRIMARY signal. Labels are 1–2
+         words, scannable in 200ms. Verbose copy lives in toasts and
+         logs, not the headline. -->
+    <string name="status_starting">Starting</string>
+    <string name="status_loading_ip">Resolving address</string>
+    <string name="status_disconnected">Offline</string>
+    <string name="status_restarting">Restarting</string>
+    <string name="status_ready">Ready</string>
+    <string name="status_connecting">Connecting</string>
+    <string name="status_waiting_for_web">Waiting for browser</string>
+    <string name="status_live">Connected</string>
+    <string name="status_service_not_running">Offline</string>
+    <string name="status_perms_requesting">Requesting permissions</string>
+    <string name="status_perms_needed">Permissions needed</string>
+    <string name="status_perms_denied_permanent">Permissions blocked</string>
+    <string name="status_perms_denied_permanent_hint">Grant access in App Settings to continue.</string>
+    <string name="status_battery_request">Battery permission</string>
+    <string name="status_battery_request_hint">Required so the service stays alive in the background.</string>
+    <string name="status_perms_granted">Permissions granted</string>
+
+    <!-- Buttons -->
+    <string name="action_copy">Copy</string>
+    <string name="action_copy_long">Copy address to clipboard</string>
+    <string name="action_reconnect">Reconnect</string>
+    <string name="action_disconnect">Disconnect and stop</string>
+    <string name="action_enable_notifications">Enable notifications</string>
+    <string name="action_open_app_settings">Open app settings</string>
+
+    <!-- Toasts -->
+    <string name="toast_copied">Address copied</string>
+
+    <!-- Connection-state transitions for the LAN flow.
+         CONNECTING / FAILED are surfaced in the status row; the failure
+         copy is mapped from close code + exception class so the user
+         gets actionable advice instead of "WebSocket error". -->
+    <string name="status_connecting_relay">Connecting…</string>
+    <string name="status_failed_prefix">Couldn\'t connect.</string>
+    <string name="status_failed_refused">Couldn\'t reach the relay at %1$s. Is the dev server running?</string>
+    <string name="status_failed_timeout">Connection timed out. Check that your phone is on the same WiFi as your computer.</string>
+    <!-- Client-side 10s connect-timeout. Fires when the WS handshake
+         never completes (silent firewall drop, wrong IP, VPN interference) —
+         the WebSocket lib would otherwise hang the user in CONNECTING for
+         ~75s+ before the OS finally surfaces the TCP failure. -->
+    <string name="error_connect_timeout">Connection timed out — check WiFi / firewall.</string>
+    <string name="status_failed_unknown_host">Couldn\'t resolve %1$s. Check the relay host address.</string>
+    <string name="status_failed_invalid_token">Invalid pairing token. Re-scan the QR from your account settings.</string>
+    <string name="status_failed_generic">Connect failed: %1$s</string>
+    <string name="status_target_prefix">Target: %1$s</string>
+
+    <!-- Content descriptions -->
+    <string name="cd_qr">QR code — scan it with the web app to pair.</string>
+    <string name="cd_status_dot">Connection state indicator</string>
+
+    <!-- Format strings — collapsed to a single short label.
+         "Connected" reads at a glance; the client count goes in logs. -->
+    <string name="status_connected_to_host">Connected</string>
+    <string name="status_clients_connected_one">Connected</string>
+    <string name="status_clients_connected_many">Connected · %1$d</string>
+    <string name="status_error_format">%1$s</string>
+    <string name="status_perms_denied_count">%1$d permissions required</string>
+    <string name="status_cannot_start_without_perms">Cannot start without permissions</string>
+    <string name="status_failed_to_start">Failed to start</string>
+</resources>

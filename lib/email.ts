@@ -5,7 +5,11 @@ const FROM = process.env.EMAIL_FROM ?? 'noreply@dnkdialer.com';
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
 
 export async function sendVerificationEmail(email: string, token: string) {
-  const url = `${APP_URL}/auth/verify-email?token=${token}`;
+  // Point at the API route — it verifies the token server-side and redirects
+  // to `/auth/login?verified=1`. The `/auth/verify-email` PAGE is a static
+  // placeholder ("Verifying your email…") that does no work; landing the user
+  // there leaves them stuck forever. (Fixed 2026-05-19.)
+  const url = `${APP_URL}/api/auth/verify-email?token=${token}`;
   await resend.emails.send({
     from: FROM,
     to: email,

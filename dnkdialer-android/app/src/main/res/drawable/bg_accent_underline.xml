@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Thin warm accent underline. Used as the wordmark's anchor stroke
+  under "DNK" and as the QR card's top accent. A single visual
+  detail repeated sparingly — it ties the screen together without
+  decoration.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/accent_warm" />
+    <corners android:radius="1dp" />
+</shape>

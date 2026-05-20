@@ -39,7 +39,16 @@ export type PhoneEventType =
   | 'PHONE_NOTIFICATION'
   // Notification dismissed on the phone (user swipe / source-app cancel) —
   // carries the matching notificationKey so the webapp can drop the row.
-  | 'NOTIFICATION_REMOVED';
+  | 'NOTIFICATION_REMOVED'
+  // Confirmation that a NOTIFICATION_REPLY was successfully delivered to the
+  // source app's RemoteInput PendingIntent. Carries the notificationKey so
+  // the webapp can mark the corresponding row as read.
+  | 'NOTIFICATION_REPLY_SENT'
+  // App-level pong from the phone in response to an APP_PING. Carries the
+  // ping's `ts` so the web side can compute round-trip latency, and acts as
+  // a liveness signal — if pongs stop arriving for 30s the web flips the
+  // phone to "stale" even when the relay socket is still TCP-alive.
+  | 'APP_PONG';
 
 // Message types to phone
 export type PhoneCommandType =
@@ -49,7 +58,11 @@ export type PhoneCommandType =
   | 'SEND_SMS'
   | 'GET_CONTACTS'
   | 'GET_MESSAGES'
-  | 'GET_CALL_LOGS';
+  | 'GET_CALL_LOGS'
+  // App-level liveness ping sent every 15s while the web believes the phone
+  // is connected. Phone echoes back APP_PONG with the same `ts`. See
+  // hooks/usePhoneBridge.ts for the timer + stale-detection logic.
+  | 'APP_PING';
 
 // Call states
 export type CallState = 'idle' | 'ringing' | 'dialing' | 'active';

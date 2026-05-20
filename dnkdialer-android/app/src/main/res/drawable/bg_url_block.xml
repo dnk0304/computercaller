@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  URL block surface. Recessed monochrome panel with a single warm
+  vertical bar on the left (like a margin note / code-block
+  annotation). The bar is the only color on the surface — everything
+  else is grayscale. Reads as "this is reference data, treat it
+  precisely."
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Recessed panel base -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/surface_inset" />
+            <corners android:radius="@dimen/radius_chip" />
+        </shape>
+    </item>
+    <!-- Warm left bar — 3dp wide, full height -->
+    <item
+        android:width="3dp"
+        android:gravity="start">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/accent_warm" />
+        </shape>
+    </item>
+</layer-list>

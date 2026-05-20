@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App background. Flat warm near-black — no gradient.
+  Gradients read as decorative; flat says confident. The warm tint
+  (slight red bias vs. cool blue-black) makes the surface feel like
+  paper-under-lamp rather than spaceship-console.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/surface_base" />
+</shape>

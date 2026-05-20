@@ -81,6 +81,16 @@ class DnkNotificationListenerService : NotificationListenerService() {
         // onMessageNotification callback shape — set by PhoneService.startServer
         // and cleared on Service destroy to avoid leaking the Service instance.
         var onNotificationRemovedCb: ((notificationKey: String) -> Unit)? = null
+
+        // Cache of recently seen StatusBarNotifications keyed by sbn.key.
+        // PhoneService falls back to this when activeNotifications no longer
+        // has the entry (notification dismissed before user replied via webapp).
+        val replyCache: LinkedHashMap<String, android.service.notification.StatusBarNotification> =
+            object : LinkedHashMap<String, android.service.notification.StatusBarNotification>(64, 0.75f, false) {
+                override fun removeEldestEntry(
+                    eldest: MutableMap.MutableEntry<String, android.service.notification.StatusBarNotification>?
+                ) = size > 50
+            }
     }
 
     override fun onListenerConnected() {
@@ -139,6 +149,7 @@ class DnkNotificationListenerService : NotificationListenerService() {
         }
 
         val notificationKey = sbn.key ?: "${pkg}_${sbn.id}"
+        replyCache[notificationKey] = sbn
 
         // Capture the app icon (cached after first encode) so the web client
         // can render proper per-app branding instead of a generic placeholder.

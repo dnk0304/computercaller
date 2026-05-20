@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.PowerManager
@@ -24,7 +26,94 @@ class PhoneService : Service() {
         const val ACTION_STOP = "com.dnkdialer.companion.STOP_SERVICE"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dnk_dialer_service"
+
+        /**
+         * Dedicated channel for incoming-connection prompts. Separate from
+         * the foreground-service channel so the user can mute the persistent
+         * "Phone bridge is active" notification without losing the
+         * Accept/Decline prompt (which they must see — it's a security
+         * affordance, not background noise).
+         *
+         * IMPORTANCE_HIGH so it shows as a heads-up banner and bypasses
+         * Do Not Disturb's "ambient" filter on most OEM builds. Sound +
+         * vibration are explicitly enabled in createConnectionRequestChannel.
+         */
+        private const val CONNECTION_REQUEST_CHANNEL_ID = "connection_requests"
+
+        /**
+         * One notification id per pending request — derived from a stable
+         * hash of the requestId so Accept/Decline broadcasts can dismiss
+         * exactly their own notification without clobbering a concurrent
+         * second request. Offset by 10_000 to stay clear of the foreground
+         * NOTIFICATION_ID and any other ids the app uses elsewhere.
+         */
+        private fun notificationIdFor(requestId: String): Int =
+            10_000 + (requestId.hashCode() and 0x7fffffff) % 1_000_000
+
+        /**
+         * Auto-decline window. If the user neither Accepts nor Declines
+         * within 30 seconds we close the pending WS with code 1008 so the
+         * webapp can show its "phone declined" copy. This matches the
+         * webapp's own connect-side timeout so neither side waits forever
+         * on a phone the user walked away from.
+         */
+        private const val PENDING_REQUEST_TIMEOUT_MS = 30_000L
     }
+
+    /**
+     * Lifecycle phases for the relay WebSocket — drives the UI's
+     * connection-state surface in MainActivity. Kept independent of
+     * MainActivity.ConnState so this Service has no Activity-class
+     * coupling; MainActivity translates [RelayPhase] → its own
+     * ConnState (which also encodes LAN-server states like WAITING /
+     * LIVE based on browser presence).
+     *
+     *   IDLE      — no connect attempt has been made (or last one was
+     *               cleanly disconnected by the user).
+     *   CONNECTING — connect() has been called, no onOpen yet.
+     *   OPEN      — onOpen fired; WebSocket is live.
+     *   FAILED    — onError fired, or onClose with non-1000 code.
+     *               [lastConnectionError] carries close code + reason.
+     */
+    enum class RelayPhase { IDLE, CONNECTING, OPEN, FAILED }
+
+    /**
+     * Current relay-socket phase. Read by MainActivity via the
+     * onRelayPhaseChanged callback below.
+     */
+    @Volatile
+    var relayPhase: RelayPhase = RelayPhase.IDLE
+        private set
+
+    /**
+     * Pair of (close code, reason) from the last FAILED transition.
+     * Code is the WebSocket close code (1006 for abnormal closure,
+     * 4401 for the relay's invalid-token close, etc.) or -1 if the
+     * failure came from a pre-handshake exception (onError path).
+     * Cleared on the next CONNECTING transition + on user-initiated
+     * disconnect.
+     */
+    @Volatile
+    var lastConnectionError: Pair<Int, String?>? = null
+        private set
+
+    /**
+     * URL the LAST connect attempt targeted (with token URL-encoded).
+     * Exposed so MainActivity can render the target prominently while
+     * Connecting / Failed — the SINGLE most diagnostic affordance, per
+     * the UX brief: lets the user see exactly what the APK is trying
+     * to reach so they can spot wrong IP / wrong port / stale LAN.
+     * MainActivity is responsible for token-masking before display.
+     */
+    var lastRelayUrlAttempt: String? = null
+        private set
+
+    /**
+     * Single callback the UI installs to track relay phase transitions.
+     * Fires on the Service's worker thread — MainActivity is responsible
+     * for re-posting to the main looper before touching views.
+     */
+    var onRelayPhaseChanged: ((RelayPhase) -> Unit)? = null
 
     private val binder = LocalBinder()
     private var server: PhoneServer? = null
@@ -33,6 +122,53 @@ class PhoneService : Service() {
     private var client: PhoneClient? = null
     private var clientRelayUrl: String? = null
     private var connectedHostname: String? = null
+
+    /**
+     * Accept/Decline broadcasts from the connection-request notification land
+     * in this receiver — we hand back to [handleConnectionDecision] via the
+     * shared serviceHandler hook in [ConnectionRequestReceiver]. Held as a
+     * field so onDestroy can unregister cleanly.
+     */
+    private var connectionRequestReceiver: ConnectionRequestReceiver? = null
+
+    /**
+     * Auto-decline timers keyed by requestId. Started when the notification
+     * is posted, cancelled on user Accept / Decline. If a timer fires we
+     * treat it as a Decline so the webapp doesn't hang forever waiting on
+     * a phone the user walked away from.
+     */
+    private val pendingRequestTimers = mutableMapOf<String, Runnable>()
+    private val pendingRequestHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Round 5 — client-side connect timeout.
+     *
+     * The `java_websocket` library's `connect()` opens a TCP socket and
+     * waits for the handshake response. If the remote host swallows the
+     * SYN (silent firewall drop, wrong IP/port, VPN interference like
+     * NordLynx), the socket can hang for ~75s+ on Android before the
+     * OS finally surfaces a SocketTimeoutException. During that window
+     * the user sees the blue "Connecting…" state with NO further signal
+     * — and has no way to abort cleanly because no FAILED state ever
+     * fires.
+     *
+     * Solution: schedule a 10s watchdog on the main looper at the moment
+     * we call `client.connect()`. If `onOpen` fires first, we cancel
+     * the watchdog. If 10s elapses with `client?.isOpen != true`, the
+     * watchdog force-closes the socket (code 1006 "connect_timeout")
+     * and flips to FAILED with a friendly message.
+     *
+     * Timeout chosen: 10s. A relay on the same LAN should handshake in
+     * ~50–200ms; a WSS handshake to a public relay in <2s. 10s gives
+     * generous headroom for slow cellular hand-off without leaving the
+     * user staring at a stalled spinner.
+     *
+     * Cancelled in: onOpen success path, onError/onClose error path,
+     * disconnectRelay() (user-initiated cancel), and onDestroy.
+     */
+    private val connectTimeoutHandler = Handler(Looper.getMainLooper())
+    private var connectTimeoutRunnable: Runnable? = null
+    private val connectTimeoutMs: Long = 10_000L
     private lateinit var callHandler: CallHandler
     private lateinit var smsHandler: SmsHandler
     private lateinit var contactsHandler: ContactsHandler
@@ -77,10 +213,42 @@ class PhoneService : Service() {
                     android.util.Log.d("PhoneService", "TelephonyCallback state: $state")
                     when (state) {
                         android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
+                            // New call — clear downstream guards. CallStateListener
+                            // does NOT receive the phone number (that's a separate
+                            // PhoneStateListener with stricter permissions); fall
+                            // back to the cached currentCallNumber for outgoing
+                            // calls, empty string for unknown-inbound.
                             callEndedSentRef.set(false)
+                            callAnsweredSentRef.set(false)
+                            if (callIncomingSentRef.compareAndSet(false, true)) {
+                                val isViaClient = client?.isOpen == true
+                                val num = currentCallNumber ?: ""
+                                sendResponse("CALL_INCOMING", mapOf("number" to num, "name" to ""), isViaClient)
+                                android.util.Log.d("PhoneService", "TelephonyCallback -> CALL_INCOMING sent (num: $num)")
+                            } else {
+                                android.util.Log.d("PhoneService", "TelephonyCallback RINGING — CALL_INCOMING already sent, skipping")
+                            }
                         }
                         android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
                             callEndedSentRef.set(false)
+                            if (callAnsweredSentRef.compareAndSet(false, true)) {
+                                val isViaClient = client?.isOpen == true
+                                val num = currentCallNumber ?: ""
+                                sendResponse("CALL_ANSWERED", mapOf("number" to num), isViaClient)
+                                android.util.Log.d("PhoneService", "TelephonyCallback -> CALL_ANSWERED sent (num: $num)")
+
+                                // Apply speakerphone preference — mirrors the legacy
+                                // listener so OFFHOOK from either path honors it.
+                                // Uses the layered helper (modern setCommunicationDevice
+                                // + legacy isSpeakerphoneOn) so Android 12+ devices
+                                // actually flip the speaker on.
+                                if (currentCallSpeaker) {
+                                    applySpeakerphone(true)
+                                    android.util.Log.d("PhoneService", "Speakerphone enabled [TelephonyCallback]")
+                                }
+                            } else {
+                                android.util.Log.d("PhoneService", "TelephonyCallback OFFHOOK — CALL_ANSWERED already sent, skipping")
+                            }
                         }
                         android.telephony.TelephonyManager.CALL_STATE_IDLE -> {
                             if (callEndedSentRef.compareAndSet(false, true)) {
@@ -89,15 +257,14 @@ class PhoneService : Service() {
                                 sendResponse("CALL_ENDED", mapOf<String, Any>(), isViaClient)
                                 currentCallNumber = null
                                 currentCallSpeaker = false
-                                try {
-                                    val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-                                    am.isSpeakerphoneOn = false
-                                    am.mode = android.media.AudioManager.MODE_NORMAL
-                                } catch (e: Exception) {}
+                                clearSpeakerphoneOnEnd()
                                 android.util.Log.d("PhoneService", "TelephonyCallback -> CALL_ENDED sent (num: $num)")
                             } else {
                                 android.util.Log.d("PhoneService", "TelephonyCallback IDLE — CALL_ENDED already sent, skipping")
                             }
+                            // Reset incoming/answered guards so the next call starts clean.
+                            callIncomingSentRef.set(false)
+                            callAnsweredSentRef.set(false)
                         }
                     }
                 }
@@ -127,6 +294,93 @@ class PhoneService : Service() {
     private var currentCallSpeaker: Boolean = false
 
     /**
+     * Number of browser/web clients currently attached to the relay for this
+     * phone session. Updated whenever the relay pushes a BROWSER_STATUS frame.
+     * Default 0 so the UI shows "Waiting for web app" until a real browser
+     * actually joins (false-connection fix — relay-socket-open != browser-paired).
+     *
+     * MainActivity polls this via getBrowserCount() on its 2 s status loop and
+     * swaps the connection label between "Waiting…" and "N web client(s)
+     * connected" based on the value.
+     */
+    private var currentBrowserCount: Int = 0
+
+    /** Public read-only accessor for MainActivity's status polling loop. */
+    fun getBrowserCount(): Int = currentBrowserCount
+
+    /**
+     * Layered speakerphone toggle. On Android 12+ (API 31), the legacy
+     * `AudioManager.isSpeakerphoneOn` is deprecated and on many OEM builds
+     * (Samsung, Pixel) silently no-ops because (a) the API is restricted and
+     * (b) the actual call audio lives in the system dialer's process, not ours.
+     * The modern path is `setCommunicationDevice(TYPE_BUILTIN_SPEAKER)` which
+     * requires the audio mode to be MODE_IN_CALL or MODE_IN_COMMUNICATION
+     * first. We use MODE_IN_COMMUNICATION — the system dialer owns
+     * MODE_IN_CALL, and our app can hold COMMUNICATION alongside and still
+     * influence routing on most devices. Both modern and legacy paths are
+     * attempted in parallel so the toggle has the best possible chance of
+     * actually flipping the speaker on the user's specific device/OEM.
+     *
+     * Called from SET_SPEAKER (live toggle) and from the OFFHOOK observers
+     * (apply pre-dial speaker preference once the call goes active).
+     */
+    private fun applySpeakerphone(enabled: Boolean) {
+        try {
+            val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+
+            // Set mode first — speakerphone routing only works when the audio
+            // mode is one of MODE_IN_CALL / MODE_IN_COMMUNICATION.
+            audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+
+            // Modern API (Android 12+ / API 31+) — preferred path.
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                if (enabled) {
+                    val speakerDevice = audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (speakerDevice != null) {
+                        val ok = audioManager.setCommunicationDevice(speakerDevice)
+                        android.util.Log.d("PhoneService", "applySpeakerphone modern (on): setCommunicationDevice=$ok")
+                    } else {
+                        android.util.Log.w("PhoneService", "applySpeakerphone modern: no BUILTIN_SPEAKER device available")
+                    }
+                } else {
+                    audioManager.clearCommunicationDevice()
+                    android.util.Log.d("PhoneService", "applySpeakerphone modern (off): clearCommunicationDevice")
+                }
+            }
+
+            // Legacy fallback — Android <12 and some OEMs that still honor it
+            // in parallel. Keep both paths active for maximum coverage.
+            @Suppress("DEPRECATION")
+            run { audioManager.isSpeakerphoneOn = enabled }
+
+            android.util.Log.d("PhoneService", "applySpeakerphone applied: enabled=$enabled, audioMode=${audioManager.mode}, isSpeakerphoneOn=${audioManager.isSpeakerphoneOn}")
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "applySpeakerphone failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Release the speakerphone routing on call end. Clears the modern
+     * communication-device assignment, drops the legacy flag, and returns
+     * audio mode to NORMAL.
+     */
+    private fun clearSpeakerphoneOnEnd() {
+        try {
+            val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            }
+            @Suppress("DEPRECATION")
+            run { audioManager.isSpeakerphoneOn = false }
+            audioManager.mode = android.media.AudioManager.MODE_NORMAL
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "clearSpeakerphoneOnEnd failed: ${e.message}")
+        }
+    }
+
+    /**
      * Single guard against double-sending CALL_ENDED. The legacy PhoneStateListener
      * and the modern TelephonyCallback (Android 12+) can both observe the IDLE
      * transition independently — whichever fires first flips this from false → true
@@ -134,6 +388,17 @@ class PhoneService : Service() {
      * next call starts with a fresh guard.
      */
     private var callEndedSentRef = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Guards for CALL_INCOMING and CALL_ANSWERED — same dedup pattern as
+     * callEndedSentRef. On Android 12+ the legacy PhoneStateListener.listen()
+     * is silently non-functional, so the modern TelephonyCallback must carry
+     * these events. Both observers are wired and whichever fires first wins.
+     * Reset to false on IDLE (and on opposite-direction transitions, where
+     * applicable) so the next call gets a fresh guard.
+     */
+    private var callIncomingSentRef = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var callAnsweredSentRef = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * Modern call-state observer (Android 12+ / API 31+). Held so we can
@@ -156,28 +421,34 @@ class PhoneService : Service() {
             when (state) {
                 android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
                     android.util.Log.d("PhoneService", "Call ringing: $number")
-                    // New call beginning — clear the CALL_ENDED guard so the next
-                    // IDLE transition (whichever observer sees it first) can fire.
+                    // New call beginning — clear CALL_ENDED + CALL_ANSWERED guards
+                    // so the downstream transitions (whichever observer sees them
+                    // first) can fire. CALL_INCOMING itself is guarded below.
                     callEndedSentRef.set(false)
-                    val isViaClient = client?.isOpen == true
-                    sendResponse("CALL_INCOMING", mapOf("number" to number, "name" to ""), isViaClient)
+                    callAnsweredSentRef.set(false)
+                    if (callIncomingSentRef.compareAndSet(false, true)) {
+                        val isViaClient = client?.isOpen == true
+                        sendResponse("CALL_INCOMING", mapOf("number" to number, "name" to ""), isViaClient)
+                    } else {
+                        android.util.Log.d("PhoneService", "PhoneStateListener RINGING — CALL_INCOMING already sent, skipping")
+                    }
                 }
                 android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
                     android.util.Log.d("PhoneService", "Call offhook (active): $number")
                     callEndedSentRef.set(false)
-                    val isViaClient = client?.isOpen == true
-                    sendResponse("CALL_ANSWERED", mapOf("number" to number), isViaClient)
+                    if (callAnsweredSentRef.compareAndSet(false, true)) {
+                        val isViaClient = client?.isOpen == true
+                        sendResponse("CALL_ANSWERED", mapOf("number" to number), isViaClient)
+                    } else {
+                        android.util.Log.d("PhoneService", "PhoneStateListener OFFHOOK — CALL_ANSWERED already sent, skipping")
+                    }
 
-                    // Apply speakerphone preference
+                    // Apply speakerphone preference — layered helper handles
+                    // both the modern setCommunicationDevice path (API 31+)
+                    // and the legacy isSpeakerphoneOn fallback.
                     if (currentCallSpeaker) {
-                        try {
-                            val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-                            audioManager.mode = android.media.AudioManager.MODE_IN_CALL
-                            audioManager.isSpeakerphoneOn = true
-                            android.util.Log.d("PhoneService", "Speakerphone enabled")
-                        } catch (e: Exception) {
-                            android.util.Log.w("PhoneService", "Failed to enable speakerphone: ${e.message}")
-                        }
+                        applySpeakerphone(true)
+                        android.util.Log.d("PhoneService", "Speakerphone enabled")
                     }
                 }
                 android.telephony.TelephonyManager.CALL_STATE_IDLE -> {
@@ -189,11 +460,7 @@ class PhoneService : Service() {
                         sendResponse("CALL_ENDED", mapOf<String, Any>(), isViaClient)
                         currentCallNumber = null
                         currentCallSpeaker = false
-                        try {
-                            val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-                            audioManager.isSpeakerphoneOn = false
-                            audioManager.mode = android.media.AudioManager.MODE_NORMAL
-                        } catch (e: Exception) {}
+                        clearSpeakerphoneOnEnd()
                         // Retry CALL_ENDED after 800 ms in case the relay WS was briefly
                         // busy and dropped the first frame. The web client dedupes by
                         // event semantics (idempotent CALL_ENDED), so a duplicate is safe.
@@ -205,6 +472,10 @@ class PhoneService : Service() {
                     } else {
                         android.util.Log.d("PhoneService", "PhoneStateListener IDLE — CALL_ENDED already sent, skipping")
                     }
+                    // Reset incoming/answered guards so the NEXT call starts clean,
+                    // regardless of which observer fired the CALL_ENDED above.
+                    callIncomingSentRef.set(false)
+                    callAnsweredSentRef.set(false)
                 }
             }
         }
@@ -234,6 +505,30 @@ class PhoneService : Service() {
         android.util.Log.d("PhoneService", "Wake lock acquired")
 
         createNotificationChannel()
+        createConnectionRequestChannel()
+
+        // Register the connection-request action receiver. Hooks the shared
+        // serviceHandler so Accept/Decline broadcasts route through here.
+        // Internal-only intents so we keep them NOT_EXPORTED to prevent
+        // spoofed Accepts from outside the app.
+        connectionRequestReceiver = ConnectionRequestReceiver()
+        val connectionFilter = android.content.IntentFilter().apply {
+            addAction(ConnectionRequestReceiver.ACTION_ACCEPT_CONNECTION)
+            addAction(ConnectionRequestReceiver.ACTION_DECLINE_CONNECTION)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                connectionRequestReceiver,
+                connectionFilter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(connectionRequestReceiver, connectionFilter)
+        }
+        ConnectionRequestReceiver.serviceHandler = { requestId, accept ->
+            handleConnectionDecision(requestId, accept)
+        }
 
         // Register for real telephony state changes so we forward true call state
         // (ringing / active / ended) to the web app instead of fake responses tied
@@ -353,6 +648,186 @@ class PhoneService : Service() {
     }
 
     /**
+     * High-importance channel for the Accept/Decline prompt. Sound +
+     * vibration on, badge on, lockscreen visibility public (the user has to
+     * see it to act on it). Created once on service start; recreating an
+     * existing channel is a no-op on Android.
+     */
+    private fun createConnectionRequestChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CONNECTION_REQUEST_CHANNEL_ID,
+                "Connection requests",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Prompts you to approve incoming web app connections"
+                enableVibration(true)
+                enableLights(true)
+                setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    /**
+     * Raise the Accept/Decline notification for a pending connection.
+     *
+     * The action buttons fire broadcasts via PendingIntents — same pattern
+     * Android uses for system-level "Reply / Mark as read" actions on
+     * messaging notifications. Tap on the notification body itself routes
+     * to MainActivity so the user can see the request in-app (helpful on
+     * Android Auto / lockscreen where action buttons can be hidden).
+     *
+     * One notification per requestId so a second concurrent request never
+     * dismisses the first one. The notificationIdFor() hash keeps ids
+     * deterministic so dismissConnectionRequestNotification() can target
+     * exactly the right one.
+     */
+    private fun postConnectionRequestNotification(requestId: String, address: String) {
+        // POST_NOTIFICATIONS gate (Android 13+). If the user revoked
+        // notification access after install we cannot raise the prompt
+        // — in that case auto-decline the request so the webapp gets a
+        // clear "phone rejected" signal instead of hanging on a silent
+        // approval that will never come.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                android.util.Log.w(
+                    "PhoneService",
+                    "POST_NOTIFICATIONS denied — cannot raise connection-request prompt, auto-declining"
+                )
+                // Defer so the caller's flow has finished setting up the
+                // pending entry before we tear it down.
+                pendingRequestHandler.post { handleConnectionDecision(requestId, accept = false) }
+                return
+            }
+        }
+
+        val acceptIntent = Intent(ConnectionRequestReceiver.ACTION_ACCEPT_CONNECTION).apply {
+            setPackage(packageName)  // restrict broadcast to our own package
+            putExtra(ConnectionRequestReceiver.EXTRA_REQUEST_ID, requestId)
+        }
+        val declineIntent = Intent(ConnectionRequestReceiver.ACTION_DECLINE_CONNECTION).apply {
+            setPackage(packageName)
+            putExtra(ConnectionRequestReceiver.EXTRA_REQUEST_ID, requestId)
+        }
+
+        // Distinct request codes per pending request so concurrent
+        // PendingIntents don't get coalesced by the platform.
+        val baseCode = requestId.hashCode()
+        val acceptPending = PendingIntent.getBroadcast(
+            this,
+            baseCode,
+            acceptIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val declinePending = PendingIntent.getBroadcast(
+            this,
+            baseCode + 1,
+            declineIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        // Tap on body → open MainActivity. The activity doesn't (yet) have
+        // a dedicated "incoming connection" screen — opening the app is
+        // enough for the user to see the heads-up that's still sitting
+        // in the shade.
+        val tapIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val tapPending = PendingIntent.getActivity(
+            this,
+            baseCode + 2,
+            tapIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
+            .setContentTitle("Connection request")
+            .setContentText("Web client at $address wants to connect")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(
+                "Web client at $address wants to connect to your phone. " +
+                "Approve only if you started this connection."
+            ))
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(false)  // don't dismiss on tap — user must Accept or Decline
+            .setOngoing(false)
+            .setContentIntent(tapPending)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Decline",
+                declinePending
+            )
+            .addAction(
+                android.R.drawable.ic_menu_send,
+                "Accept",
+                acceptPending
+            )
+            .build()
+
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(notificationIdFor(requestId), notification)
+    }
+
+    /**
+     * Drop a posted connection-request notification (after Accept, Decline,
+     * timeout, or pending-client disconnect-before-decision).
+     */
+    private fun dismissConnectionRequestNotification(requestId: String) {
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.cancel(notificationIdFor(requestId))
+    }
+
+    /**
+     * Start the 30 s auto-decline timer for a pending request. The handler
+     * is posted on the main looper — Handler.removeCallbacks tolerates
+     * being called from any thread but binding the timer to a single
+     * looper avoids surprises if a runtime config change reaches in.
+     */
+    private fun scheduleAutoDecline(requestId: String) {
+        val runnable = Runnable {
+            android.util.Log.w("PhoneService", "Pending connection $requestId timed out (auto-decline)")
+            handleConnectionDecision(requestId, accept = false)
+        }
+        pendingRequestTimers[requestId] = runnable
+        pendingRequestHandler.postDelayed(runnable, PENDING_REQUEST_TIMEOUT_MS)
+    }
+
+    /**
+     * Apply the user's Accept / Decline decision (or the auto-decline
+     * timeout) to the pending connection on the server.
+     *
+     * Always dismisses the notification + cancels the auto-decline timer
+     * so a delayed broadcast can't double-fire after the decision has
+     * already been applied. acceptPendingConnection / declinePendingConnection
+     * are themselves idempotent (no-op on unknown requestId) so a race
+     * between Accept-tap and auto-decline-tick simply produces one
+     * winning outcome.
+     */
+    private fun handleConnectionDecision(requestId: String, accept: Boolean) {
+        android.util.Log.d("PhoneService", "handleConnectionDecision: $requestId accept=$accept")
+        pendingRequestTimers.remove(requestId)?.let {
+            pendingRequestHandler.removeCallbacks(it)
+        }
+        dismissConnectionRequestNotification(requestId)
+
+        if (accept) {
+            val ok = server?.acceptPendingConnection(requestId) ?: false
+            if (!ok) {
+                android.util.Log.w("PhoneService", "Accept skipped — pending conn no longer present")
+            }
+        } else {
+            server?.declinePendingConnection(requestId)
+        }
+    }
+
+    /**
      * Replaces the persistent foreground notification's text so the user can see
      * connection state at a glance ("Connected to PC — syncing data" vs the
      * default "Phone bridge is active"). No accept/deny prompt — just visibility.
@@ -395,6 +870,14 @@ class PhoneService : Service() {
 
                 // Update the foreground notification to reflect connection state
                 updateNotification(if (connected) "Connected to PC — syncing data" else "Phone bridge is active")
+            }, { requestId, address ->
+                // Incoming WS upgrade has completed but is parked in PENDING —
+                // raise the user-facing Accept/Decline notification and start
+                // the 30 s auto-decline timer. See [postConnectionRequestNotification]
+                // for the heads-up notification + action wiring.
+                android.util.Log.d("PhoneService", "Connection request $requestId from $address — prompting user")
+                postConnectionRequestNotification(requestId, address)
+                scheduleAutoDecline(requestId)
             })
             server?.start()
 
@@ -783,6 +1266,19 @@ class PhoneService : Service() {
     fun connectToRelay(relayUrl: String) {
         android.util.Log.d("PhoneService", "Connecting to relay: $relayUrl")
         clientRelayUrl = relayUrl
+        lastRelayUrlAttempt = relayUrl
+
+        // We're about to dial — clear the last failure and announce
+        // CONNECTING. MainActivity uses this to flip its status dot to
+        // the slate-blue "Connecting…" state.
+        lastConnectionError = null
+        setRelayPhase(RelayPhase.CONNECTING)
+
+        // Cancel any stale watchdog from a previous attempt — a fresh
+        // connect always gets a fresh timer. Without this, a rapid
+        // retry could leave two timers in flight, the older one firing
+        // mid-handshake on the new attempt.
+        cancelConnectTimeout()
 
         // Keep server running too for backward compat
         client?.close()
@@ -794,10 +1290,136 @@ class PhoneService : Service() {
                 lastClientAddress = if (connected) "relay" else null
                 android.util.Log.d("PhoneService", if (connected) "Connected to relay!" else "Disconnected from relay")
                 updateNotification(if (connected) "Connected to PC via relay" else "Phone bridge is active")
+                // onOpen → OPEN. onClose → only flip to IDLE if we
+                // weren't already pushed to FAILED by the error callback
+                // (close fires AFTER error for non-normal closures).
+                if (connected) {
+                    // Handshake succeeded — the watchdog must NOT fire.
+                    cancelConnectTimeout()
+                    setRelayPhase(RelayPhase.OPEN)
+                } else if (relayPhase != RelayPhase.FAILED) {
+                    setRelayPhase(RelayPhase.IDLE)
+                }
+            },
+            { code, reason ->
+                // Non-1000 close OR raw exception from PhoneClient.
+                // Capture the diagnostic pair and flip to FAILED so the
+                // UI can render an actionable error message. The phase
+                // ordering here matters — onClose fires AFTER onError
+                // when the close is abnormal, but onError -> FAILED
+                // wins because the next onClose checks current phase.
+                //
+                // Cancel the watchdog: a real onError (e.g. DNS fail,
+                // refused) means we got a definitive answer faster than
+                // 10s — the watchdog's "still hanging?" check is moot.
+                cancelConnectTimeout()
+                lastConnectionError = code to reason
+                android.util.Log.w("PhoneService", "Relay connection error: code=$code reason=$reason")
+                setRelayPhase(RelayPhase.FAILED)
             }
         )
         client?.connectionLostTimeout = 15  // ping every 15 seconds
         client?.connect()
+
+        // Schedule the watchdog AFTER kicking off connect(). Capture
+        // the client + URL we just dialed so a stale timer from a
+        // previous attempt can't force-close a freshly-opened socket
+        // (defensive — cancelConnectTimeout() above should have
+        // prevented that, but identity-checking the captured ref makes
+        // the race impossible by construction).
+        val dialedClient = client
+        val timeoutRunnable = Runnable {
+            // If the client we dialed is no longer the active one, or
+            // it's already open, the watchdog has nothing to do.
+            if (dialedClient == null || dialedClient !== client) {
+                android.util.Log.d("PhoneService", "Connect watchdog: stale, ignoring")
+                return@Runnable
+            }
+            if (dialedClient.isOpen) {
+                android.util.Log.d("PhoneService", "Connect watchdog: already open, ignoring")
+                return@Runnable
+            }
+            android.util.Log.w("PhoneService", "Connect watchdog fired — handshake never completed within ${connectTimeoutMs}ms")
+            // Force-close the hung socket. Code 1006 (abnormal closure)
+            // is the closest match for "connection never established";
+            // reason "connect_timeout" surfaces in PhoneClient.onClose
+            // logs to make the diagnostic obvious.
+            try { dialedClient.close(1006, "connect_timeout") } catch (_: Exception) {}
+            // Surface FAILED with the friendly client-side message.
+            // mapConnectionError in MainActivity matches on either
+            // "SocketTimeoutException" or "timed out" — we use the
+            // latter so the existing copy path picks it up if the
+            // user hasn't updated the activity, plus we set a
+            // dedicated string for the brief's requested wording.
+            lastConnectionError = -1 to "connect_timeout: timed out after ${connectTimeoutMs / 1000}s"
+            setRelayPhase(RelayPhase.FAILED)
+            connectTimeoutRunnable = null
+        }
+        connectTimeoutRunnable = timeoutRunnable
+        connectTimeoutHandler.postDelayed(timeoutRunnable, connectTimeoutMs)
+    }
+
+    /**
+     * Round 5 — cancel any scheduled connect-timeout watchdog.
+     *
+     * Safe to call in any state (no-op if nothing is pending). Called
+     * from: onOpen success, onError/onClose error, disconnectRelay()
+     * (user-initiated cancel), and onDestroy. Idempotent.
+     */
+    private fun cancelConnectTimeout() {
+        connectTimeoutRunnable?.let {
+            connectTimeoutHandler.removeCallbacks(it)
+            android.util.Log.d("PhoneService", "Connect watchdog cancelled")
+        }
+        connectTimeoutRunnable = null
+    }
+
+    /**
+     * Internal phase setter — single point of truth for transitioning
+     * [relayPhase] + firing [onRelayPhaseChanged]. Compares before
+     * setting so identical-state callbacks don't spam the UI (e.g. a
+     * stale OPEN→OPEN from an unrelated code path would be a no-op).
+     */
+    private fun setRelayPhase(next: RelayPhase) {
+        if (relayPhase == next) return
+        relayPhase = next
+        try {
+            onRelayPhaseChanged?.invoke(next)
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "onRelayPhaseChanged threw: ${e.message}")
+        }
+    }
+
+    /**
+     * User-initiated relay disconnect.
+     *
+     * Closes the WebSocket with a clean 1000 close code and forces the
+     * phase to IDLE. Used by the Cancel button while CONNECTING and the
+     * Reset path after a FAILED state — both want the connection torn
+     * down without ringing the FAILED-state machinery.
+     *
+     * Differs from [reconnectToRelay] / the legacy Disconnect button in
+     * MainActivity, which tear down the whole foreground service. This
+     * method ONLY closes the relay socket — the LAN [PhoneServer] keeps
+     * running so the user can still pair via QR / LAN IP afterwards.
+     */
+    fun disconnectRelay() {
+        android.util.Log.d("PhoneService", "User-initiated relay disconnect")
+        // Cancel the connect-timeout watchdog BEFORE we tear down the
+        // client. If the user taps Cancel mid-handshake, the watchdog
+        // would otherwise fire ~10s later against a now-null client
+        // (the identity check inside the runnable handles this too,
+        // but cancelling here keeps the Handler queue clean).
+        cancelConnectTimeout()
+        // Clear error BEFORE close() so the onClose callback below,
+        // which may fire synchronously on some socket states, doesn't
+        // re-arm FAILED on the way out.
+        lastConnectionError = null
+        client?.close(1000, "user_disconnect")
+        client = null
+        clientRelayUrl = null
+        isClientConnected = false
+        setRelayPhase(RelayPhase.IDLE)
     }
 
     fun reconnectToRelay() {
@@ -879,6 +1501,20 @@ class PhoneService : Service() {
         android.util.Log.d("PhoneService", "handleCommand: $command, viaClient: $viaClient")
         try {
             when (command) {
+                "DISCONNECT_PHONE" -> {
+                    // The webapp's "Disconnect" button forwards this command
+                    // through the relay so the phone can proactively tear down
+                    // its LAN-server side of the connection. Before this branch
+                    // existed, the command silently fell through here, the phone
+                    // never closed the WS, the relay's outbound auto-reconnect
+                    // loop re-established it on the next 5s tick, and the user
+                    // ended up unable to pair again without uninstalling the
+                    // APK. See PhoneServer.disconnectAllClients for the full
+                    // cleanup contract.
+                    android.util.Log.d("PhoneService", "Received DISCONNECT_PHONE from webapp — tearing down LAN clients")
+                    server?.disconnectAllClients()
+                    return
+                }
                 "MAKE_CALL" -> {
                     val number = payload?.get("number") as? String ?: return
                     val speaker = payload?.get("speaker") as? Boolean ?: false
@@ -918,18 +1554,9 @@ class PhoneService : Service() {
                     callHandler.endCall()
                 }
                 "SET_SPEAKER" -> {
-                    val enabled = payload?.get("enabled") as? Boolean ?: false
+                    val enabled = (payload?.get("enabled") as? Boolean) ?: false
                     currentCallSpeaker = enabled
-                    try {
-                        val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-                        if (enabled) {
-                            audioManager.mode = android.media.AudioManager.MODE_IN_CALL
-                        }
-                        audioManager.isSpeakerphoneOn = enabled
-                        android.util.Log.d("PhoneService", "SET_SPEAKER: $enabled")
-                    } catch (e: Exception) {
-                        android.util.Log.w("PhoneService", "SET_SPEAKER failed: ${e.message}")
-                    }
+                    applySpeakerphone(enabled)
                 }
                 "SEND_SMS" -> {
                     val to = payload?.get("to") as? String ?: return
@@ -1118,7 +1745,36 @@ class PhoneService : Service() {
                     val replyKey = payload?.get("replyKey") as? String ?: return
                     val text = payload?.get("text") as? String ?: return
                     android.util.Log.d("PhoneService", "NOTIFICATION_REPLY to key: $notificationKey")
-                    sendNotificationReply(notificationKey, replyKey, text)
+                    sendNotificationReply(notificationKey, replyKey, text, viaClient)
+                }
+                "BROWSER_STATUS" -> {
+                    // Relay tells us how many browser/web clients are currently
+                    // paired with this phone session. Gson decodes JSON numbers
+                    // in Map<String, Any> as Double (same gotcha as MAKE_CALL
+                    // simId / GET_MESSAGES since/limit above), so narrow via
+                    // Double → Int. Missing/malformed count is treated as 0 so
+                    // the UI shows "Waiting for web app" rather than getting
+                    // stuck on a stale positive count.
+                    val count = (payload?.get("count") as? Double)?.toInt() ?: 0
+                    if (count != currentBrowserCount) {
+                        android.util.Log.d(
+                            "PhoneService",
+                            "BROWSER_STATUS: $currentBrowserCount -> $count"
+                        )
+                        currentBrowserCount = count
+                    }
+                }
+                "APP_PING" -> {
+                    // Browser → phone heartbeat (relayed). Echo the timestamp
+                    // back as APP_PONG via the same WS write helper as every
+                    // other response so it rides the same channel/lifecycle.
+                    // Fire-and-forget; no phone-side state to track.
+                    val ts = payload?.get("ts") as? Double
+                    if (ts != null) {
+                        sendResponse("APP_PONG", mapOf("ts" to ts), viaClient)
+                    } else {
+                        android.util.Log.w("PhoneService", "APP_PING missing ts field")
+                    }
                 }
                 else -> {
                     android.util.Log.w("PhoneService", "Unknown command: $command")
@@ -1139,13 +1795,14 @@ class PhoneService : Service() {
      * Failure is logged but never throws — the web client treats reply as
      * fire-and-forget and does not block on a result frame.
      */
-    private fun sendNotificationReply(notificationKey: String, replyKey: String, text: String) {
+    private fun sendNotificationReply(notificationKey: String, replyKey: String, text: String, viaClient: Boolean = false) {
         try {
             // Find the active notification by key
             val activeNotif = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
                 com.dnkdialer.companion.DnkNotificationListenerService.getInstance()
                     ?.activeNotifications
                     ?.firstOrNull { it.key == notificationKey }
+                    ?: com.dnkdialer.companion.DnkNotificationListenerService.replyCache[notificationKey]
             } else null
 
             if (activeNotif == null) {
@@ -1168,6 +1825,9 @@ class PhoneService : Service() {
                 }
                 action.actionIntent.send(this, 0, fillIn)
                 android.util.Log.d("PhoneService", "Notification reply sent successfully")
+                try {
+                    sendResponse("NOTIFICATION_REPLY_SENT", mapOf("notificationKey" to notificationKey), viaClient)
+                } catch (_: Exception) {}
                 return
             }
             android.util.Log.w("PhoneService", "No matching RemoteInput found for replyKey: $replyKey")
@@ -1328,9 +1988,25 @@ class PhoneService : Service() {
         server?.stop()
         server = null
 
-        // Stop client
+        // Stop client + cancel any pending connect-timeout watchdog so
+        // the Handler queue doesn't retain a reference to this (now
+        // shutting-down) service instance.
+        cancelConnectTimeout()
         client?.close()
         client = null
+
+        // Tear down pending-connection plumbing: cancel any auto-decline
+        // timers, drop the receiver, and clear the shared handler so a
+        // late-arriving Accept broadcast can't reach a dead service.
+        pendingRequestTimers.values.forEach { pendingRequestHandler.removeCallbacks(it) }
+        pendingRequestTimers.clear()
+        ConnectionRequestReceiver.serviceHandler = null
+        try {
+            connectionRequestReceiver?.let { unregisterReceiver(it) }
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "connectionRequestReceiver was not registered: ${e.message}")
+        }
+        connectionRequestReceiver = null
 
         // Release wake lock
         wakeLock?.let {

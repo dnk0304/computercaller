@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ghost button — borderless slate label. Used for the secondary
+  Disconnect action. Single-color palette: status differentiation
+  comes from weight + position, not three different button colors.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/surface_inset" />
+            <corners android:radius="@dimen/radius_button" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/transparent" />
+            <corners android:radius="@dimen/radius_button" />
+        </shape>
+    </item>
+</selector>

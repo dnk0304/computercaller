@@ -45,6 +45,8 @@ export const SyncProgressBar = () => {
     clearSyncNotification?: () => void;
     syncData?: (opts: object) => void;
     syncProgress?: SyncProgressShape | null;
+    cancelSync?: () => void;
+    openSyncPanel?: () => void;
   };
 
   const isSyncing = phone.isSyncing ?? false;
@@ -176,7 +178,12 @@ export const SyncProgressBar = () => {
     );
   }
 
-  // ── 3. Syncing banner with per-row progress ────────────────────────────
+  // ── 3. Syncing — centered floating modal with per-row progress + Cancel/Restart
+  //
+  // Earlier this was a thin top-of-screen banner. User wanted it as a centered
+  // floating modal with the ability to cancel an in-flight sync and restart
+  // with different settings — surfaces sync as a focused, interruptible
+  // operation instead of a passive background tick.
   if (isSyncing) {
     const rows = [
       { key: 'contacts', label: 'Contacts', data: syncProgress?.contacts },
@@ -184,42 +191,103 @@ export const SyncProgressBar = () => {
       { key: 'callLogs', label: 'Call Logs', data: syncProgress?.callLogs },
     ] as const;
 
+    const handleCancel = () => phone.cancelSync?.();
+    const handleRestart = () => {
+      phone.cancelSync?.();
+      // Tiny delay so the modal unmounts cleanly before the setup panel
+      // re-opens — avoids a render where both are momentarily mounted.
+      window.setTimeout(() => phone.openSyncPanel?.(), 50);
+    };
+
     return (
       <div
-        role="status"
-        aria-live="polite"
-        className="fixed top-0 left-0 right-0 z-50 transition-transform duration-300 ease-out translate-y-0"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="sync-progress-title"
+        className="fixed inset-0 z-[200] flex items-center justify-center p-4 animate-in fade-in duration-200"
       >
-        <div className="bg-slate-900 text-white shadow-lg shadow-slate-900/30 border-b border-slate-800">
-          <div className="px-5 py-3 space-y-2">
+        {/* Backdrop — non-dismissive on click; user must use Cancel/Restart.
+            This is an intentional "modal commitment" pattern: the user is
+            mid-operation, accidental backdrop clicks shouldn't abandon it. */}
+        <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm" aria-hidden="true" />
+
+        {/* Card */}
+        <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl shadow-slate-900/30 overflow-hidden animate-in zoom-in-95 duration-200">
+          {/* Header */}
+          <div className="px-5 pt-5 pb-4 border-b border-slate-100 flex items-start gap-3">
+            <span
+              aria-hidden="true"
+              className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center flex-shrink-0 shadow-md shadow-blue-500/20"
+            >
+              <Loader2 className="w-5 h-5 text-white motion-safe:animate-spin" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <h2 id="sync-progress-title" className="text-base font-bold text-slate-900">
+                Syncing from phone
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Pulling contacts, messages, and call logs in the background.
+              </p>
+            </div>
+          </div>
+
+          {/* Per-row progress */}
+          <div className="px-5 py-4 space-y-3">
             {rows.map(({ key, label, data }) => {
               const done = data?.done ?? 0;
               const total = data?.total ?? 0;
               const complete = data?.complete ?? false;
               const fill = complete ? 100 : pct(done, total);
               return (
-                <div key={key} className="flex items-center gap-3">
-                  <span className="w-20 text-xs font-medium text-slate-300 flex-shrink-0">{label}</span>
-                  <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                <div key={key}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-medium text-slate-700">{label}</span>
+                    <span className="text-[11px] tabular-nums text-slate-500">
+                      {complete && total > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
+                          <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                          {total.toLocaleString()}
+                        </span>
+                      ) : total > 0 ? (
+                        `${done.toLocaleString()} / ${total.toLocaleString()}`
+                      ) : (
+                        <Loader2 className="w-3 h-3 inline motion-safe:animate-spin" aria-hidden="true" />
+                      )}
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
                     <div
                       className={clsx(
                         'h-full rounded-full transition-[width] duration-300',
-                        complete ? 'bg-emerald-400' : 'bg-blue-400'
+                        complete ? 'bg-emerald-500' : 'bg-blue-500'
                       )}
                       style={{ width: `${fill}%` }}
                     />
                   </div>
-                  <span className="w-20 text-[11px] tabular-nums text-slate-400 text-right flex-shrink-0">
-                    {total > 0
-                      ? complete
-                        ? `${total.toLocaleString()} ✓`
-                        : `${done.toLocaleString()} / ${total.toLocaleString()}`
-                      : <Loader2 className="w-3 h-3 inline motion-safe:animate-spin" aria-hidden="true" />
-                    }
-                  </span>
                 </div>
               );
             })}
+          </div>
+
+          {/* Actions */}
+          <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={handleCancel}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-700 bg-white hover:bg-rose-50 rounded-lg transition-colors border border-rose-200"
+            >
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleRestart}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white hover:bg-slate-100 rounded-lg transition-colors border border-slate-200"
+              title="Cancel and re-open the sync setup panel"
+            >
+              <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+              Restart with different settings
+            </button>
           </div>
         </div>
       </div>

@@ -1,125 +1,296 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Activity: Main / control screen — Round 3.
+
+  Design changes vs Round 2 (the "editorial / writer-like" pass):
+    - The DOT is the primary status signal again (14dp, green/amber/slate)
+      with a short 1–2 word label next to it. The 01/02/03 step-number
+      ladder is HIDDEN — it read as a setup checklist, but the user wanted
+      a connection indicator, not a walkthrough. Less to scan = faster
+      glance.
+    - Single tight wordmark instead of the DNK lockup + Dialer subtitle +
+      serif-italic tagline. The tagline was the most "writer-like" element
+      on the screen and is gone in R3.
+    - Type system collapsed: one display size for the wordmark, one body
+      size for everything else, monospace for technical strings (URL,
+      token). The serif-italic state copy is gone — sans throughout.
+    - New: USER TOKEN field. Sits below the URL block, same visual
+      treatment (recessed surface + warm left bar) so the two read as a
+      pair: "this is what the browser sees" + "this is what identifies
+      your account". Includes a Paste-from-clipboard chip.
+    - Reduced top padding (56→40), tighter section gaps (40→28) — the R2
+      composition was airy in a "magazine layout" way. R3 packs the
+      glance-critical surface up where the thumb naturally rests.
+
+  Vertical stack inside ScrollView so small phones can reach the bottom.
+-->
 <ScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#1e1e2e"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:scrollbars="none"
+    android:overScrollMode="never">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:gravity="center_horizontal"
-        android:padding="24dp">
+        android:paddingStart="@dimen/space_28"
+        android:paddingEnd="@dimen/space_28"
+        android:paddingTop="@dimen/space_40"
+        android:paddingBottom="@dimen/space_40">
 
+        <!-- ============ 1. Wordmark + status row ============
+             R3 puts the brand and the status on adjacent lines so the
+             user's eye lands on "DNK Dialer · [GREEN DOT] Connected"
+             in one scan — no scrolling, no checklist to read. -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="DNK Dialer"
-            android:textSize="24sp"
-            android:textColor="#ffffff"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp"
-            android:layout_marginBottom="4dp"/>
+            android:text="@string/app_name"
+            android:textSize="@dimen/text_wordmark"
+            android:textColor="@color/text_primary"
+            android:fontFamily="sans-serif-black"
+            android:letterSpacing="-0.03"
+            android:lineSpacingMultiplier="0.95"
+            android:includeFontPadding="false" />
 
+        <!-- Warm accent underline — same detail as R2, kept because it's
+             the project's signature mark. -->
+        <View
+            android:layout_width="@dimen/wordmark_underline_width"
+            android:layout_height="@dimen/wordmark_underline_height"
+            android:background="@drawable/bg_accent_underline"
+            android:layout_marginTop="@dimen/space_8"
+            android:layout_marginBottom="@dimen/space_28" />
+
+        <!-- Status row — DOT + short label. This is the headline now.
+             The 01/02/03 step number is still in the tree (kept so the
+             Kotlin's setStatusVisual() helper compiles unchanged) but
+             gone="true" — invisible to the user.
+             gravity=center_vertical aligns dot baseline with text
+             cap-height for a tight visual lockup. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <!-- 14dp dot. Background tint is set at runtime via
+                 setStatusVisual() → emerald / amber / slate. -->
+            <View
+                android:id="@+id/statusDot"
+                android:layout_width="@dimen/dot_size"
+                android:layout_height="@dimen/dot_size"
+                android:background="@drawable/status_dot"
+                android:layout_marginEnd="@dimen/space_12"
+                android:contentDescription="@string/cd_status_dot" />
+
+            <!-- Short status label — 1–2 words. No serif italic
+                 anymore; clean sans-serif matches the rest of R3. -->
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/status_starting"
+                android:textSize="@dimen/text_status"
+                android:textColor="@color/text_primary"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="-0.01" />
+
+            <!-- Step number — kept invisible. Code still drives it via
+                 setStatusVisual(); hiding it here means we don't have to
+                 refactor the Kotlin. Future cleanup can remove both. -->
+            <TextView
+                android:id="@+id/stepNumber"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/step_01"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Round 4 — connection diagnostic line.
+             Hidden by default; shown ONLY in CONNECTING and FAILED
+             states. Two TextViews stacked: the first carries the
+             resolved relay URL (with token last-12-only-masked) so
+             the user can immediately see what the APK is trying to
+             reach; the second carries the failure reason mapped from
+             close code + exception class. Both are selectable so the
+             user can copy into a diagnostic tool.
+
+             The brief calls this out as THE single most diagnostic
+             affordance: if the IP / port is wrong (LAN moved, dev
+             server on a different port), the user sees it instantly
+             without opening logcat. -->
+        <TextView
+            android:id="@+id/connectionTargetText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="@dimen/text_caption"
+            android:textColor="@color/text_secondary"
+            android:fontFamily="monospace"
+            android:fontFeatureSettings="tnum"
+            android:textIsSelectable="true"
+            android:singleLine="false"
+            android:breakStrategy="balanced"
+            android:hyphenationFrequency="none"
+            android:lineSpacingMultiplier="1.3"
+            android:layout_marginTop="@dimen/space_8"
+            android:visibility="gone"
+            tools:text="Target: ws://192.168.1.136:4001/phone?token=clx5h8k9q…"
+            tools:visibility="visible" />
+
+        <TextView
+            android:id="@+id/connectionErrorText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="@dimen/text_caption"
+            android:textColor="@color/dot_failed"
+            android:fontFamily="sans-serif"
+            android:textIsSelectable="true"
+            android:singleLine="false"
+            android:breakStrategy="balanced"
+            android:hyphenationFrequency="none"
+            android:lineSpacingMultiplier="1.3"
+            android:layout_marginTop="@dimen/space_4"
+            android:visibility="gone"
+            tools:text="Couldn't reach the relay at ws://192.168.1.136:4001. Is the dev server running?"
+            tools:visibility="visible" />
+
+        <!-- ============ 2. Local address (the URL) ============ -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Companion App"
-            android:textSize="12sp"
-            android:textColor="#888888"
-            android:layout_marginBottom="20dp"/>
+            android:text="@string/label_address"
+            android:textSize="@dimen/text_eyebrow"
+            android:textColor="@color/text_label"
+            android:textAllCaps="true"
+            android:letterSpacing="0.18"
+            android:layout_marginTop="@dimen/space_32"
+            android:fontFamily="sans-serif-medium" />
 
-        <ImageView
-            android:id="@+id/qrCodeImage"
-            android:layout_width="200dp"
-            android:layout_height="200dp"
-            android:layout_marginBottom="12dp"
-            android:background="#ffffff"
-            android:padding="8dp"
-            android:contentDescription="QR Code for connection"/>
+        <!-- URL block. Full width. Multi-line wrap. Selectable. -->
+        <TextView
+            android:id="@+id/ipText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status_loading_ip"
+            android:textSize="@dimen/text_url"
+            android:textColor="@color/text_primary"
+            android:fontFamily="monospace"
+            android:fontFeatureSettings="tnum"
+            android:background="@drawable/bg_url_block"
+            android:paddingStart="@dimen/space_16"
+            android:paddingEnd="@dimen/space_16"
+            android:paddingTop="@dimen/space_16"
+            android:paddingBottom="@dimen/space_16"
+            android:singleLine="false"
+            android:breakStrategy="balanced"
+            android:hyphenationFrequency="none"
+            android:lineSpacingMultiplier="1.35"
+            android:textIsSelectable="true"
+            android:layout_marginTop="@dimen/space_10"
+            tools:text="ws://192.168.1.42:8765" />
+
+        <Button
+            android:id="@+id/copyIpButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:text="@string/action_copy"
+            android:textSize="@dimen/text_caption"
+            android:textColor="@color/text_secondary"
+            android:textAllCaps="false"
+            android:fontFamily="sans-serif-medium"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:paddingStart="@dimen/space_16"
+            android:paddingEnd="@dimen/space_16"
+            android:paddingTop="@dimen/space_8"
+            android:paddingBottom="@dimen/space_8"
+            android:background="@drawable/bg_button_copy"
+            android:stateListAnimator="@null"
+            android:letterSpacing="0.04"
+            android:layout_marginTop="@dimen/space_10"
+            android:contentDescription="@string/action_copy_long" />
+
+        <!-- ============ 3. QR card ============ -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_scan"
+            android:textSize="@dimen/text_eyebrow"
+            android:textColor="@color/text_label"
+            android:textAllCaps="true"
+            android:letterSpacing="0.18"
+            android:layout_marginTop="@dimen/space_32"
+            android:fontFamily="sans-serif-medium" />
 
         <LinearLayout
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center_horizontal"
-            android:layout_marginBottom="8dp">
+            android:layout_marginTop="@dimen/space_16">
 
-            <TextView
-                android:id="@+id/ipText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="IP: Loading..."
-                android:textSize="24sp"
-                android:textColor="#3b82f6"
-                android:textStyle="bold"/>
-
-            <Button
-                android:id="@+id/copyIpButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Copy IP"
-                android:textSize="12sp"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:paddingStart="20dp"
-                android:paddingEnd="20dp"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp"
-                android:backgroundTint="#374151"
-                android:textColor="@android:color/white"/>
+            <ImageView
+                android:id="@+id/qrCodeImage"
+                android:layout_width="@dimen/qr_size"
+                android:layout_height="@dimen/qr_size"
+                android:background="@drawable/bg_qr_frame"
+                android:padding="@dimen/space_10"
+                android:contentDescription="@string/cd_qr" />
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Starting..."
-            android:textSize="14sp"
-            android:textColor="#22c55e"
-            android:layout_marginBottom="20dp"/>
-
+        <!-- ============ 4. Action stack ============ -->
         <Button
             android:id="@+id/reconnectButton"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="16dp"
-            android:layout_marginEnd="16dp"
-            android:text="Reconnect to web app"
-            android:textSize="16sp"
-            android:padding="14dp"
-            android:backgroundTint="#2563EB"
-            android:textColor="@android:color/white"
+            android:layout_height="@dimen/button_height"
+            android:text="@string/action_reconnect"
+            android:textSize="@dimen/text_body"
+            android:textAllCaps="false"
+            android:textColor="@color/surface_base"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.02"
+            android:background="@drawable/bg_button_primary"
+            android:stateListAnimator="@null"
             android:visibility="gone"
-            android:layout_marginBottom="12dp"/>
+            android:layout_marginTop="@dimen/space_32" />
 
         <Button
             android:id="@+id/disconnectButton"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="16dp"
-            android:layout_marginEnd="16dp"
-            android:text="⏹ Disconnect &amp; Stop"
-            android:textSize="14sp"
-            android:padding="12dp"
-            android:backgroundTint="#DC2626"
-            android:textColor="@android:color/white"
+            android:layout_height="@dimen/button_height_small"
+            android:text="@string/action_disconnect"
+            android:textSize="@dimen/text_body"
+            android:textAllCaps="false"
+            android:textColor="@color/text_secondary"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="0.02"
+            android:background="@drawable/bg_button_ghost"
+            android:stateListAnimator="@null"
             android:visibility="gone"
-            android:layout_marginBottom="12dp"/>
+            android:layout_marginTop="@dimen/space_8" />
 
         <Button
             android:id="@+id/enable_notifications_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Enable Notifications (Optional)"
-            android:textSize="12sp"
-            android:textColor="#ffffff"
-            android:backgroundTint="#f59e0b"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/button_height_small"
+            android:text="@string/action_enable_notifications"
+            android:textSize="@dimen/text_body"
+            android:textAllCaps="false"
+            android:textColor="@color/accent_warm"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.02"
+            android:background="@drawable/bg_button_warning"
+            android:stateListAnimator="@null"
             android:visibility="gone"
-            android:layout_marginBottom="16dp"/>
+            android:layout_marginTop="@dimen/space_16" />
 
     </LinearLayout>
 </ScrollView>

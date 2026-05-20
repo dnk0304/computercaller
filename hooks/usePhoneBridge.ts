@@ -8,6 +8,7 @@ import type {
   SmsMessage,
   CallLogEntry
 } from './phoneTypes';
+import { findContactByNumber } from '@/lib/normalizeNumber';
 
 const RECONNECT_DELAY = 3000;
 const PHONE_URL_KEY = 'dnkdialer_phone_url';
@@ -85,6 +86,26 @@ export function usePhoneBridge() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [isRelayConnection, setIsRelayConnection] = useState<boolean>(true);
   const [isRelayOffline, setIsRelayOffline] = useState<boolean>(false);
+
+  // Accept-on-phone flow state. The phone now raises a notification on every
+  // incoming WS connection asking the user to Accept / Decline. Between the
+  // moment we send CONNECT_TO and the moment the user taps Accept, the
+  // relay's outbound WS is open but the phone has not yet committed to the
+  // session — so we surface a distinct "waiting for phone to accept" state
+  // instead of the misleading green Connected pill or a generic "Connecting".
+  //
+  // States:
+  //   isAwaitingPhoneAccept = true   → relay broadcast STATUS:{awaitingAccept:true}
+  //                                    (phone showing Accept/Decline notif)
+  //   phoneAcceptDeclined   = true   → relay broadcast STATUS:{declined:true}
+  //                                    (user tapped Decline, or 30s auto-decline)
+  //
+  // Both clear automatically on the next STATUS:{connected:true} or on
+  // disconnect(). The webapp also runs its own 30s defensive timeout so a
+  // wedged phone (e.g. APK crashed mid-prompt) can't leave us stuck forever.
+  const [isAwaitingPhoneAccept, setIsAwaitingPhoneAccept] = useState<boolean>(false);
+  const [phoneAcceptDeclined, setPhoneAcceptDeclined] = useState<boolean>(false);
+  const awaitingAcceptTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Sync progress UI state — shown during a manual sync, dismissed by user / auto.
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
@@ -164,6 +185,20 @@ export function usePhoneBridge() {
   // and clear the stale call state.
   const callStatusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // App-level liveness pings — sent to the phone every 15s while we believe
+  // we're connected. The phone echoes back APP_PONG with the ping's `ts` so
+  // we can compute round-trip latency and detect a phone that is reachable
+  // via the relay's TCP socket but actually frozen / killed.
+  //
+  // appPingIntervalRef holds the setInterval id so we can clear on
+  // disconnect. lastPongAtRef is the wall-clock ts of the most recent pong
+  // — used by the 5s stale-check effect below to flip `isPhoneStale`.
+  // window.setInterval returns `number` in the browser DOM lib (not NodeJS.Timeout).
+  // Keep it as `number | null` so the assignment from window.setInterval typechecks.
+  const appPingIntervalRef = useRef<number | null>(null);
+  const lastPongAtRef = useRef<number>(Date.now());
+  const [isPhoneStale, setIsPhoneStale] = useState(false);
+
   // Tracks when the current/last call started so CALL_ENDED can fetch
   // the call log from before the call started (handles long calls >30 min).
   const callStartTimeRef = useRef<number | null>(null);
@@ -178,6 +213,13 @@ export function usePhoneBridge() {
   const contactsBufferRef = useRef<Contact[]>([]);
   const messagesBufferRef = useRef<SmsMessage[]>([]);
   const callLogsBufferRef = useRef<CallLogEntry[]>([]);
+
+  // Mirror of `contacts` state, kept in a ref so the CALL_INCOMING /
+  // CALL_LOG_ENTRY handlers below can look up a caller's contact name without
+  // forcing `handleMessage` (a useCallback) to re-bind on every contacts
+  // update — which would tear down and reattach ws.onmessage on every sync
+  // chunk. Synced from the canonical state via a useEffect further down.
+  const contactsRef = useRef<Contact[]>([]);
 
   // MMS_MEDIA_CHUNK reassembly. Android slices each `GET_MMS_FULL` response
   // into 64 KB base64 chunks; we collect them keyed by messageId, then resolve
@@ -263,7 +305,21 @@ export function usePhoneBridge() {
         progress.messages.complete &&
         progress.callLogs.complete
       ) {
-        localStorage.setItem(HAS_SYNCED_KEY, 'true'); // suppress auto-panel on next reconnect
+        // Legacy marker — formerly used to gate the auto-open of the sync panel
+        // on first connect. Auto-open was removed when the panel moved into
+        // /app/settings; the marker is still written for forward compat with any
+        // future feature that wants to detect "has this user ever completed a
+        // full sync".
+        localStorage.setItem(HAS_SYNCED_KEY, 'true');
+        // Record both the full-sync and quick-sync timestamps. A full sync
+        // supersedes any quick sync — bumping both keeps "Last full sync" and
+        // "Last quick resync" consistent in the Settings page (otherwise a stale
+        // quick-sync timestamp from before a full run would look misleading).
+        try {
+          const now = String(Date.now());
+          localStorage.setItem('dnkdialer_last_full_sync_at', now);
+          localStorage.setItem('dnkdialer_last_quick_sync_at', now);
+        } catch { /* localStorage quota / privacy mode — non-fatal */ }
         setIsSyncing(false);
         syncModeRef.current = 'merge'; // restore merge mode after full sync
         // Completion toast is non-urgent — defer so the heavy post-sync re-renders
@@ -325,7 +381,50 @@ export function usePhoneBridge() {
       case 'STATUS':
         setIsRelayOffline(false);
 
+        // Accept-on-phone signals. The relay forwards these BEFORE the
+        // standard connected:true to distinguish "phone is prompting user"
+        // from "phone is paired". Order of handling matters — awaitingAccept
+        // can arrive standalone, and declined arrives instead of connected.
+        if (payload.awaitingAccept === true) {
+          console.log('[PhoneBridge] Phone showing Accept/Decline prompt — waiting for user');
+          setIsAwaitingPhoneAccept(true);
+          setPhoneAcceptDeclined(false);
+          setConnectionError(null);
+          // Defensive client-side timeout — mirror the phone's 30s
+          // auto-decline so a wedged APK (no broadcast came back) doesn't
+          // leave the UI spinning forever. Slightly longer than the phone
+          // side (35s) so a borderline-on-time Accept still wins.
+          if (awaitingAcceptTimeoutRef.current) {
+            clearTimeout(awaitingAcceptTimeoutRef.current);
+          }
+          awaitingAcceptTimeoutRef.current = setTimeout(() => {
+            console.warn('[PhoneBridge] Awaiting-accept timed out — phone unresponsive');
+            setIsAwaitingPhoneAccept(false);
+            setConnectionError('Connection timed out — is your phone awake?');
+          }, 35_000);
+          break;
+        }
+        if (payload.declined === true) {
+          console.log('[PhoneBridge] Phone declined the connection');
+          setIsAwaitingPhoneAccept(false);
+          setPhoneAcceptDeclined(true);
+          setIsConnected(false);
+          setConnectionError('Phone declined the connection.');
+          if (awaitingAcceptTimeoutRef.current) {
+            clearTimeout(awaitingAcceptTimeoutRef.current);
+            awaitingAcceptTimeoutRef.current = null;
+          }
+          break;
+        }
+
         if (payload.connected === true) {
+          // Clear any pending Accept/Decline state — the phone confirmed.
+          setIsAwaitingPhoneAccept(false);
+          setPhoneAcceptDeclined(false);
+          if (awaitingAcceptTimeoutRef.current) {
+            clearTimeout(awaitingAcceptTimeoutRef.current);
+            awaitingAcceptTimeoutRef.current = null;
+          }
           if (payload.phoneIp) {
             // Inbound QR connection — relay discovered the phone's LAN IP.
             // Don't auto-connect: surface the IP so the user can confirm manually.
@@ -339,34 +438,38 @@ export function usePhoneBridge() {
             }
           } else {
             // Outbound connection (CONNECT_TO) — full auto-connect path.
+            console.log(`[PhoneBridge] Phone paired in room. Device=${payload.deviceName ?? '<unknown>'}`);
             setDiscoveredPhoneIp(null); // clear any prior QR-discovered IP
             setIsConnected(true);
+            setIsPhoneStale(false); // fresh pairing — wipe any prior stale flag
+            lastPongAtRef.current = Date.now(); // baseline for the 30s stale check
             setPhoneName(prev => payload.deviceName ?? prev);
             setConnectionError(null);
-            // First-ever connect: show the sync panel so user can do the initial full sync.
-            // Subsequent reconnects (phone pong / relay restart): auto-quicksync instead
-            // (last 30 min) so data stays fresh without user action.
-            if (typeof window !== 'undefined' && localStorage.getItem(HAS_SYNCED_KEY) === 'true') {
-              // Already synced — silent quick catch-up after a 2s delay.
-              // Guard: relay sends STATUS:connected twice (open + DEVICE_INFO),
-              // so only schedule one sync per connection event.
-              if (!quickSyncScheduledRef.current) {
-                quickSyncScheduledRef.current = true;
-                setTimeout(() => {
-                  quickSyncScheduledRef.current = false;
-                  if (wsRef.current?.readyState === WebSocket.OPEN) {
-                    const since30min = Date.now() - 30 * 60 * 1000;
-                    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since30min })}`);
-                    setTimeout(() => {
-                      if (wsRef.current?.readyState === WebSocket.OPEN) {
-                        wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since30min })}`);
-                      }
-                    }, 300);
-                  }
-                }, 2000);
-              }
-            } else {
-              setShowSyncPanel(true);
+            // On every connect (first or reconnect): kick off a silent quick catch-up
+            // after 2s. Widened from 30 min → 6 hours so brief overnight reconnects
+            // still pick up missed activity. The user can also trigger Full Sync or
+            // Quick Resync manually from /app/settings.
+            //
+            // Auto-opening the sync panel on first connect was removed in the
+            // settings-overhaul patch — the panel is now only mounted inside the
+            // Settings page and opened by explicit user action via openSyncPanel().
+            //
+            // Guard: relay sends STATUS:connected twice (open + DEVICE_INFO),
+            // so only schedule one sync per connection event.
+            if (!quickSyncScheduledRef.current) {
+              quickSyncScheduledRef.current = true;
+              setTimeout(() => {
+                quickSyncScheduledRef.current = false;
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  const since6h = Date.now() - 6 * 60 * 60 * 1000;
+                  wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
+                  setTimeout(() => {
+                    if (wsRef.current?.readyState === WebSocket.OPEN) {
+                      wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since6h })}`);
+                    }
+                  }, 300);
+                }
+              }, 2000);
             }
             // Fire estimate in background (non-blocking) — updates contact total
             // in the panel if/when it arrives. Double-guarded so it only fires once.
@@ -383,9 +486,22 @@ export function usePhoneBridge() {
           // Phone disconnected (relay hiccup or phone reboot).
           // Do NOT clear HAS_SYNCED_KEY here — brief disconnects should not
           // re-show the sync panel. Only explicit user disconnect() clears it.
+          //
+          // Diagnostic: if the relay WS is still open but we just got STATUS:false,
+          // the most common cause is the phone never made it into THIS browser's
+          // room — i.e. the APK's WSS URL has a stale or wrong token. Log a hint
+          // so the user can self-diagnose from DevTools console without us having
+          // to ask them to dig through server logs.
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            console.warn(
+              '[PhoneBridge] Phone NOT present in room — likely token mismatch ' +
+              'or phone not connected. Verify APK URL matches /app/settings WSS URL.'
+            );
+          }
           estimateRequestedRef.current = false;
           quickSyncScheduledRef.current = false;
           setIsConnected(false);
+          setIsPhoneStale(false); // reset — staleness only applies while we believe we're connected
           setPhoneName(null);
           setConnectionError('Phone not connected — scan QR code on your phone');
           setShowSyncPanel(false);
@@ -398,20 +514,51 @@ export function usePhoneBridge() {
         }
         break;
 
-      case 'CALL_INCOMING':
+      case 'CALL_INCOMING': {
         console.log('[PhoneBridge] Incoming call from:', payload.number);
         lastCallWasAnsweredRef.current = false;
         callStartTimeRef.current = Date.now();
         stopCallTimer();
+        // Fallback contact-name resolution. The Android bridge does its own
+        // contact lookup, but it can fail (permission revoked, number stored
+        // only in the webapp, or the bridge just echoed the raw number into
+        // `name`). When that happens, resolve the name against our local
+        // contacts list before the UI ever sees "Unknown". See findContactByNumber
+        // for the digit-suffix matching that tolerates country-code differences.
+        const rawName: unknown = payload.name;
+        const incomingNumber: string = payload.number ?? '';
+        const nameIsMissing =
+          typeof rawName !== 'string' ||
+          rawName.trim() === '' ||
+          rawName.trim() === incomingNumber.trim();
+        const fallbackContact = nameIsMissing
+          ? findContactByNumber(incomingNumber, contactsRef.current)
+          : null;
+        const resolvedName = nameIsMissing
+          ? fallbackContact?.name
+          : (rawName as string);
+        // Diagnostic — added 2026-05-20 to investigate why some incoming calls
+        // still show "Unknown" in the UI. Paste this whole line from the browser
+        // console to Niki on the next incoming call. Remove once the cause is
+        // identified and the resolution is correct.
+        console.log('[PhoneBridge][diag CALL_INCOMING]', {
+          rawName,
+          incomingNumber,
+          nameIsMissing,
+          contactsCount: contactsRef.current.length,
+          fallbackMatchedContact: fallbackContact?.name ?? null,
+          resolvedName,
+        });
         setCurrentCall({
-          number: payload.number,
-          name: payload.name,
+          number: incomingNumber,
+          name: resolvedName,
           isIncoming: true,
           startTime: Date.now(),
           // duration omitted — computed locally in display components
           state: 'ringing'
         });
         break;
+      }
 
       case 'CALL_ANSWERED':
         console.log('[PhoneBridge] Call answered');
@@ -486,12 +633,37 @@ export function usePhoneBridge() {
       }
 
       case 'CALL_LOG_ENTRY': {
+        // Diagnostic — added 2026-05-20 to investigate why Recent Calls
+        // doesn't update in real time despite the Android observer being
+        // wired. If this log appears in browser DevTools but the UI doesn't
+        // update, the bug is in the render path. If it doesn't appear at all,
+        // the event isn't reaching the webapp (transport / relay issue).
+        // Remove once the cause is identified.
+        console.log('[PhoneBridge][diag CALL_LOG_ENTRY arrived]', {
+          id: payload.id,
+          number: payload.number,
+          name: payload.name,
+          type: payload.type,
+          date: payload.date,
+        });
         // Real-time call log entry pushed from phone's ContentObserver.
         // Prepend to the callLogs array if not already present.
+        // Same name-resolution fallback as CALL_INCOMING — if the bridge didn't
+        // include a resolved name (or echoed the raw number into the name
+        // field), look the number up in our local contacts before storing.
+        const entryNumber: string = payload.number ?? '';
+        const entryRawName: unknown = payload.name;
+        const entryNameMissing =
+          typeof entryRawName !== 'string' ||
+          entryRawName.trim() === '' ||
+          entryRawName.trim() === entryNumber.trim();
+        const entryResolvedName = entryNameMissing
+          ? findContactByNumber(entryNumber, contactsRef.current)?.name
+          : (entryRawName as string);
         const entry: CallLogEntry = {
           id: String(payload.id ?? Date.now()),
-          number: payload.number ?? '',
-          name: payload.name || undefined,
+          number: entryNumber,
+          name: entryResolvedName || undefined,
           date: payload.date ?? Date.now(),
           duration: payload.duration ?? 0,
           type: (payload.type as CallLogEntry['type']) ?? 'unknown',
@@ -678,12 +850,11 @@ export function usePhoneBridge() {
           messages: { total: payload.messages?.total ?? 0 },
           callLogs: { total: payload.callLogs?.total ?? 0 },
         });
-        // Auto-open the sync panel only on first-ever connect (no prior full sync).
-        // On subsequent reconnects the estimate updates silently so the panel
-        // doesn't pop up unexpectedly after every call / relay restart.
-        if (typeof window !== 'undefined' && localStorage.getItem(HAS_SYNCED_KEY) !== 'true') {
-          setShowSyncPanel(true);
-        }
+        // No auto-open here. The estimate just updates the totals visible in the
+        // sync panel; the panel is opened by explicit user action from /app/settings
+        // (Run Full Sync button). Previously this fired setShowSyncPanel(true) on
+        // first connect, which yanked the user out of the dashboard the moment
+        // the phone paired — surprising and unwanted.
         break;
       }
 
@@ -766,8 +937,37 @@ export function usePhoneBridge() {
         }
         break;
       }
+
+      case 'NOTIFICATION_REPLY_SENT': {
+        const { notificationKey } = payload as { notificationKey?: string };
+        if (notificationKey) {
+          setPhoneNotifications(prev =>
+            prev.map(n => n.notificationKey === notificationKey ? { ...n, read: true } : n)
+          );
+        }
+        break;
+      }
+
+      case 'APP_PONG': {
+        // Phone replied to our APP_PING — echo-ts is the same `ts` we sent, so
+        // (now - ts) is round-trip latency. We log it at debug level; if it
+        // ever creeps past ~500ms regularly that's a sign the relay or phone
+        // is overloaded. Whatever the latency, the FACT of receiving a pong
+        // is what we care about — bump lastPongAtRef so the stale check resets.
+        lastPongAtRef.current = Date.now();
+        // If the phone was previously marked stale, clear the flag now that
+        // it responded. The 5s stale-check effect below will also clear it
+        // on its next tick — this just makes recovery instant.
+        if (isPhoneStale) {
+          setIsPhoneStale(false);
+          setIsConnected(true);
+        }
+        const rtt = typeof payload.ts === 'number' ? Date.now() - payload.ts : null;
+        if (rtt !== null) console.log(`[PhoneBridge] APP_PONG rtt=${rtt}ms`);
+        break;
+      }
     }
-  }, [startCallTimer, stopCallTimer]);
+  }, [startCallTimer, stopCallTimer, isPhoneStale]);
 
   // Connect to phone WebSocket
   const connect = useCallback((url?: string) => {
@@ -803,8 +1003,23 @@ export function usePhoneBridge() {
         // If we just opened the relay socket, the relay is by definition not offline.
         if (wsUrl === RELAY_URL) {
           setIsRelayOffline(false);
+          // Token sanity log — slice off the first 8 chars of the relay-URL query
+          // string. The relay URL constant has no token (the multi-tenant token is
+          // appended by the SaaS layer in production); in dev this just logs '<none>'.
+          // The follow-up STATUS log tells the user whether the phone is actually
+          // in their room — together these two log lines let the user self-diagnose
+          // a token mismatch from DevTools.
+          const tokenMatch = /[?&]token=([^&]+)/.exec(wsUrl);
+          const tokenSlice = tokenMatch ? `${tokenMatch[1].slice(0, 8)}…` : '<none>';
+          console.log(`[PhoneBridge] Connected to relay. Token=${tokenSlice} Awaiting STATUS to confirm phone present in room.`);
         }
         setIsBridgeConnected(true);
+
+        // Reset the pong watermark on every successful WS open. Stale value from
+        // before the reconnect would otherwise trip the 30s stale check on the
+        // first tick — the phone hasn't had a chance to send a pong yet.
+        lastPongAtRef.current = Date.now();
+        setIsPhoneStale(false);
 
         // Store URL for future reconnection
         if (url) {
@@ -825,6 +1040,15 @@ export function usePhoneBridge() {
         setIsBridgeConnected(false);
         setIsConnected(false);
         setPhoneName(null);
+        // If the relay WS itself died while we were awaiting Accept, the
+        // pending prompt on the phone is now orphaned anyway — clear the
+        // waiting state so the user doesn't see a stuck "waiting for phone
+        // to accept" alongside the relay-offline banner.
+        setIsAwaitingPhoneAccept(false);
+        if (awaitingAcceptTimeoutRef.current) {
+          clearTimeout(awaitingAcceptTimeoutRef.current);
+          awaitingAcceptTimeoutRef.current = null;
+        }
         // If the socket we just lost was the relay, mark relay offline.
         if (wsUrl === RELAY_URL) {
           setIsRelayOffline(true);
@@ -906,7 +1130,18 @@ export function usePhoneBridge() {
     }
 
     console.log('[PhoneBridge] connectPhone called with:', urlOrIp);
-    
+
+    // Clear stale Accept-on-phone error states so the retry attempt
+    // starts with a fresh "waiting…" → "accepted/declined" cycle. Without
+    // this, hitting Connect right after a Decline would briefly show
+    // both "declined" and "waiting for phone to accept" at the same time.
+    setPhoneAcceptDeclined(false);
+    setConnectionError(null);
+    if (awaitingAcceptTimeoutRef.current) {
+      clearTimeout(awaitingAcceptTimeoutRef.current);
+      awaitingAcceptTimeoutRef.current = null;
+    }
+
     let phoneUrl: string;
     if (urlOrIp.startsWith('ws://') || urlOrIp.startsWith('wss://')) {
       phoneUrl = urlOrIp;
@@ -1187,6 +1422,25 @@ export function usePhoneBridge() {
     }
   }, []);
 
+  // Cancel an in-flight sync. Stops the local UI from waiting on chunks; the
+  // phone may still finish sending whatever it has already started — incoming
+  // data after cancel is just merged via the normal chunk path, no separate
+  // discard logic needed (the UI just won't show the progress modal). Also
+  // notifies the relay so a future phone-side cancel handler can stop early.
+  const cancelSync = useCallback(() => {
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = null;
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      try { wsRef.current.send('SYNC_CANCEL:{}'); } catch { /* non-fatal */ }
+    }
+    setIsSyncing(false);
+    setSyncProgress(null);
+    setSyncTimedOut(false);
+    syncModeRef.current = 'merge';
+  }, []);
+
   const clearSyncNotification = useCallback(
     () => setSyncCompleteNotification(null),
     []
@@ -1196,22 +1450,38 @@ export function usePhoneBridge() {
   const openSyncPanel    = useCallback(() => setShowSyncPanel(true),  []);
 
   /**
-   * Quick background sync — fetches only the last 30 minutes of messages
-   * and call logs without showing the sync panel. Used by resync buttons
-   * after the initial full sync is done. Contacts are excluded since they
-   * rarely change and the ContentObserver already handles new messages live.
+   * Quick background sync — fetches only the last 6 hours of messages and
+   * call logs without showing the sync panel. Used by resync buttons after
+   * the initial full sync is done, and by the auto-reconnect catch-up in
+   * the STATUS handler above. Contacts are excluded since they rarely change
+   * and the ContentObserver already handles new messages live.
+   *
+   * Widened from 30 min → 6h so brief overnight or commute reconnects still
+   * pick up missed activity. Writes `dnkdialer_last_quick_sync_at` (unix ms)
+   * to localStorage on dispatch so the Settings page can render a relative
+   * "Last quick resync: 3m ago" timestamp.
    */
   const quickSync = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    const since30min = Date.now() - 30 * 60 * 1000;
+    const since6h = Date.now() - 6 * 60 * 60 * 1000;
     messagesBufferRef.current = [];
     callLogsBufferRef.current = [];
-    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since30min })}`);
+    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
     setTimeout(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since30min })}`);
+        wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since6h })}`);
       }
     }, 300);
+    // Record the last-quick-sync timestamp for the Settings page. We write on
+    // dispatch (not completion) because there is no single "complete" callback
+    // for quick syncs — chunks land via CALL_LOGS_CHUNK / MESSAGES_CHUNK and
+    // the merge happens silently. Dispatch time is a close-enough proxy and
+    // matches how the user perceives "I just clicked the button".
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('dnkdialer_last_quick_sync_at', String(Date.now()));
+      } catch { /* localStorage quota / privacy mode — non-fatal */ }
+    }
   }, []);
 
   const clearMissedCallCount = useCallback(() => setMissedCallCount(0), []);
@@ -1332,6 +1602,13 @@ export function usePhoneBridge() {
     // Send a command to the relay to close the phone connection.
     // The relay WS (wsRef) stays open — the relay server keeps running and the
     // browser stays connected to it, ready for the next phone connection.
+    // The relay's DISCONNECT_PHONE handler tears down the outbound phone WS
+    // AND clears outboundTargetUrl so the 5s auto-reconnect loop doesn't
+    // immediately re-establish — see relay-server.js teardownOutboundPhone().
+    // On the phone side, PhoneService.handleCommand("DISCONNECT_PHONE")
+    // calls server.disconnectAllClients() so the LAN-side WS state ends up
+    // clean and ready for the next pairing (this was the missing piece
+    // that previously forced users to reinstall the APK).
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send('DISCONNECT_PHONE:{}');
     }
@@ -1339,12 +1616,28 @@ export function usePhoneBridge() {
     localStorage.removeItem(PHONE_URL_KEY);
     estimateRequestedRef.current = false;
     localStorage.removeItem(HAS_SYNCED_KEY);
+    // Clear Accept-on-phone state — a fresh Connect should start clean,
+    // and any in-flight client-side awaiting-accept timeout should not
+    // fire after the user explicitly disconnected.
+    setIsAwaitingPhoneAccept(false);
+    setPhoneAcceptDeclined(false);
+    if (awaitingAcceptTimeoutRef.current) {
+      clearTimeout(awaitingAcceptTimeoutRef.current);
+      awaitingAcceptTimeoutRef.current = null;
+    }
     // Clear the call-heartbeat watchdog so a stale Runnable can't fire after
     // the user manually disconnected.
     if (callStatusTimeoutRef.current) {
       clearTimeout(callStatusTimeoutRef.current);
       callStatusTimeoutRef.current = null;
     }
+    // Stop sending APP_PING and clear stale flag. The mount effect re-arms the
+    // interval automatically the next time isConnected flips true.
+    if (appPingIntervalRef.current) {
+      clearInterval(appPingIntervalRef.current);
+      appPingIntervalRef.current = null;
+    }
+    setIsPhoneStale(false);
     setConnectionError(null);
     setSyncEstimate(null);
     setDiscoveredPhoneIp(null);
@@ -1361,6 +1654,15 @@ export function usePhoneBridge() {
   }, []);
 
   // Connect on mount — connect to relay only.
+  // Mirror `contacts` state into a ref so the CALL_INCOMING / CALL_LOG_ENTRY
+  // handlers (inside the stable handleMessage useCallback) can read the
+  // current contact list at fire-time without re-binding the message handler
+  // on every contact update. Without this, syncing a few thousand contacts
+  // would also tear down and reattach ws.onmessage thousands of times.
+  useEffect(() => {
+    contactsRef.current = contacts;
+  }, [contacts]);
+
   // Do NOT auto-send CONNECT_TO with a saved phone URL. Reasons:
   // 1. If phone is connected via QR, the relay already knows — no CONNECT_TO needed.
   // 2. If a stale/wrong IP is in localStorage, auto-CONNECT_TO causes endless
@@ -1384,6 +1686,54 @@ export function usePhoneBridge() {
       wsRef.current?.close();
     };
   }, [connect]);
+
+  // App-level liveness ping. While `isConnected` is true, send APP_PING every
+  // 15s. The phone echoes APP_PONG back which bumps lastPongAtRef (see handler
+  // above). If pongs stop arriving for 30s the next effect flips isPhoneStale
+  // and forces isConnected → false; the user sees "Phone: waiting…" instead
+  // of the misleading green "Phone Connected" while messages silently drop.
+  useEffect(() => {
+    if (!isConnected) {
+      // Clear any prior interval if we just lost connection.
+      if (appPingIntervalRef.current) {
+        clearInterval(appPingIntervalRef.current);
+        appPingIntervalRef.current = null;
+      }
+      return;
+    }
+    // Fresh "we just became connected" — reset lastPongAt so the stale check
+    // doesn't fire instantly from a long-stale value (e.g. after a relay
+    // reconnect). The first real pong will bump it again within ~one RTT.
+    lastPongAtRef.current = Date.now();
+    const id = window.setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(`APP_PING:${JSON.stringify({ ts: Date.now() })}`);
+      }
+    }, 15000);
+    appPingIntervalRef.current = id;
+    return () => {
+      clearInterval(id);
+      appPingIntervalRef.current = null;
+    };
+  }, [isConnected]);
+
+  // Stale-check tick. Every 5s, if we believe we're connected but haven't
+  // heard a pong in >30s, mark phone as stale and downgrade isConnected.
+  // The downgrade is what drives the UI from "Phone: paired ✓" → "Phone:
+  // waiting…" — without it the user keeps seeing green while their commands
+  // sink into the relay and never reach the phone.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (!isConnected) return;
+      const ageMs = Date.now() - lastPongAtRef.current;
+      if (ageMs > 30000) {
+        console.warn(`[PhoneBridge] No APP_PONG for ${Math.round(ageMs/1000)}s — marking phone stale`);
+        setIsPhoneStale(true);
+        setIsConnected(false);
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [isConnected]);
 
   // Flush buffered notification events to React state every 200ms.
   useEffect(() => {
@@ -1420,6 +1770,16 @@ export function usePhoneBridge() {
     connectionError,
     isRelayConnection,
     isRelayOffline,
+    // True when the relay WS is open and we think we're connected, but the
+    // phone hasn't responded to APP_PING in >30s. UI uses this to surface a
+    // "Phone: waiting…" state instead of the misleading green pill.
+    isPhoneStale,
+
+    // Accept-on-phone flow (security prompt on every connection). UI uses
+    // these to render the "waiting for phone to accept" pill and the
+    // "phone declined" error state with an actionable retry button.
+    isAwaitingPhoneAccept,
+    phoneAcceptDeclined,
 
     // Sync state
     syncProgress,
@@ -1429,6 +1789,7 @@ export function usePhoneBridge() {
     syncTimedOut,
     syncCompleteNotification,
     clearSyncNotification,
+    cancelSync,
 
     // Missed-call badge
     missedCallCount,

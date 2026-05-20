@@ -36,7 +36,7 @@ import React, {
   useDeferredValue,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { usePhone, useNotifications, getNotificationIcon } from '@/hooks';
+import { usePhone, useNotifications, getNotificationIcon, useDashboardTab } from '@/hooks';
 import type { Contact, SmsMessage } from '@/hooks';
 import type { CallLogEntry } from '@/hooks/phoneTypes';
 import {
@@ -62,6 +62,7 @@ import {
   FileText,
   Keyboard,
   Delete,
+  Bell,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -337,28 +338,30 @@ const MessengerBar: React.FC<MessengerBarProps> = ({ notifications }) => {
     const top  = Math.floor((window.screen.height - ph) / 2);
     const features = `width=${pw},height=${ph},left=${left},top=${top},resizable=yes,scrollbars=yes`;
 
-    const existingWin = _messengerPopups[app.id];
+    // _messengerOpen is the source of truth for whether we believe a popup is
+    // alive. We do NOT use existingWin.closed as the primary guard because
+    // sites that send Cross-Origin-Opener-Policy: same-origin (e.g. Discord)
+    // sever the opener→popup handle after navigation — existingWin.closed
+    // returns true even while the window is visible. Relying on it caused a
+    // duplicate window to open on every click after the first.
 
-    if (_messengerOpen[app.id] && existingWin && !existingWin.closed) {
-      // Popup is visible — retract it behind the dialer.
-      // window.focus() on the opener is allowed cross-origin and reliably
-      // brings the dialer to front without closing the popup.
-      window.focus();
+    if (_messengerOpen[app.id]) {
+      // We believe the popup is open. Try to bring it to front via the stored
+      // ref (works for same-origin / non-COOP sites). For COOP-severed windows
+      // (Discord) this silently fails — we can't programmatically focus them,
+      // but we must NOT open a second copy.
+      const existingWin = _messengerPopups[app.id];
+      if (existingWin && !existingWin.closed) {
+        try { existingWin.focus(); } catch { /* COOP or cross-origin block */ }
+      }
+      // Retract: clear open flag regardless of whether focus succeeded.
+      // Next click will open a fresh popup if the user wants the messenger back.
       _messengerOpen[app.id] = false;
       setOpenApps(prev => { const s = new Set(prev); s.delete(app.id); return s; });
-      return;
+      return; // ← Never fall through to "open fresh" when we believe popup is open
     }
 
-    if (existingWin && !existingWin.closed) {
-      // Popup exists but is retracted — bring it back to front using the
-      // stored ref directly (avoids window.name lookup which Discord clears).
-      try { existingWin.focus(); } catch { /* cross-origin focus blocked */ }
-      _messengerOpen[app.id] = true;
-      setOpenApps(prev => prev.has(app.id) ? prev : new Set([...prev, app.id]));
-      return;
-    }
-
-    // No live popup — open a fresh one (first open or after OS ✕).
+    // No live popup (first open, or after retract / OS ✕) — open a fresh one.
     _messengerPopups[app.id] = null;
     _messengerOpen[app.id] = false;
     const popup = window.open(`/messenger/${app.id}`, windowName, features);
@@ -448,6 +451,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     endCall,
     sendSms,
   } = phone;
+
+  // Cross-route dashboard tab control — Quick Dial's SMS shortcut routes the
+  // user to the messages tab with the dialled / active-call number pre-selected.
+  // See hooks/dashboardTabContext.tsx for the navigation contract.
+  const { setActiveTab, setSelectedMessageNumber } = useDashboardTab();
 
   // Defer expensive thread/callLog computations so they run in the background
   // without blocking the UI when messages or callLogs update.
@@ -627,6 +635,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // is replaced with a back-able panel showing every call with that number.
   // Set by clicking the row body (not the inline action buttons).
   const [callHistoryNumber, setCallHistoryNumber] = useState<string | null>(null);
+  // Which specific Recent Calls row is currently expanded inline. Keyed on the
+  // log entry's unique id, NOT the number — otherwise a number that appears
+  // multiple times in Recent Calls (e.g. you called the same person 3 times)
+  // would render the expansion underneath every matching row simultaneously.
+  // The `callHistoryNumber` state above still drives the contact + entries
+  // lookup; this id just gates WHICH row in the list gets the inline expansion.
+  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
 
   // Resolve the contact (if any) for the active history number, used for the
   // detail-panel header. Same digit-suffix matcher as the rest of the file.
@@ -674,19 +689,29 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     return named?.name || callHistoryNumber || 'Unknown';
   }, [callHistoryContact, callHistoryEntries, callHistoryNumber]);
 
-  const handleOpenCallHistory = useCallback((number: string) => {
-    if (!number) return;
+  // Toggles the inline expansion on a specific Recent Calls row. Takes the
+  // log.id so we know exactly which row to expand, and the number so the
+  // entries lookup (callHistoryEntries useMemo) can fetch sibling calls.
+  const handleOpenCallHistory = useCallback((id: string, number: string) => {
+    if (!id) return;
     // startTransition marks this as a non-urgent update — React keeps the UI
     // responsive while processing the Dashboard re-render in the background.
-    // Without this, clicking a number freezes the UI for the full re-render
-    // duration of the entire Dashboard tree.
     startTransition(() => {
-      setCallHistoryNumber(prev => prev === number ? null : number);
+      setExpandedCallId(prev => {
+        const next = prev === id ? null : id;
+        // Sync the number used for the entries lookup. When collapsing, clear
+        // it too so we don't pay the useMemo cost for an invisible expansion.
+        setCallHistoryNumber(next ? number : null);
+        return next;
+      });
     });
   }, []);
 
   const handleCloseCallHistory = useCallback(() => {
-    startTransition(() => setCallHistoryNumber(null));
+    startTransition(() => {
+      setExpandedCallId(null);
+      setCallHistoryNumber(null);
+    });
   }, []);
 
   // ---------- Threads (group messages by address) ---------------------------
@@ -847,6 +872,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     setComposingNew(false);
   }, []);
 
+  // Quick Dial → SMS shortcut. Picks the dialled number first; falls back to
+  // the active call's number when the input is empty so the user can text the
+  // person they're on the phone with without retyping. No-ops if neither is
+  // available (the button is also disabled in that state, but we belt-and-brace
+  // here so the handler is safe to call from anywhere).
+  const handleSmsFromQuickDial = useCallback(() => {
+    const target = dialNumber.trim() || currentCall?.number?.trim() || '';
+    if (!target) return;
+    setSelectedMessageNumber(target);
+    setActiveTab('messages');
+  }, [dialNumber, currentCall, setSelectedMessageNumber, setActiveTab]);
+
   const handleStartNewMessage = useCallback(() => {
     setComposingNew(true);
     setSelectedThread(null);
@@ -959,21 +996,42 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
       />
 
       {/* ============================================================ */}
-      {/* Main column — MessengerBar pinned above the 3-column grid.    */}
-      {/* The outer wrapper is flex-col so the bar takes its intrinsic  */}
-      {/* height (44px) while the grid below absorbs all remaining      */}
-      {/* vertical space. min-h-0 on both prevents flex-children from   */}
+      {/* Main column — 3-column grid fills the remaining space.        */}
+      {/* The MessengerBar mount was removed (2026-05-18) — the         */}
+      {/* notification sidebar / NotificationStrip / NotificationOverlay*/}
+      {/* now own all messenger surfaces. The MessengerBar sub-component*/}
+      {/* definition is intentionally retained below for easy revert.   */}
+      {/* min-h-0 on both wrapper and grid prevents flex-children from  */}
       {/* refusing to shrink below their content height — same pattern  */}
       {/* used inside each column.                                      */}
       {/* Single stacked column below xl so the columns don't collapse  */}
       {/* to unusable widths on tablet/mobile.                          */}
       {/* ============================================================ */}
       <div className="flex-1 min-w-0 flex flex-col gap-2 h-full min-h-0">
-        <MessengerBar notifications={phoneNotifications} />
         <div
           className={clsx(
             'flex-1 min-h-0 grid gap-2 overflow-hidden',
-            'grid-cols-[1.1fr_1.1fr_2fr]'
+            // Resize-order contract:
+            //   Col 1 (Quick Dial / Recent Calls) is bounded with explicit
+            //     min/max to keep the track visually stable across the
+            //     idle ↔ in-call state change. Previously this was `auto`,
+            //     which sized the track to content min-width — that worked
+            //     in idle state (where phone numbers like "+47 12 34 56 78"
+            //     set the floor), but when the Active Call card mounted
+            //     inside this column it brought wider content (3-pill audio
+            //     toggle, dialpad-style action grid) and the `auto` track
+            //     grew to fit, jumping the whole layout sideways.
+            //     `minmax(300px, 340px)` keeps the floor wide enough for a
+            //     full phone number and locks the ceiling so the in-call
+            //     card lives within the same visual footprint as idle.
+            //   Col 2 (thread list)  — 0.88fr = 1.1fr * 0.8 (20% narrower
+            //     baseline than the prior 1.1fr) with a 260px minimum.
+            //   Col 3 (open thread)  — 1.8fr (unchanged) with 280px minimum.
+            //   When the window narrows, cols 2/3 shrink first to their
+            //     minimums; only after both bottom out does the grid
+            //     overflow horizontally — phone numbers stay visible.
+            // Pure CSS, no JS resize listener.
+            'grid-cols-[minmax(300px,340px)_minmax(260px,0.88fr)_minmax(280px,1.8fr)]'
           )}
         >
       {/* ============================================================ */}
@@ -988,23 +1046,55 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         <header className="px-3 py-1.5 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2 flex-shrink-0">
           <Phone className="w-3 h-3 text-slate-400" aria-hidden="true" />
           <h2 className="text-xs font-semibold text-slate-800">Quick Dial</h2>
-          <button
-            type="button"
-            onClick={() => setShowDialpad((v) => !v)}
-            aria-pressed={showDialpad}
-            aria-label={showDialpad ? 'Hide dialpad' : 'Show dialpad'}
-            title={showDialpad ? 'Hide dialpad' : 'Show dialpad'}
-            className={clsx(
-              'ml-auto inline-flex items-center justify-center w-5 h-5 rounded-lg',
-              'transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
-              showDialpad
-                ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
-            )}
-          >
-            <Keyboard className="w-3 h-3" aria-hidden="true" />
-          </button>
+          {/* Header actions group. SMS shortcut + dialpad toggle. The SMS
+              button replaced a legacy "default audio source" pill (2026-05-20)
+              — audio routing now lives exclusively on the in-call segmented
+              control in ActiveCallCard / CallModal, and this slot exposes a
+              direct path to message whoever you're about to call (or are
+              already on the phone with). */}
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              onClick={handleSmsFromQuickDial}
+              disabled={!dialNumber.trim() && !currentCall}
+              aria-label={
+                dialNumber.trim() || currentCall
+                  ? 'Send SMS to this number'
+                  : 'Enter a number or start a call to send SMS'
+              }
+              title={
+                dialNumber.trim() || currentCall
+                  ? 'Send SMS to this number'
+                  : 'Enter a number or start a call to send SMS.'
+              }
+              className={clsx(
+                'inline-flex items-center justify-center w-5 h-5 rounded-lg',
+                'transition-colors',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                'text-blue-600 bg-blue-50 hover:bg-blue-100',
+                'disabled:bg-transparent disabled:text-slate-300 disabled:cursor-not-allowed disabled:hover:bg-transparent'
+              )}
+            >
+              <MessageSquare className="w-3 h-3" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowDialpad((v) => !v)}
+              aria-pressed={showDialpad}
+              aria-label={showDialpad ? 'Hide dialpad' : 'Show dialpad'}
+              title={showDialpad ? 'Hide dialpad' : 'Show dialpad'}
+              className={clsx(
+                'inline-flex items-center justify-center w-5 h-5 rounded-lg',
+                'transition-colors',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                showDialpad
+                  ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+              )}
+            >
+              <Keyboard className="w-3 h-3" aria-hidden="true" />
+            </button>
+          </div>
         </header>
 
         {/* Quick dial input + Call button + Active call card (fixed height) */}
@@ -1028,7 +1118,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             }}
             placeholder="+47 ..."
             className={clsx(
-              'w-full px-3 py-1.5 rounded-lg text-xs font-medium tabular-nums tracking-wide',
+              'w-full px-3 py-1.5 rounded-lg text-sm font-medium tabular-nums tracking-wide',
               'bg-slate-50 border border-slate-200',
               'placeholder:text-slate-300 text-slate-800',
               'focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-300',
@@ -1055,7 +1145,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                       setDialNumber((prev) => prev + digit)
                     }
                     className={clsx(
-                      'w-full h-10 rounded-lg text-base font-semibold tabular-nums',
+                      'w-full h-10 rounded-lg text-sm font-semibold tabular-nums',
                       'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800',
                       'transition-colors',
                       'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40'
@@ -1188,7 +1278,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                         button and fire the history view as well. */}
                     <button
                       type="button"
-                      onClick={() => handleOpenCallHistory(log.number)}
+                      onClick={() => handleOpenCallHistory(log.id, log.number)}
                       className={clsx(
                         'flex-1 min-w-0 flex items-center gap-3 px-3 py-2.5 text-left rounded-xl',
                         'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
@@ -1267,14 +1357,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                   </li>
                 );
               }).flatMap((rowEl, idx) => {
-                // After each row, check if this row's number is the expanded one
-                // and inject accordion history entries below it.
+                // After each row, inject the accordion expansion ONLY when this
+                // specific row's id matches the expanded one. Previously this
+                // matched by number, which meant a number appearing N times in
+                // Recent Calls (e.g. 3 calls to the same person) rendered the
+                // expansion N times — once under each matching row. The id
+                // match guarantees one row, one expansion.
                 const log = recentCalls[idx];
-                if (!log || !callHistoryNumber) return [rowEl];
-                const digs = (n: string) => (n || '').replace(/\D/g, '');
-                const logTail = digs(log.number).slice(-10);
-                const histTail = digs(callHistoryNumber).slice(-10);
-                if (!logTail || !histTail || logTail !== histTail) return [rowEl];
+                if (!log || !expandedCallId || log.id !== expandedCallId) return [rowEl];
                 return [
                   rowEl,
                   <li key={`hist-${log.id}`} className="bg-slate-50/60 rounded-xl mx-1 mb-1 overflow-hidden animate-in slide-in-from-top-1 duration-150">
@@ -1282,12 +1372,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                       {callHistoryEntries.map((entry) => {
                         const es = callTypeStyle(entry.type);
                         const EIcon = es.Icon;
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        const entrySimId = (entry as any).simId;
+                        const simName = entrySimId && simList.length > 1
+                          ? simList.find((s) => String(s.id) === entrySimId)?.name ?? null
+                          : null;
                         return (
                           <li key={entry.id} className="flex items-center gap-2 py-2 text-[12px]">
                             <div className={clsx('w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0', es.bg, es.fg)}>
                               <EIcon className="w-3.5 h-3.5" />
                             </div>
-                            <span className="flex-1 text-slate-800 font-medium">{es.label}</span>
+                            <span className="flex-1 text-slate-800 font-medium truncate">
+                              {es.label}
+                              {simName && (
+                                <span className="ml-1.5 text-slate-400 font-normal">· {simName}</span>
+                              )}
+                            </span>
                             <span className="text-slate-600 tabular-nums font-medium">
                               {formatCallTime(entry.date, now)}
                               {' · '}
@@ -1560,6 +1660,176 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
 // ---------- Sub-components --------------------------------------------------
 
+// ---------- AudioSourceToggle ----------------------------------------------
+//
+// Three-pill segmented control replacing the legacy single Speaker toggle
+// (2026-05-18). The old toggle was a single boolean that flipped the system
+// `SET_SPEAKER` route — unreliable on modern Android because the system
+// dialer fights us for the audio route (Phase A work landed on 2026-05-15
+// only mitigated this — it didn't eliminate the conflict). The three-pill
+// shape makes the limited reality explicit: you get earpiece or speaker on
+// the phone, and "PC Audio" is a known future feature.
+//
+// Source-of-truth lives in localStorage under `dnkdialer_audio_source_default`
+// so the last choice survives reloads. The in-call instance is the only
+// interactive surface — the Quick Dial header shows a read-only pill that
+// reflects the current default at a glance.
+
+type AudioSource = 'earpiece' | 'speaker' | 'pc';
+const AUDIO_SOURCE_KEY = 'dnkdialer_audio_source_default';
+const AUDIO_SOURCE_DEFAULT: AudioSource = 'earpiece';
+
+function readAudioSourceDefault(): AudioSource {
+  if (typeof window === 'undefined') return AUDIO_SOURCE_DEFAULT;
+  try {
+    const v = window.localStorage.getItem(AUDIO_SOURCE_KEY);
+    if (v === 'earpiece' || v === 'speaker' || v === 'pc') return v;
+  } catch {
+    // localStorage can throw in private-browsing / sandboxed iframes.
+  }
+  return AUDIO_SOURCE_DEFAULT;
+}
+
+function writeAudioSourceDefault(v: AudioSource): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(AUDIO_SOURCE_KEY, v);
+  } catch {
+    // Silent — same rationale as the read path.
+  }
+}
+
+const AUDIO_SOURCE_LABEL: Record<AudioSource, string> = {
+  earpiece: 'Phone Earpiece',
+  speaker: 'Phone Speaker',
+  pc: 'PC Audio',
+};
+
+// Read-only pill for the Quick Dial header — shows the current default at a
+// glance without exposing a mid-call route change here. Re-reads on mount,
+// on the cross-tab `storage` event, and on the same-tab custom event that
+// AudioSourceToggle dispatches after every write.
+const AudioSourcePill: React.FC = () => {
+  const [current, setCurrent] = useState<AudioSource>(() => readAudioSourceDefault());
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const sync = () => setCurrent(readAudioSourceDefault());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === AUDIO_SOURCE_KEY) sync();
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('dnkdialer:audio-source-changed', sync);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('dnkdialer:audio-source-changed', sync);
+    };
+  }, []);
+
+  const Icon = current === 'speaker' ? Volume2 : current === 'pc' ? Volume2 : Phone;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-600 text-[10px] font-semibold px-2 py-0.5"
+      title="Change in Settings → Audio"
+      aria-label={`Default audio source: ${AUDIO_SOURCE_LABEL[current]}`}
+    >
+      <Icon className="w-3 h-3" aria-hidden="true" />
+      Audio: {AUDIO_SOURCE_LABEL[current]}
+    </span>
+  );
+};
+
+interface AudioSourceToggleProps {
+  value: AudioSource;
+  onChange: (next: AudioSource) => void;
+  size?: 'sm' | 'md';
+}
+
+const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
+  value,
+  onChange,
+  size = 'md',
+}) => {
+  const sizing =
+    size === 'sm'
+      ? { pad: 'px-2 py-1', text: 'text-[11px]', icon: 'w-3 h-3', gap: 'gap-1' }
+      : { pad: 'px-3 py-2', text: 'text-xs', icon: 'w-4 h-4', gap: 'gap-1.5' };
+
+  // `min-w-0` on each pill is load-bearing: this toggle lives inside the
+  // Active Call card, which itself lives inside the bounded 300-340px
+  // column 1 grid track. Without `min-w-0` the pill's unbreakable label
+  // text ("Phone Earpiece" etc.) sets a min-content floor that would push
+  // the card wider than the track allows and clip out of `overflow-hidden`.
+  // With it, the pills shrink gracefully and the inner label `truncate`s.
+  const pill = (active: boolean, disabled = false) =>
+    clsx(
+      'flex-1 min-w-0 inline-flex items-center justify-center rounded-lg font-semibold transition-colors',
+      sizing.pad,
+      sizing.text,
+      sizing.gap,
+      disabled
+        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+        : active
+        ? 'bg-blue-600 text-white hover:bg-blue-700'
+        : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+    );
+
+  return (
+    <div className="w-full">
+      <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-500 mb-1">
+        Audio Source
+      </div>
+      <div role="radiogroup" aria-label="Audio source" className="flex items-stretch gap-1.5">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={value === 'earpiece'}
+          onClick={() => onChange('earpiece')}
+          className={pill(value === 'earpiece')}
+          title="Route audio to the phone earpiece"
+        >
+          <Phone className={clsx(sizing.icon, 'flex-shrink-0')} aria-hidden="true" />
+          <span className="truncate">{AUDIO_SOURCE_LABEL.earpiece}</span>
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={value === 'speaker'}
+          onClick={() => onChange('speaker')}
+          className={pill(value === 'speaker')}
+          title="Route audio to the phone speaker"
+        >
+          <Volume2 className={clsx(sizing.icon, 'flex-shrink-0')} aria-hidden="true" />
+          <span className="truncate">{AUDIO_SOURCE_LABEL.speaker}</span>
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={false}
+          aria-disabled="true"
+          disabled
+          onClick={() => {
+            // Stub — PC audio routing isn't implemented yet. Click is wired
+            // so the button isn't dead-silent in case `disabled` is ever
+            // removed by mistake; the visual `disabled` styling above is
+            // the primary UX signal.
+            // eslint-disable-next-line no-console
+            console.warn('[dnkdialer] PC Audio routing not yet implemented');
+          }}
+          className={clsx(pill(false, true), 'relative')}
+          title="PC audio routing — coming soon"
+        >
+          <Volume2 className={clsx(sizing.icon, 'flex-shrink-0')} aria-hidden="true" />
+          <span className="truncate">{AUDIO_SOURCE_LABEL.pc}</span>
+          <span className="ml-1 inline-flex items-center rounded-full bg-slate-200 text-slate-500 text-[9px] uppercase tracking-wide font-semibold px-1.5 py-0.5 flex-shrink-0">
+            Soon
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
 interface ActiveCallCardProps {
   call: NonNullable<ReturnType<typeof usePhone>['currentCall']>;
   tickKey: number; // forces re-render every second so the timer updates
@@ -1580,16 +1850,34 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
   // Mute is a placeholder per spec — local-only state, not wired to the bridge.
   const [muted, setMuted] = useState(false);
 
-  // Speakerphone toggle — wired live via SET_SPEAKER. Resets to false whenever
-  // the call object identity changes (call ended / new call started) so a
-  // previous call's speaker state never leaks into the next one.
-  const [speakerOn, setSpeakerOn] = useState(false);
+  // Audio source — replaces the legacy single Speaker toggle (2026-05-18).
+  // Seeded from localStorage so the last-chosen default carries across calls
+  // and reloads. When the call identity changes (new call started) we re-seed
+  // from localStorage rather than resetting to a hardcoded value — the user
+  // already expressed a preference, honor it. Every change is persisted back
+  // so the Quick Dial read-only pill and the settings page stay in sync.
+  const [audioSource, setAudioSource] = useState<AudioSource>(() => readAudioSourceDefault());
   useEffect(() => {
-    // `call` becomes a fresh object on the next call; this effect runs each
-    // time, resetting the toggle. When the parent unmounts the card on
-    // CALL_ENDED, the state is discarded with it — same effect.
-    setSpeakerOn(false);
+    setAudioSource(readAudioSourceDefault());
   }, [call]);
+
+  const handleAudioSourceChange = (next: AudioSource) => {
+    setAudioSource(next);
+    writeAudioSourceDefault(next);
+    // Notify same-tab listeners (the storage event only fires cross-tab).
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('dnkdialer:audio-source-changed'));
+    }
+    // Wire the two phone-routed options to the existing SET_SPEAKER bridge.
+    // PC audio is a UI stub — see AudioSourceToggle for the no-op rationale.
+    if (next === 'earpiece') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (phone as any).setSpeaker?.(false);
+    } else if (next === 'speaker') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (phone as any).setSpeaker?.(true);
+    }
+  };
 
   // Re-read time only via tickKey re-renders; avoids spurious renders elsewhere.
   void tickKey;
@@ -1643,7 +1931,7 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-4 gap-2">
+      <div className="mt-4 grid grid-cols-3 gap-2">
         {isIncomingRinging ? (
           <button
             type="button"
@@ -1687,31 +1975,6 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
           {muted ? 'Muted' : 'Mute'}
         </button>
 
-        {/* Speakerphone — wired live to SET_SPEAKER on the bridge. Loose
-            optional-chained call so this UI keeps working if an older bridge
-            build is loaded that hasn't shipped setSpeaker yet. */}
-        <button
-          type="button"
-          onClick={() => {
-            const next = !speakerOn;
-            setSpeakerOn(next);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (phone as any).setSpeaker?.(next);
-          }}
-          aria-pressed={speakerOn}
-          aria-label={speakerOn ? 'Turn off speaker' : 'Turn on speaker'}
-          title={speakerOn ? 'Speaker on' : 'Speaker off'}
-          className={clsx(
-            'col-span-1 flex items-center justify-center gap-1 px-2 py-2.5 rounded-xl font-semibold text-xs transition-colors',
-            speakerOn
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
-          )}
-        >
-          <Volume2 className="w-4 h-4" aria-hidden="true" />
-          Speaker
-        </button>
-
         <button
           type="button"
           onClick={onEnd}
@@ -1721,6 +1984,15 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
           <PhoneOff className="w-4 h-4" aria-hidden="true" />
           End
         </button>
+      </div>
+
+      {/* Audio source — three-pill segmented control replacing the legacy
+          Speaker button (2026-05-18). The in-call instance is the only
+          interactive surface for the audio route; persists the choice to
+          localStorage so the Quick Dial header pill and the next call both
+          pick up the latest preference. */}
+      <div className="mt-3">
+        <AudioSourceToggle value={audioSource} onChange={handleAudioSourceChange} />
       </div>
     </div>
   );
@@ -2634,7 +2906,7 @@ const ThreadView = React.memo(function ThreadView({
             aria-haspopup="listbox"
             aria-expanded={templatesOpen}
             className={clsx(
-              'h-10 px-3 rounded-xl flex items-center gap-1.5 font-medium text-sm flex-shrink-0',
+              'h-9 px-2.5 rounded-xl flex items-center gap-1.5 font-medium text-xs flex-shrink-0',
               'border border-slate-200 bg-white text-slate-700',
               'hover:bg-slate-50 hover:border-slate-300',
               'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
@@ -2643,7 +2915,7 @@ const ThreadView = React.memo(function ThreadView({
             )}
             title="Insert a saved template"
           >
-            <FileText className="w-4 h-4" aria-hidden="true" />
+            <FileText className="w-3.5 h-3.5" aria-hidden="true" />
             <span className="hidden sm:inline">Templates</span>
           </button>
           <button
@@ -3211,7 +3483,7 @@ const NotificationStrip: React.FC<NotificationStripProps> = ({
     >
       {/* Bell + unread badge */}
       <div className="relative">
-        <span className="text-xl" aria-hidden="true">🔔</span>
+        <Bell className="w-4 h-4 text-slate-500" aria-hidden="true" />
         {unreadCount > 0 && (
           <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-0.5 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
             {unreadCount > 9 ? '9+' : unreadCount}
@@ -3286,6 +3558,7 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [replyTexts, setReplyTexts] = useState<Record<string, string>>({});
+  const [sentIds, setSentIds] = useState<Set<string>>(new Set());
 
   const formatTime = (ts: number): string => {
     const diff = Date.now() - ts;
@@ -3314,7 +3587,7 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
         {/* Header */}
         <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2">
-            <span className="text-base" aria-hidden="true">🔔</span>
+            <Bell className="w-4 h-4 text-slate-500" aria-hidden="true" />
             <span className="text-sm font-semibold text-slate-800">Notifications</span>
             {unreadCount > 0 && (
               <span className="px-1.5 py-0.5 bg-red-100 text-red-700 text-[10px] font-bold rounded-full">
@@ -3356,7 +3629,7 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
           {notifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <span className="text-4xl mb-3 opacity-20" aria-hidden="true">🔔</span>
+              <Bell className="w-10 h-10 text-slate-200 mb-3" aria-hidden="true" />
               <p className="text-sm text-slate-400">No notifications from your phone</p>
             </div>
           ) : (
@@ -3374,53 +3647,56 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
                       : 'border-blue-100 bg-blue-50/40'
                   )}
                 >
-                  <button
-                    type="button"
-                    onClick={() => setExpandedId(isExpanded ? null : notif.id)}
-                    className="w-full flex items-start gap-3 px-3 py-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 rounded-xl"
-                    aria-expanded={isExpanded}
-                  >
-                    {/* App icon */}
-                    <div className="flex-shrink-0 mt-0.5">
-                      {getNotificationIcon(notif.packageName) ? (
-                        <img
-                          src={`data:image/png;base64,${getNotificationIcon(notif.packageName)}`}
-                          alt={notif.appName ?? 'notification'}
-                          className="w-9 h-9 rounded-xl object-cover"
-                        />
-                      ) : (
-                        <div className="w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center text-xl" aria-hidden="true">
-                          {appEmojiFromPkg(notif.packageName)}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Content */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-baseline justify-between gap-2 mb-0.5">
-                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide truncate">
-                          {notif.appName}
-                        </p>
-                        <span className="text-[10px] text-slate-300 flex-shrink-0 tabular-nums">
-                          {formatTime(notif.timestamp)}
-                        </span>
+                  {/* Row: expand toggle + dismiss button as siblings (no nested buttons) */}
+                  <div className="flex items-start">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId(isExpanded ? null : notif.id)}
+                      className="flex-1 flex items-start gap-3 px-3 py-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 rounded-xl min-w-0"
+                      aria-expanded={isExpanded}
+                    >
+                      {/* App icon */}
+                      <div className="flex-shrink-0 mt-0.5">
+                        {getNotificationIcon(notif.packageName) ? (
+                          <img
+                            src={`data:image/png;base64,${getNotificationIcon(notif.packageName)}`}
+                            alt={notif.appName ?? 'notification'}
+                            className="w-9 h-9 rounded-xl object-cover"
+                          />
+                        ) : (
+                          <div className="w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center text-xl" aria-hidden="true">
+                            {appEmojiFromPkg(notif.packageName)}
+                          </div>
+                        )}
                       </div>
-                      <p className="text-[12px] font-semibold text-slate-800 truncate">{notif.title}</p>
-                      <p className="text-[11px] text-slate-500 line-clamp-2 mt-0.5">{notif.body}</p>
-                    </div>
 
-                    {/* Dismiss */}
+                      {/* Content */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-baseline justify-between gap-2 mb-0.5">
+                          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide truncate">
+                            {notif.appName}
+                          </p>
+                          <span className="text-[10px] text-slate-300 flex-shrink-0 tabular-nums">
+                            {formatTime(notif.timestamp)}
+                          </span>
+                        </div>
+                        <p className="text-[12px] font-semibold text-slate-800 truncate">{notif.title}</p>
+                        <p className="text-[11px] text-slate-500 line-clamp-2 mt-0.5">{notif.body}</p>
+                      </div>
+                    </button>
+
+                    {/* Dismiss — sibling of expand button, not nested inside it */}
                     {onClear && (
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); onClear(notif.id); }}
-                        className="flex-shrink-0 p-1 text-slate-200 hover:text-slate-400 transition-colors rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                        onClick={() => onClear(notif.id)}
+                        className="flex-shrink-0 p-1 mt-2 mr-2 text-slate-200 hover:text-slate-400 transition-colors rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                         aria-label="Dismiss notification"
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>
                     )}
-                  </button>
+                  </div>
 
                   {/* Expanded body + inline reply */}
                   {isExpanded && (
@@ -3435,8 +3711,10 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' && replyText.trim()) {
                                 onReply(notif.notificationKey, notif.replyKey, replyText.trim());
+                                setSentIds(prev => new Set([...prev, notif.id]));
                                 setReplyTexts((prev) => ({ ...prev, [notif.id]: '' }));
-                                setExpandedId(null);
+                                // Keep expanded for 1.5s so user sees "Sent ✓", then collapse
+                                setTimeout(() => setExpandedId(null), 1500);
                               }
                             }}
                             placeholder={`Reply to ${notif.title}...`}
@@ -3450,8 +3728,10 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
                             onClick={() => {
                               if (replyText.trim()) {
                                 onReply(notif.notificationKey, notif.replyKey, replyText.trim());
+                                setSentIds(prev => new Set([...prev, notif.id]));
                                 setReplyTexts((prev) => ({ ...prev, [notif.id]: '' }));
-                                setExpandedId(null);
+                                // Keep expanded for 1.5s so user sees "Sent ✓", then collapse
+                                setTimeout(() => setExpandedId(null), 1500);
                               }
                             }}
                             className="px-3 py-1.5 bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[12px] font-semibold rounded-xl hover:bg-blue-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
@@ -3460,6 +3740,9 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
                             <Send className="w-3.5 h-3.5" />
                           </button>
                         </div>
+                      )}
+                      {sentIds.has(notif.id) && (
+                        <p className="text-[11px] text-emerald-600 font-medium mt-1">Sent ✓</p>
                       )}
                     </div>
                   )}
