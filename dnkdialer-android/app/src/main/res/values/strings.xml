@@ -94,12 +94,34 @@
     <!-- Permissions-required pane (Samsung One UI auto-revoke -->
     <!-- defense). Shown by MainActivity when                  -->
     <!-- PermissionChecker.checkAll() returns a non-empty list. -->
+    <!--                                                       -->
+    <!-- Round 8 — replaced per-card Grant chips with a single -->
+    <!-- "Grant All" primary CTA that fires the OS-native      -->
+    <!-- runtime-permissions popup (batched) and then walks    -->
+    <!-- the user through the two special-access settings      -->
+    <!-- screens that can't be granted via popup.              -->
     <!-- =================================================== -->
     <string name="perms_title">Permissions needed</string>
-    <string name="perms_subtitle">Some required permissions are missing — Android may have revoked them in the background. Tap each one to re-grant.</string>
+    <string name="perms_subtitle">ComputerCaller needs a handful of permissions to connect to your phone. Tap below to grant them all in one go.</string>
     <string name="perms_grant">Grant</string>
+    <string name="perms_grant_all">Grant All Permissions</string>
     <string name="perms_refresh">I\'ve granted everything — re-check</string>
     <string name="perms_all_set">All set</string>
+    <string name="perms_details_show">What does this need access to?</string>
+    <string name="perms_details_hide">Hide details</string>
+    <string name="perms_details_section_runtime">Standard permissions (one popup)</string>
+    <string name="perms_details_section_special">Special access (Settings screens)</string>
+
+    <!-- Special-access intro dialog. Shown after the OS runtime popup is
+         dismissed if Notification Listener and/or Battery still need to
+         be granted (those CAN'T be requested via runtime popup — Android
+         requires the user to enable them in Settings). -->
+    <string name="perms_special_dialog_title">Two more to go</string>
+    <string name="perms_special_dialog_message_both">Two permissions need to be granted in Settings: Notification Access and Battery (Don\'t optimize). Tap each one when prompted, then come back here.</string>
+    <string name="perms_special_dialog_message_listener">Notification Access needs to be granted in Settings. Find ComputerCaller in the list and turn it on, then come back here.</string>
+    <string name="perms_special_dialog_message_battery">Battery (Don\'t optimize) needs to be granted in Settings. Tap Allow when prompted, then come back here.</string>
+    <string name="perms_special_dialog_action">Take me there</string>
+    <string name="perms_special_dialog_cancel">Not now</string>
 
     <!-- Per-permission rows. Display name on top of each card,
          single-line "why we need this" below. -->
@@ -138,4 +160,19 @@
 
     <string name="perm_name_battery">Battery — don\'t optimize</string>
     <string name="perm_why_battery">Samsung-specific. Keeps the connection alive when the screen is off.</string>
+
+    <!-- =================================================== -->
+    <!-- Hard Reset — manual escape hatch for the "Samsung    -->
+    <!-- silently revoked something" class of bugs. Wipes     -->
+    <!-- app data via ActivityManager.clearApplicationUserData()-->
+    <!-- and force-restarts the process, so the user lands    -->
+    <!-- back on the Grant All pane with a clean slate.       -->
+    <!-- =================================================== -->
+    <string name="action_hard_reset">Hard Reset</string>
+    <string name="action_hard_reset_subtitle">If connection fails repeatedly, tap to reset all permissions and start fresh.</string>
+    <string name="hard_reset_dialog_title">Hard Reset?</string>
+    <string name="hard_reset_dialog_message">This will reset all ComputerCaller data and you\'ll need to re-grant all permissions. Use this only if you can\'t connect normally. Continue?</string>
+    <string name="hard_reset_dialog_cancel">Cancel</string>
+    <string name="hard_reset_dialog_confirm">Reset</string>
+    <string name="hard_reset_failed">Couldn\'t auto-reset. Open Settings → Apps → ComputerCaller → Storage → Clear data.</string>
 </resources>

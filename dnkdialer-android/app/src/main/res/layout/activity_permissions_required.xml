@@ -1,25 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Permissions-required pane. Shown by MainActivity when PermissionChecker
-  reports any missing runtime permission or special-access grant. Blocks
-  the main control surface until everything is granted.
+  Permissions-required pane (Round 8).
 
-  Design language matches the rest of the app:
-    - Wordmark + warm-accent underline at the top so the user knows
-      they're still in ComputerCaller (not Settings).
-    - Title + subtitle pair under the wordmark.
-    - Scrollable list of cards (recessed bg_url_block surface with the
-      warm left bar — same visual treatment as the URL block on main,
-      reads as "this is the data that matters").
-    - Each card: human-readable title, one-line why, Grant chip on the
-      right (hairline-bordered warm accent — bg_button_warning).
-    - Sticky Refresh button at the bottom for the user to re-check after
-      coming back from a grant flow that DIDN'T trigger onResume (rare).
+  Replaces the per-card Grant pattern from Round 6/7 with a single
+  primary CTA: "Grant All Permissions". Tapping it kicks off the OS-
+  native runtime-permission popup (batched — Android shows the dialogs
+  back-to-back automatically when multiple permissions are passed to
+  ActivityCompat.requestPermissions). After the runtime batch resolves,
+  any remaining special-access grants (Notification Listener, Battery
+  optimization) are handled by a single confirmation dialog + sequential
+  Settings deep-links, with onResume detection driving the transitions.
+
+  Layout vertical stack:
+    1. Wordmark + gradient underline (same treatment as main pane, so
+       the user knows they're still in ComputerCaller, not Settings).
+    2. Title row (amber attention dot + "Permissions needed").
+    3. Subtitle explaining the one-tap flow.
+    4. Primary CTA — "Grant All Permissions".
+    5. Expandable "What does this need access to?" section with a
+       categorized breakdown of each permission for the curious. Hidden
+       by default so the pane reads as clean and confident.
+    6. Sticky Refresh button — re-runs the check without leaving the
+       Activity (safety net for OEM grant flows that don't return to us).
 
   Success animation overlay (FrameLayout sibling of the scroll content):
     full-screen green check on dot_live, fades in/out over 800ms when
-    the last permission resolves. Sits on top of the scroll content so
-    the user gets a clear "you're done" beat before the main pane appears.
+    the last permission resolves.
 -->
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -46,8 +52,7 @@
             android:paddingTop="@dimen/space_40"
             android:paddingBottom="@dimen/space_40">
 
-            <!-- Wordmark — same treatment as the main pane so the user
-                 knows they didn't get punted into Settings. -->
+            <!-- Wordmark — same treatment as the main pane. -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -67,9 +72,7 @@
                 android:layout_marginBottom="@dimen/space_32" />
 
             <!-- Title — pairs the dot affordance (amber 'attention') with
-                 the headline. Reusing the existing status_dot drawable +
-                 dot_waiting tint so this screen feels like a deliberate
-                 state of the app, not a foreign error screen. -->
+                 the headline. -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -95,8 +98,7 @@
                     android:letterSpacing="-0.01" />
             </LinearLayout>
 
-            <!-- Subtitle — names the Samsung-revoke pattern explicitly so
-                 the user doesn't think they did something wrong. -->
+            <!-- Subtitle — explains the one-tap flow. -->
             <TextView
                 android:id="@+id/permsSubtitle"
                 android:layout_width="match_parent"
@@ -107,49 +109,110 @@
                 android:lineSpacingMultiplier="1.35"
                 android:layout_marginTop="@dimen/space_12" />
 
-            <!-- The list. Populated at runtime from PermissionChecker.checkAll().
-                 Using a vertical LinearLayout rather than RecyclerView because
-                 the list is small (max ~11 entries) and we want the whole
-                 thing inside the ScrollView with the title + Refresh button
-                 — RecyclerView inside ScrollView is more friction than it's
-                 worth at this scale. -->
-            <LinearLayout
-                android:id="@+id/missingPermissionsList"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:layout_marginTop="@dimen/space_32"
-                tools:ignore="UselessLeaf" />
-
-            <!-- Refresh — the safety net. onResume re-checks automatically
-                 when the user returns from Settings, but some OEM flows
-                 don't return to the calling Activity (Samsung's battery
-                 settings sometimes drop the user on the Home screen). This
-                 button lets them re-check without killing the app. -->
+            <!-- Primary CTA. Full-width, gradient, gets the user moving
+                 in one tap. -->
             <Button
-                android:id="@+id/permsRefreshButton"
+                android:id="@+id/permsGrantAllButton"
                 android:layout_width="match_parent"
                 android:layout_height="@dimen/button_height"
-                android:text="@string/perms_refresh"
+                android:text="@string/perms_grant_all"
                 android:textSize="@dimen/text_body"
                 android:textAllCaps="false"
-                android:textColor="@color/surface_base"
+                android:textColor="@color/text_primary"
                 android:fontFamily="sans-serif-medium"
                 android:letterSpacing="0.02"
                 android:background="@drawable/bg_button_primary"
                 android:stateListAnimator="@null"
-                android:layout_marginTop="@dimen/space_40" />
+                android:layout_marginTop="@dimen/space_32" />
+
+            <!-- Expandable details toggle. Reads as a quiet link — small,
+                 secondary color, no chrome. Tapping it expands the list
+                 below; tapping again collapses. -->
+            <TextView
+                android:id="@+id/permsDetailsToggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/perms_details_show"
+                android:textSize="@dimen/text_caption"
+                android:textColor="@color/text_secondary"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0.02"
+                android:paddingTop="@dimen/space_8"
+                android:paddingBottom="@dimen/space_8"
+                android:layout_marginTop="@dimen/space_20"
+                android:background="?attr/selectableItemBackground" />
+
+            <!-- Expandable detail panel. Hidden by default. Contains two
+                 sections (Standard / Special access) with one row per
+                 permission. Each row is inflated from item_missing_permission
+                 (repurposed — no Grant chip, just title + why). -->
+            <LinearLayout
+                android:id="@+id/permsDetailsPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone"
+                android:layout_marginTop="@dimen/space_12">
+
+                <TextView
+                    android:id="@+id/permsRuntimeSectionLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/perms_details_section_runtime"
+                    android:textSize="@dimen/text_eyebrow"
+                    android:textColor="@color/text_label"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.18"
+                    android:fontFamily="sans-serif-medium"
+                    android:layout_marginBottom="@dimen/space_12" />
+
+                <LinearLayout
+                    android:id="@+id/permsRuntimeList"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    tools:ignore="UselessLeaf" />
+
+                <TextView
+                    android:id="@+id/permsSpecialSectionLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/perms_details_section_special"
+                    android:textSize="@dimen/text_eyebrow"
+                    android:textColor="@color/text_label"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.18"
+                    android:fontFamily="sans-serif-medium"
+                    android:layout_marginTop="@dimen/space_20"
+                    android:layout_marginBottom="@dimen/space_12" />
+
+                <LinearLayout
+                    android:id="@+id/permsSpecialList"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    tools:ignore="UselessLeaf" />
+            </LinearLayout>
+
+            <!-- Refresh — the safety net. -->
+            <Button
+                android:id="@+id/permsRefreshButton"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/button_height_small"
+                android:text="@string/perms_refresh"
+                android:textSize="@dimen/text_body"
+                android:textAllCaps="false"
+                android:textColor="@color/text_secondary"
+                android:fontFamily="sans-serif"
+                android:letterSpacing="0.02"
+                android:background="@drawable/bg_button_ghost"
+                android:stateListAnimator="@null"
+                android:layout_marginTop="@dimen/space_24" />
 
         </LinearLayout>
     </ScrollView>
 
-    <!-- ============ Success overlay ============
-         Hidden by default. MainActivity flips it to VISIBLE + animates
-         alpha 0→1→0 over 800ms when the last permission resolves, then
-         hides the whole permissionsRequiredRoot and reveals the main
-         pane. Background is the same surface_base so the alpha fade
-         doesn't reveal the form behind it; the green checkmark sits
-         centered to give the "all set" beat its own moment. -->
+    <!-- ============ Success overlay ============ -->
     <FrameLayout
         android:id="@+id/permsSuccessOverlay"
         android:layout_width="match_parent"
@@ -167,10 +230,6 @@
             android:orientation="vertical"
             android:gravity="center_horizontal">
 
-            <!-- Reusing status_dot as a 64dp green disc. No vector asset
-                 needed — the dot drawable is just a circle, and scaling
-                 it up gives us the same shape language the rest of the
-                 app uses for state. -->
             <View
                 android:layout_width="64dp"
                 android:layout_height="64dp"

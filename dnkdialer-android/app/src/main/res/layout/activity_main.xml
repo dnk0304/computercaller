@@ -285,5 +285,48 @@
             android:visibility="gone"
             android:layout_marginTop="@dimen/space_12" />
 
+        <!-- ============ 5. Hard Reset (low-priority escape hatch) ============
+             Manual workaround for the Samsung One UI "silently revoked
+             something in the background" bug class. Wipes app data via
+             ActivityManager.clearApplicationUserData() and force-restarts
+             the process so the user lands back on the Grant All pane
+             with a clean slate. Styled as a quiet ghost button (slate text,
+             transparent background) so it doesn't compete with the
+             primary Refresh + Disconnect actions above. Sits below a
+             subtle divider so it reads as a separate "emergency" zone. -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/stroke_hairline"
+            android:background="@color/surface_border"
+            android:layout_marginTop="@dimen/space_32" />
+
+        <Button
+            android:id="@+id/hardResetButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/button_height_small"
+            android:text="@string/action_hard_reset"
+            android:textSize="@dimen/text_body"
+            android:textAllCaps="false"
+            android:textColor="@color/text_tertiary"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.02"
+            android:background="@drawable/bg_button_ghost"
+            android:stateListAnimator="@null"
+            android:layout_marginTop="@dimen/space_16" />
+
+        <TextView
+            android:id="@+id/hardResetSubtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/action_hard_reset_subtitle"
+            android:textSize="@dimen/text_caption"
+            android:textColor="@color/text_tertiary"
+            android:fontFamily="sans-serif"
+            android:lineSpacingMultiplier="1.3"
+            android:gravity="center_horizontal"
+            android:paddingStart="@dimen/space_16"
+            android:paddingEnd="@dimen/space_16"
+            android:layout_marginTop="@dimen/space_6" />
+
     </LinearLayout>
 </ScrollView>

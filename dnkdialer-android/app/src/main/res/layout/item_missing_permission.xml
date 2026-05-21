@@ -1,73 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  One card per missing permission. Inflated into missingPermissionsList
-  by MainActivity.renderPermissionsRequiredPane().
+  Permission detail row (Round 8 — repurposed).
 
-  Layout: bg_url_block surface (recessed warm-bar panel — same vocabulary
-  as the URL block on the main pane). Title row at the top, why-text
-  below in secondary color, Grant chip floating right.
+  Previously this was a card with title + why + a Grant chip on the right.
+  Round 8 collapses the per-card Grant pattern into a single primary
+  "Grant All" CTA on the parent pane, so the row no longer needs an
+  action affordance. What remains is a quiet two-line breakdown shown
+  ONLY when the user expands the "What does this need access to?"
+  section — purely informational.
 
-  The Grant chip uses bg_button_warning (hairline warm-accent border) so
-  it picks up the screen's only color signal without competing with the
-  warm-accent dot or the primary CTA at the bottom of the scroll.
+  Layout: recessed bg_url_block panel for visual consistency with the
+  rest of the dark surfaces, title on top, one-line why below in
+  secondary color. No Button, no chrome.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="horizontal"
-    android:gravity="center_vertical"
+    android:orientation="vertical"
     android:background="@drawable/bg_url_block"
     android:paddingStart="@dimen/space_16"
-    android:paddingEnd="@dimen/space_12"
-    android:paddingTop="@dimen/space_16"
-    android:paddingBottom="@dimen/space_16"
-    android:layout_marginBottom="@dimen/space_12">
+    android:paddingEnd="@dimen/space_16"
+    android:paddingTop="@dimen/space_12"
+    android:paddingBottom="@dimen/space_12"
+    android:layout_marginBottom="@dimen/space_8">
 
-    <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:layout_marginEnd="@dimen/space_12">
-
-        <TextView
-            android:id="@+id/permTitle"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textSize="@dimen/text_body"
-            android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium"
-            android:letterSpacing="-0.005"
-            tools:text="Notifications" />
-
-        <TextView
-            android:id="@+id/permWhy"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="@dimen/text_caption"
-            android:textColor="@color/text_secondary"
-            android:lineSpacingMultiplier="1.3"
-            android:layout_marginTop="@dimen/space_4"
-            tools:text="Show incoming-call alerts" />
-    </LinearLayout>
-
-    <Button
-        android:id="@+id/permGrantButton"
+    <TextView
+        android:id="@+id/permTitle"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:minWidth="0dp"
-        android:minHeight="0dp"
-        android:paddingStart="@dimen/space_16"
-        android:paddingEnd="@dimen/space_16"
-        android:paddingTop="@dimen/space_8"
-        android:paddingBottom="@dimen/space_8"
-        android:text="@string/perms_grant"
-        android:textSize="@dimen/text_caption"
-        android:textColor="@color/accent_blue"
-        android:textAllCaps="false"
+        android:textSize="@dimen/text_body"
+        android:textColor="@color/text_primary"
         android:fontFamily="sans-serif-medium"
-        android:letterSpacing="0.04"
-        android:background="@drawable/bg_button_warning"
-        android:stateListAnimator="@null" />
+        android:letterSpacing="-0.005"
+        tools:text="Notifications" />
+
+    <TextView
+        android:id="@+id/permWhy"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="@dimen/text_caption"
+        android:textColor="@color/text_secondary"
+        android:lineSpacingMultiplier="1.3"
+        android:layout_marginTop="@dimen/space_4"
+        tools:text="Show incoming-call alerts" />
 </LinearLayout>

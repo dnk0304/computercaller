@@ -23,6 +23,14 @@ import androidx.core.content.ContextCompat
  * the main pane is hidden and a blocking permissions-required pane is
  * shown until every entry resolves.
  *
+ * Round 8 — each [MissingPermission] now carries a [kind] that lets the
+ * UI distinguish between standard runtime grants (re-requestable via the
+ * OS-native popup) and special-access grants (Notification Listener,
+ * Battery optimization — only re-grantable via a Settings deep-link).
+ * MainActivity's "Grant All" flow uses this to batch all RUNTIME entries
+ * into one ActivityCompat.requestPermissions() call and then walk the
+ * user sequentially through the SPECIAL entries via Settings.
+ *
  * Ordering inside [checkAll] is intentional: the list is rendered in
  * order, and the user sees the most-critical-to-app-function items at
  * the top of the scroll. Anything that breaks the core call-bridge flow
@@ -32,22 +40,37 @@ import androidx.core.content.ContextCompat
 object PermissionChecker {
 
     /**
+     * Distinguishes a standard Android runtime permission (can be granted
+     * via the OS-native runtime popup) from a special-access grant (can
+     * ONLY be granted via a Settings deep-link — Notification Listener
+     * and Battery optimization fall into this category). MainActivity's
+     * Grant All flow needs to know which is which so it can batch
+     * runtime requests into a single popup and handle special grants
+     * separately.
+     */
+    enum class Kind { RUNTIME, SPECIAL }
+
+    /**
      * One missing-permission row, fully described so the UI layer doesn't
      * have to know the difference between a runtime permission and a
      * special-access grant.
      *
-     *  - [id]: stable string id, used as the View tag in the list so the
-     *    Grant button click handler can build the right Intent.
-     *  - [displayName]: human-readable title shown on the card. NEVER the
-     *    raw Manifest constant — the user shouldn't have to translate
-     *    "android.permission.READ_CALL_LOG" in their head.
+     *  - [id]: stable string id, used for diagnostics + debugging.
+     *  - [kind]: see [Kind] kdoc.
+     *  - [manifestPermission]: for RUNTIME entries, the Manifest constant
+     *    that ActivityCompat.requestPermissions accepts. Null for SPECIAL
+     *    entries (no runtime constant exists for them).
+     *  - [displayName]: human-readable title shown in the details panel.
      *  - [why]: one-line plain-English explainer. Short. No marketing.
      *  - [intent]: the deep-link Intent to drop the user exactly where
-     *    they can grant this. Already pre-constructed against the calling
-     *    Context — fire-and-forget from the UI.
+     *    they can grant this. Used for SPECIAL grants (the Grant All
+     *    flow calls startActivity(intent)) and as a fallback for any
+     *    RUNTIME entry whose popup gets "Don't ask again"'d.
      */
     data class MissingPermission(
         val id: String,
+        val kind: Kind,
+        val manifestPermission: String?,
         val displayName: String,
         val why: String,
         val intent: Intent,
@@ -63,28 +86,33 @@ object PermissionChecker {
 
         // 1. POST_NOTIFICATIONS (API 33+). Without this, incoming-call
         //    heads-up banners + Connection requests never reach the user.
-        //    Top of the list — first thing they should fix.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             !isGranted(context, Manifest.permission.POST_NOTIFICATIONS)
         ) {
             missing += MissingPermission(
                 id = "post_notifications",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.POST_NOTIFICATIONS,
                 displayName = context.getString(R.string.perm_name_notifications),
                 why = context.getString(R.string.perm_why_notifications),
                 intent = appDetailsIntent(context),
             )
         }
 
-        // 2. Notification Listener access — special-access grant, not a
-        //    runtime permission. Checked via Settings.Secure because the
-        //    OS doesn't expose a checkSelfPermission path for this.
-        //    Without it, the webapp can't mirror messaging notifications.
+        // 2. Notification Listener access — SPECIAL. Checked via
+        //    Settings.Secure; the OS doesn't expose a checkSelfPermission
+        //    path for this. Without it, the webapp can't mirror messaging
+        //    notifications.
         if (!isNotificationListenerEnabled(context)) {
             missing += MissingPermission(
                 id = "notification_listener",
+                kind = Kind.SPECIAL,
+                manifestPermission = null,
                 displayName = context.getString(R.string.perm_name_notif_listener),
                 why = context.getString(R.string.perm_why_notif_listener),
-                intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
+                intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
             )
         }
 
@@ -92,60 +120,68 @@ object PermissionChecker {
         if (!isGranted(context, Manifest.permission.CALL_PHONE)) {
             missing += MissingPermission(
                 id = "call_phone",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.CALL_PHONE,
                 displayName = context.getString(R.string.perm_name_phone),
                 why = context.getString(R.string.perm_why_phone),
                 intent = appDetailsIntent(context),
             )
         }
 
-        // 4. READ_PHONE_STATE — required to observe call state changes
-        //    so we know when a call connects/ends.
+        // 4. READ_PHONE_STATE.
         if (!isGranted(context, Manifest.permission.READ_PHONE_STATE)) {
             missing += MissingPermission(
                 id = "read_phone_state",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.READ_PHONE_STATE,
                 displayName = context.getString(R.string.perm_name_phone_state),
                 why = context.getString(R.string.perm_why_phone_state),
                 intent = appDetailsIntent(context),
             )
         }
 
-        // 5. ANSWER_PHONE_CALLS — accept incoming calls from the webapp UI.
+        // 5. ANSWER_PHONE_CALLS.
         if (!isGranted(context, Manifest.permission.ANSWER_PHONE_CALLS)) {
             missing += MissingPermission(
                 id = "answer_phone_calls",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.ANSWER_PHONE_CALLS,
                 displayName = context.getString(R.string.perm_name_answer),
                 why = context.getString(R.string.perm_why_answer),
                 intent = appDetailsIntent(context),
             )
         }
 
-        // 6. READ_CONTACTS — match incoming caller IDs to saved names.
+        // 6. READ_CONTACTS.
         if (!isGranted(context, Manifest.permission.READ_CONTACTS)) {
             missing += MissingPermission(
                 id = "read_contacts",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.READ_CONTACTS,
                 displayName = context.getString(R.string.perm_name_contacts),
                 why = context.getString(R.string.perm_why_contacts),
                 intent = appDetailsIntent(context),
             )
         }
 
-        // 7. READ_CALL_LOG — sync recents to the webapp.
+        // 7. READ_CALL_LOG.
         if (!isGranted(context, Manifest.permission.READ_CALL_LOG)) {
             missing += MissingPermission(
                 id = "read_call_log",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.READ_CALL_LOG,
                 displayName = context.getString(R.string.perm_name_call_log),
                 why = context.getString(R.string.perm_why_call_log),
                 intent = appDetailsIntent(context),
             )
         }
 
-        // 8. SMS triplet — grouped because they're the same surface in
-        //    the user's mental model ("SMS access"). Each is checked
-        //    individually but presented in the order Read → Send → Receive
-        //    so the user can grant them as a logical block.
+        // 8. SMS triplet.
         if (!isGranted(context, Manifest.permission.READ_SMS)) {
             missing += MissingPermission(
                 id = "read_sms",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.READ_SMS,
                 displayName = context.getString(R.string.perm_name_read_sms),
                 why = context.getString(R.string.perm_why_read_sms),
                 intent = appDetailsIntent(context),
@@ -154,6 +190,8 @@ object PermissionChecker {
         if (!isGranted(context, Manifest.permission.SEND_SMS)) {
             missing += MissingPermission(
                 id = "send_sms",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.SEND_SMS,
                 displayName = context.getString(R.string.perm_name_send_sms),
                 why = context.getString(R.string.perm_why_send_sms),
                 intent = appDetailsIntent(context),
@@ -162,32 +200,32 @@ object PermissionChecker {
         if (!isGranted(context, Manifest.permission.RECEIVE_SMS)) {
             missing += MissingPermission(
                 id = "receive_sms",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.RECEIVE_SMS,
                 displayName = context.getString(R.string.perm_name_receive_sms),
                 why = context.getString(R.string.perm_why_receive_sms),
                 intent = appDetailsIntent(context),
             )
         }
 
-        // 9. CAMERA — QR scanning. Less critical (the user can type the
-        //    pairing URL manually) but still in the manifest, so audited.
+        // 9. CAMERA.
         if (!isGranted(context, Manifest.permission.CAMERA)) {
             missing += MissingPermission(
                 id = "camera",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.CAMERA,
                 displayName = context.getString(R.string.perm_name_camera),
                 why = context.getString(R.string.perm_why_camera),
                 intent = appDetailsIntent(context),
             )
         }
 
-        // 10. Battery optimization ignore — Samsung-specific framing in the
-        //     copy because it's not a standard permission; it's a "don't
-        //     optimize" toggle the OEM exposes. Bottom of the list because
-        //     missing this degrades reliability rather than killing
-        //     features outright (the service still functions, it just
-        //     gets killed sooner under memory pressure).
+        // 10. Battery optimization ignore — SPECIAL. Samsung-specific framing.
         if (!isBatteryOptimizationIgnored(context)) {
             missing += MissingPermission(
                 id = "battery_optimization",
+                kind = Kind.SPECIAL,
+                manifestPermission = null,
                 displayName = context.getString(R.string.perm_name_battery),
                 why = context.getString(R.string.perm_why_battery),
                 intent = batteryOptimizationIntent(context),
@@ -219,8 +257,6 @@ object PermissionChecker {
             "enabled_notification_listeners"
         ) ?: ""
         val component = ComponentName(context, DnkNotificationListenerService::class.java)
-        // Match both the short and flattened forms — some Android builds
-        // store the short form (pkg/.Class), some the long (pkg/pkg.Class).
         return enabled.contains(component.flattenToString()) ||
             enabled.contains(component.flattenToShortString())
     }
@@ -230,20 +266,9 @@ object PermissionChecker {
         return pm.isIgnoringBatteryOptimizations(context.packageName)
     }
 
-    /**
-     * The standard app-details intent for any runtime permission. Drops
-     * the user on the App Info screen, which is the only reliable surface
-     * for re-granting a runtime permission they previously denied — the
-     * runtime requestPermissions dialog won't re-show after a "Don't ask
-     * again" tap.
-     */
     private fun appDetailsIntent(context: Context): Intent {
         return Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
             data = Uri.fromParts("package", context.packageName, null)
-            // FLAG_ACTIVITY_NEW_TASK is required when launching from a
-            // non-Activity context. We're called from an Activity, but
-            // setting it costs nothing and makes the helper safe to reuse
-            // from a Service later if needed.
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }

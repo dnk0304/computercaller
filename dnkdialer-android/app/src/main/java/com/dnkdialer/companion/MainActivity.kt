@@ -5,6 +5,8 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
+import android.app.ActivityManager
+import android.app.AlertDialog
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
@@ -37,6 +39,21 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        /**
+         * Request code for the legacy "auto-request on first launch" flow
+         * (kept for back-compat — the Grant All flow uses its own code so
+         * the result handler can branch on it).
+         */
+        private const val REQ_INITIAL_PERMISSIONS = 1
+
+        /**
+         * Request code for the "Grant All" runtime-permission batch fired
+         * from the blocking permissions-required pane.
+         */
+        private const val REQ_GRANT_ALL_RUNTIME = 2
+    }
 
     /**
      * Connection-status visual states. The colored dot carries the signal so
@@ -150,6 +167,39 @@ class MainActivity : AppCompatActivity() {
      * normal auto-start flow once the user finishes granting.
      */
     private var mainPaneInitialized: Boolean = false
+
+    /**
+     * Round 8 — Grant All flow state.
+     *
+     * When the user taps "Grant All Permissions" on the blocking pane we
+     * fire ActivityCompat.requestPermissions() with every missing RUNTIME
+     * permission batched into one call (Android shows them as a
+     * back-to-back sequence of native popups inside a single request).
+     * On callback we re-check the audit and, if any SPECIAL grants remain,
+     * we walk the user through them sequentially via Settings deep-links.
+     *
+     * [grantAllInProgress] gates onResume so the special-access dialog
+     * doesn't re-fire every time the user comes back from a Settings
+     * screen mid-sequence. Cleared when the audit clears or the user
+     * cancels.
+     */
+    private var grantAllInProgress: Boolean = false
+
+    /**
+     * Suppression flag for the runtime-popup result handler. When set,
+     * onRequestPermissionsResult will (after recording results) continue
+     * into the special-access sequence instead of treating the result as
+     * a one-shot "did we get every standard permission" gate.
+     */
+    private var awaitingRuntimeResultForGrantAll: Boolean = false
+
+    /**
+     * Detail panel expanded/collapsed state. Persisted across pane
+     * re-renders within the same Activity instance so the user doesn't
+     * lose their "expanded" view if Android revokes another permission
+     * mid-grant.
+     */
+    private var permsDetailsExpanded: Boolean = false
 
     private val requiredPermissions = arrayOf(
         Manifest.permission.CALL_PHONE,
@@ -349,6 +399,18 @@ class MainActivity : AppCompatActivity() {
             }, 800)
         }
         
+        // Hard Reset button — manual escape hatch for the "Samsung
+        // One UI silently revoked something" class of bugs. Wipes app
+        // data via ActivityManager.clearApplicationUserData() and
+        // force-restarts the process, so the user lands back on the
+        // Grant All pane with a clean slate. Gated behind a confirmation
+        // dialog with a destructive-style action button (red text) so an
+        // accidental tap doesn't nuke the user's setup.
+        val hardResetButton: Button = findViewById(R.id.hardResetButton)
+        hardResetButton.setOnClickListener {
+            showHardResetConfirmation()
+        }
+
         // Check and show notification status
         checkNotificationStatus()
 
@@ -399,7 +461,7 @@ class MainActivity : AppCompatActivity() {
         android.util.Log.d("MainActivity", "Requesting permissions...")
         // Request all permissions together (required + optional)
         val allPermissions = requiredPermissions + optionalPermissions
-        ActivityCompat.requestPermissions(this, allPermissions, 1)
+        ActivityCompat.requestPermissions(this, allPermissions, REQ_INITIAL_PERMISSIONS)
     }
     
     private fun openNotificationSettings() {
@@ -463,8 +525,31 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         android.util.Log.d("MainActivity", "Permission result received, requestCode: $requestCode")
-        
-        if (requestCode == 1) { // Initial permissions request
+
+        // Round 8 — Grant All flow result.
+        // The batched runtime popup finished (every permission either
+        // granted, denied, or "Don't ask again"'d). Re-run the full audit
+        // so we know whether to continue into special-access prompts or
+        // surface a "still missing" UI.
+        if (requestCode == REQ_GRANT_ALL_RUNTIME) {
+            awaitingRuntimeResultForGrantAll = false
+            // Log every result for diagnostics — useful when a user
+            // reports "I tapped Allow on everything but it still shows
+            // the screen". Almost always one permission was tapped
+            // Don't allow once before and the OS auto-denied it.
+            for (i in permissions.indices) {
+                val granted = i < grantResults.size &&
+                    grantResults[i] == PackageManager.PERMISSION_GRANTED
+                android.util.Log.d(
+                    "MainActivity",
+                    "Grant All runtime result: ${permissions[i]} = ${if (granted) "GRANTED" else "DENIED"}"
+                )
+            }
+            continueGrantAllFlow()
+            return
+        }
+
+        if (requestCode == REQ_INITIAL_PERMISSIONS) { // Initial permissions request
             if (hasPermissions()) {
                 android.util.Log.d("MainActivity", "All required permissions granted, auto-starting service")
                 statusText.text = getString(R.string.status_perms_granted)
@@ -994,6 +1079,16 @@ class MainActivity : AppCompatActivity() {
                 handleRevocationMidSession()
             }
             renderPermissionsRequiredPane(missing)
+
+            // Round 8 — if a Grant All flow is in progress and we're
+            // back from a Settings deep-link, advance to the next step.
+            // continueGrantAllFlow re-audits, re-renders, and either
+            // shows the next dialog (special-access still missing) or
+            // plays the success animation (everything resolved during
+            // this trip to Settings — handled inside continueGrantAllFlow).
+            if (grantAllInProgress && !awaitingRuntimeResultForGrantAll) {
+                continueGrantAllFlow()
+            }
             return
         }
 
@@ -1003,6 +1098,7 @@ class MainActivity : AppCompatActivity() {
         // onResume flow that was here before.
         if (inPermissionsRequiredPane) {
             android.util.Log.d("MainActivity", "onResume: all permissions granted — playing success animation")
+            grantAllInProgress = false
             playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
             return
         }
@@ -1087,9 +1183,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Inflate / refresh the permissions-required pane. Idempotent — safe
-     * to call repeatedly (e.g. user grants one of three permissions and
-     * comes back; we re-render the now-2-item list).
+     * Inflate / refresh the permissions-required pane (Round 8 — Grant
+     * All flow). Idempotent — safe to call repeatedly.
+     *
+     * The pane is now a single primary CTA ("Grant All Permissions") plus
+     * an expandable detail panel for the curious. The CTA fires the
+     * OS-native runtime-permission popup batched across every missing
+     * RUNTIME permission, then walks the user through any remaining
+     * SPECIAL grants (Notification Listener, Battery optimization) via
+     * Settings deep-links.
      *
      * Side effect: sets [inPermissionsRequiredPane] to true.
      */
@@ -1099,49 +1201,280 @@ class MainActivity : AppCompatActivity() {
             inPermissionsRequiredPane = true
         }
 
-        val listContainer: LinearLayout = findViewById(R.id.missingPermissionsList)
-        listContainer.removeAllViews()
-        val inflater = LayoutInflater.from(this)
-        for (perm in missing) {
-            val card = inflater.inflate(R.layout.item_missing_permission, listContainer, false)
-            card.findViewById<TextView>(R.id.permTitle).text = perm.displayName
-            card.findViewById<TextView>(R.id.permWhy).text = perm.why
-            // contentDescription on the Grant button gets the permission
-            // name appended so TalkBack reads "Grant, Notifications" rather
-            // than just "Grant" eleven times in a row.
-            val grantButton: Button = card.findViewById(R.id.permGrantButton)
-            grantButton.contentDescription = getString(R.string.perms_grant) + ", " + perm.displayName
-            grantButton.setOnClickListener {
-                try {
-                    startActivity(perm.intent)
-                } catch (e: Exception) {
-                    android.util.Log.e("MainActivity", "Failed to launch grant intent for ${perm.id}", e)
-                    // Defensive fallback: if a special-access intent
-                    // isn't resolvable on this OEM build (rare), drop
-                    // the user on the app-details screen so they have
-                    // somewhere to land.
-                    try {
-                        val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = Uri.fromParts("package", packageName, null)
-                        }
-                        startActivity(fallback)
-                    } catch (_: Exception) { /* genuinely nothing we can do */ }
-                }
-            }
-            listContainer.addView(card)
+        // Partition the audit by kind. Runtime permissions go in one
+        // batch via ActivityCompat.requestPermissions; special-access
+        // grants are walked sequentially via Settings deep-links.
+        val runtimeMissing = missing.filter { it.kind == PermissionChecker.Kind.RUNTIME }
+        val specialMissing = missing.filter { it.kind == PermissionChecker.Kind.SPECIAL }
+
+        // Populate the expandable detail lists. Hide the section labels
+        // when their list is empty so a partially-granted state doesn't
+        // show an orphan heading.
+        val runtimeList: LinearLayout = findViewById(R.id.permsRuntimeList)
+        val specialList: LinearLayout = findViewById(R.id.permsSpecialList)
+        val runtimeLabel: TextView = findViewById(R.id.permsRuntimeSectionLabel)
+        val specialLabel: TextView = findViewById(R.id.permsSpecialSectionLabel)
+        renderDetailList(runtimeList, runtimeMissing)
+        renderDetailList(specialList, specialMissing)
+        runtimeLabel.visibility = if (runtimeMissing.isEmpty()) View.GONE else View.VISIBLE
+        runtimeList.visibility = if (runtimeMissing.isEmpty()) View.GONE else View.VISIBLE
+        specialLabel.visibility = if (specialMissing.isEmpty()) View.GONE else View.VISIBLE
+        specialList.visibility = if (specialMissing.isEmpty()) View.GONE else View.VISIBLE
+
+        // Detail panel — start collapsed unless the user previously
+        // expanded it. Re-renders preserve [permsDetailsExpanded] so an
+        // Android-revoked permission appearing mid-flow doesn't snap the
+        // panel shut.
+        val toggle: TextView = findViewById(R.id.permsDetailsToggle)
+        val panel: LinearLayout = findViewById(R.id.permsDetailsPanel)
+        applyDetailsExpansion(toggle, panel)
+        toggle.setOnClickListener {
+            permsDetailsExpanded = !permsDetailsExpanded
+            applyDetailsExpansion(toggle, panel)
+        }
+
+        // Primary CTA — Grant All. Kicks off the full sequence.
+        val grantAllButton: Button = findViewById(R.id.permsGrantAllButton)
+        grantAllButton.setOnClickListener {
+            startGrantAllFlow(runtimeMissing, specialMissing)
         }
 
         // Refresh button — re-runs the check without leaving the Activity.
-        // Useful when the user grants something via a flow that doesn't
-        // resume our Activity (some OEM battery settings drop you on
-        // Home rather than coming back).
+        // Safety net for OEM flows that don't return to us on Back.
         findViewById<Button>(R.id.permsRefreshButton).setOnClickListener {
             android.util.Log.d("MainActivity", "Refresh tapped — re-checking permissions")
             val now = PermissionChecker.checkAll(this)
             if (now.isEmpty()) {
+                grantAllInProgress = false
                 playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
             } else {
                 renderPermissionsRequiredPane(now)
+            }
+        }
+    }
+
+    /**
+     * Apply the current expanded/collapsed state to the toggle label and
+     * the detail panel visibility. Extracted because we need to do the
+     * same thing in two places (initial render + click handler).
+     */
+    private fun applyDetailsExpansion(toggle: TextView, panel: LinearLayout) {
+        if (permsDetailsExpanded) {
+            panel.visibility = View.VISIBLE
+            toggle.text = getString(R.string.perms_details_hide)
+        } else {
+            panel.visibility = View.GONE
+            toggle.text = getString(R.string.perms_details_show)
+        }
+    }
+
+    /**
+     * Render an informational list of missing-permission rows into a
+     * container. No Grant buttons — the user grants everything through
+     * the Grant All flow. This list is purely a "what does this need?"
+     * breakdown for the curious user who taps the disclosure toggle.
+     */
+    private fun renderDetailList(
+        container: LinearLayout,
+        items: List<PermissionChecker.MissingPermission>
+    ) {
+        container.removeAllViews()
+        val inflater = LayoutInflater.from(this)
+        for (perm in items) {
+            val row = inflater.inflate(R.layout.item_missing_permission, container, false)
+            row.findViewById<TextView>(R.id.permTitle).text = perm.displayName
+            row.findViewById<TextView>(R.id.permWhy).text = perm.why
+            container.addView(row)
+        }
+    }
+
+    /**
+     * Round 8 — Grant All flow entry point.
+     *
+     * Sequence:
+     *   1. Fire ActivityCompat.requestPermissions with every missing
+     *      runtime permission batched into one call. Android dispatches
+     *      them as a back-to-back sequence of native popups under a
+     *      single result callback.
+     *   2. When the callback fires, [continueGrantAllFlow] re-audits
+     *      and either:
+     *        a. Walks the user through remaining SPECIAL grants via a
+     *           confirmation dialog + Settings deep-links.
+     *        b. Plays the success animation if everything's resolved.
+     *        c. Re-renders the pane with whatever still needs attention.
+     *
+     * If there are NO runtime permissions to request (already granted —
+     * the user came back to grant the special ones), we skip straight
+     * to [continueGrantAllFlow] so they don't see a no-op popup.
+     */
+    private fun startGrantAllFlow(
+        runtimeMissing: List<PermissionChecker.MissingPermission>,
+        specialMissing: List<PermissionChecker.MissingPermission>
+    ) {
+        android.util.Log.d(
+            "MainActivity",
+            "Grant All tapped — runtime=${runtimeMissing.size}, special=${specialMissing.size}"
+        )
+        grantAllInProgress = true
+
+        val runtimeArr = runtimeMissing
+            .mapNotNull { it.manifestPermission }
+            .toTypedArray()
+
+        if (runtimeArr.isEmpty()) {
+            // Nothing to batch — straight into special-access dialogs.
+            continueGrantAllFlow()
+            return
+        }
+
+        awaitingRuntimeResultForGrantAll = true
+        ActivityCompat.requestPermissions(this, runtimeArr, REQ_GRANT_ALL_RUNTIME)
+    }
+
+    /**
+     * Step 2 of the Grant All flow — runs after the runtime popup batch
+     * has returned (or if there were no runtime permissions to batch).
+     *
+     * Re-audits everything and decides the next step:
+     *   - Audit empty: play success animation, transition to main pane.
+     *   - Only special-access remaining: show the confirmation dialog +
+     *     route the user to the first Settings screen. onResume detects
+     *     when they come back and re-enters this method.
+     *   - Mixed remaining (some runtime were denied): re-render the pane.
+     *     This typically means the user tapped "Don't allow" on one of
+     *     the runtime popups — the OS won't show it again, so the user
+     *     needs to go to Settings → Apps → ComputerCaller → Permissions.
+     *     We push them there via the special-access flow.
+     */
+    private fun continueGrantAllFlow() {
+        val now = PermissionChecker.checkAll(this)
+        if (now.isEmpty()) {
+            android.util.Log.d("MainActivity", "Grant All complete — all permissions resolved")
+            grantAllInProgress = false
+            playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+            return
+        }
+
+        val remainingRuntime = now.filter { it.kind == PermissionChecker.Kind.RUNTIME }
+        val remainingSpecial = now.filter { it.kind == PermissionChecker.Kind.SPECIAL }
+
+        // If runtime entries are still missing here, the user denied them
+        // in the popup (and possibly tapped "Don't ask again"). The OS
+        // popup can't be re-shown for "Don't ask again" entries, so the
+        // only path forward is App Settings. Drop them there with a
+        // dialog explaining why.
+        if (remainingRuntime.isNotEmpty()) {
+            android.util.Log.d(
+                "MainActivity",
+                "Grant All — runtime still missing: ${remainingRuntime.map { it.id }}"
+            )
+            // Re-render to show the new (smaller) list, so the user can
+            // see progress. The Refresh button below the CTA lets them
+            // re-tick the audit after fixing.
+            renderPermissionsRequiredPane(now)
+            // Send them to the app-details Settings screen so they can
+            // manually re-grant the denied runtime perms. We use the
+            // same dialog UI as the special-access flow for consistency.
+            promptForRemainingGrants(remainingRuntime, remainingSpecial)
+            return
+        }
+
+        // Only SPECIAL grants left — the normal happy path of the flow.
+        if (remainingSpecial.isNotEmpty()) {
+            android.util.Log.d(
+                "MainActivity",
+                "Grant All — special access still missing: ${remainingSpecial.map { it.id }}"
+            )
+            renderPermissionsRequiredPane(now)
+            promptForRemainingGrants(emptyList(), remainingSpecial)
+        }
+    }
+
+    /**
+     * Show the single explanatory dialog before routing the user to
+     * Settings. Covers three message variants:
+     *   - Both special-access grants missing → "Two more to go..."
+     *   - Only Notification Listener missing → "Notification Access..."
+     *   - Only Battery optimization missing → "Battery (Don't optimize)..."
+     *
+     * "Take me there" launches the first remaining grant intent.
+     * onResume detects when the user comes back and either fires the
+     * next dialog (if the previous one resolved) or re-renders the pane.
+     *
+     * If [remainingRuntime] is non-empty (denied/"Don't ask again" case),
+     * the first stop is App Settings; remainingSpecial entries are
+     * queued behind it.
+     */
+    private fun promptForRemainingGrants(
+        remainingRuntime: List<PermissionChecker.MissingPermission>,
+        remainingSpecial: List<PermissionChecker.MissingPermission>
+    ) {
+        val hasListener = remainingSpecial.any { it.id == "notification_listener" }
+        val hasBattery = remainingSpecial.any { it.id == "battery_optimization" }
+
+        val messageRes = when {
+            // Runtime denied — message focuses on the Settings hand-off.
+            // We reuse the "both" copy because it's the most descriptive
+            // ("tap each one when prompted") and matches what the user
+            // will see if both runtime + special are mixed.
+            remainingRuntime.isNotEmpty() -> R.string.perms_special_dialog_message_both
+            hasListener && hasBattery -> R.string.perms_special_dialog_message_both
+            hasListener -> R.string.perms_special_dialog_message_listener
+            hasBattery -> R.string.perms_special_dialog_message_battery
+            else -> return // nothing to prompt for
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.perms_special_dialog_title)
+            .setMessage(messageRes)
+            .setPositiveButton(R.string.perms_special_dialog_action) { dialog, _ ->
+                dialog.dismiss()
+                launchNextGrantIntent(remainingRuntime, remainingSpecial)
+            }
+            .setNegativeButton(R.string.perms_special_dialog_cancel) { dialog, _ ->
+                grantAllInProgress = false
+                dialog.dismiss()
+            }
+            .setCancelable(true)
+            .setOnCancelListener { grantAllInProgress = false }
+            .show()
+    }
+
+    /**
+     * Launch the first available grant intent in priority order:
+     *   1. App settings (if any runtime perms are stuck on "Don't ask again")
+     *   2. Notification Listener settings
+     *   3. Battery optimization request
+     *
+     * onResume re-audits and re-enters [continueGrantAllFlow] when the
+     * user returns, so this method is one-shot — it never tries to
+     * chain calls internally. The chain is driven by user navigation
+     * (back from Settings → onResume → next step).
+     */
+    private fun launchNextGrantIntent(
+        remainingRuntime: List<PermissionChecker.MissingPermission>,
+        remainingSpecial: List<PermissionChecker.MissingPermission>
+    ) {
+        val intent = when {
+            remainingRuntime.isNotEmpty() -> remainingRuntime.first().intent
+            else -> remainingSpecial.firstOrNull()?.intent
+        } ?: return
+
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to launch grant intent", e)
+            // Fallback: app-details Settings is universally resolvable.
+            try {
+                val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(fallback)
+            } catch (_: Exception) {
+                // Genuinely nothing we can do — at least keep the flow
+                // state sane so the next Refresh tap works.
+                grantAllInProgress = false
             }
         }
     }
@@ -1193,6 +1526,114 @@ class MainActivity : AppCompatActivity() {
                 }, 320)
             }
             .start()
+    }
+
+    /**
+     * Hard Reset confirmation dialog. Shown before any destructive
+     * action so accidental taps don't nuke the user's setup. The
+     * positive action ("Reset") is restyled red after the dialog
+     * shows — AlertDialog doesn't expose a "destructive" style via
+     * the builder API, but tinting the positive button text post-show
+     * gives the same visual signal.
+     */
+    private fun showHardResetConfirmation() {
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.hard_reset_dialog_title)
+            .setMessage(R.string.hard_reset_dialog_message)
+            .setNegativeButton(R.string.hard_reset_dialog_cancel) { d, _ -> d.dismiss() }
+            .setPositiveButton(R.string.hard_reset_dialog_confirm) { d, _ ->
+                d.dismiss()
+                performHardReset()
+            }
+            .setCancelable(true)
+            .create()
+
+        dialog.setOnShowListener {
+            // Tint the positive button red to signal destructive action.
+            // Cancel stays in the default secondary color so the user's
+            // eye lands on it first — the safer choice.
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(
+                ContextCompat.getColor(this, R.color.dot_failed)
+            )
+        }
+        dialog.show()
+    }
+
+    /**
+     * Hard Reset implementation. Uses ActivityManager.clearApplicationUserData()
+     * — the OS-level equivalent of Settings → Apps → ComputerCaller →
+     * Storage → Clear data. On success:
+     *   - All app SharedPreferences, databases, cache, files are wiped.
+     *   - On Android 13+ the OS revokes runtime permissions back to their
+     *     default-denied state (matching what a fresh install looks like),
+     *     so the user re-enters the Grant All flow on next launch.
+     *   - The process is force-killed by the OS as part of the call; the
+     *     OS will restart the launcher activity on next user tap.
+     *
+     * We stop our foreground service first so it can't outlive the clear
+     * and re-bind to a half-wiped state. The call itself returns true
+     * on success; if it returns false (rare — usually means the app is
+     * being debugged or is the device-owner) we surface a toast pointing
+     * the user at the manual Settings path.
+     */
+    private fun performHardReset() {
+        android.util.Log.w("MainActivity", "Hard Reset confirmed — clearing user data")
+        Toast.makeText(this, R.string.action_hard_reset, Toast.LENGTH_SHORT).show()
+
+        // Tear down the service cleanly before the wipe. The OS will kill
+        // the process anyway, but doing it explicitly means a foreground
+        // notification doesn't linger for the half-second between Toast
+        // and process-kill.
+        try {
+            if (serviceBound) {
+                unbindService(serviceConnection)
+                serviceBound = false
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "unbindService failed during Hard Reset: ${e.message}")
+        }
+        try {
+            val stopIntent = Intent(this, PhoneService::class.java).apply {
+                action = PhoneService.ACTION_STOP
+            }
+            stopService(stopIntent)
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "stopService failed during Hard Reset: ${e.message}")
+        }
+        phoneService = null
+        stopStatusUpdates()
+
+        // Fire the wipe. The OS kills our process partway through this
+        // call, so any code after the `if` block here is best-effort and
+        // may not execute. If clearApplicationUserData() returns false,
+        // we're still alive — show the manual-recovery toast.
+        val ok = try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            am.clearApplicationUserData()
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "clearApplicationUserData threw", e)
+            false
+        }
+
+        if (!ok) {
+            Toast.makeText(this, R.string.hard_reset_failed, Toast.LENGTH_LONG).show()
+            // Last-resort fallback — open app-details Settings so the
+            // user can clear data manually.
+            try {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Couldn't open app-details after Hard Reset failure", e)
+            }
+        }
+        // No `finish()` / `startActivity()` here on the success path —
+        // clearApplicationUserData() kills our process. On next launch
+        // the OS reads the (now empty) permission state, MainActivity.
+        // onCreate runs PermissionChecker.checkAll(), finds everything
+        // missing, and routes the user into the Grant All pane.
     }
 
     override fun onDestroy() {
