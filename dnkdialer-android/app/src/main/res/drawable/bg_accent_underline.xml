@@ -14,5 +14,3 @@
         android:endColor="@color/accent_cyan" />
     <corners android:radius="2dp" />
 </shape>
-</content>
-</invoke>

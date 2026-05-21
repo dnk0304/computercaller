@@ -16,5 +16,3 @@
         android:width="@dimen/dot_size"
         android:height="@dimen/dot_size" />
 </shape>
-</content>
-</invoke>

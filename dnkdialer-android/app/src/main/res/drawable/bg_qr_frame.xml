@@ -13,5 +13,3 @@
     <solid android:color="@color/surface_qr" />
     <corners android:radius="@dimen/radius_chip" />
 </shape>
-</content>
-</invoke>

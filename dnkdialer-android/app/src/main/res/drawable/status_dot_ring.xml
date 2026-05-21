@@ -19,5 +19,3 @@
         android:width="@dimen/dot_ring_size"
         android:height="@dimen/dot_ring_size" />
 </shape>
-</content>
-</invoke>

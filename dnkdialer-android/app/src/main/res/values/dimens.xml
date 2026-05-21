@@ -61,5 +61,3 @@
     <!-- QR — 200dp unchanged. -->
     <dimen name="qr_size">200dp</dimen>
 </resources>
-</content>
-</invoke>
