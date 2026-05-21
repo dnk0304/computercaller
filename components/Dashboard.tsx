@@ -877,12 +877,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // person they're on the phone with without retyping. No-ops if neither is
   // available (the button is also disabled in that state, but we belt-and-brace
   // here so the handler is safe to call from anywhere).
+  // Quick SMS — replicate clicking "+ New" in the thread list header,
+  // then pre-fill the recipient with the active-call's number (or whatever
+  // is typed in Quick Dial). Stays on the Dashboard tab so the user
+  // doesn't lose sight of the Quick Dial / Active Call card while
+  // composing. Same state mutations as handleStartNewMessage + the
+  // recipient pre-fill.
   const handleSmsFromQuickDial = useCallback(() => {
     const target = dialNumber.trim() || currentCall?.number?.trim() || '';
     if (!target) return;
-    setSelectedMessageNumber(target);
-    setActiveTab('messages');
-  }, [dialNumber, currentCall, setSelectedMessageNumber, setActiveTab]);
+    setComposingNew(true);
+    setSelectedThread(null);
+    setNewMsgRecipient(target);
+    setNewMsgBody('');
+  }, [dialNumber, currentCall, setComposingNew, setSelectedThread, setNewMsgRecipient, setNewMsgBody]);
 
   const handleStartNewMessage = useCallback(() => {
     setComposingNew(true);
@@ -1217,6 +1225,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               tickKey={callTick}
               onAnswer={answerCall}
               onEnd={endCall}
+              onSendSms={(target) => {
+                // Same as Quick Dial's SMS button: open the "+ New"
+                // composer in Column 3 with the caller's number pre-filled.
+                // Stays on Dashboard — the call card and composer sit
+                // side-by-side. Identical state mutations as
+                // handleStartNewMessage + the recipient pre-fill.
+                setComposingNew(true);
+                setSelectedThread(null);
+                setNewMsgRecipient(target);
+                setNewMsgBody('');
+              }}
             />
           )}
         </div>
@@ -1834,6 +1853,10 @@ interface ActiveCallCardProps {
   tickKey: number; // forces re-render every second so the timer updates
   onAnswer: () => void;
   onEnd: () => void;
+  // Triggers the parent dashboard's "+ New" compose flow with the
+  // caller's number pre-filled. Stays on the Dashboard tab so the user
+  // doesn't lose sight of the Active Call card while composing.
+  onSendSms: (target: string) => void;
 }
 
 const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
@@ -1841,22 +1864,20 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
   tickKey,
   onAnswer,
   onEnd,
+  onSendSms,
 }) => {
   // Mute is a placeholder per spec — local-only state, not wired to the bridge.
   const [muted, setMuted] = useState(false);
 
-  // Send-SMS shortcut during a live call. Routes to the Messages tab with the
-  // caller's number pre-selected, mirroring the Quick Dial header SMS button
-  // pattern. ActiveCallCard is a child component but hooks compose fine here —
-  // calling useDashboardTab() directly keeps the prop surface lean and avoids
-  // drilling another callback through the parent.
-  const { setSelectedMessageNumber, setActiveTab } = useDashboardTab();
+  // Send-SMS shortcut during a live call. Replicates the parent dashboard's
+  // "+ New" compose flow (Column 2 header button) and pre-fills the recipient
+  // with the caller's number. Stays on the Dashboard tab — Column 3 transforms
+  // into the new-message composer right next to the still-visible call card.
   const smsTarget = call.number?.trim() ?? '';
   const canSendSms = smsTarget.length > 0;
   const handleSendSms = () => {
     if (!canSendSms) return;
-    setSelectedMessageNumber(smsTarget);
-    setActiveTab('messages');
+    onSendSms(smsTarget);
   };
 
   // Re-read time only via tickKey re-renders; avoids spurious renders elsewhere.
