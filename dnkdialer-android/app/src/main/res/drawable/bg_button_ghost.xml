@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Ghost button — borderless slate label. Used for the secondary
-  Disconnect action. Single-color palette: status differentiation
-  comes from weight + position, not three different button colors.
+  Ghost button — borderless secondary label. Used for Disconnect.
+  Round 7: pressed state fills with surface_inset (was surface_inset
+  in R6 too — kept since the new palette has the same name pointing
+  at the right hex). Reads as "stop / cancel" without competing with
+  the primary gradient.
 -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_pressed="true">
@@ -18,3 +20,5 @@
         </shape>
     </item>
 </selector>
+</content>
+</invoke>

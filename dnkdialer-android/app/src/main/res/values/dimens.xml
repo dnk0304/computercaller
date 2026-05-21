@@ -1,14 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Spacing scale (4dp grid).
-         Round 2: section gutters bumped from 16/24 → 28/40 for breathing
-         room. Negative space is a feature, not waste. -->
+         Round 7: tightened 20-30% vs Round 6. The R6 stack felt like a
+         "tutorial app" — generous gutters for first-time setup. Modern
+         pro tools (Linear, Vercel dashboards, Claude.ai) run dense.
+         Section gutters 28/40 → 20/28. Padding stays for tap targets. -->
     <dimen name="space_2">2dp</dimen>
     <dimen name="space_4">4dp</dimen>
     <dimen name="space_6">6dp</dimen>
     <dimen name="space_8">8dp</dimen>
     <dimen name="space_10">10dp</dimen>
     <dimen name="space_12">12dp</dimen>
+    <dimen name="space_14">14dp</dimen>
     <dimen name="space_16">16dp</dimen>
     <dimen name="space_20">20dp</dimen>
     <dimen name="space_24">24dp</dimen>
@@ -17,45 +20,46 @@
     <dimen name="space_40">40dp</dimen>
     <dimen name="space_56">56dp</dimen>
 
-    <!-- Radii -->
-    <dimen name="radius_chip">8dp</dimen>
-    <dimen name="radius_button">10dp</dimen>
+    <!-- Radii — slightly larger so the dark surfaces read as "screens"
+         not "paper". 8 → 10 / 10 → 12. -->
+    <dimen name="radius_chip">10dp</dimen>
+    <dimen name="radius_button">12dp</dimen>
+    <dimen name="radius_card">14dp</dimen>
 
     <!-- Stroke -->
     <dimen name="stroke_hairline">1dp</dimen>
-    <dimen name="stroke_accent">3dp</dimen>
+    <dimen name="stroke_accent">2dp</dimen>
 
-    <!-- Status dot — round 3 promotes the dot back to PRIMARY signal.
-         14dp reads as a deliberate indicator at arm's length, not a
-         punctuation mark. The step-number is hidden in round 3 in
-         favor of a single dot + short label — less to read, more to
-         glance. -->
-    <dimen name="dot_size">14dp</dimen>
+    <!-- Status dot — 12dp. Slightly smaller than R6's 14dp; the LIVE
+         state now has a soft glow ring so visual weight comes from
+         the halo, not the dot itself. -->
+    <dimen name="dot_size">12dp</dimen>
+    <dimen name="dot_ring_size">22dp</dimen>
 
-    <!-- Buttons -->
+    <!-- Buttons — kept tap-friendly at 52/42. -->
     <dimen name="button_height">52dp</dimen>
     <dimen name="button_height_small">42dp</dimen>
 
-    <!-- Typography — round 3 collapses the scale.
-         The R2 scale had FIVE voices (11/12/14/22/26/64). Felt
-         editorial / "writer-like". R3 keeps two functional sizes
-         (14 body, 22 status) + a single brand display (44 wordmark).
-         Everything else (eyebrows, captions) collapses to body or
-         caption-tight. Less type variety = more digital-service feel. -->
+    <!-- Typography — Round 7 simplifies further. Display, body,
+         caption, mono. The status size drops 22 → 20 to sit
+         comfortably next to the smaller dot + ring. -->
     <dimen name="text_eyebrow">11sp</dimen>
     <dimen name="text_step_number">11sp</dimen>
     <dimen name="text_caption">12sp</dimen>
     <dimen name="text_body">14sp</dimen>
     <dimen name="text_url">14sp</dimen>
-    <dimen name="text_status">22sp</dimen>
-    <dimen name="text_subtitle">20sp</dimen>
-    <dimen name="text_wordmark">44sp</dimen>
+    <dimen name="text_status">20sp</dimen>
+    <dimen name="text_subtitle">18sp</dimen>
+    <dimen name="text_wordmark">42sp</dimen>
 
-    <!-- Wordmark accent underline -->
-    <dimen name="wordmark_underline_width">52dp</dimen>
+    <!-- Wordmark accent underline — slightly thicker (2 → 3dp) and
+         shorter (52 → 44dp) so it reads as a deliberate stroke under
+         the wordmark, not a decorative line. -->
+    <dimen name="wordmark_underline_width">44dp</dimen>
     <dimen name="wordmark_underline_height">3dp</dimen>
 
-    <!-- QR — bumped 220 → 200 (the screen is now busier with type;
-         giving the QR slightly less weight balances the composition). -->
+    <!-- QR — 200dp unchanged. -->
     <dimen name="qr_size">200dp</dimen>
 </resources>
+</content>
+</invoke>

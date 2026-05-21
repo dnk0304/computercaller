@@ -10,62 +10,77 @@
     <color name="white">#FFFFFFFF</color>
 
     <!-- =================================================== -->
-    <!-- ComputerCaller — Round 2 tokens                     -->
+    <!-- ComputerCaller — Round 7 (sleek-tech)               -->
     <!--                                                     -->
-    <!-- Departures from round 1:                            -->
-    <!--   - Flat warm near-black surface (no gradient)      -->
-    <!--   - One accent color, not three. The status hue     -->
-    <!--     differentiation moved to step-numbers + dot     -->
-    <!--   - Warm bias throughout (slightly red-shifted      -->
-    <!--     greys) so the surface reads as paper-under-     -->
-    <!--     lamp, not spaceship-console                     -->
+    <!-- Direction: modern fintech / AI tools / pro tools    -->
+    <!-- (Linear, Vercel, Revolut, Claude.ai). Dark base by  -->
+    <!-- default. Pure near-black. Electric blue accent.     -->
+    <!-- Emerald LIVE dot retained — semantically correct.   -->
+    <!--                                                     -->
+    <!-- Departures from Round 6 (warm-terracotta):          -->
+    <!--   - Warm near-black (#0A0A0B) → pure near-black     -->
+    <!--     (#050507). Slight cool bias on raised surfaces  -->
+    <!--     so layered chrome reads as "screen" not "paper" -->
+    <!--   - Warm orange #E8763A → electric blue #0A84FF     -->
+    <!--     (Apple system blue). Used on CTAs, URL bar,     -->
+    <!--     wordmark stroke. Cyan secondary for hover/glow. -->
+    <!--   - Text: warm off-white #F4F1EA → neutral cool     -->
+    <!--     #F5F7FA. Less "paper", more "OLED".             -->
+    <!--   - Hairlines on white@8-15% instead of warm grays. -->
     <!-- =================================================== -->
 
-    <!-- Surface scale (warm grays — slight red bias, NOT slate-blue) -->
-    <color name="surface_base">#0A0A0B</color>          <!-- app background, flat -->
-    <color name="surface_raised">#141416</color>        <!-- subtle elevation -->
-    <color name="surface_inset">#1A1A1D</color>         <!-- recessed (url block) -->
-    <color name="surface_border">#26262A</color>        <!-- hairline divider -->
-    <color name="surface_qr">#F5F1EA</color>            <!-- warm off-white for QR plate -->
+    <!-- Surface scale — pure near-black with subtle cool elevation. -->
+    <color name="surface_base">#050507</color>          <!-- app background, the void -->
+    <color name="surface_raised">#0E0F12</color>        <!-- subtle elevation (cards) -->
+    <color name="surface_inset">#13141A</color>         <!-- recessed (url block, fields) -->
+    <color name="surface_border">#FFFFFF1A</color>      <!-- 10% white hairline -->
+    <color name="surface_border_strong">#FFFFFF26</color> <!-- 15% white — focused/active -->
+    <color name="surface_qr">#FFFFFF</color>            <!-- pure white QR plate; max contrast for scanners -->
 
-    <!-- Text scale -->
-    <color name="text_primary">#F4F1EA</color>          <!-- warm off-white -->
-    <color name="text_secondary">#9C968A</color>        <!-- mid warm gray -->
-    <color name="text_tertiary">#5E5A52</color>         <!-- dim warm gray -->
-    <color name="text_label">#6E6A60</color>            <!-- eyebrow / step number -->
+    <!-- Text scale — cool neutral grays. -->
+    <color name="text_primary">#F5F7FA</color>          <!-- near-white, slight cool -->
+    <color name="text_secondary">#A1A6B0</color>        <!-- mid-cool gray -->
+    <color name="text_tertiary">#60656E</color>         <!-- dim cool gray -->
+    <color name="text_label">#6B7280</color>            <!-- eyebrow / label -->
 
-    <!-- Single accent — warm orange. Used SPARINGLY: wordmark underline,
-         URL-block left bar, primary CTA, dot in LIVE state.
-         Reference: a designer who picked one and committed. -->
-    <color name="accent_warm">#E8763A</color>           <!-- terracotta / burnt orange -->
-    <color name="accent_warm_pressed">#C75F26</color>
-    <color name="accent_warm_dim">#7A4220</color>       <!-- for muted/inactive states -->
+    <!-- Accent — electric blue. Apple system blue (#0A84FF) is the
+         de-facto "modern tech" primary in 2025. Used SPARINGLY:
+         primary CTA gradient, URL-block left bar, wordmark stroke,
+         focused field border. Cyan is the gradient companion for
+         depth on the primary CTA. -->
+    <color name="accent_blue">#0A84FF</color>           <!-- electric blue, primary -->
+    <color name="accent_blue_pressed">#0066D6</color>   <!-- darker pressed state -->
+    <color name="accent_blue_dim">#1F3A6B</color>       <!-- muted / disabled -->
+    <color name="accent_cyan">#00D4FF</color>           <!-- gradient companion, glow -->
 
-    <!-- Status semantic — the dot is the PRIMARY signal now. Status
-         text is reduced to 1–2 words, so the dot carries the meaning
-         and must read at a glance.
+    <!-- Aliases — keep the old `accent_warm` token names resolvable
+         so any drawable / theme reference that hasn't been migrated
+         yet still compiles to the new palette. Pure mapping; no
+         visual difference vs the canonical accent_blue tokens. -->
+    <color name="accent_warm">#0A84FF</color>
+    <color name="accent_warm_pressed">#0066D6</color>
+    <color name="accent_warm_dim">#1F3A6B</color>
 
-         Round 3: emerald GREEN for LIVE (the universal "healthy /
-         active service" signal — emerald-500 from Tailwind). Amber
-         for WAITING, slate for IDLE. The brand warm-terracotta stays
-         reserved for chrome (wordmark underline, primary CTA, URL
-         block bar), so the dot's green pops against the warm surface
-         instead of competing with the brand accent. -->
+    <!-- Status semantic — the dot is the PRIMARY signal. Emerald
+         stays for LIVE (universal "healthy service" green), amber
+         for WAITING (universal "in-progress"), red for FAILED. The
+         IDLE dim slate is now cooler so it sits in the same family
+         as the rest of the chrome. -->
     <color name="dot_live">#10B981</color>              <!-- emerald-500; connected -->
-    <color name="dot_live_soft">#10B98133</color>       <!-- 20% emerald — soft halo / fill -->
+    <color name="dot_live_soft">#10B98140</color>       <!-- 25% emerald — glow ring -->
+    <color name="dot_live_glow">#10B98166</color>       <!-- 40% emerald — outer glow -->
     <color name="dot_waiting">#F59E0B</color>           <!-- amber-500; pending -->
-    <color name="dot_idle">#3A3A3E</color>              <!-- dim warm gray; offline -->
-    <!-- Round 4 — new ConnState entries for the explicit Connect flow.
-         CONNECTING uses a slate-blue distinct from amber WAITING so the
-         user can tell "we're mid-handshake on the relay" apart from
-         "browser-side hasn't joined yet". FAILED is red-500 — universal
-         signal for an error the user must act on. -->
-    <color name="dot_connecting">#60A5FA</color>        <!-- blue-400; relay handshake in flight -->
-    <color name="dot_failed">#EF4444</color>            <!-- red-500; last attempt errored -->
+    <color name="dot_waiting_soft">#F59E0B40</color>    <!-- amber glow for pulse -->
+    <color name="dot_idle">#2A2D35</color>              <!-- cool dim gray; offline -->
+    <color name="dot_connecting">#0A84FF</color>        <!-- electric blue; handshake -->
+    <color name="dot_connecting_soft">#0A84FF40</color>
+    <color name="dot_failed">#FF453A</color>            <!-- iOS system red -->
+    <color name="dot_failed_soft">#FF453A40</color>
 
-    <!-- Token-input chrome — recessed field surface + a subtle focused border.
-         Sits next to the URL block visually but is editable, not reference. -->
-    <color name="field_surface">#141416</color>
-    <color name="field_border">#2E2E32</color>
-    <color name="field_border_focused">#E8763A</color>
+    <!-- Token-input chrome. -->
+    <color name="field_surface">#13141A</color>
+    <color name="field_border">#FFFFFF1A</color>
+    <color name="field_border_focused">#0A84FF</color>
 </resources>
+</content>
+</invoke>

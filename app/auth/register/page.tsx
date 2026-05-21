@@ -63,12 +63,13 @@ export default function RegisterPage() {
   return (
     <div className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        <div className="flex justify-center mb-8">
-          <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center">
-            <Phone className="w-6 h-6 text-white" />
+        <div className="flex items-center justify-center gap-3 mb-8">
+          <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-lg shadow-blue-600/30 flex items-center justify-center">
+            <Phone className="w-5 h-5 text-white" />
           </div>
+          <span className="text-lg font-semibold tracking-tight text-white">ComputerCaller</span>
         </div>
-        <h1 className="text-2xl font-bold text-white text-center mb-2">
+        <h1 className="text-2xl font-bold text-white text-center mb-2 tracking-tight">
           Create account
         </h1>
         <p className="text-slate-400 text-center text-sm mb-8">

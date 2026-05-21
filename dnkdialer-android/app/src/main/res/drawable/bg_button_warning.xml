@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Permissions-needed chip. Hairline border in the warm accent so it
-  picks up the screen's only color signal — same single-accent
-  discipline as everything else.
+  Permissions-needed chip — Round 7.
+  Hairline electric-blue border on transparent. Picks up the screen's
+  primary accent without competing with the gradient primary CTA.
+  Same single-accent discipline as the rest of the design.
 -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_pressed="true">
@@ -10,7 +11,7 @@
             <solid android:color="@color/surface_inset" />
             <stroke
                 android:width="@dimen/stroke_hairline"
-                android:color="@color/accent_warm" />
+                android:color="@color/accent_blue" />
             <corners android:radius="@dimen/radius_button" />
         </shape>
     </item>
@@ -19,8 +20,10 @@
             <solid android:color="@android:color/transparent" />
             <stroke
                 android:width="@dimen/stroke_hairline"
-                android:color="@color/accent_warm" />
+                android:color="@color/accent_blue" />
             <corners android:radius="@dimen/radius_button" />
         </shape>
     </item>
 </selector>
+</content>
+</invoke>

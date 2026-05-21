@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Copy button — slim hairline-bordered chip. Sits next to the URL
-  block. Reads as "tool", not "primary action".
+  Copy button — Round 7.
+  Hairline white-at-10% border on transparent. Sits next to the URL
+  block. Reads as "tool / utility", not "primary action". Pressed
+  state fills with a slightly raised surface for the tap beat.
 -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_pressed="true">
@@ -10,7 +12,7 @@
             <corners android:radius="@dimen/radius_chip" />
             <stroke
                 android:width="@dimen/stroke_hairline"
-                android:color="@color/surface_border" />
+                android:color="@color/surface_border_strong" />
         </shape>
     </item>
     <item>
@@ -23,3 +25,5 @@
         </shape>
     </item>
 </selector>
+</content>
+</invoke>

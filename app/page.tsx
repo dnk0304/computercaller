@@ -8,11 +8,11 @@ export default function LandingPage() {
     <div className="min-h-screen bg-slate-950 text-white">
       {/* Header */}
       <header className="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-md shadow-blue-600/30 flex items-center justify-center">
             <Phone className="w-4 h-4 text-white" />
           </div>
-          <span className="font-bold text-lg">ComputerCaller</span>
+          <span className="font-semibold text-lg tracking-tight">ComputerCaller</span>
         </div>
         <div className="flex items-center gap-3">
           <Link href="/auth/login" className="text-slate-400 hover:text-white text-sm transition-colors">
@@ -33,7 +33,7 @@ export default function LandingPage() {
           <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
           14-day free trial — no credit card required
         </div>
-        <h1 className="text-5xl font-bold leading-tight mb-6">
+        <h1 className="text-5xl font-bold tracking-tight leading-[1.05] mb-6">
           Your phone.<br />
           <span className="text-blue-400">In your browser.</span>
         </h1>

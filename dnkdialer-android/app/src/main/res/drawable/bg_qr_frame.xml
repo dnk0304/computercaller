@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  QR backdrop — warm off-white (not pure white) so it sits softer
-  against the warm near-black canvas. 8dp internal padding via the
-  ImageView's android:padding.
+  QR backdrop — Round 7.
+  Pure white plate now (was warm off-white in R6). Pure white is the
+  most reliable surface for camera scanners and the highest contrast
+  against the near-black canvas — the QR snaps off the screen like a
+  card on glass.
+
+  No border — the dark canvas behind it does the framing work.
 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <solid android:color="@color/surface_qr" />
-    <corners android:radius="8dp" />
+    <corners android:radius="@dimen/radius_chip" />
 </shape>
+</content>
+</invoke>

@@ -1,20 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!--
-      ComputerCaller companion theme (Round 2).
+      ComputerCaller companion theme (Round 7 — sleek-tech).
 
-      Parent: NoActionBar — the layout owns its own wordmark header.
-      Background is FLAT now (was a gradient in round 1) — flat reads
-      as confident, gradient as decorative. Status + nav bars match
-      the surface so the app is one continuous canvas.
+      Parent: MaterialComponents NoActionBar (Dark). The previous round
+      used the light-base MaterialComponents variant; switching to the
+      Dark base means OS-provided affordances (spinners, ripples,
+      checkbox tints) inherit the right contrast on the near-black
+      surface without per-widget overrides.
+
+      Primary swapped warm-terracotta → electric blue (Apple system
+      blue, #0A84FF). Status + nav bars match the surface so the app
+      is one continuous canvas with no chrome seam.
     -->
     <style name="Theme.DNKDialerCompanion" parent="Theme.MaterialComponents.NoActionBar">
-        <item name="colorPrimary">@color/accent_warm</item>
-        <item name="colorPrimaryVariant">@color/accent_warm_pressed</item>
-        <item name="colorOnPrimary">@color/surface_base</item>
+        <item name="colorPrimary">@color/accent_blue</item>
+        <item name="colorPrimaryVariant">@color/accent_blue_pressed</item>
+        <item name="colorOnPrimary">@color/text_primary</item>
 
-        <item name="colorSecondary">@color/text_primary</item>
-        <item name="colorSecondaryVariant">@color/text_secondary</item>
+        <item name="colorSecondary">@color/accent_cyan</item>
+        <item name="colorSecondaryVariant">@color/accent_blue</item>
         <item name="colorOnSecondary">@color/surface_base</item>
 
         <item name="android:windowBackground">@drawable/bg_app_solid</item>
@@ -27,3 +32,5 @@
         <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
     </style>
 </resources>
+</content>
+</invoke>

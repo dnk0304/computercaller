@@ -1,6 +1,10 @@
 package com.dnkdialer.companion
 
 import android.Manifest
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
@@ -17,6 +21,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -56,10 +61,37 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
     private lateinit var statusDot: View
+    private lateinit var statusDotRing: View
     private lateinit var stepNumber: TextView
     private lateinit var ipText: TextView
     private lateinit var qrCodeImage: ImageView
     private lateinit var enableNotificationsButton: Button
+
+    /**
+     * Round 7 — status dot pulse animator.
+     *
+     * In CONNECTING / WAITING states the soft halo ring breathes
+     * (alpha 0.35 → 1.0 → 0.35 over 1500ms, repeated). In LIVE it's
+     * held at a steady 0.6 alpha (clear "lit indicator" affordance,
+     * not animated — animation should signal *action*, not *health*).
+     * In IDLE / FAILED the ring is hidden entirely.
+     *
+     * Stored as a field so [setStatusVisual] can cancel the previous
+     * animator before starting a new one, preventing alpha drift when
+     * state transitions arrive faster than one pulse cycle.
+     */
+    private var statusPulseAnimator: ValueAnimator? = null
+
+    /**
+     * Round 7 — FAILED-state shake suppression flag.
+     *
+     * The shake should fire only on the FIRST entry into FAILED, not
+     * on every subsequent setStatusVisual(FAILED) call (the polling
+     * loop + relay-phase callback can re-paint FAILED several times
+     * per second while the user is still reading the error message).
+     * Reset when state leaves FAILED.
+     */
+    private var failedShakePlayed: Boolean = false
 
     // Hoisted to a field so handleRelayPhaseChanged() can flip
     // isEnabled / setText without re-findViewById'ing on every phase
@@ -207,6 +239,7 @@ class MainActivity : AppCompatActivity() {
 
         statusText = findViewById(R.id.statusText)
         statusDot = findViewById(R.id.statusDot)
+        statusDotRing = findViewById(R.id.statusDotRing)
         stepNumber = findViewById(R.id.stepNumber)
         ipText = findViewById(R.id.ipText)
         qrCodeImage = findViewById(R.id.qrCodeImage)
@@ -241,16 +274,40 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.toast_copied, Toast.LENGTH_SHORT).show()
         }
 
-        // Connect button — re-opens the relay against the LAN URL the
-        // service was previously bound to. LAN flow only: the phone is
-        // the WS server, the webapp connects in via the IP shown above.
-        // The handler still routes through reconnectToRelay() because
-        // that's the force-close+reopen path; the label says "Connect"
-        // because from the user's POV they're establishing a session,
-        // not recovering one.
+        // Refresh button (R7) — was "Connect" in R5/R6 which was a
+        // dead label in LAN-only mode (PhoneService.reconnectToRelay()
+        // requires a saved clientRelayUrl that's always null in LAN
+        // mode, so tapping it did nothing — the user-visible bug we're
+        // fixing). The new role: rebind the LAN PhoneServer on port
+        // 8765, re-resolve the local IPv4, regenerate the QR. Useful
+        // after WiFi network changes or a stale listener.
         reconnectButton.setOnClickListener {
-            android.util.Log.d("MainActivity", "Connect button pressed")
-            phoneService?.reconnectToRelay()
+            android.util.Log.d("MainActivity", "Refresh button pressed")
+            // Disable + re-label so the tap registers visually. ~500ms
+            // is enough for the WS server to stop + rebind on the
+            // backend; we re-enable on a posted runnable rather than
+            // gating on a callback because PhoneServer.start() is
+            // non-blocking and there's no completion event to listen for.
+            reconnectButton.isEnabled = false
+            reconnectButton.text = getString(R.string.action_connecting)
+
+            val newUrl = phoneService?.restartServer()
+
+            handler.postDelayed({
+                reconnectButton.isEnabled = true
+                reconnectButton.text = getString(R.string.action_reconnect)
+                // Force a status refresh so the IP + QR repaint with
+                // whatever the rebind resolved to. updateStatus() owns
+                // the QR regeneration via generateQRCode().
+                updateStatus()
+                if (newUrl != null) {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.toast_refreshed, newUrl),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }, 500)
         }
 
         // Disconnect button - stops the service and all connections
@@ -566,29 +623,88 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Drive the status dot tint (and, for back-compat, the hidden
-     * stepNumber color) to match the connection state.
+     * Drive the status dot tint + glow ring to match the connection
+     * state. Owns animation (pulse / shake) as a side effect.
      *
-     * Round 3 contract: the DOT is the primary signal again.
-     *   LIVE     → emerald green (R.color.dot_live)
-     *   WAITING  → amber (R.color.dot_waiting)
-     *   IDLE     → slate (R.color.dot_idle)
+     * Round 7 contract: dot + glow ring carry the entire visual signal.
+     *   LIVE       → emerald dot, steady soft-emerald ring at 0.6 alpha
+     *                (the "lit indicator" — looks awake, not animated)
+     *   WAITING    → amber dot, breathing amber ring (alpha pulse)
+     *   CONNECTING → blue dot, breathing blue ring (alpha pulse)
+     *   IDLE       → slate dot, ring hidden
+     *   FAILED     → red dot, ring hidden; one-shot shake on first entry
      *
-     * The stepNumber TextView is `visibility="gone"` in the R3 layout,
-     * so its color setter below is effectively a no-op — kept in case
-     * a future debug overlay re-enables it. Removing it would require
-     * a separate cleanup pass; not worth the churn now.
+     * The pulse animator is cancelled before each transition so we
+     * don't get drifting alpha when state changes mid-cycle. shake
+     * is gated by [failedShakePlayed] so it only fires on the FIRST
+     * transition into FAILED, not on every poll-loop repaint.
      */
     private fun setStatusVisual(state: ConnState) {
-        val dotColor = when (state) {
-            ConnState.LIVE -> ContextCompat.getColor(this, R.color.dot_live)
-            ConnState.WAITING -> ContextCompat.getColor(this, R.color.dot_waiting)
-            ConnState.IDLE -> ContextCompat.getColor(this, R.color.dot_idle)
-            ConnState.CONNECTING -> ContextCompat.getColor(this, R.color.dot_connecting)
-            ConnState.FAILED -> ContextCompat.getColor(this, R.color.dot_failed)
-        }
-        statusDot.backgroundTintList = ColorStateList.valueOf(dotColor)
+        // Cancel any in-flight ring pulse before we touch tint/alpha.
+        statusPulseAnimator?.cancel()
+        statusPulseAnimator = null
 
+        val dotColorRes = when (state) {
+            ConnState.LIVE -> R.color.dot_live
+            ConnState.WAITING -> R.color.dot_waiting
+            ConnState.IDLE -> R.color.dot_idle
+            ConnState.CONNECTING -> R.color.dot_connecting
+            ConnState.FAILED -> R.color.dot_failed
+        }
+        statusDot.backgroundTintList =
+            ColorStateList.valueOf(ContextCompat.getColor(this, dotColorRes))
+
+        // Glow ring tint — use the *_soft (25% alpha) variant so it
+        // sits behind the dot as a halo rather than a competing disc.
+        val ringColorRes = when (state) {
+            ConnState.LIVE -> R.color.dot_live_soft
+            ConnState.WAITING -> R.color.dot_waiting_soft
+            ConnState.CONNECTING -> R.color.dot_connecting_soft
+            ConnState.IDLE, ConnState.FAILED -> R.color.dot_idle  // unused; ring is hidden
+        }
+        statusDotRing.backgroundTintList =
+            ColorStateList.valueOf(ContextCompat.getColor(this, ringColorRes))
+
+        // Ring visibility + animation per-state.
+        when (state) {
+            ConnState.LIVE -> {
+                // Steady halo. Held alpha — health is communicated by
+                // presence, not motion.
+                statusDotRing.alpha = 0.6f
+            }
+            ConnState.WAITING, ConnState.CONNECTING -> {
+                // Breathing halo. 1500ms loop, ease-in-out.
+                statusDotRing.alpha = 0.35f
+                statusPulseAnimator = ValueAnimator.ofFloat(0.35f, 1.0f).apply {
+                    duration = 1500
+                    repeatCount = ValueAnimator.INFINITE
+                    repeatMode = ValueAnimator.REVERSE
+                    interpolator = AccelerateDecelerateInterpolator()
+                    addUpdateListener { anim ->
+                        statusDotRing.alpha = anim.animatedValue as Float
+                    }
+                    start()
+                }
+            }
+            ConnState.IDLE -> {
+                statusDotRing.alpha = 0f
+            }
+            ConnState.FAILED -> {
+                statusDotRing.alpha = 0f
+                if (!failedShakePlayed) {
+                    failedShakePlayed = true
+                    playFailedShake()
+                }
+            }
+        }
+
+        // Reset the shake suppression when we leave FAILED so the
+        // *next* entry into FAILED gets its own one-shot animation.
+        if (state != ConnState.FAILED) {
+            failedShakePlayed = false
+        }
+
+        // Hidden stepNumber back-compat — kept so legacy refs compile.
         val stepLabel = when (state) {
             ConnState.LIVE -> R.string.step_03
             ConnState.WAITING -> R.string.step_02
@@ -596,17 +712,58 @@ class MainActivity : AppCompatActivity() {
             ConnState.CONNECTING -> R.string.step_02
         }
         stepNumber.setText(stepLabel)
+        stepNumber.setTextColor(
+            ContextCompat.getColor(
+                this,
+                if (state == ConnState.IDLE || state == ConnState.FAILED)
+                    R.color.text_tertiary
+                else
+                    R.color.accent_blue
+            )
+        )
+    }
 
-        // Active step gets the warm accent; inactive stays dim. The
-        // step number is the same size as the status text, so this
-        // color shift carries real visual weight.
-        val stepColor = when (state) {
-            ConnState.LIVE, ConnState.WAITING, ConnState.CONNECTING ->
-                ContextCompat.getColor(this, R.color.accent_warm)
-            ConnState.IDLE, ConnState.FAILED ->
-                ContextCompat.getColor(this, R.color.text_tertiary)
+    /**
+     * Round 7 — FAILED state shake.
+     *
+     * Brief horizontal jitter on the whole status row (dot + label).
+     * 4 oscillations over 320ms — short enough to read as "something
+     * went wrong" without crossing into "buggy / glitching". Respects
+     * the system animator-duration-scale: if the user has animations
+     * disabled (Developer options → Animator duration scale = Off),
+     * we skip the shake entirely. Otherwise translation animations
+     * would no-op and we'd just freeze the view at a random offset.
+     */
+    private fun playFailedShake() {
+        val animScale = try {
+            Settings.Global.getFloat(
+                contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            )
+        } catch (e: Exception) { 1f }
+        if (animScale == 0f) return
+
+        // Shake the parent row (dot FrameLayout + label) by walking up
+        // from statusDot to its parent LinearLayout. Translating just
+        // the dot would look like the indicator broke; translating the
+        // row signals "alert".
+        val row = statusDot.parent?.parent as? View ?: statusDot
+        val shake = ObjectAnimator.ofFloat(
+            row, "translationX",
+            0f, -12f, 12f, -8f, 8f, -4f, 4f, 0f
+        ).apply {
+            duration = 320
+            interpolator = AccelerateDecelerateInterpolator()
         }
-        stepNumber.setTextColor(stepColor)
+        shake.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                // Hard-reset translation in case the animator was
+                // cancelled mid-cycle (config-change, state churn).
+                row.translationX = 0f
+            }
+        })
+        shake.start()
     }
 
     /**
@@ -629,33 +786,17 @@ class MainActivity : AppCompatActivity() {
         val targetUrl = service?.lastRelayUrlAttempt
         val error = service?.lastConnectionError
 
-        // Drive the Connect button's enabled state + label off the relay
-        // phase. The button reads as "Connect" in every state the user
-        // can tap it, and "Connecting…" while the handshake is in flight
-        // so the tap registers visually even though the button is
-        // disabled (prevents spam taps).
+        // Round 7 — the Refresh button no longer mirrors the relay
+        // phase. In LAN-only mode there's no outbound relay socket, so
+        // the phase callback effectively never fires with anything
+        // interesting; if it does (e.g. an old leftover transition
+        // during teardown) we don't want it stomping the Refresh label.
+        // The button's enabled/text state is now owned by the click
+        // handler (disabled → "Refreshing…" for 500ms, then re-enabled).
         //
-        // Phase → button:
-        //   LIVE       → disabled, "Connect"      (already connected)
-        //   OPEN       → disabled, "Connect"      (socket up, treat as live;
-        //                                          the polling loop will refine)
-        //   CONNECTING → disabled, "Connecting…"  (handshake in flight)
-        //   IDLE       → enabled,  "Connect"      (ready to tap)
-        //   FAILED     → enabled,  "Connect"      (let the user retry)
-        //
-        // PhoneService.RelayPhase only exposes the four members above
-        // (LIVE doesn't exist on RelayPhase — that's ConnState's
-        // higher-level abstraction). OPEN is the relay-socket-up state.
-        reconnectButton.isEnabled = when (phase) {
-            PhoneService.RelayPhase.OPEN -> false        // socket open — nothing to do
-            PhoneService.RelayPhase.CONNECTING -> false  // handshake in progress — don't spam
-            else -> true                                 // IDLE / FAILED → enabled
-        }
-        reconnectButton.text = if (phase == PhoneService.RelayPhase.CONNECTING) {
-            getString(R.string.action_connecting)
-        } else {
-            getString(R.string.action_reconnect)
-        }
+        // Phase-keyed reasoning preserved as a comment for future
+        // reference if a relay client ever returns:
+        //   OPEN/CONNECTING → would disable; IDLE/FAILED → would enable.
 
         when (phase) {
             PhoneService.RelayPhase.CONNECTING -> {
@@ -1057,6 +1198,11 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopStatusUpdates()
+        // Drop the pulse animator so its update listener can't fire
+        // on a destroyed view (no observed leak, but the listener
+        // holds a strong ref to statusDotRing).
+        statusPulseAnimator?.cancel()
+        statusPulseAnimator = null
         if (serviceBound) {
             unbindService(serviceConnection)
             serviceBound = false

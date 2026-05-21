@@ -64,7 +64,7 @@
         android:paddingBottom="@dimen/space_8"
         android:text="@string/perms_grant"
         android:textSize="@dimen/text_caption"
-        android:textColor="@color/accent_warm"
+        android:textColor="@color/accent_blue"
         android:textAllCaps="false"
         android:fontFamily="sans-serif-medium"
         android:letterSpacing="0.04"

@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Status dot — 8dp circle. Tinted at runtime from MainActivity via
+  Status dot — 12dp circle. Tinted at runtime from MainActivity via
   setBackgroundTintList(...). The default fill is white so the tint
   reads accurately on top.
 
-  The dot is intentionally tiny — status hierarchy in this design is
-  carried by the step-number (01/02/03) typography next to it, not by
-  the dot. The dot is just a punctuation mark.
+  Round 7: the dot is paired with a glow ring (status_dot_ring) when
+  LIVE, and is the animation target for the CONNECTING pulse. Size
+  bumped to 12dp via dimens (was 14dp R6 — the ring takes the visual
+  weight now, so the dot itself can be tighter).
 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
@@ -15,3 +16,5 @@
         android:width="@dimen/dot_size"
         android:height="@dimen/dot_size" />
 </shape>
+</content>
+</invoke>

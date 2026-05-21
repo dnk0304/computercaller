@@ -1,26 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Activity: Main / control screen — Round 3.
+  Activity: Main / control screen — Round 7 (sleek-tech).
 
-  Design changes vs Round 2 (the "editorial / writer-like" pass):
-    - The DOT is the primary status signal again (14dp, green/amber/slate)
-      with a short 1–2 word label next to it. The 01/02/03 step-number
-      ladder is HIDDEN — it read as a setup checklist, but the user wanted
-      a connection indicator, not a walkthrough. Less to scan = faster
-      glance.
-    - Single tight wordmark instead of the DNK lockup + Dialer subtitle +
-      serif-italic tagline. The tagline was the most "writer-like" element
-      on the screen and is gone in R3.
-    - Type system collapsed: one display size for the wordmark, one body
-      size for everything else, monospace for technical strings (URL,
-      token). The serif-italic state copy is gone — sans throughout.
-    - New: USER TOKEN field. Sits below the URL block, same visual
-      treatment (recessed surface + warm left bar) so the two read as a
-      pair: "this is what the browser sees" + "this is what identifies
-      your account". Includes a Paste-from-clipboard chip.
-    - Reduced top padding (56→40), tighter section gaps (40→28) — the R2
-      composition was airy in a "magazine layout" way. R3 packs the
-      glance-critical surface up where the thumb naturally rests.
+  Design changes vs Round 6 (warm-terracotta):
+    - Dark palette: near-black canvas, electric blue accent, emerald
+      LIVE dot retained. The whole screen reads as "modern pro tool"
+      (Linear / Vercel / Claude.ai), not "friendly companion app".
+    - Status dot now sits inside a FrameLayout with a 22dp soft glow
+      ring behind it. The ring is GONE in IDLE, faded soft-emerald in
+      LIVE, soft-amber in WAITING, soft-blue in CONNECTING. Animation
+      logic in MainActivity.setStatusVisual() drives the alpha pulse.
+    - Section gutters tightened 28→20 / 32→24 — denser, more pro.
+    - QR plate is pure white (best for scanners + max contrast).
+    - Wordmark stays sans-serif-black at 42sp with the gradient
+      underline.
 
   Vertical stack inside ScrollView so small phones can reach the bottom.
 -->
@@ -38,15 +31,12 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="@dimen/space_28"
-        android:paddingEnd="@dimen/space_28"
-        android:paddingTop="@dimen/space_40"
-        android:paddingBottom="@dimen/space_40">
+        android:paddingStart="@dimen/space_24"
+        android:paddingEnd="@dimen/space_24"
+        android:paddingTop="@dimen/space_32"
+        android:paddingBottom="@dimen/space_32">
 
-        <!-- ============ 1. Wordmark + status row ============
-             R3 puts the brand and the status on adjacent lines so the
-             user's eye lands on "ComputerCaller · [GREEN DOT] Connected"
-             in one scan — no scrolling, no checklist to read. -->
+        <!-- ============ 1. Wordmark + status row ============ -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -54,43 +44,57 @@
             android:textSize="@dimen/text_wordmark"
             android:textColor="@color/text_primary"
             android:fontFamily="sans-serif-black"
-            android:letterSpacing="-0.03"
+            android:letterSpacing="-0.035"
             android:lineSpacingMultiplier="0.95"
             android:includeFontPadding="false" />
 
-        <!-- Warm accent underline — same detail as R2, kept because it's
-             the project's signature mark. -->
+        <!-- Electric blue → cyan gradient underline. -->
         <View
             android:layout_width="@dimen/wordmark_underline_width"
             android:layout_height="@dimen/wordmark_underline_height"
             android:background="@drawable/bg_accent_underline"
             android:layout_marginTop="@dimen/space_8"
-            android:layout_marginBottom="@dimen/space_28" />
+            android:layout_marginBottom="@dimen/space_20" />
 
-        <!-- Status row — DOT + short label. This is the headline now.
-             The 01/02/03 step number is still in the tree (kept so the
-             Kotlin's setStatusVisual() helper compiles unchanged) but
-             gone="true" — invisible to the user.
-             gravity=center_vertical aligns dot baseline with text
-             cap-height for a tight visual lockup. -->
+        <!-- Status row — DOT + RING + short label. gravity=center_vertical
+             aligns the FrameLayout midpoint with the text cap-height. -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
-            <!-- 14dp dot. Background tint is set at runtime via
-                 setStatusVisual() → emerald / amber / slate. -->
-            <View
-                android:id="@+id/statusDot"
-                android:layout_width="@dimen/dot_size"
-                android:layout_height="@dimen/dot_size"
-                android:background="@drawable/status_dot"
-                android:layout_marginEnd="@dimen/space_12"
-                android:contentDescription="@string/cd_status_dot" />
+            <!-- Dot + ring stack. FrameLayout sizes to dot_ring_size; the
+                 ring sits at the back, the dot is centered on top. Both
+                 are tinted at runtime via setStatusVisual().
 
-            <!-- Short status label — 1–2 words. No serif italic
-                 anymore; clean sans-serif matches the rest of R3. -->
+                 The ring's alpha is 0 in IDLE and 1 in LIVE/WAITING/
+                 CONNECTING — driven from Kotlin so the pulse animation
+                 can override it without fighting the XML. -->
+            <FrameLayout
+                android:layout_width="@dimen/dot_ring_size"
+                android:layout_height="@dimen/dot_ring_size"
+                android:layout_marginEnd="@dimen/space_12">
+
+                <View
+                    android:id="@+id/statusDotRing"
+                    android:layout_width="@dimen/dot_ring_size"
+                    android:layout_height="@dimen/dot_ring_size"
+                    android:layout_gravity="center"
+                    android:background="@drawable/status_dot_ring"
+                    android:alpha="0"
+                    android:importantForAccessibility="no" />
+
+                <View
+                    android:id="@+id/statusDot"
+                    android:layout_width="@dimen/dot_size"
+                    android:layout_height="@dimen/dot_size"
+                    android:layout_gravity="center"
+                    android:background="@drawable/status_dot"
+                    android:contentDescription="@string/cd_status_dot" />
+            </FrameLayout>
+
+            <!-- Short status label — 1–2 words. -->
             <TextView
                 android:id="@+id/statusText"
                 android:layout_width="0dp"
@@ -100,11 +104,10 @@
                 android:textSize="@dimen/text_status"
                 android:textColor="@color/text_primary"
                 android:fontFamily="sans-serif-medium"
-                android:letterSpacing="-0.01" />
+                android:letterSpacing="-0.015" />
 
-            <!-- Step number — kept invisible. Code still drives it via
-                 setStatusVisual(); hiding it here means we don't have to
-                 refactor the Kotlin. Future cleanup can remove both. -->
+            <!-- Step number — kept invisible (back-compat with the Kotlin
+                 setStatusVisual() helper that still references it). -->
             <TextView
                 android:id="@+id/stepNumber"
                 android:layout_width="wrap_content"
@@ -113,19 +116,7 @@
                 android:visibility="gone" />
         </LinearLayout>
 
-        <!-- Round 4 — connection diagnostic line.
-             Hidden by default; shown ONLY in CONNECTING and FAILED
-             states. Two TextViews stacked: the first carries the
-             resolved relay URL (with token last-12-only-masked) so
-             the user can immediately see what the APK is trying to
-             reach; the second carries the failure reason mapped from
-             close code + exception class. Both are selectable so the
-             user can copy into a diagnostic tool.
-
-             The brief calls this out as THE single most diagnostic
-             affordance: if the IP / port is wrong (LAN moved, dev
-             server on a different port), the user sees it instantly
-             without opening logcat. -->
+        <!-- Connection diagnostic lines (CONNECTING / FAILED phases only). -->
         <TextView
             android:id="@+id/connectionTargetText"
             android:layout_width="match_parent"
@@ -141,7 +132,7 @@
             android:lineSpacingMultiplier="1.3"
             android:layout_marginTop="@dimen/space_8"
             android:visibility="gone"
-            tools:text="Target: ws://192.168.1.136:4001/phone?token=clx5h8k9q…"
+            tools:text="Target: ws://192.168.1.136:8765"
             tools:visibility="visible" />
 
         <TextView
@@ -158,7 +149,7 @@
             android:lineSpacingMultiplier="1.3"
             android:layout_marginTop="@dimen/space_4"
             android:visibility="gone"
-            tools:text="Couldn't reach the relay at ws://192.168.1.136:4001. Is the dev server running?"
+            tools:text="Couldn't bind to port 8765."
             tools:visibility="visible" />
 
         <!-- ============ 2. Local address (the URL) ============ -->
@@ -170,10 +161,12 @@
             android:textColor="@color/text_label"
             android:textAllCaps="true"
             android:letterSpacing="0.18"
-            android:layout_marginTop="@dimen/space_32"
+            android:layout_marginTop="@dimen/space_24"
             android:fontFamily="sans-serif-medium" />
 
-        <!-- URL block. Full width. Multi-line wrap. Selectable. -->
+        <!-- URL block. Full width. Multi-line wrap. Selectable.
+             Now sits inside a hairline-bordered recessed panel with a
+             2dp electric-blue left bar. -->
         <TextView
             android:id="@+id/ipText"
             android:layout_width="match_parent"
@@ -186,14 +179,14 @@
             android:background="@drawable/bg_url_block"
             android:paddingStart="@dimen/space_16"
             android:paddingEnd="@dimen/space_16"
-            android:paddingTop="@dimen/space_16"
-            android:paddingBottom="@dimen/space_16"
+            android:paddingTop="@dimen/space_14"
+            android:paddingBottom="@dimen/space_14"
             android:singleLine="false"
             android:breakStrategy="balanced"
             android:hyphenationFrequency="none"
             android:lineSpacingMultiplier="1.35"
             android:textIsSelectable="true"
-            android:layout_marginTop="@dimen/space_10"
+            android:layout_marginTop="@dimen/space_8"
             tools:text="ws://192.168.1.42:8765" />
 
         <Button
@@ -208,14 +201,14 @@
             android:fontFamily="sans-serif-medium"
             android:minWidth="0dp"
             android:minHeight="0dp"
-            android:paddingStart="@dimen/space_16"
-            android:paddingEnd="@dimen/space_16"
+            android:paddingStart="@dimen/space_14"
+            android:paddingEnd="@dimen/space_14"
             android:paddingTop="@dimen/space_8"
             android:paddingBottom="@dimen/space_8"
             android:background="@drawable/bg_button_copy"
             android:stateListAnimator="@null"
             android:letterSpacing="0.04"
-            android:layout_marginTop="@dimen/space_10"
+            android:layout_marginTop="@dimen/space_8"
             android:contentDescription="@string/action_copy_long" />
 
         <!-- ============ 3. QR card ============ -->
@@ -227,7 +220,7 @@
             android:textColor="@color/text_label"
             android:textAllCaps="true"
             android:letterSpacing="0.18"
-            android:layout_marginTop="@dimen/space_32"
+            android:layout_marginTop="@dimen/space_24"
             android:fontFamily="sans-serif-medium" />
 
         <LinearLayout
@@ -235,7 +228,7 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center_horizontal"
-            android:layout_marginTop="@dimen/space_16">
+            android:layout_marginTop="@dimen/space_12">
 
             <ImageView
                 android:id="@+id/qrCodeImage"
@@ -254,13 +247,13 @@
             android:text="@string/action_reconnect"
             android:textSize="@dimen/text_body"
             android:textAllCaps="false"
-            android:textColor="@color/surface_base"
+            android:textColor="@color/text_primary"
             android:fontFamily="sans-serif-medium"
             android:letterSpacing="0.02"
             android:background="@drawable/bg_button_primary"
             android:stateListAnimator="@null"
             android:visibility="gone"
-            android:layout_marginTop="@dimen/space_32" />
+            android:layout_marginTop="@dimen/space_24" />
 
         <Button
             android:id="@+id/disconnectButton"
@@ -284,13 +277,15 @@
             android:text="@string/action_enable_notifications"
             android:textSize="@dimen/text_body"
             android:textAllCaps="false"
-            android:textColor="@color/accent_warm"
+            android:textColor="@color/accent_blue"
             android:fontFamily="sans-serif-medium"
             android:letterSpacing="0.02"
             android:background="@drawable/bg_button_warning"
             android:stateListAnimator="@null"
             android:visibility="gone"
-            android:layout_marginTop="@dimen/space_16" />
+            android:layout_marginTop="@dimen/space_12" />
 
     </LinearLayout>
 </ScrollView>
+</content>
+</invoke>

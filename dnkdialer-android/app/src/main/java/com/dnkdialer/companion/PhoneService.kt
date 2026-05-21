@@ -16,6 +16,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -612,6 +613,11 @@ class PhoneService : Service() {
                     .setContentTitle("ComputerCaller")
                     .setContentText("Phone bridge is active")
                     .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+                    // Round 7 — tint the notification chrome with the new
+                    // brand accent so the OS notification row reads as part
+                    // of the app rather than a generic system notification.
+                    .setColor(ContextCompat.getColor(this, R.color.accent_blue))
+                    .setColorized(false)
                     .setContentIntent(pendingIntent)
                     .setOngoing(true)
                     .build()
@@ -1433,6 +1439,47 @@ class PhoneService : Service() {
         } else {
             android.util.Log.w("PhoneService", "No saved relay URL to reconnect to")
         }
+    }
+
+    /**
+     * LAN-mode "Refresh" — tears down the PhoneServer (port 8765) and
+     * rebinds a fresh instance. The browser side reconnects via its own
+     * QR/IP form, so this is sufficient to recover from:
+     *   - WiFi network changes (phone IP shifted; old binding is stale)
+     *   - The listener silently dying (rare, but observed once on a
+     *     Samsung after-sleep wake)
+     *   - Stuck client state from a half-closed socket
+     *
+     * Why this exists: in LAN-only mode the phone is the WS *server*,
+     * not the client. `reconnectToRelay()` requires a saved
+     * [clientRelayUrl] which is always null in LAN mode — calling it
+     * is a no-op, which is why the user's "Connect" button appeared
+     * dead. This method gives the on-phone button a real LAN-mode job:
+     * refresh the listener.
+     *
+     * Returns the new ws:// URL the listener is bound to (or null if
+     * the IP resolver returned "Unknown") so the caller can re-render
+     * the QR + emit a confirmation toast.
+     *
+     * Safe to call from any thread; PhoneServer.start() is non-blocking
+     * (java-websocket spins up its own selector thread internally).
+     */
+    fun restartServer(): String? {
+        android.util.Log.d("PhoneService", "restartServer requested")
+        try {
+            server?.stop()
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "server.stop() threw during restart: ${e.message}")
+        }
+        server = null
+
+        // Rebind. startServer() re-wires SmsReceiver / DnkNotificationListenerService
+        // callbacks too, which is harmless on a re-entry (just reassigns the
+        // static lambda fields to the same instance methods).
+        startServer()
+
+        val ip = getLocalIpAddress()
+        return if (ip != "Unknown") "ws://$ip:8765" else null
     }
 
     private fun sendResponse(type: String, data: Any, viaClient: Boolean = false) {

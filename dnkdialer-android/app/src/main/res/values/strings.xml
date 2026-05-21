@@ -38,22 +38,25 @@
     <!-- Buttons -->
     <string name="action_copy">Copy</string>
     <string name="action_copy_long">Copy address to clipboard</string>
-    <!-- User-facing label is "Connect" (R5+). Resource key kept as
-         action_reconnect to avoid an XML refactor — the underlying
-         action still routes through PhoneService.reconnectToRelay()
-         (which force-closes + reopens the socket against the
-         last-known relay target). -->
-    <string name="action_reconnect">Connect</string>
-    <!-- Shown on the same button during a CONNECTING phase. Trailing
-         ellipsis is a real horizontal-ellipsis char (U+2026), not three
-         dots — keeps kerning even on narrow phones. -->
-    <string name="action_connecting">Connecting…</string>
+    <!-- Round 7 — repurposed for LAN-only mode.
+         The old label "Connect" was a leftover from the SaaS architecture
+         where the phone initiated an outbound WS to a relay. In LAN-only
+         mode the phone is the WS *server* (port 8765) — the webapp's
+         browser connects IN. The button now refreshes the listener: it
+         re-resolves the current LAN IPv4, restarts PhoneServer cleanly,
+         and regenerates the QR. Resource key kept as `action_reconnect`
+         to avoid churn in the layout XML; the underlying handler is
+         rewired to PhoneService.restartServer(). -->
+    <string name="action_reconnect">Refresh</string>
+    <!-- Shown on the same button while the listener is rebinding. -->
+    <string name="action_connecting">Refreshing…</string>
     <string name="action_disconnect">Disconnect and stop</string>
     <string name="action_enable_notifications">Enable notifications</string>
     <string name="action_open_app_settings">Open app settings</string>
 
     <!-- Toasts -->
     <string name="toast_copied">Address copied</string>
+    <string name="toast_refreshed">Refreshed — ready at %1$s</string>
 
     <!-- Connection-state transitions for the LAN flow.
          CONNECTING / FAILED are surfaced in the status row; the failure

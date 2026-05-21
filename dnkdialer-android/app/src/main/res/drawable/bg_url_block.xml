@@ -1,25 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  URL block surface. Recessed monochrome panel with a single warm
-  vertical bar on the left (like a margin note / code-block
-  annotation). The bar is the only color on the surface — everything
-  else is grayscale. Reads as "this is reference data, treat it
-  precisely."
+  URL block — Round 7.
+  Recessed near-black panel with a thin white-at-10% hairline border
+  AND a 2px electric-blue left bar (kept from R6's "margin note"
+  affordance because it's still the right semantic — "this is the
+  reference data"). The hairline border is what makes the surface
+  read as "screen / panel" rather than "flat dark rectangle".
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Recessed panel base -->
+    <!-- Recessed panel base with hairline border -->
     <item>
         <shape android:shape="rectangle">
             <solid android:color="@color/surface_inset" />
+            <stroke
+                android:width="@dimen/stroke_hairline"
+                android:color="@color/surface_border" />
             <corners android:radius="@dimen/radius_chip" />
         </shape>
     </item>
-    <!-- Warm left bar — 3dp wide, full height -->
+    <!-- Electric blue left bar — 2dp wide, full height -->
     <item
-        android:width="3dp"
+        android:width="2dp"
         android:gravity="start">
         <shape android:shape="rectangle">
-            <solid android:color="@color/accent_warm" />
+            <solid android:color="@color/accent_blue" />
         </shape>
     </item>
 </layer-list>
+</content>
+</invoke>

@@ -44,12 +44,12 @@ export const Sidebar = ({ activeTab, setActiveTab }: SidebarProps) => {
         collapsed ? 'justify-center' : 'gap-3 justify-between'
       )}>
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 flex-shrink-0 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl shadow-lg flex items-center justify-center">
+          <div className="w-10 h-10 flex-shrink-0 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl shadow-lg shadow-blue-600/20 flex items-center justify-center">
             <Phone className="text-white w-6 h-6" />
           </div>
           {!collapsed && (
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-700 to-indigo-700 truncate">
-              Nexus
+            <h1 className="text-base font-semibold tracking-tight text-slate-900 truncate">
+              ComputerCaller
             </h1>
           )}
         </div>

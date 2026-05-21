@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Status dot GLOW RING — Round 7.
+
+  A 22dp circle that sits BEHIND the 12dp status dot. Tinted at runtime
+  by MainActivity to a "soft" variant of the active dot color (25% alpha
+  emerald for LIVE, 25% alpha amber for WAITING / CONNECTING). Gives the
+  status indicator the "I am actively alive" halo that LED indicators
+  have in physical hardware.
+
+  Default fill white so the runtime tint reads accurately. Visibility
+  and tint are both managed by MainActivity.setStatusVisual() — IDLE
+  state hides the ring entirely so offline reads as truly inert.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/white" />
+    <size
+        android:width="@dimen/dot_ring_size"
+        android:height="@dimen/dot_ring_size" />
+</shape>
+</content>
+</invoke>
