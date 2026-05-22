@@ -1,6 +1,21 @@
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Lazy Resend client. The constructor throws "Missing API key" if
+// `RESEND_API_KEY` is empty/undefined — which used to happen at module
+// load and crashed the register endpoint in dev mode (no key set) even
+// though the register route now short-circuits to auto-verify before
+// the email call. Deferring construction means the import is safe; the
+// client only ever materializes when something actually tries to send.
+let _resend: Resend | null = null;
+function getResend(): Resend {
+  if (_resend) return _resend;
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    throw new Error('[email] RESEND_API_KEY is not set — refusing to send.');
+  }
+  _resend = new Resend(key);
+  return _resend;
+}
 
 // Brand identity. `EMAIL_FROM` overrides via env when needed (e.g. staging),
 // but the production default is the friendly `hello@` so customers see a real
@@ -24,7 +39,7 @@ export async function sendVerificationEmail(email: string, token: string) {
   // placeholder ("Verifying your email…") that does no work; landing the user
   // there leaves them stuck forever. (Fixed 2026-05-19.)
   const url = `${APP_URL}/api/auth/verify-email?token=${token}`;
-  await resend.emails.send({
+  await getResend().emails.send({
     from: FROM,
     to: email,
     replyTo: REPLY_TO,
@@ -41,7 +56,7 @@ export async function sendVerificationEmail(email: string, token: string) {
 
 export async function sendPasswordResetEmail(email: string, token: string) {
   const url = `${APP_URL}/auth/reset-password?token=${token}`;
-  await resend.emails.send({
+  await getResend().emails.send({
     from: FROM,
     to: email,
     replyTo: REPLY_TO,

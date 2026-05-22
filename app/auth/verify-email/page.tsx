@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { Phone } from 'lucide-react';
+import { Phone, Check, AlertCircle } from 'lucide-react';
 
 const COOLDOWN_SECONDS = 20;
 
@@ -95,157 +95,158 @@ function VerifyEmailForm() {
   }
 
   return (
-    <div className="w-full max-w-sm">
-      <div className="flex items-center justify-center gap-3 mb-8">
-        <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-lg shadow-blue-600/30 flex items-center justify-center">
-          <Phone className="w-5 h-5 text-white" />
+    <div className="w-full max-w-md">
+      <Link href="/" className="flex items-center justify-center gap-2.5 mb-10">
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm shadow-blue-600/20 flex items-center justify-center">
+          <Phone className="w-4 h-4 text-white" />
         </div>
-        <span className="text-lg font-semibold tracking-tight text-white">ComputerCaller</span>
-      </div>
-      <h1 className="text-2xl font-bold text-white text-center mb-2 tracking-tight">
-        {sent ? 'Check your email' : 'Verify your email'}
-      </h1>
-      <p className="text-slate-400 text-center text-sm mb-8">
-        {sent
-          ? 'We sent a fresh verification link if your email is on file.'
-          : hasStaleToken
-            ? "Your verification link didn't work or has expired."
-            : 'Need a new verification email?'}
-      </p>
+        <span className="text-base font-semibold tracking-tight text-slate-900">
+          ComputerCaller
+        </span>
+      </Link>
 
-      {sent ? (
-        <div className="space-y-6">
-          <div
-            role="status"
-            aria-live="polite"
-            className="p-4 bg-emerald-950 border border-emerald-800 rounded-xl text-emerald-300 text-sm text-center"
-          >
-            <span aria-hidden="true" className="mr-1.5">
-              ✓
-            </span>
-            If that email is registered and not yet verified, we&apos;ve sent
-            a new verification link. Check your inbox (and spam).
-          </div>
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8">
+        <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">
+          {sent ? 'Check your email' : 'Verify your email'}
+        </h1>
+        <p className="mt-1.5 text-slate-500 text-sm leading-relaxed">
+          {sent
+            ? 'We sent a fresh verification link if your email is on file.'
+            : hasStaleToken
+              ? "Your verification link didn't work or has expired."
+              : 'Need a new verification email?'}
+        </p>
 
-          <div className="text-center text-sm text-slate-500">
-            {cooldownLeft > 0 ? (
-              <span aria-live="polite">
-                You can request another in {cooldownLeft}s
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSendAnother}
-                className="text-blue-400 hover:text-blue-300 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 rounded"
-              >
-                Send another
-              </button>
-            )}
-          </div>
-
-          <p className="text-center text-sm text-slate-500">
-            <Link
-              href="/auth/login"
-              className="hover:text-slate-300 transition-colors"
-            >
-              Back to sign in
-            </Link>
-          </p>
-        </div>
-      ) : (
-        <>
-          {hasStaleToken && (
+        {sent ? (
+          <div className="mt-6 space-y-5">
             <div
               role="status"
-              className="mb-4 p-3 bg-slate-900 border border-slate-800 rounded-xl text-slate-300 text-sm"
+              aria-live="polite"
+              className="flex items-start gap-2.5 p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-700 text-sm"
             >
-              Enter your email below to get a fresh verification link.
+              <span className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <Check className="w-3 h-3 text-white" strokeWidth={3} />
+              </span>
+              <span className="leading-relaxed">
+                If that email is registered and not yet verified, we&apos;ve
+                sent a new verification link. Check your inbox (and spam).
+              </span>
             </div>
-          )}
 
-          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-            <div>
-              <label
-                htmlFor="verify-email"
-                className="block text-sm text-slate-400 mb-1.5"
-              >
-                Email
-              </label>
-              <input
-                id="verify-email"
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  if (validationError) setValidationError('');
-                }}
-                aria-invalid={validationError ? true : undefined}
-                aria-describedby={
-                  validationError ? 'verify-email-error' : undefined
-                }
-                className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 placeholder:text-slate-600"
-                placeholder="you@example.com"
-              />
-              {validationError && (
-                <p
-                  id="verify-email-error"
-                  role="alert"
-                  className="mt-1.5 text-red-400 text-sm"
+            <div className="text-center text-sm text-slate-500">
+              {cooldownLeft > 0 ? (
+                <span aria-live="polite">
+                  You can request another in {cooldownLeft}s
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSendAnother}
+                  className="font-medium text-blue-600 hover:text-blue-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 rounded"
                 >
-                  {validationError}
-                </p>
+                  Send another
+                </button>
               )}
             </div>
-
-            {error && (
-              <p
-                role="alert"
-                aria-live="polite"
-                className="text-red-400 text-sm"
+          </div>
+        ) : (
+          <>
+            {hasStaleToken && (
+              <div
+                role="status"
+                className="mt-6 flex items-start gap-2.5 p-3.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm"
               >
-                {error}
-              </p>
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span className="leading-relaxed">
+                  Enter your email below to get a fresh verification link.
+                </span>
+              </div>
             )}
 
-            <button
-              type="submit"
-              disabled={loading}
-              aria-busy={loading}
-              className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 inline-flex items-center justify-center gap-2"
-            >
-              {loading && (
-                <span
-                  aria-hidden="true"
-                  className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"
+            <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
+              <div>
+                <label
+                  htmlFor="verify-email"
+                  className="block text-sm font-medium text-slate-700 mb-1.5"
+                >
+                  Email
+                </label>
+                <input
+                  id="verify-email"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    if (validationError) setValidationError('');
+                  }}
+                  aria-invalid={validationError ? true : undefined}
+                  aria-describedby={
+                    validationError ? 'verify-email-error' : undefined
+                  }
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 placeholder:text-slate-400 transition-colors"
+                  placeholder="you@example.com"
                 />
-              )}
-              {loading ? 'Sending…' : 'Send verification email'}
-            </button>
-          </form>
+                {validationError && (
+                  <p
+                    id="verify-email-error"
+                    role="alert"
+                    className="mt-1.5 text-red-600 text-sm"
+                  >
+                    {validationError}
+                  </p>
+                )}
+              </div>
 
-          <p className="mt-6 text-center text-sm text-slate-500">
-            <Link
-              href="/auth/login"
-              className="hover:text-slate-300 transition-colors"
-            >
-              Back to sign in
-            </Link>
-          </p>
-        </>
-      )}
+              {error && (
+                <div
+                  role="alert"
+                  aria-live="polite"
+                  className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm"
+                >
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                aria-busy={loading}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors text-sm shadow-sm shadow-blue-600/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 inline-flex items-center justify-center gap-2"
+              >
+                {loading && (
+                  <span
+                    aria-hidden="true"
+                    className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"
+                  />
+                )}
+                {loading ? 'Sending…' : 'Send verification email'}
+              </button>
+            </form>
+          </>
+        )}
+      </div>
+
+      <p className="mt-6 text-center text-sm text-slate-600">
+        <Link
+          href="/auth/login"
+          className="font-medium text-blue-600 hover:text-blue-700 transition-colors"
+        >
+          Back to sign in
+        </Link>
+      </p>
     </div>
   );
 }
 
 export default function VerifyEmailPage() {
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
       <Suspense
         fallback={
-          <div className="w-full max-w-sm text-center text-slate-400 text-sm">
+          <div className="w-full max-w-md text-center text-slate-500 text-sm">
             Loading…
           </div>
         }

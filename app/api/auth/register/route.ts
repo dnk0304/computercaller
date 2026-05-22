@@ -23,15 +23,33 @@ export async function POST(req: NextRequest) {
     const passwordHash = await bcrypt.hash(password, 12);
     const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
 
+    // Dev-mode auto-verify: if no Resend API key is configured, skip the
+    // email step entirely and mark the user as already verified. Lets us
+    // run the full A→B flow on localhost with zero external deps. In
+    // production RESEND_API_KEY is set, so the normal verify-by-email
+    // gate stays intact. Detected here (not in lib/email.ts) because the
+    // emailVerified column lives in the User row — has to be set at
+    // create time to skip the gate cleanly.
+    const skipEmailVerification = !process.env.RESEND_API_KEY;
+
     const user = await db.user.create({
       data: {
         email: email.toLowerCase(),
         passwordHash,
+        emailVerified: skipEmailVerification,
         subscription: {
           create: { status: 'trial', trialEndsAt },
         },
       },
     });
+
+    if (skipEmailVerification) {
+      console.log(`[Auth] DEV MODE — auto-verified ${user.email} (no RESEND_API_KEY set).`);
+      return NextResponse.json(
+        { message: 'Account created (dev mode auto-verified). You can sign in now.' },
+        { status: 201 },
+      );
+    }
 
     const verifyToken = signEmailToken(user.id);
     await db.user.update({ where: { id: user.id }, data: { emailVerifyToken: verifyToken } });

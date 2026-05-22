@@ -3,7 +3,7 @@
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Phone } from 'lucide-react';
+import { Phone, Check } from 'lucide-react';
 
 // useSearchParams() must be wrapped in <Suspense>; the page-level default export
 // provides that boundary so static export and partial pre-rendering work.
@@ -42,99 +42,121 @@ function LoginForm() {
   }
 
   return (
-    <div className="w-full max-w-sm">
-      <div className="flex items-center justify-center gap-3 mb-8">
-        <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-lg shadow-blue-600/30 flex items-center justify-center">
-          <Phone className="w-5 h-5 text-white" />
+    <div className="w-full max-w-md">
+      <Link href="/" className="flex items-center justify-center gap-2.5 mb-10">
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm shadow-blue-600/20 flex items-center justify-center">
+          <Phone className="w-4 h-4 text-white" />
         </div>
-        <span className="text-lg font-semibold tracking-tight text-white">ComputerCaller</span>
-      </div>
-      <h1 className="text-2xl font-bold text-white text-center mb-2 tracking-tight">Sign in</h1>
-      <p className="text-slate-400 text-center text-sm mb-8">Welcome back</p>
+        <span className="text-base font-semibold tracking-tight text-slate-900">
+          ComputerCaller
+        </span>
+      </Link>
 
-      {verified && (
-        <div
-          role="status"
-          className="mb-4 p-3 bg-emerald-950 border border-emerald-800 rounded-xl text-emerald-300 text-sm text-center"
-        >
-          Email verified! You can now sign in.
-        </div>
-      )}
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8">
+        <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">
+          Welcome back
+        </h1>
+        <p className="mt-1.5 text-slate-500 text-sm">
+          Sign in to your account to continue.
+        </p>
 
-      <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-        <div>
-          <label htmlFor="login-email" className="block text-sm text-slate-400 mb-1.5">
-            Email
-          </label>
-          <input
-            id="login-email"
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 placeholder:text-slate-600"
-            placeholder="you@example.com"
-          />
-        </div>
-        <div>
-          <label htmlFor="login-password" className="block text-sm text-slate-400 mb-1.5">
-            Password
-          </label>
-          <input
-            id="login-password"
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500"
-            placeholder="••••••••"
-          />
-        </div>
-        {error && (
-          <p role="alert" className="text-red-400 text-sm">
-            {error}
-          </p>
+        {verified && (
+          <div
+            role="status"
+            className="mt-6 flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-700 text-sm"
+          >
+            <span className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0">
+              <Check className="w-3 h-3 text-white" strokeWidth={3} />
+            </span>
+            Email verified. You can sign in now.
+          </div>
         )}
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors text-sm"
-        >
-          {loading ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
 
-      <div className="mt-6 text-center space-y-2 text-sm text-slate-500">
-        <p>
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
+          <div>
+            <label
+              htmlFor="login-email"
+              className="block text-sm font-medium text-slate-700 mb-1.5"
+            >
+              Email
+            </label>
+            <input
+              id="login-email"
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 placeholder:text-slate-400 transition-colors"
+              placeholder="you@example.com"
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="login-password"
+              className="block text-sm font-medium text-slate-700 mb-1.5"
+            >
+              Password
+            </label>
+            <input
+              id="login-password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 placeholder:text-slate-400 transition-colors"
+              placeholder="••••••••"
+            />
+          </div>
+
+          {error && (
+            <div
+              role="alert"
+              className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm"
+            >
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors text-sm shadow-sm shadow-blue-600/20"
+          >
+            {loading ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+
+        <div className="mt-6 text-center">
           <Link
             href="/auth/forgot-password"
-            className="hover:text-slate-300 transition-colors"
+            className="text-sm text-slate-500 hover:text-slate-900 transition-colors"
           >
             Forgot password?
           </Link>
-        </p>
-        <p>
-          Don&apos;t have an account?{' '}
-          <Link
-            href="/auth/register"
-            className="text-blue-400 hover:text-blue-300 transition-colors"
-          >
-            Start free trial
-          </Link>
-        </p>
+        </div>
       </div>
+
+      <p className="mt-6 text-center text-sm text-slate-600">
+        Don&apos;t have an account?{' '}
+        <Link
+          href="/auth/register"
+          className="font-medium text-blue-600 hover:text-blue-700 transition-colors"
+        >
+          Start free trial
+        </Link>
+      </p>
     </div>
   );
 }
 
 export default function LoginPage() {
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
       <Suspense
         fallback={
-          <div className="w-full max-w-sm text-center text-slate-400 text-sm">
+          <div className="w-full max-w-md text-center text-slate-500 text-sm">
             Loading…
           </div>
         }

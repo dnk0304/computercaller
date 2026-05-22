@@ -58,3 +58,11 @@ dk-partner-work/
 *.xlsx
 *.apk
 dnkdialer-android/dnkdialer-v*.apk
+
+# Prisma — local dev SQLite + migration trail.
+# When we deploy to Hetzner we'll switch the provider back to postgres
+# and check in a fresh migration set against the Neon schema; this
+# directory + the dev.db file are localhost-only artifacts.
+prisma/dev.db
+prisma/dev.db-journal
+prisma/migrations/
