@@ -37,12 +37,23 @@ const FIRST_PAIR_KEY = 'dnkdialer_first_pair_done';
 // dev URL. The string only matters once we're in the browser, where
 // `window.location` is always defined by the time this module executes
 // inside the React tree (`use client` at the top of the file guarantees it).
-function deriveRelayUrl(): string {
-  if (typeof window === 'undefined') return 'ws://localhost:3000/relay';
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/relay`;
+//
+// Dispatch #28 (2026-05-24): we now append the logged-in user's phoneToken
+// as a query param so the relay can route this browser into the correct
+// multi-tenant room. The relay's new gate (also part of #28) closes any
+// upgrade that arrives without a valid token — so we must NOT attempt the
+// WS connection until /api/auth/me has resolved and we have a real token.
+// The hook fetches the token on mount and only kicks off the relay connect
+// once it lands.
+function deriveRelayUrl(token: string | null): string {
+  const base = (() => {
+    if (typeof window === 'undefined') return 'ws://localhost:3000/relay';
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/relay`;
+  })();
+  if (!token) return base;
+  return `${base}?token=${encodeURIComponent(token)}`;
 }
-const RELAY_URL = deriveRelayUrl();
 
 // Map a coarse range key to a `since` unix-ms timestamp. Sending `since`
 // lets Android use an indexed WHERE clause instead of a full table scan —
@@ -211,6 +222,31 @@ export function usePhoneBridge() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // callTimerRef removed — duration is computed locally in display components
   const phoneUrlRef = useRef<string | null>(null);
+
+  // Dispatch #28 (2026-05-24): the user's phoneToken, fetched once on mount
+  // from /api/auth/me. Held in a ref so the stable connect/connectPhone
+  // useCallbacks can always read the latest value without re-binding the
+  // ws.onmessage handler whenever the token resolves. Also held in state so
+  // an effect can kick the initial connect once the token lands. A small
+  // `isRelayUrl(url)` helper below normalises the equality checks (we used
+  // to compare against the module-level RELAY_URL constant, but now the
+  // URL string is dynamic per user). isRelayUrl uses a prefix match — the
+  // base relay URL (with no query string) is a strict prefix of every URL
+  // we ever pass to `connect()`, so prefix-startsWith is enough.
+  const phoneTokenRef = useRef<string | null>(null);
+  const [phoneTokenState, setPhoneTokenState] = useState<string | null>(null);
+  const relayUrlBase = (() => {
+    if (typeof window === 'undefined') return 'ws://localhost:3000/relay';
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/relay`;
+  })();
+  const isRelayUrl = useCallback((u: string | null | undefined) => {
+    if (!u) return false;
+    // Match the base /relay path optionally followed by ?token= or end-of-string.
+    // We deliberately do NOT match /relay/phone — that is the phone-side
+    // socket and is never opened from the browser.
+    return u === relayUrlBase || u.startsWith(`${relayUrlBase}?`);
+  }, [relayUrlBase]);
 
   // Watchdog timer for the CALL_STATUS heartbeat. Reset every time a heartbeat
   // arrives during an active call; if it fires (12 s window — over 2 missed
@@ -1052,7 +1088,7 @@ export function usePhoneBridge() {
     }
 
     // Track whether this is a relay or direct connection
-    setIsRelayConnection(wsUrl === RELAY_URL);
+    setIsRelayConnection(isRelayUrl(wsUrl));
 
     try {
       console.log('[PhoneBridge] Connecting to:', wsUrl);
@@ -1074,13 +1110,13 @@ export function usePhoneBridge() {
         }
         // If we just opened the relay socket, log a sanity line. Dispatch #27
         // removed the isRelayOffline state — no UI signal needed.
-        if (wsUrl === RELAY_URL) {
+        if (isRelayUrl(wsUrl)) {
           // Token sanity log — slice off the first 8 chars of the relay-URL query
-          // string. The relay URL constant has no token (the multi-tenant token is
-          // appended by the SaaS layer in production); in dev this just logs '<none>'.
-          // The follow-up STATUS log tells the user whether the phone is actually
-          // in their room — together these two log lines let the user self-diagnose
-          // a token mismatch from DevTools.
+          // string. Dispatch #28 made the token mandatory; the relay closes any
+          // upgrade without a valid token, so a real prod open here always has
+          // a token query param. The follow-up STATUS log tells the user whether
+          // the phone is actually in their room — together these two log lines
+          // let the user self-diagnose a token mismatch from DevTools.
           const tokenMatch = /[?&]token=([^&]+)/.exec(wsUrl);
           const tokenSlice = tokenMatch ? `${tokenMatch[1].slice(0, 8)}…` : '<none>';
           console.log(`[PhoneBridge] Connected to relay. Token=${tokenSlice} Awaiting STATUS to confirm phone present in room.`);
@@ -1128,7 +1164,7 @@ export function usePhoneBridge() {
         // local dev the relay starts in the same process as Next.js (server.js)
         // so it's effectively always up. Outbound phone-WS drops still surface
         // a generic "Connection lost" so the user knows a manual retry may help.
-        if (wsUrl === RELAY_URL) {
+        if (isRelayUrl(wsUrl)) {
           console.warn('[PhoneBridge] Relay socket closed — silent retry pending');
         } else {
           setConnectionError('Connection lost. Attempting to reconnect...');
@@ -1146,7 +1182,7 @@ export function usePhoneBridge() {
         // Dispatch #27 (2026-05-24): the relay being unreachable is logged but
         // not surfaced — same rationale as the onclose handler. The onclose
         // event will fire right after and drive the silent retry loop.
-        if (wsUrl === RELAY_URL) {
+        if (isRelayUrl(wsUrl)) {
           console.warn('[PhoneBridge] Relay socket error — silent retry pending');
           return;
         }
@@ -1171,7 +1207,7 @@ export function usePhoneBridge() {
       // Dispatch #27 (2026-05-24): same silent-retry policy for the synchronous
       // WebSocket-construction failure path (rare — usually only fires on a
       // malformed URL). Relay path stays quiet, phone path keeps surfacing.
-      if (wsUrl === RELAY_URL) {
+      if (isRelayUrl(wsUrl)) {
         console.warn('[PhoneBridge] Relay socket construction failed — silent retry pending');
       } else {
         setConnectionError(
@@ -1185,7 +1221,7 @@ export function usePhoneBridge() {
         reconnectTimeoutRef.current = setTimeout(() => connect(), RECONNECT_DELAY);
       }
     }
-  }, [handleMessage]);
+  }, [handleMessage, isRelayUrl]);
 
   // Send command to phone
   const sendCommand = useCallback((type: string, payload: object = {}) => {
@@ -1269,7 +1305,12 @@ export function usePhoneBridge() {
     // socket queue before we open a fresh one — without this, some browsers
     // race and the new WS inherits the same underlying TCP socket state.
     setTimeout(() => {
-      connect(RELAY_URL);
+      // Dispatch #28 (2026-05-24): build the relay URL with the user's
+      // current phoneToken at call-time. If the token hasn't loaded yet
+      // (race between mount and /api/auth/me), the connect call no-ops
+      // via the empty-string check inside connect() — once the token
+      // lands, the on-mount effect will open the relay anyway.
+      connect(deriveRelayUrl(phoneTokenRef.current));
 
       if (phoneUrl) {
         // Wait for the new relay WS to reach OPEN, then send CONNECT_TO.
@@ -1844,6 +1885,40 @@ export function usePhoneBridge() {
     contactsRef.current = contacts;
   }, [contacts]);
 
+  // Dispatch #28 (2026-05-24): fetch the user's phoneToken from /api/auth/me
+  // on mount so the relay URL can be built with ?token=<phoneToken>. The relay
+  // now closes any upgrade that arrives without a valid token (auth gate), so
+  // we MUST have the token in hand before opening the WS. Token fetch is
+  // idempotent and cheap (in-process Prisma lookup behind the auth cookie),
+  // runs once per hook instance. Failure → null token → the connect effect
+  // below is a no-op and the UI stays in its "Waiting for phone…" state until
+  // the user resolves whatever broke /api/auth/me (typically: signed out).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        if (!res.ok) {
+          console.warn(`[PhoneBridge] /api/auth/me returned ${res.status} — relay connect deferred`);
+          return;
+        }
+        const json = await res.json();
+        const token: string | null = json?.user?.phoneToken ?? null;
+        if (cancelled) return;
+        if (!token) {
+          console.warn('[PhoneBridge] No phoneToken on user — relay connect deferred');
+          return;
+        }
+        phoneTokenRef.current = token;
+        setPhoneTokenState(token);
+        console.log(`[PhoneBridge] phoneToken loaded (${token.slice(0, 8)}…) — relay connect will kick from effect`);
+      } catch (e) {
+        console.warn('[PhoneBridge] /api/auth/me fetch failed:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // Do NOT auto-send CONNECT_TO with a saved phone URL. Reasons:
   // 1. If phone is connected via QR, the relay already knows — no CONNECT_TO needed.
   // 2. If a stale/wrong IP is in localStorage, auto-CONNECT_TO causes endless
@@ -1855,9 +1930,18 @@ export function usePhoneBridge() {
   // on mount because connectPhone() relies on the relay socket being live to
   // forward CONNECT_TO frames. Any failure here is silent (no banner) — the
   // onclose/onerror handlers log a warn and the existing retry loop covers it.
+  //
+  // Dispatch #28 (2026-05-24): effect now depends on phoneTokenState so it
+  // fires AFTER the token resolves — opens the relay with ?token=<phoneToken>
+  // and gets accepted by the relay's new auth gate. If the token never lands
+  // (anonymous user / failed /api/auth/me) the effect skips the connect entirely.
   useEffect(() => {
-    console.log('[PhoneBridge] Auto-connecting to relay server (silent)');
-    connect(RELAY_URL);
+    if (!phoneTokenState) {
+      console.log('[PhoneBridge] Awaiting phoneToken before opening relay');
+      return;
+    }
+    console.log('[PhoneBridge] Auto-connecting to relay server (silent, token-gated)');
+    connect(deriveRelayUrl(phoneTokenState));
 
     // Page-unload teardown. Fires on F5 / Ctrl+R, tab close, browser close,
     // and same-tab navigation away. We do BOTH a best-effort
@@ -1910,7 +1994,7 @@ export function usePhoneBridge() {
       }
       wsRef.current = null;
     };
-  }, [connect]);
+  }, [connect, phoneTokenState]);
 
   // App-level liveness ping. While `isConnected` is true, send APP_PING every
   // 15s. The phone echoes APP_PONG back which bumps lastPongAtRef (see handler

@@ -8,13 +8,12 @@
  * both up together, with one set of logs.
  *
  * Multi-tenant rooms:
- *   The relay used to maintain a single (phone, browsers) pair globally — fine for the
- *   single-user dev flow, but broken for SaaS. Now every connection is routed into a
- *   `rooms` Map keyed by `phoneToken` (User.phoneToken in Prisma). Browser opens
- *   `ws://host:3001?token=<phoneToken>`; phone opens `ws://host:3001/phone?token=<phoneToken>`.
- *   Each room has its own phoneWs, browsers Set, outbound state, fail counter and device
- *   name — completely isolated. Connections without a token fall into a `'default'` room
- *   so the existing single-user dev flow keeps working without auth.
+ *   The relay maintains a `rooms` Map keyed by `phoneToken` (User.phoneToken in Prisma).
+ *   Browser opens `ws://host:3001?token=<phoneToken>`; phone opens
+ *   `ws://host:3001/phone?token=<phoneToken>`. Each room has its own phoneWs, browsers
+ *   Set, outbound state, fail counter and device name — completely isolated.
+ *   Dispatch #28 (2026-05-24): connections without a valid token are CLOSED with
+ *   code 4401. The legacy 'default' room is gone.
  */
 
 const next = require('next');
@@ -175,10 +174,10 @@ function startRelay(httpServer) {
     return room;
   }
 
-  // Drop empty rooms so the Map does not grow forever. Default room is never
-  // garbage-collected because it is the fallback for unauth dev.
+  // Drop empty rooms so the Map does not grow forever. Dispatch #28: the
+  // 'default' room is gone, so every room is eligible for reaping once
+  // empty. No early-return for 'default' anymore.
   function maybeReapRoom(room) {
-    if (room.token === 'default') return;
     if (room.phoneWs) return;
     if (room.outboundPhoneWs) return;
     if (room.outboundReconnectTimeout) return;
@@ -413,7 +412,8 @@ function startRelay(httpServer) {
    * Extract phoneToken from the connection request URL.
    * Browser:  ws://host:3001/?token=XYZ      → ('XYZ', '/')
    * Phone:    ws://host:3001/phone?token=XYZ → ('XYZ', '/phone')
-   * Missing token falls back to 'default' (legacy unauth dev mode).
+   * Dispatch #28: missing token is rejected at the connection handler
+   * (close 4401). No fallback room anymore.
    */
   function parseConnection(req) {
     const parsed = parse(req.url || '/', true);
@@ -447,26 +447,31 @@ function startRelay(httpServer) {
   wss.on('connection', async (ws, req) => {
     const { pathname, token: rawToken } = parseConnection(req);
 
-    // Backwards-compat: no token in query → legacy single-user LAN-IP mode.
-    // Everything funnels into the 'default' room; no DB lookup, no userId.
-    // Remove this branch once all clients (web + Android) are sending tokens.
-    let token = rawToken;
-    let userId = null;
-    if (!token) {
-      token = 'default';
-    } else {
-      userId = await validateToken(token);
-      if (!userId) {
-        console.log(`[Relay] Rejecting connection — invalid token: ${token.substring(0, 8)}...`);
-        // 4401 = our custom "unauthorized" close code (4xxx is application range).
-        try { ws.close(4401, 'invalid_token'); } catch (e) {}
-        return;
-      }
-      // Stash on the socket so message handlers / future audit logging can read it
-      // without another DB hit. Auth happens once, here, on connect.
-      ws.userId = userId;
-      ws.phoneToken = token;
+    // Dispatch #28 (2026-05-24): the 'default' room is GONE. Every relay
+    // upgrade must arrive with a ?token=<phoneToken> query that resolves to
+    // a real User row, or we close 4401 immediately. Both the webapp
+    // (usePhoneBridge.ts fetches /api/auth/me on mount and appends the
+    // token) and the APK (SignInActivity stores the token after a
+    // successful /api/auth/apk-login and PhoneService appends it) are now
+    // required to authenticate before they can join a room. RISK-002 in
+    // Ken's ledger is closed by this change.
+    if (!rawToken) {
+      console.log('[Relay] Rejecting connection — no token in query');
+      try { ws.close(4401, 'invalid_token'); } catch (e) {}
+      return;
     }
+    const userId = await validateToken(rawToken);
+    if (!userId) {
+      console.log(`[Relay] Rejecting connection — invalid token: ${rawToken.substring(0, 8)}...`);
+      // 4401 = our custom "unauthorized" close code (4xxx is application range).
+      try { ws.close(4401, 'invalid_token'); } catch (e) {}
+      return;
+    }
+    const token = rawToken;
+    // Stash on the socket so message handlers / future audit logging can read it
+    // without another DB hit. Auth happens once, here, on connect.
+    ws.userId = userId;
+    ws.phoneToken = token;
 
     const room = getRoom(token);
 
@@ -659,16 +664,9 @@ function startRelay(httpServer) {
     const parsed = parse(request.url || '/', true);
     const pathname = parsed.pathname || '/';
     if (pathname === '/relay' || pathname === '/relay/phone') {
-      // TODO(dispatch #27 Q4 deferred, RISK-002): gate this upgrade with
-      // JWT validation before public launch. Currently any unauthenticated
-      // websocket can open /relay and land in the 'default' room (the
-      // multi-tenant rooms keyed on ?token=phoneToken are auth'd via
-      // validateToken below, but a connection WITHOUT a token still
-      // succeeds into 'default'). Acceptable for v1 single-user / private
-      // beta. MUST close before turning the front door on to the public —
-      // see Ken's project ledger RISK-002 for the design notes (likely:
-      // strip the 'default' fallback, require a ?token= query that maps to
-      // a known User.phoneToken, close the socket with 4401 otherwise).
+      // Dispatch #28 (2026-05-24): the wss 'connection' handler now closes
+      // every upgrade that lacks a valid ?token query (code 4401). The old
+      // 'default' room fallback is gone. RISK-002 in Ken's ledger is closed.
       handleRelayUpgrade(request, socket, head);
       return;
     }
@@ -676,7 +674,7 @@ function startRelay(httpServer) {
     // same httpServer and will pick it up. Do nothing here.
   });
 
-  console.log(`[Relay] Mounted on shared httpServer at /relay (browser) and /relay/phone (inbound QR). Validates ?token=<phoneToken> against User.phoneToken; missing token falls back to legacy 'default' room.`);
+  console.log(`[Relay] Mounted on shared httpServer at /relay (browser) and /relay/phone (inbound QR). Validates ?token=<phoneToken> against User.phoneToken; missing or invalid token = close 4401.`);
 
   // Optional backward-compat: ALSO bring up the old standalone listener on
   // RELAY_PORT when LEGACY_RELAY_PORT=1. Same wss instance, just a second
