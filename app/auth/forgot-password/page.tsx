@@ -14,12 +14,12 @@ export default function ForgotPasswordPage() {
           aria-label="ComputerCaller — home"
         >
           <Image
-            src="/brand/computercaller-icon-square.png"
+            src="/brand/computercaller-icon-transparent.png"
             alt="ComputerCaller"
-            width={742}
-            height={595}
+            width={396}
+            height={317}
             priority
-            className="h-14 w-auto rounded-lg"
+            className="h-14 w-auto"
           />
         </Link>
 

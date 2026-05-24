@@ -12,12 +12,12 @@ export default function LandingPage() {
         <div className="max-w-6xl mx-auto px-6 h-20 flex items-center justify-between">
           <Link href="/" className="flex items-center group" aria-label="ComputerCaller — home">
             <Image
-              src="/brand/computercaller-icon-square.png"
+              src="/brand/computercaller-icon-transparent.png"
               alt="ComputerCaller"
-              width={742}
-              height={595}
+              width={396}
+              height={317}
               priority
-              className="h-14 w-auto rounded-lg"
+              className="h-14 w-auto"
             />
           </Link>
           <div className="flex items-center gap-2">
@@ -199,11 +199,11 @@ export default function LandingPage() {
         <div className="max-w-6xl mx-auto px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Image
-              src="/brand/computercaller-icon-square.png"
+              src="/brand/computercaller-icon-transparent.png"
               alt=""
-              width={742}
-              height={595}
-              className="h-7 w-auto rounded-md"
+              width={396}
+              height={317}
+              className="h-7 w-auto"
             />
             <span className="text-sm text-slate-600">
               © {new Date().getFullYear()} ComputerCaller

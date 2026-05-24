@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { Phone, MessageSquare, LayoutTemplate, Settings, User, FileText, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -43,10 +44,20 @@ export const Sidebar = ({ activeTab, setActiveTab }: SidebarProps) => {
         'mb-10 flex items-center w-full px-3',
         collapsed ? 'justify-center' : 'gap-3 justify-between'
       )}>
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 flex-shrink-0 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl shadow-lg shadow-blue-600/20 flex items-center justify-center">
-            <Phone className="text-white w-6 h-6" />
-          </div>
+        <div className="flex items-center gap-2 min-w-0">
+          {/* Brand logo — transparent-bg icon (monitor + smartphone + handset).
+              Swapped from a gradient-square + Phone glyph dispatch #20 to
+              match the public surfaces (header, footer, auth). The icon
+              carries no wordmark; we keep the "ComputerCaller" text beside
+              it at full width and let only the icon show when collapsed. */}
+          <Image
+            src="/brand/computercaller-icon-transparent.png"
+            alt="ComputerCaller"
+            width={396}
+            height={317}
+            priority
+            className="h-10 w-auto flex-shrink-0"
+          />
           {!collapsed && (
             <h1 className="text-base font-semibold tracking-tight text-slate-900 truncate">
               ComputerCaller
