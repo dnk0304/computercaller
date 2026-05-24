@@ -4,11 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "node server.js",
-    "build": "next build --no-turbopack",
-    "start": "next start",
+    "build": "next build",
+    "start": "node server.js",
     "lint": "eslint",
     "relay": "node relay-server.js",
-    "dev:all": "node server.js"
+    "dev:all": "node server.js",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
