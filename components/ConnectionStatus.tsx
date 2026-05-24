@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Smartphone, RefreshCw, AlertTriangle, XCircle, ServerCrash, X, MessageSquare, Bell, ShieldX, History } from 'lucide-react';
+import { Smartphone, RefreshCw, AlertTriangle, XCircle, X, MessageSquare, Bell, ShieldX, History } from 'lucide-react';
 import { usePhone } from '@/hooks';
 
 export const ConnectionStatus = () => {
@@ -12,14 +12,12 @@ export const ConnectionStatus = () => {
     connectPhone,
     disconnect,
     connectionError,
-    isRelayOffline,
     isPhoneStale,
     notificationPermissionGranted,
     requestNotificationAccess,
     isAwaitingPhoneAccept,
     phoneAcceptDeclined,
   } = usePhone() as ReturnType<typeof usePhone> & {
-    isRelayOffline?: boolean;
     isPhoneStale?: boolean;
     notificationPermissionGranted?: boolean | null;
     requestNotificationAccess?: () => void;
@@ -60,7 +58,6 @@ export const ConnectionStatus = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedPhoneUrl]);
 
-  const [relayBannerDismissed, setRelayBannerDismissed] = useState(false);
   const [notifBannerDismissed, setNotifBannerDismissed] = useState(false);
 
   // Auto-hide the notification-access banner once the phone reports access has
@@ -110,7 +107,7 @@ export const ConnectionStatus = () => {
         {showPrefillCue && (
           <span
             className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
-            title="Last connected IP — pre-filled from your previous session"
+            title="Last used phone address — remembered from your previous session"
             aria-label="Pre-filled from last connection"
           >
             <History className="w-3.5 h-3.5" aria-hidden="true" />
@@ -123,9 +120,13 @@ export const ConnectionStatus = () => {
           onKeyDown={(e) => {
             if (e.key === 'Enter') handleConnect();
           }}
-          placeholder="e.g. 192.168.1.42:8765"
-          aria-label="Phone IP address"
-          className={`py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-56 ${showPrefillCue ? 'pl-8 pr-3' : 'px-3'}`}
+          // Dispatch #27 wording pass — no jargon, no "relay", no port. The
+          // Android app shows the user a phone address (IP:port) on its main
+          // screen; this placeholder mirrors that shape so the user knows
+          // exactly what to type without needing a manual.
+          placeholder="Phone address (shown on the phone app)"
+          aria-label="Phone address shown on the phone app"
+          className={`py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-72 ${showPrefillCue ? 'pl-8 pr-3' : 'px-3'}`}
         />
       </div>
       <button
@@ -133,54 +134,13 @@ export const ConnectionStatus = () => {
         onClick={handleConnect}
         disabled={!inputValue.trim()}
         className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
-        title="Connect to this phone IP"
+        title="Connect to this phone"
       >
         <Smartphone className="w-4 h-4" aria-hidden="true" />
         Connect
       </button>
     </div>
   );
-
-  // The relay-offline banner is rendered as a fixed top-of-page notice, since
-  // ConnectionStatus lives inside a small header slot. Position it relative to
-  // the viewport so it cannot be clipped by the header's overflow.
-  const relayBanner =
-    isRelayOffline && !relayBannerDismissed ? (
-      <div
-        role="alert"
-        aria-live="polite"
-        className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] w-[min(640px,calc(100%-1.5rem))]"
-      >
-        <div className="flex items-start gap-3 px-4 py-3 bg-amber-50 border border-amber-300 rounded-2xl shadow-lg shadow-amber-100/50 backdrop-blur-sm">
-          <div className="w-9 h-9 rounded-xl bg-amber-100 border border-amber-200 flex items-center justify-center flex-shrink-0">
-            <ServerCrash className="w-4.5 h-4.5 text-amber-700" aria-hidden="true" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-amber-900">
-              Bridge server not running
-            </p>
-            <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
-              Start it with{' '}
-              <code className="px-1.5 py-0.5 bg-amber-100 border border-amber-200 rounded font-mono text-[11px] text-amber-900">
-                npm run dev
-              </code>{' '}
-              <span className="text-amber-700">(auto-starts)</span> or{' '}
-              <code className="px-1.5 py-0.5 bg-amber-100 border border-amber-200 rounded font-mono text-[11px] text-amber-900">
-                npm run relay
-              </code>
-            </p>
-          </div>
-          <button
-            onClick={() => setRelayBannerDismissed(true)}
-            className="p-1.5 -m-1 text-amber-700 hover:text-amber-900 hover:bg-amber-100 rounded-lg transition-colors flex-shrink-0"
-            aria-label="Dismiss bridge server notice"
-            title="Dismiss"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-    ) : null;
 
   // Notification-access banner. Rendered as a fixed-position notice (mirroring
   // the relay banner pattern) so it's never clipped by header overflow. Only
@@ -221,7 +181,6 @@ export const ConnectionStatus = () => {
   if (isAwaitingPhoneAccept) {
     return (
       <>
-        {relayBanner}
         <div
           className="flex items-center gap-3 px-5 py-2 bg-blue-50/70 backdrop-blur-md rounded-2xl border border-blue-200/70 shadow-sm"
           role="status"
@@ -256,7 +215,6 @@ export const ConnectionStatus = () => {
   if (phoneAcceptDeclined) {
     return (
       <>
-        {relayBanner}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-3 px-5 py-2 bg-red-50/70 backdrop-blur-md rounded-2xl border border-red-200/70 shadow-sm">
             <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center border border-red-200">
@@ -285,7 +243,6 @@ export const ConnectionStatus = () => {
   if (isFullyHealthy) {
     return (
       <>
-        {relayBanner}
         {notificationBanner}
         <div className="flex items-center gap-4 px-5 py-2 bg-white/50 backdrop-blur-md rounded-2xl border border-slate-200/60 shadow-sm">
           <div className="flex items-center gap-3">
@@ -302,7 +259,7 @@ export const ConnectionStatus = () => {
           <div className="hidden md:flex items-center gap-1.5" role="status" aria-label="Connection details">
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[10px] font-medium text-emerald-700 uppercase tracking-wide">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-              Relay ✓
+              Server ✓
             </span>
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[10px] font-medium text-emerald-700 uppercase tracking-wide">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
@@ -344,20 +301,19 @@ export const ConnectionStatus = () => {
   // — messages they send right now will not be delivered. This used to show
   // a misleading green "Connected" dot even when the phone wasn't paired,
   // which is the entire false-connection bug class this UI is fixing.
-  if (isBridgeConnected && !connectionError && !isRelayOffline) {
+  if (isBridgeConnected && !connectionError) {
     // Phone-pill label depends on whether we ever saw the phone (isConnected
     // would be true at some point) or just relay-only the whole time.
     const phoneLabel = isPhoneStale ? 'stale — reconnecting…' : 'waiting…';
     const topLabel = isPhoneStale
       ? 'Phone unresponsive — reconnecting'
-      : 'Relay only — phone not paired';
-    // Amber state means relay is up but no phone is paired. From the user's POV
-    // this IS the "disconnected" state where they want to (re)pair. The LAN-IP
+      : 'Phone not paired';
+    // Amber state — server's up but no phone is paired. From the user's POV
+    // this IS the "disconnected" state where they want to (re)pair. The
     // input row is the single connection affordance — pre-filled with the last
     // `savedPhoneUrl` so a single Enter / Connect re-pairs.
     return (
       <>
-        {relayBanner}
         {notificationBanner}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-3 px-5 py-2 bg-amber-50/70 backdrop-blur-md rounded-2xl border border-amber-200/70 shadow-sm">
@@ -367,13 +323,13 @@ export const ConnectionStatus = () => {
               </div>
               <div className="flex flex-col">
                 <span className="text-sm font-semibold text-amber-900">{topLabel}</span>
-                <span className="text-[11px] text-amber-700">Enter your phone IP to reconnect</span>
+                <span className="text-[11px] text-amber-700">Enter your phone address to connect</span>
               </div>
             </div>
             <div className="hidden md:flex items-center gap-1.5" role="status" aria-label="Connection details">
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[10px] font-medium text-emerald-700 uppercase tracking-wide">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-                Relay ✓
+                Server ✓
               </span>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 border border-amber-300 text-[10px] font-medium text-amber-800 uppercase tracking-wide">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden="true" />
@@ -403,7 +359,6 @@ export const ConnectionStatus = () => {
 
   return (
     <>
-      {relayBanner}
       <div className="flex items-center gap-2">
         {errorPill}
         {inputRow}

@@ -114,7 +114,11 @@ export function usePhoneBridge() {
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [isRelayConnection, setIsRelayConnection] = useState<boolean>(true);
-  const [isRelayOffline, setIsRelayOffline] = useState<boolean>(false);
+  // Dispatch #27 (2026-05-24, Option 1): isRelayOffline removed. The relay
+  // being briefly unreachable is no longer surfaced to the user — we silently
+  // retry instead. The four call sites that flipped this flag are now
+  // commented out (kept as documentation of past behavior) or replaced with
+  // console.warn so the dev console still shows what's happening.
 
   // Accept-on-phone flow state. The phone now raises a notification on every
   // incoming WS connection asking the user to Accept / Decline. Between the
@@ -417,7 +421,7 @@ export function usePhoneBridge() {
       }
 
       case 'STATUS':
-        setIsRelayOffline(false);
+        // Dispatch #27: setIsRelayOffline removed — state no longer tracked.
 
         // Accept-on-phone signals. The relay forwards these BEFORE the
         // standard connected:true to distinguish "phone is prompting user"
@@ -1068,9 +1072,9 @@ export function usePhoneBridge() {
           clearTimeout(awaitingAcceptTimeoutRef.current);
           awaitingAcceptTimeoutRef.current = null;
         }
-        // If we just opened the relay socket, the relay is by definition not offline.
+        // If we just opened the relay socket, log a sanity line. Dispatch #27
+        // removed the isRelayOffline state — no UI signal needed.
         if (wsUrl === RELAY_URL) {
-          setIsRelayOffline(false);
           // Token sanity log — slice off the first 8 chars of the relay-URL query
           // string. The relay URL constant has no token (the multi-tenant token is
           // appended by the SaaS layer in production); in dev this just logs '<none>'.
@@ -1111,16 +1115,21 @@ export function usePhoneBridge() {
         // If the relay WS itself died while we were awaiting Accept, the
         // pending prompt on the phone is now orphaned anyway — clear the
         // waiting state so the user doesn't see a stuck "waiting for phone
-        // to accept" alongside the relay-offline banner.
+        // to accept" alongside any partial state.
         setIsAwaitingPhoneAccept(false);
         if (awaitingAcceptTimeoutRef.current) {
           clearTimeout(awaitingAcceptTimeoutRef.current);
           awaitingAcceptTimeoutRef.current = null;
         }
-        // If the socket we just lost was the relay, mark relay offline.
+        // Dispatch #27 (2026-05-24, Option 1): the relay drop is no longer a
+        // user-facing error — we silently retry in the background. Surfacing
+        // "Bridge server not running" was misleading: in prod the relay is on
+        // the same origin so a momentary blip is just a reconnect, and during
+        // local dev the relay starts in the same process as Next.js (server.js)
+        // so it's effectively always up. Outbound phone-WS drops still surface
+        // a generic "Connection lost" so the user knows a manual retry may help.
         if (wsUrl === RELAY_URL) {
-          setIsRelayOffline(true);
-          setConnectionError('Relay server is not running');
+          console.warn('[PhoneBridge] Relay socket closed — silent retry pending');
         } else {
           setConnectionError('Connection lost. Attempting to reconnect...');
         }
@@ -1134,10 +1143,11 @@ export function usePhoneBridge() {
       ws.onerror = (error) => {
         console.error('[PhoneBridge] WebSocket error:', error);
 
-        // If this is the relay socket, the relay is offline — give a precise message.
+        // Dispatch #27 (2026-05-24): the relay being unreachable is logged but
+        // not surfaced — same rationale as the onclose handler. The onclose
+        // event will fire right after and drive the silent retry loop.
         if (wsUrl === RELAY_URL) {
-          setIsRelayOffline(true);
-          setConnectionError('Relay server is not running');
+          console.warn('[PhoneBridge] Relay socket error — silent retry pending');
           return;
         }
 
@@ -1158,9 +1168,11 @@ export function usePhoneBridge() {
       wsRef.current = ws;
     } catch (error) {
       console.error('[PhoneBridge] Connection error:', error);
+      // Dispatch #27 (2026-05-24): same silent-retry policy for the synchronous
+      // WebSocket-construction failure path (rare — usually only fires on a
+      // malformed URL). Relay path stays quiet, phone path keeps surfacing.
       if (wsUrl === RELAY_URL) {
-        setIsRelayOffline(true);
-        setConnectionError('Relay server is not running');
+        console.warn('[PhoneBridge] Relay socket construction failed — silent retry pending');
       } else {
         setConnectionError(
           'Failed to create connection. Please verify:\n' +
@@ -1838,8 +1850,13 @@ export function usePhoneBridge() {
   //    ECONNREFUSED retries that interfere with the QR flow.
   // 3. The relay handles outbound reconnect internally (outboundReconnectTimeout).
   // Manual IP connections are only triggered when the user explicitly enters one.
+  //
+  // Dispatch #27 (2026-05-24, Option 1): we DO auto-open the relay WS itself
+  // on mount because connectPhone() relies on the relay socket being live to
+  // forward CONNECT_TO frames. Any failure here is silent (no banner) — the
+  // onclose/onerror handlers log a warn and the existing retry loop covers it.
   useEffect(() => {
-    console.log('[PhoneBridge] Auto-connecting to relay server');
+    console.log('[PhoneBridge] Auto-connecting to relay server (silent)');
     connect(RELAY_URL);
 
     // Page-unload teardown. Fires on F5 / Ctrl+R, tab close, browser close,
@@ -1985,7 +2002,9 @@ export function usePhoneBridge() {
     callLogs,
     connectionError,
     isRelayConnection,
-    isRelayOffline,
+    // Dispatch #27: isRelayOffline removed from public API. Components should
+    // not condition UI on relay availability — the silent retry loop handles
+    // it without user-facing noise.
     // True when the relay WS is open and we think we're connected, but the
     // phone hasn't responded to APP_PING in >30s. UI uses this to surface a
     // "Phone: waiting…" state instead of the misleading green pill.
