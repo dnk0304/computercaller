@@ -8,7 +8,7 @@ export const metadata = {
     'The agreement between you and ComputerCaller when you use the service.',
 };
 
-// Terms of Service — plain-language, EU-defensible (Norway-based operator).
+// Terms of Service — plain-language, EU-defensible (Europe-based operator).
 // Mirrors Whop subscription terms for billing language.
 
 export default function TermsPage() {
@@ -166,9 +166,9 @@ export default function TermsPage() {
               Governing law
             </h2>
             <p>
-              These terms are governed by the laws of Norway. Disputes go to
-              Norwegian courts unless local consumer-protection law gives you
-              the right to your own jurisdiction.
+              These terms are governed by European Law. Disputes are resolved
+              under European jurisdiction unless local consumer-protection law
+              gives you the right to your own jurisdiction.
             </p>
           </section>
 
