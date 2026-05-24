@@ -97,18 +97,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Quick-sync visual affordance — Bug #1 dispatch #23. Reports from prod:
-  // clicking Quick produced zero visible feedback even when the underlying
-  // dispatch fired correctly, leading users to mash the button or assume the
-  // app was broken. We track a short-lived `isQuickSyncing` local state set
-  // on click, cleared either when fresh data arrives (rough heuristic — when
-  // any sync-related ref bumps) or after an 8 s safety timeout so the
-  // spinner can't get stuck forever if the phone never responds.
+  // Quick-sync visual affordance — Bug #1 dispatch #23, timeout retuned in
+  // dispatch #24 from 8s → 3s per Dennis: quick sync over LAN typically
+  // round-trips in under a second, so 8s of "Syncing…" felt sluggish even
+  // when the sync had already completed. 3s keeps the spinner long enough
+  // to feel deliberate but reverts fast on the happy path.
+  //
+  // Reports from prod: clicking Quick produced zero visible feedback even
+  // when the underlying dispatch fired correctly, leading users to mash the
+  // button or assume the app was broken. We track a short-lived
+  // `isQuickSyncing` local state set on click, cleared by the safety
+  // timeout so the spinner can't get stuck forever if the phone never
+  // responds.
   //
   // Approach is intentionally minimal: no toast lib added, no new global
   // state. Just a local flag that swaps the button label/icon. If quickSync
   // early-returns because the WS isn't OPEN, the timeout still clears the
-  // spinner cleanly within 8 s — diagnostics in usePhoneBridge log the WHY
+  // spinner cleanly within 3s — diagnostics in usePhoneBridge log the WHY
   // separately.
   const [isQuickSyncing, setIsQuickSyncing] = React.useState(false);
   const quickSyncTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -120,7 +125,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     quickSyncTimerRef.current = setTimeout(() => {
       setIsQuickSyncing(false);
       quickSyncTimerRef.current = null;
-    }, 8000);
+    }, 3000);
     quickSync();
   }, [quickSync]);
 
