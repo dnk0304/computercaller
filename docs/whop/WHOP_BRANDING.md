@@ -2,7 +2,7 @@
 
 > Ken-authored deck for Phase 9 of the deploy. The Whop product page at
 > https://whop.com/computercaller/computercaller-82/ is the page that
-> converts trial users into €5.99/month paying customers. It needs to
+> converts trial users into €7.99/month paying customers. It needs to
 > feel like a continuation of computercaller.com, not a different app.
 
 Last updated: 2026-05-24 (Ken dispatch #14).
@@ -46,7 +46,7 @@ WHAT YOUR SUBSCRIPTION INCLUDES
 • Priority email support
 
 5-DAY FREE TRIAL
-Start free, no credit card required. After the trial: €5.99 per month.
+Start free, no credit card required. After the trial: €7.99 per month.
 Cancel any time from your Whop account.
 
 WORKS WITH
@@ -79,7 +79,7 @@ brand asset per surface — that's how the visual identity drifts.
 
 | Field | Value |
 |---|---|
-| Price | €5.99 / month |
+| Price | €7.99 / month |
 | Billing cycle | Monthly |
 | Trial length | 5 days |
 | Trial requires credit card | No |

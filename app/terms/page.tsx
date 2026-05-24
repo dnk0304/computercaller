@@ -75,7 +75,7 @@ export default function TermsPage() {
                 start.
               </li>
               <li>
-                After the trial, the service costs €5.99 / month, billed
+                After the trial, the service costs €7.99 / month, billed
                 monthly through Whop.
               </li>
               <li>

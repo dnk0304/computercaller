@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { Phone, MessageSquare, Bell, Zap, Shield, Globe, Check, ArrowRight } from 'lucide-react';
 
 export default function LandingPage() {
@@ -9,13 +10,15 @@ export default function LandingPage() {
       {/* Header */}
       <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-slate-200/80">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5 group">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm shadow-blue-600/20 flex items-center justify-center">
-              <Phone className="w-4 h-4 text-white" />
-            </div>
-            <span className="font-semibold text-[15px] tracking-tight text-slate-900">
-              ComputerCaller
-            </span>
+          <Link href="/" className="flex items-center group" aria-label="ComputerCaller — home">
+            <Image
+              src="/brand/computercaller-banner.png"
+              alt="ComputerCaller"
+              width={400}
+              height={170}
+              priority
+              className="h-10 w-auto"
+            />
           </Link>
           <div className="flex items-center gap-2">
             <Link
@@ -144,7 +147,7 @@ export default function LandingPage() {
 
           <div className="mt-12 max-w-md mx-auto p-8 bg-white border border-slate-200 rounded-2xl shadow-sm text-left">
             <div className="flex items-baseline gap-1.5">
-              <span className="text-5xl font-semibold tracking-tight text-slate-900">€5.99</span>
+              <span className="text-5xl font-semibold tracking-tight text-slate-900">€7.99</span>
               <span className="text-slate-500 text-base">/ month</span>
             </div>
             <p className="mt-2 text-sm text-slate-500">

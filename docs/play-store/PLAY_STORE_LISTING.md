@@ -39,7 +39,7 @@ Last updated: 2026-05-24 (Ken dispatch #14).
 ### Monetization note for the "Free or paid" choice
 
 The app on Play is free to install. The companion web service has a 5-day
-trial and then €5.99/month, billed via Whop (NOT Google Play Billing).
+trial and then €7.99/month, billed via Whop (NOT Google Play Billing).
 Because billing happens off-Google, declare **Free** — you do NOT need to
 enable in-app purchases or Google Play Billing.
 
@@ -94,7 +94,7 @@ PRIVATE BY DESIGN
 PRICING
 
 5-day free trial. No credit card required to start.
-After the trial: €5.99 per month. Cancel any time.
+After the trial: €7.99 per month. Cancel any time.
 
 REQUIREMENTS
 
