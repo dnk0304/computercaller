@@ -38,7 +38,13 @@ export default function LandingPage() {
         </div>
       </header>
 
-      {/* Hero banner — full-width brand banner with baked-in wordmark + tagline */}
+      {/* Hero banner — capped at source resolution (1436px) so the image never
+          upscales on large monitors. Dispatch #29 Track B (Option C — Dennis,
+          2026-05-24): full-width was upscaling on 4K displays and reading blurry.
+          We trade edge-to-edge fill for crisp pixels by centering the banner
+          inside a continuous light-blue field (#dbeefc — same as the banner's
+          own bottom edge), so on screens wider than 1436px the gradient extends
+          on either side and there's no hard cut. */}
       <div className="w-full bg-[#dbeefc]">
         <Image
           src="/brand/computercaller-hero-banner-v2-cropped.png"
@@ -46,8 +52,8 @@ export default function LandingPage() {
           width={1436}
           height={530}
           priority
-          sizes="100vw"
-          className="w-full h-auto block"
+          sizes="(min-width: 1436px) 1436px, 100vw"
+          className="w-full h-auto block max-w-[1436px] mx-auto"
         />
       </div>
 
