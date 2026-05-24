@@ -41,10 +41,10 @@ export default function LandingPage() {
       {/* Hero banner — full-width brand banner with baked-in wordmark + tagline */}
       <div className="w-full bg-[#dbeefc]">
         <Image
-          src="/brand/computercaller-hero-banner.png"
-          alt="ComputerCaller — Connect. Call. Communicate. Seamlessly."
-          width={632}
-          height={231}
+          src="/brand/computercaller-hero-banner-v2-cropped.png"
+          alt="ComputerCaller — Connect. Call. Sms. Communicate. Seamlessly."
+          width={1436}
+          height={530}
           priority
           sizes="100vw"
           className="w-full h-auto block"
@@ -53,7 +53,8 @@ export default function LandingPage() {
 
       {/* Hero — value prop sits below the banner.
           Background fades from the banner's bottom-edge blue down to white
-          so the visual flow is continuous (no hard cut). */}
+          so the visual flow is continuous (no hard cut). Tighter top padding
+          and a wider container keep the copy visually connected to the banner. */}
       <section
         className="relative overflow-hidden"
         style={{
@@ -61,7 +62,7 @@ export default function LandingPage() {
             'linear-gradient(to bottom, #dbeefc 0%, #eef6fc 35%, #ffffff 100%)',
         }}
       >
-        <div className="max-w-4xl mx-auto px-6 pt-16 pb-24 sm:pt-20 sm:pb-32 text-center">
+        <div className="max-w-5xl mx-auto px-6 pt-10 pb-24 sm:pt-12 sm:pb-32 text-center">
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             5-day free trial — no credit card required
