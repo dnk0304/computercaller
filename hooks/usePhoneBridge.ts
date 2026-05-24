@@ -1555,14 +1555,40 @@ export function usePhoneBridge() {
    * "Last quick resync: 3m ago" timestamp.
    */
   const quickSync = useCallback(() => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    // Diagnostic logging — Bug #1 dispatch #23. Reports from prod: clicking
+    // Quick produces zero visible effect even though the connection is live.
+    // Capture the WS state at the moment of click so logcat / browser console
+    // shows whether we early-returned (and why) or actually dispatched the
+    // GET_MESSAGES frame. If readyState !== OPEN we now log the actual numeric
+    // state (0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED) so we can tell
+    // "never connected" apart from "connection dropped silently".
+    const ws = wsRef.current;
+    const readyState = ws?.readyState;
+    // eslint-disable-next-line no-console
+    console.log('[QuickSync] firing — ws.readyState=', readyState);
+    if (!ws || readyState !== WebSocket.OPEN) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[QuickSync] aborting — ws not OPEN. state=',
+        readyState,
+        '(0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED, undefined=no socket)'
+      );
+      return;
+    }
     const since6h = Date.now() - 6 * 60 * 60 * 1000;
     messagesBufferRef.current = [];
     callLogsBufferRef.current = [];
-    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
+    // eslint-disable-next-line no-console
+    console.log('[QuickSync] dispatching GET_MESSAGES since', new Date(since6h).toISOString());
+    ws.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
     setTimeout(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // eslint-disable-next-line no-console
+        console.log('[QuickSync] dispatching GET_CALL_LOGS since', new Date(since6h).toISOString());
         wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since6h })}`);
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn('[QuickSync] skipping GET_CALL_LOGS — ws no longer OPEN');
       }
     }, 300);
     // Record the last-quick-sync timestamp for the Settings page. We write on

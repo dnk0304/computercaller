@@ -97,6 +97,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   };
 
+  // Quick-sync visual affordance — Bug #1 dispatch #23. Reports from prod:
+  // clicking Quick produced zero visible feedback even when the underlying
+  // dispatch fired correctly, leading users to mash the button or assume the
+  // app was broken. We track a short-lived `isQuickSyncing` local state set
+  // on click, cleared either when fresh data arrives (rough heuristic — when
+  // any sync-related ref bumps) or after an 8 s safety timeout so the
+  // spinner can't get stuck forever if the phone never responds.
+  //
+  // Approach is intentionally minimal: no toast lib added, no new global
+  // state. Just a local flag that swaps the button label/icon. If quickSync
+  // early-returns because the WS isn't OPEN, the timeout still clears the
+  // spinner cleanly within 8 s — diagnostics in usePhoneBridge log the WHY
+  // separately.
+  const [isQuickSyncing, setIsQuickSyncing] = React.useState(false);
+  const quickSyncTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleQuickSyncClick = React.useCallback(() => {
+    if (typeof quickSync !== 'function') return;
+    setIsQuickSyncing(true);
+    if (quickSyncTimerRef.current) clearTimeout(quickSyncTimerRef.current);
+    quickSyncTimerRef.current = setTimeout(() => {
+      setIsQuickSyncing(false);
+      quickSyncTimerRef.current = null;
+    }, 8000);
+    quickSync();
+  }, [quickSync]);
+
+  // Cleanup any pending timer on unmount so a fast route change doesn't leak
+  // a setTimeout that fires into a dead component.
+  React.useEffect(() => {
+    return () => {
+      if (quickSyncTimerRef.current) clearTimeout(quickSyncTimerRef.current);
+    };
+  }, []);
+
   const wrapInScroll = shouldWrapInScrollContainer(pathname);
 
   return (
@@ -116,13 +151,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <PhoneStatusButton />
             {isConnected && typeof quickSync === 'function' && (
               <button
-                onClick={quickSync}
-                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors border border-slate-200"
-                title="Quick sync — last 6 hours"
-                aria-label="Quick sync"
+                onClick={handleQuickSyncClick}
+                disabled={isQuickSyncing}
+                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors border border-slate-200 disabled:opacity-70 disabled:cursor-progress"
+                title={isQuickSyncing ? 'Syncing last 6 hours of messages and calls…' : 'Quick sync — last 6 hours'}
+                aria-label={isQuickSyncing ? 'Quick sync in progress' : 'Quick sync'}
+                aria-busy={isQuickSyncing}
               >
-                <RefreshCw className="w-3 h-3" aria-hidden="true" />
-                Quick
+                <RefreshCw
+                  className={`w-3 h-3 ${isQuickSyncing ? 'animate-spin' : ''}`}
+                  aria-hidden="true"
+                />
+                {isQuickSyncing ? 'Syncing…' : 'Quick'}
               </button>
             )}
             {/* Full Sync button — opens the SyncSetupPanel modal (the same
