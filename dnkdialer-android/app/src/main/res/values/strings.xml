@@ -196,4 +196,34 @@
     <string name="hard_reset_dialog_cancel">Cancel</string>
     <string name="hard_reset_dialog_confirm">Reset</string>
     <string name="hard_reset_failed">Couldn\'t auto-reset. Open Settings → Apps → ComputerCaller → Storage → Clear data.</string>
+
+    <!-- =================================================== -->
+    <!-- Sign-in screen (dispatch #28, 2026-05-24).            -->
+    <!-- First-launch gate. Stores phoneToken in              -->
+    <!-- EncryptedSharedPreferences so PhoneService can       -->
+    <!-- connect to the relay without re-prompting.           -->
+    <!-- =================================================== -->
+    <string name="signin_title">Sign in</string>
+    <string name="signin_subtitle">Use the same email and password you use on computercaller.com.</string>
+    <string name="signin_email_hint">Email</string>
+    <string name="signin_password_hint">Password</string>
+    <string name="signin_action">Sign In</string>
+    <string name="signin_action_loading">Signing in…</string>
+    <string name="signin_error_empty">Enter your email and password.</string>
+    <string name="signin_error_network">Network error. Check your internet connection and try again.</string>
+    <string name="signin_error_invalid">Invalid email or password.</string>
+    <string name="signin_error_unverified">Please verify your email on computercaller.com first, then come back.</string>
+    <string name="signin_error_generic">Sign-in failed. Try again.</string>
+    <string name="signin_footer">Don\'t have an account? Sign up at computercaller.com first, then come back here.</string>
+
+    <!-- Sign-out menu item replaces "Disconnect and refresh" once       -->
+    <!-- the user is signed in. Clears stored phoneToken and returns     -->
+    <!-- to SignInActivity. Phase 4 work — exposed via MainActivity.     -->
+    <string name="action_sign_out">Sign out</string>
+
+    <!-- Relay-status surface — replaces the LAN-IP / QR plate after     -->
+    <!-- Phase 4 lands. The Kotlin side feeds these into the status row. -->
+    <string name="relay_status_waiting">Waiting for browser…</string>
+    <string name="relay_status_paired">Connected · browser paired</string>
+    <string name="relay_status_offline">Offline · check internet</string>
 </resources>

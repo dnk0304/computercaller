@@ -78,6 +78,16 @@
             </intent-filter>
         </activity>
 
+        <!--
+          Dispatch #28 (2026-05-24) — first-launch sign-in.
+          Not exported (no external entry point) and not declared in the
+          LAUNCHER intent-filter; MainActivity launches it via explicit
+          Intent when TokenStore.hasToken() returns false.
+        -->
+        <activity
+            android:name=".SignInActivity"
+            android:exported="false" />
+
         <receiver
             android:name=".SmsReceiver"
             android:exported="true"

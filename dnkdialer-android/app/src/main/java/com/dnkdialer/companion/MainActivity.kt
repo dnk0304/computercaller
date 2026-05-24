@@ -272,6 +272,18 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Dispatch #28 (2026-05-24) — first-launch sign-in gate. Before any
+        // permission audit, check we have a phoneToken stored. Without one
+        // there is no relay room to join, so showing the permissions pane
+        // would be pointless — we bounce to SignInActivity immediately and
+        // come back here once the user has signed in.
+        if (!TokenStore.hasToken(this)) {
+            android.util.Log.d("MainActivity", "onCreate: no stored phoneToken — launching SignInActivity")
+            startActivity(Intent(this, SignInActivity::class.java))
+            finish()
+            return
+        }
+
         // Samsung One UI auto-revoke defense — see [inPermissionsRequiredPane]
         // kdoc. We audit permissions BEFORE inflating the main layout so
         // findViewById calls below never try to resolve ids that aren't

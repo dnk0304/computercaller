@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Activity: SignIn — dispatch #28 (2026-05-24).
+
+  First-launch gate. The user signs in with the same email / password
+  they use on computercaller.com. Backend (/api/auth/apk-login) returns
+  a phoneToken; we stash it in EncryptedSharedPreferences and proceed
+  to MainActivity.
+
+  Visual language matches activity_main.xml — pure near-black canvas,
+  electric blue accent on the primary CTA, sans-serif-black wordmark.
+-->
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/surface_base"
+    android:fillViewport="true"
+    android:scrollbars="none"
+    android:overScrollMode="never">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center_vertical"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:paddingTop="48dp"
+        android:paddingBottom="32dp">
+
+        <!-- Wordmark -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textSize="36sp"
+            android:textColor="@color/text_primary"
+            android:fontFamily="sans-serif-black"
+            android:letterSpacing="-0.035"
+            android:layout_marginBottom="32dp" />
+
+        <!-- Title -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/signin_title"
+            android:textSize="24sp"
+            android:textColor="@color/text_primary"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Subtitle -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/signin_subtitle"
+            android:textSize="14sp"
+            android:textColor="@color/text_secondary"
+            android:lineSpacingMultiplier="1.3"
+            android:layout_marginBottom="32dp" />
+
+        <!-- Email -->
+        <EditText
+            android:id="@+id/emailField"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:hint="@string/signin_email_hint"
+            android:inputType="textEmailAddress"
+            android:textSize="16sp"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_tertiary"
+            android:background="@color/surface_inset"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:importantForAutofill="yes"
+            android:autofillHints="emailAddress"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Password -->
+        <EditText
+            android:id="@+id/passwordField"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:hint="@string/signin_password_hint"
+            android:inputType="textPassword"
+            android:textSize="16sp"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_tertiary"
+            android:background="@color/surface_inset"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:importantForAutofill="yes"
+            android:autofillHints="password"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Error pill (shown only on failure) -->
+        <TextView
+            android:id="@+id/errorText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="13sp"
+            android:textColor="@color/dot_failed"
+            android:visibility="gone"
+            android:layout_marginBottom="16dp"
+            tools:visibility="visible"
+            tools:text="Invalid email or password." />
+
+        <!-- Sign in button -->
+        <Button
+            android:id="@+id/signInButton"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="@string/signin_action"
+            android:textSize="16sp"
+            android:textColor="@color/text_primary"
+            android:textAllCaps="false"
+            android:fontFamily="sans-serif-medium"
+            android:backgroundTint="@color/accent_blue"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Footer -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/signin_footer"
+            android:textSize="12sp"
+            android:textColor="@color/text_tertiary"
+            android:lineSpacingMultiplier="1.3"
+            android:gravity="center"
+            android:paddingTop="8dp" />
+
+    </LinearLayout>
+</ScrollView>

@@ -669,11 +669,28 @@ class PhoneService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         android.util.Log.d("PhoneService", "onStartCommand called with action: ${intent?.action}")
-        
+
         when (intent?.action) {
             ACTION_START -> {
                 android.util.Log.d("PhoneService", "Starting server...")
                 startServer()
+
+                // Dispatch #28 (2026-05-24) — auto-dial the SaaS relay on
+                // startup. The user already signed in (SignInActivity stored
+                // the phoneToken via TokenStore); we now connect directly to
+                // wss://computercaller.com/relay/phone?token=<phoneToken> so
+                // the browser sees the phone in its room the moment the user
+                // opens the web app. The LAN PhoneServer above keeps running
+                // (legacy / dev flow) — Phase 4 follow-up dispatch will rip
+                // it out once the relay-direct path is field-verified.
+                val phoneToken = TokenStore.getPhoneToken(this)
+                if (!phoneToken.isNullOrBlank()) {
+                    val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
+                    android.util.Log.d("PhoneService", "Auto-dialing relay (token=${phoneToken.take(8)}…)")
+                    connectToRelay(relayUrl)
+                } else {
+                    android.util.Log.w("PhoneService", "No phoneToken in TokenStore — skipping relay auto-dial")
+                }
 
                 val notificationIntent = Intent(this, MainActivity::class.java)
                 val pendingIntent = PendingIntent.getActivity(

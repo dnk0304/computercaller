@@ -31,7 +31,9 @@ android {
         // shipped (debug or release). Play Store requires strictly higher
         // than the highest one already on the track.
         // versionName: human-readable; Play Console shows this on listing.
-        versionCode = 15
+        // Dispatch #28 (2026-05-24): bumped 15 → 16 for the SaaS-direct
+        // refactor (SignInActivity gate + relay-only PhoneService).
+        versionCode = 16
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -99,6 +101,12 @@ dependencies {
     // compile-classpath needs an explicit declaration to resolve the
     // symbol.
     implementation("com.google.guava:listenablefuture:1.0")
+
+    // Dispatch #28 (v16) — encrypted phoneToken storage. The user's
+    // phoneToken is the relay's authentication signal; we keep it in
+    // EncryptedSharedPreferences (AES-256-GCM, keys held in the Android
+    // Keystore / TEE). See TokenStore.kt for the wrapper.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

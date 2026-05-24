@@ -1,0 +1,181 @@
+package com.dnkdialer.companion
+
+import android.content.Intent
+import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.View
+import android.widget.Button
+import android.widget.EditText
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import com.google.gson.Gson
+import org.json.JSONObject
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
+
+/**
+ * Dispatch #28 (2026-05-24) — first-launch sign-in.
+ *
+ * Posts {email, password} to https://computercaller.com/api/auth/apk-login
+ * and stores the returned phoneToken via TokenStore. On success it launches
+ * MainActivity and finishes itself so back-button doesn't return here while
+ * signed in.
+ *
+ * MainActivity.onCreate checks TokenStore.hasToken(this) and bounces to this
+ * activity if no token is stored. SignOut from MainActivity clears the token
+ * and re-launches this activity.
+ */
+class SignInActivity : AppCompatActivity() {
+
+    companion object {
+        private const val LOGIN_URL = "https://computercaller.com/api/auth/apk-login"
+        private const val TAG = "SignInActivity"
+    }
+
+    private lateinit var emailField: EditText
+    private lateinit var passwordField: EditText
+    private lateinit var signInButton: Button
+    private lateinit var errorText: TextView
+
+    private val gson = Gson()
+    private var inFlight = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_signin)
+
+        emailField = findViewById(R.id.emailField)
+        passwordField = findViewById(R.id.passwordField)
+        signInButton = findViewById(R.id.signInButton)
+        errorText = findViewById(R.id.errorText)
+
+        // Clear the error pill as soon as the user starts typing again — the
+        // failure was about the previous attempt, not this fresh one.
+        val clearOnType = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (errorText.visibility == View.VISIBLE) {
+                    errorText.visibility = View.GONE
+                }
+            }
+            override fun afterTextChanged(s: Editable?) {}
+        }
+        emailField.addTextChangedListener(clearOnType)
+        passwordField.addTextChangedListener(clearOnType)
+
+        signInButton.setOnClickListener { attemptSignIn() }
+    }
+
+    private fun attemptSignIn() {
+        if (inFlight) return
+        val email = emailField.text.toString().trim()
+        val password = passwordField.text.toString()
+
+        if (email.isEmpty() || password.isEmpty()) {
+            showError(getString(R.string.signin_error_empty))
+            return
+        }
+
+        setLoading(true)
+
+        // Background HTTP call. HttpURLConnection on a background thread is
+        // intentionally low-dependency — we don't want to pull OkHttp in for
+        // a single endpoint when the rest of the app already runs java-websocket
+        // over its own bundled URL transport.
+        Thread {
+            val result = postLogin(email, password)
+            runOnUiThread {
+                setLoading(false)
+                when (result) {
+                    is LoginResult.Success -> {
+                        TokenStore.save(this, result.phoneToken, result.deviceName)
+                        android.util.Log.d(TAG, "Sign-in OK — token stored (${result.phoneToken.take(8)}…)")
+                        startActivity(Intent(this, MainActivity::class.java))
+                        finish()
+                    }
+                    is LoginResult.InvalidCredentials -> showError(getString(R.string.signin_error_invalid))
+                    is LoginResult.Unverified -> showError(getString(R.string.signin_error_unverified))
+                    is LoginResult.Network -> showError(getString(R.string.signin_error_network))
+                    is LoginResult.Generic -> showError(getString(R.string.signin_error_generic))
+                }
+            }
+        }.start()
+    }
+
+    private fun postLogin(email: String, password: String): LoginResult {
+        var conn: HttpURLConnection? = null
+        return try {
+            val url = URL(LOGIN_URL)
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 10_000
+                readTimeout = 10_000
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+            }
+            val body = JSONObject().apply {
+                put("email", email)
+                put("password", password)
+            }.toString()
+            OutputStreamWriter(conn.outputStream).use { it.write(body) }
+
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            when (code) {
+                in 200..299 -> {
+                    val obj = JSONObject(text)
+                    val token = obj.optString("phoneToken", "")
+                    val deviceName = if (obj.has("deviceName") && !obj.isNull("deviceName")) {
+                        obj.optString("deviceName", "")
+                    } else null
+                    if (token.isNotEmpty()) LoginResult.Success(token, deviceName)
+                    else LoginResult.Generic
+                }
+                401 -> LoginResult.InvalidCredentials
+                403 -> LoginResult.Unverified
+                else -> {
+                    android.util.Log.w(TAG, "Sign-in HTTP $code: $text")
+                    LoginResult.Generic
+                }
+            }
+        } catch (e: java.net.SocketTimeoutException) {
+            android.util.Log.w(TAG, "Sign-in timeout: ${e.message}")
+            LoginResult.Network
+        } catch (e: java.io.IOException) {
+            android.util.Log.w(TAG, "Sign-in IOException: ${e.message}")
+            LoginResult.Network
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Sign-in unexpected: ${e.message}", e)
+            LoginResult.Generic
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    private fun setLoading(loading: Boolean) {
+        inFlight = loading
+        signInButton.isEnabled = !loading
+        signInButton.text = getString(
+            if (loading) R.string.signin_action_loading else R.string.signin_action
+        )
+        emailField.isEnabled = !loading
+        passwordField.isEnabled = !loading
+    }
+
+    private fun showError(msg: String) {
+        errorText.text = msg
+        errorText.visibility = View.VISIBLE
+    }
+
+    private sealed class LoginResult {
+        data class Success(val phoneToken: String, val deviceName: String?) : LoginResult()
+        object InvalidCredentials : LoginResult()
+        object Unverified : LoginResult()
+        object Network : LoginResult()
+        object Generic : LoginResult()
+    }
+}
