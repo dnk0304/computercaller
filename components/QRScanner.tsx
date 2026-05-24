@@ -20,16 +20,39 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
   const onCloseRef = React.useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
-  // Derive the QR URL from the current page's origin (dispatch #26).
-  // The relay is mounted on the same http server as Next.js at /relay/phone
-  // — no /api/local-ip call needed, no LAN-IP dependency. Phone scans the
-  // QR and connects to the public relay over WSS in prod (works from ANY
-  // network with internet) or over ws://localhost:3000 in dev.
+  // Derive the QR URL from the current page's origin (dispatch #26) and
+  // append the logged-in user's phoneToken (dispatch #28) so a phone that
+  // scans the QR lands in the correct multi-tenant room without needing to
+  // sign in inside the APK. Token fetch is the same one usePhoneBridge does;
+  // we tolerate a missing token gracefully (encode the URL without it so
+  // the relay close 4401 surfaces immediately rather than silently dropping
+  // into a non-existent default room).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    setRelayUrl(`${proto}//${window.location.host}/relay/phone`);
-    setLoading(false);
+    let cancelled = false;
+    (async () => {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const base = `${proto}//${window.location.host}/relay/phone`;
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        if (cancelled) return;
+        if (res.ok) {
+          const json = await res.json();
+          const token: string | null = json?.user?.phoneToken ?? null;
+          if (token) {
+            setRelayUrl(`${base}?token=${encodeURIComponent(token)}`);
+            setLoading(false);
+            return;
+          }
+        }
+        setRelayUrl(base);
+      } catch {
+        setRelayUrl(base);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Auto-close when connected — only depend on isConnected, use the stable
