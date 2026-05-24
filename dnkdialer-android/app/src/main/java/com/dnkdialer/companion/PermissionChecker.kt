@@ -10,6 +10,9 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.ContextCompat
+import androidx.core.content.PackageManagerCompat
+import androidx.core.content.UnusedAppRestrictionsConstants
+import java.util.concurrent.TimeUnit
 
 /**
  * Runtime + special-access grant checker. The fix for Samsung One UI (and
@@ -238,16 +241,24 @@ object PermissionChecker {
         //     bridge background service that's a silent killer: user grants
         //     everything once, never opens the app for a week (the whole
         //     point — it just runs), comes back to find calls/SMS broken
-        //     with no error. AndroidManifest.xml application tag now sets
-        //     android:autoRevokePermissions="disallowed" (Bug #3 dispatch
-        //     #23) but the OS can still opt us back in on a setting change
-        //     or per-OEM policy; check at runtime and route the user to the
-        //     auto-revoke settings deep-link if so. Inverted: the OS API
-        //     returns TRUE when the app IS whitelisted (i.e. auto-revoke is
-        //     OFF for us = healthy). When it returns FALSE we surface the
-        //     fix to the user.
+        //     with no error.
+        //
+        //     Dispatch #25 (v15) — moved from the deprecated
+        //     PackageManager.isAutoRevokeWhitelisted (which Dennis's v14
+        //     report showed never surfaces the row + ate the "Manage app
+        //     if unused" intent on Samsung) to the AndroidX-Jetpack
+        //     forward-compatible API: PackageManagerCompat
+        //     .getUnusedAppRestrictionsStatus(). The Compat API returns a
+        //     ListenableFuture<Integer> that the framework resolves on a
+        //     worker thread; we .get(1500, MILLISECONDS) it so the
+        //     permission-pane render stays a single sync pass. Treat the
+        //     three positive enum values (API_30_BACKPORT / API_30 /
+        //     API_31) as "auto-revoke ENABLED for our app → surface the
+        //     row"; treat DISABLED / FEATURE_NOT_AVAILABLE / ERROR /
+        //     timeout as "no row needed" (defensive — better to under-
+        //     surface than to gate on a heuristic that throws or stalls).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-            !isAutoRevokeWhitelisted(context)
+            shouldShowAutoRevokeWarning(context)
         ) {
             missing += MissingPermission(
                 id = "auto_revoke",
@@ -308,31 +319,55 @@ object PermissionChecker {
     }
 
     /**
-     * API 30+ — returns true when the app is whitelisted from background
-     * permission auto-revoke (i.e. the user has explicitly set
-     * "Remove permissions if app isn't used" to OFF for us, OR the OS has
-     * honored our manifest android:autoRevokePermissions="disallowed" and
-     * not flipped us back).
+     * Returns true when we should SURFACE the auto-revoke warning row in
+     * the permissions pane — i.e. the OS has auto-revoke ENABLED for this
+     * app (so our grants are at risk of background hibernation).
      *
-     * On API < 30 there's no auto-revoke flow at all, so we return true
-     * (whitelisted == "no auto-revoke threat exists") and the caller
-     * already gates this with a Build.VERSION_CODES.R check.
+     * Dispatch #25 (v15) — replaces the v14 implementation that called
+     * the platform PackageManager.isAutoRevokeWhitelisted. Dennis reported
+     * on v14 that the row never surfaced at all AND that the "Manage app
+     * if unused" Settings entry stopped opening — strongly suggesting the
+     * platform API's behavior on his Samsung One UI build is not what the
+     * docs imply (likely returning the wrong sense, or the throw branch
+     * silently swallowing a real signal).
      *
-     * Defensive: PackageManager.isAutoRevokeWhitelisted() throws on rare
-     * OEM forks that haven't fully wired the API; treat any throw as
-     * "assume whitelisted" so we don't spam the user with a fix they
-     * can't action on their device.
+     * The replacement uses androidx.core.content.PackageManagerCompat
+     * .getUnusedAppRestrictionsStatus(context), which is the Jetpack
+     * forward-compatible call that maps to the right under-the-hood API
+     * on each platform version (App-Hibernation on 31+, Permission-Revoke
+     * on 30, backport on 23-29). It returns a ListenableFuture<Integer>
+     * resolved off the calling thread, so we block on .get with a 1500ms
+     * timeout — well inside the budget for the permissions-pane render
+     * which already does dozens of sync PackageManager calls.
+     *
+     * Returned status semantics (per UnusedAppRestrictionsConstants):
+     *   - API_30_BACKPORT, API_30, API_31 → auto-revoke ENABLED → SHOW
+     *   - DISABLED                        → user already opted out → HIDE
+     *   - FEATURE_NOT_AVAILABLE           → pre-API-30 device → HIDE
+     *   - ERROR                           → defensive HIDE (avoid spamming
+     *                                       a row the user can't action)
+     *   - timeout / exception             → defensive HIDE
+     *
+     * On API < 30 the caller already gates with a VERSION_CODES.R check,
+     * so this fn returns false defensively in that branch too.
      */
-    private fun isAutoRevokeWhitelisted(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return true
+    private fun shouldShowAutoRevokeWarning(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
         return try {
-            context.packageManager.isAutoRevokeWhitelisted
+            val future = PackageManagerCompat.getUnusedAppRestrictionsStatus(context)
+            val status = future.get(1500, TimeUnit.MILLISECONDS)
+            when (status) {
+                UnusedAppRestrictionsConstants.API_30_BACKPORT,
+                UnusedAppRestrictionsConstants.API_30,
+                UnusedAppRestrictionsConstants.API_31 -> true
+                else -> false
+            }
         } catch (e: Exception) {
             android.util.Log.w(
                 "PermissionChecker",
-                "isAutoRevokeWhitelisted threw on this OEM build — assuming healthy: ${e.message}"
+                "getUnusedAppRestrictionsStatus failed (${e.javaClass.simpleName}: ${e.message}) — hiding row defensively"
             )
-            true
+            false
         }
     }
 

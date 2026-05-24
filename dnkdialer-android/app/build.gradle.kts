@@ -31,7 +31,7 @@ android {
         // shipped (debug or release). Play Store requires strictly higher
         // than the highest one already on the track.
         // versionName: human-readable; Play Console shows this on listing.
-        versionCode = 14
+        versionCode = 15
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -88,6 +88,17 @@ dependencies {
 
     // QR Code scanning
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
+    // Dispatch #25 (v15) — PermissionChecker.shouldShowAutoRevokeWarning
+    // calls PackageManagerCompat.getUnusedAppRestrictionsStatus(context)
+    // which returns com.google.common.util.concurrent.ListenableFuture.
+    // The class lives in this 1KB stub artifact that Guava publishes
+    // specifically so Android apps can take a ListenableFuture-typed
+    // return value without pulling the full ~3 MB Guava jar. AndroidX
+    // core 1.12.0 brings it transitively at runtime, but Kotlin's
+    // compile-classpath needs an explicit declaration to resolve the
+    // symbol.
+    implementation("com.google.guava:listenablefuture:1.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

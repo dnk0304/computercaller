@@ -60,9 +60,12 @@
           silently nuking call/SMS/contacts permissions.
 
           PermissionChecker.kt has a paired runtime check
-          (isAutoRevokeWhitelisted) that detects when the OS has flipped
-          us back to auto-revoking and re-routes the user to the auto-revoke
-          deep-link before we hit the resulting permission losses.
+          (shouldShowAutoRevokeWarning — backed by
+          androidx.core.content.PackageManagerCompat
+          .getUnusedAppRestrictionsStatus since dispatch #25 v15) that
+          detects when the OS has flipped us back to auto-revoking and
+          re-routes the user to the auto-revoke deep-link before we hit
+          the resulting permission losses.
         -->
 
 
