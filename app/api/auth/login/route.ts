@@ -20,7 +20,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Please verify your email before logging in' }, { status: 403 });
     }
 
-    const token = signAccessToken({ userId: user.id, email: user.email });
+    // Dispatch #27 Block B (2026-05-24, Option III) — single-active-session.
+    // Bump sessionVersion BEFORE signing the new JWT. Any previously-issued
+    // token for this user carries the old `ver` claim; subsequent calls to
+    // validateSessionToken will compare against this newly-incremented row
+    // and reject the stale token. Use `update`'s atomic increment so concurrent
+    // logins serialise correctly at the DB level (no read-modify-write race).
+    const bumped = await db.user.update({
+      where: { id: user.id },
+      data: { sessionVersion: { increment: 1 } },
+      select: { sessionVersion: true },
+    });
+
+    const token = signAccessToken({
+      userId: user.id,
+      email: user.email,
+      ver: bumped.sessionVersion,
+    });
 
     const response = NextResponse.json({
       user: { id: user.id, email: user.email, phoneToken: user.phoneToken },

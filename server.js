@@ -659,6 +659,16 @@ function startRelay(httpServer) {
     const parsed = parse(request.url || '/', true);
     const pathname = parsed.pathname || '/';
     if (pathname === '/relay' || pathname === '/relay/phone') {
+      // TODO(dispatch #27 Q4 deferred, RISK-002): gate this upgrade with
+      // JWT validation before public launch. Currently any unauthenticated
+      // websocket can open /relay and land in the 'default' room (the
+      // multi-tenant rooms keyed on ?token=phoneToken are auth'd via
+      // validateToken below, but a connection WITHOUT a token still
+      // succeeds into 'default'). Acceptable for v1 single-user / private
+      // beta. MUST close before turning the front door on to the public —
+      // see Ken's project ledger RISK-002 for the design notes (likely:
+      // strip the 'default' fallback, require a ?token= query that maps to
+      // a known User.phoneToken, close the socket with 4401 otherwise).
       handleRelayUpgrade(request, socket, head);
       return;
     }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAccessToken } from '@/lib/auth';
+import { validateSessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
 
 export async function GET(req: NextRequest) {
@@ -7,7 +7,11 @@ export async function GET(req: NextRequest) {
     const token = req.cookies.get('auth_token')?.value;
     if (!token) return NextResponse.json({ user: null }, { status: 401 });
 
-    const payload = verifyAccessToken(token);
+    // Dispatch #27 Block B — validateSessionToken does signature verify AND
+    // sessionVersion check. A kicked session (another browser logged in for
+    // this user) lands here as null, the frontend already routes 401 to the
+    // login page so the bounce is automatic.
+    const payload = await validateSessionToken(token);
     if (!payload) return NextResponse.json({ user: null }, { status: 401 });
 
     const user = await db.user.findUnique({

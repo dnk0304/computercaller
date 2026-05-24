@@ -27,6 +27,11 @@ model User {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   phoneToken        String    @unique @default(cuid())  // WSS connection token for Android APK
+  // sessionVersion — monotonic counter, bumped on every successful login.
+  // JWTs are signed with the post-bump value in their `ver` claim. Any token
+  // whose `ver` no longer matches the DB column is rejected → effectively a
+  // single-active-session policy (dispatch #27, 2026-05-24, Option III).
+  sessionVersion    Int       @default(0)
   subscription      Subscription?
 }
 
