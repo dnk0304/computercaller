@@ -232,6 +232,33 @@ object PermissionChecker {
             )
         }
 
+        // 11. Auto-revoke whitelist — SPECIAL. API 30+ (Android 11) added
+        //     a background "hibernation" pass that revokes runtime permissions
+        //     for apps the user hasn't foregrounded "recently". For a phone-
+        //     bridge background service that's a silent killer: user grants
+        //     everything once, never opens the app for a week (the whole
+        //     point — it just runs), comes back to find calls/SMS broken
+        //     with no error. AndroidManifest.xml application tag now sets
+        //     android:autoRevokePermissions="disallowed" (Bug #3 dispatch
+        //     #23) but the OS can still opt us back in on a setting change
+        //     or per-OEM policy; check at runtime and route the user to the
+        //     auto-revoke settings deep-link if so. Inverted: the OS API
+        //     returns TRUE when the app IS whitelisted (i.e. auto-revoke is
+        //     OFF for us = healthy). When it returns FALSE we surface the
+        //     fix to the user.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            !isAutoRevokeWhitelisted(context)
+        ) {
+            missing += MissingPermission(
+                id = "auto_revoke",
+                kind = Kind.SPECIAL,
+                manifestPermission = null,
+                displayName = context.getString(R.string.perm_name_auto_revoke),
+                why = context.getString(R.string.perm_why_auto_revoke),
+                intent = autoRevokeIntent(context),
+            )
+        }
+
         return missing
     }
 
@@ -277,6 +304,57 @@ object PermissionChecker {
         return Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
             data = Uri.parse("package:${context.packageName}")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    /**
+     * API 30+ — returns true when the app is whitelisted from background
+     * permission auto-revoke (i.e. the user has explicitly set
+     * "Remove permissions if app isn't used" to OFF for us, OR the OS has
+     * honored our manifest android:autoRevokePermissions="disallowed" and
+     * not flipped us back).
+     *
+     * On API < 30 there's no auto-revoke flow at all, so we return true
+     * (whitelisted == "no auto-revoke threat exists") and the caller
+     * already gates this with a Build.VERSION_CODES.R check.
+     *
+     * Defensive: PackageManager.isAutoRevokeWhitelisted() throws on rare
+     * OEM forks that haven't fully wired the API; treat any throw as
+     * "assume whitelisted" so we don't spam the user with a fix they
+     * can't action on their device.
+     */
+    private fun isAutoRevokeWhitelisted(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return true
+        return try {
+            context.packageManager.isAutoRevokeWhitelisted
+        } catch (e: Exception) {
+            android.util.Log.w(
+                "PermissionChecker",
+                "isAutoRevokeWhitelisted threw on this OEM build — assuming healthy: ${e.message}"
+            )
+            true
+        }
+    }
+
+    /**
+     * Deep-link to the Auto-revoke settings page for this app. Uses
+     * Intent.ACTION_AUTO_REVOKE_PERMISSIONS (constant value
+     * "android.intent.action.AUTO_REVOKE_PERMISSIONS") which the framework
+     * maps to the per-app "Pause app activity if unused" / "Remove
+     * permissions if app isn't used" toggle.
+     *
+     * On API < 30 this constant doesn't exist; we fall back to the standard
+     * app-details settings screen so the user can find the toggle there.
+     * (Caller gates with VERSION check so this branch is defensive only.)
+     */
+    private fun autoRevokeIntent(context: Context): Intent {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(Intent.ACTION_AUTO_REVOKE_PERMISSIONS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        } else {
+            appDetailsIntent(context)
         }
     }
 }

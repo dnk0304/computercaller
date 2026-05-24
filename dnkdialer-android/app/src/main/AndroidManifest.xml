@@ -36,6 +36,7 @@
 
     <application
         android:allowBackup="true"
+        android:autoRevokePermissions="disallowed"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -43,6 +44,27 @@
         android:theme="@style/Theme.DNKDialerCompanion"
         android:usesCleartextTraffic="true"
         tools:targetApi="31">
+
+        <!--
+          Bug #3 dispatch #23 — Android 11+ auto-revokes runtime permissions
+          for apps the user "hasn't used recently". For a phone-bridge
+          background service the user almost never opens the app's
+          foreground UI; the bridge runs as a foreground service. That makes
+          us a textbook auto-revoke victim.
+
+          android:autoRevokePermissions="disallowed" (introduced API 31, but
+          honored by the framework's auto-revoke flow on API 30 too) asks
+          the OS to keep our grants UNLESS the user explicitly disables
+          auto-revoke in our app's settings — which means the OS will surface
+          a request the first time it would have auto-revoked, rather than
+          silently nuking call/SMS/contacts permissions.
+
+          PermissionChecker.kt has a paired runtime check
+          (isAutoRevokeWhitelisted) that detects when the OS has flipped
+          us back to auto-revoking and re-routes the user to the auto-revoke
+          deep-link before we hit the resulting permission losses.
+        -->
+
 
         <activity
             android:name=".MainActivity"

@@ -179,6 +179,9 @@
     <string name="perm_name_battery">Battery — don\'t optimize</string>
     <string name="perm_why_battery">Samsung-specific. Keeps the connection alive when the screen is off.</string>
 
+    <string name="perm_name_auto_revoke">Keep permissions when unused</string>
+    <string name="perm_why_auto_revoke">Stops Android from silently revoking call/SMS access if the app sits in the background for days.</string>
+
     <!-- =================================================== -->
     <!-- Hard Reset — manual escape hatch for the "Samsung    -->
     <!-- silently revoked something" class of bugs. Wipes     -->

@@ -31,7 +31,7 @@ android {
         // shipped (debug or release). Play Store requires strictly higher
         // than the highest one already on the track.
         // versionName: human-readable; Play Console shows this on listing.
-        versionCode = 13
+        versionCode = 14
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

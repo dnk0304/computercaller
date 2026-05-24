@@ -49,6 +49,28 @@ class PhoneServer(
     private val onConnectionRequest: (String, String) -> Unit    // (requestId, remoteAddress)
 ) : WebSocketServer(InetSocketAddress(port)) {
 
+    init {
+        // Bug #2 dispatch #23 — "Disconnect and refresh" sometimes failed to
+        // come back online because the OS held port 8765 in TIME_WAIT after
+        // the previous server.stop(), and the new bind would hit
+        // BindException: Address already in use.
+        //
+        // SO_REUSEADDR (set via the inherited AbstractWebSocket.isReuseAddr
+        // Kotlin property — backed by setReuseAddr(boolean) on the Java side)
+        // tells the OS we explicitly want to bind even if a previous socket
+        // is still lingering in TIME_WAIT. Safe on Android/Linux: the OS
+        // still guarantees TCP correctness because the 4-tuple
+        // (src-ip, src-port, dst-ip, dst-port) of an incoming packet is
+        // unique enough to route to the new socket.
+        //
+        // CRITICAL: this MUST be set BEFORE start() is called — the value
+        // is read once during the ServerSocketChannel bind in run(). Setting
+        // it after start() is a no-op. Construction in PhoneService happens
+        // BEFORE the explicit server?.start() at PhoneService.kt:960, so
+        // the init block runs in time.
+        isReuseAddr = true
+    }
+
     private val gson = Gson()
     private var client: WebSocket? = null
 

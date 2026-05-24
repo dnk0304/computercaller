@@ -406,14 +406,21 @@ class MainActivity : AppCompatActivity() {
             setStatusVisual(ConnState.CONNECTING)
             qrCodeImage.setImageBitmap(null)
 
-            // Step 3: re-arm the service after a beat. 800 ms is the same
-            // window dispatch #6's old refresh handler used; it gives the
-            // OS time to release port 8765 before our new ServerSocket
-            // tries to bind it.
+            // Step 3: re-arm the service after a beat. Bumped 800 ms → 1500 ms
+            // (Bug #2 dispatch #23). Field reports showed that on some Android
+            // builds (Samsung One UI in particular), 800 ms was occasionally
+            // not enough for the kernel to fully release port 8765 from
+            // TIME_WAIT after stopService() — the new ServerSocket bind would
+            // hit BindException and the service would silently stay down
+            // until the user opened the app again. 1500 ms is empirically
+            // generous; SO_REUSEADDR (added to PhoneServer.kt init block this
+            // same dispatch) is the belt — this longer delay is the braces.
+            // Optimistic UI above already shows "Starting / Connecting" so the
+            // extra 700 ms isn't user-visible.
             handler.postDelayed({
                 android.util.Log.d("MainActivity", "Disconnect-and-refresh: restarting service")
                 startPhoneService()
-            }, 800L)
+            }, 1500L)
         }
         
         // Hard Reset button — manual escape hatch for the "Samsung
