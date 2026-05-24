@@ -226,4 +226,29 @@
     <string name="relay_status_waiting">Waiting for browser…</string>
     <string name="relay_status_paired">Connected · browser paired</string>
     <string name="relay_status_offline">Offline · check internet</string>
+
+    <!-- Dispatch #29 — relay-status helper line under the status row.
+         Reassures the user that there is nothing to do here — the phone
+         is connected to the cloud relay; the browser side will pick it
+         up automatically once they log in on the web. -->
+    <string name="relay_help_text">Sign in on computercaller.com on any browser to use your phone from your computer. You can close this app — it keeps running in the background.</string>
+
+    <!-- Dispatch #29 — Sign Out confirmation. Wipes the stored phoneToken
+         and returns to SignInActivity. Phrased as a question with a
+         clear "Sign out" action so an accidental tap doesn't lose the
+         connection mid-call. -->
+    <string name="signout_dialog_title">Sign out?</string>
+    <string name="signout_dialog_message">You\'ll need to sign in again to reconnect to your computer. The phone bridge will stop until you do.</string>
+    <string name="signout_dialog_cancel">Cancel</string>
+    <string name="signout_dialog_confirm">Sign out</string>
+
+    <!-- Dispatch #29 — Refresh-button copy that better matches Dennis's
+         expectation of "I have granted all permissions". Previous copy
+         was "I've granted everything — re-check" which only re-ran the
+         audit and stayed stuck if the audit flagged a soft (informational)
+         permission the user couldn't easily resolve. The new flow advances
+         to the main pane as long as no BLOCKING (runtime call/SMS/etc.)
+         permissions are still missing. -->
+    <string name="perms_continue_anyway">Continue to app</string>
+    <string name="perms_continue_anyway_hint">Some optional permissions are still missing but you can continue. Reliability may be reduced — you can grant them later from app settings.</string>
 </resources>

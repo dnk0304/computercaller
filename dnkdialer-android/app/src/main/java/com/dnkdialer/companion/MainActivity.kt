@@ -13,8 +13,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -25,7 +23,6 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.Button
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -34,9 +31,6 @@ import androidx.core.content.ContextCompat
 import android.content.res.ColorStateList
 import android.widget.Toast
 import com.dnkdialer.companion.R
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.EncodeHintType
-import com.google.zxing.qrcode.QRCodeWriter
 
 class MainActivity : AppCompatActivity() {
 
@@ -80,9 +74,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusDot: View
     private lateinit var statusDotRing: View
     private lateinit var stepNumber: TextView
-    private lateinit var ipText: TextView
-    private lateinit var qrCodeImage: ImageView
     private lateinit var enableNotificationsButton: Button
+    // Dispatch #29 — Phase 4 finish. LAN-IP / QR plate stripped from
+    // activity_main.xml; the corresponding ipText + qrCodeImage fields
+    // are gone. The phone now only connects outbound to the SaaS relay
+    // (wired in PhoneService.onStartCommand) so there's nothing for the
+    // user to copy or scan on this surface.
 
     /**
      * Round 7 — status dot pulse animator.
@@ -321,12 +318,10 @@ class MainActivity : AppCompatActivity() {
         statusDot = findViewById(R.id.statusDot)
         statusDotRing = findViewById(R.id.statusDotRing)
         stepNumber = findViewById(R.id.stepNumber)
-        ipText = findViewById(R.id.ipText)
-        qrCodeImage = findViewById(R.id.qrCodeImage)
         enableNotificationsButton = findViewById(R.id.enable_notifications_button)
         reconnectButton = findViewById(R.id.reconnectButton)
 
-        // Diagnostic surface for LAN reconnect attempts that hang or fail.
+        // Diagnostic surface for relay-dial attempts that hang or fail.
         connectionTargetText = findViewById(R.id.connectionTargetText)
         connectionErrorText = findViewById(R.id.connectionErrorText)
 
@@ -347,92 +342,22 @@ class MainActivity : AppCompatActivity() {
             openNotificationSettings()
         }
 
-        // Copy IP button - copies the displayed IP/URL to clipboard
-        val copyIpButton: Button = findViewById(R.id.copyIpButton)
-        copyIpButton.setOnClickListener {
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            val clip = android.content.ClipData.newPlainText("Phone IP", ipText.text.toString())
-            clipboard.setPrimaryClip(clip)
-            Toast.makeText(this, R.string.toast_copied, Toast.LENGTH_SHORT).show()
-        }
-
-        // Dispatch #9: reconnectButton click handler REMOVED.
-        // The widget is forced GONE in initializeMainPane() above and in
-        // every updateStatus() branch below. With no surface, no handler.
-        // (See field-site tombstone for `userStopped` above for the
-        // full lineage.)
-
-        // "Disconnect and refresh" button (dispatch #9, 2026-05-22).
-        // Single-button replacement for the dispatch #6 dual-button UX
-        // (Start partner + Disconnect-and-stop). One tap:
-        //   1. Politely close active LAN clients (DISCONNECT_PHONE frame
-        //      → close 1000 → browser sees a clean teardown, no TCP
-        //      timeout reaper).
-        //   2. stopService → PhoneService.stopSelf → onDestroy →
-        //      server.stop() (port 8765 released, notification cleared).
-        //   3. 800 ms postDelayed → startPhoneService() — gives the OS
-        //      time to fully release the port before we re-bind it.
-        //      Race-condition guard: if the user mashes the button mid-
-        //      restart, the second tap finds serviceBound==false and
-        //      phoneService==null (set in this handler), so the polite-
-        //      close call no-ops and the stopService is a no-op too.
-        //   4. updateStatus() runs once the rebind callback lands and
-        //      paints the "Listening, ready at IP X.X.X.X" surface.
-        //
-        // No userStopped latch — the user's intent is "blip the service
-        // and come back", not "stay down". onResume's auto-bind will
-        // not race the postDelayed start because runMainPaneOnResume
-        // only fires startPhoneService when !serviceBound, and our 800ms
-        // window is well inside the typical resume interval.
+        // Dispatch #29 — disconnectButton repurposed as Sign Out.
+        // Old behavior: polite-close LAN clients + stop service + restart
+        // service after 1500ms (dispatch #6/#9/#23 lineage). With no LAN
+        // server anymore (PhoneServer.kt deleted) there's nothing to
+        // "refresh" — the only meaningful tear-down is dropping the
+        // signed-in identity. Tapping Sign Out:
+        //   1. Confirms with the user (dialog with Cancel / Sign out).
+        //   2. Stops the foreground service so the relay socket closes
+        //      cleanly (otherwise the browser would still see the phone).
+        //   3. Wipes the stored phoneToken via TokenStore.clearToken.
+        //   4. Launches SignInActivity with CLEAR_TASK so back-button
+        //      can't return to the main pane in a half-signed-out state.
+        //   5. finish() so the activity stack ends with SignIn as root.
         val disconnectButton: Button = findViewById(R.id.disconnectButton)
         disconnectButton.setOnClickListener {
-            android.util.Log.d("MainActivity", "Disconnect and refresh pressed")
-
-            // Step 1: polite close of any active/pending LAN clients
-            // BEFORE we kill the service. Idempotent — disconnectAllClients
-            // no-ops cleanly when there's nothing connected.
-            try {
-                phoneService?.getServer()?.disconnectAllClients()
-            } catch (e: Exception) {
-                android.util.Log.w("MainActivity", "disconnectAllClients threw during refresh: ${e.message}")
-            }
-
-            // Step 2: stop the foreground service. ACTION_STOP →
-            // PhoneService.stopSelf() → onDestroy → server.stop().
-            val stopIntent = Intent(this, PhoneService::class.java).apply {
-                action = PhoneService.ACTION_STOP
-            }
-            stopService(stopIntent)
-            if (serviceBound) {
-                unbindService(serviceConnection)
-                serviceBound = false
-            }
-            phoneService = null
-            stopStatusUpdates()
-
-            // Optimistic UI during the 800 ms gap so the tap registers
-            // visually. The next updateStatus() (driven by the rebind
-            // callback after startPhoneService) will repaint correctly.
-            statusText.text = getString(R.string.status_starting)
-            ipText.text = getString(R.string.status_connecting)
-            setStatusVisual(ConnState.CONNECTING)
-            qrCodeImage.setImageBitmap(null)
-
-            // Step 3: re-arm the service after a beat. Bumped 800 ms → 1500 ms
-            // (Bug #2 dispatch #23). Field reports showed that on some Android
-            // builds (Samsung One UI in particular), 800 ms was occasionally
-            // not enough for the kernel to fully release port 8765 from
-            // TIME_WAIT after stopService() — the new ServerSocket bind would
-            // hit BindException and the service would silently stay down
-            // until the user opened the app again. 1500 ms is empirically
-            // generous; SO_REUSEADDR (added to PhoneServer.kt init block this
-            // same dispatch) is the belt — this longer delay is the braces.
-            // Optimistic UI above already shows "Starting / Connecting" so the
-            // extra 700 ms isn't user-visible.
-            handler.postDelayed({
-                android.util.Log.d("MainActivity", "Disconnect-and-refresh: restarting service")
-                startPhoneService()
-            }, 1500L)
+            showSignOutConfirmation()
         }
         
         // Hard Reset button — manual escape hatch for the "Samsung
@@ -450,28 +375,27 @@ class MainActivity : AppCompatActivity() {
         // Check and show notification status
         checkNotificationStatus()
 
-        // Auto-start flow: Request permissions and battery exemption
+        // Auto-start flow: request battery exemption then start the
+        // service. Permissions were already audited via the
+        // permissions-required pane gate in onCreate, so we don't need
+        // to redundantly re-request them here.
         if (hasPermissions()) {
             android.util.Log.d("MainActivity", "Permissions already granted")
-            
-            // Check battery optimization
+
             if (!isBatteryOptimizationDisabled()) {
                 android.util.Log.d("MainActivity", "Requesting battery optimization exemption")
                 statusText.text = getString(R.string.status_battery_request)
-                ipText.text = getString(R.string.status_battery_request_hint)
                 setStatusVisual(ConnState.WAITING)
                 requestBatteryOptimizationExemption()
             } else {
                 android.util.Log.d("MainActivity", "Battery optimization already disabled, starting service")
                 statusText.text = getString(R.string.status_connecting)
-                ipText.text = getString(R.string.status_connecting)
                 setStatusVisual(ConnState.WAITING)
                 startPhoneService()
             }
         } else {
             android.util.Log.d("MainActivity", "Permissions not granted, requesting automatically")
             statusText.text = getString(R.string.status_perms_requesting)
-            ipText.text = getString(R.string.status_perms_needed)
             setStatusVisual(ConnState.IDLE)
             requestPermissions()
         }
@@ -589,7 +513,6 @@ class MainActivity : AppCompatActivity() {
             if (hasPermissions()) {
                 android.util.Log.d("MainActivity", "All required permissions granted, auto-starting service")
                 statusText.text = getString(R.string.status_perms_granted)
-                ipText.text = getString(R.string.status_connecting)
                 setStatusVisual(ConnState.WAITING)
 
                 // Auto-start service immediately
@@ -600,31 +523,8 @@ class MainActivity : AppCompatActivity() {
                     ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
                 }
 
-                // Check if any permission was permanently denied ("Don't ask again")
-                val permanentlyDenied = deniedPermissions.any { perm ->
-                    !ActivityCompat.shouldShowRequestPermissionRationale(this, perm)
-                }
-
-                if (permanentlyDenied) {
-                    statusText.text = getString(R.string.status_perms_denied_permanent)
-                    ipText.text = getString(R.string.status_perms_denied_permanent_hint)
-                    setStatusVisual(ConnState.IDLE)
-
-                    // Show a button to open app settings
-                    val disconnectButton: Button = findViewById(R.id.disconnectButton)
-                    disconnectButton.text = getString(R.string.action_open_app_settings)
-                    disconnectButton.visibility = android.view.View.VISIBLE
-                    disconnectButton.setOnClickListener {
-                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = Uri.parse("package:$packageName")
-                        }
-                        startActivity(intent)
-                    }
-                } else {
-                    statusText.text = getString(R.string.status_perms_denied_count, deniedPermissions.size)
-                    ipText.text = getString(R.string.status_cannot_start_without_perms)
-                    setStatusVisual(ConnState.IDLE)
-                }
+                statusText.text = getString(R.string.status_perms_denied_count, deniedPermissions.size)
+                setStatusVisual(ConnState.IDLE)
 
                 // Show which specific permissions were denied
                 deniedPermissions.forEach {
@@ -656,55 +556,35 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Error starting service", e)
             statusText.text = getString(R.string.status_error_format, e.message ?: "unknown")
-            ipText.text = getString(R.string.status_failed_to_start)
             setStatusVisual(ConnState.IDLE)
         }
     }
 
     private fun updateStatus() {
         android.util.Log.d("MainActivity", "updateStatus - serviceBound: $serviceBound, phoneService: ${phoneService != null}")
-        // Round 4 — when the relay socket is CONNECTING or FAILED, the
-        // phase callback owns the status row and we DON'T let the
-        // polling loop overwrite it. Otherwise "Connecting…" would
-        // flicker back to "Waiting for browser" on the next 2s tick.
+
+        // Dispatch #29 — Phase 4 finish. With the LAN PhoneServer gone,
+        // updateStatus only paints the relay-side state. Phase-driven
+        // paints (CONNECTING / FAILED) are owned by handleRelayPhaseChanged
+        // and short-circuit here so the 2s polling tick doesn't fight them.
         if (latestRelayPhase == PhoneService.RelayPhase.CONNECTING ||
             latestRelayPhase == PhoneService.RelayPhase.FAILED) {
-            // Disconnect-and-refresh stays visible so the user can blip
-            // a hung relay attempt. Dispatch #9: reconnectButton is
-            // always GONE — see initializeMainPane for the rationale.
-            val disconnectButton: Button = findViewById(R.id.disconnectButton)
-            disconnectButton.visibility = View.VISIBLE
+            // Sign Out button stays visible regardless of phase so the
+            // user can always escape a wedged state.
             reconnectButton.visibility = View.GONE
             return
         }
+
         if (serviceBound && phoneService != null) {
             val status = phoneService?.getServerStatus() ?: "Service not running"
-            val ip = phoneService?.getServerStatus()?.let { s ->
-                val ipMatch = Regex("IP: ([\\d.]+):8765").find(s)
-                ipMatch?.groupValues?.get(1)
-            } ?: "Unknown"
-
-            if (ip != "Unknown" && ip.isNotEmpty()) {
-                val wsUrl = "ws://$ip:8765"
-                ipText.text = wsUrl
-                generateQRCode(wsUrl)
-            }
-
-            val isActive = status.contains("Connected to relay") || status.contains("Connected from")
-            // Extract hostname if present (e.g. "Connected from D-Omni-HP" or "Connected to relay (D-Omni-HP)")
-            val hostnameMatch = Regex("\\(([^)]+)\\)|Connected from ([^\\s-]+[^\\s]*)").find(status)
-            val hostname = hostnameMatch?.groupValues?.firstOrNull { it.isNotEmpty() && it != hostnameMatch.value }
 
             // Browser-presence overlay (false-connection fix). The relay
             // socket being open does NOT mean a real browser is paired —
             // the relay pushes BROWSER_STATUS with the live count, and
             // PhoneService caches it. When we're connected to the relay
             // but no browser is actually on the other end, fall back to
-            // the "Waiting for web app" copy rather than claiming the
+            // the "Waiting for browser" copy rather than claiming the
             // pairing is live. Polled on every 2 s status tick.
-            //
-            // The colored dot (green / amber / slate) carries the
-            // visual signal — keep the text clean, no emoji prefixes.
             val browserCount = phoneService?.getBrowserCount() ?: 0
 
             val (text, conn) = when {
@@ -717,8 +597,6 @@ class MainActivity : AppCompatActivity() {
                         getString(R.string.status_clients_connected_many, browserCount)
                     copy to ConnState.LIVE
                 }
-                status.contains("Connected from") ->
-                    getString(R.string.status_connected_to_host, hostname ?: "web app") to ConnState.LIVE
                 status.contains("Waiting") ->
                     getString(R.string.status_waiting_for_web) to ConnState.WAITING
                 else ->
@@ -727,35 +605,11 @@ class MainActivity : AppCompatActivity() {
             statusText.text = text
             setStatusVisual(conn)
 
-            // Service is running: Disconnect-and-refresh visible.
-            // Dispatch #9: reconnectButton stays GONE forever — the
-            // dual-button stopped state is dead, see initializeMainPane.
-            val disconnectButton: Button = findViewById(R.id.disconnectButton)
-            disconnectButton.visibility = android.view.View.VISIBLE
-            reconnectButton.visibility = android.view.View.GONE
-
+            reconnectButton.visibility = View.GONE
             android.util.Log.d("MainActivity", "Status updated: ${statusText.text}")
         } else {
-            // Service not bound. Two ways to land here (dispatch #9):
-            //   (a) initial state before startPhoneService() finishes
-            //       binding — paint the loading copy; the bind callback
-            //       will paint the running state in a moment.
-            //   (b) inside the 800ms postDelayed gap of the Disconnect-
-            //       and-refresh handler. The handler already painted
-            //       optimistic "Starting…" copy and ConnState.CONNECTING,
-            //       so we leave that surface alone here.
-            //   (c) service died unexpectedly (OOM kill / crash). Same
-            //       loading copy as (a) — onResume's auto-bind will
-            //       restart the service shortly.
-            //
-            // The userStopped latch from dispatch #6 is gone, so there's
-            // no "deliberately stopped" branch any more — we always paint
-            // the loading state. The reconnectButton stays GONE.
-            val disconnectButton: Button = findViewById(R.id.disconnectButton)
-            disconnectButton.visibility = android.view.View.GONE
-            reconnectButton.visibility = android.view.View.GONE
+            reconnectButton.visibility = View.GONE
             statusText.text = getString(R.string.status_service_not_running)
-            ipText.text = getString(R.string.status_loading_ip)
             setStatusVisual(ConnState.IDLE)
             android.util.Log.d("MainActivity", "Status updated: Service not running")
         }
@@ -1067,30 +921,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun generateQRCode(content: String) {
-        try {
-            val size = 512 // QR code size in pixels
-            val hints = hashMapOf<EncodeHintType, Int>().apply {
-                put(EncodeHintType.MARGIN, 1)
-            }
-            
-            val qrCodeWriter = QRCodeWriter()
-            val bitMatrix = qrCodeWriter.encode(content, BarcodeFormat.QR_CODE, size, size, hints)
-            
-            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565)
-            for (x in 0 until size) {
-                for (y in 0 until size) {
-                    bitmap.setPixel(x, y, if (bitMatrix[x, y]) Color.BLACK else Color.WHITE)
-                }
-            }
-            
-            qrCodeImage.setImageBitmap(bitmap)
-            android.util.Log.d("MainActivity", "QR code generated successfully")
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Error generating QR code", e)
-        }
-    }
-    
+    // Dispatch #29 — generateQRCode() removed. The LAN-IP QR plate that
+    // it rendered is gone from activity_main.xml; the webapp now pairs by
+    // authenticated cookie + phoneToken via the SaaS relay, not by
+    // scanning a per-phone WS URL. zxing imports stripped at the top of
+    // the file. If we ever want a QR for a different surface again,
+    // resurrect from git history (last live revision: 32d0a44).
+
     private fun startStatusUpdates() {
         statusUpdateRunnable = object : Runnable {
             override fun run() {
@@ -1186,7 +1023,6 @@ class MainActivity : AppCompatActivity() {
         if (hasPermissions() && isBatteryOptimizationDisabled() && !serviceBound) {
             android.util.Log.d("MainActivity", "Battery exemption granted, starting service")
             statusText.text = getString(R.string.status_starting)
-            ipText.text = getString(R.string.status_connecting)
             startPhoneService()
         }
 
@@ -1297,15 +1133,52 @@ class MainActivity : AppCompatActivity() {
             startGrantAllFlow(runtimeMissing, specialMissing)
         }
 
-        // Refresh button — re-runs the check without leaving the Activity.
-        // Safety net for OEM flows that don't return to us on Back.
+        // "I've granted everything — re-check" button.
+        //
+        // Dispatch #29 fix — Dennis testing v16 on Samsung One UI got
+        // stuck on this pane even after granting every visible permission:
+        // PermissionChecker.checkAll() kept returning a non-empty list
+        // because one or more SPECIAL entries (auto_revoke whitelist,
+        // battery optimization toast that requires re-tap on each launch)
+        // never resolve cleanly on this OEM. The audit was correct but
+        // the pane became a dead-end with no escape.
+        //
+        // Fix: split the result by Kind.
+        //   - RUNTIME entries still missing → real blockers (CALL_PHONE,
+        //     READ_PHONE_STATE, etc. — the service would crash without
+        //     these). Stay on the pane and re-render.
+        //   - Only SPECIAL entries still missing → soft / reliability
+        //     warnings. Allow the user to advance to the main pane with
+        //     a one-line toast acknowledging the trade-off. They can
+        //     revisit from app settings later if reliability suffers.
+        //   - List empty → happy path, success animation + transition.
         findViewById<Button>(R.id.permsRefreshButton).setOnClickListener {
             android.util.Log.d("MainActivity", "Refresh tapped — re-checking permissions")
             val now = PermissionChecker.checkAll(this)
+            val stillRuntimeMissing = now.any { it.kind == PermissionChecker.Kind.RUNTIME }
+
             if (now.isEmpty()) {
                 grantAllInProgress = false
                 playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+            } else if (!stillRuntimeMissing) {
+                // Only soft (SPECIAL) entries remain — let the user through.
+                android.util.Log.d(
+                    "MainActivity",
+                    "Refresh: only SPECIAL permissions missing (${now.map { it.id }}) — allowing user to continue"
+                )
+                grantAllInProgress = false
+                Toast.makeText(
+                    this,
+                    R.string.perms_continue_anyway_hint,
+                    Toast.LENGTH_LONG
+                ).show()
+                playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
             } else {
+                // Real blockers still missing — re-render and keep them here.
+                android.util.Log.d(
+                    "MainActivity",
+                    "Refresh: RUNTIME permissions still missing — staying on pane"
+                )
                 renderPermissionsRequiredPane(now)
             }
         }
@@ -1584,6 +1457,87 @@ class MainActivity : AppCompatActivity() {
                 }, 320)
             }
             .start()
+    }
+
+    /**
+     * Dispatch #29 — Sign Out confirmation.
+     *
+     * Replaces the dispatch #6/#9/#23 "Disconnect and refresh" button
+     * since there's no LAN listener left to refresh. Sign Out is what
+     * the user actually wants when they're done with a session.
+     *
+     * Two-step confirmation (Cancel / Sign out) so an accidental tap
+     * doesn't drop the bridge mid-call.
+     */
+    private fun showSignOutConfirmation() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.signout_dialog_title)
+            .setMessage(R.string.signout_dialog_message)
+            .setNegativeButton(R.string.signout_dialog_cancel) { d, _ -> d.dismiss() }
+            .setPositiveButton(R.string.signout_dialog_confirm) { d, _ ->
+                d.dismiss()
+                performSignOut()
+            }
+            .setCancelable(true)
+            .show()
+    }
+
+    /**
+     * Dispatch #29 — Sign Out implementation.
+     *
+     * Steps:
+     *   1. Stop the foreground service (ACTION_STOP → onDestroy → relay
+     *      WebSocket close 1000 → the browser side sees the phone
+     *      disconnect cleanly).
+     *   2. Unbind locally so we don't leak the ServiceConnection.
+     *   3. Clear the stored phoneToken so the next launch lands on the
+     *      Sign In screen (MainActivity.onCreate's TokenStore.hasToken
+     *      gate kicks).
+     *   4. Launch SignInActivity with FLAG_ACTIVITY_NEW_TASK +
+     *      FLAG_ACTIVITY_CLEAR_TASK so the back button from the new
+     *      SignIn screen can't return to this half-signed-out activity.
+     *   5. finish() — defensive; the CLEAR_TASK above already kills
+     *      this instance, but we want to make damn sure we don't
+     *      linger.
+     */
+    private fun performSignOut() {
+        android.util.Log.d("MainActivity", "Sign out confirmed")
+        Toast.makeText(this, R.string.action_sign_out, Toast.LENGTH_SHORT).show()
+
+        // 1+2. Stop + unbind service.
+        try {
+            val stopIntent = Intent(this, PhoneService::class.java).apply {
+                action = PhoneService.ACTION_STOP
+            }
+            stopService(stopIntent)
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "stopService threw during sign-out: ${e.message}")
+        }
+        try {
+            if (serviceBound) {
+                unbindService(serviceConnection)
+                serviceBound = false
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "unbindService threw during sign-out: ${e.message}")
+        }
+        phoneService = null
+        stopStatusUpdates()
+
+        // 3. Wipe the stored phoneToken.
+        try {
+            TokenStore.clear(this)
+            android.util.Log.d("MainActivity", "TokenStore cleared")
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "TokenStore.clear threw — proceeding to SignIn anyway", e)
+        }
+
+        // 4+5. Hand off to SignInActivity and finish.
+        val signInIntent = Intent(this, SignInActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        }
+        startActivity(signInIntent)
+        finish()
     }
 
     /**

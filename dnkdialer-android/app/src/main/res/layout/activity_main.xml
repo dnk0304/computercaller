@@ -1,21 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Activity: Main / control screen — Round 7 (sleek-tech).
+  Activity: Main / control screen — Round 8 (full-SaaS — dispatch #29 Phase 4 finish).
 
-  Design changes vs Round 6 (warm-terracotta):
-    - Dark palette: near-black canvas, electric blue accent, emerald
-      LIVE dot retained. The whole screen reads as "modern pro tool"
-      (Linear / Vercel / Claude.ai), not "friendly companion app".
-    - Status dot now sits inside a FrameLayout with a 22dp soft glow
-      ring behind it. The ring is GONE in IDLE, faded soft-emerald in
-      LIVE, soft-amber in WAITING, soft-blue in CONNECTING. Animation
-      logic in MainActivity.setStatusVisual() drives the alpha pulse.
-    - Section gutters tightened 28→20 / 32→24 — denser, more pro.
-    - QR plate is pure white (best for scanners + max contrast).
-    - Wordmark stays sans-serif-black at 42sp with the gradient
-      underline.
+  Major shift vs Round 7: the phone is no longer a WS server. It connects
+  outbound to wss://computercaller.com/relay/phone?token=… so the browser
+  finds it via the multi-tenant SaaS relay. No more LAN IP. No more QR
+  code. The webapp connects via the same relay using the auth-cookie
+  derived token (no manual address entry on either side).
 
-  Vertical stack inside ScrollView so small phones can reach the bottom.
+  As a result the layout is dramatically simpler:
+    1. Wordmark + gradient underline (unchanged from R7)
+    2. Status row (dot + ring + short label) — bound to RelayPhase
+       (IDLE / CONNECTING / OPEN / FAILED) and browser-presence count
+       via MainActivity.handleRelayPhaseChanged + updateStatus.
+    3. Diagnostic lines (CONNECTING / FAILED phases only — masked
+       target URL + actionable error copy).
+    4. "Enable notifications" button (only shown if system-notifications
+       are blocked at OS level for the app).
+    5. Sign-out (clears the stored phoneToken, drops the user back at
+       SignInActivity).
+    6. Hard Reset escape hatch (wipes app data — recovery for the
+       Samsung One UI "silently revoked permissions in background" bug
+       class). Reads as a quiet ghost action below a hairline divider.
+
+  REMOVED (dispatch #29):
+    - ipText  (LAN ws://X:8765 URL display — no LAN listener now)
+    - qrCodeImage  (LAN QR for browser scan — webapp uses cookie token)
+    - copyIpButton  (copy LAN URL — no URL to copy)
+    - label_address + label_scan  (section labels for those blocks)
+    - reconnectButton  (was already permanently GONE since dispatch #9)
+
+  Kept the disconnectButton view-id but repurposed as Sign Out (different
+  string, same id so the existing Kotlin findViewById still resolves).
+  See MainActivity disconnect button handler — rewritten to do the
+  Sign Out flow (clear TokenStore + launch SignInActivity + finish()).
 -->
 <ScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -36,7 +54,7 @@
         android:paddingTop="@dimen/space_32"
         android:paddingBottom="@dimen/space_32">
 
-        <!-- ============ 1. Wordmark + status row ============ -->
+        <!-- ============ 1. Wordmark + gradient underline ============ -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -48,29 +66,20 @@
             android:lineSpacingMultiplier="0.95"
             android:includeFontPadding="false" />
 
-        <!-- Electric blue → cyan gradient underline. -->
         <View
             android:layout_width="@dimen/wordmark_underline_width"
             android:layout_height="@dimen/wordmark_underline_height"
             android:background="@drawable/bg_accent_underline"
             android:layout_marginTop="@dimen/space_8"
-            android:layout_marginBottom="@dimen/space_20" />
+            android:layout_marginBottom="@dimen/space_24" />
 
-        <!-- Status row — DOT + RING + short label. gravity=center_vertical
-             aligns the FrameLayout midpoint with the text cap-height. -->
+        <!-- ============ 2. Status row ============ -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
-            <!-- Dot + ring stack. FrameLayout sizes to dot_ring_size; the
-                 ring sits at the back, the dot is centered on top. Both
-                 are tinted at runtime via setStatusVisual().
-
-                 The ring's alpha is 0 in IDLE and 1 in LIVE/WAITING/
-                 CONNECTING — driven from Kotlin so the pulse animation
-                 can override it without fighting the XML. -->
             <FrameLayout
                 android:layout_width="@dimen/dot_ring_size"
                 android:layout_height="@dimen/dot_ring_size"
@@ -94,7 +103,6 @@
                     android:contentDescription="@string/cd_status_dot" />
             </FrameLayout>
 
-            <!-- Short status label — 1–2 words. -->
             <TextView
                 android:id="@+id/statusText"
                 android:layout_width="0dp"
@@ -106,8 +114,7 @@
                 android:fontFamily="sans-serif-medium"
                 android:letterSpacing="-0.015" />
 
-            <!-- Step number — kept invisible (back-compat with the Kotlin
-                 setStatusVisual() helper that still references it). -->
+            <!-- Back-compat — setStatusVisual() still references this id. -->
             <TextView
                 android:id="@+id/stepNumber"
                 android:layout_width="wrap_content"
@@ -116,7 +123,7 @@
                 android:visibility="gone" />
         </LinearLayout>
 
-        <!-- Connection diagnostic lines (CONNECTING / FAILED phases only). -->
+        <!-- ============ 3. Diagnostic lines ============ -->
         <TextView
             android:id="@+id/connectionTargetText"
             android:layout_width="match_parent"
@@ -132,7 +139,7 @@
             android:lineSpacingMultiplier="1.3"
             android:layout_marginTop="@dimen/space_8"
             android:visibility="gone"
-            tools:text="Target: ws://192.168.1.136:8765"
+            tools:text="Target: wss://computercaller.com/relay/phone?token=abc12345…"
             tools:visibility="visible" />
 
         <TextView
@@ -149,97 +156,27 @@
             android:lineSpacingMultiplier="1.3"
             android:layout_marginTop="@dimen/space_4"
             android:visibility="gone"
-            tools:text="Couldn't bind to port 8765."
+            tools:text="Couldn't reach the relay. Check your internet."
             tools:visibility="visible" />
 
-        <!-- ============ 2. Local address (the URL) ============ -->
+        <!-- One-line helper copy below the status — explains what the
+             app is doing in plain English while the user is just sitting
+             on this screen. Replaces the LAN-IP value as the user's
+             reassurance that the bridge is alive. -->
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/label_address"
-            android:textSize="@dimen/text_eyebrow"
-            android:textColor="@color/text_label"
-            android:textAllCaps="true"
-            android:letterSpacing="0.18"
-            android:layout_marginTop="@dimen/space_24"
-            android:fontFamily="sans-serif-medium" />
-
-        <!-- URL block. Full width. Multi-line wrap. Selectable.
-             Now sits inside a hairline-bordered recessed panel with a
-             2dp electric-blue left bar. -->
-        <TextView
-            android:id="@+id/ipText"
+            android:id="@+id/relayHelpText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/status_loading_ip"
-            android:textSize="@dimen/text_url"
-            android:textColor="@color/text_primary"
-            android:fontFamily="monospace"
-            android:fontFeatureSettings="tnum"
-            android:background="@drawable/bg_url_block"
-            android:paddingStart="@dimen/space_16"
-            android:paddingEnd="@dimen/space_16"
-            android:paddingTop="@dimen/space_14"
-            android:paddingBottom="@dimen/space_14"
-            android:singleLine="false"
-            android:breakStrategy="balanced"
-            android:hyphenationFrequency="none"
-            android:lineSpacingMultiplier="1.35"
-            android:textIsSelectable="true"
-            android:layout_marginTop="@dimen/space_8"
-            tools:text="ws://192.168.1.42:8765" />
-
-        <Button
-            android:id="@+id/copyIpButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="end"
-            android:text="@string/action_copy"
-            android:textSize="@dimen/text_caption"
+            android:text="@string/relay_help_text"
+            android:textSize="@dimen/text_body"
             android:textColor="@color/text_secondary"
-            android:textAllCaps="false"
-            android:fontFamily="sans-serif-medium"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:paddingStart="@dimen/space_14"
-            android:paddingEnd="@dimen/space_14"
-            android:paddingTop="@dimen/space_8"
-            android:paddingBottom="@dimen/space_8"
-            android:background="@drawable/bg_button_copy"
-            android:stateListAnimator="@null"
-            android:letterSpacing="0.04"
-            android:layout_marginTop="@dimen/space_8"
-            android:contentDescription="@string/action_copy_long" />
-
-        <!-- ============ 3. QR card ============ -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/label_scan"
-            android:textSize="@dimen/text_eyebrow"
-            android:textColor="@color/text_label"
-            android:textAllCaps="true"
-            android:letterSpacing="0.18"
-            android:layout_marginTop="@dimen/space_24"
-            android:fontFamily="sans-serif-medium" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:layout_marginTop="@dimen/space_12">
-
-            <ImageView
-                android:id="@+id/qrCodeImage"
-                android:layout_width="@dimen/qr_size"
-                android:layout_height="@dimen/qr_size"
-                android:background="@drawable/bg_qr_frame"
-                android:padding="@dimen/space_10"
-                android:contentDescription="@string/cd_qr" />
-        </LinearLayout>
+            android:lineSpacingMultiplier="1.35"
+            android:layout_marginTop="@dimen/space_16" />
 
         <!-- ============ 4. Action stack ============ -->
+        <!-- reconnectButton kept hidden for back-compat with the Kotlin
+             field declaration (initializeMainPane findViewById still
+             resolves it). Permanently GONE — see dispatch #9. -->
         <Button
             android:id="@+id/reconnectButton"
             android:layout_width="match_parent"
@@ -255,11 +192,15 @@
             android:visibility="gone"
             android:layout_marginTop="@dimen/space_24" />
 
+        <!-- Sign Out — repurposed from the old disconnectButton id.
+             MainActivity rebinds the click handler to clear TokenStore
+             + relaunch SignInActivity. Same id keeps the existing
+             findViewById call site unchanged. -->
         <Button
             android:id="@+id/disconnectButton"
             android:layout_width="match_parent"
             android:layout_height="@dimen/button_height_small"
-            android:text="@string/action_disconnect"
+            android:text="@string/action_sign_out"
             android:textSize="@dimen/text_body"
             android:textAllCaps="false"
             android:textColor="@color/text_secondary"
@@ -267,8 +208,7 @@
             android:letterSpacing="0.02"
             android:background="@drawable/bg_button_ghost"
             android:stateListAnimator="@null"
-            android:visibility="gone"
-            android:layout_marginTop="@dimen/space_8" />
+            android:layout_marginTop="@dimen/space_24" />
 
         <Button
             android:id="@+id/enable_notifications_button"
@@ -285,15 +225,7 @@
             android:visibility="gone"
             android:layout_marginTop="@dimen/space_12" />
 
-        <!-- ============ 5. Hard Reset (low-priority escape hatch) ============
-             Manual workaround for the Samsung One UI "silently revoked
-             something in the background" bug class. Wipes app data via
-             ActivityManager.clearApplicationUserData() and force-restarts
-             the process so the user lands back on the Grant All pane
-             with a clean slate. Styled as a quiet ghost button (slate text,
-             transparent background) so it doesn't compete with the
-             primary Refresh + Disconnect actions above. Sits below a
-             subtle divider so it reads as a separate "emergency" zone. -->
+        <!-- ============ 5. Hard Reset (low-priority escape hatch) ============ -->
         <View
             android:layout_width="match_parent"
             android:layout_height="@dimen/stroke_hairline"

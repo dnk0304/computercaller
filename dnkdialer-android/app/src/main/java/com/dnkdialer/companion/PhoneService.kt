@@ -117,12 +117,29 @@ class PhoneService : Service() {
     var onRelayPhaseChanged: ((RelayPhase) -> Unit)? = null
 
     private val binder = LocalBinder()
-    private var server: PhoneServer? = null
+    // Dispatch #29 — Phase 4 finish. PhoneServer.kt deleted; the phone
+    // no longer accepts inbound LAN WebSocket connections. The only
+    // network surface is the outbound relay client (`client` below).
+    // The LAN `server` field + all PhoneServer references were removed
+    // throughout this file. If a future dispatch reintroduces LAN mode,
+    // recover from git history (last live revision: 32d0a44).
     private var lastClientAddress: String? = null
     private var isClientConnected: Boolean = false
     private var client: PhoneClient? = null
     private var clientRelayUrl: String? = null
     private var connectedHostname: String? = null
+
+    // Dispatch #29 — exponential-backoff relay auto-reconnect (R-028B
+    // mitigation). When the relay socket dies unexpectedly (network blip,
+    // server restart, OEM background freeze), we re-dial automatically
+    // with a back-off so we don't pummel the relay during prolonged
+    // outages. Sequence: 1s → 2s → 4s → 8s → 16s → 30s (capped). Reset
+    // to 1s on every clean OPEN. Cancelled on user-initiated disconnect
+    // and on service teardown.
+    private val reconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var reconnectRunnable: Runnable? = null
+    private var reconnectAttempt: Int = 0
+    private val reconnectBackoffsMs: LongArray = longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L)
 
     /**
      * Accept/Decline broadcasts from the connection-request notification land
@@ -538,8 +555,8 @@ class PhoneService : Service() {
                         // busy and dropped the first frame. The web client dedupes by
                         // event semantics (idempotent CALL_ENDED), so a duplicate is safe.
                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            if (client?.isOpen == true || server?.isClientConnected() == true) {
-                                sendResponse("CALL_ENDED", mapOf<String, Any>(), client?.isOpen == true)
+                            if (client?.isOpen == true) {
+                                sendResponse("CALL_ENDED", mapOf<String, Any>(), true)
                             }
                         }, 800)
                     } else {
@@ -672,17 +689,19 @@ class PhoneService : Service() {
 
         when (intent?.action) {
             ACTION_START -> {
-                android.util.Log.d("PhoneService", "Starting server...")
-                startServer()
+                android.util.Log.d("PhoneService", "Starting bridge...")
 
-                // Dispatch #28 (2026-05-24) — auto-dial the SaaS relay on
-                // startup. The user already signed in (SignInActivity stored
-                // the phoneToken via TokenStore); we now connect directly to
-                // wss://computercaller.com/relay/phone?token=<phoneToken> so
-                // the browser sees the phone in its room the moment the user
-                // opens the web app. The LAN PhoneServer above keeps running
-                // (legacy / dev flow) — Phase 4 follow-up dispatch will rip
-                // it out once the relay-direct path is field-verified.
+                // Dispatch #29 — Phase 4 finish. startServer() (the LAN
+                // PhoneServer on port 8765) is gone. We now ONLY wire
+                // up the side-effects that used to live inside startServer
+                // (telephony callback, SMS receiver, content observers,
+                // notification listener bridge) and then auto-dial the
+                // SaaS relay. The user signed in via SignInActivity, the
+                // phoneToken is in TokenStore, we connect outbound to
+                // wss://computercaller.com/relay/phone?token=… so the
+                // webapp's room sees the phone immediately.
+                installSideEffects()
+
                 val phoneToken = TokenStore.getPhoneToken(this)
                 if (!phoneToken.isNullOrBlank()) {
                     val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
@@ -912,14 +931,15 @@ class PhoneService : Service() {
         }
         dismissConnectionRequestNotification(requestId)
 
-        if (accept) {
-            val ok = server?.acceptPendingConnection(requestId) ?: false
-            if (!ok) {
-                android.util.Log.w("PhoneService", "Accept skipped — pending conn no longer present")
-            }
-        } else {
-            server?.declinePendingConnection(requestId)
-        }
+        // Dispatch #29 — Phase 4 finish. PhoneServer (LAN listener) gone,
+        // so there's no inbound pending-connection to accept or decline.
+        // This branch is now dead in practice (the user can't trigger a
+        // LAN pairing notification), but the broadcast receiver is still
+        // registered for back-compat; log and no-op rather than throw.
+        android.util.Log.w(
+            "PhoneService",
+            "handleConnectionDecision called post-Phase-4 (accept=$accept reqId=$requestId) — LAN PhoneServer is gone; no-op"
+        )
     }
 
     /**
@@ -943,40 +963,31 @@ class PhoneService : Service() {
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun startServer() {
+    /**
+     * Dispatch #29 — Phase 4 finish. Replaces the old `startServer()` that
+     * spun up the LAN PhoneServer on port 8765. The PhoneServer is gone
+     * (the phone now ONLY talks outbound to the SaaS relay) but the
+     * side-effect wiring it used to set up — telephony callback, SmsReceiver
+     * callback, content observers, NotificationListenerService bridge —
+     * is still needed for the relay-side flow.
+     *
+     * Idempotent on re-entry: telephony callback registration guards on
+     * telCallbackRef; static-callback assignments are simple field writes;
+     * startContentObservers() handles its own double-call check.
+     */
+    private fun installSideEffects() {
         // Register the modern TelephonyCallback on Android 12+ (S / API 31).
         // Done here in addition to the legacy PhoneStateListener registered in
         // onCreate — both co-exist; whichever observes IDLE first sends
-        // CALL_ENDED and the other no-ops via callEndedSentRef. startServer is
-        // called every ACTION_START, so guard against double-registration in
-        // registerTelephonyCallback by checking telCallbackRef first.
+        // CALL_ENDED and the other no-ops via callEndedSentRef.
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && telCallbackRef == null) {
             registerTelephonyCallback()
         }
 
         try {
-            android.util.Log.d("PhoneService", "Starting WebSocket server...")
-            server = PhoneServer(8765, { command, payload ->
-                handleCommand(command, payload)
-            }, { connected, address ->
-                isClientConnected = connected
-                lastClientAddress = if (connected) address else null
-                android.util.Log.d("PhoneService", if (connected) "Client connected from: $address" else "Client disconnected")
+            android.util.Log.d("PhoneService", "Installing side-effect wiring (no LAN server)")
 
-                // Update the foreground notification to reflect connection state
-                updateNotification(if (connected) "Connected to PC — syncing data" else "Phone bridge is active")
-            }, { requestId, address ->
-                // Incoming WS upgrade has completed but is parked in PENDING —
-                // raise the user-facing Accept/Decline notification and start
-                // the 30 s auto-decline timer. See [postConnectionRequestNotification]
-                // for the heads-up notification + action wiring.
-                android.util.Log.d("PhoneService", "Connection request $requestId from $address — prompting user")
-                postConnectionRequestNotification(requestId, address)
-                scheduleAutoDecline(requestId)
-            })
-            server?.start()
-
-            // Set up SMS receiver callback — send via both server and client.
+            // Set up SMS receiver callback — send via the relay client.
             // simId may be null on single-SIM phones / older Android; only put
             // the field on the wire when it's actually known so clients without
             // dual-SIM context don't see a noisy null.
@@ -994,11 +1005,7 @@ class PhoneService : Service() {
                 if (client?.isOpen == true) {
                     client?.sendResponse("SMS_RECEIVED", data)
                 }
-                server?.send("SMS_RECEIVED", data)
             }
-
-            val ip = getLocalIpAddress()
-            android.util.Log.d("PhoneService", "Server started successfully on $ip:8765")
 
             // Wire up ContentObservers so SMS / calls that happen OUTSIDE this app
             // (default messaging app, native dialer, etc.) still flow to the web
@@ -1064,7 +1071,7 @@ class PhoneService : Service() {
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            android.util.Log.e("PhoneService", "Failed to start server: ${e.message}", e)
+            android.util.Log.e("PhoneService", "Failed to install side-effects: ${e.message}", e)
         }
     }
 
@@ -1375,7 +1382,10 @@ class PhoneService : Service() {
         // mid-handshake on the new attempt.
         cancelConnectTimeout()
 
-        // Keep server running too for backward compat
+        // Cancel any pending auto-reconnect — we're about to dial right
+        // now, so the back-off timer would just race against us.
+        cancelScheduledReconnect()
+
         client?.close()
         client = PhoneClient(
             java.net.URI(relayUrl),
@@ -1389,28 +1399,45 @@ class PhoneService : Service() {
                 // weren't already pushed to FAILED by the error callback
                 // (close fires AFTER error for non-normal closures).
                 if (connected) {
-                    // Handshake succeeded — the watchdog must NOT fire.
+                    // Handshake succeeded — the watchdog must NOT fire,
+                    // and the back-off counter resets so the NEXT failure
+                    // starts again from the 1s rung.
                     cancelConnectTimeout()
+                    reconnectAttempt = 0
                     setRelayPhase(RelayPhase.OPEN)
-                } else if (relayPhase != RelayPhase.FAILED) {
-                    setRelayPhase(RelayPhase.IDLE)
+                } else {
+                    if (relayPhase != RelayPhase.FAILED) {
+                        setRelayPhase(RelayPhase.IDLE)
+                    }
+                    // Unexpected disconnect (the user didn't tap Sign Out
+                    // or anything that would have called disconnectRelay()
+                    // — that path clears clientRelayUrl). Schedule the
+                    // next back-off attempt if we still know what URL to
+                    // re-dial.
+                    if (clientRelayUrl != null) {
+                        scheduleReconnect("relay socket closed")
+                    }
                 }
             },
             { code, reason ->
                 // Non-1000 close OR raw exception from PhoneClient.
                 // Capture the diagnostic pair and flip to FAILED so the
-                // UI can render an actionable error message. The phase
-                // ordering here matters — onClose fires AFTER onError
-                // when the close is abnormal, but onError -> FAILED
-                // wins because the next onClose checks current phase.
-                //
-                // Cancel the watchdog: a real onError (e.g. DNS fail,
-                // refused) means we got a definitive answer faster than
-                // 10s — the watchdog's "still hanging?" check is moot.
+                // UI can render an actionable error message.
                 cancelConnectTimeout()
                 lastConnectionError = code to reason
                 android.util.Log.w("PhoneService", "Relay connection error: code=$code reason=$reason")
                 setRelayPhase(RelayPhase.FAILED)
+                // 4401 = relay's "invalid token" close. No amount of
+                // retrying will fix that — the user needs to sign in
+                // again. Bail without scheduling.
+                if (code == 4401) {
+                    android.util.Log.w("PhoneService", "Relay rejected token (4401) — not auto-reconnecting")
+                    cancelScheduledReconnect()
+                    return@PhoneClient
+                }
+                if (clientRelayUrl != null) {
+                    scheduleReconnect("relay error code=$code")
+                }
             }
         )
         client?.connectionLostTimeout = 15  // ping every 15 seconds
@@ -1470,6 +1497,59 @@ class PhoneService : Service() {
     }
 
     /**
+     * Dispatch #29 — schedule an exponential-backoff relay re-dial.
+     *
+     * Picks the next entry from [reconnectBackoffsMs] (1s → 2s → 4s →
+     * 8s → 16s → 30s, capped at 30s for any attempt beyond the array)
+     * and posts a redial task. Cancels any previously-pending redial
+     * first so we never end up with two stacked timers competing.
+     *
+     * The redial only fires if [clientRelayUrl] is still non-null at
+     * the moment it pops — a Sign Out / disconnect that lands between
+     * scheduling and firing nulls out the URL and the task no-ops.
+     *
+     * On every clean OPEN, [reconnectAttempt] resets to 0 so the next
+     * failure starts back at 1s.
+     */
+    private fun scheduleReconnect(reason: String) {
+        cancelScheduledReconnect()
+        val idx = reconnectAttempt.coerceAtMost(reconnectBackoffsMs.size - 1)
+        val delayMs = reconnectBackoffsMs[idx]
+        reconnectAttempt += 1
+        android.util.Log.d(
+            "PhoneService",
+            "Auto-reconnect scheduled in ${delayMs}ms (attempt #$reconnectAttempt, reason=$reason)"
+        )
+        val task = Runnable {
+            reconnectRunnable = null
+            val url = clientRelayUrl
+            if (url.isNullOrBlank()) {
+                android.util.Log.d("PhoneService", "Auto-reconnect: clientRelayUrl is null — bailing")
+                return@Runnable
+            }
+            if (client?.isOpen == true) {
+                android.util.Log.d("PhoneService", "Auto-reconnect: socket already open — skipping")
+                return@Runnable
+            }
+            android.util.Log.d("PhoneService", "Auto-reconnect firing — attempt #$reconnectAttempt")
+            connectToRelay(url)
+        }
+        reconnectRunnable = task
+        reconnectHandler.postDelayed(task, delayMs)
+    }
+
+    /**
+     * Cancel any pending auto-reconnect. Safe to call repeatedly.
+     */
+    private fun cancelScheduledReconnect() {
+        reconnectRunnable?.let {
+            reconnectHandler.removeCallbacks(it)
+            android.util.Log.d("PhoneService", "Auto-reconnect cancelled")
+        }
+        reconnectRunnable = null
+    }
+
+    /**
      * Internal phase setter — single point of truth for transitioning
      * [relayPhase] + firing [onRelayPhaseChanged]. Compares before
      * setting so identical-state callbacks don't spam the UI (e.g. a
@@ -1500,18 +1580,20 @@ class PhoneService : Service() {
      */
     fun disconnectRelay() {
         android.util.Log.d("PhoneService", "User-initiated relay disconnect")
-        // Cancel the connect-timeout watchdog BEFORE we tear down the
-        // client. If the user taps Cancel mid-handshake, the watchdog
-        // would otherwise fire ~10s later against a now-null client
-        // (the identity check inside the runnable handles this too,
-        // but cancelling here keeps the Handler queue clean).
         cancelConnectTimeout()
+        // Dispatch #29 — cancel any pending exponential-backoff retry
+        // too. Without this, a user Sign Out → next 30s redial would
+        // wake up after the user is gone and try to log them back in.
+        cancelScheduledReconnect()
         // Clear error BEFORE close() so the onClose callback below,
         // which may fire synchronously on some socket states, doesn't
         // re-arm FAILED on the way out.
         lastConnectionError = null
         client?.close(1000, "user_disconnect")
         client = null
+        // Nulling clientRelayUrl BEFORE the onClose callback fires also
+        // gates the auto-reconnect — the scheduleReconnect call sites
+        // null-check clientRelayUrl, so this cleanly stops the loop.
         clientRelayUrl = null
         isClientConnected = false
         setRelayPhase(RelayPhase.IDLE)
@@ -1530,56 +1612,28 @@ class PhoneService : Service() {
         }
     }
 
+    // Dispatch #29 — restartServer() removed. With no LAN PhoneServer
+    // there's nothing to "refresh" on port 8765. The relay-side equivalent
+    // is reconnectToRelay() above. If a caller still references this
+    // method (none should — the MainActivity Disconnect-and-refresh button
+    // is gone), they'll get a compile error and can switch to
+    // reconnectToRelay().
+
     /**
-     * LAN-mode "Refresh" — tears down the PhoneServer (port 8765) and
-     * rebinds a fresh instance. The browser side reconnects via its own
-     * QR/IP form, so this is sufficient to recover from:
-     *   - WiFi network changes (phone IP shifted; old binding is stale)
-     *   - The listener silently dying (rare, but observed once on a
-     *     Samsung after-sleep wake)
-     *   - Stuck client state from a half-closed socket
-     *
-     * Why this exists: in LAN-only mode the phone is the WS *server*,
-     * not the client. `reconnectToRelay()` requires a saved
-     * [clientRelayUrl] which is always null in LAN mode — calling it
-     * is a no-op, which is why the user's "Connect" button appeared
-     * dead. This method gives the on-phone button a real LAN-mode job:
-     * refresh the listener.
-     *
-     * Returns the new ws:// URL the listener is bound to (or null if
-     * the IP resolver returned "Unknown") so the caller can re-render
-     * the QR + emit a confirmation toast.
-     *
-     * Safe to call from any thread; PhoneServer.start() is non-blocking
-     * (java-websocket spins up its own selector thread internally).
+     * Dispatch #29 — viaClient parameter is now effectively dead
+     * (there's only one transport, the relay client) but kept in the
+     * signature for back-compat with the dozens of existing callsites.
+     * If viaClient is true OR if the relay client is open, we send via
+     * the client. Otherwise the message is dropped (nowhere to send it).
      */
-    fun restartServer(): String? {
-        android.util.Log.d("PhoneService", "restartServer requested")
-        try {
-            server?.stop()
-        } catch (e: Exception) {
-            android.util.Log.w("PhoneService", "server.stop() threw during restart: ${e.message}")
-        }
-        server = null
-
-        // Rebind. startServer() re-wires SmsReceiver / DnkNotificationListenerService
-        // callbacks too, which is harmless on a re-entry (just reassigns the
-        // static lambda fields to the same instance methods).
-        startServer()
-
-        val ip = getLocalIpAddress()
-        return if (ip != "Unknown") "ws://$ip:8765" else null
-    }
-
     private fun sendResponse(type: String, data: Any, viaClient: Boolean = false) {
-        android.util.Log.d("PhoneService", "sendResponse: type=$type, viaClient=$viaClient, clientOpen=${client?.isOpen}, serverClientConnected=${server?.isClientConnected()}")
+        android.util.Log.d("PhoneService", "sendResponse: type=$type, viaClient=$viaClient, clientOpen=${client?.isOpen}")
         try {
-            if (viaClient && client != null) {
+            if (client?.isOpen == true) {
                 client?.sendResponse(type, data)
-                android.util.Log.d("PhoneService", "Response sent via client")
+                android.util.Log.d("PhoneService", "Response sent via relay client")
             } else {
-                server?.send(type, data)
-                android.util.Log.d("PhoneService", "Response sent via server")
+                android.util.Log.w("PhoneService", "sendResponse: relay client not open — dropping $type")
             }
         } catch (e: Exception) {
             android.util.Log.e("PhoneService", "Error sending response $type: ${e.message}", e)
@@ -1639,16 +1693,21 @@ class PhoneService : Service() {
             when (command) {
                 "DISCONNECT_PHONE" -> {
                     // The webapp's "Disconnect" button forwards this command
-                    // through the relay so the phone can proactively tear down
-                    // its LAN-server side of the connection. Before this branch
-                    // existed, the command silently fell through here, the phone
-                    // never closed the WS, the relay's outbound auto-reconnect
-                    // loop re-established it on the next 5s tick, and the user
-                    // ended up unable to pair again without uninstalling the
-                    // APK. See PhoneServer.disconnectAllClients for the full
-                    // cleanup contract.
-                    android.util.Log.d("PhoneService", "Received DISCONNECT_PHONE from webapp — tearing down LAN clients")
-                    server?.disconnectAllClients()
+                    // through the relay to ask the phone to tear down its
+                    // side of the connection.
+                    //
+                    // Dispatch #29 — the LAN PhoneServer is gone, so there's
+                    // no LAN client to disconnect. The only remaining
+                    // transport is the relay client itself, so the cleanest
+                    // response is to close the relay socket with a polite
+                    // 1000 code. The user can sign in again on the webapp
+                    // and the phone will re-dial on next ACTION_START.
+                    android.util.Log.d("PhoneService", "Received DISCONNECT_PHONE from webapp — closing relay client")
+                    try {
+                        client?.close(1000, "webapp_disconnect")
+                    } catch (e: Exception) {
+                        android.util.Log.w("PhoneService", "client.close threw during DISCONNECT_PHONE: ${e.message}")
+                    }
                     return
                 }
                 "MAKE_CALL" -> {
@@ -2079,25 +2138,24 @@ class PhoneService : Service() {
         return "Unknown"
     }
 
+    /**
+     * Dispatch #29 — simplified to a relay-only status string. The IP /
+     * port LAN suffix is gone (no LAN listener) but the textual prefixes
+     * are preserved so MainActivity.updateStatus's existing `contains`
+     * branches still match.
+     */
     fun getServerStatus(): String {
-        val ip = getLocalIpAddress()
         val host = connectedHostname
         return when {
-            client?.isOpen == true -> "Connected to relay${if (host != null) " ($host)" else ""} - IP: $ip:8765"
-            isClientConnected -> "Connected from ${host ?: lastClientAddress ?: "unknown"} - IP: $ip:8765"
-            else -> "Waiting for connection - IP: $ip:8765"
+            client?.isOpen == true -> "Connected to relay${if (host != null) " ($host)" else ""}"
+            else -> "Waiting for connection"
         }
     }
 
-    /**
-     * Read-only accessor for the LAN [PhoneServer]. Added for dispatch #6
-     * so MainActivity's "Disconnect and stop" handler can call
-     * [PhoneServer.disconnectAllClients] for a polite shutdown (DISCONNECT_PHONE
-     * frame + close 1000) BEFORE sending ACTION_STOP to tear down the
-     * foreground service. Returns null if the server hasn't been
-     * started yet — caller should null-check.
-     */
-    fun getServer(): PhoneServer? = server
+    // Dispatch #29 — getServer() removed. Callers should be ported to use
+    // reconnectToRelay() / disconnectRelay() instead. The only known caller
+    // (MainActivity's Disconnect-and-refresh button) was rewritten as the
+    // Sign Out flow this same dispatch.
 
     override fun onDestroy() {
         super.onDestroy()
@@ -2147,9 +2205,14 @@ class PhoneService : Service() {
             android.util.Log.w("PhoneService", "smsStatusReceiver was not registered: ${e.message}")
         }
 
-        // Stop server
-        server?.stop()
-        server = null
+        // Dispatch #29 — Phase 4 finish. PhoneServer (LAN) is gone; the
+        // server?.stop() + server = null lines from prior dispatches are
+        // no longer needed. Only the relay client needs tearing down.
+
+        // Dispatch #29 — cancel any pending auto-reconnect so a 30s
+        // back-off timer doesn't wake up post-onDestroy with a Handler
+        // ref back into this dead Service instance.
+        cancelScheduledReconnect()
 
         // Stop client + cancel any pending connect-timeout watchdog so
         // the Handler queue doesn't retain a reference to this (now

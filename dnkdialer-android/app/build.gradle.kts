@@ -31,9 +31,11 @@ android {
         // shipped (debug or release). Play Store requires strictly higher
         // than the highest one already on the track.
         // versionName: human-readable; Play Console shows this on listing.
-        // Dispatch #28 (2026-05-24): bumped 15 → 16 for the SaaS-direct
-        // refactor (SignInActivity gate + relay-only PhoneService).
-        versionCode = 16
+        // Dispatch #29 (2026-05-25): 16 → 17 for the Phase 4 finish —
+        // PhoneServer.kt deleted, MainActivity LAN-IP/QR plate stripped,
+        // Sign Out wiring, exponential-backoff relay reconnect, and the
+        // permissions-pane refresh-button-advance fix Dennis hit on v16.
+        versionCode = 17
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
