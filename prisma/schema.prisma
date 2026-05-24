@@ -4,6 +4,14 @@ generator client {
 }
 
 datasource db {
+  // Production: PostgreSQL on Hetzner via Coolify-managed instance.
+  // Local dev uses Neon/Hetzner Postgres via a DATABASE_URL override in
+  // .env.local. The sqlite dummy-mode rig that lived here through
+  // 2026-05-22 has been retired — Phase 1 of the deploy plan (Ken
+  // dispatch #14, 2026-05-24) flipped this back to postgres ahead of
+  // the first Coolify push. If you need a zero-deps local rig again,
+  // override DATABASE_URL to a sqlite file AND swap this provider line
+  // — Prisma refuses cross-provider migrations.
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }

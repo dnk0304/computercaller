@@ -13,6 +13,19 @@ import { findContactByNumber } from '@/lib/normalizeNumber';
 const RECONNECT_DELAY = 3000;
 const PHONE_URL_KEY = 'dnkdialer_phone_url';
 const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
+// Distinct from HAS_SYNCED_KEY: set the FIRST time a pair completes (regardless
+// of whether the user ran a sync). Drives the "auto-open Full Sync popup on
+// first phone connect" UX — once set, future pairings stay quiet so the user
+// can decide when to sync. Reset on Sign Out (see components/ProfileMenu.tsx
+// handleSignOut, dispatch #7 2026-05-22) because Sign Out is the deliberate
+// identity-boundary event where a fresh first-pair experience is correct.
+// NOT reset on disconnect or tab close — those may be temporary, and a
+// re-pair within the same login should stay quiet. Brief WS hiccups never
+// reset it either; the user has to explicitly Sign Out (or clear browser
+// storage) to re-arm the auto-open. ALSO mirrored in hard-coded string form
+// in ProfileMenu's removeItem call — if you rename this constant, search
+// the repo for the literal 'dnkdialer_first_pair_done' too.
+const FIRST_PAIR_KEY = 'dnkdialer_first_pair_done';
 const RELAY_URL = 'ws://localhost:3001';
 
 // Map a coarse range key to a `since` unix-ms timestamp. Sending `since`
@@ -198,6 +211,15 @@ export function usePhoneBridge() {
   const appPingIntervalRef = useRef<number | null>(null);
   const lastPongAtRef = useRef<number>(Date.now());
   const [isPhoneStale, setIsPhoneStale] = useState(false);
+
+  // Auto-reconnect watchdog REMOVED (2026-05-22, dispatch #3). The defensive
+  // watchdog added earlier today was firing without explicit user intent and
+  // re-establishing connections after explicit teardowns (Sign Out, Disconnect,
+  // browser close), creating ghost connections. Per Dennis: hard-kill on user
+  // action is enough — explicit Connect button is the ONLY auto path. The
+  // beforeunload/pagehide + DISCONNECT_PHONE chain (dispatch #2) already covers
+  // every teardown surface. If the WS dies and the user wants it back, they
+  // click Connect.
 
   // Tracks when the current/last call started so CALL_ENDED can fetch
   // the call log from before the call started (handles long calls >30 min).
@@ -445,14 +467,30 @@ export function usePhoneBridge() {
             lastPongAtRef.current = Date.now(); // baseline for the 30s stale check
             setPhoneName(prev => payload.deviceName ?? prev);
             setConnectionError(null);
+
+            // First-pair auto-open of Full Sync popup (2026-05-22). When the
+            // FIRST_PAIR_KEY flag is absent, this is the user's first successful
+            // pairing — surface the Full Sync panel so they can either run a
+            // sync immediately or dismiss with X. Flag is set permanently so
+            // subsequent reconnects stay quiet; they can still launch Full Sync
+            // manually from /app/settings.
+            //
+            // Wrapped in try/catch because localStorage can throw in private
+            // browsing mode. Falling back to "don't auto-open" is the safe
+            // behaviour — better than a 401 dev tools loop.
+            try {
+              if (!localStorage.getItem(FIRST_PAIR_KEY)) {
+                localStorage.setItem(FIRST_PAIR_KEY, String(Date.now()));
+                // Defer one tick so isConnected has propagated to downstream
+                // panel-mount guards before we ask the panel to open.
+                setTimeout(() => setShowSyncPanel(true), 50);
+              }
+            } catch { /* localStorage unavailable — skip auto-open */ }
+
             // On every connect (first or reconnect): kick off a silent quick catch-up
             // after 2s. Widened from 30 min → 6 hours so brief overnight reconnects
             // still pick up missed activity. The user can also trigger Full Sync or
             // Quick Resync manually from /app/settings.
-            //
-            // Auto-opening the sync panel on first connect was removed in the
-            // settings-overhaul patch — the panel is now only mounted inside the
-            // Settings page and opened by explicit user action via openSyncPanel().
             //
             // Guard: relay sends STATUS:connected twice (open + DEVICE_INFO),
             // so only schedule one sync per connection event.
@@ -1260,6 +1298,21 @@ export function usePhoneBridge() {
     sendCommand('SET_SPEAKER', { enabled });
   }, [sendCommand]);
 
+  // Send a DTMF tone into an active call. The phone-side plays the tone into
+  // the voice-call audio stream via ToneGenerator(STREAM_VOICE_CALL). Caller
+  // (Quick Dial dialpad) is responsible for gating this to `currentCall.state
+  // === 'active'` — when no call is active, the dialpad composes the digit
+  // into the dial input instead.
+  // `digit` must be a single character from 0-9, *, or #. The phone-side
+  // re-validates defensively.
+  const sendDtmf = useCallback((digit: string) => {
+    if (typeof digit !== 'string' || digit.length !== 1 || !/^[0-9*#]$/.test(digit)) {
+      console.warn('[PhoneBridge] sendDtmf rejected invalid digit:', digit);
+      return;
+    }
+    sendCommand('SEND_DTMF', { digit });
+  }, [sendCommand]);
+
   // Pick which SIM outgoing MAKE_CALL / SEND_SMS should route through. Pass
   // null to revert to "use Android's default outgoing SIM". This is purely a
   // client-side selection — nothing is sent to the phone until the next call
@@ -1535,7 +1588,16 @@ export function usePhoneBridge() {
    */
   const acceptQrConnection = useCallback(() => {
     setDiscoveredPhoneIp(null);       // clear the pre-fill state
-    localStorage.removeItem(PHONE_URL_KEY); // don't persist — no outbound IP to reconnect to
+    // PHONE_URL_KEY is intentionally NOT cleared here (dispatch #8, 2026-05-22).
+    // Previously this path wiped any prior saved manual IP on the grounds that
+    // "QR has no outbound IP to reconnect to". But that destroys convenience
+    // state from earlier manual sessions — the user paired manually yesterday
+    // at 192.168.1.140 (saved), uses QR today, and next time their input row
+    // is blank instead of pre-filled with the IP they'll almost certainly
+    // want again (same phone = same IP in nearly every home/office network).
+    // Saved IP persists across QR accept; only an explicit "Forget saved phone"
+    // action in /app/settings (or a NEW successful connectPhone(url) which
+    // overwrites the saved value) replaces it.
     // The phone is already connected; STATUS:connected was already received.
     // The estimate request was already scheduled. Nothing else to do.
   }, []);
@@ -1664,7 +1726,18 @@ export function usePhoneBridge() {
     }
 
     phoneUrlRef.current = null;
-    localStorage.removeItem(PHONE_URL_KEY);
+    // PHONE_URL_KEY is intentionally NOT cleared on disconnect (dispatch #8,
+    // 2026-05-22). Same-phone reconnect is the overwhelmingly common case —
+    // users have one phone, it gets the same DHCP lease day after day, and
+    // pre-filling the input is one click of value with zero cost. Convenience
+    // state (saved IPs, recent contacts, UI prefs) persists by default; only
+    // ACTIVE-connection state (phoneUrlRef in-memory, HAS_SYNCED_KEY for the
+    // sync-completion gate, the WS itself) is cleared on disconnect. The
+    // "Forget saved phone" button in /app/settings is the escape hatch when
+    // the user genuinely wants a fresh start (different phone, sold device,
+    // testing pairing flow). A successful connectPhone(url) to a NEW IP also
+    // overwrites the saved value at line ~1079, so swapping phones is
+    // self-healing — no explicit clear needed for that flow either.
     estimateRequestedRef.current = false;
     quickSyncScheduledRef.current = false;
     localStorage.removeItem(HAS_SYNCED_KEY);
@@ -1828,6 +1901,14 @@ export function usePhoneBridge() {
     return () => clearInterval(id);
   }, [isConnected]);
 
+  // Auto-reconnect watchdog REMOVED (2026-05-22, dispatch #3). See the note at
+  // the top of the hook where the refs/state used to live. Hard-kill on user
+  // action (Sign Out, Disconnect, browser close) is the entire teardown model.
+  // The only auto path remaining is the connect() onclose retry below, which
+  // is scoped to a single relay-WS dropout WITH an active wsRef — not a
+  // "phone went away" rebuild attempt. Stale-detection still flips
+  // isPhoneStale for the UI; the user explicitly clicks Connect to recover.
+
   // Flush buffered notification events to React state every 200ms.
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -1893,6 +1974,7 @@ export function usePhoneBridge() {
     disconnect,
     makeCall,
     setSpeaker,
+    sendDtmf,
     answerCall,
     endCall,
     sendSms,

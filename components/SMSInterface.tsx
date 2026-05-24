@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react';
 import { Send, Image, Smile, Search, MoreVertical, Phone, Plus, X, Save, Settings, Edit2, Trash2, ChevronDown, ChevronUp, RefreshCw, Inbox } from 'lucide-react';
 import { clsx } from 'clsx';
-import { usePhone } from '@/hooks';
+import { usePhone, useDebouncedValue } from '@/hooks';
 import type { SmsMessage } from '@/hooks';
 
 interface Conversation {
@@ -297,16 +297,24 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
     }).sort((a, b) => b.messages[0].date - a.messages[0].date);
   }, [phoneMessages, contacts]);
 
-  // Filter conversations based on search query
+  // Filter conversations based on search query.
+  //
+  // Performance (dispatch #9, 2026-05-22 — T6 SMS perf fix):
+  //   Same class of freeze as Dashboard's thread filter — re-running this
+  //   filter on every keystroke against 500+ messages was the source of
+  //   the lag Dennis reported. The controlled input still binds to the
+  //   live `searchQuery` (so typing feels instant) but the filter only
+  //   recomputes after the user pauses typing for 150ms.
+  const debouncedSearchQuery = useDebouncedValue(searchQuery, 150);
   const filteredConversations = useMemo(() => {
-    if (!searchQuery) return conversations;
-    const query = searchQuery.toLowerCase();
+    if (!debouncedSearchQuery) return conversations;
+    const query = debouncedSearchQuery.toLowerCase();
     return conversations.filter(c =>
       c.name.toLowerCase().includes(query) ||
       c.number.includes(query) ||
       c.lastMessage.toLowerCase().includes(query)
     );
-  }, [conversations, searchQuery]);
+  }, [conversations, debouncedSearchQuery]);
 
   // Handle initialNumber prop to auto-select conversation
   useEffect(() => {

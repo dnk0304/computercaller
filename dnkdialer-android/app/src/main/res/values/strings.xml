@@ -38,24 +38,42 @@
     <!-- Buttons -->
     <string name="action_copy">Copy</string>
     <string name="action_copy_long">Copy address to clipboard</string>
-    <!-- Round 7 — repurposed for LAN-only mode.
-         The old label "Connect" was a leftover from the SaaS architecture
-         where the phone initiated an outbound WS to a relay. In LAN-only
-         mode the phone is the WS *server* (port 8765) — the webapp's
-         browser connects IN. The button now refreshes the listener: it
-         re-resolves the current LAN IPv4, restarts PhoneServer cleanly,
-         and regenerates the QR. Resource key kept as `action_reconnect`
-         to avoid churn in the layout XML; the underlying handler is
-         rewired to PhoneService.restartServer(). -->
-    <string name="action_reconnect">Refresh</string>
-    <!-- Shown on the same button while the listener is rebinding. -->
-    <string name="action_connecting">Refreshing…</string>
-    <string name="action_disconnect">Disconnect and stop</string>
+    <!-- Round 7 → dispatch #6 → dispatch #9 lineage.
+         R7 = "Refresh" (port-rebind, useless to user).
+         Dispatch #6 = "Start" — partner button that appeared only when
+                       the user had explicitly Disconnected; introduced a
+                       userStopped latch + a dual-button stopped state.
+         Dispatch #9 (2026-05-22) = THE BUTTON IS GONE.
+                       Dennis wanted a single button labelled
+                       "Disconnect and refresh" — one tap, polite-close
+                       active clients, stopService, 800ms postDelayed,
+                       startPhoneService → back to the ready state. No
+                       stopped-state, no Start partner, no userStopped
+                       latch. The reconnectButton XML widget is still
+                       present (id retained to avoid layout churn) but
+                       hidden permanently — see MainActivity for the
+                       visibility=GONE force.
+         Resource key `action_reconnect` kept as a tombstone string
+         pointing readers to this comment. The button it referenced is
+         no longer surfaced. -->
+    <string name="action_reconnect">Start</string>
+    <!-- Shown on the same button while the service is spinning up. Now
+         orphan after dispatch #9 (the partner button is gone) but
+         retained as a one-round tombstone. -->
+    <string name="action_connecting">Starting…</string>
+    <!-- Dispatch #9: the single remaining lifecycle button is now
+         labelled "Disconnect and refresh". Underlying handler:
+         polite close → stopService → 800ms postDelayed → startPhoneService.
+         User-visible effect = phone briefly drops the LAN socket then
+         comes back live with a fresh QR + IP. -->
+    <string name="action_disconnect">Disconnect and refresh</string>
     <string name="action_enable_notifications">Enable notifications</string>
     <string name="action_open_app_settings">Open app settings</string>
 
     <!-- Toasts -->
     <string name="toast_copied">Address copied</string>
+    <!-- Tombstone strings — were used by the dispatch #6 "Start" button
+         path that no longer exists. Kept one round in case rollback. -->
     <string name="toast_refreshed">Refreshed — ready at %1$s</string>
 
     <!-- Connection-state transitions for the LAN flow.

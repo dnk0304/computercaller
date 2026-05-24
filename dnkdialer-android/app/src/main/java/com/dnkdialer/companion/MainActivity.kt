@@ -169,6 +169,22 @@ class MainActivity : AppCompatActivity() {
     private var mainPaneInitialized: Boolean = false
 
     /**
+     * Dispatch #9 (2026-05-22) — `userStopped` field REMOVED.
+     *
+     * Background: dispatch #6 introduced this Boolean to track whether the
+     * user explicitly tapped "Disconnect and stop", so that updateStatus()
+     * could decide between "show Start CTA" and "paint the loading state".
+     * That whole dual-button stopped/running UX is gone in dispatch #9 —
+     * Dennis wanted a single "Disconnect and refresh" button that tears
+     * down + immediately restarts the service. There's no stopped UI to
+     * paint and no user intent for the service to stay down, so the latch
+     * is dead weight.
+     *
+     * Tombstone left so a future agent doesn't reintroduce the same idea.
+     */
+    // (intentionally no field here — see kdoc above)
+
+    /**
      * Round 8 — Grant All flow state.
      *
      * When the user taps "Grant All Permissions" on the blocking pane we
@@ -223,6 +239,8 @@ class MainActivity : AppCompatActivity() {
             val binder = service as PhoneService.LocalBinder
             phoneService = binder.getService()
             serviceBound = true
+            // Dispatch #9: userStopped field removed (see field-site
+            // tombstone above). No bind-side cleanup needed.
             android.util.Log.d("MainActivity", "Service connected")
 
             // Install the relay-phase callback so any CONNECTING / FAILED
@@ -303,12 +321,14 @@ class MainActivity : AppCompatActivity() {
         // Initial visual: idle. Real state arrives once the service binds.
         setStatusVisual(ConnState.IDLE)
 
-        // Initial Connect-button state. latestRelayPhase starts as IDLE,
-        // so the button is enabled out of the gate — the user can tap
-        // it the moment the service binds. The phase callback will
-        // override this once a real RelayPhase arrives.
-        reconnectButton.isEnabled = true
-        reconnectButton.text = getString(R.string.action_reconnect)
+        // Dispatch #9: the reconnectButton widget is now PERMANENTLY hidden.
+        // The dual-button "Start / Disconnect and stop" UX from dispatch #6
+        // collapsed to a single "Disconnect and refresh" button. The XML id
+        // is retained to avoid layout churn but the widget is forced GONE
+        // here AND in every updateStatus() branch (see lines below). If a
+        // future dispatch wants to bring a partner button back, look here.
+        reconnectButton.visibility = View.GONE
+        reconnectButton.isEnabled = false
 
         // Enable Notifications button - opens system settings
         enableNotificationsButton.setOnClickListener {
@@ -324,47 +344,49 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.toast_copied, Toast.LENGTH_SHORT).show()
         }
 
-        // Refresh button (R7) — was "Connect" in R5/R6 which was a
-        // dead label in LAN-only mode (PhoneService.reconnectToRelay()
-        // requires a saved clientRelayUrl that's always null in LAN
-        // mode, so tapping it did nothing — the user-visible bug we're
-        // fixing). The new role: rebind the LAN PhoneServer on port
-        // 8765, re-resolve the local IPv4, regenerate the QR. Useful
-        // after WiFi network changes or a stale listener.
-        reconnectButton.setOnClickListener {
-            android.util.Log.d("MainActivity", "Refresh button pressed")
-            // Disable + re-label so the tap registers visually. ~500ms
-            // is enough for the WS server to stop + rebind on the
-            // backend; we re-enable on a posted runnable rather than
-            // gating on a callback because PhoneServer.start() is
-            // non-blocking and there's no completion event to listen for.
-            reconnectButton.isEnabled = false
-            reconnectButton.text = getString(R.string.action_connecting)
+        // Dispatch #9: reconnectButton click handler REMOVED.
+        // The widget is forced GONE in initializeMainPane() above and in
+        // every updateStatus() branch below. With no surface, no handler.
+        // (See field-site tombstone for `userStopped` above for the
+        // full lineage.)
 
-            val newUrl = phoneService?.restartServer()
-
-            handler.postDelayed({
-                reconnectButton.isEnabled = true
-                reconnectButton.text = getString(R.string.action_reconnect)
-                // Force a status refresh so the IP + QR repaint with
-                // whatever the rebind resolved to. updateStatus() owns
-                // the QR regeneration via generateQRCode().
-                updateStatus()
-                if (newUrl != null) {
-                    Toast.makeText(
-                        this,
-                        getString(R.string.toast_refreshed, newUrl),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }, 500)
-        }
-
-        // Disconnect button - stops the service and all connections
+        // "Disconnect and refresh" button (dispatch #9, 2026-05-22).
+        // Single-button replacement for the dispatch #6 dual-button UX
+        // (Start partner + Disconnect-and-stop). One tap:
+        //   1. Politely close active LAN clients (DISCONNECT_PHONE frame
+        //      → close 1000 → browser sees a clean teardown, no TCP
+        //      timeout reaper).
+        //   2. stopService → PhoneService.stopSelf → onDestroy →
+        //      server.stop() (port 8765 released, notification cleared).
+        //   3. 800 ms postDelayed → startPhoneService() — gives the OS
+        //      time to fully release the port before we re-bind it.
+        //      Race-condition guard: if the user mashes the button mid-
+        //      restart, the second tap finds serviceBound==false and
+        //      phoneService==null (set in this handler), so the polite-
+        //      close call no-ops and the stopService is a no-op too.
+        //   4. updateStatus() runs once the rebind callback lands and
+        //      paints the "Listening, ready at IP X.X.X.X" surface.
+        //
+        // No userStopped latch — the user's intent is "blip the service
+        // and come back", not "stay down". onResume's auto-bind will
+        // not race the postDelayed start because runMainPaneOnResume
+        // only fires startPhoneService when !serviceBound, and our 800ms
+        // window is well inside the typical resume interval.
         val disconnectButton: Button = findViewById(R.id.disconnectButton)
         disconnectButton.setOnClickListener {
-            android.util.Log.d("MainActivity", "Disconnect button pressed")
-            // Stop the service
+            android.util.Log.d("MainActivity", "Disconnect and refresh pressed")
+
+            // Step 1: polite close of any active/pending LAN clients
+            // BEFORE we kill the service. Idempotent — disconnectAllClients
+            // no-ops cleanly when there's nothing connected.
+            try {
+                phoneService?.getServer()?.disconnectAllClients()
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "disconnectAllClients threw during refresh: ${e.message}")
+            }
+
+            // Step 2: stop the foreground service. ACTION_STOP →
+            // PhoneService.stopSelf() → onDestroy → server.stop().
             val stopIntent = Intent(this, PhoneService::class.java).apply {
                 action = PhoneService.ACTION_STOP
             }
@@ -376,27 +398,22 @@ class MainActivity : AppCompatActivity() {
             phoneService = null
             stopStatusUpdates()
 
-            // Show brief disconnected state then restart so the user lands back on
-            // the QR/IP screen ready to connect again (not stuck on a dead screen).
-            statusText.text = getString(R.string.status_disconnected)
-            ipText.text = getString(R.string.status_restarting)
-            setStatusVisual(ConnState.IDLE)
-            disconnectButton.visibility = android.view.View.GONE
-            reconnectButton.visibility = android.view.View.GONE
-            // Reset the Connect button copy in case it was mid-"Connecting…"
-            // when the user pulled the plug.
-            reconnectButton.text = getString(R.string.action_reconnect)
-            reconnectButton.isEnabled = true
+            // Optimistic UI during the 800 ms gap so the tap registers
+            // visually. The next updateStatus() (driven by the rebind
+            // callback after startPhoneService) will repaint correctly.
+            statusText.text = getString(R.string.status_starting)
+            ipText.text = getString(R.string.status_connecting)
+            setStatusVisual(ConnState.CONNECTING)
             qrCodeImage.setImageBitmap(null)
 
+            // Step 3: re-arm the service after a beat. 800 ms is the same
+            // window dispatch #6's old refresh handler used; it gives the
+            // OS time to release port 8765 before our new ServerSocket
+            // tries to bind it.
             handler.postDelayed({
-                if (!serviceBound) {
-                    statusText.text = getString(R.string.status_ready)
-                    ipText.text = getString(R.string.status_starting)
-                    setStatusVisual(ConnState.IDLE)
-                    startPhoneService()
-                }
-            }, 800)
+                android.util.Log.d("MainActivity", "Disconnect-and-refresh: restarting service")
+                startPhoneService()
+            }, 800L)
         }
         
         // Hard Reset button — manual escape hatch for the "Samsung
@@ -633,11 +650,12 @@ class MainActivity : AppCompatActivity() {
         // flicker back to "Waiting for browser" on the next 2s tick.
         if (latestRelayPhase == PhoneService.RelayPhase.CONNECTING ||
             latestRelayPhase == PhoneService.RelayPhase.FAILED) {
-            // Still keep the action stack visible so the user can hit
-            // Reset / Cancel.
+            // Disconnect-and-refresh stays visible so the user can blip
+            // a hung relay attempt. Dispatch #9: reconnectButton is
+            // always GONE — see initializeMainPane for the rationale.
             val disconnectButton: Button = findViewById(R.id.disconnectButton)
             disconnectButton.visibility = View.VISIBLE
-            reconnectButton.visibility = View.VISIBLE
+            reconnectButton.visibility = View.GONE
             return
         }
         if (serviceBound && phoneService != null) {
@@ -690,19 +708,36 @@ class MainActivity : AppCompatActivity() {
             statusText.text = text
             setStatusVisual(conn)
 
-            // Show disconnect + connect buttons when service is running
+            // Service is running: Disconnect-and-refresh visible.
+            // Dispatch #9: reconnectButton stays GONE forever — the
+            // dual-button stopped state is dead, see initializeMainPane.
             val disconnectButton: Button = findViewById(R.id.disconnectButton)
             disconnectButton.visibility = android.view.View.VISIBLE
-            reconnectButton.visibility = android.view.View.VISIBLE
+            reconnectButton.visibility = android.view.View.GONE
 
             android.util.Log.d("MainActivity", "Status updated: ${statusText.text}")
         } else {
-            statusText.text = getString(R.string.status_service_not_running)
-            ipText.text = getString(R.string.status_loading_ip)
-            setStatusVisual(ConnState.IDLE)
+            // Service not bound. Two ways to land here (dispatch #9):
+            //   (a) initial state before startPhoneService() finishes
+            //       binding — paint the loading copy; the bind callback
+            //       will paint the running state in a moment.
+            //   (b) inside the 800ms postDelayed gap of the Disconnect-
+            //       and-refresh handler. The handler already painted
+            //       optimistic "Starting…" copy and ConnState.CONNECTING,
+            //       so we leave that surface alone here.
+            //   (c) service died unexpectedly (OOM kill / crash). Same
+            //       loading copy as (a) — onResume's auto-bind will
+            //       restart the service shortly.
+            //
+            // The userStopped latch from dispatch #6 is gone, so there's
+            // no "deliberately stopped" branch any more — we always paint
+            // the loading state. The reconnectButton stays GONE.
             val disconnectButton: Button = findViewById(R.id.disconnectButton)
             disconnectButton.visibility = android.view.View.GONE
             reconnectButton.visibility = android.view.View.GONE
+            statusText.text = getString(R.string.status_service_not_running)
+            ipText.text = getString(R.string.status_loading_ip)
+            setStatusVisual(ConnState.IDLE)
             android.util.Log.d("MainActivity", "Status updated: Service not running")
         }
     }
@@ -1125,7 +1160,10 @@ class MainActivity : AppCompatActivity() {
         // Check notification status on resume (user might have changed it in settings)
         checkNotificationStatus()
 
-        // Check if user granted battery optimization exemption
+        // Check if user granted battery optimization exemption.
+        // Dispatch #9: userStopped gating removed (see field-site tombstone).
+        // The single-button "Disconnect and refresh" UX never leaves the
+        // service intentionally down, so onResume can always auto-restart.
         if (hasPermissions() && isBatteryOptimizationDisabled() && !serviceBound) {
             android.util.Log.d("MainActivity", "Battery exemption granted, starting service")
             statusText.text = getString(R.string.status_starting)
@@ -1133,7 +1171,8 @@ class MainActivity : AppCompatActivity() {
             startPhoneService()
         }
 
-        // Try to rebind to service if it's running
+        // Try to rebind to service if it's running. Dispatch #9: no
+        // userStopped gate — see above.
         if (!serviceBound) {
             val intent = Intent(this, PhoneService::class.java)
             bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)

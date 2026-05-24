@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Smartphone, RefreshCw, AlertTriangle, XCircle, ServerCrash, X, MessageSquare, Bell, ShieldX } from 'lucide-react';
+import { Smartphone, RefreshCw, AlertTriangle, XCircle, ServerCrash, X, MessageSquare, Bell, ShieldX, History } from 'lucide-react';
 import { usePhone } from '@/hooks';
 
 export const ConnectionStatus = () => {
@@ -96,19 +96,38 @@ export const ConnectionStatus = () => {
   //
   // Fix: render the JSX directly via a stable variable (not a function). The
   // input is the same DOM node across renders, focus persists.
+  //
+  // Pre-fill memory cue (dispatch #8, 2026-05-22): when the input value still
+  // matches the persisted savedPhoneUrl, surface a small History icon inside
+  // the input's left edge so the user can see at a glance that the address
+  // was remembered from a prior successful connection. As soon as they edit
+  // the value, the icon disappears — typing means "I'm changing this, don't
+  // imply it's the last one used." Pure visual hint, no logic side-effects.
+  const showPrefillCue = !!savedPhoneUrl && inputValue === savedPhoneUrl;
   const inputRow = (
     <div className="flex items-center gap-2">
-      <input
-        type="text"
-        value={inputValue}
-        onChange={(e) => setInputValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') handleConnect();
-        }}
-        placeholder="e.g. 192.168.1.42:8765"
-        aria-label="Phone IP address"
-        className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-56"
-      />
+      <div className="relative">
+        {showPrefillCue && (
+          <span
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+            title="Last connected IP — pre-filled from your previous session"
+            aria-label="Pre-filled from last connection"
+          >
+            <History className="w-3.5 h-3.5" aria-hidden="true" />
+          </span>
+        )}
+        <input
+          type="text"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleConnect();
+          }}
+          placeholder="e.g. 192.168.1.42:8765"
+          aria-label="Phone IP address"
+          className={`py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-56 ${showPrefillCue ? 'pl-8 pr-3' : 'px-3'}`}
+        />
+      </div>
       <button
         type="button"
         onClick={handleConnect}
@@ -292,9 +311,25 @@ export const ConnectionStatus = () => {
           </div>
           <div className="h-6 w-px bg-slate-200" />
           <button
-            onClick={() => disconnect()}
+            onClick={() => {
+              // Dispatch #9: Disconnect from the green pill ALSO refreshes the
+              // page. Rationale: the relay WS close frame (DISCONNECT_PHONE)
+              // tears down the room cleanly, but the browser side is still
+              // holding a mountain of in-memory state (cached threads,
+              // contacts, message buffers, sync timers, derived memos). A
+              // hard reload is the simplest, surest way to land back at a
+              // clean "ready to pair" surface — no stale callbacks, no
+              // half-flushed message buffer, no leaked subscriptions. The
+              // 150 ms timeout gives the WS close frame time to flush over
+              // the TCP socket before the reload kills the JS context; with
+              // a 0 ms timeout the room teardown sometimes races the page
+              // navigation and the relay logs the browser as TCP-disconnect
+              // (~30 s reaper) instead of clean DISCONNECT_PHONE.
+              disconnect();
+              setTimeout(() => window.location.reload(), 150);
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-red-100 hover:text-red-700 text-slate-500 text-xs font-medium rounded-lg transition-colors"
-            title="Disconnect phone"
+            title="Disconnect phone and refresh page"
           >
             <XCircle className="w-3.5 h-3.5" />
             Disconnect

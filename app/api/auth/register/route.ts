@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
+    const trialEndsAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days
 
     // Dev-mode auto-verify: if no Resend API key is configured, skip the
     // email step entirely and mark the user as already verified. Lets us

@@ -1,7 +1,10 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
-/node_modules
+# dependencies — match node_modules at any depth, not just repo root.
+# The unrooted `node_modules/` pattern catches nested package roots like
+# dnkdialer-bridge/node_modules/ (which holds electron.exe at 201MB —
+# blows past GitHub's 100MB push limit if accidentally tracked).
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -30,8 +33,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files — real values never committed. Example file IS committed
+# (no secrets, just keys + format guidance for new envs).
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -43,6 +48,7 @@ next-env.d.ts
 # Android build artifacts — must never be committed
 dnkdialer-android/.gradle/
 dnkdialer-android/app/build/
+dnkdialer-android/build/
 dnkdialer-android/local.properties
 dnkdialer-android/.idea/
 *.iml
@@ -58,11 +64,21 @@ dk-partner-work/
 *.xlsx
 *.apk
 dnkdialer-android/dnkdialer-v*.apk
+apk-releases/
 
-# Prisma — local dev SQLite + migration trail.
-# When we deploy to Hetzner we'll switch the provider back to postgres
-# and check in a fresh migration set against the Neon schema; this
-# directory + the dev.db file are localhost-only artifacts.
+# Android signing — keystores + keystore.properties NEVER committed.
+# Live at C:\Users\D\Keystores\ on the build box; passwords in
+# agent-memory/niki/PROJECTS/computercaller/CREDS.md (also gitignored).
+*.keystore
+*.jks
+dnkdialer-android/keystore.properties
+dnkdialer-android/app/release/
+dnkdialer-android/app/build/outputs/
+
+# Prisma — local dev SQLite artifacts. Postgres migrations DO get
+# committed (Coolify deploy runs `prisma migrate deploy` from them).
+# The sqlite-mode rig + its migration trail have been retired as of
+# Phase 1 of the deploy (2026-05-24); production runs Postgres.
 prisma/dev.db
 prisma/dev.db-journal
-prisma/migrations/
+prisma/migrations/20260522093753_init/

@@ -2,11 +2,11 @@
 
 import React from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, DatabaseBackup } from 'lucide-react';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
-import { SubscriptionPill } from '@/components/SubscriptionPill';
+import { ProfileMenu } from '@/components/ProfileMenu';
 import { usePhone, useDashboardTab, type DashboardTab } from '@/hooks';
 
 /**
@@ -57,24 +57,31 @@ function shouldWrapInScrollContainer(pathname: string | null): boolean {
   return pathname.startsWith('/app/settings');
 }
 
-// Derive the header title from the current pathname OR active tab. /app/settings
-// is a hard route so its title is fixed; everything else mirrors the active tab.
-function deriveHeaderTitle(pathname: string | null, activeTab: DashboardTab): string {
-  if (pathname?.startsWith('/app/settings')) return 'Settings';
-  return activeTab;
-}
+// Header title in the chrome is product branding, not page state. The page-
+// level heading (tab label or route name) is surfaced by the Sidebar / page
+// content itself — the bar at the top of the shell is the brand.
+const HEADER_TITLE = 'ComputerCaller';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { activeTab, setActiveTab } = useDashboardTab();
 
-  // Phone bridge — header still shows the quick-sync button when a phone is
-  // connected. quickSync may not be on the public hook type yet; loose cast
-  // matches the pattern used at /app/page.tsx so this stays in lockstep.
+  // Phone bridge — header surfaces TWO sync affordances when a phone is
+  // connected:
+  //   1. "Quick" — six-hour incremental sync (calls + messages since the
+  //      last successful pass). Cheap, runs in the background, no modal.
+  //   2. "Full" — opens the Full Sync setup panel (SyncSetupPanel) so the
+  //      user can re-run the whole sync from scratch with per-row progress.
+  //      Added dispatch #9 (2026-05-22) — Dennis wanted the full-sync UI
+  //      reachable from the header without first opening a settings drawer.
+  // Both methods are exposed defensively (loose cast) — the public hook type
+  // hasn't been regenerated in every consumer build yet. Same pattern as the
+  // sendDtmf cast in Dashboard.tsx.
   const phone = usePhone();
   const { isConnected } = phone;
   const quickSync = (phone as unknown as { quickSync?: () => void }).quickSync;
+  const openSyncPanel = (phone as unknown as { openSyncPanel?: () => void }).openSyncPanel;
 
   // Sidebar click handler.
   //   - If we're not on the dashboard route, route to /app first so the
@@ -90,7 +97,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const headerTitle = deriveHeaderTitle(pathname, activeTab);
   const wrapInScroll = shouldWrapInScrollContainer(pathname);
 
   return (
@@ -102,7 +108,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             of /app/page.tsx so /app/settings inherits it. */}
         <header className="h-20 px-8 flex items-center justify-between bg-white/50 backdrop-blur-sm border-b border-slate-200/50 z-10 sticky top-0">
           <div className="flex flex-col">
-            <h2 className="text-xl font-bold text-slate-800 capitalize">{headerTitle}</h2>
+            <h2 className="text-xl font-bold text-slate-800">{HEADER_TITLE}</h2>
             <p className="text-xs text-slate-500">Manage your communication</p>
           </div>
 
@@ -119,8 +125,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Quick
               </button>
             )}
+            {/* Full Sync button — opens the SyncSetupPanel modal (the same
+                centered popup that auto-opens on first pair). Distinguishable
+                from Quick: DatabaseBackup icon vs RefreshCw, slate→indigo on
+                hover so the affordance reads "this is the bigger / heavier
+                operation". Added dispatch #9 (2026-05-22). */}
+            {isConnected && typeof openSyncPanel === 'function' && (
+              <button
+                onClick={openSyncPanel}
+                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 rounded-xl transition-colors border border-slate-200 hover:border-indigo-200"
+                title="Full sync — re-sync everything from the phone"
+                aria-label="Full sync"
+              >
+                <DatabaseBackup className="w-3 h-3" aria-hidden="true" />
+                Full
+              </button>
+            )}
             <ConnectionStatus />
-            <SubscriptionPill />
+            {/* ProfileMenu — days-left urgency chip beside the avatar, plus a
+                dropdown for Manage subscription / Sign out. Sign Out tears
+                down the phone bridge WS BEFORE the SPA route change so the
+                relay room doesn't survive across logout. */}
+            <ProfileMenu />
           </div>
         </header>
 

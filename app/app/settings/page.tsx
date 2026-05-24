@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ExternalLink, ChevronDown, ChevronUp, RefreshCw, Zap, Smartphone } from 'lucide-react';
+import { ExternalLink, ChevronDown, ChevronUp, RefreshCw, Zap, Smartphone, Download } from 'lucide-react';
 import { usePhone } from '@/hooks';
 // SyncSetupPanel is mounted in app/app/layout.tsx — no import needed here.
 
@@ -20,6 +20,12 @@ interface UserData {
 // localStorage keys also written by usePhoneBridge — keep in sync.
 const LAST_FULL_SYNC_KEY = 'dnkdialer_last_full_sync_at';
 const LAST_QUICK_SYNC_KEY = 'dnkdialer_last_quick_sync_at';
+// Mirror of hooks/usePhoneBridge.ts PHONE_URL_KEY (dispatch #8, 2026-05-22).
+// Hard-coded here intentionally to avoid pulling the hook's module just to
+// share one literal; if the constant in the hook is ever renamed, search the
+// repo for 'dnkdialer_phone_url' to find both call sites. Used by the
+// "Forget saved phone" affordance below.
+const PHONE_URL_KEY = 'dnkdialer_phone_url';
 
 // Format a unix-ms timestamp as a relative "Just now / 5m ago / 2h ago / 3d ago"
 // string. Returns "Never" when the timestamp is null/0/NaN. Granularity is the
@@ -57,6 +63,49 @@ function readSyncTimestamp(key: string): number | null {
 export default function SettingsPage() {
   const [user, setUser] = useState<UserData | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Saved-phone-IP state (dispatch #8, 2026-05-22). Mirrors PHONE_URL_KEY so
+  // the "Forget saved phone" button can show the IP about to be cleared AND
+  // disable itself when there's nothing to forget. Re-read on:
+  //   - mount
+  //   - storage events (another tab connected/disconnected)
+  //   - after Forget click (handler bumps state to null)
+  // We deliberately do NOT poll on a timer — the only same-tab mutators are
+  // usePhoneBridge.connectPhone (sets) and this button's handler (clears).
+  // Stale read between a same-tab connect and the user landing on settings is
+  // a non-issue: by the time they navigate here, the connect is done.
+  const [savedPhoneUrl, setSavedPhoneUrl] = useState<string | null>(null);
+  const [forgetConfirmedAt, setForgetConfirmedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (typeof window === 'undefined') return;
+      try {
+        setSavedPhoneUrl(window.localStorage.getItem(PHONE_URL_KEY));
+      } catch {
+        setSavedPhoneUrl(null);
+      }
+    };
+    refresh();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === PHONE_URL_KEY) refresh();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  const handleForgetSavedPhone = () => {
+    try {
+      window.localStorage.removeItem(PHONE_URL_KEY);
+    } catch {
+      /* localStorage may throw in private mode — UI still reflects the intent */
+    }
+    setSavedPhoneUrl(null);
+    setForgetConfirmedAt(Date.now());
+    // Auto-clear the confirmation after 3s so it doesn't linger if the user
+    // navigates away and back.
+    window.setTimeout(() => setForgetConfirmedAt(null), 3000);
+  };
 
   // Phone bridge — drives the Sync section (counts, button enabled state,
   // launch actions). `openSyncPanel` and `quickSync` may not yet be in the
@@ -164,6 +213,90 @@ export default function SettingsPage() {
             dashboard
           </Link>
           .
+        </p>
+
+        {/* Saved-phone-IP escape hatch (dispatch #8, 2026-05-22). The webapp
+            remembers the last successful LAN address so the input row pre-fills
+            on every session. This button is the way to wipe that — useful when
+            switching to a different phone, after selling the device, or when
+            testing the fresh-pair flow. Hard Reset on the phone itself does NOT
+            clear this (it lives in webapp localStorage, not on the phone), so
+            this is the only in-app affordance. Subtle styling because it's an
+            escape hatch, not a primary action; disabled when there's nothing
+            saved so the affordance only surfaces when meaningful. */}
+        <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] font-medium text-slate-600">Saved phone address</p>
+            <p className="text-[11px] text-slate-400 truncate font-mono" title={savedPhoneUrl ?? undefined}>
+              {savedPhoneUrl ?? 'No phone saved yet'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleForgetSavedPhone}
+            disabled={!savedPhoneUrl}
+            className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-slate-500 hover:text-red-700 hover:bg-red-50 disabled:text-slate-300 disabled:hover:bg-transparent disabled:cursor-not-allowed border border-slate-200 hover:border-red-200 disabled:hover:border-slate-200 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30"
+            title={
+              savedPhoneUrl
+                ? 'Clear the remembered LAN IP so the dashboard input starts blank next session'
+                : 'No saved phone address to forget'
+            }
+            aria-label="Forget saved phone address"
+          >
+            Forget saved phone
+          </button>
+        </div>
+        {forgetConfirmedAt && (
+          <p
+            className="mt-2 text-[11px] text-emerald-600"
+            role="status"
+            aria-live="polite"
+          >
+            Saved phone cleared.
+          </p>
+        )}
+      </section>
+
+      {/* Android app — direct APK download for sideloading. Auth-gated server
+          route; not a public link. Show only the latest version. Listed BEFORE
+          Subscription because a user who can't install the app can't subscribe
+          meaningfully. Future: when we're live on Google Play, replace the
+          direct-APK CTA with a "Get on Google Play" badge while keeping the
+          auth-gated APK as the secondary path for power users. */}
+      <section
+        className="bg-white rounded-2xl border border-slate-200 p-5"
+        aria-labelledby="android-app-heading"
+      >
+        <h2
+          id="android-app-heading"
+          className="text-sm font-semibold text-slate-700 mb-1 flex items-center gap-2"
+        >
+          <span
+            aria-hidden="true"
+            className="w-6 h-6 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600"
+          >
+            <Download className="w-3.5 h-3.5" aria-hidden="true" />
+          </span>
+          Android app
+        </h2>
+        <p className="text-xs text-slate-500 leading-relaxed mb-4">
+          Install ComputerCaller on your Android phone, then connect it to
+          this browser from the dashboard. You only need to do this once per
+          phone.
+        </p>
+        <a
+          href="/api/download/apk"
+          className="inline-flex items-center justify-center gap-2 w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-xl transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+          // No `download` attribute needed — the server route sets
+          // Content-Disposition: attachment, which forces the browser to save
+          // rather than navigate. Also avoids the empty href issue if JS is off.
+        >
+          <Download className="w-4 h-4" aria-hidden="true" />
+          Download Android app (.apk)
+        </a>
+        <p className="mt-2 text-[11px] text-slate-400">
+          Android 8.0 or newer. You may need to allow installs from your browser
+          the first time.
         </p>
       </section>
 

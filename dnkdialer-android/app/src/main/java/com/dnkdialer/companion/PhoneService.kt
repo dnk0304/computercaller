@@ -382,6 +382,78 @@ class PhoneService : Service() {
     }
 
     /**
+     * Send a DTMF tone into the active call's audio path.
+     *
+     * Why ToneGenerator and not TelecomManager.playDtmfTone or Connection.sendDtmf?
+     *   We use TelecomManager.placeCall() to dial — the call itself is owned by
+     *   the system default dialer (or whichever ConnectionService the platform
+     *   selected). We do NOT register an InCallService and we do NOT own a
+     *   ConnectionService, so we have no Connection / Call handle to invoke
+     *   sendDtmf on. TelecomManager.playDtmfTone is also gated to InCallService
+     *   holders.
+     *
+     *   ToneGenerator(STREAM_VOICE_CALL) is the supported alternative for
+     *   non-default-dialer apps: it generates a DTMF waveform and routes it
+     *   through the voice-call audio stream. On most OEM stacks the modem
+     *   picks up STREAM_VOICE_CALL output and mixes it into the outbound RF
+     *   audio, which is exactly what we want — the remote party (IVR, voicemail
+     *   tree, etc.) hears the tone.
+     *
+     *   Caveats:
+     *     - Some OEMs / Android versions route STREAM_VOICE_CALL only to the
+     *       earpiece, NOT to the modem. In that case the user hears the tone
+     *       locally but the IVR does not — this is hardware/firmware dependent
+     *       and there is no portable workaround short of becoming the default
+     *       dialer. Worth confirming on Dennis's Samsung SM-S911B.
+     *     - We use a short tone duration (180ms) so successive presses queue
+     *       cleanly. The tone is fire-and-forget — we don't wait for it to
+     *       finish before returning, but we DO release the ToneGenerator after
+     *       a small delay to avoid leaking native resources.
+     */
+    private fun sendDtmfTone(digit: Char) {
+        // Map character → ToneGenerator constant. Only 0-9, *, # are valid DTMF.
+        val toneType = when (digit) {
+            '0' -> android.media.ToneGenerator.TONE_DTMF_0
+            '1' -> android.media.ToneGenerator.TONE_DTMF_1
+            '2' -> android.media.ToneGenerator.TONE_DTMF_2
+            '3' -> android.media.ToneGenerator.TONE_DTMF_3
+            '4' -> android.media.ToneGenerator.TONE_DTMF_4
+            '5' -> android.media.ToneGenerator.TONE_DTMF_5
+            '6' -> android.media.ToneGenerator.TONE_DTMF_6
+            '7' -> android.media.ToneGenerator.TONE_DTMF_7
+            '8' -> android.media.ToneGenerator.TONE_DTMF_8
+            '9' -> android.media.ToneGenerator.TONE_DTMF_9
+            '*' -> android.media.ToneGenerator.TONE_DTMF_S
+            '#' -> android.media.ToneGenerator.TONE_DTMF_P
+            else -> {
+                android.util.Log.w("PhoneService", "sendDtmfTone: rejecting non-DTMF char '$digit'")
+                return
+            }
+        }
+
+        try {
+            // Volume range 0-100. 80 is loud enough to register on most IVRs
+            // without clipping. STREAM_VOICE_CALL is the routing target.
+            val toneGen = android.media.ToneGenerator(
+                android.media.AudioManager.STREAM_VOICE_CALL,
+                80
+            )
+            // 180ms is the sweet spot — long enough to register on most IVR
+            // tone detectors, short enough that rapid keying doesn't stack.
+            val ok = toneGen.startTone(toneType, 180)
+            android.util.Log.d("PhoneService", "sendDtmfTone: digit='$digit' tone=$toneType startTone=$ok")
+
+            // Release the native resource after the tone has had time to play.
+            // Releasing immediately would clip the tone; never releasing leaks.
+            Handler(Looper.getMainLooper()).postDelayed({
+                try { toneGen.release() } catch (e: Exception) { /* swallow */ }
+            }, 240)
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "sendDtmfTone failed for '$digit': ${e.message}", e)
+        }
+    }
+
+    /**
      * Single guard against double-sending CALL_ENDED. The legacy PhoneStateListener
      * and the modern TelephonyCallback (Android 12+) can both observe the IDLE
      * transition independently — whichever fires first flips this from false → true
@@ -1605,6 +1677,23 @@ class PhoneService : Service() {
                     currentCallSpeaker = enabled
                     applySpeakerphone(enabled)
                 }
+                "SEND_DTMF" -> {
+                    // Webapp Quick Dial dialpad routed a key-press through the
+                    // bridge while a call is active. Browser-side already validated
+                    // the digit + gated on currentCall.state === 'active', but we
+                    // re-validate defensively (never trust the wire).
+                    val raw = payload?.get("digit") as? String
+                    if (raw == null || raw.length != 1) {
+                        android.util.Log.w("PhoneService", "SEND_DTMF: invalid digit payload: $raw")
+                        return
+                    }
+                    val ch = raw[0]
+                    if (!(ch in '0'..'9' || ch == '*' || ch == '#')) {
+                        android.util.Log.w("PhoneService", "SEND_DTMF: non-DTMF char rejected: '$ch'")
+                        return
+                    }
+                    sendDtmfTone(ch)
+                }
                 "SEND_SMS" -> {
                     val to = payload?.get("to") as? String ?: return
                     val body = payload?.get("body") as? String ?: return
@@ -1982,6 +2071,16 @@ class PhoneService : Service() {
             else -> "Waiting for connection - IP: $ip:8765"
         }
     }
+
+    /**
+     * Read-only accessor for the LAN [PhoneServer]. Added for dispatch #6
+     * so MainActivity's "Disconnect and stop" handler can call
+     * [PhoneServer.disconnectAllClients] for a polite shutdown (DISCONNECT_PHONE
+     * frame + close 1000) BEFORE sending ACTION_STOP to tear down the
+     * foreground service. Returns null if the server hasn't been
+     * started yet — caller should null-check.
+     */
+    fun getServer(): PhoneServer? = server
 
     override fun onDestroy() {
         super.onDestroy()

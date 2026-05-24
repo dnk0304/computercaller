@@ -36,7 +36,7 @@ import React, {
   useDeferredValue,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { usePhone, useNotifications, getNotificationIcon, useDashboardTab } from '@/hooks';
+import { usePhone, useNotifications, getNotificationIcon, useDashboardTab, useDebouncedValue } from '@/hooks';
 import type { Contact, SmsMessage } from '@/hooks';
 import type { CallLogEntry } from '@/hooks/phoneTypes';
 import {
@@ -63,8 +63,10 @@ import {
   Keyboard,
   Delete,
   Bell,
+  Hash,
 } from 'lucide-react';
 import { clsx } from 'clsx';
+import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
@@ -452,6 +454,35 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     sendSms,
   } = phone;
 
+  // Defensive cast for sendDtmf — the bridge exposes this on the return
+  // surface but the hook's exported TS shape may not have been regenerated
+  // in every consumer build. Pattern matches AppShell's quickSync cast.
+  //
+  // Dispatch #9 (2026-05-22) — DTMF UX flipped from "auto-repurpose the
+  // Quick Dial dialpad while a call is active" to "explicit Dialpad button
+  // on the Active Call card opens a modal". Rationale: the auto-flip was
+  // confusing (user types digits expecting them in the dial input, gets
+  // surprise tones instead) AND it stole the Quick Dial composer at the
+  // moment users most often want to look up the next number. Modal is the
+  // cleaner mental model: tap Dialpad → modal opens → send tones → close.
+  // The sendDtmf callback + Android SEND_DTMF handler are untouched — only
+  // the UI trigger changed. See DtmfDialpadModal at the bottom of this file.
+  const sendDtmf = (phone as unknown as { sendDtmf?: (digit: string) => void }).sendDtmf;
+
+  // Local UI state — controls visibility of the DTMF modal. Opened by the
+  // "Dialpad" button on ActiveCallCard (next to "Send SMS"), closed by
+  // backdrop click / Escape key / X button. Lives on the parent (not the
+  // modal itself) because the trigger is on a sibling component
+  // (ActiveCallCard) — both need to read/write the same boolean.
+  const [dtmfModalOpen, setDtmfModalOpen] = useState(false);
+
+  // Defensive auto-close: if the call ends while the modal is open, drop it.
+  // Sending tones into a call that just hung up would be a no-op at best
+  // and a confusing user signal at worst.
+  useEffect(() => {
+    if (!currentCall && dtmfModalOpen) setDtmfModalOpen(false);
+  }, [currentCall, dtmfModalOpen]);
+
   // Cross-route dashboard tab control — Quick Dial's SMS shortcut routes the
   // user to the messages tab with the dialled / active-call number pre-selected.
   // See hooks/dashboardTabContext.tsx for the navigation contract.
@@ -759,25 +790,56 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   );
 
   // Filtered threads — matches contact name, phone number, OR message body content.
+  //
+  // Performance (dispatch #9, 2026-05-22 — T6 SMS perf fix):
+  //   This memo falls through to `messages.some(...)` PER THREAD on every
+  //   character of the search query. With 500+ messages cached and N
+  //   threads, that's O(threads × messages) per keystroke — half-second
+  //   freezes on Dennis's data set.
+  //   Two-part fix:
+  //     1. Debounce the search query (150ms) so the expensive filter only
+  //        runs after the user stops typing. The controlled input still
+  //        binds to `threadSearch` so typing feels instant.
+  //     2. Pre-build a per-thread "haystack" string once per (threads,
+  //        messages) change. This collapses the inner `.some()` into a
+  //        single `.includes()` on a concatenated lowercase string —
+  //        same semantics, ~10–50× faster.
+  //   The debounce alone solves the freeze. The haystack precompute brings
+  //   the actual filter speed back to sub-millisecond so live-updates as
+  //   new messages arrive don't stutter either.
+  const debouncedThreadSearch = useDebouncedValue(threadSearch, 150);
+
+  // Per-thread body-haystack index. Keyed by digits-tail of the thread
+  // address. Built once per messages change, NOT per keystroke. The value
+  // is a lowercased concatenation of every message body for that thread,
+  // so the search filter becomes a single string.includes() per thread.
+  const threadBodyIndex = useMemo(() => {
+    const digitsTail = (n: string) => (n || '').replace(/\D/g, '').slice(-10);
+    const idx = new Map<string, string>();
+    for (const m of messages) {
+      const key = digitsTail(m.address) || (m.address ?? '').toLowerCase();
+      const prev = idx.get(key);
+      const next = prev ? prev + '  ' + m.body.toLowerCase() : m.body.toLowerCase();
+      idx.set(key, next);
+    }
+    return idx;
+  }, [messages]);
+
   const filteredThreads = useMemo(() => {
-    const q = threadSearch.trim().toLowerCase();
+    const q = debouncedThreadSearch.trim().toLowerCase();
     if (!q) return threads;
     const digitsTail = (n: string) => (n || '').replace(/\D/g, '').slice(-10);
     return threads.filter(t => {
       const name = (t.contact?.name ?? '').toLowerCase();
       const addr = (t.address ?? '').toLowerCase();
-      // Match on name or number first (fast path)
+      // Match on name or number first (fast path — string.includes()).
       if (name.includes(q) || addr.includes(q)) return true;
-      // Fall through: search all message bodies for this thread
-      const threadTail = digitsTail(t.address);
-      return messages.some(m => {
-        const addrMatch = threadTail
-          ? digitsTail(m.address) === threadTail             // numeric sender
-          : (m.address ?? '').toLowerCase() === (t.address ?? '').toLowerCase(); // alphanumeric
-        return addrMatch && m.body.toLowerCase().includes(q);
-      });
+      // Fall through: search the precomputed thread body haystack.
+      const key = digitsTail(t.address) || addr;
+      const hay = threadBodyIndex.get(key);
+      return hay ? hay.includes(q) : false;
     });
-  }, [threads, threadSearch, messages]);
+  }, [threads, debouncedThreadSearch, threadBodyIndex]);
 
   // Messages for the currently selected thread, oldest → newest.
   // Match by last 8 digits so the same conversation resolves whether the address
@@ -872,25 +934,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     setComposingNew(false);
   }, []);
 
-  // Quick Dial → SMS shortcut. Picks the dialled number first; falls back to
-  // the active call's number when the input is empty so the user can text the
-  // person they're on the phone with without retyping. No-ops if neither is
-  // available (the button is also disabled in that state, but we belt-and-brace
-  // here so the handler is safe to call from anywhere).
-  // Quick SMS — replicate clicking "+ New" in the thread list header,
-  // then pre-fill the recipient with the active-call's number (or whatever
-  // is typed in Quick Dial). Stays on the Dashboard tab so the user
-  // doesn't lose sight of the Quick Dial / Active Call card while
-  // composing. Same state mutations as handleStartNewMessage + the
-  // recipient pre-fill.
-  const handleSmsFromQuickDial = useCallback(() => {
-    const target = dialNumber.trim() || currentCall?.number?.trim() || '';
-    if (!target) return;
-    setComposingNew(true);
-    setSelectedThread(null);
-    setNewMsgRecipient(target);
-    setNewMsgBody('');
-  }, [dialNumber, currentCall, setComposingNew, setSelectedThread, setNewMsgRecipient, setNewMsgBody]);
+  // handleSmsFromQuickDial removed 2026-05-22 — the Quick Dial header SMS
+  // button was deleted and ActiveCallCard's onSendSms now inlines the same
+  // composing-state mutations directly (see the JSX at the ActiveCallCard
+  // render site below). Recent Calls per-row SMS uses handleOpenThread.
 
   const handleStartNewMessage = useCallback(() => {
     setComposingNew(true);
@@ -1054,37 +1101,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         <header className="px-3 py-1.5 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2 flex-shrink-0">
           <Phone className="w-3 h-3 text-slate-400" aria-hidden="true" />
           <h2 className="text-xs font-semibold text-slate-800">Quick Dial</h2>
-          {/* Header actions group. SMS shortcut + dialpad toggle. The SMS
-              button replaced a legacy "default audio source" pill (2026-05-20)
-              — audio routing now lives exclusively on the in-call segmented
-              control in ActiveCallCard / CallModal, and this slot exposes a
-              direct path to message whoever you're about to call (or are
-              already on the phone with). */}
+          {/* Header actions group. SMS shortcut removed 2026-05-22 — Dennis
+              wanted the Quick Dial card cleaner; SMS is still reachable via
+              the Active Call card and via the per-row Recent Calls SMS
+              buttons. handleSmsFromQuickDial is preserved (ActiveCallCard's
+              onSendSms still routes through it). */}
           <div className="ml-auto flex items-center gap-1">
-            <button
-              type="button"
-              onClick={handleSmsFromQuickDial}
-              disabled={!dialNumber.trim() && !currentCall}
-              aria-label={
-                dialNumber.trim() || currentCall
-                  ? 'Send SMS to this number'
-                  : 'Enter a number or start a call to send SMS'
-              }
-              title={
-                dialNumber.trim() || currentCall
-                  ? 'Send SMS to this number'
-                  : 'Enter a number or start a call to send SMS.'
-              }
-              className={clsx(
-                'inline-flex items-center justify-center w-5 h-5 rounded-lg',
-                'transition-colors',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
-                'text-blue-600 bg-blue-50 hover:bg-blue-100',
-                'disabled:bg-transparent disabled:text-slate-300 disabled:cursor-not-allowed disabled:hover:bg-transparent'
-              )}
-            >
-              <MessageSquare className="w-3 h-3" aria-hidden="true" />
-            </button>
             <button
               type="button"
               onClick={() => setShowDialpad((v) => !v)}
@@ -1137,55 +1159,62 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
           {/* Inline dialpad — 3x4 numeric grid plus a backspace button.
               Each digit appends to dialNumber; backspace removes the last
               character. Conditionally rendered (cheaper than animating mount/
-              unmount) with a subtle slide-in for affordance. */}
+              unmount) with a subtle slide-in for affordance.
+
+              Dispatch #9 (2026-05-22): reverted the DTMF auto-flip behavior
+              from dispatch #4. Quick Dial's inline dialpad is now ALWAYS the
+              number-composer — typing here always appends to the dial input,
+              never sends tones. The DTMF send path moved to an explicit
+              modal triggered by the "Dialpad" button on ActiveCallCard. The
+              auto-flip was confusing: users in the middle of looking up a
+              number got their input stolen the instant the previous call
+              connected. */}
           {showDialpad && (
             <div
-              className="grid grid-cols-3 gap-2 animate-in slide-in-from-top-2 duration-150"
+              className="flex flex-col gap-1.5 animate-in slide-in-from-top-2 duration-150"
               role="group"
               aria-label="Dialpad"
             >
-              {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map(
-                (digit) => (
-                  <button
-                    key={digit}
-                    type="button"
-                    onClick={() =>
-                      setDialNumber((prev) => prev + digit)
-                    }
-                    className={clsx(
-                      'w-full h-10 rounded-lg text-sm font-semibold tabular-nums',
-                      'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800',
-                      'transition-colors',
-                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40'
-                    )}
-                    aria-label={`Dial ${digit}`}
-                  >
-                    {digit}
-                  </button>
-                )
-              )}
-              {/* Backspace spans the bottom row's empty 4th slot would clutter
-                  the 3-col grid. Instead place it below the grid as a wide
-                  utility row so it's easy to hit. */}
-              <button
-                type="button"
-                onClick={() =>
-                  setDialNumber((prev) => prev.slice(0, -1))
-                }
-                disabled={!dialNumber}
-                className={clsx(
-                  'col-span-3 h-10 rounded-lg flex items-center justify-center gap-2',
-                  'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700',
-                  'transition-colors',
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
-                  'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-slate-100'
+              <div className="grid grid-cols-3 gap-2">
+                {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map(
+                  (digit) => (
+                    <button
+                      key={digit}
+                      type="button"
+                      onClick={() => setDialNumber((prev) => prev + digit)}
+                      className={clsx(
+                        'w-full h-10 rounded-lg text-sm font-semibold tabular-nums',
+                        'transition-colors',
+                        'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                        'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800'
+                      )}
+                      aria-label={`Dial ${digit}`}
+                    >
+                      {digit}
+                    </button>
+                  )
                 )}
-                aria-label="Delete last digit"
-                title="Delete last digit"
-              >
-                <Delete className="w-4 h-4" aria-hidden="true" />
-                <span className="text-xs font-medium">Backspace</span>
-              </button>
+                {/* Backspace — removes the last character from the dial input. */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDialNumber((prev) => prev.slice(0, -1))
+                  }
+                  disabled={!dialNumber}
+                  className={clsx(
+                    'col-span-3 h-10 rounded-lg flex items-center justify-center gap-2',
+                    'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700',
+                    'transition-colors',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                    'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-slate-100'
+                  )}
+                  aria-label="Delete last digit"
+                  title="Delete last digit"
+                >
+                  <Delete className="w-4 h-4" aria-hidden="true" />
+                  <span className="text-xs font-medium">Backspace</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -1236,8 +1265,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                 setNewMsgRecipient(target);
                 setNewMsgBody('');
               }}
+              // Dispatch #9 (2026-05-22): explicit DTMF dialpad trigger.
+              // Only enabled while the call is ACTIVE — sending tones during
+              // ringing/dialing is a no-op at best and confusing at worst.
+              canSendDtmf={currentCall.state === 'active' && typeof sendDtmf === 'function'}
+              onOpenDialpad={() => setDtmfModalOpen(true)}
             />
           )}
+
+          {/* DTMF dialpad modal — mounts only when explicitly opened from
+              the Active Call card. Rendered HERE (inside Column 1, but as a
+              fixed-position overlay) so the modal lives within the same
+              tree as the call state, and so the modal's auto-close on
+              call-end can rely on currentCall being in scope. */}
+          <DtmfDialpadModal
+            open={dtmfModalOpen && !!currentCall}
+            onClose={() => setDtmfModalOpen(false)}
+            onDigit={(digit) => sendDtmf?.(digit)}
+            callerLabel={currentCall ? (currentCall.name || currentCall.number || undefined) : undefined}
+          />
+
         </div>
 
         {/* Recent Calls header — sits above the scrolling list. */}
@@ -1345,7 +1392,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                         </p>
                       </div>
                     </button>
-                    <div className="flex items-center gap-1 pr-3 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex-shrink-0">
+                    {/* Action buttons — always visible (2026-05-22). Previously
+                        opacity-0 + group-hover, which hid the affordance. Dennis
+                        wants one-tap Call / SMS directly from any Recent Calls
+                        row without having to mouse over it first. */}
+                    <div className="flex items-center gap-1 pr-3 flex-shrink-0">
                       <button
                         type="button"
                         onClick={(e) => {
@@ -1857,6 +1908,12 @@ interface ActiveCallCardProps {
   // caller's number pre-filled. Stays on the Dashboard tab so the user
   // doesn't lose sight of the Active Call card while composing.
   onSendSms: (target: string) => void;
+  // Dispatch #9 (2026-05-22): explicit DTMF dialpad. The trigger lives on
+  // this card (next to Send SMS) because the call card is the contextual
+  // anchor for in-call actions. Parent owns modal visibility — see
+  // DtmfDialpadModal mount in the Dashboard component below.
+  canSendDtmf: boolean;
+  onOpenDialpad: () => void;
 }
 
 const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
@@ -1865,6 +1922,8 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
   onAnswer,
   onEnd,
   onSendSms,
+  canSendDtmf,
+  onOpenDialpad,
 }) => {
   // Mute is a placeholder per spec — local-only state, not wired to the bridge.
   const [muted, setMuted] = useState(false);
@@ -1987,28 +2046,50 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
         </button>
       </div>
 
-      {/* Send SMS — primary side-action during a live call (2026-05-20).
-          Routes the user to the Messages tab with the caller's number
-          pre-selected so they can text the person they're talking to without
-          retyping. Full-width to read as the dominant secondary action below
-          the Answer/Mute/End row. Disabled when the caller number was withheld
-          / unavailable — the button still renders so the layout stays stable. */}
-      <button
-        type="button"
-        onClick={handleSendSms}
-        disabled={!canSendSms}
-        className={clsx(
-          'mt-3 w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-semibold text-xs shadow-sm transition-colors',
-          canSendSms
-            ? 'bg-blue-600 hover:bg-blue-700 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white'
-            : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-        )}
-        aria-label={canSendSms ? `Send SMS to ${displayName}` : 'Send SMS (unavailable)'}
-        title={canSendSms ? undefined : 'Caller number not available.'}
-      >
-        <MessageSquare className="w-4 h-4" aria-hidden="true" />
-        Send SMS
-      </button>
+      {/* Side-action row — primary in-call helpers that aren't Answer/Mute/End.
+          Two side-by-side buttons: Send SMS (left, blue, primary) and Dialpad
+          (right, slate, secondary). The Dialpad button opens a centered modal
+          overlay with a 3x4 DTMF grid — see DtmfDialpadModal at the bottom of
+          this file. Both buttons disable independently:
+            - Send SMS: requires a non-empty caller number.
+            - Dialpad:  requires an ACTIVE call (sendDtmf is a no-op while
+                        ringing/dialing) AND a wired sendDtmf hook surface.
+          Layout: 2-column grid so each button gets equal width regardless of
+          label length. Disabled buttons still render so the row never reflows. */}
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={handleSendSms}
+          disabled={!canSendSms}
+          className={clsx(
+            'flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-semibold text-xs shadow-sm transition-colors',
+            canSendSms
+              ? 'bg-blue-600 hover:bg-blue-700 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white'
+              : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+          )}
+          aria-label={canSendSms ? `Send SMS to ${displayName}` : 'Send SMS (unavailable)'}
+          title={canSendSms ? undefined : 'Caller number not available.'}
+        >
+          <MessageSquare className="w-4 h-4" aria-hidden="true" />
+          Send SMS
+        </button>
+        <button
+          type="button"
+          onClick={onOpenDialpad}
+          disabled={!canSendDtmf}
+          className={clsx(
+            'flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-semibold text-xs shadow-sm transition-colors',
+            canSendDtmf
+              ? 'bg-slate-700 hover:bg-slate-800 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white'
+              : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+          )}
+          aria-label={canSendDtmf ? 'Open dialpad for DTMF tones' : 'Dialpad (unavailable until call connects)'}
+          title={canSendDtmf ? 'Send touch-tone digits (DTMF)' : 'Dialpad becomes available once the call connects.'}
+        >
+          <Hash className="w-4 h-4" aria-hidden="true" />
+          Dialpad
+        </button>
+      </div>
     </div>
   );
 };

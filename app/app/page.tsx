@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-// Sidebar + ConnectionStatus + PhoneStatusButton + SubscriptionPill + header
+// Sidebar + ConnectionStatus + PhoneStatusButton + ProfileMenu + header
 // chrome have moved into components/AppShell.tsx, mounted from
 // app/app/layout.tsx so /app/settings inherits them too. This page now
 // renders ONLY the tab content; the shell is the layout's responsibility.

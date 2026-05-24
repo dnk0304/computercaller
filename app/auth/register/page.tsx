@@ -88,7 +88,7 @@ export default function RegisterPage() {
             Create your account
           </h1>
           <p className="mt-1.5 text-slate-500 text-sm">
-            14-day free trial. No credit card required.
+            5-day free trial. No credit card required.
           </p>
 
           <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>

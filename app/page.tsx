@@ -54,7 +54,7 @@ export default function LandingPage() {
         <div className="max-w-4xl mx-auto px-6 pt-20 pb-24 sm:pt-28 sm:pb-32 text-center">
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            14-day free trial — no credit card required
+            5-day free trial — no credit card required
           </div>
 
           <h1 className="mt-8 text-5xl sm:text-6xl md:text-7xl font-semibold tracking-[-0.03em] leading-[1.02] text-slate-900">
@@ -159,7 +159,7 @@ export default function LandingPage() {
                 'Real-time notification mirror',
                 'Unlimited contacts & history',
                 'Works from any device, anywhere',
-                '14-day free trial',
+                '5-day free trial',
               ].map((f) => (
                 <li key={f} className="flex items-start gap-2.5">
                   <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
@@ -174,7 +174,7 @@ export default function LandingPage() {
               href="/auth/register"
               className="mt-8 flex items-center justify-center gap-1.5 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-center shadow-sm shadow-blue-600/20"
             >
-              Start 14-day free trial
+              Start 5-day free trial
               <ArrowRight className="w-4 h-4" />
             </Link>
             <p className="mt-3 text-center text-slate-500 text-xs">
@@ -196,6 +196,12 @@ export default function LandingPage() {
             </span>
           </div>
           <div className="flex items-center gap-5 text-sm text-slate-500">
+            <Link href="/privacy" className="hover:text-slate-900 transition-colors">
+              Privacy
+            </Link>
+            <Link href="/terms" className="hover:text-slate-900 transition-colors">
+              Terms
+            </Link>
             <a
               href="mailto:support@computercaller.com"
               className="hover:text-slate-900 transition-colors"
