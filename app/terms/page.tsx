@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { Phone, ArrowLeft } from 'lucide-react';
+import Image from 'next/image';
+import { ArrowLeft } from 'lucide-react';
 
 export const metadata = {
   title: 'Terms of Service — ComputerCaller',
@@ -15,13 +16,19 @@ export default function TermsPage() {
     <div className="min-h-screen bg-white text-slate-900">
       <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-slate-200/80">
         <div className="max-w-3xl mx-auto px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5 group">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm shadow-blue-600/20 flex items-center justify-center">
-              <Phone className="w-4 h-4 text-white" />
-            </div>
-            <span className="font-semibold text-[15px] tracking-tight">
-              ComputerCaller
-            </span>
+          <Link
+            href="/"
+            className="flex items-center group"
+            aria-label="ComputerCaller — home"
+          >
+            <Image
+              src="/brand/computercaller-icon-square.png"
+              alt="ComputerCaller"
+              width={742}
+              height={595}
+              priority
+              className="h-12 w-auto rounded-lg"
+            />
           </Link>
           <Link
             href="/"

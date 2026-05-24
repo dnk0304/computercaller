@@ -2,8 +2,9 @@
 
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Phone, Check } from 'lucide-react';
+import { Check } from 'lucide-react';
 
 // useSearchParams() must be wrapped in <Suspense>; the page-level default export
 // provides that boundary so static export and partial pre-rendering work.
@@ -43,13 +44,19 @@ function LoginForm() {
 
   return (
     <div className="w-full max-w-md">
-      <Link href="/" className="flex items-center justify-center gap-2.5 mb-10">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm shadow-blue-600/20 flex items-center justify-center">
-          <Phone className="w-4 h-4 text-white" />
-        </div>
-        <span className="text-base font-semibold tracking-tight text-slate-900">
-          ComputerCaller
-        </span>
+      <Link
+        href="/"
+        className="flex items-center justify-center mb-10"
+        aria-label="ComputerCaller — home"
+      >
+        <Image
+          src="/brand/computercaller-icon-square.png"
+          alt="ComputerCaller"
+          width={742}
+          height={595}
+          priority
+          className="h-14 w-auto rounded-lg"
+        />
       </Link>
 
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8">

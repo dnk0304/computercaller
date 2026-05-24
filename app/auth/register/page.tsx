@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Phone, Check } from 'lucide-react';
+import Image from 'next/image';
+import { Check } from 'lucide-react';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
@@ -38,13 +39,19 @@ export default function RegisterPage() {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
         <div className="w-full max-w-md">
-          <Link href="/" className="flex items-center justify-center gap-2.5 mb-10">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm shadow-blue-600/20 flex items-center justify-center">
-              <Phone className="w-4 h-4 text-white" />
-            </div>
-            <span className="text-base font-semibold tracking-tight text-slate-900">
-              ComputerCaller
-            </span>
+          <Link
+            href="/"
+            className="flex items-center justify-center mb-10"
+            aria-label="ComputerCaller — home"
+          >
+            <Image
+              src="/brand/computercaller-icon-square.png"
+              alt="ComputerCaller"
+              width={742}
+              height={595}
+              priority
+              className="h-14 w-auto rounded-lg"
+            />
           </Link>
 
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8 text-center">
@@ -74,13 +81,19 @@ export default function RegisterPage() {
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
-        <Link href="/" className="flex items-center justify-center gap-2.5 mb-10">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 shadow-sm shadow-blue-600/20 flex items-center justify-center">
-            <Phone className="w-4 h-4 text-white" />
-          </div>
-          <span className="text-base font-semibold tracking-tight text-slate-900">
-            ComputerCaller
-          </span>
+        <Link
+          href="/"
+          className="flex items-center justify-center mb-10"
+          aria-label="ComputerCaller — home"
+        >
+          <Image
+            src="/brand/computercaller-icon-square.png"
+            alt="ComputerCaller"
+            width={742}
+            height={595}
+            priority
+            className="h-14 w-auto rounded-lg"
+          />
         </Link>
 
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8">

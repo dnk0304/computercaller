@@ -2,22 +2,22 @@
 
 import Link from 'next/link';
 import Image from 'next/image';
-import { Phone, MessageSquare, Bell, Zap, Shield, Globe, Check, ArrowRight } from 'lucide-react';
+import { MessageSquare, Bell, Zap, Shield, Globe, Check, ArrowRight, Phone } from 'lucide-react';
 
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-white text-slate-900">
       {/* Header */}
       <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-slate-200/80">
-        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-6 h-20 flex items-center justify-between">
           <Link href="/" className="flex items-center group" aria-label="ComputerCaller — home">
             <Image
-              src="/brand/computercaller-banner.png"
+              src="/brand/computercaller-icon-square.png"
               alt="ComputerCaller"
-              width={400}
-              height={170}
+              width={742}
+              height={595}
               priority
-              className="h-10 w-auto"
+              className="h-14 w-auto rounded-lg"
             />
           </Link>
           <div className="flex items-center gap-2">
@@ -191,9 +191,13 @@ export default function LandingPage() {
       <footer className="border-t border-slate-200 bg-slate-50/60">
         <div className="max-w-6xl mx-auto px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-md bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center">
-              <Phone className="w-3 h-3 text-white" />
-            </div>
+            <Image
+              src="/brand/computercaller-icon-square.png"
+              alt=""
+              width={742}
+              height={595}
+              className="h-7 w-auto rounded-md"
+            />
             <span className="text-sm text-slate-600">
               © {new Date().getFullYear()} ComputerCaller
             </span>
