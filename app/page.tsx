@@ -38,23 +38,30 @@ export default function LandingPage() {
         </div>
       </header>
 
-      {/* Hero */}
-      <section className="relative overflow-hidden">
-        {/* Soft gradient orb — purely decorative */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 -z-10 transform-gpu blur-3xl"
-        >
-          <div
-            className="mx-auto aspect-[1155/678] w-[72rem] bg-gradient-to-tr from-blue-200 via-indigo-100 to-blue-50 opacity-60"
-            style={{
-              clipPath:
-                'polygon(74.1% 44.1%, 100% 61.6%, 97.5% 26.9%, 85.5% 0.1%, 80.7% 2%, 72.5% 32.5%, 60.2% 62.4%, 52.4% 68.1%, 47.5% 58.3%, 45.2% 34.5%, 27.5% 76.7%, 0.1% 64.9%, 17.9% 100%, 27.6% 76.8%, 76.1% 97.7%, 74.1% 44.1%)',
-            }}
-          />
-        </div>
+      {/* Hero banner — full-width brand banner with baked-in wordmark + tagline */}
+      <div className="w-full bg-[#dbeefc]">
+        <Image
+          src="/brand/computercaller-hero-banner.png"
+          alt="ComputerCaller — Connect. Call. Communicate. Seamlessly."
+          width={632}
+          height={231}
+          priority
+          sizes="100vw"
+          className="w-full h-auto block"
+        />
+      </div>
 
-        <div className="max-w-4xl mx-auto px-6 pt-20 pb-24 sm:pt-28 sm:pb-32 text-center">
+      {/* Hero — value prop sits below the banner.
+          Background fades from the banner's bottom-edge blue down to white
+          so the visual flow is continuous (no hard cut). */}
+      <section
+        className="relative overflow-hidden"
+        style={{
+          background:
+            'linear-gradient(to bottom, #dbeefc 0%, #eef6fc 35%, #ffffff 100%)',
+        }}
+      >
+        <div className="max-w-4xl mx-auto px-6 pt-16 pb-24 sm:pt-20 sm:pb-32 text-center">
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             5-day free trial — no credit card required
