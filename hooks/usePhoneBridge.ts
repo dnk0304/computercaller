@@ -26,7 +26,23 @@ const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
 // in ProfileMenu's removeItem call — if you rename this constant, search
 // the repo for the literal 'dnkdialer_first_pair_done' too.
 const FIRST_PAIR_KEY = 'dnkdialer_first_pair_done';
-const RELAY_URL = 'ws://localhost:3001';
+// Path-based relay (dispatch #26, 2026-05-24).
+//
+// The relay is mounted on the SAME http server as Next.js at /relay, so we
+// derive the URL from window.location instead of hard-coding a port. This
+// gives us:
+//   • dev:  ws://localhost:3000/relay
+//   • prod: wss://computercaller.com/relay  (Coolify proxies :443 → :3000)
+// SSR-safe: during server render, `window` is undefined — fall back to the
+// dev URL. The string only matters once we're in the browser, where
+// `window.location` is always defined by the time this module executes
+// inside the React tree (`use client` at the top of the file guarantees it).
+function deriveRelayUrl(): string {
+  if (typeof window === 'undefined') return 'ws://localhost:3000/relay';
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/relay`;
+}
+const RELAY_URL = deriveRelayUrl();
 
 // Map a coarse range key to a `since` unix-ms timestamp. Sending `since`
 // lets Android use an indexed WHERE clause instead of a full table scan —

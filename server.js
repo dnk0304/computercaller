@@ -30,6 +30,19 @@ const RELAY_PORT = parseInt(process.env.RELAY_PORT || '3001', 10);
 const HOSTNAME = os.hostname();
 const dev = process.env.NODE_ENV !== 'production';
 
+// LEGACY_RELAY_PORT=1 opt-in safety net (dispatch #26, 2026-05-24).
+//
+// As of the path-based mount, the relay is exposed at `/relay` on the same
+// HTTP server as Next.js — no separate port is needed in production. Coolify
+// proxies WSS on :443 → /relay → Node :3000, single TLS endpoint, public QR
+// works over the internet.
+//
+// If anything explodes in prod we want a 5-second revert. Setting this env
+// var to "1" makes server.js ALSO start the old standalone listener on
+// RELAY_PORT (default 3001), restoring the pre-refactor behavior. Default
+// OFF — production should never need it after the deploy is verified.
+const LEGACY_RELAY_PORT = process.env.LEGACY_RELAY_PORT === '1';
+
 // One Prisma client for the whole relay process. server.js is a long-lived
 // custom server (not Next.js runtime), so it can't import the TS singleton from
 // lib/db.ts directly — instantiating here is fine because we never hot-reload
@@ -133,8 +146,12 @@ function getLocalSubnet() {
 
 const MAX_OUTBOUND_FAILURES = 3;
 
-function startRelay() {
-  const wss = new WebSocketServer({ port: RELAY_PORT });
+function startRelay(httpServer) {
+  // noServer mode: we handle the HTTP `upgrade` event ourselves below and
+  // gate by URL path. This lets us mount the relay at /relay on the SAME
+  // httpServer Next.js uses — no separate port to expose through Coolify,
+  // no cross-origin LAN-IP gymnastics, single WSS endpoint over :443 in prod.
+  const wss = new WebSocketServer({ noServer: true });
 
   // token -> Room
   const rooms = new Map();
@@ -609,9 +626,68 @@ function startRelay() {
     });
   });
 
-  wss.on('listening', () => {
-    console.log(`[Relay] Ready on ws://localhost:${RELAY_PORT} — accepts browser (/) and phone (/phone) connections with ?token=<phoneToken> (validated against User.phoneToken; missing token falls back to legacy 'default' room)`);
+  // Attach the relay to the shared httpServer via 'upgrade'. We only claim
+  // upgrades whose pathname starts with /relay so Next.js HMR sockets
+  // (/_next/webpack-hmr, etc.) flow through Next's own upgrade handler
+  // untouched. Path layout:
+  //   /relay         → browser room socket
+  //   /relay/phone   → phone room socket (inbound QR)
+  // The query string (?token=…) is preserved verbatim. Before handing off
+  // to the existing connection handler, we strip the /relay prefix from
+  // req.url so parseConnection() sees the same pathnames it used to see on
+  // the standalone port (/ for browser, /phone for phone). This keeps all
+  // downstream logic byte-identical.
+  function handleRelayUpgrade(request, socket, head) {
+    const parsed = parse(request.url || '/', true);
+    const pathname = parsed.pathname || '/';
+    if (pathname !== '/relay' && pathname !== '/relay/phone') {
+      return false; // not ours — let the caller handle it (or drop)
+    }
+    // Rewrite so parseConnection() sees the legacy shape.
+    const rewritten = pathname === '/relay/phone' ? '/phone' : '/';
+    const search = request.url.includes('?')
+      ? request.url.slice(request.url.indexOf('?'))
+      : '';
+    request.url = rewritten + search;
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+    return true;
+  }
+
+  httpServer.on('upgrade', (request, socket, head) => {
+    const parsed = parse(request.url || '/', true);
+    const pathname = parsed.pathname || '/';
+    if (pathname === '/relay' || pathname === '/relay/phone') {
+      handleRelayUpgrade(request, socket, head);
+      return;
+    }
+    // Anything else (e.g. Next.js HMR) — Next's handler is registered on the
+    // same httpServer and will pick it up. Do nothing here.
   });
+
+  console.log(`[Relay] Mounted on shared httpServer at /relay (browser) and /relay/phone (inbound QR). Validates ?token=<phoneToken> against User.phoneToken; missing token falls back to legacy 'default' room.`);
+
+  // Optional backward-compat: ALSO bring up the old standalone listener on
+  // RELAY_PORT when LEGACY_RELAY_PORT=1. Same wss instance, just a second
+  // entry point. Safe revert path if anything regresses in prod — flip the
+  // env var, restart, the old behavior is back without a code change.
+  if (LEGACY_RELAY_PORT) {
+    const legacyServer = http.createServer();
+    legacyServer.on('upgrade', (request, socket, head) => {
+      // Legacy clients hit / or /phone directly on RELAY_PORT — no rewrite
+      // needed, parseConnection() already understands those pathnames.
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    });
+    legacyServer.listen(RELAY_PORT, () => {
+      console.log(`[Relay] LEGACY_RELAY_PORT=1 — also listening on ws://localhost:${RELAY_PORT} for backward compat.`);
+    });
+    legacyServer.on('error', (err) => {
+      console.error(`[Relay] Legacy listener error: ${err.message}`);
+    });
+  }
 
   // Keep every active phone connection alive and detect silent disconnects.
   //
@@ -655,12 +731,9 @@ async function main() {
   console.log('[Server] Starting ComputerCaller...');
   console.log(`[Server] Mode: ${dev ? 'development' : 'production'}`);
 
-  // Start the relay first so it is ready by the time the browser loads the page.
-  console.log(`[Server] Launching relay WebSocket server on port ${RELAY_PORT}...`);
-  startRelay();
-
-  // Then start Next.js.
-  console.log(`[Server] Launching Next.js on port ${NEXT_PORT}...`);
+  // Prepare Next.js first — we need its request handler to wire into the
+  // httpServer before we listen, otherwise early HTTP requests would 404.
+  console.log(`[Server] Preparing Next.js on port ${NEXT_PORT}...`);
   // webpack: true — Turbopack panics on Windows when bundling Prisma's
   // native client (tries to symlink `@prisma/client` into the build chunks;
   // hits `os error 1314 / SeCreateSymbolicLinkPrivilege` for non-admin users).
@@ -673,15 +746,27 @@ async function main() {
   const handle = app.getRequestHandler();
   await app.prepare();
 
+  // Create the shared httpServer. This server handles BOTH Next.js HTTP
+  // requests AND WebSocket upgrades — Next.js handles requests on the
+  // request handler, the relay grabs WS upgrades on /relay and /relay/phone
+  // via its own 'upgrade' listener.
   const httpServer = http.createServer((req, res) => {
     const parsedUrl = parse(req.url || '/', true);
     handle(req, res, parsedUrl);
   });
 
+  // Mount the relay onto the shared httpServer BEFORE listen() so its
+  // 'upgrade' listener is registered when the first WS upgrade arrives.
+  console.log(`[Server] Mounting relay WebSocket server on shared httpServer at /relay...`);
+  startRelay(httpServer);
+
   httpServer.listen(NEXT_PORT, (err) => {
     if (err) throw err;
     console.log(`[Server] Next.js ready on http://localhost:${NEXT_PORT}`);
-    console.log(`[Server] Both Next.js (${NEXT_PORT}) and Relay (${RELAY_PORT}) are running in this process.`);
+    console.log(`[Server] Relay WebSocket ready on ws://localhost:${NEXT_PORT}/relay (browser) and /relay/phone (phone).`);
+    if (LEGACY_RELAY_PORT) {
+      console.log(`[Server] Legacy port ${RELAY_PORT} also active (LEGACY_RELAY_PORT=1).`);
+    }
   });
 }
 

@@ -11,7 +11,7 @@ interface QRDisplayProps {
 }
 
 export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
-  const [localIp, setLocalIp] = useState<string | null>(null);
+  const [relayUrl, setRelayUrl] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const { isConnected } = usePhone();
 
@@ -20,17 +20,16 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
   const onCloseRef = React.useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
+  // Derive the QR URL from the current page's origin (dispatch #26).
+  // The relay is mounted on the same http server as Next.js at /relay/phone
+  // — no /api/local-ip call needed, no LAN-IP dependency. Phone scans the
+  // QR and connects to the public relay over WSS in prod (works from ANY
+  // network with internet) or over ws://localhost:3000 in dev.
   useEffect(() => {
-    fetch('/api/local-ip')
-      .then(res => res.json())
-      .then(data => {
-        setLocalIp(data.ip);
-        setLoading(false);
-      })
-      .catch(() => {
-        setLocalIp('localhost');
-        setLoading(false);
-      });
+    if (typeof window === 'undefined') return;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    setRelayUrl(`${proto}//${window.location.host}/relay/phone`);
+    setLoading(false);
   }, []);
 
   // Auto-close when connected — only depend on isConnected, use the stable
@@ -41,8 +40,6 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
       return () => clearTimeout(timer);
     }
   }, [isConnected]);
-
-  const relayUrl = localIp ? `ws://${localIp}:3001/phone` : '';
 
   // Render via portal to document.body so it's always on top of header
   return typeof document !== 'undefined' ? createPortal(
@@ -69,7 +66,7 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
         ) : loading ? (
           <div className="text-center py-16 px-6">
             <Loader2 className="w-10 h-10 text-blue-600 animate-spin mx-auto mb-4" />
-            <p className="text-slate-500">Detecting network...</p>
+            <p className="text-slate-500">Preparing QR code...</p>
           </div>
         ) : (
           <div className="text-center px-6 py-6">
@@ -112,7 +109,7 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
             </div>
 
             <p className="text-[10px] text-slate-400 mt-3">
-              Both devices must be on the same WiFi network
+              Phone needs internet — works on any network
             </p>
           </div>
         )}
