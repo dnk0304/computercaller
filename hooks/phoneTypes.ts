@@ -48,7 +48,26 @@ export type PhoneEventType =
   // ping's `ts` so the web side can compute round-trip latency, and acts as
   // a liveness signal — if pongs stop arriving for 30s the web flips the
   // phone to "stale" even when the relay socket is still TCP-alive.
-  | 'APP_PONG';
+  | 'APP_PONG'
+  // Lobby / Connect+Accept control plane (dispatch #32, 2026-05-25). All
+  // pairing handshake events arrive over this channel; see lib/lobbyState.ts
+  // for the state machine.
+  //   LOBBY_STATUS       relay snapshot on lobby join
+  //   PHONE_PRESENT      a phone joined the lobby
+  //   PHONE_ABSENT       the last phone left the lobby
+  //   PAIRING_ACTIVE     phone tapped Accept — data plane open
+  //   PAIRING_DECLINED   phone tapped Decline — back to lobby
+  //   PAIRING_TIMEOUT    30s TTL elapsed with no answer
+  //   PAIRING_REJECTED   relay refused the request (already_active, …)
+  //   PAIRING_TERMINATED active pair torn down by peer / socket close
+  | 'LOBBY_STATUS'
+  | 'PHONE_PRESENT'
+  | 'PHONE_ABSENT'
+  | 'PAIRING_ACTIVE'
+  | 'PAIRING_DECLINED'
+  | 'PAIRING_TIMEOUT'
+  | 'PAIRING_REJECTED'
+  | 'PAIRING_TERMINATED';
 
 // Message types to phone
 export type PhoneCommandType =

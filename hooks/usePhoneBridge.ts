@@ -10,23 +10,23 @@ import type {
   CallLogEntry
 } from './phoneTypes';
 import { findContactByNumber } from '@/lib/normalizeNumber';
+import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 
-const RECONNECT_DELAY = 3000;
-const PHONE_URL_KEY = 'dnkdialer_phone_url';
 const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
-// Distinct from HAS_SYNCED_KEY: set the FIRST time a pair completes (regardless
-// of whether the user ran a sync). Drives the "auto-open Full Sync popup on
-// first phone connect" UX — once set, future pairings stay quiet so the user
-// can decide when to sync. Reset on Sign Out (see components/ProfileMenu.tsx
-// handleSignOut, dispatch #7 2026-05-22) because Sign Out is the deliberate
-// identity-boundary event where a fresh first-pair experience is correct.
-// NOT reset on disconnect or tab close — those may be temporary, and a
-// re-pair within the same login should stay quiet. Brief WS hiccups never
-// reset it either; the user has to explicitly Sign Out (or clear browser
-// storage) to re-arm the auto-open. ALSO mirrored in hard-coded string form
-// in ProfileMenu's removeItem call — if you rename this constant, search
-// the repo for the literal 'dnkdialer_first_pair_done' too.
-const FIRST_PAIR_KEY = 'dnkdialer_first_pair_done';
+// Defensive client-side TTL for a pending pair request. The relay enforces a
+// 30 s TTL too; this is a belt-and-braces fallback so a lost PAIRING_TIMEOUT
+// frame doesn't strand the UI in 'requesting' forever.
+const PAIRING_REQUEST_TTL_MS = 30_000;
+// How long PAIRING_DECLINED / PAIRING_TIMEOUT / PAIRING_REJECTED stays on
+// screen before auto-clearing back to 'lobby' so the Connect button is live
+// again. Long enough for the user to read the copy, short enough to not
+// require an explicit dismiss.
+const TRANSIENT_REASON_CLEAR_MS = 4000;
+// Distinct from HAS_SYNCED_KEY: legacy FIRST_PAIR_KEY removed in dispatch #32
+// (2026-05-25). The first-pair Full Sync auto-open behaviour is dropped because
+// the Connect+Accept flow already gives the user a clear "you just paired"
+// moment — a surprise modal on top of an explicit accept gesture is noise.
+// Users open Full Sync from /app/settings instead.
 // Path-based relay (dispatch #26, 2026-05-24).
 //
 // The relay is mounted on the SAME http server as Next.js at /relay, so we
@@ -140,25 +140,14 @@ export function usePhoneBridge() {
   // commented out (kept as documentation of past behavior) or replaced with
   // console.warn so the dev console still shows what's happening.
 
-  // Accept-on-phone flow state. The phone now raises a notification on every
-  // incoming WS connection asking the user to Accept / Decline. Between the
-  // moment we send CONNECT_TO and the moment the user taps Accept, the
-  // relay's outbound WS is open but the phone has not yet committed to the
-  // session — so we surface a distinct "waiting for phone to accept" state
-  // instead of the misleading green Connected pill or a generic "Connecting".
-  //
-  // States:
-  //   isAwaitingPhoneAccept = true   → relay broadcast STATUS:{awaitingAccept:true}
-  //                                    (phone showing Accept/Decline notif)
-  //   phoneAcceptDeclined   = true   → relay broadcast STATUS:{declined:true}
-  //                                    (user tapped Decline, or 30s auto-decline)
-  //
-  // Both clear automatically on the next STATUS:{connected:true} or on
-  // disconnect(). The webapp also runs its own 30s defensive timeout so a
-  // wedged phone (e.g. APK crashed mid-prompt) can't leave us stuck forever.
-  const [isAwaitingPhoneAccept, setIsAwaitingPhoneAccept] = useState<boolean>(false);
-  const [phoneAcceptDeclined, setPhoneAcceptDeclined] = useState<boolean>(false);
-  const awaitingAcceptTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Dispatch #32 (2026-05-25, Connect+Accept pivot): the old Accept-on-phone
+  // state (isAwaitingPhoneAccept / phoneAcceptDeclined / awaitingAcceptTimeoutRef)
+  // is replaced by the full lobby state machine declared further down
+  // (lobbyState, phonePresentInLobby, lastBrowserRequest, pairingTimerRef,
+  // transientClearTimerRef). The lobby model subsumes the old "awaiting
+  // accept" / "declined" states as discrete LobbyState values, plus adds
+  // 'lobby', 'requesting', 'timeout', and 'rejected' so the UI can render
+  // every transition explicitly. See lib/lobbyState.ts for the spec.
 
   // Sync progress UI state — shown during a manual sync, dismissed by user / auto.
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
@@ -178,15 +167,40 @@ export function usePhoneBridge() {
     callLogs: number;
   } | null>(null);
 
-  // Discovered phone IP from inbound QR connection — set when the phone connects
-  // via QR scan and the relay includes its LAN IP in the STATUS broadcast.
-  // The web app uses this to pre-fill the IP input so the user can manually confirm
-  // the connection instead of auto-connecting.
-  const [discoveredPhoneIp, setDiscoveredPhoneIp] = useState<string | null>(null);
+  // Dispatch #32 (2026-05-25): discoveredPhoneIp + phoneScanState + scannedPhoneIp
+  // REMOVED. After the SaaS pivot the phone signs into the same account as the
+  // browser and joins the relay room over WSS — there is no LAN IP to discover,
+  // no /24 subnet to scan. The whole "manual IP" / "scan for phone" UX is gone,
+  // and the data backing it goes with it.
 
-  // Phone scan state — driven by SCAN_STATUS messages from the relay.
-  const [phoneScanState, setPhoneScanState] = useState<'idle'|'scanning'|'found'|'not_found'>('idle');
-  const [scannedPhoneIp, setScannedPhoneIp] = useState<string | null>(null);
+  // Lobby / Connect+Accept state (dispatch #32, 2026-05-25). See lib/lobbyState.ts.
+  // Drives the entire pairing-handshake UI surface. Default 'lobby' once the
+  // relay WS opens; flips through 'requesting' → 'active' on the happy path,
+  // or 'declined' / 'timeout' / 'rejected' on the unhappy paths (each of which
+  // auto-clears back to 'lobby' after TRANSIENT_REASON_CLEAR_MS).
+  const [lobbyState, setLobbyState] = useState<LobbyState>('lobby');
+  // True when at least one PHONE is in our lobby (relay told us so via
+  // LOBBY_STATUS or PHONE_PRESENT). Gates the Connect button — without a
+  // phone in the lobby there is nothing to pair with.
+  const [phonePresentInLobby, setPhonePresentInLobby] = useState<boolean>(false);
+  // Snapshot of the most recent BROWSER_REQUEST_PAIRING we sent. UI uses
+  // `expiresAt` to render a countdown while in 'requesting', and `reason` to
+  // render the rejected-state copy. Set to null whenever lobbyState transitions
+  // back to 'lobby' or 'active'.
+  const [lastBrowserRequest, setLastBrowserRequest] = useState<{
+    ua: string;
+    ip: string;
+    expiresAt: number;
+    reason?: LobbyRejectedReason;
+  } | null>(null);
+  // Defensive 30 s timer that flips 'requesting' → 'timeout' if the relay
+  // never sends PAIRING_TIMEOUT (e.g. relay restart mid-handshake). Cleared
+  // on every state transition out of 'requesting'.
+  const pairingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Auto-clear timer that returns the lobby to 'lobby' after a transient
+  // 'declined' / 'timeout' / 'rejected'. Held in a ref so a rapid second
+  // failure cancels the previous clear before scheduling a new one.
+  const transientClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Missed-call tracking. lastCallWasAnsweredRef flips true on CALL_ANSWERED and
   // is consulted on CALL_ENDED — if an incoming call ends without ever being
@@ -226,11 +240,13 @@ export function usePhoneBridge() {
     | { type: 'remove'; key: string }
   >>([]);
 
-  // WebSocket ref
+  // WebSocket ref. Dispatch #32 (2026-05-25): reconnectTimeoutRef and
+  // phoneUrlRef are GONE. There is no auto-reconnect anymore — if the relay
+  // WS dies the user must click Connect again (a page refresh re-opens the
+  // socket through the mount effect). There is no IP-based phone URL because
+  // the phone connects directly to the relay over WSS via its own sign-in.
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // callTimerRef removed — duration is computed locally in display components
-  const phoneUrlRef = useRef<string | null>(null);
 
   // Dispatch #28 (2026-05-24): the user's phoneToken, fetched once on mount
   // from /api/auth/me. Held in a ref so the stable connect/connectPhone
@@ -440,17 +456,177 @@ export function usePhoneBridge() {
     };
 
     switch (type) {
-      case 'SCAN_STATUS':
-        if (payload.scanning) {
-          setPhoneScanState('scanning');
-        } else if (payload.found && payload.phoneIp) {
-          setPhoneScanState('found');
-          setScannedPhoneIp(payload.phoneIp);
-        } else {
-          setPhoneScanState('not_found');
-          setScannedPhoneIp(null);
+      // ---------- Lobby / Connect+Accept control plane ----------
+      // Dispatch #32 (2026-05-25). The relay sends these BEFORE any data
+      // plane is opened. All transitions to/from 'active' are gated through
+      // here — there is no other path to flip lobbyState (e.g. nothing
+      // implicit on STATUS:connected anymore).
+
+      case 'LOBBY_STATUS': {
+        // Initial snapshot the relay sends on lobby join. For a browser:
+        //   { phonePresent: boolean, alreadyActive: boolean }
+        // alreadyActive=true means a prior session in this account is
+        // still active in another tab — the user should normally not see
+        // this state but if they do, the Connect button stays gated until
+        // the other tab leaves.
+        if (typeof payload.phonePresent === 'boolean') {
+          setPhonePresentInLobby(payload.phonePresent);
+        }
+        // alreadyActive is intentionally NOT mapped to a separate UI flag —
+        // a request kicked off in that state will get PAIRING_REJECTED:
+        // {reason:'already_active'} from the relay, which is the canonical
+        // path that drives the rejected UI.
+        break;
+      }
+
+      case 'PHONE_PRESENT':
+        setPhonePresentInLobby(true);
+        break;
+
+      case 'PHONE_ABSENT':
+        setPhonePresentInLobby(false);
+        break;
+
+      case 'PAIRING_ACTIVE': {
+        // Phone accepted (or relay confirmed). Move to active, clear the
+        // defensive timer, kick the initial data fetch. Payload from relay:
+        //   browser side: { deviceName }
+        //   phone side:   { ua, ip }   ← we never see this in the browser.
+        if (pairingTimerRef.current) {
+          clearTimeout(pairingTimerRef.current);
+          pairingTimerRef.current = null;
+        }
+        if (transientClearTimerRef.current) {
+          clearTimeout(transientClearTimerRef.current);
+          transientClearTimerRef.current = null;
+        }
+        setLobbyState('active');
+        setLastBrowserRequest(null);
+        setIsConnected(true);
+        setIsPhoneStale(false);
+        lastPongAtRef.current = Date.now();
+        if (typeof payload.deviceName === 'string' && payload.deviceName) {
+          setPhoneName(payload.deviceName);
+        }
+        setConnectionError(null);
+
+        // Kick the initial data catch-up (previously fired off
+        // STATUS:connected:true). Wrapped in the same dedup guard so any
+        // duplicate PAIRING_ACTIVE during a reconnect race fires only one
+        // sync. 6-hour catch-up matches the prior behaviour.
+        if (!quickSyncScheduledRef.current) {
+          quickSyncScheduledRef.current = true;
+          setTimeout(() => {
+            quickSyncScheduledRef.current = false;
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              const since6h = Date.now() - 6 * 60 * 60 * 1000;
+              wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
+              setTimeout(() => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since6h })}`);
+                }
+              }, 300);
+            }
+          }, 2000);
+        }
+        if (!estimateRequestedRef.current && syncEstimate === null) {
+          estimateRequestedRef.current = true;
+          setTimeout(() => {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send('GET_SYNC_ESTIMATE:{}');
+            }
+          }, 800);
         }
         break;
+      }
+
+      case 'PAIRING_DECLINED': {
+        if (pairingTimerRef.current) {
+          clearTimeout(pairingTimerRef.current);
+          pairingTimerRef.current = null;
+        }
+        setLobbyState('declined');
+        // Auto-clear back to lobby so the Connect button is live again.
+        if (transientClearTimerRef.current) clearTimeout(transientClearTimerRef.current);
+        transientClearTimerRef.current = setTimeout(() => {
+          setLobbyState('lobby');
+          setLastBrowserRequest(null);
+          transientClearTimerRef.current = null;
+        }, TRANSIENT_REASON_CLEAR_MS);
+        break;
+      }
+
+      case 'PAIRING_TIMEOUT': {
+        if (pairingTimerRef.current) {
+          clearTimeout(pairingTimerRef.current);
+          pairingTimerRef.current = null;
+        }
+        setLobbyState('timeout');
+        if (transientClearTimerRef.current) clearTimeout(transientClearTimerRef.current);
+        transientClearTimerRef.current = setTimeout(() => {
+          setLobbyState('lobby');
+          setLastBrowserRequest(null);
+          transientClearTimerRef.current = null;
+        }, TRANSIENT_REASON_CLEAR_MS);
+        break;
+      }
+
+      case 'PAIRING_REJECTED': {
+        // Relay refused (room already_active, already_pending). The reason
+        // is part of the payload; map to LobbyRejectedReason or fall back
+        // to 'unknown' so the UI never crashes on a future reason code.
+        if (pairingTimerRef.current) {
+          clearTimeout(pairingTimerRef.current);
+          pairingTimerRef.current = null;
+        }
+        const rawReason = payload?.reason;
+        const reason: LobbyRejectedReason =
+          rawReason === 'already_active' || rawReason === 'already_pending'
+            ? rawReason
+            : 'unknown';
+        setLobbyState('rejected');
+        setLastBrowserRequest((prev) =>
+          prev ? { ...prev, reason } : { ua: 'unknown', ip: 'unknown', expiresAt: 0, reason }
+        );
+        if (transientClearTimerRef.current) clearTimeout(transientClearTimerRef.current);
+        transientClearTimerRef.current = setTimeout(() => {
+          setLobbyState('lobby');
+          setLastBrowserRequest(null);
+          transientClearTimerRef.current = null;
+        }, TRANSIENT_REASON_CLEAR_MS);
+        break;
+      }
+
+      case 'PAIRING_TERMINATED': {
+        // Active pair torn down by peer / socket close / explicit LEAVE_ACTIVE.
+        // Reset to lobby and wipe data caches — same shape as the old
+        // disconnect path so downstream views (contacts, messages, calls)
+        // don't render stale data while waiting for a new pair.
+        if (pairingTimerRef.current) {
+          clearTimeout(pairingTimerRef.current);
+          pairingTimerRef.current = null;
+        }
+        if (transientClearTimerRef.current) {
+          clearTimeout(transientClearTimerRef.current);
+          transientClearTimerRef.current = null;
+        }
+        setLobbyState('lobby');
+        setLastBrowserRequest(null);
+        setIsConnected(false);
+        setIsPhoneStale(false);
+        setPhoneName(null);
+        setShowSyncPanel(false);
+        setSyncEstimate(null);
+        setNotificationPermissionGranted(null);
+        setPhoneNotifications([]);
+        estimateRequestedRef.current = false;
+        quickSyncScheduledRef.current = false;
+        setCurrentCall(null);
+        setContacts([]);
+        setMessages([]);
+        setCallLogs([]);
+        break;
+      }
 
       case 'DEVICE_INFO':
         setPhoneName(payload.deviceName || null);
@@ -486,155 +662,14 @@ export function usePhoneBridge() {
       }
 
       case 'STATUS':
-        // Dispatch #27: setIsRelayOffline removed — state no longer tracked.
-
-        // Accept-on-phone signals. The relay forwards these BEFORE the
-        // standard connected:true to distinguish "phone is prompting user"
-        // from "phone is paired". Order of handling matters — awaitingAccept
-        // can arrive standalone, and declined arrives instead of connected.
-        if (payload.awaitingAccept === true) {
-          console.log('[PhoneBridge] Phone showing Accept/Decline prompt — waiting for user');
-          setIsAwaitingPhoneAccept(true);
-          setPhoneAcceptDeclined(false);
-          setConnectionError(null);
-          // Defensive client-side timeout — mirror the phone's 30s
-          // auto-decline so a wedged APK (no broadcast came back) doesn't
-          // leave the UI spinning forever. Slightly longer than the phone
-          // side (35s) so a borderline-on-time Accept still wins.
-          if (awaitingAcceptTimeoutRef.current) {
-            clearTimeout(awaitingAcceptTimeoutRef.current);
-          }
-          awaitingAcceptTimeoutRef.current = setTimeout(() => {
-            console.warn('[PhoneBridge] Awaiting-accept timed out — phone unresponsive');
-            setIsAwaitingPhoneAccept(false);
-            setConnectionError('Connection timed out — is your phone awake?');
-          }, 35_000);
-          break;
-        }
-        if (payload.declined === true) {
-          console.log('[PhoneBridge] Phone declined the connection');
-          setIsAwaitingPhoneAccept(false);
-          setPhoneAcceptDeclined(true);
-          setIsConnected(false);
-          setConnectionError('Phone declined the connection.');
-          if (awaitingAcceptTimeoutRef.current) {
-            clearTimeout(awaitingAcceptTimeoutRef.current);
-            awaitingAcceptTimeoutRef.current = null;
-          }
-          break;
-        }
-
-        if (payload.connected === true) {
-          // Clear any pending Accept/Decline state — the phone confirmed.
-          setIsAwaitingPhoneAccept(false);
-          setPhoneAcceptDeclined(false);
-          if (awaitingAcceptTimeoutRef.current) {
-            clearTimeout(awaitingAcceptTimeoutRef.current);
-            awaitingAcceptTimeoutRef.current = null;
-          }
-          if (payload.phoneIp) {
-            // Inbound QR connection — relay discovered the phone's LAN IP.
-            // Don't auto-connect: surface the IP so the user can confirm manually.
-            // isConnected stays false until the user clicks Connect and the outbound
-            // path (CONNECT_TO) establishes the full data connection.
-            setDiscoveredPhoneIp(payload.phoneIp);
-            setConnectionError(null);
-            // Keep phoneName if the DEVICE_INFO broadcast already set it
-            if (payload.deviceName) {
-              setPhoneName(payload.deviceName);
-            }
-          } else {
-            // Outbound connection (CONNECT_TO) — full auto-connect path.
-            console.log(`[PhoneBridge] Phone paired in room. Device=${payload.deviceName ?? '<unknown>'}`);
-            setDiscoveredPhoneIp(null); // clear any prior QR-discovered IP
-            setIsConnected(true);
-            setIsPhoneStale(false); // fresh pairing — wipe any prior stale flag
-            lastPongAtRef.current = Date.now(); // baseline for the 30s stale check
-            setPhoneName(prev => payload.deviceName ?? prev);
-            setConnectionError(null);
-
-            // First-pair auto-open of Full Sync popup (2026-05-22). When the
-            // FIRST_PAIR_KEY flag is absent, this is the user's first successful
-            // pairing — surface the Full Sync panel so they can either run a
-            // sync immediately or dismiss with X. Flag is set permanently so
-            // subsequent reconnects stay quiet; they can still launch Full Sync
-            // manually from /app/settings.
-            //
-            // Wrapped in try/catch because localStorage can throw in private
-            // browsing mode. Falling back to "don't auto-open" is the safe
-            // behaviour — better than a 401 dev tools loop.
-            try {
-              if (!localStorage.getItem(FIRST_PAIR_KEY)) {
-                localStorage.setItem(FIRST_PAIR_KEY, String(Date.now()));
-                // Defer one tick so isConnected has propagated to downstream
-                // panel-mount guards before we ask the panel to open.
-                setTimeout(() => setShowSyncPanel(true), 50);
-              }
-            } catch { /* localStorage unavailable — skip auto-open */ }
-
-            // On every connect (first or reconnect): kick off a silent quick catch-up
-            // after 2s. Widened from 30 min → 6 hours so brief overnight reconnects
-            // still pick up missed activity. The user can also trigger Full Sync or
-            // Quick Resync manually from /app/settings.
-            //
-            // Guard: relay sends STATUS:connected twice (open + DEVICE_INFO),
-            // so only schedule one sync per connection event.
-            if (!quickSyncScheduledRef.current) {
-              quickSyncScheduledRef.current = true;
-              setTimeout(() => {
-                quickSyncScheduledRef.current = false;
-                if (wsRef.current?.readyState === WebSocket.OPEN) {
-                  const since6h = Date.now() - 6 * 60 * 60 * 1000;
-                  wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
-                  setTimeout(() => {
-                    if (wsRef.current?.readyState === WebSocket.OPEN) {
-                      wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since6h })}`);
-                    }
-                  }, 300);
-                }
-              }, 2000);
-            }
-            // Fire estimate in background (non-blocking) — updates contact total
-            // in the panel if/when it arrives. Double-guarded so it only fires once.
-            if (!estimateRequestedRef.current && syncEstimate === null) {
-              estimateRequestedRef.current = true;
-              setTimeout(() => {
-                if (wsRef.current?.readyState === WebSocket.OPEN) {
-                  wsRef.current.send('GET_SYNC_ESTIMATE:{}');
-                }
-              }, 800);
-            }
-          }
-        } else {
-          // Phone disconnected (relay hiccup or phone reboot).
-          // Do NOT clear HAS_SYNCED_KEY here — brief disconnects should not
-          // re-show the sync panel. Only explicit user disconnect() clears it.
-          //
-          // Diagnostic: if the relay WS is still open but we just got STATUS:false,
-          // the most common cause is the phone never made it into THIS browser's
-          // room — i.e. the APK's WSS URL has a stale or wrong token. Log a hint
-          // so the user can self-diagnose from DevTools console without us having
-          // to ask them to dig through server logs.
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            console.warn(
-              '[PhoneBridge] Phone NOT present in room — likely token mismatch ' +
-              'or phone not connected. Verify APK URL matches /app/settings WSS URL.'
-            );
-          }
-          estimateRequestedRef.current = false;
-          quickSyncScheduledRef.current = false;
-          setIsConnected(false);
-          setIsPhoneStale(false); // reset — staleness only applies while we believe we're connected
-          setPhoneName(null);
-          setConnectionError('Phone not connected — scan QR code on your phone');
-          setShowSyncPanel(false);
-          setSyncEstimate(null);
-          setNotificationPermissionGranted(null);
-          setPhoneNotifications([]);
-          // Don't clear discoveredPhoneIp here — it persists through the brief
-          // STATUS:false that fires when the inbound QR is closed after user clicks
-          // Connect (relay closes inbound, then opens outbound).
-        }
+        // Dispatch #32 (2026-05-25): the STATUS frame is no longer used by the
+        // relay's lobby/active state machine — pair lifecycle is driven by
+        // PAIRING_ACTIVE / PAIRING_DECLINED / PAIRING_TIMEOUT / PAIRING_REJECTED
+        // / PAIRING_TERMINATED. We log incoming STATUS frames (legacy APKs or a
+        // mismatched server during cutover would still send them) and drop the
+        // payload. Do NOT mutate lobbyState / isConnected from here — that would
+        // race with the canonical pairing handlers above.
+        console.warn('[PhoneBridge] Received legacy STATUS frame — ignored. Payload:', payload);
         break;
 
       case 'CALL_INCOMING': {
@@ -1104,77 +1139,48 @@ export function usePhoneBridge() {
     // to the relay). See the loop write-up in the isPhoneStaleRef block.
   }, [startCallTimer, stopCallTimer]);
 
-  // Connect to phone WebSocket
+  // Open the relay WebSocket. Dispatch #32 (2026-05-25): heavily simplified.
+  // The only URL we ever open is the relay /relay endpoint with the user's
+  // phoneToken in the query string. There is NO auto-reconnect — if the
+  // socket dies the user must click Connect (or refresh) to re-open it. The
+  // page-mount effect opens the socket once on initial load; from then on
+  // it stays open for the life of the page.
   const connect = useCallback((url?: string) => {
-    // Clear any pending reconnect
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    // Don't reconnect if already connected
+    // Don't open a duplicate socket if one is already up.
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       console.log('[PhoneBridge] Already connected');
       return;
     }
-
-    // Use provided URL or stored URL
-    const wsUrl = url || phoneUrlRef.current;
-    if (!wsUrl) {
-      console.log('[PhoneBridge] No phone URL available to connect');
+    if (!url) {
+      console.log('[PhoneBridge] connect() called without URL — ignoring');
       return;
     }
 
-    // Track whether this is a relay or direct connection
-    setIsRelayConnection(isRelayUrl(wsUrl));
+    setIsRelayConnection(isRelayUrl(url));
 
     try {
-      console.log('[PhoneBridge] Connecting to:', wsUrl);
-      const ws = new WebSocket(wsUrl);
+      console.log('[PhoneBridge] Connecting to relay:', url);
+      const ws = new WebSocket(url);
 
       ws.onopen = () => {
-        console.log('[PhoneBridge] WebSocket connected, requesting initial data...');
-        setConnectionError(null); // Clear any previous errors
-        // Belt-and-braces: clear stale Accept-flow flags on every fresh WS
-        // open. The STATUS handler clears them too once the relay broadcasts
-        // {connected:true}, but doing it here as well means an in-flight
-        // "phone declined" pill from the previous session can't bleed into
-        // a fresh socket and confuse the user mid-pairing.
-        setIsAwaitingPhoneAccept(false);
-        setPhoneAcceptDeclined(false);
-        if (awaitingAcceptTimeoutRef.current) {
-          clearTimeout(awaitingAcceptTimeoutRef.current);
-          awaitingAcceptTimeoutRef.current = null;
-        }
-        // If we just opened the relay socket, log a sanity line. Dispatch #27
-        // removed the isRelayOffline state — no UI signal needed.
-        if (isRelayUrl(wsUrl)) {
-          // Token sanity log — slice off the first 8 chars of the relay-URL query
-          // string. Dispatch #28 made the token mandatory; the relay closes any
-          // upgrade without a valid token, so a real prod open here always has
-          // a token query param. The follow-up STATUS log tells the user whether
-          // the phone is actually in their room — together these two log lines
-          // let the user self-diagnose a token mismatch from DevTools.
-          const tokenMatch = /[?&]token=([^&]+)/.exec(wsUrl);
-          const tokenSlice = tokenMatch ? `${tokenMatch[1].slice(0, 8)}…` : '<none>';
-          console.log(`[PhoneBridge] Connected to relay. Token=${tokenSlice} Awaiting STATUS to confirm phone present in room.`);
-        }
+        console.log('[PhoneBridge] Relay WebSocket open — entering lobby');
+        setConnectionError(null);
         setIsBridgeConnected(true);
+        // Dispatch #32: lobbyState defaults to 'lobby' immediately on WS
+        // open. The relay's LOBBY_STATUS frame will arrive a moment later
+        // with phonePresent.
+        setLobbyState('lobby');
+        setLastBrowserRequest(null);
+        setPhonePresentInLobby(false);
 
-        // Reset the pong watermark on every successful WS open. Stale value from
-        // before the reconnect would otherwise trip the 30s stale check on the
-        // first tick — the phone hasn't had a chance to send a pong yet.
+        // Reset pong watermark for the 30 s stale check.
         lastPongAtRef.current = Date.now();
         setIsPhoneStale(false);
 
-        // Store URL for future reconnection
-        if (url) {
-          phoneUrlRef.current = url;
-          localStorage.setItem(PHONE_URL_KEY, url);
-        }
-
-        // Data fetch removed from onopen — requests are sent when STATUS:connected=true is received,
-        // ensuring the phone is actually bridged before requesting data.
+        // Token sanity log so a token mismatch is debuggable from DevTools.
+        const tokenMatch = /[?&]token=([^&]+)/.exec(url);
+        const tokenSlice = tokenMatch ? `${tokenMatch[1].slice(0, 8)}…` : '<none>';
+        console.log(`[PhoneBridge] Connected to relay. Token=${tokenSlice}. Awaiting LOBBY_STATUS.`);
       };
 
       ws.onmessage = (event) => {
@@ -1182,82 +1188,38 @@ export function usePhoneBridge() {
       };
 
       ws.onclose = () => {
-        console.log('[PhoneBridge] WebSocket disconnected');
+        console.log('[PhoneBridge] Relay WebSocket closed');
         setIsBridgeConnected(false);
+        // If we were active, downgrade to lobby so the UI doesn't lie about
+        // the data plane being live. We do NOT auto-reconnect — user clicks
+        // Connect (or refreshes) to recover.
+        setLobbyState((prev) => (prev === 'active' ? 'lobby' : prev));
         setIsConnected(false);
         setPhoneName(null);
-        // If the relay WS itself died while we were awaiting Accept, the
-        // pending prompt on the phone is now orphaned anyway — clear the
-        // waiting state so the user doesn't see a stuck "waiting for phone
-        // to accept" alongside any partial state.
-        setIsAwaitingPhoneAccept(false);
-        if (awaitingAcceptTimeoutRef.current) {
-          clearTimeout(awaitingAcceptTimeoutRef.current);
-          awaitingAcceptTimeoutRef.current = null;
+        setPhonePresentInLobby(false);
+        // Cancel any pending pair-request timer — the relay is gone, the
+        // request can never resolve.
+        if (pairingTimerRef.current) {
+          clearTimeout(pairingTimerRef.current);
+          pairingTimerRef.current = null;
         }
-        // Dispatch #27 (2026-05-24, Option 1): the relay drop is no longer a
-        // user-facing error — we silently retry in the background. Surfacing
-        // "Bridge server not running" was misleading: in prod the relay is on
-        // the same origin so a momentary blip is just a reconnect, and during
-        // local dev the relay starts in the same process as Next.js (server.js)
-        // so it's effectively always up. Outbound phone-WS drops still surface
-        // a generic "Connection lost" so the user knows a manual retry may help.
-        if (isRelayUrl(wsUrl)) {
-          console.warn('[PhoneBridge] Relay socket closed — silent retry pending');
-        } else {
-          setConnectionError('Connection lost. Attempting to reconnect...');
+        if (transientClearTimerRef.current) {
+          clearTimeout(transientClearTimerRef.current);
+          transientClearTimerRef.current = null;
         }
-        // Schedule reconnect if we have a URL
-        if (phoneUrlRef.current) {
-          console.log('[PhoneBridge] Scheduling reconnect in', RECONNECT_DELAY, 'ms');
-          reconnectTimeoutRef.current = setTimeout(() => connect(), RECONNECT_DELAY);
-        }
+        console.warn('[PhoneBridge] Relay socket closed — no auto-reconnect. Refresh or click Connect.');
       };
 
       ws.onerror = (error) => {
-        console.error('[PhoneBridge] WebSocket error:', error);
-
-        // Dispatch #27 (2026-05-24): the relay being unreachable is logged but
-        // not surfaced — same rationale as the onclose handler. The onclose
-        // event will fire right after and drive the silent retry loop.
-        if (isRelayUrl(wsUrl)) {
-          console.warn('[PhoneBridge] Relay socket error — silent retry pending');
-          return;
-        }
-
-        // Otherwise this is an outbound/direct phone connection failure.
-        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-          setConnectionError(
-            'Cannot connect to phone. Please check:\n' +
-            '• Both devices are on the same WiFi network\n' +
-            '• ComputerCaller Android app is running\n' +
-            '• Phone IP address is correct\n' +
-            '• Firewall is not blocking port 8765'
-          );
-        } else {
-          setConnectionError('Connection error occurred. Please try reconnecting.');
-        }
+        console.error('[PhoneBridge] Relay WebSocket error:', error);
+        // Per dispatch #27, relay errors are silent — onclose will fire
+        // right after and do the state cleanup.
       };
 
       wsRef.current = ws;
     } catch (error) {
-      console.error('[PhoneBridge] Connection error:', error);
-      // Dispatch #27 (2026-05-24): same silent-retry policy for the synchronous
-      // WebSocket-construction failure path (rare — usually only fires on a
-      // malformed URL). Relay path stays quiet, phone path keeps surfacing.
-      if (isRelayUrl(wsUrl)) {
-        console.warn('[PhoneBridge] Relay socket construction failed — silent retry pending');
-      } else {
-        setConnectionError(
-          'Failed to create connection. Please verify:\n' +
-          '• The phone IP address is valid\n' +
-          '• You are connected to WiFi'
-        );
-      }
-      // Schedule reconnect on error if we have a URL
-      if (phoneUrlRef.current) {
-        reconnectTimeoutRef.current = setTimeout(() => connect(), RECONNECT_DELAY);
-      }
+      console.error('[PhoneBridge] Relay connection error:', error);
+      // No auto-retry — same rationale as onclose.
     }
   }, [handleMessage, isRelayUrl]);
 
@@ -1274,100 +1236,115 @@ export function usePhoneBridge() {
 
   // Public actions
   //
-  // connectPhone — idempotent, clean-slate. Every call ALWAYS starts by
-  // actively closing any prior relay WS handle (not just `if open` — also
-  // CONNECTING, and even CLOSING/CLOSED handles get nulled out so a half-dead
-  // socket can't linger and intercept the next phase). After the close
-  // propagates we open a fresh WS, which causes the relay to see a brand-new
-  // session and the phone to raise a fresh Accept/Decline prompt on the next
-  // CONNECT_TO — that's the "fresh Accept on every connect" discipline.
-  //
-  // Note: we intentionally tear down the relay WS even when the user just
-  // wants to swap phone IP (`urlOrIp` provided). The cost is ~1 round-trip on
-  // re-pair; the benefit is that "zombie" sockets (open in the browser, dead
-  // in the relay's view, or vice-versa) can never persist across a Connect
-  // click — which was the bug class the user kept hitting.
-  const connectPhone = useCallback((urlOrIp?: string) => {
-    // Clear stale Accept-on-phone error states so the retry attempt
-    // starts with a fresh "waiting…" → "accepted/declined" cycle. Without
-    // this, hitting Connect right after a Decline would briefly show
-    // both "declined" and "waiting for phone to accept" at the same time.
-    setPhoneAcceptDeclined(false);
-    setIsAwaitingPhoneAccept(false);
+  // requestPairing — the browser explicitly asks the phone to accept this
+  // session. Gated on `lobbyState === 'lobby' && phonePresentInLobby` (the
+  // UI should already enforce this; the function double-checks). Sends
+  // BROWSER_REQUEST_PAIRING:{ua, ip:'unknown'} — the relay fills in the
+  // real IP from req.socket.remoteAddress and ignores the client value.
+  // Flips lobbyState to 'requesting' and starts a 30 s defensive timer that
+  // promotes to 'timeout' if the relay never answers (lost frame, relay
+  // restart, etc.). The happy-path PAIRING_ACTIVE handler clears the timer
+  // when the phone taps Accept.
+  const requestPairing = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.warn('[PhoneBridge] requestPairing — relay socket not open');
+      return;
+    }
+    if (lobbyState !== 'lobby') {
+      console.warn(`[PhoneBridge] requestPairing rejected — lobbyState=${lobbyState}`);
+      return;
+    }
+    if (!phonePresentInLobby) {
+      console.warn('[PhoneBridge] requestPairing rejected — no phone in lobby');
+      return;
+    }
+
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown';
+    // Client-supplied IP is intentionally always 'unknown' — the relay
+    // overwrites it with req.socket.remoteAddress. We send the field anyway
+    // to keep the protocol shape stable.
+    const payload = { ua, ip: 'unknown' };
+    const expiresAt = Date.now() + PAIRING_REQUEST_TTL_MS;
+    setLastBrowserRequest({ ua, ip: 'unknown', expiresAt });
+    setLobbyState('requesting');
     setConnectionError(null);
-    if (awaitingAcceptTimeoutRef.current) {
-      clearTimeout(awaitingAcceptTimeoutRef.current);
-      awaitingAcceptTimeoutRef.current = null;
-    }
-    // Cancel any pending reconnect from a prior onclose — we are about to
-    // open a new socket explicitly and don't want a stale timer firing on top.
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
 
-    // Hard-close any existing relay handle, regardless of readyState. OPEN
-    // and CONNECTING get an explicit close(1000, 'reconnect'); CLOSING/CLOSED
-    // just get nulled so the new socket isn't shadowed by a dead reference.
-    const existing = wsRef.current;
-    if (existing) {
-      const rs = existing.readyState;
-      if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) {
-        // Best-effort goodbye — relay tears down the outbound phone WS on
-        // either the explicit DISCONNECT_PHONE OR the WS close itself, so
-        // the send is belt-and-braces but won't cause double-teardown.
-        if (rs === WebSocket.OPEN) {
-          try { existing.send('DISCONNECT_PHONE:{}'); } catch { /* socket may have flipped to CLOSING mid-send */ }
-        }
-        try { existing.close(1000, 'reconnect'); } catch { /* safari throws on close while CONNECTING — ignore */ }
+    if (transientClearTimerRef.current) {
+      clearTimeout(transientClearTimerRef.current);
+      transientClearTimerRef.current = null;
+    }
+    if (pairingTimerRef.current) clearTimeout(pairingTimerRef.current);
+    pairingTimerRef.current = setTimeout(() => {
+      // Relay never answered — defensively flip to 'timeout'. The relay's
+      // own 30 s TTL should have already fired PAIRING_TIMEOUT but we
+      // can't depend on a single frame in either direction.
+      console.warn('[PhoneBridge] requestPairing defensive timer fired — flipping to timeout');
+      setLobbyState('timeout');
+      if (transientClearTimerRef.current) clearTimeout(transientClearTimerRef.current);
+      transientClearTimerRef.current = setTimeout(() => {
+        setLobbyState('lobby');
+        setLastBrowserRequest(null);
+        transientClearTimerRef.current = null;
+      }, TRANSIENT_REASON_CLEAR_MS);
+      pairingTimerRef.current = null;
+    }, PAIRING_REQUEST_TTL_MS);
+
+    try {
+      wsRef.current.send(`BROWSER_REQUEST_PAIRING:${JSON.stringify(payload)}`);
+      console.log('[PhoneBridge] BROWSER_REQUEST_PAIRING sent');
+    } catch (e) {
+      console.error('[PhoneBridge] requestPairing send failed:', e);
+    }
+  }, [lobbyState, phonePresentInLobby]);
+
+  // leaveActive — explicit "I'm done with this pairing" from the user. Sends
+  // LEAVE_ACTIVE:{} to the relay so it can broadcast PAIRING_TERMINATED to
+  // the phone and move both sides back into the lobby. Also resets local
+  // data caches synchronously (the PAIRING_TERMINATED echo will do the same
+  // again — idempotent — but acting locally first feels instant to the user).
+  const leaveActive = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN && lobbyState === 'active') {
+      try {
+        wsRef.current.send(`LEAVE_ACTIVE:${JSON.stringify({})}`);
+      } catch (e) {
+        console.warn('[PhoneBridge] leaveActive send failed:', e);
       }
-      wsRef.current = null;
     }
-
-    // Resolve the phone URL we'll ask the relay to dial (only used when an
-    // IP was supplied — bare relay-connect path skips this).
-    let phoneUrl: string | null = null;
-    if (urlOrIp && urlOrIp.trim() !== '') {
-      console.log('[PhoneBridge] connectPhone called with:', urlOrIp);
-      if (urlOrIp.startsWith('ws://') || urlOrIp.startsWith('wss://')) {
-        phoneUrl = urlOrIp;
-      } else if (urlOrIp.includes(':')) {
-        phoneUrl = `ws://${urlOrIp}`;
-      } else {
-        phoneUrl = `ws://${urlOrIp}:8765`;
-      }
-      console.log('[PhoneBridge] Telling relay to connect to phone at:', phoneUrl);
+    setLobbyState('lobby');
+    setLastBrowserRequest(null);
+    setIsConnected(false);
+    setIsPhoneStale(false);
+    setPhoneName(null);
+    setShowSyncPanel(false);
+    setSyncEstimate(null);
+    setNotificationPermissionGranted(null);
+    setPhoneNotifications([]);
+    estimateRequestedRef.current = false;
+    quickSyncScheduledRef.current = false;
+    setCurrentCall(null);
+    setContacts([]);
+    setMessages([]);
+    setCallLogs([]);
+    setSimList([]);
+    setSelectedSimId(null);
+    if (pairingTimerRef.current) {
+      clearTimeout(pairingTimerRef.current);
+      pairingTimerRef.current = null;
     }
-
-    // Small delay so the close above can propagate through the runtime's
-    // socket queue before we open a fresh one — without this, some browsers
-    // race and the new WS inherits the same underlying TCP socket state.
-    setTimeout(() => {
-      // Dispatch #28 (2026-05-24): build the relay URL with the user's
-      // current phoneToken at call-time. If the token hasn't loaded yet
-      // (race between mount and /api/auth/me), the connect call no-ops
-      // via the empty-string check inside connect() — once the token
-      // lands, the on-mount effect will open the relay anyway.
-      connect(deriveRelayUrl(phoneTokenRef.current));
-
-      if (phoneUrl) {
-        // Wait for the new relay WS to reach OPEN, then send CONNECT_TO.
-        // Capped at 5s so a relay that never opens doesn't leave a runaway timer.
-        const savedPhoneUrl = phoneUrl;
-        const checkInterval = setInterval(() => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            clearInterval(checkInterval);
-            wsRef.current.send(`CONNECT_TO:${savedPhoneUrl}`);
-            phoneUrlRef.current = savedPhoneUrl;
-            localStorage.setItem(PHONE_URL_KEY, savedPhoneUrl);
-          }
-        }, 200);
-        setTimeout(() => clearInterval(checkInterval), 5000);
-      }
-    }, 100);
-
-    setIsRelayConnection(true);
-  }, [connect]);
+    if (transientClearTimerRef.current) {
+      clearTimeout(transientClearTimerRef.current);
+      transientClearTimerRef.current = null;
+    }
+    if (appPingIntervalRef.current) {
+      clearInterval(appPingIntervalRef.current);
+      appPingIntervalRef.current = null;
+    }
+    if (callStatusTimeoutRef.current) {
+      clearTimeout(callStatusTimeoutRef.current);
+      callStatusTimeoutRef.current = null;
+    }
+    console.log('[PhoneBridge] leaveActive — back in lobby');
+  }, [lobbyState]);
 
   const makeCall = useCallback((number: string, speaker: boolean = false): boolean => {
     // Check if WebSocket is connected before making call
@@ -1712,41 +1689,11 @@ export function usePhoneBridge() {
 
   const clearMissedCallCount = useCallback(() => setMissedCallCount(0), []);
 
-  /**
-   * Accept the phone's existing QR/inbound relay connection without sending a
-   * CONNECT_TO command. Use this when `discoveredPhoneIp` is set (QR IP
-   * pre-fill flow) — the phone is ALREADY connected via the relay, so firing
-   * CONNECT_TO would create a redundant outbound connection that the relay then
-   * retries indefinitely on disconnect (ECONNREFUSED loop).
-   */
-  const acceptQrConnection = useCallback(() => {
-    setDiscoveredPhoneIp(null);       // clear the pre-fill state
-    // PHONE_URL_KEY is intentionally NOT cleared here (dispatch #8, 2026-05-22).
-    // Previously this path wiped any prior saved manual IP on the grounds that
-    // "QR has no outbound IP to reconnect to". But that destroys convenience
-    // state from earlier manual sessions — the user paired manually yesterday
-    // at 192.168.1.140 (saved), uses QR today, and next time their input row
-    // is blank instead of pre-filled with the IP they'll almost certainly
-    // want again (same phone = same IP in nearly every home/office network).
-    // Saved IP persists across QR accept; only an explicit "Forget saved phone"
-    // action in /app/settings (or a NEW successful connectPhone(url) which
-    // overwrites the saved value) replaces it.
-    // The phone is already connected; STATUS:connected was already received.
-    // The estimate request was already scheduled. Nothing else to do.
-  }, []);
-
-  // Trigger the relay to scan the local subnet for the Android app on port 8765.
-  const scanForPhone = useCallback(() => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    setPhoneScanState('scanning');
-    setScannedPhoneIp(null);
-    wsRef.current.send('SCAN_FOR_PHONE:{}');
-  }, []);
-
-  const clearPhoneScan = useCallback(() => {
-    setPhoneScanState('idle');
-    setScannedPhoneIp(null);
-  }, []);
+  // Dispatch #32 (2026-05-25): acceptQrConnection / scanForPhone / clearPhoneScan
+  // REMOVED. The whole QR / LAN-scan UX is gone — the phone signs into the
+  // account and joins the relay room over WSS. There is no IP to discover,
+  // no subnet to scan, no inbound QR flow to "accept" as a separate
+  // affordance.
 
   /**
    * Ask the phone to open Android's NotificationListener settings screen.
@@ -1832,86 +1779,26 @@ export function usePhoneBridge() {
     []
   );
 
+  // disconnect — legacy public alias. Dispatch #32 (2026-05-25): under the
+  // Connect+Accept model, "disconnect" semantically means "leave the active
+  // pair" — so this delegates to leaveActive(). Kept as a separately-exported
+  // function so existing callers (ConnectionStatus, ProfileMenu.handleSignOut,
+  // any AppShell consumers) keep working without an import rename. New code
+  // should call leaveActive() directly for clarity.
   const disconnect = useCallback(() => {
-    console.log('[PhoneBridge] Manual disconnect — full WS teardown');
-    // Hardened lifecycle: send DISCONNECT_PHONE (best-effort, relay forwards
-    // it to the phone so the LAN-side WS state resets) then close the relay
-    // WS itself with code 1000 + reason 'user_disconnect'. Previously this
-    // kept the relay WS alive to "stay ready for the next phone connection",
-    // but that left a class of zombie-socket bugs where the next Connect
-    // re-used a half-dead session and the phone never raised a fresh
-    // Accept/Decline prompt. Closing the WS forces the relay to drop the
-    // browser-side session entirely — next connectPhone() opens a brand-new
-    // socket and the phone's Accept flow fires from scratch.
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      try { wsRef.current.send('DISCONNECT_PHONE:{}'); } catch { /* socket may have flipped to CLOSING — ignore */ }
-    }
+    console.log('[PhoneBridge] disconnect() — delegating to leaveActive()');
+    leaveActive();
+    // Sign Out callers expect a stronger semantic — they don't just want to
+    // leave the active pair, they want to sever the relay socket entirely so
+    // the next sign-in starts fresh. Honour that by also closing the relay
+    // WS. The mount effect will re-open it on the next pathname change after
+    // the sign-in redirect lands.
     if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-      try { wsRef.current.close(1000, 'user_disconnect'); } catch { /* close() can throw on CONNECTING in some browsers — ignore */ }
+      try { wsRef.current.close(1000, 'user_disconnect'); } catch { /* CONNECTING-state close may throw — ignore */ }
     }
     wsRef.current = null;
-
-    // Cancel any pending auto-reconnect timer from ws.onclose so we don't
-    // immediately re-establish what the user just tore down.
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    phoneUrlRef.current = null;
-    // PHONE_URL_KEY is intentionally NOT cleared on disconnect (dispatch #8,
-    // 2026-05-22). Same-phone reconnect is the overwhelmingly common case —
-    // users have one phone, it gets the same DHCP lease day after day, and
-    // pre-filling the input is one click of value with zero cost. Convenience
-    // state (saved IPs, recent contacts, UI prefs) persists by default; only
-    // ACTIVE-connection state (phoneUrlRef in-memory, HAS_SYNCED_KEY for the
-    // sync-completion gate, the WS itself) is cleared on disconnect. The
-    // "Forget saved phone" button in /app/settings is the escape hatch when
-    // the user genuinely wants a fresh start (different phone, sold device,
-    // testing pairing flow). A successful connectPhone(url) to a NEW IP also
-    // overwrites the saved value at line ~1079, so swapping phones is
-    // self-healing — no explicit clear needed for that flow either.
-    estimateRequestedRef.current = false;
-    quickSyncScheduledRef.current = false;
     localStorage.removeItem(HAS_SYNCED_KEY);
-    // Clear Accept-on-phone state — a fresh Connect should start clean,
-    // and any in-flight client-side awaiting-accept timeout should not
-    // fire after the user explicitly disconnected.
-    setIsAwaitingPhoneAccept(false);
-    setPhoneAcceptDeclined(false);
-    if (awaitingAcceptTimeoutRef.current) {
-      clearTimeout(awaitingAcceptTimeoutRef.current);
-      awaitingAcceptTimeoutRef.current = null;
-    }
-    // Clear the call-heartbeat watchdog so a stale Runnable can't fire after
-    // the user manually disconnected.
-    if (callStatusTimeoutRef.current) {
-      clearTimeout(callStatusTimeoutRef.current);
-      callStatusTimeoutRef.current = null;
-    }
-    // Stop sending APP_PING and clear stale flag. The mount effect re-arms the
-    // interval automatically the next time isConnected flips true.
-    if (appPingIntervalRef.current) {
-      clearInterval(appPingIntervalRef.current);
-      appPingIntervalRef.current = null;
-    }
-    setIsPhoneStale(false);
-    setConnectionError(null);
-    setSyncEstimate(null);
-    setDiscoveredPhoneIp(null);
-    setNotificationPermissionGranted(null);
-    // Reset SIM picker — next phone will re-broadcast SIM_LIST on HELLO.
-    setSimList([]);
-    setSelectedSimId(null);
-    setPhoneNotifications([]);
-    setIsConnected(false);
-    setIsBridgeConnected(false);
-    setCurrentCall(null);
-    setPhoneName(null);
-    setContacts([]);
-    setMessages([]);
-    setCallLogs([]);
-  }, []);
+  }, [leaveActive]);
 
   // Connect on mount — connect to relay only.
   // Mirror `contacts` state into a ref so the CALL_INCOMING / CALL_LOG_ENTRY
@@ -1993,22 +1880,13 @@ export function usePhoneBridge() {
     connect(deriveRelayUrl(phoneTokenState));
 
     // Page-unload teardown. Fires on F5 / Ctrl+R, tab close, browser close,
-    // and same-tab navigation away. We do BOTH a best-effort
-    // DISCONNECT_PHONE send AND an explicit close(1000) so the relay sees
-    // the session terminate cleanly — its websocket close handler then
-    // tears down the outbound phone WS and forces a fresh Accept prompt
-    // on the next pairing. Without the explicit close(), browsers may
-    // hold the socket open for several seconds during the unload,
-    // creating a "zombie" window where the relay still thinks we're
-    // around. Local React state is reset too — strictly redundant on
-    // unmount but cheap insurance in case the page comes back via
-    // bfcache (Safari, modern Chrome) and the hook is re-entered without
-    // a full mount.
+    // and same-tab navigation away. Dispatch #32 (2026-05-25): under the
+    // Connect+Accept model, an active pair is torn down by the relay's WS
+    // 'close' handler — there is no DISCONNECT_PHONE frame to send. We just
+    // close the relay WS cleanly with code 1000; the relay's close handler
+    // calls terminateActivePair() if this socket was in active.browser.
     const handleBeforeUnload = () => {
-      console.log('[PhoneBridge] beforeunload — tearing down relay WS');
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        try { wsRef.current.send('DISCONNECT_PHONE:{}'); } catch { /* unload-window send may race — ignore */ }
-      }
+      console.log('[PhoneBridge] beforeunload — closing relay WS');
       if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
         try { wsRef.current.close(1000, 'page_unload'); } catch { /* CONNECTING-state close throws in some browsers — ignore */ }
       }
@@ -2016,8 +1894,8 @@ export function usePhoneBridge() {
       setIsConnected(false);
       setIsBridgeConnected(false);
       setCurrentCall(null);
-      setIsAwaitingPhoneAccept(false);
-      setPhoneAcceptDeclined(false);
+      setLobbyState('lobby');
+      setLastBrowserRequest(null);
     };
     // pagehide covers the bfcache case where beforeunload doesn't fire
     // (iOS Safari, modern Chrome with back/forward cache). Registering
@@ -2027,17 +1905,13 @@ export function usePhoneBridge() {
     window.addEventListener('pagehide', handleBeforeUnload);
 
     return () => {
-      console.log('[PhoneBridge] Cleaning up — disconnecting phone on page unload');
+      console.log('[PhoneBridge] Cleaning up — closing relay WS on unmount');
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handleBeforeUnload);
-      // Disconnect the phone from the relay so a page refresh always returns
-      // to the "disconnected" state. The saved phone URL stays in localStorage
-      // so the user can reconnect in one click without re-scanning the QR.
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        try { wsRef.current.send('DISCONNECT_PHONE:{}'); } catch { /* socket race — ignore */ }
-      }
       if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
       if (callStatusTimeoutRef.current) clearTimeout(callStatusTimeoutRef.current);
+      if (pairingTimerRef.current) clearTimeout(pairingTimerRef.current);
+      if (transientClearTimerRef.current) clearTimeout(transientClearTimerRef.current);
       if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
         try { wsRef.current.close(1000, 'unmount'); } catch { /* ignore */ }
       }
@@ -2143,11 +2017,11 @@ export function usePhoneBridge() {
     // "Phone: waiting…" state instead of the misleading green pill.
     isPhoneStale,
 
-    // Accept-on-phone flow (security prompt on every connection). UI uses
-    // these to render the "waiting for phone to accept" pill and the
-    // "phone declined" error state with an actionable retry button.
-    isAwaitingPhoneAccept,
-    phoneAcceptDeclined,
+    // Lobby / Connect+Accept state (dispatch #32, 2026-05-25). Pixel renders
+    // the entire pair-handshake UI off these fields. See lib/lobbyState.ts.
+    lobbyState,
+    phonePresentInLobby,
+    lastBrowserRequest,
 
     // Sync state
     syncProgress,
@@ -2164,7 +2038,10 @@ export function usePhoneBridge() {
     clearMissedCallCount,
 
     // Actions
-    connectPhone,
+    requestPairing,
+    leaveActive,
+    // `disconnect` is preserved as a backward-compat alias for ConnectionStatus /
+    // ProfileMenu.handleSignOut. New code should call leaveActive() directly.
     disconnect,
     makeCall,
     setSpeaker,
@@ -2182,12 +2059,6 @@ export function usePhoneBridge() {
     dismissSyncPanel,
     openSyncPanel,
     quickSync,
-    discoveredPhoneIp,
-    acceptQrConnection,
-    phoneScanState,
-    scannedPhoneIp,
-    scanForPhone,
-    clearPhoneScan,
 
     // Notification-listener permission (RCS / Google Messages sync gate)
     notificationPermissionGranted,
