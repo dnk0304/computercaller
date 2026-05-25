@@ -41,7 +41,14 @@ android {
         // ripped out; replaced with simple 5s lobby-only reconnect.
         // Permissions UI redesigned as live checklist (all permissions
         // visible with status icons) instead of missing-only list.
-        versionCode = 18
+        // Status-display fix (2026-05-25): 18 → 19. Post-Accept the
+        // in-activity status line was stuck on "Lobby — waiting for
+        // browser to connect" because updateStatus() was gated on a
+        // browserCount field the relay no longer populates (BROWSER_STATUS
+        // was replaced by PAIRING_ACTIVE/PAIRING_TERMINATED in v18). New
+        // isPairActive flag on PhoneService tracks the lifecycle and the
+        // status line now picks the right copy.
+        versionCode = 19
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

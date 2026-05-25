@@ -640,30 +640,40 @@ class MainActivity : AppCompatActivity() {
         if (serviceBound && phoneService != null) {
             val status = phoneService?.getServerStatus() ?: "Service not running"
 
-            // Browser-presence overlay (false-connection fix). The relay
-            // socket being open does NOT mean a real browser is paired —
-            // the relay pushes BROWSER_STATUS with the live count, and
-            // PhoneService caches it. When we're connected to the relay
-            // but no browser is actually on the other end, fall back to
-            // the "Waiting for browser" copy rather than claiming the
-            // pairing is live. Polled on every 2 s status tick.
-            val browserCount = phoneService?.getBrowserCount() ?: 0
+            // v19 — Connect+Accept pivot status display.
+            //
+            // Relay-socket OPEN (`status.contains("Connected to relay")`)
+            // does NOT mean a browser is actually paired with us. The
+            // socket can be open while we're still in the LOBBY waiting
+            // for the user to Accept a pairing request.
+            //
+            // PhoneService now tracks an explicit `isPairActive` flag that
+            // flips on PAIRING_ACTIVE (relay confirms the pair crossed
+            // into the active room) and clears on PAIRING_TERMINATED /
+            // socket close / user disconnect. We read it here and use it
+            // as the source of truth for the status copy.
+            //
+            // The legacy `browserCount` field is kept on PhoneService as
+            // a dead-code path in case the relay protocol changes back,
+            // but the relay no longer emits BROWSER_STATUS — so we no
+            // longer read it here. (Removing the field would risk a
+            // wider blast radius; the flag-based approach lets us land
+            // a tight UX fix without touching the protocol.)
+            val pairActive = phoneService?.getIsPairActive() ?: false
 
             val (text, conn) = when {
-                // v18 — relay socket is OPEN but no active pair. The phone
-                // is sitting in the LOBBY waiting for a browser to send
-                // a pairing request that the user must Accept. New copy
-                // makes the gesture-required nature explicit (vs the
-                // ambiguous pre-v18 "Waiting for browser").
-                status.contains("Connected to relay") && browserCount == 0 ->
+                // Relay open + active pair → the actual "Connected" state.
+                // Pre-v19 this branch was gated on browserCount which the
+                // relay no longer populates, so the UI never reached it
+                // even after a successful Accept. Now it's wired to the
+                // PAIRING_ACTIVE/PAIRING_TERMINATED lifecycle directly.
+                status.contains("Connected to relay") && pairActive ->
+                    getString(R.string.status_clients_connected_one) to ConnState.LIVE
+                // Relay open + no active pair → LOBBY. Phone is sitting
+                // waiting for a browser to send a pairing request that
+                // the user must Accept.
+                status.contains("Connected to relay") ->
                     getString(R.string.pair_lobby_status) to ConnState.WAITING
-                status.contains("Connected to relay") -> {
-                    val copy = if (browserCount == 1)
-                        getString(R.string.status_clients_connected_one)
-                    else
-                        getString(R.string.status_clients_connected_many, browserCount)
-                    copy to ConnState.LIVE
-                }
                 status.contains("Waiting") ->
                     getString(R.string.pair_lobby_status) to ConnState.WAITING
                 else ->

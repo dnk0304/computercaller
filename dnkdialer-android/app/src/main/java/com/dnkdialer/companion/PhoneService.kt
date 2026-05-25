@@ -344,6 +344,11 @@ class PhoneService : Service() {
      * Default 0 so the UI shows "Waiting for web app" until a real browser
      * actually joins (false-connection fix — relay-socket-open != browser-paired).
      *
+     * v18+ note: the Connect+Accept relay no longer emits BROWSER_STATUS — it
+     * now uses PAIRING_ACTIVE / PAIRING_TERMINATED instead, surfaced via
+     * [isPairActive] below. This field + handler are retained as harmless
+     * dead-code paths in case a future relay revision reinstates the protocol.
+     *
      * MainActivity polls this via getBrowserCount() on its 2 s status loop and
      * swaps the connection label between "Waiting…" and "N web client(s)
      * connected" based on the value.
@@ -352,6 +357,33 @@ class PhoneService : Service() {
 
     /** Public read-only accessor for MainActivity's status polling loop. */
     fun getBrowserCount(): Int = currentBrowserCount
+
+    /**
+     * Connect+Accept pivot (v18+): whether the relay reports an ACTIVE pair
+     * between this phone session and a paired browser. Distinct from the
+     * relay-socket [relayPhase] — the WebSocket can be OPEN while still in
+     * the lobby (no browser has been Accepted yet).
+     *
+     * Lifecycle:
+     *   - true on PAIRING_ACTIVE (relay confirms the pair crossed into the
+     *     active room — either right after our ACCEPT_PAIRING ack, or because
+     *     the relay re-promoted an existing session on reconnect).
+     *   - false on PAIRING_TERMINATED (browser left, relay reaped the room).
+     *   - false on relay WS close (any code) — the active pair cannot
+     *     survive a relay socket teardown; we must re-enter the lobby.
+     *   - false on user-initiated disconnectRelay() — Sign Out clears
+     *     everything including any in-flight pair claim.
+     *   - false on service onCreate (default state).
+     *
+     * MainActivity polls this via [getIsPairActive] on its 2 s status loop
+     * to render "Connected — paired with browser" (true) vs "Lobby — waiting
+     * for browser to connect" (false) on top of the OPEN phase.
+     */
+    @Volatile
+    private var isPairActive: Boolean = false
+
+    /** Public read-only accessor for MainActivity's status polling loop. */
+    fun getIsPairActive(): Boolean = isPairActive
 
     /**
      * Layered speakerphone toggle. On Android 12+ (API 31), the legacy
@@ -1515,6 +1547,12 @@ class PhoneService : Service() {
                     // sent after the socket dies, and leaving a stale
                     // notification visible would mis-lead the user.
                     clearAllPendingPairings("relay socket closed")
+                    // Clear the pair-active flag — the relay is the
+                    // authority on active-pair membership, so any socket
+                    // teardown drops us back to lobby semantics. Without
+                    // this, the in-activity status line would keep
+                    // claiming "Connected" while the WS was dead.
+                    isPairActive = false
                     // Foreground notification back to "Waiting" — the
                     // user is no longer connected to a browser.
                     updateNotification(getString(R.string.status_waiting_for_web))
@@ -1709,6 +1747,11 @@ class PhoneService : Service() {
         // null-check clientRelayUrl, so this cleanly stops the loop.
         clientRelayUrl = null
         isClientConnected = false
+        // User-initiated teardown drops the pair-active claim too. The
+        // onClose callback above will also do this (via the connected=false
+        // branch), but we set it here too so the status flips immediately
+        // for any caller that reads the flag before onClose fires.
+        isPairActive = false
         setRelayPhase(RelayPhase.IDLE)
     }
 
@@ -1873,10 +1916,14 @@ class PhoneService : Service() {
                     // Pair has crossed into the active room — usually
                     // arrives right after ACCEPT_PAIRING was sent (the
                     // relay confirms the room change). Refresh the
-                    // foreground notification to reflect the live state.
+                    // foreground notification to reflect the live state,
+                    // and flip the in-activity status flag so the main
+                    // pane swaps from "Lobby — waiting…" to "Connected"
+                    // on its next 2s polling tick.
                     val ua = (payload?.get("ua") as? String).orEmpty()
                     val ip = (payload?.get("ip") as? String).orEmpty()
                     android.util.Log.d("PhoneService", "PAIRING_ACTIVE ua=$ua ip=$ip")
+                    isPairActive = true
                     updateNotification(getString(R.string.pair_active_notification))
                 }
                 "PAIRING_TERMINATED" -> {
@@ -1885,6 +1932,7 @@ class PhoneService : Service() {
                     // Stay connected to the relay (lobby). Just reset
                     // the foreground notification text — the pair is
                     // over but we're still available for the next one.
+                    isPairActive = false
                     updateNotification(getString(R.string.status_waiting_for_web))
                     // Drop any pending request notifications for this
                     // session — defensive; usually nothing is pending
