@@ -44,7 +44,22 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    // Google-only account guard (dispatch #36, 2026-05-25). passwordHash
+    // is NULL for OAuth-only users. The APK currently has no Google sign-in
+    // path — surface a specific error so the user knows to set a password
+    // (via /auth/forgot-password, once that ships) rather than retrying
+    // with the same Google email + a guessed password forever.
+    if (user && user.passwordHash === null) {
+      return NextResponse.json(
+        {
+          error:
+            'This account uses Google sign-in. Set a password via the web app to sign into the Android app.',
+        },
+        { status: 400 },
+      );
+    }
+
+    if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
       return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 });
     }
 

@@ -12,7 +12,24 @@ export async function POST(req: NextRequest) {
       include: { subscription: true },
     });
 
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    // Google-only account guard (dispatch #36, 2026-05-25).
+    // If a user signed up via Google, passwordHash is NULL. Returning the
+    // generic "Invalid email or password" would be misleading — they HAVE
+    // an account, they just need to use the Google button. Surface a clear
+    // message so they don't get stuck.
+    // We deliberately respond BEFORE the bcrypt.compare so we don't leak
+    // timing info on the password — but this also means we leak the
+    // existence of the email + the fact that it's Google-linked. Acceptable
+    // trade-off: this is a sign-in form, not a recovery flow, and the
+    // alternative (silent generic 401) is a UX dead-end.
+    if (user && user.passwordHash === null) {
+      return NextResponse.json(
+        { error: 'This account uses Google. Sign in with Google.' },
+        { status: 400 },
+      );
+    }
+
+    if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
       return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 });
     }
 

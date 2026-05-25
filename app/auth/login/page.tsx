@@ -6,6 +6,31 @@ import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Check } from 'lucide-react';
 
+// Inline Google "G" logo SVG — avoids a network round-trip + zero new deps.
+// Coloured per Google's 2015 brand identity guidelines for the "G" mark.
+function GoogleGlyph({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 48 48" aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"
+      />
+      <path
+        fill="#34A853"
+        d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M11.69 28.18c-.44-1.32-.69-2.73-.69-4.18s.25-2.86.69-4.18v-5.7H4.34C2.85 17.09 2 20.45 2 24c0 3.55.85 6.91 2.34 9.88l7.35-5.7z"
+      />
+      <path
+        fill="#EA4335"
+        d="M24 9.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 3.18 29.93 1 24 1 15.4 1 7.96 5.93 4.34 13.12l7.35 5.7C13.42 13.62 18.27 9.75 24 9.75z"
+      />
+    </svg>
+  );
+}
+
 // useSearchParams() must be wrapped in <Suspense>; the page-level default export
 // provides that boundary so static export and partial pre-rendering work.
 function LoginForm() {
@@ -18,6 +43,30 @@ function LoginForm() {
 
   const verified = params.get('verified') === '1';
   const next = params.get('next') || '/app';
+  const oauthError = params.get('error');
+
+  // Map Google callback error codes to friendly copy. Anything we don't
+  // recognise falls through to the generic message.
+  const oauthErrorMessage = (() => {
+    switch (oauthError) {
+      case 'google_cancelled':
+        return null; // silent — user clicked Cancel, no need to scold
+      case 'google_email_unverified':
+        return 'Your Google account does not have a verified email. Please verify it with Google and try again.';
+      case 'google_state_mismatch':
+      case 'google_state_invalid':
+        return 'Your Google sign-in session expired. Please try again.';
+      case 'google_missing_params':
+      case 'google_error':
+      case 'google_internal_error':
+        return 'Google sign-in failed. Please try again or use email and password.';
+      default:
+        return null;
+    }
+  })();
+
+  // Build the Google start URL with `next` preserved so deep-links survive.
+  const googleHref = `/api/auth/google/start?next=${encodeURIComponent(next)}`;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -78,6 +127,32 @@ function LoginForm() {
             Email verified. You can sign in now.
           </div>
         )}
+
+        {oauthErrorMessage && (
+          <div
+            role="alert"
+            className="mt-6 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm"
+          >
+            {oauthErrorMessage}
+          </div>
+        )}
+
+        {/* Google sign-in — primary affordance. Anchored as a real <a> so
+            the request goes server-side without JS and the redirect chain
+            is the browser's, not React's. */}
+        <a
+          href={googleHref}
+          className="mt-6 w-full inline-flex items-center justify-center gap-2.5 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium rounded-lg transition-colors text-sm shadow-sm"
+        >
+          <GoogleGlyph />
+          Continue with Google
+        </a>
+
+        <div className="mt-6 flex items-center gap-3 text-xs text-slate-400">
+          <span className="h-px bg-slate-200 flex-1" />
+          <span className="uppercase tracking-wider">or</span>
+          <span className="h-px bg-slate-200 flex-1" />
+        </div>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
           <div>
