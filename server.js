@@ -9,11 +9,11 @@
  *
  * Multi-tenant rooms:
  *   The relay maintains a `rooms` Map keyed by `phoneToken` (User.phoneToken in Prisma).
- *   Browser opens `ws://host:3001?token=<phoneToken>`; phone opens
- *   `ws://host:3001/phone?token=<phoneToken>`. Each room has its own phoneWs, browsers
- *   Set, outbound state, fail counter and device name — completely isolated.
+ *   Browser opens `wss://host/relay?token=<phoneToken>`; phone opens
+ *   `wss://host/relay/phone?token=<phoneToken>`. Each room is completely isolated.
  *   Dispatch #28 (2026-05-24): connections without a valid token are CLOSED with
  *   code 4401. The legacy 'default' room is gone.
+ *   Dispatch #32 (2026-05-25): the auto-pair model is GONE. See startRelay() docblock.
  */
 
 const next = require('next');
@@ -21,7 +21,7 @@ const http = require('http');
 const { parse } = require('url');
 const { WebSocketServer, WebSocket } = require('ws');
 const os = require('os');
-const net = require('net');
+const crypto = require('crypto');
 const { PrismaClient } = require('@prisma/client');
 
 const NEXT_PORT = parseInt(process.env.PORT || '3000', 10);
@@ -54,96 +54,71 @@ const db = new PrismaClient({ log: dev ? ['error'] : [] });
 const RELAY_VERBOSE = process.env.RELAY_VERBOSE === '1';
 const rlog = (...args) => { if (RELAY_VERBOSE) console.log(...args); };
 
-// ---------------------------------------------------------------------------
-// LAN discovery helpers — used by the SCAN_FOR_PHONE relay command so the
-// browser can ask the relay to find the Android app on the local subnet
-// without the user needing to type an IP.
-// ---------------------------------------------------------------------------
+// Pairing-request TTL. The browser sends BROWSER_REQUEST_PAIRING and the
+// phone has this many ms to ACCEPT or DECLINE before we auto-cancel.
+// 30 s mirrors the existing 35 s defensive timeout previously used in the
+// webapp for the old accept-on-connect flow, with 5 s slack for the
+// browser-side fallback timer.
+const PAIRING_TTL_MS = 30_000;
 
 /**
- * Scan a /24 subnet for a specific open TCP port.
- * Returns the first IP found, or null if none respond within timeoutMs.
+ * Relay state machine — Connect+Accept lobby model (dispatch #32, 2026-05-25).
+ *
+ * Replaces the prior auto-pair model where both sides joined a single room
+ * and the relay forwarded data the instant a phone WS appeared. That model
+ * caused race conditions on reload (new browser/phone collided with the prior
+ * pair), reconnect loops, and shipped no explicit consent gate — both sides
+ * found themselves in an active session without ever opting in.
+ *
+ * New model — every connected socket is in one of two slots per Room:
+ *
+ *   room.lobby                — Set<WS> of every socket NOT in an active pair.
+ *                               Both browsers and phones land here on connect.
+ *   room.active               — { browser: WS|null, phone: WS|null }
+ *                               At most ONE browser ↔ ONE phone, both consented.
+ *                               Data-plane forwarding ONLY happens between
+ *                               active.browser and active.phone.
+ *   room.pendingPairing       — { id, browserWs, ua, ip, expiresAt, timer } | null
+ *                               A pairing request in flight. Browser asked,
+ *                               phone has not yet answered. 30 s TTL.
+ *
+ * Wire protocol — control plane:
+ *
+ *   Browser → Relay:
+ *     BROWSER_REQUEST_PAIRING:{ua, ip}     start a pairing handshake
+ *     ACCEPT_PAIRING / DECLINE_PAIRING     (NEVER sent by browser; phone-only)
+ *     LEAVE_ACTIVE:{}                      explicit teardown of an active pair
+ *
+ *   Phone → Relay:
+ *     ACCEPT_PAIRING:{pairingId}           confirm the pending request
+ *     DECLINE_PAIRING:{pairingId}          reject the pending request
+ *
+ *   Relay → Browser:
+ *     LOBBY_STATUS:{phonePresent, alreadyActive}   sent on lobby join
+ *     PHONE_PRESENT:{}                              a phone just joined the lobby
+ *     PHONE_ABSENT:{}                               the only phone left the lobby
+ *     PAIRING_ACTIVE:{deviceName}                   request was accepted, you're active
+ *     PAIRING_DECLINED:{}                           phone said no, back to lobby
+ *     PAIRING_TIMEOUT:{}                            30 s elapsed, no answer
+ *     PAIRING_REJECTED:{reason}                     relay said no (already_active, …)
+ *     PAIRING_TERMINATED:{reason}                   active pair torn down (peer left,
+ *                                                   socket closed, etc.)
+ *
+ *   Relay → Phone:
+ *     LOBBY_STATUS:{browserCount}                   sent on lobby join
+ *     PAIRING_REQUEST:{pairingId, ua, ip}           browser is asking — show prompt
+ *     PAIRING_ACTIVE:{ua, ip}                       relay confirmed the pair
+ *     PAIRING_CANCELLED:{pairingId}                 30 s expiry before phone answered
+ *     PAIRING_TERMINATED:{reason}                   active pair torn down
+ *
+ * Data plane: every non-control frame from an active.browser is forwarded to
+ * its active.phone, and vice-versa. Frames originating from any lobby socket
+ * are DROPPED + logged — pre-consent sockets have no data-plane privileges.
+ *
+ * Browser disconnects send DISCONNECT_PHONE-equivalent: nothing. The ws 'close'
+ * handler does the teardown. Page reloads land in the lobby fresh and must
+ * click Connect to re-arm a pairing — there is no implicit reconnect.
  */
-function scanForPhone(subnet, port, timeoutMs = 1500) {
-  return new Promise((resolve) => {
-    let found = null;
-    let pending = 0;
-    let resolved = false;
-
-    const done = (ip) => {
-      if (resolved) return;
-      resolved = true;
-      resolve(ip);
-    };
-
-    for (let i = 1; i <= 254; i++) {
-      const ip = `${subnet}.${i}`;
-      pending++;
-      const socket = new net.Socket();
-      socket.setTimeout(timeoutMs);
-      socket.on('connect', () => {
-        socket.destroy();
-        if (!found) { found = ip; done(ip); }
-        pending--;
-      });
-      socket.on('error', () => { socket.destroy(); pending--; if (pending === 0) done(null); });
-      socket.on('timeout', () => { socket.destroy(); pending--; if (pending === 0) done(null); });
-      socket.connect(port, ip);
-    }
-
-    // Safety fallback — resolve null after 2.5s regardless
-    setTimeout(() => done(null), 2500);
-  });
-}
-
-/**
- * Best-effort detection of the host's primary LAN /24 subnet.
- * Skips virtual adapters (Hyper-V, WSL, Docker, VMware, VirtualBox) so we
- * scan the real WiFi/Ethernet the phone is on, not a host-only bridge.
- */
-function getLocalSubnet() {
-  const interfaces = os.networkInterfaces();
-  const VIRTUAL = /vEthernet|VMware|VirtualBox|Docker|Hyper-V|WSL|vboxnet|br-|virbr|Tailscale|tailscale|ZeroTier|nordlynx/i;
-  const PRIORITY = ['Wi-Fi', 'Ethernet', 'en0', 'en1', 'eth0', 'wlan0'];
-
-  // Returns true for IPs that are NOT usable LAN addresses:
-  //   169.254.x.x — link-local / APIPA (no DHCP assigned)
-  //   100.64–127.x — Tailscale CGNAT
-  function isUnusableIp(ip) {
-    const p = ip.split('.').map(Number);
-    if (p[0] === 169 && p[1] === 254) return true;       // link-local
-    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // Tailscale
-    return false;
-  }
-
-  // Try priority interfaces first, skip bad IPs
-  for (const name of PRIORITY) {
-    const ifaces = interfaces[name] || [];
-    for (const iface of ifaces) {
-      if (!iface.internal && iface.family === 'IPv4' && !isUnusableIp(iface.address)) {
-        return iface.address.split('.').slice(0, 3).join('.');
-      }
-    }
-  }
-  // Fallback: any non-virtual, non-bad IPv4
-  for (const [name, ifaces] of Object.entries(interfaces)) {
-    if (VIRTUAL.test(name)) continue;
-    for (const iface of (ifaces || [])) {
-      if (!iface.internal && iface.family === 'IPv4' && !isUnusableIp(iface.address)) {
-        return iface.address.split('.').slice(0, 3).join('.');
-      }
-    }
-  }
-  return '192.168.1'; // last resort
-}
-
-// ---------------------------------------------------------------------------
-// Relay server — multi-tenant rooms.
-// One Room per phoneToken. Connections with no token go to the 'default' room
-// so the legacy single-user dev flow keeps working.
-// ---------------------------------------------------------------------------
-
-const MAX_OUTBOUND_FAILURES = 3;
 
 function startRelay(httpServer) {
   // noServer mode: we handle the HTTP `upgrade` event ourselves below and
@@ -160,258 +135,266 @@ function startRelay(httpServer) {
     if (!room) {
       room = {
         token,
-        phoneWs: null,
-        phoneConnected: false,
-        phoneDeviceName: null,
-        browsers: new Set(),
-        outboundPhoneWs: null,
-        outboundReconnectTimeout: null,
-        outboundTargetUrl: null,
-        outboundFailCount: 0,
+        lobby: new Set(),
+        active: { browser: null, phone: null },
+        pendingPairing: null,
       };
       rooms.set(token, room);
     }
     return room;
   }
 
-  // Drop empty rooms so the Map does not grow forever. Dispatch #28: the
-  // 'default' room is gone, so every room is eligible for reaping once
-  // empty. No early-return for 'default' anymore.
+  /**
+   * Drop empty rooms so the Map does not grow forever. A room is reapable
+   * when nothing is in the lobby, no active pair exists, and no pending
+   * pairing handshake is mid-flight.
+   */
   function maybeReapRoom(room) {
-    if (room.phoneWs) return;
-    if (room.outboundPhoneWs) return;
-    if (room.outboundReconnectTimeout) return;
-    if (room.browsers.size > 0) return;
+    if (room.lobby.size > 0) return;
+    if (room.active.browser || room.active.phone) return;
+    if (room.pendingPairing) return;
     rooms.delete(room.token);
     console.log(`[Relay] Reaped empty room ${room.token}`);
   }
 
-  function broadcastToBrowsers(room, msg) {
-    room.browsers.forEach(ws => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(typeof msg === 'string' ? msg : msg.toString());
-      }
-    });
-  }
-
-  /**
-   * Notify the phone how many browsers are currently in its room.
-   *
-   * Wire format: `BROWSER_STATUS:{"count": N, "ts": <unix-ms>}`
-   *
-   * The Android agent uses this as the inverse of STATUS:{connected:true}:
-   * when count > 0, the phone knows at least one browser is paired and stops
-   * showing "waiting for web app". When count == 0, the phone can decide to
-   * surface a "no browser connected" state in its own UI.
-   *
-   * Always uses the live room.browsers.size at call time — callers must add
-   * the new ws to room.browsers (on join) or remove it (on leave) BEFORE
-   * invoking this helper so the count is correct.
-   *
-   * No-op if no phone in the room or its WS is not open — the phone will
-   * receive a fresh count when it next connects (we don't queue).
-   */
-  function sendBrowserStatusToPhone(room) {
-    const phone = room.phoneWs;
-    if (!phone || phone.readyState !== WebSocket.OPEN) return;
-    const payload = JSON.stringify({ count: room.browsers.size, ts: Date.now() });
+  function safeSend(ws, msg) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     try {
-      phone.send(`BROWSER_STATUS:${payload}`);
+      ws.send(typeof msg === 'string' ? msg : msg.toString());
+      return true;
     } catch (e) {
-      console.log(`[Relay][${room.token}] Failed to send BROWSER_STATUS: ${e.message}`);
+      console.log(`[Relay] safeSend failed: ${e.message}`);
+      return false;
     }
   }
 
-  function setPhone(room, ws, source, inboundIp = null) {
-    if (room.phoneWs && room.phoneWs !== ws) {
-      try { room.phoneWs.close(); } catch (e) {}
+  /**
+   * Count phones / browsers in the LOBBY (excludes active sockets).
+   * Used when sending LOBBY_STATUS so each side knows whether to render the
+   * Connect affordance (browser side) / waiting copy (phone side).
+   */
+  function countLobby(room) {
+    let phones = 0;
+    let browsers = 0;
+    for (const ws of room.lobby) {
+      if (ws.role === 'phone') phones++;
+      else if (ws.role === 'browser') browsers++;
     }
-    room.phoneWs = ws;
-    room.phoneWs.isAlive = true; // mark alive on connect so the first tick doesn't immediately terminate
-    room.phoneConnected = true;
-    room.phoneDeviceName = null;
-    console.log(`[Relay][${room.token}] Phone connected (${source})`);
-    // Include phoneIp only for inbound QR connections so the web app can pre-fill
-    // the connect field and let the user confirm manually.
-    const statusPayload = inboundIp
-      ? { connected: true, phoneIp: inboundIp }
-      : { connected: true };
-    broadcastToBrowsers(room, `STATUS:${JSON.stringify(statusPayload)}`);
+    return { phones, browsers };
   }
 
-  function clearPhone(room, source) {
-    room.phoneWs = null;
-    room.phoneConnected = false;
-    room.phoneDeviceName = null;
-    console.log(`[Relay][${room.token}] Phone disconnected (${source})`);
-    broadcastToBrowsers(room, 'STATUS:{"connected":false}');
+  /** Broadcast a message to every BROWSER currently sitting in the lobby. */
+  function broadcastToLobbyBrowsers(room, msg) {
+    for (const ws of room.lobby) {
+      if (ws.role === 'browser') safeSend(ws, msg);
+    }
+  }
+
+  /** Broadcast a message to every PHONE currently sitting in the lobby. */
+  function broadcastToLobbyPhones(room, msg) {
+    for (const ws of room.lobby) {
+      if (ws.role === 'phone') safeSend(ws, msg);
+    }
+  }
+
+  /**
+   * Cancel and clear the pending pairing handshake. Does NOT notify either
+   * side — callers are responsible for sending PAIRING_TIMEOUT /
+   * PAIRING_DECLINED / etc. before invoking this. Safe to call when no
+   * pending pairing exists.
+   */
+  function clearPendingPairing(room) {
+    if (!room.pendingPairing) return;
+    if (room.pendingPairing.timer) {
+      clearTimeout(room.pendingPairing.timer);
+    }
+    room.pendingPairing = null;
+  }
+
+  /**
+   * Tear down whatever active pair currently exists in the room. Both
+   * sockets get moved back into the lobby (if still open) and each is sent
+   * PAIRING_TERMINATED:{reason} so their UI can reset cleanly. Safe to
+   * call when no pair is active.
+   */
+  function terminateActivePair(room, reason) {
+    const { browser, phone } = room.active;
+    if (!browser && !phone) return;
+    console.log(`[Relay][${room.token}] terminateActivePair: ${reason}`);
+    room.active = { browser: null, phone: null };
+
+    const payload = JSON.stringify({ reason });
+    if (browser) {
+      safeSend(browser, `PAIRING_TERMINATED:${payload}`);
+      if (browser.readyState === WebSocket.OPEN) {
+        room.lobby.add(browser);
+        // Re-send LOBBY_STATUS so the browser knows whether a phone is still
+        // around to try pairing again with.
+        const { phones } = countLobby(room);
+        safeSend(browser, `LOBBY_STATUS:${JSON.stringify({
+          phonePresent: phones > 0,
+          alreadyActive: false,
+        })}`);
+      }
+    }
+    if (phone) {
+      safeSend(phone, `PAIRING_TERMINATED:${payload}`);
+      if (phone.readyState === WebSocket.OPEN) {
+        room.lobby.add(phone);
+        const { browsers } = countLobby(room);
+        safeSend(phone, `LOBBY_STATUS:${JSON.stringify({ browserCount: browsers })}`);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pairing handshake
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Browser asked for a pairing. Validate state, assign a pairingId, start
+   * the 30 s timer, forward PAIRING_REQUEST to the phone (there should be
+   * exactly one in the lobby once we reach here; if there are several, the
+   * first found wins — multi-phone-per-account is not a supported use case
+   * today, but we still log it).
+   */
+  function handleBrowserRequestPairing(room, browserWs, payload, browserIp) {
+    if (room.active.browser || room.active.phone) {
+      safeSend(browserWs, `PAIRING_REJECTED:${JSON.stringify({ reason: 'already_active' })}`);
+      return;
+    }
+    if (room.pendingPairing) {
+      safeSend(browserWs, `PAIRING_REJECTED:${JSON.stringify({ reason: 'already_pending' })}`);
+      return;
+    }
+    // Find a phone in the lobby. Without one we can't pair — surface a
+    // distinct reason so the browser can render meaningful copy ("phone not
+    // present yet"). The current contract bundles this under
+    // 'already_pending' — not exposed in the spec, so map it to a sensible
+    // existing reason rather than invent a new one.
+    let phoneWs = null;
+    for (const ws of room.lobby) {
+      if (ws.role === 'phone') { phoneWs = ws; break; }
+    }
+    if (!phoneWs) {
+      // No phone in room. Treat as a transient reject — the browser's UI
+      // should already be gating BROWSER_REQUEST_PAIRING on phonePresent,
+      // so we hit this only on a race. Reuse already_pending for now.
+      safeSend(browserWs, `PAIRING_REJECTED:${JSON.stringify({ reason: 'already_pending' })}`);
+      return;
+    }
+
+    const ua = typeof payload?.ua === 'string' ? payload.ua.slice(0, 256) : 'unknown';
+    // The relay is the only authority on the browser's IP — never trust the
+    // client-supplied value. ua is allowed to be client-supplied (it's just
+    // a UI hint for the phone's accept prompt).
+    const ip = browserIp;
+
+    const pairingId = crypto.randomUUID();
+    const expiresAt = Date.now() + PAIRING_TTL_MS;
+
+    const timer = setTimeout(() => {
+      // 30 s elapsed with no answer. Tell both sides and clear state.
+      if (room.pendingPairing?.id !== pairingId) return; // raced — already resolved
+      console.log(`[Relay][${room.token}] Pairing ${pairingId} timed out`);
+      const pending = room.pendingPairing;
+      room.pendingPairing = null;
+      safeSend(pending.browserWs, `PAIRING_TIMEOUT:${JSON.stringify({})}`);
+      safeSend(phoneWs, `PAIRING_CANCELLED:${JSON.stringify({ pairingId })}`);
+      maybeReapRoom(room);
+    }, PAIRING_TTL_MS);
+
+    room.pendingPairing = { id: pairingId, browserWs, ua, ip, expiresAt, timer };
+
+    safeSend(phoneWs, `PAIRING_REQUEST:${JSON.stringify({ pairingId, ua, ip })}`);
+    console.log(`[Relay][${room.token}] Pairing request ${pairingId} forwarded to phone (ua=${ua.slice(0, 40)} ip=${ip})`);
+  }
+
+  /**
+   * Phone accepted the pending pairing. Validate id matches, move both
+   * sockets lobby → active, fire PAIRING_ACTIVE to each side with the
+   * peer's identifiers.
+   */
+  function handleAcceptPairing(room, phoneWs, payload) {
+    const pending = room.pendingPairing;
+    if (!pending) {
+      console.log(`[Relay][${room.token}] ACCEPT_PAIRING ignored — no pending`);
+      return;
+    }
+    if (!payload?.pairingId || payload.pairingId !== pending.id) {
+      console.log(`[Relay][${room.token}] ACCEPT_PAIRING ignored — id mismatch (got=${payload?.pairingId} expected=${pending.id})`);
+      return;
+    }
+    const browserWs = pending.browserWs;
+    clearPendingPairing(room);
+
+    // If the browser disappeared between request and accept, surface a
+    // termination to the phone immediately — accepting an empty handshake
+    // would leave the phone stuck in "active" while the browser is gone.
+    if (!browserWs || browserWs.readyState !== WebSocket.OPEN) {
+      console.log(`[Relay][${room.token}] ACCEPT_PAIRING but browser is gone — notifying phone`);
+      safeSend(phoneWs, `PAIRING_TERMINATED:${JSON.stringify({ reason: 'browser_gone' })}`);
+      maybeReapRoom(room);
+      return;
+    }
+
+    room.lobby.delete(browserWs);
+    room.lobby.delete(phoneWs);
+    room.active.browser = browserWs;
+    room.active.phone = phoneWs;
+
+    // The phone may have sent a DEVICE_INFO frame earlier (relay used to
+    // capture deviceName); we don't have a stable cache for it here. The
+    // browser can read it from the post-pairing data plane when the phone
+    // sends DEVICE_INFO; for the initial PAIRING_ACTIVE payload we omit it
+    // unless we already have it stashed on ws.deviceName.
+    const deviceName = phoneWs.deviceName ?? null;
+    safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
+    safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: pending.ua, ip: pending.ip })}`);
+    console.log(`[Relay][${room.token}] Pairing ${pending.id} ACTIVE — browser ↔ phone`);
+  }
+
+  /**
+   * Phone declined the pending pairing. Browser is told and stays in lobby.
+   */
+  function handleDeclinePairing(room, phoneWs, payload) {
+    const pending = room.pendingPairing;
+    if (!pending) return;
+    if (!payload?.pairingId || payload.pairingId !== pending.id) return;
+    const browserWs = pending.browserWs;
+    clearPendingPairing(room);
+    if (browserWs) {
+      safeSend(browserWs, `PAIRING_DECLINED:${JSON.stringify({})}`);
+    }
+    console.log(`[Relay][${room.token}] Pairing ${pending.id} declined by phone`);
     maybeReapRoom(room);
   }
 
   /**
-   * Full teardown of the phone side of a room. Called when:
-   *   - Browser sends DISCONNECT_PHONE (explicit user click).
-   *   - Last browser WS closes (tab closed / refresh / beforeunload race).
-   *     We treat this as an implicit DISCONNECT_PHONE so the relay doesn't
-   *     keep an orphan phone connection alive when no one is listening.
-   *
-   * Order matters: clean room state FIRST so any close events that race
-   * back through the listeners see a room that already knows the WS is
-   * gone (no auto-reconnect re-arm, no stale phoneWs). THEN forward
-   * DISCONNECT_PHONE:{} to the phone so PhoneService can call
-   * disconnectAllClients() on its end. THEN physically close.
+   * Forward a non-control data-plane frame between the two halves of the
+   * active pair. Returns true if the frame was forwarded, false otherwise
+   * (caller logs the drop).
    */
-  function teardownPhoneConnection(room, reasonForLog) {
-    console.log(`[Relay][${room.token}] teardownPhoneConnection: ${reasonForLog}`);
-
-    // Snapshot refs before clearing — we still need to send the polite
-    // DISCONNECT_PHONE frame to the phone after room state is wiped.
-    const outbound = room.outboundPhoneWs;
-    const phone = room.phoneWs;
-
-    // 1. Cancel any pending auto-reconnect — must happen before we drop
-    //    listeners so a racing close can't re-arm a fresh timer.
-    if (room.outboundReconnectTimeout) {
-      clearTimeout(room.outboundReconnectTimeout);
-      room.outboundReconnectTimeout = null;
+  function forwardDataPlane(room, fromWs, msg) {
+    if (fromWs === room.active.browser && room.active.phone) {
+      safeSend(room.active.phone, msg);
+      return true;
     }
-
-    // 2. Wipe room state so callbacks that still fire see a clean slate.
-    room.outboundPhoneWs = null;
-    room.outboundTargetUrl = null;
-    room.outboundFailCount = 0;
-    room.phoneWs = null;
-    room.phoneConnected = false;
-    room.phoneDeviceName = null;
-
-    // 3. Broadcast disconnected immediately so any remaining browsers
-    //    update — don't wait for the WS close event, which may race.
-    broadcastToBrowsers(room, 'STATUS:{"connected":false}');
-
-    // 4. Politely tell the phone we're tearing down (best-effort).
-    //    Prefer the outbound WS since that's the relay-initiated channel;
-    //    fall back to whichever WS the room had as phone.
-    const phoneWsForNotify = (outbound && outbound.readyState === WebSocket.OPEN)
-      ? outbound
-      : (phone && phone.readyState === WebSocket.OPEN ? phone : null);
-    if (phoneWsForNotify) {
-      try { phoneWsForNotify.send('DISCONNECT_PHONE:{}'); } catch (e) {}
-    }
-
-    // 5. Detach listeners + close. removeAllListeners prevents the close
-    //    handler (which would otherwise call clearPhone again and try to
-    //    reschedule a reconnect) from firing — we've already cleaned up.
-    if (outbound) {
-      try { outbound.removeAllListeners(); outbound.close(1000, 'user_disconnect'); } catch (e) {}
-    }
-    if (phone && phone !== outbound) {
-      try { phone.removeAllListeners(); phone.close(1000, 'user_disconnect'); } catch (e) {}
-    }
-
-    maybeReapRoom(room);
-  }
-
-  function forwardToPhone(room, msg) {
-    const active = room.phoneWs;
-    if (active && active.readyState === WebSocket.OPEN) {
-      active.send(msg);
+    if (fromWs === room.active.phone && room.active.browser) {
+      safeSend(room.active.browser, msg);
       return true;
     }
     return false;
   }
 
-  function connectOutboundToPhone(room, url) {
-    if (room.outboundReconnectTimeout) {
-      clearTimeout(room.outboundReconnectTimeout);
-      room.outboundReconnectTimeout = null;
-    }
-    if (room.outboundPhoneWs) {
-      try { room.outboundPhoneWs.removeAllListeners(); room.outboundPhoneWs.close(); } catch (e) {}
-      room.outboundPhoneWs = null;
-    }
-
-    // Stop retrying after MAX_OUTBOUND_FAILURES consecutive ECONNREFUSED.
-    // The phone server is not reachable — continuing to retry just spams logs
-    // and wastes resources. A fresh CONNECT_TO from the browser resets the counter.
-    if (room.outboundFailCount >= MAX_OUTBOUND_FAILURES) {
-      console.log(`[Relay][${room.token}] Giving up outbound connection to ${url} after ${MAX_OUTBOUND_FAILURES} failures. Browser must reconnect manually.`);
-      room.outboundTargetUrl = null;
-      room.outboundFailCount = 0;
-      maybeReapRoom(room);
-      return;
-    }
-
-    room.outboundTargetUrl = url;
-    console.log(`[Relay][${room.token}] Connecting outbound to phone at ${url}... (attempt ${room.outboundFailCount + 1}/${MAX_OUTBOUND_FAILURES})`);
-
-    try {
-      const outbound = new WebSocket(url);
-      room.outboundPhoneWs = outbound;
-
-      outbound.on('open', () => {
-        room.outboundFailCount = 0; // reset on success
-        setPhone(room, outbound, `outbound to ${url}`);
-        outbound.send(`HELLO:{"hostname":"${HOSTNAME}"}`);
-        // Same reason as the inbound path: tell the freshly-connected phone
-        // how many browsers are already paired so its UI doesn't sit at
-        // "waiting for web app" when there's actually a browser here.
-        sendBrowserStatusToPhone(room);
-      });
-
-      outbound.on('message', (data) => {
-        const msg = data.toString();
-        rlog(`[Relay][${room.token}] Phone ->`, msg.substring(0, 60));
-        if (msg.startsWith('DEVICE_INFO:')) {
-          try {
-            const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
-            room.phoneDeviceName = payload.deviceName || null;
-            console.log(`[Relay][${room.token}] Phone device name: ${room.phoneDeviceName}`);
-            broadcastToBrowsers(room, `STATUS:${JSON.stringify({ connected: true, deviceName: room.phoneDeviceName })}`);
-          } catch (e) {}
-        }
-        broadcastToBrowsers(room, msg);
-      });
-
-      outbound.on('close', () => {
-        if (room.phoneWs === outbound) {
-          clearPhone(room, 'outbound closed');
-        }
-        room.outboundPhoneWs = null;
-        if (room.browsers.size > 0 && room.outboundTargetUrl) {
-          room.outboundReconnectTimeout = setTimeout(
-            () => connectOutboundToPhone(room, room.outboundTargetUrl),
-            5000
-          );
-        } else {
-          maybeReapRoom(room);
-        }
-      });
-
-      outbound.on('error', (err) => {
-        if (err.message.includes('ECONNREFUSED')) {
-          room.outboundFailCount++;
-          console.log(`[Relay][${room.token}] Outbound phone error: ${err.message} (failure ${room.outboundFailCount}/${MAX_OUTBOUND_FAILURES})`);
-        } else {
-          console.log(`[Relay][${room.token}] Outbound phone error: ${err.message}`);
-        }
-      });
-
-      outbound.on('pong', () => {
-        if (room.outboundPhoneWs) room.outboundPhoneWs.isAlive = true;
-        rlog(`[Relay][${room.token}] Phone pong received`);
-      });
-    } catch (err) {
-      console.log(`[Relay][${room.token}] Failed to connect outbound: ${err.message}`);
-      if (room.browsers.size > 0) {
-        room.outboundReconnectTimeout = setTimeout(() => connectOutboundToPhone(room, url), 5000);
-      }
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Connection-level helpers
+  // ---------------------------------------------------------------------------
 
   /**
    * Extract phoneToken from the connection request URL.
-   * Browser:  ws://host:3001/?token=XYZ      → ('XYZ', '/')
-   * Phone:    ws://host:3001/phone?token=XYZ → ('XYZ', '/phone')
+   *   /relay?token=XYZ       → ('XYZ', '/')         browser
+   *   /relay/phone?token=XYZ → ('XYZ', '/phone')    phone
    * Dispatch #28: missing token is rejected at the connection handler
    * (close 4401). No fallback room anymore.
    */
@@ -447,14 +430,10 @@ function startRelay(httpServer) {
   wss.on('connection', async (ws, req) => {
     const { pathname, token: rawToken } = parseConnection(req);
 
-    // Dispatch #28 (2026-05-24): the 'default' room is GONE. Every relay
-    // upgrade must arrive with a ?token=<phoneToken> query that resolves to
-    // a real User row, or we close 4401 immediately. Both the webapp
-    // (usePhoneBridge.ts fetches /api/auth/me on mount and appends the
-    // token) and the APK (SignInActivity stores the token after a
-    // successful /api/auth/apk-login and PhoneService appends it) are now
-    // required to authenticate before they can join a room. RISK-002 in
-    // Ken's ledger is closed by this change.
+    // Dispatch #28 (2026-05-24): every relay upgrade must arrive with a
+    // ?token=<phoneToken> query that resolves to a real User row. Both the
+    // webapp and the APK authenticate the user first and pass the resulting
+    // token before opening the WS.
     if (!rawToken) {
       console.log('[Relay] Rejecting connection — no token in query');
       try { ws.close(4401, 'invalid_token'); } catch (e) {}
@@ -463,69 +442,125 @@ function startRelay(httpServer) {
     const userId = await validateToken(rawToken);
     if (!userId) {
       console.log(`[Relay] Rejecting connection — invalid token: ${rawToken.substring(0, 8)}...`);
-      // 4401 = our custom "unauthorized" close code (4xxx is application range).
       try { ws.close(4401, 'invalid_token'); } catch (e) {}
       return;
     }
     const token = rawToken;
-    // Stash on the socket so message handlers / future audit logging can read it
-    // without another DB hit. Auth happens once, here, on connect.
     ws.userId = userId;
     ws.phoneToken = token;
 
     const room = getRoom(token);
 
+    // Resolve the connecting peer's IP. req.socket.remoteAddress may be
+    // IPv6-mapped (::ffff:192.168.x.x) — strip the prefix. Used in
+    // PAIRING_REQUEST so the user sees the actual origin on their phone.
+    const rawIp = req.socket?.remoteAddress || '';
+    const peerIp = rawIp.replace(/^::ffff:/, '').trim() || 'unknown';
+
+    // ---- PHONE PATH ---------------------------------------------------------
     if (pathname === '/phone') {
-      console.log(`[Relay][${token}] Phone connected as client (QR scan mode)`);
+      ws.role = 'phone';
+      ws.isAlive = true;
+      ws.deviceName = null;
+      room.lobby.add(ws);
 
-      // Extract the phone's LAN IP so the web app can pre-fill it for manual connect.
-      // req.socket.remoteAddress may be IPv6-mapped (::ffff:192.168.x.x) — strip the prefix.
-      const rawPhoneIp = req.socket?.remoteAddress || '';
-      const phoneInboundIp = rawPhoneIp.replace(/^::ffff:/, '').trim();
-      console.log(`[Relay][${token}] Phone inbound IP: ${phoneInboundIp}`);
+      const lobbyCounts = countLobby(room);
+      console.log(`[Relay][${token}] Phone joined lobby (browsers=${lobbyCounts.browsers}, active=${!!room.active.phone})`);
 
-      // Inbound QR overrides any pending outbound attempt for this room.
-      if (room.outboundReconnectTimeout) {
-        clearTimeout(room.outboundReconnectTimeout);
-        room.outboundReconnectTimeout = null;
-      }
-      if (room.outboundPhoneWs) {
-        try { room.outboundPhoneWs.removeAllListeners(); room.outboundPhoneWs.close(); } catch (e) {}
-        room.outboundPhoneWs = null;
-        room.outboundTargetUrl = null;
-      }
+      // 1. Tell the phone how many browsers are already waiting in this
+      //    lobby so its UI can render an "approve incoming" affordance
+      //    (if browserCount > 0) or "waiting for desktop" (if 0).
+      safeSend(ws, `LOBBY_STATUS:${JSON.stringify({ browserCount: lobbyCounts.browsers })}`);
+      safeSend(ws, `HELLO:${JSON.stringify({ hostname: HOSTNAME })}`);
 
-      // Pass phoneInboundIp so setPhone includes it in the STATUS broadcast.
-      setPhone(room, ws, 'inbound QR', phoneInboundIp);
-      ws.send(`HELLO:{"hostname":"${HOSTNAME}"}`);
-
-      // Phone just joined — tell it whether any browsers are already in the room.
-      // Without this, a phone that connects AFTER a browser would never receive
-      // the initial count and would sit in "waiting for web app" forever.
-      sendBrowserStatusToPhone(room);
+      // 2. Tell every browser in the lobby a phone just showed up. Drives
+      //    the Connect button visibility on the browser side.
+      broadcastToLobbyBrowsers(room, `PHONE_PRESENT:${JSON.stringify({})}`);
 
       ws.on('message', (data) => {
         const msg = data.toString();
-        rlog(`[Relay][${token}] Phone ->`, msg.substring(0, 60));
+        rlog(`[Relay][${token}] Phone ->`, msg.substring(0, 80));
+
+        // DEVICE_INFO is special — capture deviceName so a subsequent
+        // PAIRING_ACTIVE can include it. Phones send DEVICE_INFO inside
+        // an active session for stateful UI, but the frame can also arrive
+        // pre-pairing depending on APK timing; in that case we just stash
+        // the name and drop the frame (no data-plane forwarding allowed
+        // from the lobby).
         if (msg.startsWith('DEVICE_INFO:')) {
           try {
             const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
-            room.phoneDeviceName = payload.deviceName || null;
-            console.log(`[Relay][${token}] Phone device name: ${room.phoneDeviceName}`);
-            broadcastToBrowsers(room, `STATUS:${JSON.stringify({ connected: true, deviceName: room.phoneDeviceName, phoneIp: phoneInboundIp })}`);
-          } catch (e) {}
+            if (payload?.deviceName) ws.deviceName = String(payload.deviceName).slice(0, 128);
+            console.log(`[Relay][${token}] Phone device name: ${ws.deviceName}`);
+          } catch (e) { /* ignore malformed */ }
+          // If pair is active and this frame came from the active phone,
+          // forward to the browser so its UI updates. Otherwise drop.
+          if (ws === room.active.phone) {
+            forwardDataPlane(room, ws, msg);
+          }
+          return;
         }
-        broadcastToBrowsers(room, msg);
+
+        // Control plane — pairing handshake responses.
+        if (msg.startsWith('ACCEPT_PAIRING:')) {
+          try {
+            const payload = JSON.parse(msg.substring('ACCEPT_PAIRING:'.length));
+            handleAcceptPairing(room, ws, payload);
+          } catch (e) {
+            console.log(`[Relay][${token}] Malformed ACCEPT_PAIRING: ${e.message}`);
+          }
+          return;
+        }
+        if (msg.startsWith('DECLINE_PAIRING:')) {
+          try {
+            const payload = JSON.parse(msg.substring('DECLINE_PAIRING:'.length));
+            handleDeclinePairing(room, ws, payload);
+          } catch (e) {
+            console.log(`[Relay][${token}] Malformed DECLINE_PAIRING: ${e.message}`);
+          }
+          return;
+        }
+
+        // Data plane — only allowed when this socket is the active phone.
+        if (ws === room.active.phone) {
+          if (!forwardDataPlane(room, ws, msg)) {
+            rlog(`[Relay][${token}] Phone data frame dropped — no active browser`);
+          }
+          return;
+        }
+
+        // Frame from a lobby phone that wasn't a recognised control frame.
+        // Drop + log so misbehaving APKs surface in the relay log.
+        console.log(`[Relay][${token}] Dropping lobby-phone frame: ${msg.substring(0, 60)}`);
       });
 
       ws.on('close', () => {
-        if (room.phoneWs === ws) {
-          clearPhone(room, 'inbound QR closed');
+        room.lobby.delete(ws);
+        const wasActive = (ws === room.active.phone);
+        const wasPendingPhone = !!room.pendingPairing && room.pendingPairing.phoneWs === ws;
+        // PAIRING_CANCELLED to the browser if the phone closed while a
+        // request was waiting for its answer.
+        if (room.pendingPairing && wasPendingPhone) {
+          const pending = room.pendingPairing;
+          clearPendingPairing(room);
+          safeSend(pending.browserWs, `PAIRING_TIMEOUT:${JSON.stringify({})}`);
         }
+        if (wasActive) {
+          terminateActivePair(room, 'socket_closed');
+        } else {
+          // Lobby phone leaving — tell remaining lobby browsers to hide
+          // the Connect affordance if this was the last phone in the lobby.
+          const { phones } = countLobby(room);
+          if (phones === 0) {
+            broadcastToLobbyBrowsers(room, `PHONE_ABSENT:${JSON.stringify({})}`);
+          }
+        }
+        console.log(`[Relay][${token}] Phone disconnected (was_active=${wasActive})`);
+        maybeReapRoom(room);
       });
 
       ws.on('error', (err) => {
-        console.log(`[Relay][${token}] Phone (inbound) error: ${err.message}`);
+        console.log(`[Relay][${token}] Phone error: ${err.message}`);
       });
 
       ws.on('pong', () => {
@@ -536,98 +571,88 @@ function startRelay(httpServer) {
       return;
     }
 
-    // Browser connection (default path)
-    console.log(`[Relay][${token}] Browser connected (${room.browsers.size + 1} total in room)`);
-    room.browsers.add(ws);
+    // ---- BROWSER PATH -------------------------------------------------------
+    ws.role = 'browser';
+    ws.isAlive = true;
+    room.lobby.add(ws);
 
-    if (room.phoneConnected) {
-      ws.send(`STATUS:${JSON.stringify({ connected: true, deviceName: room.phoneDeviceName })}`);
-    } else {
-      ws.send('STATUS:{"connected":false}');
-    }
+    const counts = countLobby(room);
+    const alreadyActive = !!(room.active.browser || room.active.phone);
+    console.log(`[Relay][${token}] Browser joined lobby (phones=${counts.phones}, active=${alreadyActive})`);
 
-    // Tell the phone how many browsers are in this room. This is the inverse
-    // half of the false-connection fix: webapp gets STATUS:{connected:true}
-    // the moment the phone is in the room; the Android agent needs the
-    // symmetric signal so it stops showing "waiting for web app" when a
-    // browser actually is paired. Sent on join AND on leave so the phone's
-    // count is always current.
-    sendBrowserStatusToPhone(room);
+    // Tell the browser whether it can act on the Connect button right away
+    // and whether an active pair already exists in this room (browser will
+    // render distinct copy in that case).
+    safeSend(ws, `LOBBY_STATUS:${JSON.stringify({
+      phonePresent: counts.phones > 0,
+      alreadyActive,
+    })}`);
 
     ws.on('message', (data) => {
       const msg = data.toString();
-      rlog(`[Relay][${token}] Browser ->`, msg.substring(0, 60));
+      rlog(`[Relay][${token}] Browser ->`, msg.substring(0, 80));
 
-      if (msg.startsWith('SCAN_FOR_PHONE:')) {
-        console.log(`[Relay][${token}] Browser requested phone scan...`);
-        // Tell browser we're scanning
-        ws.send('SCAN_STATUS:{"scanning":true}');
-
-        const subnet = getLocalSubnet();
-        console.log(`[Relay][${token}] Scanning subnet ${subnet}.0/24 for port 8765...`);
-
-        scanForPhone(subnet, 8765).then(ip => {
-          if (ip) {
-            console.log(`[Relay][${token}] Found phone at ${ip}:8765`);
-            ws.send(`SCAN_STATUS:{"scanning":false,"found":true,"phoneIp":"${ip}"}`);
-          } else {
-            console.log(`[Relay][${token}] No phone found on subnet`);
-            ws.send('SCAN_STATUS:{"scanning":false,"found":false}');
-          }
-        });
+      // Control plane — pairing kickoff.
+      if (msg.startsWith('BROWSER_REQUEST_PAIRING:')) {
+        try {
+          const payload = JSON.parse(msg.substring('BROWSER_REQUEST_PAIRING:'.length));
+          handleBrowserRequestPairing(room, ws, payload, peerIp);
+        } catch (e) {
+          console.log(`[Relay][${token}] Malformed BROWSER_REQUEST_PAIRING: ${e.message}`);
+        }
+        return;
+      }
+      // Control plane — explicit user-leaves-pair signal.
+      if (msg.startsWith('LEAVE_ACTIVE:')) {
+        if (ws === room.active.browser) {
+          terminateActivePair(room, 'user_left');
+        } else {
+          console.log(`[Relay][${token}] LEAVE_ACTIVE from non-active browser — ignored`);
+        }
         return;
       }
 
-      if (msg.startsWith('CONNECT_TO:')) {
-        const url = msg.substring('CONNECT_TO:'.length).trim();
-        console.log(`[Relay][${token}] Browser requested outbound connection to: ${url}`);
-        room.outboundFailCount = 0; // fresh user-initiated attempt resets failure counter
-        connectOutboundToPhone(room, url);
+      // Data plane — only allowed when this socket is the active browser.
+      if (ws === room.active.browser) {
+        if (!forwardDataPlane(room, ws, msg)) {
+          rlog(`[Relay][${token}] Browser data frame dropped — no active phone`);
+        }
         return;
       }
 
-      // Match both `DISCONNECT_PHONE:{...}` (current webapp) and a bare
-      // `DISCONNECT_PHONE` (defensive — the prefix without payload should
-      // also tear down, otherwise it'd fall through to forwardToPhone and
-      // get silently dropped on the phone side).
-      if (msg.startsWith('DISCONNECT_PHONE')) {
-        // Browser clicked "Disconnect" — close the phone connection but keep
-        // the relay alive and the browser WS open. The relay server stays up
-        // so the browser can reconnect a new phone without reloading the page.
-        teardownPhoneConnection(room, 'browser DISCONNECT_PHONE');
-        return;
-      }
-
-      if (!forwardToPhone(room, msg)) {
-        console.log(`[Relay][${token}] No phone connected, message dropped`);
-      }
+      // Anything else from a lobby browser (e.g. legacy CONNECT_TO from a
+      // stale tab, stray data frames). Drop + log.
+      console.log(`[Relay][${token}] Dropping lobby-browser frame: ${msg.substring(0, 60)}`);
     });
 
     ws.on('close', () => {
-      room.browsers.delete(ws);
-      console.log(`[Relay][${token}] Browser disconnected (${room.browsers.size} remaining in room)`);
-      // Tell the phone the count dropped (could be 0 → phone surfaces "no
-      // browser paired" UI; could be 2→1 → phone keeps showing paired).
-      sendBrowserStatusToPhone(room);
-      // When the last browser leaves, treat it as an implicit DISCONNECT_PHONE.
-      // Reason: the webapp's beforeunload handler tries to send DISCONNECT_PHONE
-      // but the WS may close before the frame is flushed. The relay must NOT
-      // depend on that message arriving — if no one is listening, the phone
-      // connection is orphaned: outboundTargetUrl persists, the keepalive
-      // ping loop keeps probing, and a subsequent reconnect-from-browser may
-      // collide with the stale connection. Converging both teardown paths
-      // through the same helper guarantees no stale state.
-      if (room.browsers.size === 0) {
-        if (room.phoneWs || room.outboundPhoneWs || room.outboundReconnectTimeout) {
-          teardownPhoneConnection(room, 'last browser closed');
-        } else {
-          maybeReapRoom(room);
-        }
+      room.lobby.delete(ws);
+      const wasActive = (ws === room.active.browser);
+      const wasPendingBrowser = !!room.pendingPairing && room.pendingPairing.browserWs === ws;
+      if (wasPendingBrowser) {
+        // Browser bailed mid-handshake — tell the phone to drop the prompt.
+        const pending = room.pendingPairing;
+        clearPendingPairing(room);
+        // The phone is still in the lobby (the request didn't move it),
+        // so we need to find it via the pending record-side data: we don't
+        // store the phoneWs on pending, so just broadcast PAIRING_CANCELLED
+        // to all lobby phones. There's at most one phone per room in the
+        // realistic case.
+        broadcastToLobbyPhones(room, `PAIRING_CANCELLED:${JSON.stringify({ pairingId: pending.id })}`);
       }
+      if (wasActive) {
+        terminateActivePair(room, 'socket_closed');
+      }
+      console.log(`[Relay][${token}] Browser disconnected (was_active=${wasActive})`);
+      maybeReapRoom(room);
     });
 
     ws.on('error', (err) => {
       console.log(`[Relay][${token}] Browser error: ${err.message}`);
+    });
+
+    ws.on('pong', () => {
+      ws.isAlive = true;
     });
   });
 
@@ -636,19 +661,17 @@ function startRelay(httpServer) {
   // (/_next/webpack-hmr, etc.) flow through Next's own upgrade handler
   // untouched. Path layout:
   //   /relay         → browser room socket
-  //   /relay/phone   → phone room socket (inbound QR)
+  //   /relay/phone   → phone room socket (sign-in mode)
   // The query string (?token=…) is preserved verbatim. Before handing off
   // to the existing connection handler, we strip the /relay prefix from
   // req.url so parseConnection() sees the same pathnames it used to see on
-  // the standalone port (/ for browser, /phone for phone). This keeps all
-  // downstream logic byte-identical.
+  // the standalone port (/ for browser, /phone for phone).
   function handleRelayUpgrade(request, socket, head) {
     const parsed = parse(request.url || '/', true);
     const pathname = parsed.pathname || '/';
     if (pathname !== '/relay' && pathname !== '/relay/phone') {
-      return false; // not ours — let the caller handle it (or drop)
+      return false;
     }
-    // Rewrite so parseConnection() sees the legacy shape.
     const rewritten = pathname === '/relay/phone' ? '/phone' : '/';
     const search = request.url.includes('?')
       ? request.url.slice(request.url.indexOf('?'))
@@ -664,27 +687,20 @@ function startRelay(httpServer) {
     const parsed = parse(request.url || '/', true);
     const pathname = parsed.pathname || '/';
     if (pathname === '/relay' || pathname === '/relay/phone') {
-      // Dispatch #28 (2026-05-24): the wss 'connection' handler now closes
-      // every upgrade that lacks a valid ?token query (code 4401). The old
-      // 'default' room fallback is gone. RISK-002 in Ken's ledger is closed.
       handleRelayUpgrade(request, socket, head);
       return;
     }
-    // Anything else (e.g. Next.js HMR) — Next's handler is registered on the
-    // same httpServer and will pick it up. Do nothing here.
+    // Anything else (e.g. Next.js HMR) — Next's handler picks it up.
   });
 
-  console.log(`[Relay] Mounted on shared httpServer at /relay (browser) and /relay/phone (inbound QR). Validates ?token=<phoneToken> against User.phoneToken; missing or invalid token = close 4401.`);
+  console.log(`[Relay] Mounted on shared httpServer at /relay (browser) and /relay/phone (sign-in). Connect+Accept lobby model active (dispatch #32).`);
 
   // Optional backward-compat: ALSO bring up the old standalone listener on
   // RELAY_PORT when LEGACY_RELAY_PORT=1. Same wss instance, just a second
-  // entry point. Safe revert path if anything regresses in prod — flip the
-  // env var, restart, the old behavior is back without a code change.
+  // entry point. Safe revert path if anything regresses in prod.
   if (LEGACY_RELAY_PORT) {
     const legacyServer = http.createServer();
     legacyServer.on('upgrade', (request, socket, head) => {
-      // Legacy clients hit / or /phone directly on RELAY_PORT — no rewrite
-      // needed, parseConnection() already understands those pathnames.
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
@@ -697,31 +713,30 @@ function startRelay(httpServer) {
     });
   }
 
-  // Keep every active phone connection alive and detect silent disconnects.
-  //
-  // Before each ping we mark each phone as "presumed dead". If a pong comes back
-  // before the next tick, isAlive is flipped back to true. If we reach the next
-  // tick and isAlive is still false the phone vanished without a TCP close —
-  // terminate() fires the 'close' event → clearPhone() → STATUS:false broadcast.
-  // This catches: killed Android app, phone rebooted, WiFi dropped mid-session.
-  const phoneKeepaliveInterval = setInterval(() => {
+  // Keep every connection alive and detect silent disconnects. We ping
+  // both lobby and active sockets — a stale phone in either slot needs to
+  // surface as gone so its peers can update.
+  const keepaliveInterval = setInterval(() => {
+    const allSockets = [];
     rooms.forEach((room) => {
-      const phoneWs = room.phoneWs;
-      if (!phoneWs || phoneWs.readyState !== WebSocket.OPEN) return;
-
-      if (phoneWs.isAlive === false) {
-        console.log(`[Relay][${room.token}] Phone missed heartbeat — terminating stale connection`);
-        phoneWs.terminate(); // fires 'close' → clearPhone() → browsers get STATUS:false
-        return;
-      }
-
-      phoneWs.isAlive = false; // presume dead until pong arrives
-      phoneWs.ping();
+      room.lobby.forEach((ws) => allSockets.push(ws));
+      if (room.active.browser) allSockets.push(room.active.browser);
+      if (room.active.phone) allSockets.push(room.active.phone);
     });
+    for (const ws of allSockets) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+      if (ws.isAlive === false) {
+        console.log(`[Relay] ${ws.role} missed heartbeat — terminating stale connection`);
+        ws.terminate(); // fires 'close' → cleanup
+        continue;
+      }
+      ws.isAlive = false;
+      try { ws.ping(); } catch (e) { /* ignore */ }
+    }
   }, 15000);
 
   wss.on('close', () => {
-    clearInterval(phoneKeepaliveInterval);
+    clearInterval(keepaliveInterval);
   });
 
   wss.on('error', (err) => {
@@ -739,32 +754,22 @@ async function main() {
   console.log('[Server] Starting ComputerCaller...');
   console.log(`[Server] Mode: ${dev ? 'development' : 'production'}`);
 
-  // Prepare Next.js first — we need its request handler to wire into the
-  // httpServer before we listen, otherwise early HTTP requests would 404.
   console.log(`[Server] Preparing Next.js on port ${NEXT_PORT}...`);
   // webpack: true — Turbopack panics on Windows when bundling Prisma's
   // native client (tries to symlink `@prisma/client` into the build chunks;
   // hits `os error 1314 / SeCreateSymbolicLinkPrivilege` for non-admin users).
   // IMPORTANT: Next 16's `next()` factory silently ignores `turbopack: false`
   // (only checks truthy). To actually opt OUT of Turbopack you must pass
-  // `webpack: true`. Verified 2026-05-19 in the saas-test rig — without this
-  // flag Turbopack runs regardless of any other config and every Prisma-
-  // importing API route 500s.
+  // `webpack: true`. Verified 2026-05-19 in the saas-test rig.
   const app = next({ dev, webpack: true });
   const handle = app.getRequestHandler();
   await app.prepare();
 
-  // Create the shared httpServer. This server handles BOTH Next.js HTTP
-  // requests AND WebSocket upgrades — Next.js handles requests on the
-  // request handler, the relay grabs WS upgrades on /relay and /relay/phone
-  // via its own 'upgrade' listener.
   const httpServer = http.createServer((req, res) => {
     const parsedUrl = parse(req.url || '/', true);
     handle(req, res, parsedUrl);
   });
 
-  // Mount the relay onto the shared httpServer BEFORE listen() so its
-  // 'upgrade' listener is registered when the first WS upgrade arrives.
   console.log(`[Server] Mounting relay WebSocket server on shared httpServer at /relay...`);
   startRelay(httpServer);
 
