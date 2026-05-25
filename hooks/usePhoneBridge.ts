@@ -276,6 +276,26 @@ export function usePhoneBridge() {
   const appPingIntervalRef = useRef<number | null>(null);
   const lastPongAtRef = useRef<number>(Date.now());
   const [isPhoneStale, setIsPhoneStale] = useState(false);
+  // Dispatch #31 (2026-05-25): mirror isPhoneStale into a ref so handleMessage
+  // can read the current value WITHOUT carrying isPhoneStale in its dep list.
+  // Before this fix, handleMessage's deps were [startCallTimer, stopCallTimer,
+  // isPhoneStale]. Every time isPhoneStale flipped, handleMessage got a new
+  // reference, which gave `connect` a new reference (deps [handleMessage,
+  // isRelayUrl]), which made the auto-relay-connect effect at line ~1958
+  // (deps [connect, phoneTokenState]) re-run. The effect's cleanup sends
+  // DISCONNECT_PHONE + close(1000) over the relay WS, and the new effect body
+  // opens a fresh WS — producing the tight loop Dennis hit on 2026-05-25 where
+  // the browser cycled the phone connection many times per second. Using a ref
+  // breaks the dep chain at the source: handleMessage becomes stable, connect
+  // becomes stable, the connect effect only fires once on phoneTokenState
+  // resolution (and once on unmount). isPhoneStale still drives UI rendering
+  // via the state value below.
+  const isPhoneStaleRef = useRef(false);
+  // Keep the ref in lockstep with the state. useEffect runs after commit so
+  // any code reading the ref BEFORE the next render sees the post-commit
+  // value; handleMessage only reads it inside async WS message dispatch (well
+  // after commit), so the synchronisation timing is safe.
+  useEffect(() => { isPhoneStaleRef.current = isPhoneStale; }, [isPhoneStale]);
 
   // Auto-reconnect watchdog REMOVED (2026-05-22, dispatch #3). The defensive
   // watchdog added earlier today was firing without explicit user intent and
@@ -1064,7 +1084,10 @@ export function usePhoneBridge() {
         // If the phone was previously marked stale, clear the flag now that
         // it responded. The 5s stale-check effect below will also clear it
         // on its next tick — this just makes recovery instant.
-        if (isPhoneStale) {
+        // Dispatch #31: read via ref (not state) so handleMessage stays stable
+        // across stale-flag flips. See the isPhoneStaleRef declaration block
+        // for the full rationale (tight DISCONNECT_PHONE loop diagnosis).
+        if (isPhoneStaleRef.current) {
           setIsPhoneStale(false);
           setIsConnected(true);
         }
@@ -1073,7 +1096,13 @@ export function usePhoneBridge() {
         break;
       }
     }
-  }, [startCallTimer, stopCallTimer, isPhoneStale]);
+    // Dispatch #31 (2026-05-25): isPhoneStale REMOVED from this dep list.
+    // Reading via isPhoneStaleRef.current means handleMessage no longer
+    // re-creates when the stale flag toggles, which in turn keeps the
+    // `connect` callback stable and prevents the auto-relay-connect effect
+    // (line ~1958) from running its cleanup (which sends DISCONNECT_PHONE
+    // to the relay). See the loop write-up in the isPhoneStaleRef block.
+  }, [startCallTimer, stopCallTimer]);
 
   // Connect to phone WebSocket
   const connect = useCallback((url?: string) => {
