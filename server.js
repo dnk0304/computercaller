@@ -520,6 +520,19 @@ function startRelay(httpServer) {
           }
           return;
         }
+        // Control plane — explicit user-leaves-pair signal from the phone
+        // (APK Disconnect button, v20+). Symmetric to the browser-side
+        // handler below. terminateActivePair will broadcast
+        // PAIRING_TERMINATED:{reason:'user_left'} to the browser so its UI
+        // flips back to the lobby state.
+        if (msg.startsWith('LEAVE_ACTIVE:')) {
+          if (ws === room.active.phone) {
+            terminateActivePair(room, 'user_left');
+          } else {
+            console.log(`[Relay][${token}] LEAVE_ACTIVE from non-active phone — ignored`);
+          }
+          return;
+        }
 
         // Data plane — only allowed when this socket is the active phone.
         if (ws === room.active.phone) {
