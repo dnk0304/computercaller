@@ -182,6 +182,13 @@
     <string name="perm_name_auto_revoke">Keep permissions when unused</string>
     <string name="perm_why_auto_revoke">Stops Android from silently revoking call/SMS access if the app sits in the background for days.</string>
 
+    <!-- 2-mode BT audio routing (2026-05-25). Soft permission — the app
+         works fine without it; only the "Speak through PC" routing mode
+         is disabled when BLUETOOTH_CONNECT is not granted, since we can't
+         read HFP profile state or device names without it. -->
+    <string name="perm_name_bluetooth_connect">Nearby Bluetooth devices</string>
+    <string name="perm_why_bluetooth_connect">Route call audio to your PC over Bluetooth (HFP). Without this, only Phone Earpiece / Phone Speaker work.</string>
+
     <!-- =================================================== -->
     <!-- Hard Reset — manual escape hatch for the "Samsung    -->
     <!-- silently revoked something" class of bugs. Wipes     -->

@@ -24,6 +24,38 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
 
+    <!--
+      Bluetooth permissions (2-mode audio routing — dispatch 2026-05-25).
+      Two SDK tiers because Google split BT manifest perms at API 31.
+
+      Pre-API 31 (Android 11 and below):
+        BLUETOOTH        — required to connect to / interact with an already-
+                           paired BT-HFP headset (i.e. read connection state).
+        BLUETOOTH_ADMIN  — required for SCO management (startBluetoothSco etc.).
+      Both are declared with maxSdkVersion="30" so they don't fight with the
+      new runtime-grant model on 31+.
+
+      API 31+ (Android 12 onwards):
+        BLUETOOTH_CONNECT — runtime grant. Required to (a) call
+                            BluetoothAdapter.getProfileProxy / register
+                            BluetoothHeadset state listeners, and (b) read
+                            BluetoothDevice.getName() so we can show the
+                            user "Connected to <device>" in the UI.
+
+      The app does NOT scan / pair BT devices itself — Dennis pairs his PC
+      via the system Settings, then our service just observes the resulting
+      HFP profile state and routes call audio over the SCO channel. So
+      BLUETOOTH_SCAN is intentionally NOT declared (would require additional
+      runtime grant + neverForLocation flag for no functional gain).
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30"/>
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+
     <!-- Foreground service permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>

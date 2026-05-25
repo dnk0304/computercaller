@@ -69,7 +69,25 @@ android {
         // Diagnostic logcat upgrade: every CALL_* emission now logs
         // number=[...] state=... source=[modern|legacy] so future
         // logcat captures can pinpoint which path delivered.
-        versionCode = 21
+        //
+        // 2-mode BT audio routing (2026-05-25): 21 → 22. The 3-pill
+        // AudioSourceToggle (earpiece | speaker | pc-stub) is replaced by
+        // a 2-mode UX: "Speak through phone" (with nested earpiece/speaker
+        // sub-toggle) and "Speak through PC" (gated by BT-HFP profile
+        // connection). PC mode routes call audio over the SCO channel via
+        // AudioManager.startBluetoothSco(). The phone now observes BT-HFP
+        // connection state via a BluetoothHeadset profile-proxy +
+        // ACTION_CONNECTION_STATE_CHANGED broadcast receiver, and pushes
+        // BT_HEADSET_STATUS:{connected, deviceName} to the browser on every
+        // state transition so the toggle can auto-light when the PC pairs
+        // and auto-gate when it drops. New WS command shape:
+        // SET_AUDIO_SOURCE:earpiece|speaker|bluetooth. Legacy SET_SPEAKER
+        // remains as an alias so older browser builds still toggle the
+        // speaker correctly. Permission additions: BLUETOOTH_CONNECT
+        // (API 31+ runtime grant — required to read device names + call
+        // getProfileProxy / registerReceiver for HFP state) plus the
+        // legacy BLUETOOTH + BLUETOOTH_ADMIN with maxSdkVersion=30.
+        versionCode = 22
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -421,6 +421,38 @@ class PhoneService : Service() {
     /** Public read-only accessor for MainActivity's status polling loop. */
     fun getIsPairActive(): Boolean = isPairActive
 
+    // -----------------------------------------------------------------------
+    // 2-mode BT audio routing (dispatch 2026-05-25).
+    //
+    // The "Speak through PC" toggle on the browser side routes call audio
+    // over a Bluetooth Hands-Free Profile (HFP) link to the user's PC.
+    // We don't initiate pairing — the user pairs phone↔PC via system
+    // Settings. We OBSERVE the resulting HFP connection state via:
+    //   1. A BluetoothHeadset profile-proxy (gives us the current device
+    //      list at any moment).
+    //   2. A broadcast receiver on BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED
+    //      (notifies us of every state transition so we can push
+    //      BT_HEADSET_STATUS to the browser in real time).
+    //
+    // Both observers are gated on BLUETOOTH_CONNECT (API 31+) — without it
+    // we silently degrade to "BT mode unavailable" rather than crashing.
+    // -----------------------------------------------------------------------
+
+    /** Profile-proxy handle. Acquired via BluetoothAdapter.getProfileProxy
+     *  in onCreate, released in onDestroy. Null until the platform calls
+     *  back onServiceConnected (async — typically <50ms). */
+    private var bluetoothHeadset: android.bluetooth.BluetoothHeadset? = null
+
+    /** Receiver for ACTION_CONNECTION_STATE_CHANGED. Held as a field so
+     *  onDestroy can unregister cleanly. */
+    private var bluetoothHeadsetReceiver: android.content.BroadcastReceiver? = null
+
+    /** Cached current state — pushed to the browser whenever it changes
+     *  AND whenever a new browser pairing becomes active so the UI lights
+     *  up correctly on its initial render. */
+    private var btHeadsetConnected: Boolean = false
+    private var btHeadsetDeviceName: String? = null
+
     /**
      * Layered speakerphone toggle. On Android 12+ (API 31), the legacy
      * `AudioManager.isSpeakerphoneOn` is deprecated and on many OEM builds
@@ -487,10 +519,274 @@ class PhoneService : Service() {
             }
             @Suppress("DEPRECATION")
             run { audioManager.isSpeakerphoneOn = false }
+            // Tear down any in-progress SCO link too — when the call ends we
+            // want to release the BT mic/spk slot whether the user was on PC
+            // mode or not. Cheap no-op if SCO was never started.
+            try {
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = false
+            } catch (e: Exception) {
+                // Some OEMs throw SecurityException if SCO was never started.
+                android.util.Log.d("PhoneService", "stopBluetoothSco on call-end: ${e.message}")
+            }
             audioManager.mode = android.media.AudioManager.MODE_NORMAL
         } catch (e: Exception) {
             android.util.Log.w("PhoneService", "clearSpeakerphoneOnEnd failed: ${e.message}")
         }
+    }
+
+    /**
+     * Bluetooth-SCO routing for the "Speak through PC" mode.
+     *
+     * SCO (Synchronous Connection-Oriented) is the BT audio channel used
+     * by Hands-Free Profile (HFP) — the same channel a wireless headset
+     * uses for phone-call audio. When the user pairs their phone with
+     * their PC over BT-HFP, Windows / macOS exposes the SCO link as a
+     * regular audio device, so call audio routed through it shows up on
+     * the PC speakers and mic.
+     *
+     * Why startBluetoothSco() and not setCommunicationDevice(TYPE_BLUETOOTH_SCO)?
+     *   The modern setCommunicationDevice path is gated on the SCO link
+     *   being already up — and the link only comes up after startBluetoothSco
+     *   on most OEM stacks. Calling both is safe and gives the best
+     *   coverage across Samsung / Pixel / OnePlus.
+     *
+     * Same MODE_IN_COMMUNICATION caveat as applySpeakerphone — the system
+     * dialer owns MODE_IN_CALL; we use COMMUNICATION as the best we can
+     * do without becoming the default dialer.
+     *
+     * No-op on devices where BT-HFP isn't available (BluetoothAdapter null,
+     * or no HFP-capable device paired). Caller (SET_AUDIO_SOURCE handler)
+     * is responsible for gating — but we defensive-try the route anyway,
+     * since the worst case is a logged failure and the user's call stays
+     * on whatever the previous route was.
+     */
+    private fun applyBluetoothSco(enabled: Boolean) {
+        try {
+            val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+
+            if (enabled) {
+                // 1. Start the SCO link. This is async — the BT stack takes
+                //    ~500-1500ms to negotiate; setBluetoothScoOn(true) primes
+                //    the routing for when SCO_AUDIO_STATE_CONNECTED arrives.
+                @Suppress("DEPRECATION")
+                audioManager.startBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = true
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = false
+
+                // 2. Modern API (API 31+): also pin the communication device
+                //    explicitly. Some OEMs ignore the legacy startSco call
+                //    once the system dialer is mid-call; the modern path
+                //    sidesteps that. Best-effort — failure leaves the legacy
+                //    path doing the work.
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    val scoDevice = audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+                    }
+                    if (scoDevice != null) {
+                        val ok = audioManager.setCommunicationDevice(scoDevice)
+                        android.util.Log.d("PhoneService", "applyBluetoothSco modern (on): setCommunicationDevice=$ok type=${scoDevice.type}")
+                    } else {
+                        android.util.Log.w("PhoneService", "applyBluetoothSco modern: no SCO/BLE communication device available — falling back to legacy startBluetoothSco only")
+                    }
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = false
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    audioManager.clearCommunicationDevice()
+                }
+            }
+
+            android.util.Log.d("PhoneService", "applyBluetoothSco applied: enabled=$enabled, audioMode=${audioManager.mode}, isBluetoothScoOn=${audioManager.isBluetoothScoOn}")
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "applyBluetoothSco failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Unified audio-source dispatcher. Called by the new SET_AUDIO_SOURCE
+     * command (replaces the 3-pill toggle's separate SET_SPEAKER command,
+     * which is retained as a legacy alias). The browser side knows about
+     * three terminal values:
+     *
+     *   - "earpiece"   — phone earpiece. Default.
+     *   - "speaker"    — phone loudspeaker.
+     *   - "bluetooth"  — route over the BT-HFP SCO link to the user's PC.
+     *
+     * Each terminal cleanly tears down the OTHER routings before applying
+     * its own — switching from speaker to bluetooth must drop the speaker
+     * route, not stack on top of it. The atomic order matters: clear
+     * legacy speaker / BT, then apply the target.
+     */
+    private fun applyAudioSource(source: String) {
+        currentCallSpeaker = (source == "speaker")
+        when (source) {
+            "earpiece" -> {
+                applyBluetoothSco(false)
+                applySpeakerphone(false)
+            }
+            "speaker" -> {
+                applyBluetoothSco(false)
+                applySpeakerphone(true)
+            }
+            "bluetooth" -> {
+                applySpeakerphone(false)
+                applyBluetoothSco(true)
+            }
+            else -> {
+                android.util.Log.w("PhoneService", "applyAudioSource: unknown source '$source' — ignoring")
+            }
+        }
+    }
+
+    /**
+     * Acquire the BluetoothHeadset profile proxy + register a state-change
+     * receiver so we can push BT_HEADSET_STATUS to the browser whenever
+     * the HFP link comes up or goes down.
+     *
+     * Gated on BLUETOOTH_CONNECT (API 31+) — pre-API-31 the manifest
+     * declares legacy BLUETOOTH + BLUETOOTH_ADMIN with maxSdkVersion=30
+     * so this works without a runtime grant on older devices.
+     *
+     * Initial state is pushed to the browser via the existing onConnected
+     * pair-active path (see broadcastBtHeadsetStatus); the first push
+     * after pairing happens automatically on the next state-change
+     * broadcast.
+     */
+    private fun registerBluetoothHeadsetObserver() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) !=
+                    android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    android.util.Log.d("PhoneService", "registerBluetoothHeadsetObserver: BLUETOOTH_CONNECT not granted — skipping (BT-PC mode will stay disabled)")
+                    return
+                }
+            }
+
+            val bluetoothManager = getSystemService(android.content.Context.BLUETOOTH_SERVICE)
+                as? android.bluetooth.BluetoothManager
+            val adapter = bluetoothManager?.adapter
+            if (adapter == null) {
+                android.util.Log.d("PhoneService", "registerBluetoothHeadsetObserver: no BluetoothAdapter (device has no BT hardware)")
+                return
+            }
+
+            // 1. Profile-proxy — gives us getConnectedDevices() at any moment.
+            adapter.getProfileProxy(
+                this,
+                object : android.bluetooth.BluetoothProfile.ServiceListener {
+                    override fun onServiceConnected(profile: Int, proxy: android.bluetooth.BluetoothProfile) {
+                        if (profile == android.bluetooth.BluetoothProfile.HEADSET) {
+                            bluetoothHeadset = proxy as android.bluetooth.BluetoothHeadset
+                            // Initial-state snapshot — if the user paired BEFORE
+                            // we registered (typical), the broadcast receiver
+                            // won't have fired yet so seed from the proxy's
+                            // current device list.
+                            try {
+                                val connected = proxy.connectedDevices?.firstOrNull()
+                                updateBtHeadsetState(connected != null, connected)
+                            } catch (sec: SecurityException) {
+                                android.util.Log.w("PhoneService", "BluetoothHeadset.connectedDevices SecurityException: ${sec.message}")
+                            }
+                            android.util.Log.d("PhoneService", "BluetoothHeadset proxy connected: initial connected=$btHeadsetConnected device=$btHeadsetDeviceName")
+                        }
+                    }
+
+                    override fun onServiceDisconnected(profile: Int) {
+                        if (profile == android.bluetooth.BluetoothProfile.HEADSET) {
+                            bluetoothHeadset = null
+                            android.util.Log.d("PhoneService", "BluetoothHeadset proxy disconnected")
+                        }
+                    }
+                },
+                android.bluetooth.BluetoothProfile.HEADSET
+            )
+
+            // 2. ACTION_CONNECTION_STATE_CHANGED — fires on every HFP up/down
+            //    transition. Single source of truth for the browser-side state.
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
+                    if (intent?.action != android.bluetooth.BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED) return
+                    val state = intent.getIntExtra(android.bluetooth.BluetoothHeadset.EXTRA_STATE, -1)
+                    val device: android.bluetooth.BluetoothDevice? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(android.bluetooth.BluetoothDevice.EXTRA_DEVICE, android.bluetooth.BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(android.bluetooth.BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    val connected = state == android.bluetooth.BluetoothProfile.STATE_CONNECTED
+                    updateBtHeadsetState(connected, if (connected) device else null)
+                    android.util.Log.d("PhoneService", "ACTION_CONNECTION_STATE_CHANGED: state=$state connected=$connected device=$btHeadsetDeviceName")
+
+                    // If the user was on bluetooth audio mode and the HFP
+                    // link just died mid-call, the browser will switch the
+                    // toggle back to phone-earpiece on receipt of the
+                    // BT_HEADSET_STATUS push. Defensive: also drop our
+                    // local SCO routing so the call doesn't go silent.
+                    if (!connected) {
+                        applyBluetoothSco(false)
+                    }
+                }
+            }
+            val filter = android.content.IntentFilter(
+                android.bluetooth.BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED
+            )
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(receiver, filter)
+            }
+            bluetoothHeadsetReceiver = receiver
+            android.util.Log.d("PhoneService", "BluetoothHeadset state observer registered")
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "registerBluetoothHeadsetObserver failed: ${e.message}", e)
+        }
+    }
+
+    /** Centralised state writer + browser push. Always re-emits on change so
+     *  the browser-side toggle can auto-light when the user pairs the PC. */
+    private fun updateBtHeadsetState(connected: Boolean, device: android.bluetooth.BluetoothDevice?) {
+        val newName: String? = if (connected && device != null) {
+            try {
+                // getName() throws SecurityException on API 31+ if BLUETOOTH_CONNECT
+                // isn't granted — graceful fallback to "Bluetooth device".
+                device.name ?: "Bluetooth device"
+            } catch (sec: SecurityException) {
+                "Bluetooth device"
+            }
+        } else null
+
+        val changed = (connected != btHeadsetConnected) || (newName != btHeadsetDeviceName)
+        btHeadsetConnected = connected
+        btHeadsetDeviceName = newName
+        if (changed) {
+            broadcastBtHeadsetStatus()
+        }
+    }
+
+    /** Push current BT_HEADSET_STATUS to the browser. Safe to call when no
+     *  client is connected — sendResponse degrades to a logged no-op. */
+    private fun broadcastBtHeadsetStatus() {
+        val isViaClient = client?.isOpen == true
+        sendResponse(
+            "BT_HEADSET_STATUS",
+            mapOf(
+                "connected" to btHeadsetConnected,
+                "deviceName" to (btHeadsetDeviceName ?: "")
+            ),
+            isViaClient
+        )
+        android.util.Log.d("PhoneService", "BT_HEADSET_STATUS broadcast: connected=$btHeadsetConnected deviceName=$btHeadsetDeviceName")
     }
 
     /**
@@ -789,6 +1085,13 @@ class PhoneService : Service() {
                 isViaClient
             )
         }
+
+        // 2-mode BT audio routing (2026-05-25): acquire the BluetoothHeadset
+        // profile proxy + register the connection-state-changed receiver.
+        // Best-effort — falls through to a logged warning + disabled
+        // BT-PC mode on devices without BT hardware or without the
+        // BLUETOOTH_CONNECT runtime grant.
+        registerBluetoothHeadsetObserver()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -2080,9 +2383,29 @@ class PhoneService : Service() {
                     callHandler.endCall()
                 }
                 "SET_SPEAKER" -> {
+                    // Legacy alias retained for backward compat with older
+                    // browser builds that haven't been redeployed to the
+                    // 2-mode SET_AUDIO_SOURCE shape yet. New browser sends
+                    // SET_AUDIO_SOURCE:earpiece|speaker|bluetooth instead.
                     val enabled = (payload?.get("enabled") as? Boolean) ?: false
-                    currentCallSpeaker = enabled
-                    applySpeakerphone(enabled)
+                    applyAudioSource(if (enabled) "speaker" else "earpiece")
+                }
+                "SET_AUDIO_SOURCE" -> {
+                    // 2-mode toggle. Browser sends one of "earpiece" /
+                    // "speaker" / "bluetooth". applyAudioSource validates
+                    // and cleanly tears down the other two routings before
+                    // applying the target so we never stack speakerphone
+                    // on top of SCO etc.
+                    val source = (payload?.get("source") as? String) ?: "earpiece"
+                    applyAudioSource(source)
+                    android.util.Log.d("PhoneService", "SET_AUDIO_SOURCE applied: source=$source")
+                }
+                "GET_BT_HEADSET_STATUS" -> {
+                    // Browser asks for an immediate snapshot — typically on
+                    // pair-active to populate the toggle's enabled/disabled
+                    // state before the first ACTION_CONNECTION_STATE_CHANGED
+                    // broadcast lands.
+                    broadcastBtHeadsetStatus()
                 }
                 "SEND_DTMF" -> {
                     // Webapp Quick Dial dialpad routed a key-press through the
@@ -2580,6 +2903,28 @@ class PhoneService : Service() {
         // don't leak this Service instance after destroy.
         DnkNotificationListenerService.onMessageNotification = null
         DnkNotificationListenerService.onNotificationRemovedCb = null
+
+        // 2-mode BT audio routing (2026-05-25): release the BluetoothHeadset
+        // profile proxy + unregister the connection-state-changed receiver.
+        // Skipping either leaks a binder reference through the BT stack
+        // until the next service restart.
+        try {
+            bluetoothHeadsetReceiver?.let { unregisterReceiver(it) }
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "bluetoothHeadsetReceiver was not registered: ${e.message}")
+        }
+        bluetoothHeadsetReceiver = null
+        try {
+            val bluetoothManager = getSystemService(android.content.Context.BLUETOOTH_SERVICE)
+                as? android.bluetooth.BluetoothManager
+            val adapter = bluetoothManager?.adapter
+            bluetoothHeadset?.let { proxy ->
+                adapter?.closeProfileProxy(android.bluetooth.BluetoothProfile.HEADSET, proxy)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "closeProfileProxy(HEADSET) failed: ${e.message}")
+        }
+        bluetoothHeadset = null
     }
 }
 

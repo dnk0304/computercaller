@@ -259,6 +259,25 @@ object PermissionChecker {
             missingIntent = appDetailsIntent(context),
         )
 
+        // 9b. Bluetooth Connect — SOFT (API 31+ runtime grant only).
+        //     Gates the "Speak through PC" call-audio mode. Without it we
+        //     can't read BT-HFP profile state or device names. The earpiece
+        //     and phone-speaker modes work regardless of this grant, so the
+        //     app remains usable — the PC-audio toggle just stays disabled
+        //     with a helper telling the user to grant Nearby devices in
+        //     Settings if they want to use it.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            items += statusItem(
+                context,
+                id = "bluetooth_connect",
+                granted = isGranted(context, Manifest.permission.BLUETOOTH_CONNECT),
+                requiredWhenMissing = false,
+                displayNameRes = R.string.perm_name_bluetooth_connect,
+                whyRes = R.string.perm_why_bluetooth_connect,
+                missingIntent = appDetailsIntent(context),
+            )
+        }
+
         // 10. Battery optimization — SOFT (Samsung-soft per v18 spec).
         items += statusItem(
             context,
@@ -462,6 +481,23 @@ object PermissionChecker {
                 manifestPermission = Manifest.permission.CAMERA,
                 displayName = context.getString(R.string.perm_name_camera),
                 why = context.getString(R.string.perm_why_camera),
+                intent = appDetailsIntent(context),
+            )
+        }
+
+        // 9b. BLUETOOTH_CONNECT — API 31+ runtime, soft. Surfaced when the
+        //     user hasn't granted Nearby devices and "Speak through PC"
+        //     would otherwise stay greyed out with no explanation. Soft
+        //     classification — earpiece/speaker modes still work.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !isGranted(context, Manifest.permission.BLUETOOTH_CONNECT)
+        ) {
+            missing += MissingPermission(
+                id = "bluetooth_connect",
+                kind = Kind.RUNTIME,
+                manifestPermission = Manifest.permission.BLUETOOTH_CONNECT,
+                displayName = context.getString(R.string.perm_name_bluetooth_connect),
+                why = context.getString(R.string.perm_why_bluetooth_connect),
                 intent = appDetailsIntent(context),
             )
         }
