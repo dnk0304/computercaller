@@ -19,7 +19,12 @@ datasource db {
 model User {
   id                String    @id @default(cuid())
   email             String    @unique
-  passwordHash      String
+  // passwordHash — nullable as of dispatch #36 (2026-05-25). Google-OAuth-only
+  // users have no password set. Email/password users retain a hash; users who
+  // started one way and later linked the other (authProvider = 'both') keep
+  // their hash. The /api/auth/login route returns a clear "use Google" 400 if
+  // a user with passwordHash=null tries to sign in via the password form.
+  passwordHash      String?
   emailVerified     Boolean   @default(false)
   emailVerifyToken  String?
   resetToken        String?
@@ -32,6 +37,15 @@ model User {
   // whose `ver` no longer matches the DB column is rejected → effectively a
   // single-active-session policy (dispatch #27, 2026-05-24, Option III).
   sessionVersion    Int       @default(0)
+  // Google OAuth (dispatch #36, 2026-05-25).
+  // googleId      — Google's stable user identifier (the `sub` claim from the
+  //                 ID token). Nullable for legacy email/password-only users.
+  //                 @unique enforces one Google identity per app account.
+  // authProvider  — 'email' | 'google' | 'both'. Drives UX hints and the
+  //                 lib/auth login path. 'both' = the user signed up one way
+  //                 and later linked the other on the same email.
+  googleId          String?   @unique
+  authProvider      String    @default("email")
   subscription      Subscription?
 }
 
