@@ -221,6 +221,16 @@
     <!-- to SignInActivity. Phase 4 work — exposed via MainActivity.     -->
     <string name="action_sign_out">Sign out</string>
 
+    <!-- Dispatch #34 (v20, 2026-05-25) — phone-initiated active-pair    -->
+    <!-- teardown. Sits above Sign Out in the action stack. Tapping      -->
+    <!-- ends the current pair (browser flips back to "Phone in lobby") -->
+    <!-- but keeps the phone signed in and connected to the relay, so   -->
+    <!-- the browser can immediately re-Connect without the user        -->
+    <!-- re-signing-in on the phone. Visible only while a pair is       -->
+    <!-- active (i.e. PhoneService.getIsPairActive() == true).           -->
+    <string name="action_disconnect_pair">Disconnect</string>
+    <string name="action_disconnect_pair_hint">End this session but stay signed in</string>
+
     <!-- Relay-status surface — replaces the LAN-IP / QR plate after     -->
     <!-- Phase 4 lands. The Kotlin side feeds these into the status row. -->
     <string name="relay_status_waiting">Waiting for browser…</string>

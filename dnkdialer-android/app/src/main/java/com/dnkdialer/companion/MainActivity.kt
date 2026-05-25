@@ -117,6 +117,15 @@ class MainActivity : AppCompatActivity() {
     // flight — don't let the user spam reconnects).
     private lateinit var reconnectButton: Button
 
+    // Dispatch #34 (v20) — Disconnect button (terminates the active
+    // pair without signing out). Hoisted to a field so updateStatus()
+    // and handleRelayPhaseChanged() can flip visibility based on the
+    // PhoneService.isPairActive lifecycle without re-finding the view.
+    // VISIBLE only when there's an actual pair to disconnect from
+    // (relay OPEN + isPairActive=true); GONE in lobby/idle/connecting/
+    // failed states so the user doesn't see a dead button.
+    private lateinit var disconnectPairButton: Button
+
     // Diagnostic surfacing for the LAN flow.
     // Target line + failure line stay GONE in steady-state; only the
     // CONNECTING / FAILED phases populate them. Useful when the user
@@ -404,6 +413,39 @@ class MainActivity : AppCompatActivity() {
             openNotificationSettings()
         }
 
+        // Dispatch #34 (v20) — Disconnect (active pair only) button.
+        // Sits above Sign Out. Tapping ends the current pair without
+        // signing out: phone stays signed in, returns to lobby state,
+        // browser flips back to "Phone in lobby — ready to pair", can
+        // re-Connect from browser without phone re-sign-in.
+        // Visibility is gated on PhoneService.isPairActive — initial
+        // state is GONE (XML default) until updateStatus() picks up
+        // the first LIVE poll after the service binds.
+        disconnectPairButton = findViewById(R.id.disconnectPairButton)
+        disconnectPairButton.setOnClickListener {
+            val pairActive = phoneService?.getIsPairActive() == true
+            if (!pairActive) {
+                // Defensive — the button should be hidden when there's
+                // no active pair, but if a stale tap lands during the
+                // ~1 polling-cycle window between PAIRING_TERMINATED
+                // and the next updateStatus(), do nothing.
+                android.util.Log.d("MainActivity", "Disconnect tapped with no active pair — ignoring")
+                return@setOnClickListener
+            }
+            android.util.Log.d("MainActivity", "Disconnect (active pair) tapped")
+            phoneService?.leaveActivePair()
+            // Optimistic UI — hide the button immediately and flip the
+            // status row to lobby copy so the user gets feedback without
+            // waiting for the server roundtrip. The PAIRING_TERMINATED
+            // frame coming back from the relay will reconcile via the
+            // existing PhoneService handler → isPairActive=false →
+            // updateStatus() lobby branch (idempotent with what we set
+            // here).
+            disconnectPairButton.visibility = View.GONE
+            statusText.text = getString(R.string.pair_lobby_status)
+            setStatusVisual(ConnState.WAITING)
+        }
+
         // Dispatch #29 — disconnectButton repurposed as Sign Out.
         // Old behavior: polite-close LAN clients + stop service + restart
         // service after 1500ms (dispatch #6/#9/#23 lineage). With no LAN
@@ -634,6 +676,12 @@ class MainActivity : AppCompatActivity() {
             // Sign Out button stays visible regardless of phase so the
             // user can always escape a wedged state.
             reconnectButton.visibility = View.GONE
+            // Dispatch #34 — Disconnect button hidden in CONNECTING /
+            // FAILED phases: there's no active pair to disconnect from
+            // (the relay socket itself is mid-handshake or wedged).
+            if (::disconnectPairButton.isInitialized) {
+                disconnectPairButton.visibility = View.GONE
+            }
             return
         }
 
@@ -683,9 +731,21 @@ class MainActivity : AppCompatActivity() {
             setStatusVisual(conn)
 
             reconnectButton.visibility = View.GONE
+            // Dispatch #34 — Disconnect button is visible iff there's an
+            // active pair to disconnect from. Reuses the same pairActive
+            // signal that drives the status copy above so the button and
+            // the copy can't disagree.
+            if (::disconnectPairButton.isInitialized) {
+                disconnectPairButton.visibility = if (pairActive) View.VISIBLE else View.GONE
+            }
             android.util.Log.d("MainActivity", "Status updated: ${statusText.text}")
         } else {
             reconnectButton.visibility = View.GONE
+            // Dispatch #34 — service not bound → no relay session → no
+            // pair possible. Disconnect hidden.
+            if (::disconnectPairButton.isInitialized) {
+                disconnectPairButton.visibility = View.GONE
+            }
             statusText.text = getString(R.string.status_service_not_running)
             setStatusVisual(ConnState.IDLE)
             android.util.Log.d("MainActivity", "Status updated: Service not running")

@@ -192,6 +192,36 @@
             android:visibility="gone"
             android:layout_marginTop="@dimen/space_24" />
 
+        <!-- Disconnect (active pair) — dispatch #34 / v20.
+             Sits ABOVE Sign Out in the action stack. Sign Out clears the
+             saved login on the phone; Disconnect terminates the current
+             ACTIVE pair without signing out. Phone stays signed in,
+             returns to lobby state, browser flips back to "Phone in
+             lobby — ready to pair". Visible only when a pair is active
+             (PhoneService.getIsPairActive() == true); MainActivity hides
+             this in lobby/idle/connecting/failed states via updateStatus
+             + handleRelayPhaseChanged so the only time the user sees
+             this affordance is when there's actually something to
+             disconnect FROM.
+             Styled subtly (smaller height + tertiary text color) so it
+             reads as a finer "drop this session" action than Sign Out
+             which is the bigger "leave entirely" affordance below it. -->
+        <Button
+            android:id="@+id/disconnectPairButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/button_height_small"
+            android:text="@string/action_disconnect_pair"
+            android:textSize="@dimen/text_body"
+            android:textAllCaps="false"
+            android:textColor="@color/text_tertiary"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="0.02"
+            android:background="@drawable/bg_button_ghost"
+            android:stateListAnimator="@null"
+            android:visibility="gone"
+            android:layout_marginTop="@dimen/space_24"
+            tools:visibility="visible" />
+
         <!-- Sign Out — repurposed from the old disconnectButton id.
              MainActivity rebinds the click handler to clear TokenStore
              + relaunch SignInActivity. Same id keeps the existing
@@ -208,7 +238,7 @@
             android:letterSpacing="0.02"
             android:background="@drawable/bg_button_ghost"
             android:stateListAnimator="@null"
-            android:layout_marginTop="@dimen/space_24" />
+            android:layout_marginTop="@dimen/space_12" />
 
         <Button
             android:id="@+id/enable_notifications_button"

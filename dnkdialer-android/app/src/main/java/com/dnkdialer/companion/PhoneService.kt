@@ -1768,6 +1768,59 @@ class PhoneService : Service() {
         }
     }
 
+    /**
+     * Dispatch #34 (v20, 2026-05-25) — phone-initiated active-pair
+     * teardown. Sibling to [disconnectRelay] but narrower in scope:
+     * ends only the CURRENT pair claim, NOT the relay socket itself.
+     *
+     * After this call:
+     *   - The relay client stays connected → phone remains in the lobby
+     *     and is immediately re-pairable by the browser.
+     *   - The user stays signed in on the phone (no TokenStore wipe).
+     *   - The browser receives PAIRING_TERMINATED:{reason:"user_left"}
+     *     and flips its UI back to the "Phone in lobby" affordance.
+     *   - Our local [isPairActive] flag is left for the relay's reply
+     *     (PAIRING_TERMINATED handler at line ~1935) to flip — that's
+     *     the authoritative source. MainActivity optimistically hides
+     *     the Disconnect button without waiting; the polling status
+     *     loop then reconciles when the relay frame arrives.
+     *
+     * Wire frame: `LEAVE_ACTIVE:{}` — chosen to mirror the browser-side
+     * Disconnect button which sends the same frame to terminate from
+     * its end.
+     *
+     * Forward-compat note: as of this dispatch, server.js only accepts
+     * `LEAVE_ACTIVE` from the active BROWSER socket (server.js:606-613,
+     * `if (ws === room.active.browser)` — non-browser LEAVE_ACTIVE is
+     * logged and dropped). A matching server.js change is required for
+     * the phone-side teardown to actually terminate the pair on the
+     * relay. Until that lands, this send is forward-compatible no-op:
+     * the relay sees the frame and ignores it (it falls through to the
+     * data-plane forward path which broadcasts it to the active browser,
+     * which has no inbound LEAVE_ACTIVE handler either). Surfaced as a
+     * follow-up in the dispatch return.
+     */
+    fun leaveActivePair() {
+        android.util.Log.d("PhoneService", "User-initiated leave of active pair (relay stays connected)")
+        // Send LEAVE_ACTIVE over the relay client. Format matches the
+        // browser-side outbound (see hooks/usePhoneBridge.ts leaveActive()).
+        if (client?.isOpen == true) {
+            try {
+                client?.send("LEAVE_ACTIVE:{}")
+                android.util.Log.d("PhoneService", "LEAVE_ACTIVE sent")
+            } catch (e: Exception) {
+                android.util.Log.e("PhoneService", "Failed to send LEAVE_ACTIVE: ${e.message}", e)
+            }
+        } else {
+            android.util.Log.w("PhoneService", "leaveActivePair: relay client not open — nothing to send")
+        }
+        // Do NOT close the relay client. Do NOT null clientRelayUrl. Do
+        // NOT touch the TokenStore. Phone stays in lobby, ready to
+        // accept a new pairing. The PAIRING_TERMINATED reply (when the
+        // relay supports phone-side LEAVE_ACTIVE) will flip
+        // isPairActive=false via the existing handler at ~line 1935.
+    }
+
     // Dispatch #29 — restartServer() removed. With no LAN PhoneServer
     // there's nothing to "refresh" on port 8765. The relay-side equivalent
     // is reconnectToRelay() above. If a caller still references this

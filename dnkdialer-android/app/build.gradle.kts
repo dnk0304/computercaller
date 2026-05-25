@@ -48,7 +48,13 @@ android {
         // was replaced by PAIRING_ACTIVE/PAIRING_TERMINATED in v18). New
         // isPairActive flag on PhoneService tracks the lifecycle and the
         // status line now picks the right copy.
-        versionCode = 19
+        // Disconnect button (2026-05-25): 19 → 20. New "Disconnect" button
+        // above Sign Out lets the user terminate the current active pair
+        // without signing out — phone stays signed in + connected to the
+        // relay (returns to lobby state), browser flips back to "Phone in
+        // lobby — ready to pair". Wire frame: LEAVE_ACTIVE:{} (matches the
+        // browser-side outbound). Visible only while a pair is active.
+        versionCode = 20
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
