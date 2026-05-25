@@ -11,14 +11,46 @@ import path from 'node:path';
 // per-user telemetry into the APK build later.
 //
 // This route reads the APK from disk OUTSIDE the Next.js bundle
-// (apk-releases/ at the project root, gitignored) and streams it to the
-// browser only after JWT cookie verification. Anonymous requests get 401.
+// (apk-releases/ at the project root — see .gitignore for which files are
+// tracked) and streams it to the browser only after JWT cookie verification.
+// Anonymous requests get 401.
 //
 // Filename + version are surfaced via the X-CC-Apk-Version header so the
-// /app/settings UI can show "you're downloading vN.N.N".
+// /app/settings UI can show "you're downloading vN".
+//
+// Versioning: instead of hardcoding the filename, we scan apk-releases/ at
+// request time and pick the highest `computercaller-v<N>.apk` we find. The
+// strict regex (no hyphens between `v<digits>` and `.apk`) deliberately
+// excludes Play Store `.aab` bundles and bisect builds like
+// `computercaller-v14a-bisect-noreuseaddr.apk`. Adding a new release is a
+// drop-the-file-and-update-.gitignore operation — no code edit here.
 
-const APK_FILENAME = 'computercaller-v12.apk';
-const APK_VERSION = '1.0.0';
+const APK_DIR = 'apk-releases';
+const APK_PATTERN = /^computercaller-v(\d+)\.apk$/;
+
+type ApkEntry = { filename: string; version: number };
+
+function findLatestApk(dirAbsPath: string): ApkEntry | null {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dirAbsPath);
+  } catch (err) {
+    console.error('[apk download] readdir failed:', dirAbsPath, err);
+    return null;
+  }
+
+  let best: ApkEntry | null = null;
+  for (const name of entries) {
+    const match = APK_PATTERN.exec(name);
+    if (!match) continue;
+    const version = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(version)) continue;
+    if (!best || version > best.version) {
+      best = { filename: name, version };
+    }
+  }
+  return best;
+}
 
 export async function GET(req: NextRequest) {
   const token = req.cookies.get('auth_token')?.value;
@@ -31,22 +63,34 @@ export async function GET(req: NextRequest) {
   }
 
   // process.cwd() in Next.js standalone / dev is the project root.
-  const apkPath = path.join(process.cwd(), 'apk-releases', APK_FILENAME);
+  const apkDirAbs = path.join(process.cwd(), APK_DIR);
+  const latest = findLatestApk(apkDirAbs);
 
-  let stat: fs.Stats;
-  try {
-    stat = await fs.promises.stat(apkPath);
-  } catch {
-    // APK isn't on disk — surface a meaningful 503 instead of a generic 500.
-    // This is the "deploy box doesn't have apk-releases/ mounted" failure mode.
-    console.error('[apk download] missing file:', apkPath);
+  if (!latest) {
+    // Directory missing or no matching files. Surface a 503 — this is the
+    // "deploy box doesn't have apk-releases/ mounted" failure mode, or the
+    // .gitignore exception didn't include the file we expected.
+    console.error('[apk download] no APK found in:', apkDirAbs);
     return NextResponse.json(
       { error: 'APK temporarily unavailable. Please try again shortly.' },
       { status: 503 },
     );
   }
 
-  // Stream via a ReadableStream so we don't load the full 5MB into memory
+  const apkPath = path.join(apkDirAbs, latest.filename);
+
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.stat(apkPath);
+  } catch (err) {
+    console.error('[apk download] stat failed:', apkPath, err);
+    return NextResponse.json(
+      { error: 'APK temporarily unavailable. Please try again shortly.' },
+      { status: 503 },
+    );
+  }
+
+  // Stream via a ReadableStream so we don't load the full ~6MB into memory
   // for every download. fs.createReadStream → web-ReadableStream conversion
   // is built into modern Node and Next.
   const nodeStream = fs.createReadStream(apkPath);
@@ -60,8 +104,8 @@ export async function GET(req: NextRequest) {
     headers: {
       'Content-Type': 'application/vnd.android.package-archive',
       'Content-Length': String(stat.size),
-      'Content-Disposition': `attachment; filename="${APK_FILENAME}"`,
-      'X-CC-Apk-Version': APK_VERSION,
+      'Content-Disposition': `attachment; filename="${latest.filename}"`,
+      'X-CC-Apk-Version': String(latest.version),
       'Cache-Control': 'private, no-store',
     },
   });
