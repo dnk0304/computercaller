@@ -454,6 +454,52 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     sendSms,
   } = phone;
 
+  // 2-mode BT audio routing (2026-05-25). Destructured separately because the
+  // hook return type is wider than the codegen'd consumer surface in some
+  // builds — defensive `as any` cast keeps the type checker quiet without
+  // requiring a regen. Reads the live BT-HFP state pushed via BT_HEADSET_STATUS
+  // and the unified setAudioSource action that wires SET_AUDIO_SOURCE on the
+  // bridge.
+  const phoneAny = phone as unknown as {
+    setAudioSource?: (source: AudioSource) => void;
+    btHeadsetConnected?: boolean;
+    btHeadsetDeviceName?: string | null;
+  };
+  const btHeadsetConnected = phoneAny.btHeadsetConnected ?? false;
+  const btHeadsetDeviceName = phoneAny.btHeadsetDeviceName ?? null;
+
+  // Local mirror of the user's active audio source so re-renders are O(1)
+  // (no localStorage read per render). Initialised from the persisted default
+  // on mount; updates on every onChange both flip the local state AND
+  // forward the new value to the phone via setAudioSource.
+  const [audioSource, setAudioSourceLocal] = useState<AudioSource>(() => readAudioSourceDefault());
+
+  // Auto-revert PC mode to the user's last phone-mode choice when the BT-HFP
+  // link drops mid-call (or between calls). Without this, the user could pick
+  // up the next call with audioSource='bluetooth' but no actual SCO link —
+  // call would route silently / fail. The phone side defensively also drops
+  // SCO on disconnect (see PhoneService.kt registerBluetoothHeadsetObserver),
+  // but flipping the UI keeps the visual state honest.
+  useEffect(() => {
+    if (!btHeadsetConnected && audioSource === 'bluetooth') {
+      const fallback: AudioSource = 'earpiece';
+      setAudioSourceLocal(fallback);
+      writeAudioSourceDefault(fallback);
+      phoneAny.setAudioSource?.(fallback);
+    }
+  }, [btHeadsetConnected, audioSource, phoneAny]);
+
+  const handleChangeAudioSource = useCallback((next: AudioSource) => {
+    setAudioSourceLocal(next);
+    writeAudioSourceDefault(next);
+    phoneAny.setAudioSource?.(next);
+    // Notify any AudioSourcePill instances on the same page so their read-only
+    // mirror updates immediately (storage event only fires cross-tab).
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('dnkdialer:audio-source-changed'));
+    }
+  }, [phoneAny]);
+
   // Defensive cast for sendDtmf — the bridge exposes this on the return
   // surface but the hook's exported TS shape may not have been regenerated
   // in every consumer build. Pattern matches AppShell's quickSync cast.
@@ -1270,6 +1316,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               // ringing/dialing is a no-op at best and confusing at worst.
               canSendDtmf={currentCall.state === 'active' && typeof sendDtmf === 'function'}
               onOpenDialpad={() => setDtmfModalOpen(true)}
+              // 2-mode BT audio routing (2026-05-25). Live values from the
+              // bridge: btHeadsetConnected gates the "Speak through PC" pill,
+              // audioSource is the user's currently selected terminal,
+              // handleChangeAudioSource forwards SET_AUDIO_SOURCE to the
+              // phone and persists the default for the next call.
+              audioSource={audioSource}
+              onChangeAudioSource={handleChangeAudioSource}
+              btHeadsetConnected={btHeadsetConnected}
+              btHeadsetDeviceName={btHeadsetDeviceName}
             />
           )}
 
@@ -1729,22 +1784,33 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
 // ---------- Sub-components --------------------------------------------------
 
-// ---------- AudioSourceToggle ----------------------------------------------
+// ---------- AudioSourceToggle (2-mode) ------------------------------------
 //
-// Three-pill segmented control replacing the legacy single Speaker toggle
-// (2026-05-18). The old toggle was a single boolean that flipped the system
-// `SET_SPEAKER` route — unreliable on modern Android because the system
-// dialer fights us for the audio route (Phase A work landed on 2026-05-15
-// only mitigated this — it didn't eliminate the conflict). The three-pill
-// shape makes the limited reality explicit: you get earpiece or speaker on
-// the phone, and "PC Audio" is a known future feature.
+// 2-mode layout (dispatch 2026-05-25, supersedes the prior 3-pill design):
+//
+//   Mode 1: "Speak through phone"  (default, always available)
+//             └─ nested sub-toggle: Earpiece | Phone Speaker
+//   Mode 2: "Speak through PC"     (BT-HFP gated)
+//             └─ disabled with setup-guide modal until the user pairs their
+//                phone to their PC over Bluetooth. Auto-enables on
+//                BT_HEADSET_STATUS connected=true.
+//
+// Dennis's framing (verbatim): "If user chooses pc, they must connect their
+// phone to their pc so we can establish the bluetooth connection." So the
+// PC mode acts as a teaching surface as much as a routing toggle — the
+// first tap on a disabled "Speak through PC" opens the setup guide; the
+// toggle auto-lights when the pairing succeeds.
 //
 // Source-of-truth lives in localStorage under `dnkdialer_audio_source_default`
-// so the last choice survives reloads. The in-call instance is the only
-// interactive surface — the Quick Dial header shows a read-only pill that
-// reflects the current default at a glance.
+// so the last choice survives reloads. Legacy stored value 'pc' migrates to
+// 'earpiece' on read — the prior 3-pill PC option was a stub that never
+// actually routed audio, so persisting it post-migration would silently
+// route every new call to a non-functional mode.
+//
+// Type widening: 'pc' (stub) → 'bluetooth' (real BT-HFP route). The phone
+// receives the new value via SET_AUDIO_SOURCE:earpiece|speaker|bluetooth.
 
-type AudioSource = 'earpiece' | 'speaker' | 'pc';
+type AudioSource = 'earpiece' | 'speaker' | 'bluetooth';
 const AUDIO_SOURCE_KEY = 'dnkdialer_audio_source_default';
 const AUDIO_SOURCE_DEFAULT: AudioSource = 'earpiece';
 
@@ -1752,7 +1818,11 @@ function readAudioSourceDefault(): AudioSource {
   if (typeof window === 'undefined') return AUDIO_SOURCE_DEFAULT;
   try {
     const v = window.localStorage.getItem(AUDIO_SOURCE_KEY);
-    if (v === 'earpiece' || v === 'speaker' || v === 'pc') return v;
+    if (v === 'earpiece' || v === 'speaker' || v === 'bluetooth') return v;
+    // Legacy migration: prior 3-pill 'pc' value mapped to a stub that never
+    // routed audio. Map to 'earpiece' so the new default isn't a broken
+    // route. Don't re-write to storage here — the next user toggle will.
+    if (v === 'pc') return 'earpiece';
   } catch {
     // localStorage can throw in private-browsing / sandboxed iframes.
   }
@@ -1771,7 +1841,7 @@ function writeAudioSourceDefault(v: AudioSource): void {
 const AUDIO_SOURCE_LABEL: Record<AudioSource, string> = {
   earpiece: 'Phone Earpiece',
   speaker: 'Phone Speaker',
-  pc: 'PC Audio',
+  bluetooth: 'PC Audio',
 };
 
 // Read-only pill for the Quick Dial header — shows the current default at a
@@ -1795,7 +1865,7 @@ const AudioSourcePill: React.FC = () => {
     };
   }, []);
 
-  const Icon = current === 'speaker' ? Volume2 : current === 'pc' ? Volume2 : Phone;
+  const Icon = current === 'speaker' || current === 'bluetooth' ? Volume2 : Phone;
   return (
     <span
       className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-600 text-[10px] font-semibold px-2 py-0.5"
@@ -1811,90 +1881,217 @@ const AudioSourcePill: React.FC = () => {
 interface AudioSourceToggleProps {
   value: AudioSource;
   onChange: (next: AudioSource) => void;
+  /** Live BT-HFP profile state from the phone (BT_HEADSET_STATUS push).
+   *  Gates the "Speak through PC" top-level mode — when false, tapping
+   *  the pill opens the setup guide instead of routing audio. */
+  btHeadsetConnected: boolean;
+  /** Best-effort BT device name from the phone — shown in the helper text
+   *  when connected. Null when no device is connected (or when the phone
+   *  lacks the BLUETOOTH_CONNECT runtime grant, in which case the name
+   *  falls back to "Bluetooth device" on the phone side). */
+  btHeadsetDeviceName: string | null;
   size?: 'sm' | 'md';
 }
 
 const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
   value,
   onChange,
+  btHeadsetConnected,
+  btHeadsetDeviceName,
   size = 'md',
 }) => {
+  // Setup-guide visibility. Local state — opens when the user taps the
+  // disabled "Speak through PC" pill, closes on the explicit "Got it"
+  // button or backdrop click. Auto-closes (collapses back to its empty
+  // state) when BT-HFP connects so the user gets a clean transition
+  // from "here's how to pair" to "you're paired — tap to switch".
+  const [setupGuideOpen, setSetupGuideOpen] = useState(false);
+  useEffect(() => {
+    if (btHeadsetConnected && setupGuideOpen) setSetupGuideOpen(false);
+  }, [btHeadsetConnected, setupGuideOpen]);
+
+  // Top-level mode is derived from the terminal value: phone-mode means
+  // "earpiece OR speaker", PC mode means "bluetooth".
+  const isPhoneMode = value === 'earpiece' || value === 'speaker';
+  const isPcMode = value === 'bluetooth';
+
   const sizing =
     size === 'sm'
-      ? { pad: 'px-2 py-1', text: 'text-[11px]', icon: 'w-3 h-3', gap: 'gap-1' }
-      : { pad: 'px-3 py-2', text: 'text-xs', icon: 'w-4 h-4', gap: 'gap-1.5' };
+      ? { pad: 'px-2 py-1.5', text: 'text-[11px]', icon: 'w-3.5 h-3.5', gap: 'gap-1' }
+      : { pad: 'px-3 py-2.5', text: 'text-xs', icon: 'w-4 h-4', gap: 'gap-1.5' };
+
+  // Phone sub-toggle uses smaller padding since it nests inside the active
+  // mode card. Avoids the nested control looking heavier than its parent.
+  const subSizing = { pad: 'px-2 py-1', text: 'text-[11px]', icon: 'w-3 h-3', gap: 'gap-1' };
 
   // `min-w-0` on each pill is load-bearing: this toggle lives inside the
-  // Active Call card, which itself lives inside the bounded 300-340px
-  // column 1 grid track. Without `min-w-0` the pill's unbreakable label
-  // text ("Phone Earpiece" etc.) sets a min-content floor that would push
-  // the card wider than the track allows and clip out of `overflow-hidden`.
-  // With it, the pills shrink gracefully and the inner label `truncate`s.
-  const pill = (active: boolean, disabled = false) =>
+  // Active Call card, which itself lives inside the bounded ~300px column 1
+  // grid track. Without `min-w-0` the pill's unbreakable label text
+  // ("Phone Earpiece" etc.) sets a min-content floor that would push the
+  // card wider than the track allows. With it, the pills shrink gracefully
+  // and the inner label `truncate`s.
+  const modePill = (active: boolean, disabled = false) =>
     clsx(
       'flex-1 min-w-0 inline-flex items-center justify-center rounded-lg font-semibold transition-colors',
       sizing.pad,
       sizing.text,
       sizing.gap,
-      disabled
-        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+      disabled && !active
+        ? 'bg-slate-100 text-slate-400 cursor-pointer hover:bg-slate-200'
         : active
-        ? 'bg-blue-600 text-white hover:bg-blue-700'
+        ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm'
         : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
     );
+
+  const subPill = (active: boolean) =>
+    clsx(
+      'flex-1 min-w-0 inline-flex items-center justify-center rounded-md font-semibold transition-colors',
+      subSizing.pad,
+      subSizing.text,
+      subSizing.gap,
+      active
+        ? 'bg-white text-blue-700 shadow-sm'
+        : 'bg-transparent text-slate-600 hover:bg-white/60'
+    );
+
+  // Tap handler for "Speak through PC". When BT is connected we just switch
+  // routing. When it's NOT connected we open the setup guide AND do not
+  // change routing — Dennis's spec: "If user chooses pc, they must connect
+  // their phone to their pc so we can establish the bluetooth connection."
+  // Tapping the gated pill is therefore a teach-me action, not a route
+  // switch.
+  const handlePcTap = () => {
+    if (btHeadsetConnected) {
+      onChange('bluetooth');
+    } else {
+      setSetupGuideOpen(true);
+    }
+  };
+
+  // Phone-mode handler. If the user is currently on PC mode, default the
+  // sub-route to their last phone-mode choice via localStorage; otherwise
+  // keep their current earpiece/speaker selection. We don't auto-flip to
+  // earpiece on every Phone-mode click — that would override the user's
+  // explicit speaker pick.
+  const handlePhoneTap = () => {
+    if (isPhoneMode) return; // already in phone mode — no-op
+    const last = readAudioSourceDefault();
+    onChange(last === 'speaker' ? 'speaker' : 'earpiece');
+  };
 
   return (
     <div className="w-full">
       <div className="text-[11px] uppercase tracking-wide font-semibold text-slate-500 mb-1">
         Audio Source
       </div>
-      <div role="radiogroup" aria-label="Audio source" className="flex items-stretch gap-1.5">
+
+      {/* Top-level 2-mode row */}
+      <div role="radiogroup" aria-label="Audio destination" className="flex items-stretch gap-1.5">
         <button
           type="button"
           role="radio"
-          aria-checked={value === 'earpiece'}
-          onClick={() => onChange('earpiece')}
-          className={pill(value === 'earpiece')}
-          title="Route audio to the phone earpiece"
+          aria-checked={isPhoneMode}
+          onClick={handlePhoneTap}
+          className={modePill(isPhoneMode)}
+          title="Route call audio through the phone (earpiece or speaker)"
         >
           <Phone className={clsx(sizing.icon, 'flex-shrink-0')} aria-hidden="true" />
-          <span className="truncate">{AUDIO_SOURCE_LABEL.earpiece}</span>
+          <span className="truncate">Speak through phone</span>
         </button>
         <button
           type="button"
           role="radio"
-          aria-checked={value === 'speaker'}
-          onClick={() => onChange('speaker')}
-          className={pill(value === 'speaker')}
-          title="Route audio to the phone speaker"
+          aria-checked={isPcMode}
+          aria-disabled={!btHeadsetConnected}
+          onClick={handlePcTap}
+          className={modePill(isPcMode, !btHeadsetConnected)}
+          title={
+            btHeadsetConnected
+              ? `Route call audio through your PC (${btHeadsetDeviceName || 'Bluetooth'})`
+              : 'Tap to set up your PC as the call audio destination'
+          }
         >
           <Volume2 className={clsx(sizing.icon, 'flex-shrink-0')} aria-hidden="true" />
-          <span className="truncate">{AUDIO_SOURCE_LABEL.speaker}</span>
-        </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={false}
-          aria-disabled="true"
-          disabled
-          onClick={() => {
-            // Stub — PC audio routing isn't implemented yet. Click is wired
-            // so the button isn't dead-silent in case `disabled` is ever
-            // removed by mistake; the visual `disabled` styling above is
-            // the primary UX signal.
-            // eslint-disable-next-line no-console
-            console.warn('[dnkdialer] PC Audio routing not yet implemented');
-          }}
-          className={clsx(pill(false, true), 'relative')}
-          title="PC audio routing — coming soon"
-        >
-          <Volume2 className={clsx(sizing.icon, 'flex-shrink-0')} aria-hidden="true" />
-          <span className="truncate">{AUDIO_SOURCE_LABEL.pc}</span>
-          <span className="ml-1 inline-flex items-center rounded-full bg-slate-200 text-slate-500 text-[9px] uppercase tracking-wide font-semibold px-1.5 py-0.5 flex-shrink-0">
-            Soon
-          </span>
+          <span className="truncate">Speak through PC</span>
         </button>
       </div>
+
+      {/* Nested phone sub-toggle — only visible when phone mode is active. */}
+      {isPhoneMode && (
+        <div
+          role="radiogroup"
+          aria-label="Phone audio output"
+          className="mt-1.5 flex items-stretch gap-1 rounded-lg bg-slate-100 p-1"
+        >
+          <button
+            type="button"
+            role="radio"
+            aria-checked={value === 'earpiece'}
+            onClick={() => onChange('earpiece')}
+            className={subPill(value === 'earpiece')}
+          >
+            <Phone className={clsx(subSizing.icon, 'flex-shrink-0')} aria-hidden="true" />
+            <span className="truncate">Earpiece</span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={value === 'speaker'}
+            onClick={() => onChange('speaker')}
+            className={subPill(value === 'speaker')}
+          >
+            <Volume2 className={clsx(subSizing.icon, 'flex-shrink-0')} aria-hidden="true" />
+            <span className="truncate">Speaker</span>
+          </button>
+        </div>
+      )}
+
+      {/* PC mode helper text — visible whenever the PC pill is the active mode
+          (shows the connected device name) OR whenever PC mode is gated
+          (single-line hint pointing the user at the setup guide). */}
+      {isPcMode && btHeadsetConnected && (
+        <p className="mt-1.5 text-[10px] text-slate-500">
+          Routing through {btHeadsetDeviceName || 'your PC'}
+        </p>
+      )}
+      {!btHeadsetConnected && !isPcMode && (
+        <button
+          type="button"
+          onClick={() => setSetupGuideOpen(true)}
+          className="mt-1.5 text-[10px] text-slate-500 hover:text-blue-700 underline-offset-2 hover:underline text-left"
+        >
+          Connect your phone to your PC via Bluetooth →
+        </button>
+      )}
+
+      {/* Setup guide — collapsible inline panel (not a modal) so it doesn't
+          obscure the call card. Opens on disabled-PC-pill tap, on the
+          helper-text link, and dismisses when BT-HFP connects (or via the
+          explicit Got-it button). */}
+      {setupGuideOpen && (
+        <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50/60 p-2.5 text-[11px] text-slate-700">
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <span className="font-semibold text-blue-900">Connect phone to PC via Bluetooth</span>
+            <button
+              type="button"
+              onClick={() => setSetupGuideOpen(false)}
+              className="text-slate-400 hover:text-slate-700 flex-shrink-0"
+              aria-label="Close setup guide"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <ol className="list-decimal list-inside space-y-0.5 text-[10.5px] leading-snug">
+            <li>Open your PC&apos;s Bluetooth settings, set it to discoverable.</li>
+            <li>On your phone, scan for devices and select your PC.</li>
+            <li>Confirm the pairing code on both devices.</li>
+            <li>Come back here and tap &ldquo;Speak through PC&rdquo;.</li>
+          </ol>
+          <p className="mt-1.5 text-[10px] text-slate-500">
+            This toggle will light up automatically once your PC is paired.
+          </p>
+        </div>
+      )}
     </div>
   );
 };
@@ -1914,6 +2111,14 @@ interface ActiveCallCardProps {
   // DtmfDialpadModal mount in the Dashboard component below.
   canSendDtmf: boolean;
   onOpenDialpad: () => void;
+  // 2-mode BT audio routing (2026-05-25). The toggle lives on this card
+  // because it's the contextual anchor for in-call audio decisions. Props
+  // are threaded from the parent Dashboard which owns the usePhone()
+  // subscription — keeps ActiveCallCard prop-driven and trivially testable.
+  audioSource: AudioSource;
+  onChangeAudioSource: (next: AudioSource) => void;
+  btHeadsetConnected: boolean;
+  btHeadsetDeviceName: string | null;
 }
 
 const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
@@ -1924,6 +2129,10 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
   onSendSms,
   canSendDtmf,
   onOpenDialpad,
+  audioSource,
+  onChangeAudioSource,
+  btHeadsetConnected,
+  btHeadsetDeviceName,
 }) => {
   // Mute is a placeholder per spec — local-only state, not wired to the bridge.
   const [muted, setMuted] = useState(false);
@@ -2050,6 +2259,24 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
           End
         </button>
       </div>
+
+      {/* 2-mode audio source toggle. Lives between the Answer/Mute/End row
+          and the side-action row so it's contextually anchored to the
+          in-call surface (where audio routing decisions actually matter).
+          Mounted only during an active or dialing call — pre-call routing
+          decisions are made via the Quick Dial header's read-only pill
+          (AudioSourcePill) + Settings, not here. */}
+      {(call.state === 'active' || call.state === 'dialing' || call.state === 'ringing') && (
+        <div className="mt-3">
+          <AudioSourceToggle
+            value={audioSource}
+            onChange={onChangeAudioSource}
+            btHeadsetConnected={btHeadsetConnected}
+            btHeadsetDeviceName={btHeadsetDeviceName}
+            size="sm"
+          />
+        </div>
+      )}
 
       {/* Side-action row — primary in-call helpers that aren't Answer/Mute/End.
           Two side-by-side buttons: Send SMS (left, blue, primary) and Dialpad

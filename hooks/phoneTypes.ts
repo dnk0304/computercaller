@@ -49,6 +49,13 @@ export type PhoneEventType =
   // a liveness signal — if pongs stop arriving for 30s the web flips the
   // phone to "stale" even when the relay socket is still TCP-alive.
   | 'APP_PONG'
+  // 2-mode BT audio routing (2026-05-25). Pushed by the phone whenever the
+  // BT-HFP profile state transitions (paired/unpaired the PC, BT toggled
+  // off, mid-call link drop, etc.). Payload: { connected: boolean,
+  // deviceName: string }. Gates the "Speak through PC" toggle in the
+  // browser AudioSourceToggle and auto-reverts an active 'bluetooth'
+  // routing back to 'earpiece' on disconnect.
+  | 'BT_HEADSET_STATUS'
   // Lobby / Connect+Accept control plane (dispatch #32, 2026-05-25). All
   // pairing handshake events arrive over this channel; see lib/lobbyState.ts
   // for the state machine.
@@ -81,7 +88,14 @@ export type PhoneCommandType =
   // App-level liveness ping sent every 15s while the web believes the phone
   // is connected. Phone echoes back APP_PONG with the same `ts`. See
   // hooks/usePhoneBridge.ts for the timer + stale-detection logic.
-  | 'APP_PING';
+  | 'APP_PING'
+  // 2-mode BT audio routing (2026-05-25). Unified audio-source command —
+  // payload: { source: 'earpiece' | 'speaker' | 'bluetooth' }. Replaces
+  // the legacy SET_SPEAKER toggle (which is retained on the phone side as
+  // an alias for backward compat). Caller is responsible for gating the
+  // 'bluetooth' value on btHeadsetConnected — the phone tries the route
+  // regardless and silently no-ops if SCO can't come up.
+  | 'SET_AUDIO_SOURCE';
 
 // Call states
 export type CallState = 'idle' | 'ringing' | 'dialing' | 'active';

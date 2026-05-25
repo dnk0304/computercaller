@@ -228,6 +228,19 @@ export function usePhoneBridge() {
   // default" (which is what single-SIM phones always do).
   const [selectedSimId, setSelectedSimId] = useState<number | null>(null);
 
+  // 2-mode BT audio routing (2026-05-25): mirrors the phone's BT-HFP profile
+  // state so the AudioSourceToggle can gate "Speak through PC" mode on a
+  // real BT link being up. Pushed by Android via BT_HEADSET_STATUS:{connected,
+  // deviceName} whenever the HFP connection state changes (ACTION_CONNECTION_
+  // STATE_CHANGED broadcast on the phone side). Defaults to disconnected so
+  // the toggle starts in the gated state and lights up the moment the user
+  // pairs their PC.
+  //
+  // deviceName is best-effort — if the phone lacks BLUETOOTH_CONNECT runtime
+  // grant it falls back to "Bluetooth device". Empty string means no device.
+  const [btHeadsetConnected, setBtHeadsetConnected] = useState<boolean>(false);
+  const [btHeadsetDeviceName, setBtHeadsetDeviceName] = useState<string | null>(null);
+
   // Phone notifications mirrored from Android's NotificationListenerService.
   // Newest first, capped at 50, deduped by notificationKey. Reset on phone
   // disconnect so stale notifications don't linger across phone sessions.
@@ -1130,6 +1143,20 @@ export function usePhoneBridge() {
         if (rtt !== null) console.log(`[PhoneBridge] APP_PONG rtt=${rtt}ms`);
         break;
       }
+
+      case 'BT_HEADSET_STATUS': {
+        // 2-mode BT audio routing (2026-05-25). Phone push whenever the BT-HFP
+        // profile state changes (paired/unpaired the PC, BT toggled off, etc).
+        // Browser uses this to gate the "Speak through PC" toggle: enabled +
+        // visually active when connected === true, disabled (with setup-guide
+        // hint) when false.
+        const { connected, deviceName } = payload as { connected?: boolean; deviceName?: string };
+        const next = !!connected;
+        setBtHeadsetConnected(next);
+        setBtHeadsetDeviceName(deviceName && deviceName.length > 0 ? deviceName : null);
+        console.log(`[PhoneBridge] BT_HEADSET_STATUS connected=${next} device=${deviceName || '-'}`);
+        break;
+      }
     }
     // Dispatch #31 (2026-05-25): isPhoneStale REMOVED from this dep list.
     // Reading via isPhoneStaleRef.current means handleMessage no longer
@@ -1327,6 +1354,12 @@ export function usePhoneBridge() {
     setCallLogs([]);
     setSimList([]);
     setSelectedSimId(null);
+    // 2-mode BT audio routing (2026-05-25): drop the cached BT-HFP state on
+    // leave so the next pairing starts from a clean "unknown / disconnected"
+    // baseline. A fresh BT_HEADSET_STATUS push from the phone on the next
+    // pair will repopulate it.
+    setBtHeadsetConnected(false);
+    setBtHeadsetDeviceName(null);
     if (pairingTimerRef.current) {
       clearTimeout(pairingTimerRef.current);
       pairingTimerRef.current = null;
@@ -1378,8 +1411,23 @@ export function usePhoneBridge() {
   }, [selectedSimId]);
 
   // Toggle speakerphone mid-call. Android applies it live via AudioManager.
+  // Legacy alias retained for any callers that haven't been migrated to the
+  // new unified setAudioSource below. New code should call setAudioSource
+  // directly so the phone side gets a single command shape covering all
+  // three terminals (earpiece / speaker / bluetooth).
   const setSpeaker = useCallback((enabled: boolean) => {
     sendCommand('SET_SPEAKER', { enabled });
+  }, [sendCommand]);
+
+  // 2-mode BT audio routing (2026-05-25). Unified audio-source dispatcher.
+  // The phone receives one of "earpiece" | "speaker" | "bluetooth" and routes
+  // accordingly via applyAudioSource(source) — tearing down the other two
+  // routings before applying the target. Caller is responsible for gating
+  // "bluetooth" on btHeadsetConnected — if it's false, the phone will still
+  // try to start SCO and log a warning, but the call will stay on whatever
+  // route was active before.
+  const setAudioSource = useCallback((source: 'earpiece' | 'speaker' | 'bluetooth') => {
+    sendCommand('SET_AUDIO_SOURCE', { source });
   }, [sendCommand]);
 
   // Send a DTMF tone into an active call. The phone-side plays the tone into
@@ -2045,6 +2093,11 @@ export function usePhoneBridge() {
     disconnect,
     makeCall,
     setSpeaker,
+    // 2-mode BT audio routing (2026-05-25): new unified surface. See
+    // setAudioSource declaration above for the rationale.
+    setAudioSource,
+    btHeadsetConnected,
+    btHeadsetDeviceName,
     sendDtmf,
     answerCall,
     endCall,
