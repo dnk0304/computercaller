@@ -1953,7 +1953,12 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
       : 'Idle';
 
   const isIncomingRinging = call.state === 'ringing' && call.isIncoming;
-  const displayName = call.name || call.number || 'Unknown';
+  // "Number hidden" (not "Unknown") for the empty-number case — see GlobalDialer
+  // for the rationale. "Unknown" is reserved for past-call-log entries where
+  // we had a number but couldn't match it to a contact; live calls without a
+  // number should be visually distinct so the user can tell phone-side
+  // number-stripping apart from a contact-lookup miss.
+  const displayName = call.name || call.number || 'Number hidden';
   const colorClass = getAvatarColor(displayName);
 
   return (

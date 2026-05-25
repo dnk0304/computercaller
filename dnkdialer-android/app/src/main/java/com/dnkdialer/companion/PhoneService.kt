@@ -255,23 +255,59 @@ class PhoneService : Service() {
             val callback = object : android.telephony.TelephonyCallback(),
                 android.telephony.TelephonyCallback.CallStateListener {
                 override fun onCallStateChanged(state: Int) {
-                    android.util.Log.d("PhoneService", "TelephonyCallback state: $state")
+                    android.util.Log.d("PhoneService", "TelephonyCallback state: $state source=modern")
                     when (state) {
                         android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
                             // New call — clear downstream guards. CallStateListener
-                            // does NOT receive the phone number (that's a separate
-                            // PhoneStateListener with stricter permissions); fall
-                            // back to the cached currentCallNumber for outgoing
-                            // calls, empty string for unknown-inbound.
+                            // does NOT receive the phone number (that's the legacy
+                            // PhoneStateListener with stricter permissions). So for
+                            // *incoming* calls (where currentCallNumber is null because
+                            // we never set it — only MAKE_CALL sets it), emitting
+                            // CALL_INCOMING from here would ship number="" and the
+                            // browser would display "Unknown" even though the legacy
+                            // listener is about to fire with the real number.
+                            //
+                            // Strategy: defer the modern-path emission. Schedule a
+                            // delayed emit on the main thread; the legacy
+                            // PhoneStateListener (which DOES carry phoneNumber) will
+                            // almost always win the race and flip callIncomingSentRef,
+                            // making this delayed task a no-op. The delayed task only
+                            // fires as a last-resort safety net if the legacy listener
+                            // never delivered (e.g. some future OEM strips the legacy
+                            // path entirely) — in which case "number hidden" is the
+                            // best we can do.
                             callEndedSentRef.set(false)
                             callAnsweredSentRef.set(false)
-                            if (callIncomingSentRef.compareAndSet(false, true)) {
-                                val isViaClient = client?.isOpen == true
-                                val num = currentCallNumber ?: ""
-                                sendResponse("CALL_INCOMING", mapOf("number" to num, "name" to ""), isViaClient)
-                                android.util.Log.d("PhoneService", "TelephonyCallback -> CALL_INCOMING sent (num: $num)")
+                            val cachedOutgoing = currentCallNumber
+                            if (!cachedOutgoing.isNullOrEmpty()) {
+                                // Outgoing path: MAKE_CALL ran before this fires, so
+                                // currentCallNumber is populated and authoritative.
+                                // (Outgoing dialing transitions through RINGING on
+                                // some OEMs.) Safe to emit immediately.
+                                if (callIncomingSentRef.compareAndSet(false, true)) {
+                                    val isViaClient = client?.isOpen == true
+                                    sendResponse("CALL_INCOMING", mapOf("number" to cachedOutgoing, "name" to ""), isViaClient)
+                                    android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[$cachedOutgoing] state=RINGING source=modern path=outgoing-cached")
+                                } else {
+                                    android.util.Log.d("PhoneService", "TelephonyCallback RINGING — CALL_INCOMING already sent, skipping (source=modern)")
+                                }
                             } else {
-                                android.util.Log.d("PhoneService", "TelephonyCallback RINGING — CALL_INCOMING already sent, skipping")
+                                // Incoming path: schedule a fallback that fires only
+                                // if the legacy listener hasn't beaten us to it.
+                                // 600ms is empirically long enough for the legacy
+                                // path on Samsung One UI; faster than user-perceptible
+                                // ring latency (a phone takes >1s to actually ring).
+                                android.util.Log.d("PhoneService", "TelephonyCallback RINGING — deferring CALL_INCOMING to await legacy-path number (source=modern)")
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    if (callIncomingSentRef.compareAndSet(false, true)) {
+                                        val isViaClient = client?.isOpen == true
+                                        val fallbackNum = currentCallNumber ?: ""
+                                        sendResponse("CALL_INCOMING", mapOf("number" to fallbackNum, "name" to ""), isViaClient)
+                                        android.util.Log.w("PhoneService", "CALL_INCOMING fired: number=[$fallbackNum] state=RINGING source=modern-fallback (legacy listener didn't deliver — number likely hidden)")
+                                    } else {
+                                        android.util.Log.d("PhoneService", "TelephonyCallback modern-fallback skipped — legacy listener already delivered (source=modern-fallback)")
+                                    }
+                                }, 600L)
                             }
                         }
                         android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
@@ -280,7 +316,7 @@ class PhoneService : Service() {
                                 val isViaClient = client?.isOpen == true
                                 val num = currentCallNumber ?: ""
                                 sendResponse("CALL_ANSWERED", mapOf("number" to num), isViaClient)
-                                android.util.Log.d("PhoneService", "TelephonyCallback -> CALL_ANSWERED sent (num: $num)")
+                                android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[$num] state=OFFHOOK source=modern")
 
                                 // Apply speakerphone preference — mirrors the legacy
                                 // listener so OFFHOOK from either path honors it.
@@ -303,7 +339,7 @@ class PhoneService : Service() {
                                 currentCallNumber = null
                                 currentCallSpeaker = false
                                 clearSpeakerphoneOnEnd()
-                                android.util.Log.d("PhoneService", "TelephonyCallback -> CALL_ENDED sent (num: $num)")
+                                android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[$num] state=IDLE source=modern")
                             } else {
                                 android.util.Log.d("PhoneService", "TelephonyCallback IDLE — CALL_ENDED already sent, skipping")
                             }
@@ -569,27 +605,38 @@ class PhoneService : Service() {
             val number = phoneNumber?.takeIf { it.isNotEmpty() } ?: currentCallNumber ?: ""
             when (state) {
                 android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
-                    android.util.Log.d("PhoneService", "Call ringing: $number")
+                    android.util.Log.d("PhoneService", "PhoneStateListener state=RINGING phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
                     // New call beginning — clear CALL_ENDED + CALL_ANSWERED guards
                     // so the downstream transitions (whichever observer sees them
                     // first) can fire. CALL_INCOMING itself is guarded below.
+                    //
+                    // IMPORTANT: this listener is the ONLY one that carries the
+                    // incoming phoneNumber (the modern TelephonyCallback.CallStateListener
+                    // does not). So on Android 12+ this path MUST win the
+                    // callIncomingSentRef race for incoming calls — otherwise the
+                    // modern path would ship number="" and the browser shows
+                    // "Unknown". The modern-path RINGING handler defers its emit
+                    // via Handler.postDelayed(600ms) precisely so this legacy
+                    // listener gets first dibs.
                     callEndedSentRef.set(false)
                     callAnsweredSentRef.set(false)
                     if (callIncomingSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
                         sendResponse("CALL_INCOMING", mapOf("number" to number, "name" to ""), isViaClient)
+                        android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[$number] state=RINGING source=legacy")
                     } else {
-                        android.util.Log.d("PhoneService", "PhoneStateListener RINGING — CALL_INCOMING already sent, skipping")
+                        android.util.Log.d("PhoneService", "PhoneStateListener RINGING — CALL_INCOMING already sent, skipping (source=legacy)")
                     }
                 }
                 android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
-                    android.util.Log.d("PhoneService", "Call offhook (active): $number")
+                    android.util.Log.d("PhoneService", "PhoneStateListener state=OFFHOOK phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
                     callEndedSentRef.set(false)
                     if (callAnsweredSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
                         sendResponse("CALL_ANSWERED", mapOf("number" to number), isViaClient)
+                        android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[$number] state=OFFHOOK source=legacy")
                     } else {
-                        android.util.Log.d("PhoneService", "PhoneStateListener OFFHOOK — CALL_ANSWERED already sent, skipping")
+                        android.util.Log.d("PhoneService", "PhoneStateListener OFFHOOK — CALL_ANSWERED already sent, skipping (source=legacy)")
                     }
 
                     // Apply speakerphone preference — layered helper handles
@@ -601,12 +648,13 @@ class PhoneService : Service() {
                     }
                 }
                 android.telephony.TelephonyManager.CALL_STATE_IDLE -> {
-                    android.util.Log.d("PhoneService", "Call idle (ended) [PhoneStateListener]")
+                    android.util.Log.d("PhoneService", "PhoneStateListener state=IDLE source=legacy")
                     // Single guard — TelephonyCallback (12+) may also observe this
                     // transition. First-writer wins.
                     if (callEndedSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
                         sendResponse("CALL_ENDED", mapOf<String, Any>(), isViaClient)
+                        android.util.Log.d("PhoneService", "CALL_ENDED fired: state=IDLE source=legacy")
                         currentCallNumber = null
                         currentCallSpeaker = false
                         clearSpeakerphoneOnEnd()

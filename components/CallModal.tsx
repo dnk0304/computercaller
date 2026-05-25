@@ -160,12 +160,17 @@ export const CallModal = () => {
             } ${state === 'ringing' || state === 'dialing' ? 'animate-pulse' : ''}`} />
           </div>
 
-          {/* Caller info */}
+          {/* Caller info. When neither name nor number is available (phone
+              didn't emit an incoming number — e.g. carrier hid the calling
+              line, or modern-path emit fired before the number could be
+              resolved), display "Number hidden" instead of "Unknown" so the
+              user can distinguish "system didn't get a number" from "system
+              got a number but we don't know whose it is". */}
           <h2 className="text-2xl font-bold text-white mb-1">
-            {name || 'Unknown'}
+            {name || number || 'Number hidden'}
           </h2>
           <p className="text-slate-400 mb-2">
-            {number}
+            {name ? number : ''}
           </p>
 
           {/* Duration/Status */}

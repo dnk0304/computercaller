@@ -54,7 +54,22 @@ android {
         // relay (returns to lobby state), browser flips back to "Phone in
         // lobby — ready to pair". Wire frame: LEAVE_ACTIVE:{} (matches the
         // browser-side outbound). Visible only while a pair is active.
-        versionCode = 20
+        // Incoming-call "Unknown" fix (2026-05-25): 20 → 21. The modern
+        // TelephonyCallback.CallStateListener on Android 12+ does not
+        // receive the incoming phone number — only the legacy
+        // PhoneStateListener does. Previously both observers raced to flip
+        // callIncomingSentRef; the modern path usually won and emitted
+        // CALL_INCOMING with number="" → browser displayed "Unknown".
+        // Modern-path RINGING now defers its emit via Handler.postDelayed
+        // (600ms) so the legacy listener (which carries the number) wins
+        // the race; the modern path only fires as a last-resort safety net.
+        // Browser-side: incoming-call surfaces now show "Number hidden"
+        // instead of "Unknown" when the emit lacked a number, so the
+        // failure mode is visually distinct from a contact-lookup miss.
+        // Diagnostic logcat upgrade: every CALL_* emission now logs
+        // number=[...] state=... source=[modern|legacy] so future
+        // logcat captures can pinpoint which path delivered.
+        versionCode = 21
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -456,8 +456,21 @@ function CallSessionView({
       <p className={clsx('text-[9px] font-semibold uppercase tracking-wide mb-0.5', statusColor)}>
         {statusLabel}
       </p>
+      {/* Display priority:
+          1. Resolved contact name (from webapp contacts or trusted CACHED_NAME).
+          2. Raw number, if present.
+          3. "Number hidden" — visually distinct from a normal-but-unmatched
+             number. This branch covers the case where the phone-side emit
+             didn't carry an incoming number (e.g. Android TelephonyCallback
+             modern-fallback timing on Android 12+; phone-number privacy
+             restricted by carrier; calling-line-id withheld). Using "hidden"
+             instead of "Unknown" makes phone-side number-stripping
+             diagnosable separately from a contact lookup miss — and is
+             semantically more honest, since "Unknown" implies we tried to
+             identify the person, while in this case we didn't even get a
+             number to look up. */}
       <h3 className="text-xs font-bold text-slate-900 truncate max-w-full">
-        {name || number || 'Unknown'}
+        {name || number || 'Number hidden'}
       </h3>
       {name && (
         <p className="text-[10px] text-slate-500 mt-0.5 truncate max-w-full">{number}</p>
