@@ -23,3 +23,26 @@ body {
   from { width: 0%; }
   to   { width: 100%; }
 }
+
+/* Post-signin splash (components/AuthSplash.tsx).
+   Two coordinated keyframes:
+   - cc-splash-fade-in: the full-screen white surface fades in fast so the
+     auth form behind it doesn't show through during transition.
+   - cc-splash-rise: the banner + subtitle lift slightly with a gentle ease,
+     mimicking a desktop app finishing launch (Linear, Things, Notion).
+   Both are gated by Tailwind's `motion-reduce:animate-none` and by an
+   in-component prefers-reduced-motion check that skips the splash entirely. */
+@keyframes cc-splash-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes cc-splash-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-cc-splash-fade-in {
+  animation: cc-splash-fade-in 250ms ease-out both;
+}
+.animate-cc-splash-rise {
+  animation: cc-splash-rise 350ms ease-out 80ms both;
+}

@@ -3,10 +3,12 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { Mail } from 'lucide-react';
+import { AuthBackdrop } from '@/components/AuthBackdrop';
 
 export default function ForgotPasswordPage() {
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+    <div className="relative min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+      <AuthBackdrop />
       <div className="w-full max-w-md">
         <Link
           href="/"

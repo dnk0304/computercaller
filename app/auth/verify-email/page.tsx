@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
 import { Check, AlertCircle } from 'lucide-react';
+import { AuthBackdrop } from '@/components/AuthBackdrop';
 
 const COOLDOWN_SECONDS = 20;
 
@@ -250,7 +251,8 @@ function VerifyEmailForm() {
 
 export default function VerifyEmailPage() {
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+    <div className="relative min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+      <AuthBackdrop />
       <Suspense
         fallback={
           <div className="w-full max-w-md text-center text-slate-500 text-sm">

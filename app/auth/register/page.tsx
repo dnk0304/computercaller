@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { Check } from 'lucide-react';
+import { AuthBackdrop } from '@/components/AuthBackdrop';
 
 // Inline Google "G" logo SVG — mirrors the one in /auth/login. Kept inline
 // per file rather than shared so the two auth pages have zero cross-import
@@ -63,7 +64,8 @@ export default function RegisterPage() {
 
   if (done) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+      <div className="relative min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+        <AuthBackdrop />
         <div className="w-full max-w-md">
           <Link
             href="/"
@@ -105,7 +107,8 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+    <div className="relative min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+      <AuthBackdrop />
       <div className="w-full max-w-md">
         <Link
           href="/"

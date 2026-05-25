@@ -1,10 +1,12 @@
 'use client';
 
-import { Suspense, useState } from 'react';
+import { Suspense, useCallback, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Check } from 'lucide-react';
+import { AuthBackdrop } from '@/components/AuthBackdrop';
+import { AuthSplash } from '@/components/AuthSplash';
 
 // Inline Google "G" logo SVG — avoids a network round-trip + zero new deps.
 // Coloured per Google's 2015 brand identity guidelines for the "G" mark.
@@ -40,6 +42,11 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // `signedIn` flips true the moment the /api/auth/login POST resolves OK.
+  // It triggers the AuthSplash overlay; the splash's onDone then performs
+  // the router.push to `next`. Decoupling navigation from the POST gives
+  // us a clean ~700ms launch animation that respects reduced-motion.
+  const [signedIn, setSignedIn] = useState(false);
 
   const verified = params.get('verified') === '1';
   const next = params.get('next') || '/app';
@@ -81,14 +88,34 @@ function LoginForm() {
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || 'Login failed');
+        setLoading(false);
         return;
       }
-      router.push(next);
+      // Cookie is set by the API; flip splash on. Keep `loading=true` so the
+      // submit button stays disabled — preventing a double-fire if the user
+      // somehow clicked twice between cookie-set and route change.
+      setSignedIn(true);
     } catch {
       setError('Network error. Please try again.');
-    } finally {
       setLoading(false);
     }
+    // Intentionally no `finally { setLoading(false) }` on success — we want
+    // the form locked while the splash animates.
+  }
+
+  // useCallback so AuthSplash's effect dependency stays stable across the
+  // single mount; without it, an identity-change of onDone could re-arm the
+  // splash timer and queue a second router.push.
+  const handleSplashDone = useCallback(() => {
+    router.push(next);
+  }, [router, next]);
+
+  // Once `signedIn` flips, render the splash *instead of* the form. The
+  // splash is position:fixed/z-50 so it would overlay anyway, but unmounting
+  // the form prevents a flash of late repaint (e.g. a slow keystroke landing
+  // in an input behind the white surface) and is friendlier to AT.
+  if (signedIn) {
+    return <AuthSplash onDone={handleSplashDone} subtitle="Welcome back" />;
   }
 
   return (
@@ -235,7 +262,8 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+    <div className="relative min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
+      <AuthBackdrop />
       <Suspense
         fallback={
           <div className="w-full max-w-md text-center text-slate-500 text-sm">
