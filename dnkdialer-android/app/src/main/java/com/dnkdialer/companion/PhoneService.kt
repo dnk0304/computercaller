@@ -25,6 +25,24 @@ class PhoneService : Service() {
     companion object {
         const val ACTION_START = "com.dnkdialer.companion.START_SERVICE"
         const val ACTION_STOP = "com.dnkdialer.companion.STOP_SERVICE"
+        /**
+         * v18 / Connect+Accept pivot — broadcast actions fired by
+         * PhoneService when a pairing request arrives over the relay
+         * and the host Activity should surface an in-foreground
+         * AlertDialog (in addition to the heads-up notification, which
+         * always fires).
+         *
+         * MainActivity registers a runtime LocalBroadcastReceiver with
+         * RECEIVER_NOT_EXPORTED for these so no external app can spoof
+         * pairing requests into our UI.
+         */
+        const val ACTION_PAIRING_REQUEST_IN_FOREGROUND =
+            "com.dnkdialer.companion.PAIRING_REQUEST_FG"
+        const val ACTION_PAIRING_CANCELLED_IN_FOREGROUND =
+            "com.dnkdialer.companion.PAIRING_CANCELLED_FG"
+        const val EXTRA_PAIRING_ID = "pairing_id"
+        /** Composed "ua · ip" string built by [buildBrowserIdentity]. */
+        const val EXTRA_PAIRING_IDENTITY = "pairing_identity"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dnk_dialer_service"
 
@@ -129,17 +147,26 @@ class PhoneService : Service() {
     private var clientRelayUrl: String? = null
     private var connectedHostname: String? = null
 
-    // Dispatch #29 — exponential-backoff relay auto-reconnect (R-028B
-    // mitigation). When the relay socket dies unexpectedly (network blip,
-    // server restart, OEM background freeze), we re-dial automatically
-    // with a back-off so we don't pummel the relay during prolonged
-    // outages. Sequence: 1s → 2s → 4s → 8s → 16s → 30s (capped). Reset
-    // to 1s on every clean OPEN. Cancelled on user-initiated disconnect
-    // and on service teardown.
+    // v18 / Connect+Accept pivot — replaces dispatch #29's exponential
+    // backoff (1s/2s/4s/8s/16s/30s) with a simple fixed 5s lobby-only
+    // auto-reconnect. Rationale:
+    //   - The relay is authoritative on active-room membership. Phone
+    //     re-opening the WS only re-enters the LOBBY; the browser has
+    //     to re-trigger the full pairing handshake to put the pair
+    //     back into an active room. There is no longer a "we lost the
+    //     pair, urgently rebuild it" scenario from the phone's side.
+    //   - With pairing being explicit (user must Accept on phone), an
+    //     aggressive 1s/2s/4s backoff isn't valuable — the user isn't
+    //     waiting on the phone to reconnect mid-pair, they're either
+    //     deliberately starting a session or not.
+    //   - 5s is a friendly interval — recovers quickly from a transient
+    //     blip without hammering the relay during an outage.
+    // Active-room re-entry MUST NEVER be automatic. The phone's only
+    // re-dial target is the lobby WebSocket; pairing requires fresh
+    // explicit user Accept.
     private val reconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var reconnectRunnable: Runnable? = null
-    private var reconnectAttempt: Int = 0
-    private val reconnectBackoffsMs: LongArray = longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L)
+    private val lobbyReconnectDelayMs: Long = 5_000L
 
     /**
      * Accept/Decline broadcasts from the connection-request notification land
@@ -924,22 +951,97 @@ class PhoneService : Service() {
      * between Accept-tap and auto-decline-tick simply produces one
      * winning outcome.
      */
-    private fun handleConnectionDecision(requestId: String, accept: Boolean) {
-        android.util.Log.d("PhoneService", "handleConnectionDecision: $requestId accept=$accept")
-        pendingRequestTimers.remove(requestId)?.let {
+    /**
+     * v18 / Connect+Accept pivot — user has tapped Accept or Decline
+     * for an inbound pairing request, either via the heads-up
+     * notification action buttons (routed through
+     * [ConnectionRequestReceiver]) or via the in-foreground
+     * AlertDialog (which dispatches the same broadcast action so both
+     * paths converge here).
+     *
+     * Dismisses the notification + auto-decline timer first so a
+     * delayed broadcast can't double-fire after the decision was
+     * already applied, then sends the appropriate frame through the
+     * relay client:
+     *   - Accept  → `ACCEPT_PAIRING:{pairingId}`
+     *   - Decline → `DECLINE_PAIRING:{pairingId}`
+     *
+     * If the relay client is no longer open we log a warning and bail —
+     * the decision is effectively a no-op (the relay timed out the
+     * pairing on its side and the request is moot).
+     */
+    private fun handleConnectionDecision(pairingId: String, accept: Boolean) {
+        android.util.Log.d("PhoneService", "handleConnectionDecision: $pairingId accept=$accept")
+        pendingRequestTimers.remove(pairingId)?.let {
             pendingRequestHandler.removeCallbacks(it)
         }
-        dismissConnectionRequestNotification(requestId)
+        dismissConnectionRequestNotification(pairingId)
 
-        // Dispatch #29 — Phase 4 finish. PhoneServer (LAN listener) gone,
-        // so there's no inbound pending-connection to accept or decline.
-        // This branch is now dead in practice (the user can't trigger a
-        // LAN pairing notification), but the broadcast receiver is still
-        // registered for back-compat; log and no-op rather than throw.
-        android.util.Log.w(
+        val type = if (accept) "ACCEPT_PAIRING" else "DECLINE_PAIRING"
+        if (client?.isOpen != true) {
+            android.util.Log.w(
+                "PhoneService",
+                "Cannot send $type — relay client not open. pairingId=$pairingId"
+            )
+            return
+        }
+        try {
+            client?.sendResponse(type, mapOf("pairingId" to pairingId))
+            android.util.Log.d("PhoneService", "$type sent for pairingId=$pairingId")
+        } catch (e: Exception) {
+            android.util.Log.e("PhoneService", "Failed to send $type: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Compose a short browser-identity string for the heads-up
+     * notification body and AlertDialog message. The relay supplies
+     * `ua` (e.g. "Chrome on macOS") and `ip` (e.g. "203.0.113.45");
+     * we join them with a middle-dot separator. Either piece may be
+     * blank — we silently drop blanks rather than render leading /
+     * trailing punctuation. If both are blank we fall back to a
+     * localized "A browser wants to connect" string.
+     */
+    private fun buildBrowserIdentity(ua: String, ip: String): String {
+        val pieces = listOf(ua, ip).filter { it.isNotBlank() }
+        return if (pieces.isEmpty()) {
+            getString(R.string.pair_request_body_unknown)
+        } else {
+            pieces.joinToString(" · ")
+        }
+    }
+
+    /**
+     * Cancel a single pending pairing: stop its auto-decline timer and
+     * dismiss its notification. Safe to call for an unknown id (no-op).
+     * Used by both PAIRING_CANCELLED handling and the foreground
+     * dialog dismiss path.
+     */
+    private fun cancelPendingPairing(pairingId: String) {
+        pendingRequestTimers.remove(pairingId)?.let {
+            pendingRequestHandler.removeCallbacks(it)
+        }
+        dismissConnectionRequestNotification(pairingId)
+    }
+
+    /**
+     * Cancel every in-flight pending pairing — called when the relay
+     * socket dies, when the user signs out, and on service teardown.
+     * Prevents a stale Accept-on-notification from sending a frame
+     * into a dead socket (which would be silently dropped anyway, but
+     * dismissing the notif keeps the UI honest).
+     */
+    private fun clearAllPendingPairings(reason: String) {
+        if (pendingRequestTimers.isEmpty()) return
+        android.util.Log.d(
             "PhoneService",
-            "handleConnectionDecision called post-Phase-4 (accept=$accept reqId=$requestId) — LAN PhoneServer is gone; no-op"
+            "Clearing ${pendingRequestTimers.size} pending pairings (reason=$reason)"
         )
+        val ids = pendingRequestTimers.keys.toList()
+        for (id in ids) {
+            cancelPendingPairing(id)
+        }
+        pendingRequestTimers.clear()
     }
 
     /**
@@ -1383,8 +1485,8 @@ class PhoneService : Service() {
         cancelConnectTimeout()
 
         // Cancel any pending auto-reconnect — we're about to dial right
-        // now, so the back-off timer would just race against us.
-        cancelScheduledReconnect()
+        // now, so the 5s timer would just race against us.
+        cancelLobbyReconnect()
 
         client?.close()
         client = PhoneClient(
@@ -1399,23 +1501,29 @@ class PhoneService : Service() {
                 // weren't already pushed to FAILED by the error callback
                 // (close fires AFTER error for non-normal closures).
                 if (connected) {
-                    // Handshake succeeded — the watchdog must NOT fire,
-                    // and the back-off counter resets so the NEXT failure
-                    // starts again from the 1s rung.
+                    // Handshake succeeded — the watchdog must NOT fire.
+                    // (No backoff counter to reset in v18 — fixed 5s
+                    // delay is stateless.)
                     cancelConnectTimeout()
-                    reconnectAttempt = 0
                     setRelayPhase(RelayPhase.OPEN)
                 } else {
                     if (relayPhase != RelayPhase.FAILED) {
                         setRelayPhase(RelayPhase.IDLE)
                     }
+                    // v18 — drop any pending pair-request state on WS
+                    // close. The relay no longer cares about Accept/Decline
+                    // sent after the socket dies, and leaving a stale
+                    // notification visible would mis-lead the user.
+                    clearAllPendingPairings("relay socket closed")
+                    // Foreground notification back to "Waiting" — the
+                    // user is no longer connected to a browser.
+                    updateNotification(getString(R.string.status_waiting_for_web))
                     // Unexpected disconnect (the user didn't tap Sign Out
                     // or anything that would have called disconnectRelay()
                     // — that path clears clientRelayUrl). Schedule the
-                    // next back-off attempt if we still know what URL to
-                    // re-dial.
+                    // simple 5s re-dial if we still know the lobby URL.
                     if (clientRelayUrl != null) {
-                        scheduleReconnect("relay socket closed")
+                        scheduleLobbyReconnect("relay socket closed")
                     }
                 }
             },
@@ -1432,11 +1540,11 @@ class PhoneService : Service() {
                 // again. Bail without scheduling.
                 if (code == 4401) {
                     android.util.Log.w("PhoneService", "Relay rejected token (4401) — not auto-reconnecting")
-                    cancelScheduledReconnect()
+                    cancelLobbyReconnect()
                     return@PhoneClient
                 }
                 if (clientRelayUrl != null) {
-                    scheduleReconnect("relay error code=$code")
+                    scheduleLobbyReconnect("relay error code=$code")
                 }
             }
         )
@@ -1497,54 +1605,55 @@ class PhoneService : Service() {
     }
 
     /**
-     * Dispatch #29 — schedule an exponential-backoff relay re-dial.
+     * v18 — simple lobby-only auto-reconnect.
      *
-     * Picks the next entry from [reconnectBackoffsMs] (1s → 2s → 4s →
-     * 8s → 16s → 30s, capped at 30s for any attempt beyond the array)
-     * and posts a redial task. Cancels any previously-pending redial
-     * first so we never end up with two stacked timers competing.
+     * Replaces dispatch #29's exponential backoff. Schedules a single
+     * re-dial after [lobbyReconnectDelayMs] (5s). Cancels any
+     * previously-pending redial first so we never end up with two
+     * stacked timers competing.
+     *
+     * The redial re-opens the LOBBY WebSocket only — it does NOT
+     * re-enter any active pairing room. Active-room membership is
+     * granted exclusively by an explicit `PAIRING_ACTIVE` from the
+     * relay, which follows a fresh user Accept on this device. A
+     * dropped active pair stays dropped until the browser requests
+     * pairing again and the user accepts.
      *
      * The redial only fires if [clientRelayUrl] is still non-null at
      * the moment it pops — a Sign Out / disconnect that lands between
      * scheduling and firing nulls out the URL and the task no-ops.
-     *
-     * On every clean OPEN, [reconnectAttempt] resets to 0 so the next
-     * failure starts back at 1s.
      */
-    private fun scheduleReconnect(reason: String) {
-        cancelScheduledReconnect()
-        val idx = reconnectAttempt.coerceAtMost(reconnectBackoffsMs.size - 1)
-        val delayMs = reconnectBackoffsMs[idx]
-        reconnectAttempt += 1
+    private fun scheduleLobbyReconnect(reason: String) {
+        cancelLobbyReconnect()
         android.util.Log.d(
             "PhoneService",
-            "Auto-reconnect scheduled in ${delayMs}ms (attempt #$reconnectAttempt, reason=$reason)"
+            "Lobby auto-reconnect scheduled in ${lobbyReconnectDelayMs}ms (reason=$reason)"
         )
         val task = Runnable {
             reconnectRunnable = null
             val url = clientRelayUrl
             if (url.isNullOrBlank()) {
-                android.util.Log.d("PhoneService", "Auto-reconnect: clientRelayUrl is null — bailing")
+                android.util.Log.d("PhoneService", "Lobby reconnect: clientRelayUrl is null — bailing")
                 return@Runnable
             }
             if (client?.isOpen == true) {
-                android.util.Log.d("PhoneService", "Auto-reconnect: socket already open — skipping")
+                android.util.Log.d("PhoneService", "Lobby reconnect: socket already open — skipping")
                 return@Runnable
             }
-            android.util.Log.d("PhoneService", "Auto-reconnect firing — attempt #$reconnectAttempt")
+            android.util.Log.d("PhoneService", "Lobby reconnect firing")
             connectToRelay(url)
         }
         reconnectRunnable = task
-        reconnectHandler.postDelayed(task, delayMs)
+        reconnectHandler.postDelayed(task, lobbyReconnectDelayMs)
     }
 
     /**
-     * Cancel any pending auto-reconnect. Safe to call repeatedly.
+     * Cancel any pending lobby auto-reconnect. Safe to call repeatedly.
      */
-    private fun cancelScheduledReconnect() {
+    private fun cancelLobbyReconnect() {
         reconnectRunnable?.let {
             reconnectHandler.removeCallbacks(it)
-            android.util.Log.d("PhoneService", "Auto-reconnect cancelled")
+            android.util.Log.d("PhoneService", "Lobby auto-reconnect cancelled")
         }
         reconnectRunnable = null
     }
@@ -1581,10 +1690,14 @@ class PhoneService : Service() {
     fun disconnectRelay() {
         android.util.Log.d("PhoneService", "User-initiated relay disconnect")
         cancelConnectTimeout()
-        // Dispatch #29 — cancel any pending exponential-backoff retry
-        // too. Without this, a user Sign Out → next 30s redial would
-        // wake up after the user is gone and try to log them back in.
-        cancelScheduledReconnect()
+        // v18 — cancel any pending lobby reconnect too. Without this,
+        // a user Sign Out → next 5s redial would wake up after the user
+        // is gone and try to log them back in.
+        cancelLobbyReconnect()
+        // Drop any pending pair requests — same reasoning, the user
+        // chose to leave so an Accept tap on a stale notification
+        // should not silently put them back in a pair.
+        clearAllPendingPairings("user disconnect")
         // Clear error BEFORE close() so the onClose callback below,
         // which may fire synchronously on some socket states, doesn't
         // re-arm FAILED on the way out.
@@ -1691,25 +1804,94 @@ class PhoneService : Service() {
         android.util.Log.d("PhoneService", "handleCommand: $command, viaClient: $viaClient")
         try {
             when (command) {
-                "DISCONNECT_PHONE" -> {
-                    // The webapp's "Disconnect" button forwards this command
-                    // through the relay to ask the phone to tear down its
-                    // side of the connection.
-                    //
-                    // Dispatch #29 — the LAN PhoneServer is gone, so there's
-                    // no LAN client to disconnect. The only remaining
-                    // transport is the relay client itself, so the cleanest
-                    // response is to close the relay socket with a polite
-                    // 1000 code. The user can sign in again on the webapp
-                    // and the phone will re-dial on next ACTION_START.
-                    android.util.Log.d("PhoneService", "Received DISCONNECT_PHONE from webapp — closing relay client")
-                    try {
-                        client?.close(1000, "webapp_disconnect")
-                    } catch (e: Exception) {
-                        android.util.Log.w("PhoneService", "client.close threw during DISCONNECT_PHONE: ${e.message}")
+                // v18 Connect+Accept pivot ----------------------------
+                //
+                // Wire protocol with the relay:
+                //   relay → phone: PAIRING_REQUEST    {pairingId, ua, ip}
+                //                  PAIRING_CANCELLED  {pairingId}
+                //                  PAIRING_ACTIVE     {ua, ip}
+                //                  PAIRING_TERMINATED {reason}
+                //   phone → relay: ACCEPT_PAIRING     {pairingId}
+                //                  DECLINE_PAIRING    {pairingId}
+                //
+                // The phone lands in LOBBY on relay open. A pair only
+                // becomes active after the user explicitly accepts a
+                // PAIRING_REQUEST — relay-side responds with PAIRING_ACTIVE,
+                // and routes the browser's room frames through. Browser
+                // disconnect or relay-driven teardown emits
+                // PAIRING_TERMINATED; the phone STAYS connected to the
+                // relay lobby (does NOT automatically re-pair).
+                //
+                // Note: dispatch #29's "DISCONNECT_PHONE" handler was
+                // removed — its semantics (close the relay socket) are
+                // now covered by PAIRING_TERMINATED (which keeps the
+                // socket open and just updates UI).
+                "PAIRING_REQUEST" -> {
+                    val pairingId = payload?.get("pairingId") as? String
+                    if (pairingId.isNullOrBlank()) {
+                        android.util.Log.w("PhoneService", "PAIRING_REQUEST missing pairingId — ignoring")
+                        return
                     }
-                    return
+                    val ua = (payload["ua"] as? String).orEmpty()
+                    val ip = (payload["ip"] as? String).orEmpty()
+                    val identity = buildBrowserIdentity(ua, ip)
+                    android.util.Log.d("PhoneService", "PAIRING_REQUEST id=$pairingId identity=$identity")
+                    // Post heads-up notification with Accept/Decline
+                    // action buttons. Reuses the same channel + receiver
+                    // wiring that was built for the old LAN PhoneServer
+                    // accept flow (dispatch #5/#6 lineage).
+                    postConnectionRequestNotification(pairingId, identity)
+                    scheduleAutoDecline(pairingId)
+                    // Broadcast to MainActivity so an in-foreground
+                    // user gets the AlertDialog as well as the notif.
+                    // Restricted to our package — RECEIVER_NOT_EXPORTED
+                    // is set on the registration side.
+                    val foregroundIntent = Intent(ACTION_PAIRING_REQUEST_IN_FOREGROUND).apply {
+                        setPackage(packageName)
+                        putExtra(EXTRA_PAIRING_ID, pairingId)
+                        putExtra(EXTRA_PAIRING_IDENTITY, identity)
+                    }
+                    sendBroadcast(foregroundIntent)
                 }
+                "PAIRING_CANCELLED" -> {
+                    val pairingId = payload?.get("pairingId") as? String
+                    if (pairingId.isNullOrBlank()) {
+                        android.util.Log.w("PhoneService", "PAIRING_CANCELLED missing pairingId — ignoring")
+                        return
+                    }
+                    android.util.Log.d("PhoneService", "PAIRING_CANCELLED id=$pairingId")
+                    cancelPendingPairing(pairingId)
+                    // Also notify any visible AlertDialog so the user
+                    // doesn't have to dismiss a stale prompt manually.
+                    val cancelIntent = Intent(ACTION_PAIRING_CANCELLED_IN_FOREGROUND).apply {
+                        setPackage(packageName)
+                        putExtra(EXTRA_PAIRING_ID, pairingId)
+                    }
+                    sendBroadcast(cancelIntent)
+                }
+                "PAIRING_ACTIVE" -> {
+                    // Pair has crossed into the active room — usually
+                    // arrives right after ACCEPT_PAIRING was sent (the
+                    // relay confirms the room change). Refresh the
+                    // foreground notification to reflect the live state.
+                    val ua = (payload?.get("ua") as? String).orEmpty()
+                    val ip = (payload?.get("ip") as? String).orEmpty()
+                    android.util.Log.d("PhoneService", "PAIRING_ACTIVE ua=$ua ip=$ip")
+                    updateNotification(getString(R.string.pair_active_notification))
+                }
+                "PAIRING_TERMINATED" -> {
+                    val reason = (payload?.get("reason") as? String).orEmpty()
+                    android.util.Log.d("PhoneService", "PAIRING_TERMINATED reason=$reason")
+                    // Stay connected to the relay (lobby). Just reset
+                    // the foreground notification text — the pair is
+                    // over but we're still available for the next one.
+                    updateNotification(getString(R.string.status_waiting_for_web))
+                    // Drop any pending request notifications for this
+                    // session — defensive; usually nothing is pending
+                    // by the time TERMINATED arrives.
+                    clearAllPendingPairings("pairing terminated: $reason")
+                }
+                // ------------------------------------------------------
                 "MAKE_CALL" -> {
                     val number = payload?.get("number") as? String ?: return
                     val speaker = payload?.get("speaker") as? Boolean ?: false
@@ -2209,10 +2391,10 @@ class PhoneService : Service() {
         // server?.stop() + server = null lines from prior dispatches are
         // no longer needed. Only the relay client needs tearing down.
 
-        // Dispatch #29 — cancel any pending auto-reconnect so a 30s
-        // back-off timer doesn't wake up post-onDestroy with a Handler
-        // ref back into this dead Service instance.
-        cancelScheduledReconnect()
+        // v18 — cancel any pending lobby reconnect so a 5s timer
+        // doesn't wake up post-onDestroy with a Handler ref back into
+        // this dead Service instance.
+        cancelLobbyReconnect()
 
         // Stop client + cancel any pending connect-timeout watchdog so
         // the Handler queue doesn't retain a reference to this (now

@@ -80,6 +80,249 @@ object PermissionChecker {
     )
 
     /**
+     * Live status of a single permission row in the checklist UI (v18).
+     *
+     * Unlike [MissingPermission] (which only describes things the user
+     * hasn't granted yet), [PermissionStatusItem] is emitted for EVERY
+     * permission the app cares about so the UI can render a complete
+     * checklist where granted rows stay visible as a ✓ green badge.
+     *
+     *  - [GRANTED]          — the OS reports the permission as granted.
+     *                          Renders ✓ green.
+     *  - [MISSING_REQUIRED] — missing and load-bearing for core call /
+     *                          contacts / SMS flows. Renders ✗ red.
+     *                          Blocks the "Continue" button.
+     *  - [MISSING_SOFT]     — missing but tolerable (battery /
+     *                          auto-revoke / notification listener — OEM
+     *                          reliability hardening, not core function).
+     *                          Renders ⚠ amber. Does NOT block Continue.
+     *
+     * "REQUIRED" here means "Continue can't proceed without it". The
+     * triage matches the v18 spec: Phone, Contacts, SMS triplet are the
+     * real blockers; everything else (battery exemption, notification
+     * listener, notification post permission, auto-revoke whitelist,
+     * camera) is SOFT.
+     */
+    enum class Status { GRANTED, MISSING_REQUIRED, MISSING_SOFT }
+
+    /**
+     * One row in the live-status checklist. Mirrors [MissingPermission]'s
+     * shape but adds [status] so the UI can render granted rows too.
+     *
+     * [intent] is null for GRANTED entries (nothing to tap into) and the
+     * deep-link Intent for missing entries so the UI can still offer a
+     * "fix this" tap target if the user wants to revisit it.
+     */
+    data class PermissionStatusItem(
+        val id: String,
+        val status: Status,
+        val displayName: String,
+        val why: String,
+        val intent: Intent?,
+    )
+
+    /**
+     * Audit ALL permissions the app cares about, regardless of grant
+     * status. Used by the v18 checklist UI in MainActivity so the user
+     * can see green ticks for what's done as well as red/amber for what
+     * isn't.
+     *
+     * Ordering matches [checkAll] — most-critical-first — so granted and
+     * missing rows interleave in the natural reading order.
+     *
+     * REQUIRED set (blocks "Continue" button when missing): CALL_PHONE,
+     * READ_PHONE_STATE, ANSWER_PHONE_CALLS, READ_CONTACTS, READ_CALL_LOG,
+     * READ_SMS, SEND_SMS, RECEIVE_SMS. Everything else is SOFT.
+     */
+    fun checkAllWithStatus(context: Context): List<PermissionStatusItem> {
+        val items = mutableListOf<PermissionStatusItem>()
+
+        // 1. POST_NOTIFICATIONS (API 33+) — SOFT. The app technically
+        //    still functions without it (notifications just don't show),
+        //    so it doesn't block Continue.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            items += statusItem(
+                context,
+                id = "post_notifications",
+                granted = isGranted(context, Manifest.permission.POST_NOTIFICATIONS),
+                requiredWhenMissing = false,
+                displayNameRes = R.string.perm_name_notifications,
+                whyRes = R.string.perm_why_notifications,
+                missingIntent = appDetailsIntent(context),
+            )
+        }
+
+        // 2. Notification Listener — SOFT. RCS / messenger mirroring
+        //    breaks without it but core SMS / call still works.
+        items += statusItem(
+            context,
+            id = "notification_listener",
+            granted = isNotificationListenerEnabled(context),
+            requiredWhenMissing = false,
+            displayNameRes = R.string.perm_name_notif_listener,
+            whyRes = R.string.perm_why_notif_listener,
+            missingIntent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
+
+        // 3-5. Phone triplet — REQUIRED.
+        items += statusItem(
+            context,
+            id = "call_phone",
+            granted = isGranted(context, Manifest.permission.CALL_PHONE),
+            requiredWhenMissing = true,
+            displayNameRes = R.string.perm_name_phone,
+            whyRes = R.string.perm_why_phone,
+            missingIntent = appDetailsIntent(context),
+        )
+        items += statusItem(
+            context,
+            id = "read_phone_state",
+            granted = isGranted(context, Manifest.permission.READ_PHONE_STATE),
+            requiredWhenMissing = true,
+            displayNameRes = R.string.perm_name_phone_state,
+            whyRes = R.string.perm_why_phone_state,
+            missingIntent = appDetailsIntent(context),
+        )
+        items += statusItem(
+            context,
+            id = "answer_phone_calls",
+            granted = isGranted(context, Manifest.permission.ANSWER_PHONE_CALLS),
+            requiredWhenMissing = true,
+            displayNameRes = R.string.perm_name_answer,
+            whyRes = R.string.perm_why_answer,
+            missingIntent = appDetailsIntent(context),
+        )
+
+        // 6. Contacts — REQUIRED.
+        items += statusItem(
+            context,
+            id = "read_contacts",
+            granted = isGranted(context, Manifest.permission.READ_CONTACTS),
+            requiredWhenMissing = true,
+            displayNameRes = R.string.perm_name_contacts,
+            whyRes = R.string.perm_why_contacts,
+            missingIntent = appDetailsIntent(context),
+        )
+
+        // 7. Call log — REQUIRED.
+        items += statusItem(
+            context,
+            id = "read_call_log",
+            granted = isGranted(context, Manifest.permission.READ_CALL_LOG),
+            requiredWhenMissing = true,
+            displayNameRes = R.string.perm_name_call_log,
+            whyRes = R.string.perm_why_call_log,
+            missingIntent = appDetailsIntent(context),
+        )
+
+        // 8. SMS triplet — REQUIRED.
+        items += statusItem(
+            context,
+            id = "read_sms",
+            granted = isGranted(context, Manifest.permission.READ_SMS),
+            requiredWhenMissing = true,
+            displayNameRes = R.string.perm_name_read_sms,
+            whyRes = R.string.perm_why_read_sms,
+            missingIntent = appDetailsIntent(context),
+        )
+        items += statusItem(
+            context,
+            id = "send_sms",
+            granted = isGranted(context, Manifest.permission.SEND_SMS),
+            requiredWhenMissing = true,
+            displayNameRes = R.string.perm_name_send_sms,
+            whyRes = R.string.perm_why_send_sms,
+            missingIntent = appDetailsIntent(context),
+        )
+        items += statusItem(
+            context,
+            id = "receive_sms",
+            granted = isGranted(context, Manifest.permission.RECEIVE_SMS),
+            requiredWhenMissing = true,
+            displayNameRes = R.string.perm_name_receive_sms,
+            whyRes = R.string.perm_why_receive_sms,
+            missingIntent = appDetailsIntent(context),
+        )
+
+        // 9. Camera — SOFT. Used to be required for the LAN-QR pairing
+        //    flow but the app no longer scans QRs (post-dispatch #29
+        //    cookie-token auth). Kept as informational.
+        items += statusItem(
+            context,
+            id = "camera",
+            granted = isGranted(context, Manifest.permission.CAMERA),
+            requiredWhenMissing = false,
+            displayNameRes = R.string.perm_name_camera,
+            whyRes = R.string.perm_why_camera,
+            missingIntent = appDetailsIntent(context),
+        )
+
+        // 10. Battery optimization — SOFT (Samsung-soft per v18 spec).
+        items += statusItem(
+            context,
+            id = "battery_optimization",
+            granted = isBatteryOptimizationIgnored(context),
+            requiredWhenMissing = false,
+            displayNameRes = R.string.perm_name_battery,
+            whyRes = R.string.perm_why_battery,
+            missingIntent = batteryOptimizationIntent(context),
+        )
+
+        // 11. Auto-revoke whitelist — SOFT (API 30+).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // shouldShowAutoRevokeWarning returns true when the OS has
+            // auto-revoke ENABLED for us — i.e. the user has NOT
+            // whitelisted. Granted = NOT whitelisted? No — granted here
+            // means whitelisted (auto-revoke OFF). The helper returns
+            // true when we should SURFACE the warning (auto-revoke ON);
+            // therefore granted = !shouldShowAutoRevokeWarning.
+            val whitelisted = !shouldShowAutoRevokeWarning(context)
+            items += statusItem(
+                context,
+                id = "auto_revoke",
+                granted = whitelisted,
+                requiredWhenMissing = false,
+                displayNameRes = R.string.perm_name_auto_revoke,
+                whyRes = R.string.perm_why_auto_revoke,
+                missingIntent = autoRevokeIntent(context),
+            )
+        }
+
+        return items
+    }
+
+    /**
+     * Builds a [PermissionStatusItem] from the granted boolean +
+     * required-when-missing classification. Centralizes the GRANTED vs
+     * MISSING_REQUIRED vs MISSING_SOFT decision so [checkAllWithStatus]
+     * stays readable.
+     */
+    private fun statusItem(
+        context: Context,
+        id: String,
+        granted: Boolean,
+        requiredWhenMissing: Boolean,
+        displayNameRes: Int,
+        whyRes: Int,
+        missingIntent: Intent,
+    ): PermissionStatusItem {
+        val status = when {
+            granted -> Status.GRANTED
+            requiredWhenMissing -> Status.MISSING_REQUIRED
+            else -> Status.MISSING_SOFT
+        }
+        return PermissionStatusItem(
+            id = id,
+            status = status,
+            displayName = context.getString(displayNameRes),
+            why = context.getString(whyRes),
+            intent = if (granted) null else missingIntent,
+        )
+    }
+
+    /**
      * The full audit. Returns an EMPTY list when everything is granted —
      * MainActivity uses `list.isEmpty()` to decide whether to render the
      * main pane or the blocking pane. Order matters; see class kdoc.

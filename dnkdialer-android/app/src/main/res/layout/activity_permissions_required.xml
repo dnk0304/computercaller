@@ -125,76 +125,47 @@
                 android:stateListAnimator="@null"
                 android:layout_marginTop="@dimen/space_32" />
 
-            <!-- Expandable details toggle. Reads as a quiet link — small,
-                 secondary color, no chrome. Tapping it expands the list
-                 below; tapping again collapses. -->
-            <TextView
-                android:id="@+id/permsDetailsToggle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/perms_details_show"
-                android:textSize="@dimen/text_caption"
-                android:textColor="@color/text_secondary"
-                android:fontFamily="sans-serif-medium"
-                android:letterSpacing="0.02"
-                android:paddingTop="@dimen/space_8"
-                android:paddingBottom="@dimen/space_8"
-                android:layout_marginTop="@dimen/space_20"
-                android:background="?attr/selectableItemBackground" />
-
-            <!-- Expandable detail panel. Hidden by default. Contains two
-                 sections (Standard / Special access) with one row per
-                 permission. Each row is inflated from item_missing_permission
-                 (repurposed — no Grant chip, just title + why). -->
+            <!-- v18 — live permissions checklist. Replaces the collapsed
+                 "details panel" + "show/hide" toggle pattern from rounds
+                 6-8 with a permanently-visible list showing every
+                 permission and its current status (✓ granted /
+                 ✗ required-missing / ⚠ soft-missing). The toggle and
+                 the per-Kind-section labels are gone — the checklist
+                 is the surface. -->
             <LinearLayout
-                android:id="@+id/permsDetailsPanel"
+                android:id="@+id/permsChecklistList"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:visibility="gone"
-                android:layout_marginTop="@dimen/space_12">
+                android:layout_marginTop="@dimen/space_20"
+                tools:ignore="UselessLeaf" />
 
-                <TextView
-                    android:id="@+id/permsRuntimeSectionLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/perms_details_section_runtime"
-                    android:textSize="@dimen/text_eyebrow"
-                    android:textColor="@color/text_label"
-                    android:textAllCaps="true"
-                    android:letterSpacing="0.18"
-                    android:fontFamily="sans-serif-medium"
-                    android:layout_marginBottom="@dimen/space_12" />
+            <!-- v18 — "Continue" button. Enabled once every REQUIRED
+                 permission is green; disabled (visually muted) while
+                 any required entry is still red. SOFT entries can stay
+                 amber without blocking. Distinct from Grant All so the
+                 user has a clear "I've done enough — let me in" affordance
+                 without having to wait on/fight optional permissions. -->
+            <Button
+                android:id="@+id/permsContinueButton"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/button_height"
+                android:text="@string/perm_continue_button"
+                android:textSize="@dimen/text_body"
+                android:textAllCaps="false"
+                android:textColor="@color/text_primary"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0.02"
+                android:background="@drawable/bg_button_primary"
+                android:stateListAnimator="@null"
+                android:enabled="false"
+                android:layout_marginTop="@dimen/space_24" />
 
-                <LinearLayout
-                    android:id="@+id/permsRuntimeList"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    tools:ignore="UselessLeaf" />
-
-                <TextView
-                    android:id="@+id/permsSpecialSectionLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/perms_details_section_special"
-                    android:textSize="@dimen/text_eyebrow"
-                    android:textColor="@color/text_label"
-                    android:textAllCaps="true"
-                    android:letterSpacing="0.18"
-                    android:fontFamily="sans-serif-medium"
-                    android:layout_marginTop="@dimen/space_20"
-                    android:layout_marginBottom="@dimen/space_12" />
-
-                <LinearLayout
-                    android:id="@+id/permsSpecialList"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    tools:ignore="UselessLeaf" />
-            </LinearLayout>
-
-            <!-- Refresh — the safety net. -->
+            <!-- Refresh — the safety net. Quieter ghost styling — the
+                 checklist is reactive (re-rendered on every onResume +
+                 after Grant All), so most users never need this. Kept
+                 as a manual re-poll for the OEM cases where Android
+                 doesn't deliver an onResume after a Settings hop. -->
             <Button
                 android:id="@+id/permsRefreshButton"
                 android:layout_width="match_parent"
@@ -207,7 +178,7 @@
                 android:letterSpacing="0.02"
                 android:background="@drawable/bg_button_ghost"
                 android:stateListAnimator="@null"
-                android:layout_marginTop="@dimen/space_24" />
+                android:layout_marginTop="@dimen/space_12" />
 
         </LinearLayout>
     </ScrollView>

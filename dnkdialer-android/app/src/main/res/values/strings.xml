@@ -227,11 +227,11 @@
     <string name="relay_status_paired">Connected · browser paired</string>
     <string name="relay_status_offline">Offline · check internet</string>
 
-    <!-- Dispatch #29 — relay-status helper line under the status row.
-         Reassures the user that there is nothing to do here — the phone
-         is connected to the cloud relay; the browser side will pick it
-         up automatically once they log in on the web. -->
-    <string name="relay_help_text">Sign in on computercaller.com on any browser to use your phone from your computer. You can close this app — it keeps running in the background.</string>
+    <!-- Connect+Accept pivot (v18) — replaces the auto-pair help copy.
+         Phone now stays in the relay lobby until the user actively
+         accepts a pairing request from a browser. Help text directs them
+         to start the flow on the web side. -->
+    <string name="relay_help_text">Sign in on computercaller.com, then tap Connect. You\'ll get a prompt here to accept.</string>
 
     <!-- Dispatch #29 — Sign Out confirmation. Wipes the stored phoneToken
          and returns to SignInActivity. Phrased as a question with a
@@ -251,4 +251,38 @@
          permissions are still missing. -->
     <string name="perms_continue_anyway">Continue to app</string>
     <string name="perms_continue_anyway_hint">Some optional permissions are still missing but you can continue. Reliability may be reduced — you can grant them later from app settings.</string>
+
+    <!-- =================================================== -->
+    <!-- Connect+Accept gesture protocol (v18 / 2026-05-25). -->
+    <!-- Phone lands in lobby on launch. Browser must request -->
+    <!-- pairing; user must Accept on the phone before any   -->
+    <!-- data flows. Replaces silent auto-pair.              -->
+    <!-- =================================================== -->
+    <string name="pair_request_title">Pairing request</string>
+    <!-- Body templated with browser identification — typically
+         "Chrome on macOS · 203.0.113.45" — first arg is ua label,
+         single composed string sent by the relay. -->
+    <string name="pair_request_body_template">%1$s wants to connect</string>
+    <string name="pair_request_body_unknown">A browser wants to connect</string>
+    <string name="pair_accept">Accept</string>
+    <string name="pair_decline">Decline</string>
+    <!-- Heads-up notification fallback when browser identification
+         is absent. Matches the dialog copy intentionally. -->
+    <string name="pair_request_notification_title">Pairing request</string>
+    <!-- Foreground-notification text replacements during the
+         PAIRING_ACTIVE / PAIRING_TERMINATED lifecycle. -->
+    <string name="pair_active_notification">Connected — syncing data</string>
+    <string name="pair_terminated_toast">Browser disconnected</string>
+    <!-- Status row copy when relay is open but no active pair. -->
+    <string name="pair_lobby_status">Lobby — waiting for browser to connect</string>
+
+    <!-- =================================================== -->
+    <!-- Permissions checklist (v18). Replaces the missing-only-->
+    <!-- list with a full status view: every permission shown -->
+    <!-- with ✓ green / ✗ red / ⚠ amber.                      -->
+    <!-- =================================================== -->
+    <string name="perm_status_granted">Granted</string>
+    <string name="perm_status_missing_required">Required</string>
+    <string name="perm_status_missing_soft">Optional</string>
+    <string name="perm_continue_button">Continue</string>
 </resources>

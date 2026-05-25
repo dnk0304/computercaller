@@ -8,9 +8,11 @@ import android.animation.ValueAnimator
 import android.app.ActivityManager
 import android.app.AlertDialog
 import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -206,13 +208,15 @@ class MainActivity : AppCompatActivity() {
      */
     private var awaitingRuntimeResultForGrantAll: Boolean = false
 
-    /**
-     * Detail panel expanded/collapsed state. Persisted across pane
-     * re-renders within the same Activity instance so the user doesn't
-     * lose their "expanded" view if Android revokes another permission
-     * mid-grant.
-     */
-    private var permsDetailsExpanded: Boolean = false
+    // v18 — `permsDetailsExpanded` field removed.
+    //
+    // Background: rounds 6-8 had a collapsible "What does this need
+    // access to?" detail panel hidden behind a toggle, with this
+    // boolean tracking expanded/collapsed state across re-renders.
+    // v18 replaces the toggle pattern with a permanently-visible
+    // checklist (every permission, every status), so the toggle and
+    // its state field are both dead. If a future dispatch wants to
+    // bring back collapsing rows, look here for the original pattern.
 
     private val requiredPermissions = arrayOf(
         Manifest.permission.CALL_PHONE,
@@ -230,6 +234,64 @@ class MainActivity : AppCompatActivity() {
     } else {
         emptyArray()
     }
+
+    /**
+     * v18 / Connect+Accept pivot — in-foreground pairing-request dialog.
+     *
+     * PhoneService broadcasts ACTION_PAIRING_REQUEST_IN_FOREGROUND every
+     * time a PAIRING_REQUEST frame arrives over the relay. When the
+     * Activity is foregrounded we surface a synchronous AlertDialog so
+     * the user can act without diving into the notification shade.
+     * The notification still posts in parallel — both Accept/Decline
+     * paths dispatch the same internal broadcast that
+     * [ConnectionRequestReceiver] consumes, so the decision converges
+     * in [PhoneService.handleConnectionDecision].
+     *
+     * Field-tracked so a PAIRING_CANCELLED (relay tells us the browser
+     * walked away) can dismiss a still-visible dialog, and so onPause
+     * can dismiss it cleanly without leaking a window token.
+     */
+    private var pairingRequestDialog: AlertDialog? = null
+
+    /**
+     * Pairing-id currently shown in [pairingRequestDialog]. Used so
+     * PAIRING_CANCELLED with a different id leaves the dialog alone
+     * (defensive — should never happen in practice, but a second
+     * concurrent request handled by a different code path could race).
+     */
+    private var pairingRequestDialogId: String? = null
+
+    /**
+     * Broadcast receiver for the in-foreground pairing surfacing.
+     * Registered in [onResume] with RECEIVER_NOT_EXPORTED so no
+     * external app can spoof pairing intents into our UI. Unregistered
+     * in [onPause].
+     */
+    private val pairingForegroundReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent == null) return
+            when (intent.action) {
+                PhoneService.ACTION_PAIRING_REQUEST_IN_FOREGROUND -> {
+                    val pairingId = intent.getStringExtra(PhoneService.EXTRA_PAIRING_ID) ?: return
+                    val identity = intent.getStringExtra(PhoneService.EXTRA_PAIRING_IDENTITY)
+                        ?: getString(R.string.pair_request_body_unknown)
+                    showPairingRequestDialog(pairingId, identity)
+                }
+                PhoneService.ACTION_PAIRING_CANCELLED_IN_FOREGROUND -> {
+                    val pairingId = intent.getStringExtra(PhoneService.EXTRA_PAIRING_ID) ?: return
+                    dismissPairingDialogIfMatching(pairingId)
+                }
+            }
+        }
+    }
+
+    /**
+     * Tracks whether [pairingForegroundReceiver] is currently registered
+     * so the unregister call in [onPause] doesn't throw on cold starts
+     * where onResume hasn't run yet (rare but possible during config
+     * changes).
+     */
+    private var pairingReceiverRegistered: Boolean = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -588,8 +650,13 @@ class MainActivity : AppCompatActivity() {
             val browserCount = phoneService?.getBrowserCount() ?: 0
 
             val (text, conn) = when {
+                // v18 — relay socket is OPEN but no active pair. The phone
+                // is sitting in the LOBBY waiting for a browser to send
+                // a pairing request that the user must Accept. New copy
+                // makes the gesture-required nature explicit (vs the
+                // ambiguous pre-v18 "Waiting for browser").
                 status.contains("Connected to relay") && browserCount == 0 ->
-                    getString(R.string.status_waiting_for_web) to ConnState.WAITING
+                    getString(R.string.pair_lobby_status) to ConnState.WAITING
                 status.contains("Connected to relay") -> {
                     val copy = if (browserCount == 1)
                         getString(R.string.status_clients_connected_one)
@@ -598,7 +665,7 @@ class MainActivity : AppCompatActivity() {
                     copy to ConnState.LIVE
                 }
                 status.contains("Waiting") ->
-                    getString(R.string.status_waiting_for_web) to ConnState.WAITING
+                    getString(R.string.pair_lobby_status) to ConnState.WAITING
                 else ->
                     status to ConnState.IDLE
             }
@@ -947,6 +1014,13 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         android.util.Log.d("MainActivity", "onResume called")
 
+        // v18 — register the pairing-foreground broadcast receiver so
+        // we can surface the Accept/Decline AlertDialog while the
+        // Activity is visible. Notification path stays primary (always
+        // posts) — the dialog is the additional in-foreground affordance
+        // so the user doesn't have to dive into the shade.
+        registerPairingForegroundReceiver()
+
         // Samsung One UI auto-revoke defense — re-check on EVERY resume.
         // This catches two cases:
         //   1. User opened the app, was shown the permissions pane, went
@@ -1101,36 +1175,36 @@ class MainActivity : AppCompatActivity() {
         val runtimeMissing = missing.filter { it.kind == PermissionChecker.Kind.RUNTIME }
         val specialMissing = missing.filter { it.kind == PermissionChecker.Kind.SPECIAL }
 
-        // Populate the expandable detail lists. Hide the section labels
-        // when their list is empty so a partially-granted state doesn't
-        // show an orphan heading.
-        val runtimeList: LinearLayout = findViewById(R.id.permsRuntimeList)
-        val specialList: LinearLayout = findViewById(R.id.permsSpecialList)
-        val runtimeLabel: TextView = findViewById(R.id.permsRuntimeSectionLabel)
-        val specialLabel: TextView = findViewById(R.id.permsSpecialSectionLabel)
-        renderDetailList(runtimeList, runtimeMissing)
-        renderDetailList(specialList, specialMissing)
-        runtimeLabel.visibility = if (runtimeMissing.isEmpty()) View.GONE else View.VISIBLE
-        runtimeList.visibility = if (runtimeMissing.isEmpty()) View.GONE else View.VISIBLE
-        specialLabel.visibility = if (specialMissing.isEmpty()) View.GONE else View.VISIBLE
-        specialList.visibility = if (specialMissing.isEmpty()) View.GONE else View.VISIBLE
-
-        // Detail panel — start collapsed unless the user previously
-        // expanded it. Re-renders preserve [permsDetailsExpanded] so an
-        // Android-revoked permission appearing mid-flow doesn't snap the
-        // panel shut.
-        val toggle: TextView = findViewById(R.id.permsDetailsToggle)
-        val panel: LinearLayout = findViewById(R.id.permsDetailsPanel)
-        applyDetailsExpansion(toggle, panel)
-        toggle.setOnClickListener {
-            permsDetailsExpanded = !permsDetailsExpanded
-            applyDetailsExpansion(toggle, panel)
-        }
+        // v18 — render the live status checklist. Replaces the
+        // collapsible per-Kind detail panel from rounds 6-8. Every
+        // permission is shown with its current status (granted/missing-
+        // required/missing-soft) so the user can SEE progress as they
+        // grant things.
+        val checklistList: LinearLayout = findViewById(R.id.permsChecklistList)
+        val statusItems = PermissionChecker.checkAllWithStatus(this)
+        renderChecklist(checklistList, statusItems)
 
         // Primary CTA — Grant All. Kicks off the full sequence.
         val grantAllButton: Button = findViewById(R.id.permsGrantAllButton)
         grantAllButton.setOnClickListener {
             startGrantAllFlow(runtimeMissing, specialMissing)
+        }
+
+        // v18 — Continue button. Enabled iff every REQUIRED permission
+        // is GRANTED. SOFT misses are tolerated (the user can grant
+        // them later from app settings; reliability may degrade but
+        // the core flow works). Disabled state mutes opacity so the
+        // user can SEE it's not actionable yet without it disappearing.
+        val continueButton: Button = findViewById(R.id.permsContinueButton)
+        val anyRequiredMissing = statusItems.any {
+            it.status == PermissionChecker.Status.MISSING_REQUIRED
+        }
+        continueButton.isEnabled = !anyRequiredMissing
+        continueButton.alpha = if (anyRequiredMissing) 0.4f else 1.0f
+        continueButton.setOnClickListener {
+            android.util.Log.d("MainActivity", "Continue tapped — required permissions satisfied")
+            grantAllInProgress = false
+            playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
         }
 
         // "I've granted everything — re-check" button.
@@ -1185,36 +1259,64 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Apply the current expanded/collapsed state to the toggle label and
-     * the detail panel visibility. Extracted because we need to do the
-     * same thing in two places (initial render + click handler).
+     * v18 — render the live permissions checklist into the container.
+     * One row per permission; status drives the icon tint + badge color
+     * + badge label so the user can scan the list at a glance and see
+     * what's done vs what isn't.
+     *
+     * Tint mapping (matches the status-dot vocabulary used elsewhere
+     * in the app — emerald = healthy, red = blocker, amber = warning):
+     *   GRANTED          → dot_live   (✓ green)
+     *   MISSING_REQUIRED → dot_failed (✗ red)
+     *   MISSING_SOFT     → dot_waiting (⚠ amber)
      */
-    private fun applyDetailsExpansion(toggle: TextView, panel: LinearLayout) {
-        if (permsDetailsExpanded) {
-            panel.visibility = View.VISIBLE
-            toggle.text = getString(R.string.perms_details_hide)
-        } else {
-            panel.visibility = View.GONE
-            toggle.text = getString(R.string.perms_details_show)
-        }
-    }
-
-    /**
-     * Render an informational list of missing-permission rows into a
-     * container. No Grant buttons — the user grants everything through
-     * the Grant All flow. This list is purely a "what does this need?"
-     * breakdown for the curious user who taps the disclosure toggle.
-     */
-    private fun renderDetailList(
+    private fun renderChecklist(
         container: LinearLayout,
-        items: List<PermissionChecker.MissingPermission>
+        items: List<PermissionChecker.PermissionStatusItem>
     ) {
         container.removeAllViews()
         val inflater = LayoutInflater.from(this)
-        for (perm in items) {
-            val row = inflater.inflate(R.layout.item_missing_permission, container, false)
-            row.findViewById<TextView>(R.id.permTitle).text = perm.displayName
-            row.findViewById<TextView>(R.id.permWhy).text = perm.why
+        for (item in items) {
+            val row = inflater.inflate(R.layout.item_permission_status, container, false)
+            row.findViewById<TextView>(R.id.permTitle).text = item.displayName
+            row.findViewById<TextView>(R.id.permWhy).text = item.why
+
+            val (colorRes, badgeRes) = when (item.status) {
+                PermissionChecker.Status.GRANTED ->
+                    R.color.dot_live to R.string.perm_status_granted
+                PermissionChecker.Status.MISSING_REQUIRED ->
+                    R.color.dot_failed to R.string.perm_status_missing_required
+                PermissionChecker.Status.MISSING_SOFT ->
+                    R.color.dot_waiting to R.string.perm_status_missing_soft
+            }
+            val color = ContextCompat.getColor(this, colorRes)
+            row.findViewById<View>(R.id.permStatusIcon).backgroundTintList =
+                ColorStateList.valueOf(color)
+            val badge: TextView = row.findViewById(R.id.permStatusBadge)
+            badge.text = getString(badgeRes)
+            badge.setTextColor(color)
+
+            // Tap a missing row to deep-link straight into the relevant
+            // grant surface. Granted rows are non-interactive. Helpful
+            // for the user who wants to fix just one thing instead of
+            // running the full Grant All flow.
+            val tapTarget = item.intent
+            if (tapTarget != null) {
+                row.setOnClickListener {
+                    try {
+                        startActivity(tapTarget)
+                    } catch (e: Exception) {
+                        android.util.Log.w(
+                            "MainActivity",
+                            "Per-row tap intent failed for ${item.id}: ${e.message}"
+                        )
+                    }
+                }
+            } else {
+                row.setOnClickListener(null)
+                row.isClickable = false
+            }
+
             container.addView(row)
         }
     }
@@ -1648,6 +1750,145 @@ class MainActivity : AppCompatActivity() {
         // missing, and routes the user into the Grant All pane.
     }
 
+    override fun onPause() {
+        super.onPause()
+        // v18 — unregister the pairing-foreground receiver and dismiss
+        // any visible AlertDialog so a paused Activity can't leak a
+        // window token (BadTokenException on the next show). The
+        // notification path is still live — if the user backgrounds
+        // mid-prompt they get the heads-up + shade entry as usual.
+        unregisterPairingForegroundReceiver()
+        pairingRequestDialog?.dismiss()
+        pairingRequestDialog = null
+        pairingRequestDialogId = null
+    }
+
+    /**
+     * v18 — register [pairingForegroundReceiver] with
+     * RECEIVER_NOT_EXPORTED on API 33+ so no other app can spoof
+     * pairing intents into our UI. Idempotent — guarded by
+     * [pairingReceiverRegistered].
+     */
+    private fun registerPairingForegroundReceiver() {
+        if (pairingReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(PhoneService.ACTION_PAIRING_REQUEST_IN_FOREGROUND)
+            addAction(PhoneService.ACTION_PAIRING_CANCELLED_IN_FOREGROUND)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(pairingForegroundReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(pairingForegroundReceiver, filter)
+        }
+        pairingReceiverRegistered = true
+        android.util.Log.d("MainActivity", "Pairing-foreground receiver registered")
+    }
+
+    /**
+     * v18 — paired with [registerPairingForegroundReceiver]. Safe to
+     * call when not registered.
+     */
+    private fun unregisterPairingForegroundReceiver() {
+        if (!pairingReceiverRegistered) return
+        try {
+            unregisterReceiver(pairingForegroundReceiver)
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "unregisterPairingForegroundReceiver threw: ${e.message}")
+        }
+        pairingReceiverRegistered = false
+    }
+
+    /**
+     * v18 — show the Accept/Decline AlertDialog for an incoming
+     * PAIRING_REQUEST. If a dialog is already visible for a different
+     * pairingId we replace it (later request wins — defensive; the
+     * relay shouldn't issue concurrent requests for the same phone but
+     * we shouldn't trust it). If the same id is already showing we
+     * leave it alone — re-broadcast on resume is the typical cause.
+     *
+     * Both buttons dispatch the SAME broadcast that the notification
+     * action buttons use ([ConnectionRequestReceiver.ACTION_ACCEPT_CONNECTION]
+     * / [ACTION_DECLINE_CONNECTION]) so both paths converge in
+     * [PhoneService.handleConnectionDecision]. This avoids any
+     * "dialog said Accept but the notification handler also fired
+     * Decline due to a race" class of bug.
+     */
+    private fun showPairingRequestDialog(pairingId: String, identity: String) {
+        if (isFinishing || isDestroyed) {
+            android.util.Log.d("MainActivity", "showPairingRequestDialog: activity gone, skipping")
+            return
+        }
+        if (pairingRequestDialogId == pairingId && pairingRequestDialog?.isShowing == true) {
+            android.util.Log.d("MainActivity", "showPairingRequestDialog: already showing for $pairingId")
+            return
+        }
+        pairingRequestDialog?.dismiss()
+
+        val message = getString(R.string.pair_request_body_template, identity)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.pair_request_title)
+            .setMessage(message)
+            .setPositiveButton(R.string.pair_accept) { d, _ ->
+                d.dismiss()
+                dispatchPairingDecision(pairingId, accept = true)
+            }
+            .setNegativeButton(R.string.pair_decline) { d, _ ->
+                d.dismiss()
+                dispatchPairingDecision(pairingId, accept = false)
+            }
+            // Cancelable=false so a stray back-tap mid-prompt doesn't
+            // leave the relay hanging. User MUST choose. The 30s
+            // auto-decline timer in PhoneService is the safety net if
+            // they ignore it entirely.
+            .setCancelable(false)
+            .create()
+        pairingRequestDialog = dialog
+        pairingRequestDialogId = pairingId
+        dialog.setOnDismissListener {
+            // Clear refs once the dialog leaves the screen. The decision
+            // dispatcher above runs BEFORE this listener fires.
+            if (pairingRequestDialog === dialog) {
+                pairingRequestDialog = null
+                pairingRequestDialogId = null
+            }
+        }
+        dialog.show()
+        android.util.Log.d("MainActivity", "Pairing dialog shown for $pairingId")
+    }
+
+    /**
+     * Convergence helper — dispatch the same broadcast the notification
+     * action buttons use so both Accept/Decline paths land in
+     * [PhoneService.handleConnectionDecision].
+     */
+    private fun dispatchPairingDecision(pairingId: String, accept: Boolean) {
+        val action = if (accept)
+            ConnectionRequestReceiver.ACTION_ACCEPT_CONNECTION
+        else
+            ConnectionRequestReceiver.ACTION_DECLINE_CONNECTION
+        val intent = Intent(action).apply {
+            setPackage(packageName)
+            putExtra(ConnectionRequestReceiver.EXTRA_REQUEST_ID, pairingId)
+        }
+        sendBroadcast(intent)
+        android.util.Log.d("MainActivity", "Dispatched $action for $pairingId")
+    }
+
+    /**
+     * Dismiss the in-foreground AlertDialog when PAIRING_CANCELLED
+     * arrives for the visible request. No-op if the visible id doesn't
+     * match (defensive — concurrent requests should not happen).
+     */
+    private fun dismissPairingDialogIfMatching(pairingId: String) {
+        if (pairingRequestDialogId == pairingId) {
+            android.util.Log.d("MainActivity", "Dismissing pairing dialog for cancelled $pairingId")
+            pairingRequestDialog?.dismiss()
+            pairingRequestDialog = null
+            pairingRequestDialogId = null
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         stopStatusUpdates()
@@ -1656,6 +1897,12 @@ class MainActivity : AppCompatActivity() {
         // holds a strong ref to statusDotRing).
         statusPulseAnimator?.cancel()
         statusPulseAnimator = null
+        // v18 — drop any stray pairing-dialog refs and the receiver
+        // registration (onPause should have done this already; defensive).
+        pairingRequestDialog?.dismiss()
+        pairingRequestDialog = null
+        pairingRequestDialogId = null
+        unregisterPairingForegroundReceiver()
         if (serviceBound) {
             unbindService(serviceConnection)
             serviceBound = false

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Permission status row (v18 / 2026-05-25 — Connect+Accept pivot).
+
+  Used by the v18 redesigned permissions pane to render EVERY permission
+  the app cares about, granted or not. Replaces the v17 missing-only
+  detail list; granted entries stay visible with a ✓ green badge.
+
+  Layout: horizontal row — status icon (✓/✗/⚠, dot-sized) + title +
+  one-line why subtitle, with a small status badge text on the trailing
+  edge. Tinted backgrounds are applied in code (MainActivity.renderChecklist).
+
+  - permStatusIcon: small dot whose backgroundTint is set per status
+    (granted → dot_live, missing-required → dot_failed,
+     missing-soft → dot_waiting).
+  - permStatusBadge: one-word status label colored to match.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="@drawable/bg_url_block"
+    android:paddingStart="@dimen/space_12"
+    android:paddingEnd="@dimen/space_12"
+    android:paddingTop="@dimen/space_12"
+    android:paddingBottom="@dimen/space_12"
+    android:layout_marginBottom="@dimen/space_8">
+
+    <View
+        android:id="@+id/permStatusIcon"
+        android:layout_width="@dimen/dot_size"
+        android:layout_height="@dimen/dot_size"
+        android:background="@drawable/status_dot"
+        android:layout_marginEnd="@dimen/space_12"
+        android:importantForAccessibility="no" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/permTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="@dimen/text_body"
+            android:textColor="@color/text_primary"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="-0.005"
+            tools:text="Phone" />
+
+        <TextView
+            android:id="@+id/permWhy"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="@dimen/text_caption"
+            android:textColor="@color/text_secondary"
+            android:lineSpacingMultiplier="1.3"
+            android:layout_marginTop="@dimen/space_4"
+            tools:text="Place calls dialed from the web app." />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/permStatusBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="@dimen/text_caption"
+        android:fontFamily="sans-serif-medium"
+        android:letterSpacing="0.04"
+        android:layout_marginStart="@dimen/space_12"
+        tools:text="Granted"
+        tools:textColor="@color/dot_live" />
+</LinearLayout>

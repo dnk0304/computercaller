@@ -35,7 +35,13 @@ android {
         // PhoneServer.kt deleted, MainActivity LAN-IP/QR plate stripped,
         // Sign Out wiring, exponential-backoff relay reconnect, and the
         // permissions-pane refresh-button-advance fix Dennis hit on v16.
-        versionCode = 17
+        // Connect+Accept pivot (2026-05-25): 17 → 18. Phone no longer
+        // auto-enters active room on launch — lands in LOBBY, browser must
+        // click Connect, user must Accept on phone. Exponential-backoff
+        // ripped out; replaced with simple 5s lobby-only reconnect.
+        // Permissions UI redesigned as live checklist (all permissions
+        // visible with status icons) instead of missing-only list.
+        versionCode = 18
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
