@@ -30,7 +30,10 @@ import { usePhone } from '@/hooks';
  *          checkout / billing portal in a new tab.
  *       3. Soft divider.
  *       4. "Sign out" row — POSTs /api/auth/logout, then routes to
- *          /auth/login on success.
+ *          the marketing landing page `/` on success. (Middleware
+ *          handles unauth-bouncing protected routes to /auth/login;
+ *          explicit user-initiated sign-out lands on the marketing
+ *          page so the user can re-enter via the landing CTA.)
  *   - Clicking the name does nothing. Names aren't routes; explicit action
  *     rows are. The Subscription row IS the route.
  *
@@ -76,7 +79,7 @@ export const ProfileMenu = () => {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   // The phone bridge's full WS teardown helper. Sign Out MUST call this BEFORE
-  // hitting /api/auth/logout — Next's router.push('/auth/login') is an SPA
+  // hitting /api/auth/logout — Next's router.push('/') is an SPA
   // navigation, so neither beforeunload nor pagehide fire. Without an explicit
   // disconnect(), the relay WS stays open across the logout, the server-side
   // room keeps `phoneWs` + `outboundTargetUrl` + keepalive pings going, and
@@ -184,13 +187,13 @@ export const ProfileMenu = () => {
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch {
       // Logout endpoint is best-effort — even if it fails, the user wants to
-      // leave the app surface; route them to /auth/login regardless. The
-      // server-side cookie will eventually expire and the route is gated by
-      // middleware anyway.
+      // leave the app surface; route them to the landing page `/` regardless.
+      // The server-side cookie will eventually expire and the protected
+      // routes are gated by middleware anyway.
     }
     setOpen(false);
     setSigningOut(false);
-    router.push('/auth/login');
+    router.push('/');
   };
 
   return (
