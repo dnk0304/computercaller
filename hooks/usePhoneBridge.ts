@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, startTransition } from 'react';
+import { usePathname } from 'next/navigation';
 import type {
   PhoneEventType,
   Contact,
@@ -112,6 +113,14 @@ export function getNotificationIcon(packageName: string): string | undefined {
 }
 
 export function usePhoneBridge() {
+  // Dispatch #30 (2026-05-25): we depend on pathname so the token-fetch effect
+  // re-fires when the user navigates (e.g. /signin → /). The hook mounts at
+  // the layout level and SURVIVES route transitions — without a pathname dep
+  // the original mount-only effect runs BEFORE the auth cookie is set during
+  // the signin redirect, and never retries. Re-firing on every path change is
+  // cheap because we guard with phoneTokenRef.current and short-circuit once
+  // the token is loaded.
+  const pathname = usePathname();
   // State — split into individual useState calls so each update only re-renders
   // components that consume the changed slice (e.g. call-timer ticks don't
   // repaint the message thread or contact list).
@@ -1886,14 +1895,25 @@ export function usePhoneBridge() {
   }, [contacts]);
 
   // Dispatch #28 (2026-05-24): fetch the user's phoneToken from /api/auth/me
-  // on mount so the relay URL can be built with ?token=<phoneToken>. The relay
-  // now closes any upgrade that arrives without a valid token (auth gate), so
-  // we MUST have the token in hand before opening the WS. Token fetch is
-  // idempotent and cheap (in-process Prisma lookup behind the auth cookie),
-  // runs once per hook instance. Failure → null token → the connect effect
-  // below is a no-op and the UI stays in its "Waiting for phone…" state until
-  // the user resolves whatever broke /api/auth/me (typically: signed out).
+  // so the relay URL can be built with ?token=<phoneToken>. The relay closes
+  // any upgrade that arrives without a valid token (auth gate), so we MUST
+  // have the token in hand before opening the WS. Token fetch is idempotent
+  // and cheap (in-process Prisma lookup behind the auth cookie). Failure →
+  // null token → the connect effect below is a no-op and the UI stays in its
+  // "Waiting for phone…" state until the user resolves whatever broke
+  // /api/auth/me (typically: signed out).
+  //
+  // Dispatch #30 (2026-05-25): depends on `pathname` so the effect re-fires
+  // on route transitions. The hook lives in the persistent layout and the
+  // ORIGINAL mount-only [] effect ran once — BEFORE the auth cookie was set
+  // when the user landed on /signin first. After login the user is navigated
+  // to /, but the component never unmounted, so the effect never re-ran and
+  // the relay stayed gated. Re-running on every pathname change is safe and
+  // cheap because the guard below short-circuits once a token is loaded.
   useEffect(() => {
+    // Once the token is loaded, subsequent route changes are no-ops. Keeps
+    // this from spamming /api/auth/me on every client-side navigation.
+    if (phoneTokenRef.current) return;
     let cancelled = false;
     (async () => {
       try {
@@ -1917,7 +1937,7 @@ export function usePhoneBridge() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [pathname]);
 
   // Do NOT auto-send CONNECT_TO with a saved phone URL. Reasons:
   // 1. If phone is connected via QR, the relay already knows — no CONNECT_TO needed.
