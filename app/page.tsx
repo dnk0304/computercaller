@@ -2,11 +2,236 @@
 
 import Link from 'next/link';
 import Image from 'next/image';
-import { MessageSquare, Bell, Zap, Shield, Globe, Check, ArrowRight, Phone } from 'lucide-react';
+import Script from 'next/script';
+import { useState } from 'react';
+import {
+  MessageSquare,
+  Bell,
+  Zap,
+  Shield,
+  Globe,
+  Check,
+  ArrowRight,
+  Phone,
+  Laptop,
+  Plane,
+  Users,
+  Accessibility,
+  Briefcase,
+  Headphones,
+  Smartphone,
+  MousePointerClick,
+  Plus,
+  Minus,
+} from 'lucide-react';
+
+/**
+ * Landing page — SEO + content rewrite (dispatch 2026-05-25).
+ *
+ * Strategy:
+ * - H1 contains the primary Ahrefs keyword "make phone calls from your computer"
+ *   verbatim. Long-tail variants ("call phone from computer", "make a phone call
+ *   from computer", "call any number from your computer") are woven naturally
+ *   into the Use Cases, How It Works, and FAQ sections — no awkward keyword
+ *   stuffing, every phrase fits the reader voice.
+ * - JSON-LD structured data (SoftwareApplication + Organization + FAQPage) is
+ *   injected via next/script using strategy="afterInteractive" so it ships in
+ *   the rendered HTML and Google can read it during the first crawl.
+ * - Hero image removed per Dennis's explicit request; the hero is now copy-led,
+ *   with the value prop carrying the visual weight via large tracking-tight
+ *   type and a subtle blue→white gradient surface.
+ * - FAQ uses native <details>/<summary> rather than a JS accordion library —
+ *   keyboard-accessible by default, no dep cost, fully crawlable (Google reads
+ *   inside <details> for rich snippets), and the open state animates with CSS
+ *   only. We layer in arrow toggling via state to keep the icon swap snappy.
+ */
+
+const PRIMARY_KEYWORD = 'Make phone calls from your computer.';
+
+const useCases = [
+  {
+    icon: Laptop,
+    title: 'Locked-down corporate laptop',
+    body:
+      "Your IT department blocked phone apps and personal numbers. ComputerCaller runs in your browser — make a phone call from your computer through your real number, no install required.",
+  },
+  {
+    icon: Globe,
+    title: 'Remote teams',
+    body:
+      "Hop on calls from any country, any device. Your phone stays in your bag while you call from your computer over WiFi or mobile data.",
+  },
+  {
+    icon: Briefcase,
+    title: 'Sales & support teams',
+    body:
+      "Make 50+ outbound calls a day from your computer. Type the number, hit dial, talk through your laptop — no headset mic-dialing dance.",
+  },
+  {
+    icon: Accessibility,
+    title: 'Accessibility-first calling',
+    body:
+      "Type, search, paste, and click your way through every call. Designed for users who find phone keypads hard or who navigate primarily with a keyboard.",
+  },
+  {
+    icon: MousePointerClick,
+    title: 'Stay in the flow',
+    body:
+      "Don't break focus to touch your phone. Your phone rings, your computer answers. Calls live next to your inbox, your IDE, your design tool.",
+  },
+  {
+    icon: Plane,
+    title: 'Travel without roaming bills',
+    body:
+      "Stay on your home number even when you're abroad. Connect your phone to WiFi, leave it in the room, and call from your computer like you never left.",
+  },
+];
+
+const howItWorks = [
+  {
+    n: '01',
+    icon: Smartphone,
+    title: 'Install the Android companion app',
+    body:
+      "One-time install on your existing Android phone. The companion app pairs your phone to your ComputerCaller account using a secure token — no new SIM, no new number, no carrier setup.",
+  },
+  {
+    n: '02',
+    icon: Laptop,
+    title: 'Open ComputerCaller in your browser',
+    body:
+      "Sign in at computercaller.com on any laptop or desktop. Hit Connect — your phone shows an Accept dialog. Tap it once and the bridge is live.",
+  },
+  {
+    n: '03',
+    icon: Phone,
+    title: 'Start calling',
+    body:
+      "Dial any phone number from your computer. Your Android phone places the call through your existing carrier. You hear and speak through your laptop's microphone and speakers.",
+  },
+];
+
+const whoItsFor = [
+  {
+    label: 'Remote workers',
+    body: 'Call clients and colleagues from wherever you work today — without the context-switch to your phone.',
+  },
+  {
+    label: 'Sales & support teams',
+    body: 'High-volume outbound calling from a real keyboard. Faster dialing, faster notes, faster follow-ups.',
+  },
+  {
+    label: 'Frequent travelers',
+    body: 'Skip roaming. Keep your home number. Call any number from your computer over hotel WiFi.',
+  },
+  {
+    label: 'Accessibility needs',
+    body: 'A computer-first calling experience for users with mobility, vision, or fine-motor needs.',
+  },
+];
+
+const faqs = [
+  {
+    q: 'How does ComputerCaller let me make a phone call from my computer?',
+    a: "ComputerCaller bridges your existing Android phone to your browser. You install a small companion app on your phone, sign in to ComputerCaller in your browser, and the two pair through a secure encrypted relay. When you dial a number on your computer, your phone places the real call through your carrier — you just hear and speak through your laptop.",
+  },
+  {
+    q: 'Do I need a new phone number?',
+    a: "No. ComputerCaller uses your existing phone number through your Android phone. The person you call sees your real number on their caller ID — exactly the same as if you'd called from your phone directly.",
+  },
+  {
+    q: 'Is it free?',
+    a: "ComputerCaller comes with a 5-day free trial — no credit card required. After the trial, it's €7.99 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
+  },
+  {
+    q: 'Can I call any phone number from my computer?',
+    a: "Yes. If your phone can call the number, ComputerCaller can call it from your computer — landlines, mobiles, international numbers, toll-free numbers, all of them. The call routes through your carrier, so it works exactly like a normal call.",
+  },
+  {
+    q: 'Does this work without my phone?',
+    a: "No — your Android phone needs to be powered on and reachable (over WiFi or mobile data). ComputerCaller is a bridge, not a replacement carrier. The upside is you keep your existing number, your existing plan, and your existing call quality.",
+  },
+  {
+    q: 'Can I call 911 from my computer?',
+    a: "Yes. When you dial an emergency number from your computer, your Android phone places the call to your local emergency service through your real carrier — the same as if you'd dialed it on your phone. We recommend keeping your phone nearby and confirming dispatch can hear you clearly through your laptop microphone.",
+  },
+  {
+    q: 'Does it work on iPhone?',
+    a: "Not yet — the companion app is Android-only today. iOS is on our roadmap, but Apple's restrictions on background calling integrations make the same bridge harder to build there. If you're on iPhone, follow @computercaller for the launch.",
+  },
+  {
+    q: 'How is this different from WhatsApp, Zoom, or Skype?',
+    a: "Those apps need both parties to install the same app — they only call other users of that app. ComputerCaller lets you call any regular phone number from your computer, because the call actually goes through your real cell phone and your real carrier. The person you're calling doesn't need to install anything.",
+  },
+];
 
 export default function LandingPage() {
+  // Track which FAQ items are open purely to swap the +/- icon. <details>
+  // owns its own open state too, but reading it back in React would require a
+  // ref per item — a small parallel Map is simpler and runs only on click.
+  const [openFaqs, setOpenFaqs] = useState<Record<number, boolean>>({});
+
+  // JSON-LD payloads — three @types in one @graph so we send a single tag.
+  // Validated mentally against schema.org; Niki will run Google's Rich Results
+  // Test post-deploy.
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'Organization',
+        '@id': 'https://computercaller.com/#organization',
+        name: 'ComputerCaller',
+        url: 'https://computercaller.com',
+        logo: 'https://computercaller.com/brand/computercaller-icon-transparent.png',
+        email: 'support@computercaller.com',
+        sameAs: [],
+      },
+      {
+        '@type': 'SoftwareApplication',
+        '@id': 'https://computercaller.com/#software',
+        name: 'ComputerCaller',
+        description:
+          'Make phone calls from your computer. ComputerCaller bridges your Android phone to your browser so you can call any phone number from your laptop using your existing number.',
+        applicationCategory: 'CommunicationApplication',
+        operatingSystem: 'Web, Android',
+        url: 'https://computercaller.com',
+        offers: {
+          '@type': 'Offer',
+          price: '7.99',
+          priceCurrency: 'EUR',
+          priceSpecification: {
+            '@type': 'UnitPriceSpecification',
+            price: '7.99',
+            priceCurrency: 'EUR',
+            unitText: 'MONTH',
+          },
+        },
+        publisher: { '@id': 'https://computercaller.com/#organization' },
+      },
+      {
+        '@type': 'FAQPage',
+        '@id': 'https://computercaller.com/#faq',
+        mainEntity: faqs.map((f) => ({
+          '@type': 'Question',
+          name: f.q,
+          acceptedAnswer: { '@type': 'Answer', text: f.a },
+        })),
+      },
+    ],
+  };
+
   return (
     <div className="min-h-screen bg-white text-slate-900">
+      {/* Structured data — afterInteractive so the tag lands in HEAD post-hydration
+          but BEFORE Google's crawler revisits. Inline script body is the JSON-LD
+          payload — Next's Script handles the type attribute and de-duplication. */}
+      <Script
+        id="ld-json-computercaller"
+        type="application/ld+json"
+        strategy="afterInteractive"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
+
       {/* Header */}
       <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-slate-200/80">
         <div className="max-w-6xl mx-auto px-6 h-20 flex items-center justify-between">
@@ -20,6 +245,20 @@ export default function LandingPage() {
               className="h-14 w-auto"
             />
           </Link>
+          <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600">
+            <a href="#use-cases" className="hover:text-slate-900 transition-colors">
+              Use cases
+            </a>
+            <a href="#how-it-works" className="hover:text-slate-900 transition-colors">
+              How it works
+            </a>
+            <a href="#pricing" className="hover:text-slate-900 transition-colors">
+              Pricing
+            </a>
+            <a href="#faqs" className="hover:text-slate-900 transition-colors">
+              FAQ
+            </a>
+          </nav>
           <div className="flex items-center gap-2">
             <Link
               href="/auth/login"
@@ -29,7 +268,7 @@ export default function LandingPage() {
             </Link>
             <Link
               href="/auth/register"
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
               Start free trial
               <ArrowRight className="w-3.5 h-3.5" />
@@ -38,108 +277,259 @@ export default function LandingPage() {
         </div>
       </header>
 
-      {/* Hero banner — capped at source resolution (1436px) so the image never
-          upscales on large monitors. Dispatch #29 Track B (Option C — Dennis,
-          2026-05-24): full-width was upscaling on 4K displays and reading blurry.
-          We trade edge-to-edge fill for crisp pixels by centering the banner
-          inside a continuous light-blue field (#dbeefc — same as the banner's
-          own bottom edge), so on screens wider than 1436px the gradient extends
-          on either side and there's no hard cut. */}
-      <div className="w-full bg-[#dbeefc]">
-        <Image
-          src="/brand/computercaller-hero-banner-v2-cropped.png"
-          alt="ComputerCaller — Connect. Call. Sms. Communicate. Seamlessly."
-          width={1436}
-          height={530}
-          priority
-          sizes="(min-width: 1436px) 1436px, 100vw"
-          className="w-full h-auto block max-w-[1436px] mx-auto"
-        />
-      </div>
-
-      {/* Hero — value prop sits below the banner.
-          Background fades from the banner's bottom-edge blue down to white
-          so the visual flow is continuous (no hard cut). Tighter top padding
-          and a wider container keep the copy visually connected to the banner. */}
+      {/* Hero — copy-led, no image. Background gradient subtly lifts the page
+          into a calm blue field before fading to white at the section seam.
+          H1 carries the primary Ahrefs keyword verbatim ("make phone calls from
+          your computer") — period intentional, Linear/Stripe-style declarative. */}
       <section
         className="relative overflow-hidden"
         style={{
           background:
-            'linear-gradient(to bottom, #dbeefc 0%, #eef6fc 35%, #ffffff 100%)',
+            'linear-gradient(to bottom, #eef6fc 0%, #f6fafd 55%, #ffffff 100%)',
         }}
       >
-        <div className="max-w-5xl mx-auto px-6 pt-10 pb-24 sm:pt-12 sm:pb-32 text-center">
+        <div className="max-w-5xl mx-auto px-6 pt-20 pb-24 sm:pt-28 sm:pb-32 text-center">
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             5-day free trial — no credit card required
           </div>
 
           <h1 className="mt-8 text-5xl sm:text-6xl md:text-7xl font-semibold tracking-[-0.03em] leading-[1.02] text-slate-900">
-            Your phone.
+            {PRIMARY_KEYWORD.slice(0, -1)}
             <br />
             <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-              In your browser.
+              from your computer.
             </span>
           </h1>
 
           <p className="mt-6 text-lg sm:text-xl text-slate-600 max-w-2xl mx-auto leading-relaxed">
-            Make calls, send messages, and manage notifications from your phone —
-            all from a unified dashboard in your browser. Works over WiFi or
-            mobile data, from anywhere.
+            ComputerCaller bridges your real phone number to your browser so you
+            can call any phone number, anywhere — without picking up your phone.
           </p>
 
           <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">
             <Link
               href="/auth/register"
-              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20"
+              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
-              Start free trial
+              Start 5-day free trial
               <ArrowRight className="w-4 h-4" />
             </Link>
-            <Link
-              href="/auth/login"
-              className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300"
+            <a
+              href="#how-it-works"
+              className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
-              Sign in
-            </Link>
+              See how it works
+            </a>
           </div>
 
-          <p className="mt-6 text-sm text-slate-500">
-            Pairs with any Android phone via the ComputerCaller app.
-          </p>
+          {/* Trust strip — three short factual claims. Bullets are visual,
+              the items themselves are an unordered list semantically. */}
+          <ul className="mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-slate-500">
+            <li className="inline-flex items-center gap-2">
+              <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
+              No new phone number
+            </li>
+            <li className="inline-flex items-center gap-2">
+              <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
+              Works with any carrier
+            </li>
+            <li className="inline-flex items-center gap-2">
+              <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
+              Your privacy, your hardware
+            </li>
+          </ul>
         </div>
       </section>
 
-      {/* Features */}
-      <section className="border-t border-slate-200 bg-slate-50/60">
+      {/* Use cases — six cards. The primary commercial-intent keyword cluster
+          lives here, woven into reader-voice copy (no stuffing). */}
+      <section id="use-cases" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-12">
-            <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              Use cases
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              Reasons people call from their computer.
+            </h2>
+            <p className="mt-4 text-slate-600 text-lg leading-relaxed">
+              Whatever your reason for wanting to make a call from your computer
+              — locked-down work laptops, hectic travel days, hours of outbound
+              dialing — ComputerCaller gets out of your way and lets you call.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {useCases.map(({ icon: Icon, title, body }) => (
+              <article
+                key={title}
+                className="group p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+              >
+                <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-5">
+                  <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
+                </div>
+                <h3 className="font-semibold text-slate-900 mb-1.5">{title}</h3>
+                <p className="text-slate-600 text-sm leading-relaxed">{body}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* How it works — three-step explainer. The mental model the user needs
+          to understand BEFORE signing up: companion app on phone + browser
+          dashboard + real calls through real carrier. */}
+      <section id="how-it-works" className="border-t border-slate-200 scroll-mt-24">
+        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
+          <div className="max-w-2xl mb-12">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              How it works
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              Three steps to call from your computer.
+            </h2>
+            <p className="mt-4 text-slate-600 text-lg leading-relaxed">
+              No new number. No new carrier. No new app on the receiving end.
+              ComputerCaller is a bridge between your Android phone and your
+              browser — the call still goes through your real phone, you just
+              hear and speak through your laptop.
+            </p>
+          </div>
+
+          <ol className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {howItWorks.map(({ n, icon: Icon, title, body }) => (
+              <li
+                key={n}
+                className="relative p-6 bg-white border border-slate-200 rounded-2xl shadow-sm"
+              >
+                <div className="flex items-center gap-3 mb-5">
+                  <span className="text-xs font-mono font-medium text-slate-400 tracking-wider">
+                    {n}
+                  </span>
+                  <span className="flex-1 h-px bg-slate-200" aria-hidden="true" />
+                  <span className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
+                    <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
+                  </span>
+                </div>
+                <h3 className="font-semibold text-slate-900 mb-1.5 text-lg">
+                  {title}
+                </h3>
+                <p className="text-slate-600 text-sm leading-relaxed">{body}</p>
+              </li>
+            ))}
+          </ol>
+
+          <div className="mt-10 flex justify-center">
+            <Link
+              href="/auth/register"
+              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            >
+              Try it free for 5 days
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Who it's for — four segments. Chip-shaped cards (denser than use-cases
+          on purpose — these are personas, not use-cases). */}
+      <section id="who-its-for" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
+        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
+          <div className="max-w-2xl mb-12">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              Who it&apos;s for
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              Built for people who&apos;d rather not pick up their phone.
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {whoItsFor.map(({ label, body }, i) => {
+              const icons = [Users, Headphones, Plane, Accessibility];
+              const Icon = icons[i];
+              return (
+                <div
+                  key={label}
+                  className="p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center mb-4">
+                    <Icon className="w-4 h-4 text-blue-600" aria-hidden="true" />
+                  </div>
+                  <h3 className="font-semibold text-slate-900 mb-1.5">
+                    {label}
+                  </h3>
+                  <p className="text-slate-600 text-sm leading-relaxed">
+                    {body}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* Features — kept from previous design (product-surface explainer).
+          Sits AFTER use-cases/how-it-works because by now the visitor knows
+          what the product DOES, and the features section is the "what's in
+          the box" follow-up. */}
+      <section id="features" className="border-t border-slate-200 scroll-mt-24">
+        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
+          <div className="max-w-2xl mb-12">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              Features
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
               Everything from your phone,
               <br />
               on a bigger screen.
             </h2>
             <p className="mt-4 text-slate-600 text-lg leading-relaxed">
               A single dashboard for the things you&apos;d otherwise pick up
-              your phone for.
+              your phone for — calls, messages, notifications, contacts.
             </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {[
-              { icon: Phone, title: 'Calls', desc: 'Make and receive calls from your browser. Active call timer, mute, and speaker controls.' },
-              { icon: MessageSquare, title: 'Messages', desc: 'Full SMS and MMS thread history. Reply without picking up your phone.' },
-              { icon: Bell, title: 'Notifications', desc: 'Messaging app notifications mirrored in real time — WhatsApp, Telegram, Discord.' },
-              { icon: Zap, title: 'Instant sync', desc: 'Messages and call logs sync automatically. Contact history loads on demand.' },
-              { icon: Globe, title: 'Works anywhere', desc: 'Connect over your home WiFi or from anywhere via the secure relay.' },
-              { icon: Shield, title: 'Private', desc: 'End-to-end encrypted relay. Your data stays between your phone and browser.' },
+              {
+                icon: Phone,
+                title: 'Calls',
+                desc: 'Make and receive calls from your browser. Active call timer, mute, and speaker controls.',
+              },
+              {
+                icon: MessageSquare,
+                title: 'Messages',
+                desc: 'Full SMS and MMS thread history. Reply without picking up your phone.',
+              },
+              {
+                icon: Bell,
+                title: 'Notifications',
+                desc: 'Messaging app notifications mirrored in real time — WhatsApp, Telegram, Discord.',
+              },
+              {
+                icon: Zap,
+                title: 'Instant sync',
+                desc: 'Messages and call logs sync automatically. Contact history loads on demand.',
+              },
+              {
+                icon: Globe,
+                title: 'Works anywhere',
+                desc: 'Connect over your home WiFi or from anywhere via the secure relay.',
+              },
+              {
+                icon: Shield,
+                title: 'Private',
+                desc: 'End-to-end encrypted relay. Your data stays between your phone and browser.',
+              },
             ].map(({ icon: Icon, title, desc }) => (
               <div
                 key={title}
                 className="group p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
               >
                 <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-5">
-                  <Icon className="w-5 h-5 text-blue-600" />
+                  <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
                 </div>
                 <h3 className="font-semibold text-slate-900 mb-1.5">{title}</h3>
                 <p className="text-slate-600 text-sm leading-relaxed">{desc}</p>
@@ -150,9 +540,12 @@ export default function LandingPage() {
       </section>
 
       {/* Pricing */}
-      <section className="border-t border-slate-200">
+      <section id="pricing" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
         <div className="max-w-3xl mx-auto px-6 py-20 sm:py-24 text-center">
-          <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+          <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+            Pricing
+          </p>
+          <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
             Simple pricing.
           </h2>
           <p className="mt-3 text-slate-600 text-lg">
@@ -161,7 +554,9 @@ export default function LandingPage() {
 
           <div className="mt-12 max-w-md mx-auto p-8 bg-white border border-slate-200 rounded-2xl shadow-sm text-left">
             <div className="flex items-baseline gap-1.5">
-              <span className="text-5xl font-semibold tracking-tight text-slate-900">€7.99</span>
+              <span className="text-5xl font-semibold tracking-tight text-slate-900">
+                €7.99
+              </span>
               <span className="text-slate-500 text-base">/ month</span>
             </div>
             <p className="mt-2 text-sm text-slate-500">
@@ -172,7 +567,8 @@ export default function LandingPage() {
 
             <ul className="space-y-3 text-sm text-slate-700">
               {[
-                'Full call & message dashboard',
+                'Call any phone number from your computer',
+                'Full SMS and message dashboard',
                 'Real-time notification mirror',
                 'Unlimited contacts & history',
                 'Works from any device, anywhere',
@@ -189,7 +585,7 @@ export default function LandingPage() {
 
             <Link
               href="/auth/register"
-              className="mt-8 flex items-center justify-center gap-1.5 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-center shadow-sm shadow-blue-600/20"
+              className="mt-8 flex items-center justify-center gap-1.5 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-center shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
               Start 5-day free trial
               <ArrowRight className="w-4 h-4" />
@@ -197,6 +593,92 @@ export default function LandingPage() {
             <p className="mt-3 text-center text-slate-500 text-xs">
               No credit card required to start.
             </p>
+          </div>
+        </div>
+      </section>
+
+      {/* FAQ — native <details>/<summary> for a11y + crawlability. Google
+          reads inside <details> for FAQ rich snippets when paired with the
+          FAQPage JSON-LD above. Each item is keyed by index so we can swap
+          the +/- icon based on its open state. */}
+      <section id="faqs" className="border-t border-slate-200 scroll-mt-24">
+        <div className="max-w-3xl mx-auto px-6 py-20 sm:py-24">
+          <div className="text-center mb-12">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              FAQ
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              Frequently asked questions.
+            </h2>
+            <p className="mt-3 text-slate-600 text-lg">
+              Still have questions? Email{' '}
+              <a
+                href="mailto:support@computercaller.com"
+                className="text-blue-600 hover:text-blue-700 underline underline-offset-2"
+              >
+                support@computercaller.com
+              </a>
+              .
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            {faqs.map((faq, i) => {
+              const isOpen = !!openFaqs[i];
+              return (
+                <details
+                  key={faq.q}
+                  className="group p-5 bg-white border border-slate-200 rounded-2xl shadow-sm open:shadow-md open:border-slate-300 transition-all"
+                  onToggle={(e) => {
+                    const el = e.currentTarget as HTMLDetailsElement;
+                    setOpenFaqs((prev) => ({ ...prev, [i]: el.open }));
+                  }}
+                >
+                  <summary className="flex items-start justify-between gap-4 cursor-pointer list-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 rounded-lg">
+                    <h3 className="font-semibold text-slate-900 text-base sm:text-lg leading-snug">
+                      {faq.q}
+                    </h3>
+                    <span
+                      className="mt-0.5 flex-shrink-0 w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 group-open:bg-blue-50 group-open:text-blue-600 transition-colors"
+                      aria-hidden="true"
+                    >
+                      {isOpen ? <Minus className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                    </span>
+                  </summary>
+                  <p className="mt-3 text-slate-600 text-sm sm:text-base leading-relaxed">
+                    {faq.a}
+                  </p>
+                </details>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* Final CTA */}
+      <section className="border-t border-slate-200 bg-gradient-to-b from-blue-50 to-white">
+        <div className="max-w-3xl mx-auto px-6 py-20 sm:py-24 text-center">
+          <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+            Ready to call from your computer?
+          </h2>
+          <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
+            5 days free. No credit card. Pair your Android phone and you&apos;re
+            calling from your browser in under two minutes.
+          </p>
+          <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
+            <Link
+              href="/auth/register"
+              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            >
+              Start free trial
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+            <Link
+              href="/auth/login"
+              className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            >
+              Sign in
+            </Link>
           </div>
         </div>
       </section>

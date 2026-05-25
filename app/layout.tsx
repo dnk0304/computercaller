@@ -19,9 +19,79 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// SEO metadata — dispatch 2026-05-25. Primary Ahrefs keyword
+// "make phone calls from your computer" lives in title + description.
+// metadataBase makes Next resolve relative OG image URLs against the prod
+// origin so the Twitter / Facebook scrapers fetch absolute URLs.
+// `title.template` lets nested routes (e.g. /privacy) extend the brand
+// suffix without manually duplicating it.
 export const metadata: Metadata = {
-  title: "ComputerCaller",
-  description: "Phone integration web app",
+  metadataBase: new URL("https://computercaller.com"),
+  title: {
+    default: "ComputerCaller — Make phone calls from your computer",
+    template: "%s · ComputerCaller",
+  },
+  description:
+    "Call any phone number from your computer or browser. ComputerCaller bridges your Android phone to your laptop so you can make and receive real calls through your existing number. 5-day free trial.",
+  keywords: [
+    "call phone from computer",
+    "call from computer",
+    "make a phone call from computer",
+    "make phone call from computer",
+    "make a call from computer",
+    "phone call from computer",
+    "call someone from computer",
+    "how to make a phone call from computer",
+    "call my phone from computer",
+    "call phone from computer free",
+  ],
+  applicationName: "ComputerCaller",
+  authors: [{ name: "ComputerCaller" }],
+  creator: "ComputerCaller",
+  publisher: "ComputerCaller",
+  category: "communication",
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    type: "website",
+    url: "https://computercaller.com/",
+    siteName: "ComputerCaller",
+    title: "ComputerCaller — Make phone calls from your computer",
+    description:
+      "Call any phone number from your computer through your existing Android phone. No new number. No new carrier. 5-day free trial.",
+    images: [
+      {
+        url: "/brand/computercaller-hero-banner-v2-cropped.png",
+        width: 1436,
+        height: 530,
+        alt: "ComputerCaller — make phone calls from your computer",
+      },
+    ],
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "ComputerCaller — Make phone calls from your computer",
+    description:
+      "Call any phone number from your computer through your existing Android phone. 5-day free trial.",
+    images: ["/brand/computercaller-hero-banner-v2-cropped.png"],
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-snippet": -1,
+      "max-image-preview": "large",
+      "max-video-preview": -1,
+    },
+  },
+  icons: {
+    icon: "/brand/computercaller-icon-transparent.png",
+    apple: "/brand/computercaller-icon-square-padded-1024.png",
+  },
 };
 
 // Next 14+ requires viewport-related fields (themeColor, width, initialScale,
