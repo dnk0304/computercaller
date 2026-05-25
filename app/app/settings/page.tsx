@@ -257,12 +257,17 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* Android app — direct APK download for sideloading. Auth-gated server
-          route; not a public link. Show only the latest version. Listed BEFORE
-          Subscription because a user who can't install the app can't subscribe
-          meaningfully. Future: when we're live on Google Play, replace the
-          direct-APK CTA with a "Get on Google Play" badge while keeping the
-          auth-gated APK as the secondary path for power users. */}
+      {/* Android companion app — direct APK download for sideloading.
+          Auth-gated server route; not a public link. Show only the latest
+          version. Listed BEFORE Subscription because a user who can't install
+          the app can't subscribe meaningfully. Copy is intentionally short
+          and outcome-led ("bridge calls + SMS") — the longer setup explanation
+          lives on the dashboard's Connect flow, not here. Includes a desktop
+          tip pointing users to open this page on their phone, since the APK
+          has to land ON the Android device to install.
+          Future: when we're live on Google Play, replace the direct-APK CTA
+          with a "Get on Google Play" badge while keeping the auth-gated APK
+          as the secondary path for power users. */}
       <section
         className="bg-white rounded-2xl border border-slate-200 p-5"
         aria-labelledby="android-app-heading"
@@ -277,12 +282,11 @@ export default function SettingsPage() {
           >
             <Download className="w-3.5 h-3.5" aria-hidden="true" />
           </span>
-          Android app
+          Android companion app
         </h2>
         <p className="text-xs text-slate-500 leading-relaxed mb-4">
-          Install ComputerCaller on your Android phone, then connect it to
-          this browser from the dashboard. You only need to do this once per
-          phone.
+          Install on your Android phone to bridge calls and SMS to this
+          browser.
         </p>
         <a
           href="/api/download/apk"
@@ -292,11 +296,12 @@ export default function SettingsPage() {
           // rather than navigate. Also avoids the empty href issue if JS is off.
         >
           <Download className="w-4 h-4" aria-hidden="true" />
-          Download Android app (.apk)
+          Download APK
         </a>
-        <p className="mt-2 text-[11px] text-slate-400">
-          Android 8.0 or newer. You may need to allow installs from your browser
-          the first time.
+        <p className="mt-2 text-[11px] text-slate-400 leading-relaxed">
+          On desktop? Open this page on your Android phone to download the
+          APK directly. Android 8.0 or newer — you may need to allow installs
+          from your browser the first time.
         </p>
       </section>
 
