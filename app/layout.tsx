@@ -32,7 +32,7 @@ export const metadata: Metadata = {
     template: "%s · ComputerCaller",
   },
   description:
-    "Call any phone number from your computer or browser. ComputerCaller bridges your Android phone to your laptop so you can make and receive real calls through your existing number. 5-day free trial.",
+    "Call any phone number from your computer or browser. ComputerCaller bridges your Android phone to your laptop — we never store your call logs, messages, or contacts. 5-day free trial.",
   keywords: [
     "call phone from computer",
     "call from computer",
@@ -59,7 +59,7 @@ export const metadata: Metadata = {
     siteName: "ComputerCaller",
     title: "ComputerCaller — Make phone calls from your computer",
     description:
-      "Call any phone number from your computer through your existing Android phone. No new number. No new carrier. 5-day free trial.",
+      "Call any phone number from your computer through your existing Android phone. We never store your calls, SMS, or contacts. 5-day free trial.",
     images: [
       {
         url: "/brand/computercaller-hero-banner-v2-cropped.png",
@@ -74,7 +74,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "ComputerCaller — Make phone calls from your computer",
     description:
-      "Call any phone number from your computer through your existing Android phone. 5-day free trial.",
+      "Call any phone number from your computer through your existing Android phone. We never store your calls, SMS, or contacts.",
     images: ["/brand/computercaller-hero-banner-v2-cropped.png"],
   },
   robots: {

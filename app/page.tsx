@@ -8,7 +8,6 @@ import {
   MessageSquare,
   Bell,
   Zap,
-  Shield,
   Globe,
   Check,
   ArrowRight,
@@ -23,10 +22,13 @@ import {
   MousePointerClick,
   Plus,
   Minus,
+  Lock,
+  ShieldCheck,
 } from 'lucide-react';
 
 /**
- * Landing page — SEO + content rewrite (dispatch 2026-05-25).
+ * Landing page — SEO + content rewrite (dispatch 2026-05-25, revised 2026-05-25
+ * to surface privacy + lift KSP/features higher).
  *
  * Strategy:
  * - H1 contains the primary Ahrefs keyword "make phone calls from your computer"
@@ -44,6 +46,24 @@ import {
  *   keyboard-accessible by default, no dep cost, fully crawlable (Google reads
  *   inside <details> for rich snippets), and the open state animates with CSS
  *   only. We layer in arrow toggling via state to keep the icon swap snappy.
+ *
+ * Section order (top→bottom):
+ *   1. Hero
+ *   2. Privacy by default        ← differentiator vs. WhatsApp/Zoom/Skype
+ *   3. Features (KSP)            ← lifted from #5 so the "what's in the box"
+ *                                  reveal lands inside the first scroll-and-a-half
+ *   4. How It Works
+ *   5. Use Cases
+ *   6. Who It's For
+ *   7. Pricing
+ *   8. FAQ                       ← includes new privacy Q&A; mirrored in JSON-LD
+ *   9. Final CTA
+ *   10. Footer
+ *
+ * Background alternation: hero(gradient) → privacy(white) → features(slate-50) →
+ * how-it-works(white) → use-cases(slate-50) → who-its-for(white) → pricing(slate-50)
+ * → faq(white) → cta(gradient) → footer(slate-50). Every section seam is a real
+ * value seam, never two white surfaces in a row.
  */
 
 const PRIMARY_KEYWORD = 'Make phone calls from your computer.';
@@ -140,6 +160,10 @@ const faqs = [
     a: "No. ComputerCaller uses your existing phone number through your Android phone. The person you call sees your real number on their caller ID — exactly the same as if you'd called from your phone directly.",
   },
   {
+    q: 'Do you store my messages, contacts, or call logs?',
+    a: "No. ComputerCaller is a bridge between your phone and your browser. Your messages, contacts, call logs, and call audio never get stored on our servers. Everything stays on your Android phone — we only relay the live connection while you're actively using it.",
+  },
+  {
     q: 'Is it free?',
     a: "ComputerCaller comes with a 5-day free trial — no credit card required. After the trial, it's €7.99 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
   },
@@ -191,7 +215,7 @@ export default function LandingPage() {
         '@id': 'https://computercaller.com/#software',
         name: 'ComputerCaller',
         description:
-          'Make phone calls from your computer. ComputerCaller bridges your Android phone to your browser so you can call any phone number from your laptop using your existing number.',
+          'Make phone calls from your computer. ComputerCaller bridges your Android phone to your browser so you can call any phone number from your laptop using your existing number — without storing your call logs, messages, or contacts on our servers.',
         applicationCategory: 'CommunicationApplication',
         operatingSystem: 'Web, Android',
         url: 'https://computercaller.com',
@@ -246,8 +270,8 @@ export default function LandingPage() {
             />
           </Link>
           <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600">
-            <a href="#use-cases" className="hover:text-slate-900 transition-colors">
-              Use cases
+            <a href="#features" className="hover:text-slate-900 transition-colors">
+              Features
             </a>
             <a href="#how-it-works" className="hover:text-slate-900 transition-colors">
               How it works
@@ -324,7 +348,10 @@ export default function LandingPage() {
           </div>
 
           {/* Trust strip — three short factual claims. Bullets are visual,
-              the items themselves are an unordered list semantically. */}
+              the items themselves are an unordered list semantically. The
+              third chip swaps an emerald Check for a slate Lock icon because
+              the privacy claim is a different category from the first two
+              (negative claim — "we don't do X" — not a positive feature). */}
           <ul className="mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-slate-500">
             <li className="inline-flex items-center gap-2">
               <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
@@ -335,34 +362,129 @@ export default function LandingPage() {
               Works with any carrier
             </li>
             <li className="inline-flex items-center gap-2">
-              <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
-              Your privacy, your hardware
+              <Lock className="w-4 h-4 text-slate-500" aria-hidden="true" />
+              We never store your calls, SMS, or contacts
             </li>
           </ul>
         </div>
       </section>
 
-      {/* Use cases — six cards. The primary commercial-intent keyword cluster
-          lives here, woven into reader-voice copy (no stuffing). */}
-      <section id="use-cases" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
+      {/* Privacy by default — sits immediately after the hero so the
+          differentiator vs. WhatsApp/Zoom/Skype (which all aggregate user
+          data) lands before any feature talk. White surface with a soft
+          slate-50 callout block inside, a Lock motif in the top-left, and
+          a three-claim row at the bottom. The page's first "moment of trust"
+          — calm, declarative, no hype words. */}
+      <section id="privacy" className="border-t border-slate-200 scroll-mt-24">
+        <div className="max-w-5xl mx-auto px-6 py-16 sm:py-20">
+          <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-slate-50/70 p-8 sm:p-12">
+            {/* Decorative tint — subtle blue glow top-right so the card
+                doesn't feel flat. aria-hidden so SR users skip it. */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -top-24 -right-24 h-64 w-64 rounded-full bg-blue-100/40 blur-3xl"
+            />
+
+            <div className="relative">
+              <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
+                <Lock className="w-3.5 h-3.5 text-blue-600" aria-hidden="true" />
+                Privacy by default
+              </div>
+
+              <h2 className="mt-5 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900 max-w-2xl">
+                Your data stays on your phone.
+              </h2>
+
+              <p className="mt-4 text-slate-600 text-lg leading-relaxed max-w-2xl">
+                ComputerCaller is a bridge, not a database. We don&apos;t store
+                your call logs, your messages, your contacts, or your audio.
+                Everything stays on your Android device — we only relay the
+                live connection while you&apos;re actively using it.
+              </p>
+
+              {/* Three claim row — three negative claims ("we don't…") rendered
+                  as positive design (check icon + crisp typography) so the trust
+                  feeling is reinforced visually. Each claim wraps to its own
+                  line on mobile, sits on one row from sm: up. */}
+              <ul className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-3xl">
+                {[
+                  { icon: Phone, label: 'No call logs stored' },
+                  { icon: MessageSquare, label: 'No SMS stored' },
+                  { icon: Users, label: 'No contacts uploaded' },
+                ].map(({ icon: Icon, label }) => (
+                  <li
+                    key={label}
+                    className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl"
+                  >
+                    <span className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
+                      <Icon className="w-4 h-4 text-blue-600" aria-hidden="true" />
+                    </span>
+                    <span className="text-sm font-medium text-slate-800">
+                      {label}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Features (KSP) — moved up from section 5 to section 3 because this
+          IS the value reveal. After the hero promise and the privacy trust
+          moment, the reader is ready for "and here's everything it can do".
+          Slate-50 background so the white feature cards lift cleanly. */}
+      <section id="features" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-12">
             <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-              Use cases
+              Features
             </p>
             <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
-              Reasons people call from their computer.
+              Everything from your phone,
+              <br />
+              on a bigger screen.
             </h2>
             <p className="mt-4 text-slate-600 text-lg leading-relaxed">
-              Whatever your reason for wanting to make a call from your computer
-              — locked-down work laptops, hectic travel days, hours of outbound
-              dialing — ComputerCaller gets out of your way and lets you call.
+              A single dashboard for the things you&apos;d otherwise pick up
+              your phone for — calls, messages, notifications, contacts.
             </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {useCases.map(({ icon: Icon, title, body }) => (
-              <article
+            {[
+              {
+                icon: Phone,
+                title: 'Calls',
+                desc: 'Make and receive calls from your browser. Active call timer, mute, and speaker controls.',
+              },
+              {
+                icon: MessageSquare,
+                title: 'Messages',
+                desc: 'Full SMS and MMS thread history. Reply without picking up your phone.',
+              },
+              {
+                icon: Bell,
+                title: 'Notifications',
+                desc: 'Messaging app notifications mirrored in real time — WhatsApp, Telegram, Discord.',
+              },
+              {
+                icon: Zap,
+                title: 'Instant sync',
+                desc: 'Messages and call logs sync automatically. Contact history loads on demand.',
+              },
+              {
+                icon: Globe,
+                title: 'Works anywhere',
+                desc: 'Connect over your home WiFi or from anywhere via the secure relay.',
+              },
+              {
+                icon: ShieldCheck,
+                title: 'Private by design',
+                desc: "End-to-end encrypted relay. Nothing about your calls, SMS, or contacts is stored on our servers.",
+              },
+            ].map(({ icon: Icon, title, desc }) => (
+              <div
                 key={title}
                 className="group p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
               >
@@ -370,8 +492,8 @@ export default function LandingPage() {
                   <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
                 </div>
                 <h3 className="font-semibold text-slate-900 mb-1.5">{title}</h3>
-                <p className="text-slate-600 text-sm leading-relaxed">{body}</p>
-              </article>
+                <p className="text-slate-600 text-sm leading-relaxed">{desc}</p>
+              </div>
             ))}
           </div>
         </div>
@@ -379,7 +501,8 @@ export default function LandingPage() {
 
       {/* How it works — three-step explainer. The mental model the user needs
           to understand BEFORE signing up: companion app on phone + browser
-          dashboard + real calls through real carrier. */}
+          dashboard + real calls through real carrier. White surface, sandwiched
+          between features (slate) above and use-cases (slate) below. */}
       <section id="how-it-works" className="border-t border-slate-200 scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-12">
@@ -432,9 +555,46 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* Use cases — six cards. The primary commercial-intent keyword cluster
+          lives here, woven into reader-voice copy (no stuffing). */}
+      <section id="use-cases" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
+        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
+          <div className="max-w-2xl mb-12">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              Use cases
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              Reasons people call from their computer.
+            </h2>
+            <p className="mt-4 text-slate-600 text-lg leading-relaxed">
+              Whatever your reason for wanting to make a call from your computer
+              — locked-down work laptops, hectic travel days, hours of outbound
+              dialing — ComputerCaller gets out of your way and lets you call.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {useCases.map(({ icon: Icon, title, body }) => (
+              <article
+                key={title}
+                className="group p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+              >
+                <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-5">
+                  <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
+                </div>
+                <h3 className="font-semibold text-slate-900 mb-1.5">{title}</h3>
+                <p className="text-slate-600 text-sm leading-relaxed">{body}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* Who it's for — four segments. Chip-shaped cards (denser than use-cases
-          on purpose — these are personas, not use-cases). */}
-      <section id="who-its-for" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
+          on purpose — these are personas, not use-cases). White surface so the
+          slate-50 use-cases section above pops; the personas read as "and these
+          are the kinds of people doing it". */}
+      <section id="who-its-for" className="border-t border-slate-200 scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-12">
             <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
@@ -466,75 +626,6 @@ export default function LandingPage() {
                 </div>
               );
             })}
-          </div>
-        </div>
-      </section>
-
-      {/* Features — kept from previous design (product-surface explainer).
-          Sits AFTER use-cases/how-it-works because by now the visitor knows
-          what the product DOES, and the features section is the "what's in
-          the box" follow-up. */}
-      <section id="features" className="border-t border-slate-200 scroll-mt-24">
-        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
-          <div className="max-w-2xl mb-12">
-            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-              Features
-            </p>
-            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
-              Everything from your phone,
-              <br />
-              on a bigger screen.
-            </h2>
-            <p className="mt-4 text-slate-600 text-lg leading-relaxed">
-              A single dashboard for the things you&apos;d otherwise pick up
-              your phone for — calls, messages, notifications, contacts.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[
-              {
-                icon: Phone,
-                title: 'Calls',
-                desc: 'Make and receive calls from your browser. Active call timer, mute, and speaker controls.',
-              },
-              {
-                icon: MessageSquare,
-                title: 'Messages',
-                desc: 'Full SMS and MMS thread history. Reply without picking up your phone.',
-              },
-              {
-                icon: Bell,
-                title: 'Notifications',
-                desc: 'Messaging app notifications mirrored in real time — WhatsApp, Telegram, Discord.',
-              },
-              {
-                icon: Zap,
-                title: 'Instant sync',
-                desc: 'Messages and call logs sync automatically. Contact history loads on demand.',
-              },
-              {
-                icon: Globe,
-                title: 'Works anywhere',
-                desc: 'Connect over your home WiFi or from anywhere via the secure relay.',
-              },
-              {
-                icon: Shield,
-                title: 'Private',
-                desc: 'End-to-end encrypted relay. Your data stays between your phone and browser.',
-              },
-            ].map(({ icon: Icon, title, desc }) => (
-              <div
-                key={title}
-                className="group p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
-              >
-                <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-5">
-                  <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
-                </div>
-                <h3 className="font-semibold text-slate-900 mb-1.5">{title}</h3>
-                <p className="text-slate-600 text-sm leading-relaxed">{desc}</p>
-              </div>
-            ))}
           </div>
         </div>
       </section>
