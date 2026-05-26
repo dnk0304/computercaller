@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { RefreshCw, DatabaseBackup, Smartphone } from 'lucide-react';
+import { RefreshCw, DatabaseBackup } from 'lucide-react';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
@@ -72,7 +72,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // button inside PhoneModeHeader returns the user to the full dashboard.
   // See hooks/usePhoneMode.tsx for the entry rules (auto-collapse at <600px
   // + manual toggle with session-scoped hysteresis suppression).
-  const { phoneMode, enterManually } = usePhoneMode();
+  //
+  // Dispatch #34 (2026-05-26): the manual-entry button (`enterManually`) moved
+  // out of the header into ProfileMenu — `enterManually` is still consumed
+  // here only as part of the phoneMode read; the trigger lives in
+  // components/ProfileMenu.tsx now.
+  const { phoneMode } = usePhoneMode();
 
   // Phone bridge — header surfaces TWO sync affordances when a phone is
   // connected:
@@ -209,25 +214,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Full
               </button>
             )}
-            {/* Phone Mode entry — opens the compact mobile-shape view.
-                Insertion left of ConnectionStatus per Dennis dispatch
-                2026-05-26. Visible at all viewports — useful even on a wide
-                screen when the user wants a focused dialer (e.g. travelling
-                with a small laptop, or just preferring the compact UI).
-                Smartphone icon (lucide-react) carries the affordance at a
-                glance; text label is hidden below md to keep the header
-                tight when the window is just past the auto-collapse
-                threshold. */}
-            <button
-              type="button"
-              onClick={enterManually}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-              title="Switch to Phone Mode — compact mobile-shape view"
-              aria-label="Switch to Phone Mode"
-            >
-              <Smartphone className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="hidden md:inline">Phone Mode</span>
-            </button>
+            {/* Phone Mode entry was here until dispatch #34 (2026-05-26) —
+                Dennis moved it into the ProfileMenu dropdown (right side of
+                header, under the avatar) so the chrome stays tighter and the
+                affordance lives next to the rest of the per-user surfaces.
+                See components/ProfileMenu.tsx for the new menu item + the
+                "Open in popup window" sub-action that ships beside it. */}
             <ConnectionStatus />
             {/* ProfileMenu — days-left urgency chip beside the avatar, plus a
                 dropdown for Manage subscription / Sign out. Sign Out tears

@@ -70,6 +70,23 @@ interface PhoneModeContextValue {
   expandManually: () => void;
   /** User clicked the entry button — enter Phone Mode and pin to dialer. */
   enterManually: () => void;
+  /**
+   * Opens the current /app URL in a separate ~380x760 popup window. Lets the
+   * user have a TRUE phone-sized window alongside the desktop dashboard —
+   * something `window.resizeTo()` on the main window cannot deliver because
+   * the DOM spec forbids it outside windows opened by `window.open()`
+   * (dispatch #34 item 4). The popup inherits the same-origin auth cookie,
+   * lands on /app, and `usePhoneMode` auto-collapses it because window width
+   * is below AUTO_COLLAPSE_BELOW_PX.
+   *
+   * Returns the WindowProxy (or null if the browser blocked the popup). The
+   * window is named so clicking the button twice focuses the existing popup
+   * instead of spawning a second one.
+   *
+   * MUST be called synchronously inside a user-gesture click handler — any
+   * async hop before `window.open` causes most popup blockers to reject it.
+   */
+  openInPopup: () => Window | null;
 }
 
 const PhoneModeContext = createContext<PhoneModeContextValue | null>(null);
@@ -229,6 +246,42 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
     setStack([{ kind: 'dialer' }]);
   }, []);
 
+  // Open a true narrow popup window. window.open is wrapped in a thin
+  // try/catch — some sandbox-iframe contexts throw on .open access entirely.
+  // We deliberately do NOT do any async work before this call: popup blockers
+  // tie the gesture-allowed grant to the synchronous call stack of the
+  // user click. The window is named `computercaller-phone-popup` so a second
+  // click focuses the existing popup rather than spawning a duplicate.
+  //
+  // The reused window name DOES inherit cookies/auth from the opener (same
+  // origin), so the popup arrives at /app already-signed-in. The popup
+  // viewport (~380px) is below AUTO_COLLAPSE_BELOW_PX, so it auto-collapses
+  // into Phone Mode on first render — no extra wiring needed.
+  const openInPopup = useCallback((): Window | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const features = 'width=380,height=760,menubar=no,toolbar=no,location=no,resizable=yes,scrollbars=yes';
+      const w = window.open(window.location.href, 'computercaller-phone-popup', features);
+      if (!w) {
+        // Popup blocked. We don't surface UI from inside the hook — the
+        // caller (ProfileMenu entry) can show a toast or silent-fail. Most
+        // browsers also show a native "site wants to open a popup" prompt
+        // the first time at this origin; from then on the user's per-origin
+        // choice is honoured automatically.
+        console.warn('[PhoneMode] openInPopup blocked by browser');
+        return null;
+      }
+      // Best-effort focus. Some browsers focus the popup automatically, but
+      // returning user to an already-open popup (named-window reuse) doesn't
+      // refocus by default — explicit focus() fixes that.
+      try { w.focus(); } catch { /* cross-origin races during navigation can throw — ignore */ }
+      return w;
+    } catch (e) {
+      console.warn('[PhoneMode] openInPopup failed:', e);
+      return null;
+    }
+  }, []);
+
   const current = useMemo(
     () => stack[stack.length - 1] ?? { kind: 'dialer' },
     [stack],
@@ -244,8 +297,9 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
       setTab,
       expandManually,
       enterManually,
+      openInPopup,
     }),
-    [phoneMode, stack, current, push, pop, setTab, expandManually, enterManually],
+    [phoneMode, stack, current, push, pop, setTab, expandManually, enterManually, openInPopup],
   );
 
   return <PhoneModeContext.Provider value={value}>{children}</PhoneModeContext.Provider>;
@@ -268,6 +322,7 @@ export function usePhoneMode(): PhoneModeContextValue {
       setTab: () => {},
       expandManually: () => {},
       enterManually: () => {},
+      openInPopup: () => null,
     };
   }
   return ctx;

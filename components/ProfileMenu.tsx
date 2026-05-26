@@ -2,9 +2,9 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { LogOut, CreditCard, ExternalLink, Loader2 } from 'lucide-react';
+import { LogOut, CreditCard, ExternalLink, Loader2, Smartphone } from 'lucide-react';
 import { clsx } from 'clsx';
-import { usePhone } from '@/hooks';
+import { usePhone, usePhoneMode } from '@/hooks';
 
 /**
  * ProfileMenu — avatar-circle trigger + dropdown card.
@@ -89,6 +89,13 @@ export const ProfileMenu = () => {
   // wipes the room down to clean state.
   const phone = usePhone();
   const phoneDisconnect = (phone as unknown as { disconnect?: () => void }).disconnect;
+
+  // Dispatch #34 (2026-05-26): Phone Mode entry moved here from AppShell
+  // header. We need both the synchronous "flip to Phone Mode" action and the
+  // popup-opener which has strict popup-blocker constraints (must be called
+  // synchronously from a user click — no async hop, no await before
+  // window.open).
+  const { enterManually, openInPopup } = usePhoneMode();
 
   // Hydrate from /api/auth/me on mount. Silently swallow errors — the
   // unauthenticated chrome surface never reaches here (AppShell only mounts
@@ -333,6 +340,54 @@ export const ProfileMenu = () => {
             </span>
             <ExternalLink className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
           </a>
+
+          {/* Soft divider — separates the subscription surface from the
+              device/mode surface. */}
+          <div className="border-t border-slate-100" aria-hidden="true" />
+
+          {/* Phone Mode — opens the compact mobile-shape view in the same
+              window. Moved here from the AppShell header per dispatch #34
+              (2026-05-26) so the header stays tighter. The dropdown closes
+              first, then enterManually flips the shell — closing first
+              matters because the menu's outside-click handler would otherwise
+              fight the shell swap. */}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { setOpen(false); enterManually(); }}
+            className={clsx(
+              'w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700',
+              'hover:bg-slate-50 transition-colors',
+              'focus:outline-none focus:bg-slate-50'
+            )}
+          >
+            <Smartphone className="w-4 h-4 text-slate-500" aria-hidden="true" />
+            <span className="flex-1 text-left">Phone Mode</span>
+          </button>
+
+          {/* Open in popup window — sub-action of Phone Mode. Indented (pl-11
+              matches the gap-3 + 4 icon width of the parent row so the label
+              left-edge aligns with the parent label). Smaller font cues
+              "variant of the above" rather than independent action.
+              CRITICAL: window.open() in usePhoneMode.openInPopup() MUST run
+              synchronously inside this click handler — async work between the
+              user gesture and window.open() makes popup blockers reject the
+              call. We close the menu AFTER triggering openInPopup() so the
+              gesture chain stays unbroken. */}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { openInPopup(); setOpen(false); }}
+            className={clsx(
+              'w-full flex items-center gap-3 pl-11 pr-4 py-2 text-xs text-slate-500',
+              'hover:bg-slate-50 transition-colors',
+              'focus:outline-none focus:bg-slate-50'
+            )}
+            title="Open Phone Mode in a separate ~380x760 browser window"
+          >
+            <span className="flex-1 text-left">Open in popup window</span>
+            <ExternalLink className="w-3 h-3 text-slate-400" aria-hidden="true" />
+          </button>
 
           {/* Soft divider */}
           <div className="border-t border-slate-100" aria-hidden="true" />

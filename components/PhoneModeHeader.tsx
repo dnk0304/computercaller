@@ -11,10 +11,15 @@
  *   ConnectionStatus's lobby-state subscription quiet during tab swipes.
  *
  * Hidden chrome (per Dennis answer #5):
- *   - Sync (Quick + Full) buttons — hidden in Phone Mode
- *   - ProfileMenu — hidden in Phone Mode
+ *   - Sync (consolidated dropdown) — hidden in Phone Mode
+ *   - ProfileMenu — hidden in Phone Mode (Phone Mode entry itself is INSIDE
+ *     ProfileMenu — see dispatch #34, item 5)
  *   - Sidebar — hidden in Phone Mode (no nav rail at this width)
  *   The user must Expand to access any of these.
+ *
+ * Sizing (dispatch #34, 2026-05-26): h-10 (40px) — was h-12 (48px). 15%
+ * shrink applied across the whole shell. Cascade: TabBar top-10,
+ * sub-headers top-[84px] (40 + 44).
  */
 
 import React from 'react';
@@ -27,11 +32,14 @@ export function PhoneModeHeader() {
 
   return (
     // Sticky so a long scrollable view (Texts list, thread) keeps the
-    // header visible. h-12 (48px) is the iOS HIG mobile header height —
-    // tighter than the dashboard's h-20 because the Sidebar is gone and
-    // we need every pixel of vertical room.
+    // header visible. h-10 (40px) — scaled down from h-12 (48px) as part of
+    // the dispatch-#34 "Phone Mode ~15% smaller" pass. The 8px reclaim
+    // cascades into every downstream sticky offset (TabBar top-10,
+    // sub-headers top-[84px]). Header is decorative chrome (no tap targets
+    // need 44px here — the Expand button itself remains a 40×40 hit area,
+    // matching iOS HIG comfortably alongside the 44px tab buttons below).
     <header
-      className="sticky top-0 z-30 flex h-12 items-center gap-2 border-b border-slate-200/60 bg-white/85 px-3 backdrop-blur-sm"
+      className="sticky top-0 z-30 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/85 px-2.5 backdrop-blur-sm"
       role="banner"
     >
       {/* Brand dot — matches the gradient brand-dot used elsewhere but at a
@@ -40,7 +48,7 @@ export function PhoneModeHeader() {
           brand context. */}
       <span
         aria-hidden="true"
-        className="h-6 w-6 flex-shrink-0 rounded-md bg-gradient-to-br from-blue-500 to-indigo-600 shadow-sm"
+        className="h-5 w-5 flex-shrink-0 rounded-md bg-gradient-to-br from-blue-500 to-indigo-600 shadow-sm"
         title="ComputerCaller"
       />
 
@@ -52,7 +60,10 @@ export function PhoneModeHeader() {
 
       {/* Expand — leave Phone Mode and reveal the dashboard chrome. The icon
           alone is enough at 320px; aria-label carries the verbal affordance.
-          44x44 hit target (iOS HIG min) even at a 32x32 visual button. */}
+          40×40 hit target — slightly under iOS HIG's 44px floor for THIS
+          single chrome control, accepted trade-off so the header stays at
+          40px total height. The dialpad keys + call button + tab buttons
+          remain ≥44px (the actually-touched targets). */}
       <button
         type="button"
         onClick={expandManually}

@@ -46,6 +46,7 @@ import {
   X,
   RotateCw,
   Delete,
+  FileText,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
@@ -110,6 +111,92 @@ function appGlyph(pkg: string): string {
   return '🔔';
 }
 
+// ---------- PhoneModeTemplates (compose ribbon) ----------------------------
+//
+// Compact horizontally-scrollable chip strip rendered above the sticky compose
+// in both ThreadView and ComposeView. Reads templates from the shared
+// `dnkdialer_templates` localStorage key — same contract as
+// `components/Templates.tsx` (load helper line 15) and `Dashboard.tsx`
+// (line 83). Re-reads on `storage` events so saving a template on the
+// dashboard side of the world (e.g. user expands, edits, returns to Phone
+// Mode) lands without a route change.
+//
+// Tap behaviour: APPEND, not replace. If the user has already typed a draft
+// we don't want to obliterate it; separate with `\n\n` so concatenation reads
+// cleanly (per risk #3 in the dispatch brief).
+//
+// Renders nothing when zero templates saved — matches Dashboard's empty
+// behaviour (no ribbon noise for users who haven't curated any).
+
+const TEMPLATES_STORAGE_KEY = 'dnkdialer_templates';
+
+interface StoredTemplate {
+  id: string;
+  name: string;
+  body: string;
+  createdAt: number;
+}
+
+function loadStoredTemplates(): StoredTemplate[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(TEMPLATES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+interface PhoneModeTemplatesProps {
+  onInsert: (body: string) => void;
+}
+
+const PhoneModeTemplates = React.memo(function PhoneModeTemplates({ onInsert }: PhoneModeTemplatesProps) {
+  const [templates, setTemplates] = useState<StoredTemplate[]>(loadStoredTemplates);
+
+  // Re-read on `storage` events. Triggers from OTHER tabs only per spec —
+  // but that's still useful: if the user keeps the dashboard open in one
+  // tab and Phone Mode (popup) in another, edits propagate live.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key && e.key !== TEMPLATES_STORAGE_KEY) return;
+      setTemplates(loadStoredTemplates());
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  // Empty state — render nothing. Match Dashboard's `return null` behaviour
+  // so users who haven't created any templates don't see an empty band.
+  if (templates.length === 0) return null;
+
+  return (
+    <div
+      role="toolbar"
+      aria-label="Insert template"
+      className="flex flex-shrink-0 items-center gap-1.5 overflow-x-auto border-t border-slate-200/60 bg-slate-50/80 px-2 py-1.5 backdrop-blur-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
+      <FileText className="h-3 w-3 flex-shrink-0 text-slate-400" aria-hidden="true" />
+      {templates.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          onClick={() => onInsert(t.body)}
+          // Chip target — 28px tall meets visual rhythm with the compose
+          // textarea while staying scannable. Full template name shown
+          // truncated; tooltip carries the full body for power users.
+          className="inline-flex max-w-[140px] flex-shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          title={t.body}
+        >
+          <span className="truncate">{t.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+});
+
 // ---------- TabBar (top, sticky under header) -------------------------------
 
 interface TabBarProps {
@@ -124,10 +211,13 @@ const TabBar = React.memo(function TabBar({ active, unreadCount, onSelect }: Tab
   // wired (low priority — single-row tabset with three items, taps dominate
   // at mobile sizes).
   return (
+    // sticky top-10 ← matches PhoneModeHeader's new h-10. h-11 (44px) floors
+    // the tap target at iOS HIG minimum even though the rest of the shell
+    // scales down to ~85% (per dispatch #34, item 7 risk #4).
     <div
       role="tablist"
       aria-label="Phone Mode navigation"
-      className="sticky top-12 z-20 flex h-12 items-stretch border-b border-slate-200/60 bg-white/95 backdrop-blur-sm"
+      className="sticky top-10 z-20 flex h-11 items-stretch border-b border-slate-200/60 bg-white/95 backdrop-blur-sm"
     >
       <TabButton
         active={active === 'dialer'}
@@ -196,9 +286,12 @@ function DialerView() {
   const { makeCall, callLogs } = usePhone();
   const [digits, setDigits] = useState<string>('');
 
-  // Newest 5 calls, deduped by number — surface the "redial" affordance.
+  // Newest 15 unique numbers, deduped — surface the "redial" affordance.
   // Pulling logs (not contacts) so the entry reflects the actual conversation
-  // history; the dashboard recents card uses the same model.
+  // history; the dashboard recents card uses the same model (10 unique).
+  // Phone Mode caps slightly higher (15) so the new split-scroll list
+  // (dispatch #34 item 3) has meaningful scrollable content even at compact
+  // viewport heights.
   const recent = useMemo(() => {
     const seen = new Set<string>();
     const out: { id: string; number: string; name?: string; date: number }[] = [];
@@ -206,7 +299,7 @@ function DialerView() {
       if (seen.has(log.number)) continue;
       seen.add(log.number);
       out.push({ id: log.id, number: log.number, name: log.name, date: log.date });
-      if (out.length >= 5) break;
+      if (out.length >= 15) break;
     }
     return out;
   }, [callLogs]);
@@ -229,100 +322,108 @@ function DialerView() {
   ];
 
   return (
-    // Outer scrolls — number field + dialpad live above; recent list scrolls
-    // beneath. flex-col so the dialpad block claims its natural height and
-    // recent fills the rest of the available column.
-    <div className="flex h-full flex-col overflow-y-auto">
-      {/* Number field — readable at 320px, grows to fill horizontal room at
-          larger narrow widths. Controlled input so keyboard typing works too. */}
-      <div className="flex items-center justify-center px-4 pt-4 pb-2">
-        <input
-          type="text"
-          inputMode="tel"
-          value={digits}
-          onChange={(e) => setDigits(e.target.value.replace(/[^0-9+*#]/g, '').slice(0, 15))}
-          placeholder="Enter number"
-          aria-label="Phone number to dial"
-          className={clsx(
-            'w-full bg-transparent text-center tracking-wider text-slate-800 placeholder-slate-300 focus:outline-none',
-            digits.length > 10 ? 'text-2xl' : 'text-3xl',
-            'font-semibold tabular-nums',
-          )}
-        />
-      </div>
-
-      {/* Dialpad grid. py-3 keeps the keypad away from the field's caret;
-          max-w-[280px] caps it on landscape phones / narrow tablets so the
-          grid doesn't stretch into oblong, finger-confusing cells. */}
-      <div className="mx-auto grid w-full max-w-[280px] grid-cols-3 gap-x-5 gap-y-3 px-4 py-2">
-        {keys.map((k) => (
-          <button
-            key={k.d}
-            type="button"
-            onClick={() => dialKey(k.d)}
-            // 56x56 keys = 64px hit target with the gap. Center-anchored
-            // glyph + tiny letter row beneath matches the phone OS pattern.
-            className="flex h-14 w-14 flex-col items-center justify-center rounded-full border border-slate-100 bg-slate-50 shadow-sm transition-all hover:bg-slate-100 active:scale-95 active:bg-blue-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            aria-label={`Dial ${k.d}`}
-          >
-            <span className="text-xl font-medium text-slate-700">{k.d}</span>
-            {k.sub && (
-              <span className="text-[9px] font-bold tracking-widest text-slate-400">
-                {k.sub}
-              </span>
+    // SPLIT-SCROLL (dispatch #34, item 3): outer is `overflow-hidden` and the
+    // dialpad block sits as a flex-shrink-0 island at the top; recent list
+    // gets `flex-1 overflow-y-auto` so it scrolls INDEPENDENTLY without
+    // pushing the dialpad off-screen. Matches Dashboard Quick Dial behaviour.
+    // Prior to this the whole view was one scroller, which scrolled the
+    // dialpad away the moment the user reached for the recent list.
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* Dialpad island — never scrolls, always anchored at the top. */}
+      <div className="flex-shrink-0">
+        {/* Number field — readable at 320px, grows to fill horizontal room at
+            larger narrow widths. Controlled input so keyboard typing works too.
+            Scaled: text-3xl→text-2xl (default) and text-2xl→text-xl (overflow).
+            Vertical pad pt-4→pt-3 to match the shell shrink. */}
+        <div className="flex items-center justify-center px-3 pt-3 pb-1.5">
+          <input
+            type="text"
+            inputMode="tel"
+            value={digits}
+            onChange={(e) => setDigits(e.target.value.replace(/[^0-9+*#]/g, '').slice(0, 15))}
+            placeholder="Enter number"
+            aria-label="Phone number to dial"
+            className={clsx(
+              'w-full bg-transparent text-center tracking-wider text-slate-800 placeholder-slate-300 focus:outline-none',
+              digits.length > 10 ? 'text-xl' : 'text-2xl',
+              'font-semibold tabular-nums',
             )}
+          />
+        </div>
+
+        {/* Dialpad grid. Scaled tokens: keys h-14 w-14→h-12 w-12 (still 48px,
+            ≥iOS HIG 44px). gap-y-3→gap-y-2.5; gap-x-5→gap-x-4. max-w
+            unchanged so the cap still prevents oblong cells on wider narrow
+            viewports. */}
+        <div className="mx-auto grid w-full max-w-[260px] grid-cols-3 gap-x-4 gap-y-2.5 px-3 py-1.5">
+          {keys.map((k) => (
+            <button
+              key={k.d}
+              type="button"
+              onClick={() => dialKey(k.d)}
+              className="flex h-12 w-12 flex-col items-center justify-center rounded-full border border-slate-100 bg-slate-50 shadow-sm transition-all hover:bg-slate-100 active:scale-95 active:bg-blue-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              aria-label={`Dial ${k.d}`}
+            >
+              <span className="text-lg font-medium text-slate-700">{k.d}</span>
+              {k.sub && (
+                <span className="text-[8px] font-bold tracking-widest text-slate-400">
+                  {k.sub}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* Call + backspace row. Call button h-16→h-14 (56px, still well
+            above 44px HIG). Backspace stays h-10 (40px hit target — non-
+            critical control). */}
+        <div className="flex items-center justify-center gap-5 px-3 py-2">
+          <span className="h-10 w-10" aria-hidden="true" /> {/* spacer for symmetry */}
+          <button
+            type="button"
+            onClick={call}
+            disabled={!digits}
+            className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-300/50 transition-all hover:bg-emerald-600 active:scale-95 disabled:opacity-40 disabled:shadow-none focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+            aria-label="Call"
+          >
+            <Phone className="h-6 w-6 fill-current" aria-hidden="true" />
           </button>
-        ))}
+          <button
+            type="button"
+            onClick={backspace}
+            disabled={!digits}
+            className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-95 disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40"
+            aria-label="Delete last digit"
+          >
+            <Delete className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
-      {/* Call + backspace row. Green call dominates; backspace lives to the
-          right per phone-OS convention so right-handed thumb reach is natural. */}
-      <div className="flex items-center justify-center gap-6 px-4 py-3">
-        <span className="h-12 w-12" aria-hidden="true" /> {/* spacer for symmetry */}
-        <button
-          type="button"
-          onClick={call}
-          disabled={!digits}
-          className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-300/50 transition-all hover:bg-emerald-600 active:scale-95 disabled:opacity-40 disabled:shadow-none focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
-          aria-label="Call"
-        >
-          <Phone className="h-7 w-7 fill-current" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          onClick={backspace}
-          disabled={!digits}
-          className="flex h-12 w-12 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-95 disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40"
-          aria-label="Delete last digit"
-        >
-          <Delete className="h-5 w-5" aria-hidden="true" />
-        </button>
-      </div>
-
-      {/* Recent calls — divider, label, then a tight list. Scrolls inside the
-          outer overflow-y-auto so it doesn't push the dialpad off-screen. */}
+      {/* Recent calls — INDEPENDENT scroller. Sits in the remaining vertical
+          space, scrolls inside its own bounds. Dialpad stays anchored above. */}
       {recent.length > 0 && (
-        <div className="mt-2 border-t border-slate-100">
-          <p className="px-4 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+        <div className="flex flex-1 flex-col overflow-hidden border-t border-slate-100">
+          <p className="flex-shrink-0 px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
             Recent
           </p>
-          <ul className="divide-y divide-slate-100 pb-3">
+          <ul className="flex-1 divide-y divide-slate-100 overflow-y-auto pb-2">
             {recent.map((r) => (
               <li key={r.id}>
                 <button
                   type="button"
                   onClick={() => makeCall(r.number)}
-                  className="flex w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50"
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50"
                   aria-label={`Call ${r.name || r.number}`}
                 >
-                  <div className={clsx('flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold', avatarColor(r.name || r.number))}>
+                  <div className={clsx('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold', avatarColor(r.name || r.number))}>
                     {(r.name || r.number).charAt(0).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-slate-800">{r.name || r.number}</p>
-                    <p className="truncate text-xs text-slate-500">{formatRelative(r.date, now)}</p>
+                    <p className="truncate text-xs font-medium text-slate-800">{r.name || r.number}</p>
+                    <p className="truncate text-[11px] text-slate-500">{formatRelative(r.date, now)}</p>
                   </div>
-                  <RotateCw className="h-4 w-4 flex-shrink-0 text-slate-300" aria-hidden="true" />
+                  <RotateCw className="h-3.5 w-3.5 flex-shrink-0 text-slate-300" aria-hidden="true" />
                 </button>
               </li>
             ))}
@@ -395,9 +496,11 @@ function TextsView() {
   return (
     <div className="flex h-full flex-col">
       {/* Sub-header: title + "+ New" button. Sticky so the list scrolls
-          beneath but the action stays reachable. */}
-      <div className="sticky top-24 z-10 flex items-center justify-between gap-2 bg-white/95 px-3 py-2 backdrop-blur-sm">
-        <h2 className="text-sm font-semibold text-slate-800">Messages</h2>
+          beneath but the action stays reachable.
+          top-[84px] = PhoneModeHeader (40) + TabBar (44). Was top-24 (96)
+          before the dispatch-#34 15%-shrink pass. */}
+      <div className="sticky top-[84px] z-10 flex items-center justify-between gap-2 bg-white/95 px-2.5 py-1.5 backdrop-blur-sm">
+        <h2 className="text-xs font-semibold text-slate-800">Messages</h2>
         <button
           type="button"
           onClick={() => push({ kind: 'compose' })}
@@ -489,24 +592,31 @@ function ThreadView({ threadId }: ThreadViewProps) {
   return (
     <div className="flex h-full flex-col">
       {/* Back-arrow header replaces the tab bar inside a thread (per State C
-          mockup). 48px tall to match PhoneModeHeader. */}
-      <div className="sticky top-12 z-20 flex h-12 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
+          mockup). h-10 to match PhoneModeHeader's dispatch-#34 shrink.
+          Dispatch #34 item 2: dropped `sticky top-12 z-20` — the prior sticky
+          stack made the header land on top of the body content's first row at
+          mount (z-20 over z-auto), which on the New Message view manifested as
+          the back-arrow visually clipping the "To" field. Inside a flex
+          column with a scrolling middle pane, the header naturally pins at
+          top-of-column without sticky semantics. flex-shrink-0 prevents it
+          collapsing as the messages list grows. */}
+      <div className="flex-shrink-0 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
         <button
           type="button"
           onClick={pop}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
           aria-label="Back to messages"
         >
           <ArrowLeft className="h-5 w-5" aria-hidden="true" />
         </button>
-        <div className={clsx('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold', avatarColor(displayName))}>
+        <div className={clsx('flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold', avatarColor(displayName))}>
           {displayName.charAt(0).toUpperCase()}
         </div>
-        <p className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-800">{displayName}</p>
+        <p className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-800">{displayName}</p>
         <button
           type="button"
           onClick={() => makeCall(threadId)}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-emerald-50 hover:text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-emerald-50 hover:text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
           aria-label={`Call ${displayName}`}
           title={`Call ${displayName}`}
         >
@@ -566,12 +676,39 @@ function ThreadCompose({ onSend }: ThreadComposeProps) {
     if (ref.current) ref.current.style.height = 'auto';
   }, [text, onSend]);
 
+  // Template-chip handler. APPENDS the template body to the current draft so a
+  // user who already typed something doesn't lose it. Separator is `\n\n` when
+  // the existing draft is non-empty — matches the dashboard chip behaviour and
+  // keeps concatenated text readable. Triggers the same scroll-height resize
+  // the onChange path runs (otherwise the textarea stays at minimum height
+  // and hides the just-inserted body).
+  const insertTemplate = useCallback((body: string) => {
+    setText(prev => {
+      const next = prev.trim().length === 0 ? body : `${prev}\n\n${body}`;
+      // Defer height adjustment to next frame so React has actually committed
+      // the new value to the textarea before we measure scrollHeight.
+      requestAnimationFrame(() => {
+        if (ref.current) {
+          ref.current.style.height = 'auto';
+          ref.current.style.height = Math.min(ref.current.scrollHeight, 120) + 'px';
+          ref.current.focus();
+        }
+      });
+      return next;
+    });
+  }, []);
+
   return (
     // Sticky bottom — `position: sticky; bottom: 0` keeps the composer pinned
     // above the OS keyboard when it lifts (risk #1). globals.css adds dvh
     // height so the parent grows with the visualViewport.
-    <div className="sticky bottom-0 border-t border-slate-200/60 bg-white/95 px-2 py-2 backdrop-blur-sm">
-      <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-500/20">
+    // Dispatch #34 item 1: PhoneModeTemplates chip strip rendered ABOVE the
+    // compose box so the templates are reachable without expanding to the
+    // dashboard. Chip strip is part of the sticky bottom island so it stays
+    // anchored with the input as the keyboard lifts.
+    <div className="sticky bottom-0 border-t border-slate-200/60 bg-white/95 backdrop-blur-sm">
+      <PhoneModeTemplates onInsert={insertTemplate} />
+      <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 mx-2 my-2 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-500/20">
         <textarea
           ref={ref}
           value={text}
@@ -624,18 +761,32 @@ function ComposeView() {
     push({ kind: 'thread', threadId: recipient });
   };
 
+  // Template-chip handler — same append semantics as ThreadCompose. The
+  // textarea here is `h-full` (no autosize), so we don't need a scrollHeight
+  // dance; React's controlled-input commit is enough.
+  const insertTemplate = useCallback((body: string) => {
+    setText(prev => (prev.trim().length === 0 ? body : `${prev}\n\n${body}`));
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
-      <div className="sticky top-12 z-20 flex h-12 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
+      {/* Dispatch #34 item 2: header was `sticky top-12 z-20` which made it
+          sit on top of the To-field at mount (z-20 over z-auto), visually
+          clipping the input on a 320px viewport. ComposeView is a single-
+          screen view (no long scrollable body that would benefit from a
+          sticky header), so we drop sticky entirely and let the natural flex-
+          column lay out: header sits at top via flex-shrink-0, body grows,
+          footer (Send) pins to bottom via sticky. No z-index conflicts left. */}
+      <div className="flex-shrink-0 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
         <button
           type="button"
           onClick={pop}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
           aria-label="Back to messages"
         >
           <ArrowLeft className="h-5 w-5" aria-hidden="true" />
         </button>
-        <p className="min-w-0 flex-1 text-sm font-semibold text-slate-800">New Message</p>
+        <p className="min-w-0 flex-1 text-xs font-semibold text-slate-800">New Message</p>
       </div>
 
       <div className="px-3 pt-3">
@@ -667,16 +818,22 @@ function ComposeView() {
         />
       </div>
 
-      <div className="sticky bottom-0 border-t border-slate-200/60 bg-white/95 px-3 py-2 backdrop-blur-sm">
-        <button
-          type="button"
-          onClick={handleSend}
-          disabled={!canSend}
-          className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-        >
-          <Send className="h-4 w-4" aria-hidden="true" />
-          Send
-        </button>
+      {/* Dispatch #34 item 1: PhoneModeTemplates above the Send footer. Stays
+          part of the sticky bottom island so the chip strip rides up with the
+          send button when the keyboard lifts. */}
+      <div className="sticky bottom-0 border-t border-slate-200/60 bg-white/95 backdrop-blur-sm">
+        <PhoneModeTemplates onInsert={insertTemplate} />
+        <div className="px-3 py-2">
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={!canSend}
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          >
+            <Send className="h-4 w-4" aria-hidden="true" />
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );
