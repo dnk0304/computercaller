@@ -101,8 +101,25 @@ android {
         // builds without deviceLabel fall through to the legacy ua+ip
         // identity — no crash, just less friendly copy. New APK against
         // old web build: deviceLabel absent → generic fallback.
-        versionCode = 23
-        versionName = "1.0.1"
+        //
+        // Audio toggle simplified to Phone | PC (FORGE-2, 2026-05-26):
+        // 23 → 24. Dennis directive: kill the nested Earpiece/Speaker
+        // sub-toggle entirely; just two buttons at the top level. The
+        // browser now emits SET_AUDIO_SOURCE:phone|pc (was
+        // earpiece|speaker|bluetooth). applyAudioSource on this side
+        // accepts the new values AND retains the legacy ones as aliases:
+        //   "phone" / "earpiece"  → clear SCO + clear speakerphone
+        //                           (system picks default — earpiece on
+        //                           most devices for MODE_IN_COMMUNICATION)
+        //   "pc" / "bluetooth"    → clear speakerphone, start BT-HFP SCO
+        //   "speaker"             → legacy only (SET_SPEAKER), keeps the
+        //                           phone loudspeaker path so old browser
+        //                           builds emitting SET_SPEAKER still work
+        // Backward compat is symmetric: new browser + v23 APK falls through
+        // v23's else-warning branch (silent no-op, safe). Old browser +
+        // v24 APK uses the legacy aliases (no behaviour change).
+        versionCode = 24
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -613,24 +613,42 @@ class PhoneService : Service() {
     }
 
     /**
-     * Unified audio-source dispatcher. Called by the new SET_AUDIO_SOURCE
-     * command (replaces the 3-pill toggle's separate SET_SPEAKER command,
-     * which is retained as a legacy alias). The browser side knows about
-     * three terminal values:
+     * Unified audio-source dispatcher. Called by SET_AUDIO_SOURCE (replaces
+     * the legacy SET_SPEAKER, which is retained as an alias on the wire).
      *
-     *   - "earpiece"   — phone earpiece. Default.
-     *   - "speaker"    — phone loudspeaker.
-     *   - "bluetooth"  — route over the BT-HFP SCO link to the user's PC.
+     * Accepted values (FORGE-2, v24, 2026-05-26):
+     *
+     *   - "phone"     — phone-default routing. Clears both forced speakerphone
+     *                   AND BT-SCO so the system picks the default route for
+     *                   MODE_IN_COMMUNICATION (earpiece on devices that have
+     *                   one; OEM decides on the rest). This is the new default
+     *                   the browser emits when the user taps "Phone".
+     *   - "pc"        — BT-HFP SCO link to the user's paired PC. Clears
+     *                   speakerphone first to avoid stacking routes.
+     *
+     * Legacy aliases (kept so old browser builds keep working against v24+
+     * APKs — see brief §2 Decision D, symmetric back-compat):
+     *
+     *   - "earpiece"  — alias for "phone". Maps to the same routing.
+     *   - "speaker"   — phone loudspeaker. Only the LEGACY SET_SPEAKER path
+     *                   and old browser builds emit this; the new UI never
+     *                   does. Retained so the legacy command shape doesn't
+     *                   break.
+     *   - "bluetooth" — alias for "pc". Maps to the same routing.
      *
      * Each terminal cleanly tears down the OTHER routings before applying
-     * its own — switching from speaker to bluetooth must drop the speaker
-     * route, not stack on top of it. The atomic order matters: clear
-     * legacy speaker / BT, then apply the target.
+     * its own — switching from speaker to pc must drop the speaker route,
+     * not stack on top of it. Atomic order matters: clear legacy speaker /
+     * BT first, then apply the target.
+     *
+     * currentCallSpeaker is set true ONLY for the legacy "speaker" value.
+     * The new "phone" / "pc" / legacy "earpiece" / "bluetooth" values all
+     * set it false — there's no forced speakerphone in the new UI.
      */
     private fun applyAudioSource(source: String) {
         currentCallSpeaker = (source == "speaker")
         when (source) {
-            "earpiece" -> {
+            "phone", "earpiece" -> {
                 applyBluetoothSco(false)
                 applySpeakerphone(false)
             }
@@ -638,7 +656,7 @@ class PhoneService : Service() {
                 applyBluetoothSco(false)
                 applySpeakerphone(true)
             }
-            "bluetooth" -> {
+            "pc", "bluetooth" -> {
                 applySpeakerphone(false)
                 applyBluetoothSco(true)
             }
@@ -2412,18 +2430,25 @@ class PhoneService : Service() {
                 "SET_SPEAKER" -> {
                     // Legacy alias retained for backward compat with older
                     // browser builds that haven't been redeployed to the
-                    // 2-mode SET_AUDIO_SOURCE shape yet. New browser sends
-                    // SET_AUDIO_SOURCE:earpiece|speaker|bluetooth instead.
+                    // simplified SET_AUDIO_SOURCE shape yet. New browser
+                    // sends SET_AUDIO_SOURCE:phone|pc instead. Maps to the
+                    // legacy "speaker"/"earpiece" terminals — both are
+                    // accepted by applyAudioSource as aliases of "phone"
+                    // routing in the new world (speaker stays as its own
+                    // terminal so this legacy path still toggles the
+                    // speakerphone if an old browser emits it).
                     val enabled = (payload?.get("enabled") as? Boolean) ?: false
                     applyAudioSource(if (enabled) "speaker" else "earpiece")
                 }
                 "SET_AUDIO_SOURCE" -> {
-                    // 2-mode toggle. Browser sends one of "earpiece" /
-                    // "speaker" / "bluetooth". applyAudioSource validates
-                    // and cleanly tears down the other two routings before
-                    // applying the target so we never stack speakerphone
-                    // on top of SCO etc.
-                    val source = (payload?.get("source") as? String) ?: "earpiece"
+                    // FORGE-2 (v24, 2026-05-26): simplified to 2 buttons.
+                    // Browser sends "phone" or "pc"; v24 also accepts the
+                    // legacy "earpiece" / "speaker" / "bluetooth" as
+                    // aliases so old browser builds keep working against
+                    // new APKs. applyAudioSource validates and cleanly
+                    // tears down the other routings before applying the
+                    // target so we never stack speakerphone on top of SCO.
+                    val source = (payload?.get("source") as? String) ?: "phone"
                     applyAudioSource(source)
                     android.util.Log.d("PhoneService", "SET_AUDIO_SOURCE applied: source=$source")
                 }
