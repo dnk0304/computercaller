@@ -348,6 +348,20 @@ export default function LandingPage() {
               <ArrowRight className="w-3 h-3" aria-hidden="true" />
             </Link>
           )}
+          {/* Brand wordmark — sits as a "stamp" above the tagline. Two-tone
+              rhymes with the H1's second-clause gradient so the page reads as
+              one designed system, not two unrelated treatments. Heavier than
+              the H1 (extrabold vs semibold) to feel like a logotype, but a
+              size-tier smaller so the H1 still wins the eye. */}
+          <p
+            aria-label="Computer Caller"
+            className="text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-[-0.02em] leading-none mb-3"
+          >
+            <span className="text-slate-900">COMPUTER</span>{' '}
+            <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+              CALLER
+            </span>
+          </p>
           <p className="text-sm sm:text-base font-medium text-slate-500 tracking-wide mb-3">
             Connect. Call. SMS. Communicate. Seamlessly.
           </p>
