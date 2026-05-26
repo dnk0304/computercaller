@@ -65,7 +65,16 @@ class SmsHandler(private val context: Context) {
         }
     }
 
-    fun getMessages(limit: Int = 2500, since: Long = 0, address: String? = null): List<SmsMessage> {
+    // Cap removed 2026-05-26 per Dennis pivot ("just make it available for
+    // users. If we want to cap it later, we can add a new tier."). The
+    // previous default of 2500 forced silent truncation on phones with large
+    // SMS histories — even though the user explicitly asked to sync "All
+    // time". Default now: Int.MAX_VALUE (effectively unbounded). Callers can
+    // still pass a positive `limit` to bound a specific call (e.g. the MMS
+    // catch-up tick passes limit = 50). The existing `effectiveLimit` math
+    // below already handles `limit <= 0` as "no cap" so this is a default
+    // flip only — no behavior change for explicit callers.
+    fun getMessages(limit: Int = Int.MAX_VALUE, since: Long = 0, address: String? = null): List<SmsMessage> {
         val messages = mutableListOf<SmsMessage>()
 
         // When `since == 0L` ("All time"), do not cap results — return everything.
@@ -201,7 +210,8 @@ class SmsHandler(private val context: Context) {
      */
     fun getMessagesWithMms(
         context: Context,
-        limit: Int = 2500,
+        // Cap removed 2026-05-26 per Dennis pivot — see getMessages() above.
+        limit: Int = Int.MAX_VALUE,
         since: Long = 0,
         address: String? = null
     ): List<SmsMessage> {

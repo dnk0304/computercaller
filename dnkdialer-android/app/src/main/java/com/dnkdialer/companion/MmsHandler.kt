@@ -14,7 +14,12 @@ data class MmsMessage(
 
 class MmsHandler(private val context: Context) {
 
-    fun getMessages(limit: Int = 2500, since: Long = 0): List<MmsMessage> {
+    // Cap removed 2026-05-26 per Dennis pivot ("just make it available for
+    // users. If we want to cap it later, we can add a new tier."). Default
+    // now: Int.MAX_VALUE (effectively unbounded). Explicit callers (e.g. the
+    // 50-row MMS catch-up tick in PhoneService.processNewMms) keep their
+    // tight bounds since they pass `limit` explicitly.
+    fun getMessages(limit: Int = Int.MAX_VALUE, since: Long = 0): List<MmsMessage> {
         val messages = mutableListOf<MmsMessage>()
 
         try {

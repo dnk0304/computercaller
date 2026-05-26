@@ -20,7 +20,12 @@ data class CallLogEntry(
 
 class CallLogsHandler(private val context: Context) {
 
-    fun getCallLogs(limit: Int = 2500, since: Long = 0): List<CallLogEntry> {
+    // Cap removed 2026-05-26 per Dennis pivot ("just make it available for
+    // users. If we want to cap it later, we can add a new tier."). Default
+    // now: Int.MAX_VALUE (effectively unbounded). The `effectiveLimit` math
+    // below already treats `limit <= 0` as "no cap" so this is a default
+    // flip only — no behavior change for explicit callers.
+    fun getCallLogs(limit: Int = Int.MAX_VALUE, since: Long = 0): List<CallLogEntry> {
         val callLogs = mutableListOf<CallLogEntry>()
 
         // When `since == 0L` ("All time"), do not cap results — return everything.

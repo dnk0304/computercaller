@@ -2517,7 +2517,11 @@ class PhoneService : Service() {
                     // Gson deserializes JSON numbers in Map<String, Any> as Double — cast through
                     // it before converting to Long/Int.
                     val since = (payload?.get("since") as? Double)?.toLong() ?: 0L
-                    val limit = (payload?.get("limit") as? Double)?.toInt() ?: 2500
+                    // Cap removed 2026-05-26 per Dennis pivot — phone returns
+                    // every row in the requested window. Browser still allowed
+                    // to send a positive `limit` if it ever wants to bound a
+                    // specific request; absent means unbounded.
+                    val limit = (payload?.get("limit") as? Double)?.toInt() ?: Int.MAX_VALUE
                     val callLogs = callLogsHandler.getCallLogs(limit = limit, since = since)
                     android.util.Log.d("PhoneService", "Got ${callLogs.size} call logs (since=$since, limit=$limit), sending in chunks...")
                     sendChunked("CALL_LOGS", callLogs, 25, viaClient, "callLogs")
@@ -2536,7 +2540,9 @@ class PhoneService : Service() {
                         return
                     }
                     val since = (payload?.get("since") as? Double)?.toLong() ?: 0L
-                    val limit = (payload?.get("limit") as? Double)?.toInt() ?: 2500
+                    // Cap removed 2026-05-26 per Dennis pivot — see GET_CALL_LOGS
+                    // above. Phone returns every row in the requested window.
+                    val limit = (payload?.get("limit") as? Double)?.toInt() ?: Int.MAX_VALUE
                     // Optional per-contact filter. When set, SmsHandler clears the
                     // time window internally so the web client gets the FULL thread
                     // history for that address (typical use: user opens a thread
@@ -2619,8 +2625,25 @@ class PhoneService : Service() {
                     )
                 }
                 "GET_SYNC_ESTIMATE" -> {
-                    android.util.Log.d("PhoneService", "Building sync estimate...")
-                    val estimate = buildSyncEstimate()
+                    // Sync-preview dispatch (v25, 2026-05-26): payload now
+                    // optionally carries since/until (Long epoch ms) and a
+                    // types array to subset which categories to count. All
+                    // three are optional — bare {} keeps the legacy all-time
+                    // all-categories behavior for older browser builds.
+                    //
+                    // Gson decodes JSON numbers in Map<String, Any> as Double,
+                    // arrays as List<*>. Cast through Double before toLong()
+                    // and through List<*> before .map { it as? String } —
+                    // matches the GET_MESSAGES / GET_CALL_LOGS handlers above.
+                    val since = (payload?.get("since") as? Double)?.toLong()?.takeIf { it > 0L }
+                    val until = (payload?.get("until") as? Double)?.toLong()?.takeIf { it > 0L }
+                    val typesRaw = payload?.get("types") as? List<*>
+                    val types = typesRaw
+                        ?.mapNotNull { it as? String }
+                        ?.filter { it.isNotBlank() }
+                        ?: listOf("contacts", "messages", "callLogs")
+                    android.util.Log.d("PhoneService", "Building sync estimate (since=$since, until=$until, types=$types)...")
+                    val estimate = buildSyncEstimate(since, until, types)
                     android.util.Log.d("PhoneService", "Estimate built: $estimate")
                     sendResponse("SYNC_ESTIMATE", estimate, viaClient)
                 }
@@ -2754,48 +2777,128 @@ class PhoneService : Service() {
         }
     }
 
-    private fun buildSyncEstimate(): Map<String, Any> {
-        // Contacts total
-        val contactsTotal = try {
-            val cursor = contentResolver.query(
-                android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                arrayOf(android.provider.ContactsContract.CommonDataKinds.Phone._ID),
-                null, null, null
-            )
-            val count = cursor?.count ?: 0
-            cursor?.close()
-            count
-        } catch (e: SecurityException) { 0 }
+    /**
+     * Build a SYNC_ESTIMATE response for the browser preview panel.
+     *
+     * - `since` / `until`  Epoch ms inclusive bounds. Null means "no bound".
+     *                      Bare null/null = legacy all-time behavior used by
+     *                      older browser builds that send GET_SYNC_ESTIMATE:{}.
+     *                      Applied to the SMS / CallLog `date` column. Not
+     *                      applied to contacts (contacts have no date concept
+     *                      in the provider — always full count).
+     * - `types`            Which categories to count. Default = all three.
+     *                      Letting the browser opt out of a category keeps
+     *                      cursor.count off providers the panel doesn't need
+     *                      for this re-render — perf hedge for big SMS DBs.
+     *
+     * Response shape per category:
+     *   contacts / messages / callLogs: { total: Int }
+     *
+     * Dennis pivot 2026-05-26 18:16 GMT+2: no cap, no willTruncate. The
+     * earlier brief specced a `cap` + `willTruncate` pair (so the browser
+     * could warn before Start Sync) but the user-facing decision is "make
+     * it available, cap later if needed". The 2,500 default in
+     * SmsHandler / CallLogsHandler / MmsHandler was also lifted in this
+     * dispatch — phone now returns every row in the chosen range.
+     */
+    private fun buildSyncEstimate(
+        since: Long? = null,
+        until: Long? = null,
+        types: List<String> = listOf("contacts", "messages", "callLogs"),
+    ): Map<String, Any> {
+        val out = mutableMapOf<String, Any>()
 
-        // Messages total
-        val messagesTotal = try {
-            val cursor = contentResolver.query(
-                android.net.Uri.parse("content://sms"),
-                arrayOf(android.provider.Telephony.Sms._ID),
-                null, null, null
-            )
-            val count = cursor?.count ?: 0
-            cursor?.close()
-            count
-        } catch (e: SecurityException) { 0 }
+        // Contacts: no range concept — always full count when requested.
+        if ("contacts" in types) {
+            val contactsTotal = try {
+                val cursor = contentResolver.query(
+                    android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(android.provider.ContactsContract.CommonDataKinds.Phone._ID),
+                    null, null, null
+                )
+                val count = cursor?.count ?: 0
+                cursor?.close()
+                count
+            } catch (e: SecurityException) { 0 }
+            out["contacts"] = mapOf("total" to contactsTotal)
+        }
 
-        // Call logs total
-        val callLogsTotal = try {
-            val cursor = contentResolver.query(
-                android.provider.CallLog.Calls.CONTENT_URI,
-                arrayOf(android.provider.CallLog.Calls._ID),
-                null, null, null
-            )
-            val count = cursor?.count ?: 0
-            cursor?.close()
-            count
-        } catch (e: SecurityException) { 0 }
+        // Messages: range-aware via "date" column. cursor.count over the
+        // SMS provider can take 100-300ms on large histories (50k+ rows) —
+        // browser-side has a 400ms debounce so user-perceived latency stays
+        // well under 1s. If a future profile shows main-thread jank, wrap
+        // this branch in withContext(Dispatchers.IO) — handler is already
+        // called off the main thread, but worth a check before optimizing.
+        if ("messages" in types) {
+            val (selection, args) = buildDateRangeSelection(since, until, "date")
+            val messagesTotal = try {
+                val cursor = contentResolver.query(
+                    android.net.Uri.parse("content://sms"),
+                    arrayOf(android.provider.Telephony.Sms._ID),
+                    selection, args, null
+                )
+                val count = cursor?.count ?: 0
+                cursor?.close()
+                count
+            } catch (e: SecurityException) { 0 }
+            out["messages"] = mapOf("total" to messagesTotal)
+        }
 
-        return mapOf(
-            "contacts" to mapOf("total" to contactsTotal),
-            "messages" to mapOf("total" to messagesTotal),
-            "callLogs" to mapOf("total" to callLogsTotal)
-        )
+        // Call logs: range-aware via "date" column.
+        if ("callLogs" in types) {
+            val (selection, args) = buildDateRangeSelection(since, until, "date")
+            val callLogsTotal = try {
+                val cursor = contentResolver.query(
+                    android.provider.CallLog.Calls.CONTENT_URI,
+                    arrayOf(android.provider.CallLog.Calls._ID),
+                    selection, args, null
+                )
+                val count = cursor?.count ?: 0
+                cursor?.close()
+                count
+            } catch (e: SecurityException) { 0 }
+            out["callLogs"] = mapOf("total" to callLogsTotal)
+        }
+
+        // Echo the range back so the browser can verify the response matches
+        // the request it dispatched (useful when fast successive user drags
+        // through the date picker fire overlapping previews).
+        if (since != null || until != null) {
+            out["range"] = buildMap<String, Any> {
+                if (since != null) put("since", since)
+                if (until != null) put("until", until)
+            }
+        }
+
+        return out
+    }
+
+    /**
+     * Build a parameterized WHERE clause + args array for a date-range
+     * query against a content provider. Returns (null, null) when both
+     * bounds are null (legacy all-time path).
+     *
+     * Always parameterized — never concatenated into the selection string —
+     * so this is safe against the (admittedly unlikely) injection vector
+     * if a malicious browser ever shipped a non-Long value.
+     */
+    private fun buildDateRangeSelection(
+        since: Long?,
+        until: Long?,
+        dateColumn: String,
+    ): Pair<String?, Array<String>?> {
+        if (since == null && until == null) return null to null
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        if (since != null) {
+            clauses += "$dateColumn >= ?"
+            args += since.toString()
+        }
+        if (until != null) {
+            clauses += "$dateColumn <= ?"
+            args += until.toString()
+        }
+        return clauses.joinToString(" AND ") to args.toTypedArray()
     }
 
     /**
