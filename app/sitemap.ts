@@ -46,6 +46,16 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.9,
     },
     {
+      // iPhone setup guide — iOS-leaning keyword cluster ("call from computer
+      // iphone", "iphone bluetooth computer calls"). Priority 0.8 because it's
+      // a real content page with HowTo + FAQPage rich-snippet eligibility, but
+      // a notch below the primary marketing routes (Android remains the lead).
+      url: `${BASE_URL}/iphone`,
+      lastModified: now,
+      changeFrequency: 'monthly',
+      priority: 0.8,
+    },
+    {
       url: `${BASE_URL}/about`,
       lastModified: now,
       changeFrequency: 'monthly',

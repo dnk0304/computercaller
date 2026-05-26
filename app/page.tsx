@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import Script from 'next/script';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   MessageSquare,
   Bell,
@@ -24,6 +24,7 @@ import {
   Minus,
   Lock,
   ShieldCheck,
+  Apple,
 } from 'lucide-react';
 
 /**
@@ -181,7 +182,7 @@ const faqs = [
   },
   {
     q: 'Does it work on iPhone?',
-    a: "Not yet — the companion app is Android-only today. iOS is on our roadmap, but Apple's restrictions on background calling integrations make the same bridge harder to build there. If you're on iPhone, follow @computercaller for the launch.",
+    a: "Yes, in beta. iPhone users pair their phone to their laptop via Bluetooth and dial through the iPhone's Phone app — full setup takes 2 minutes. Android remains our primary platform with full feature parity (SMS bridge, call log sync, one-click dial). See the iPhone setup guide at /iphone for details.",
   },
   {
     q: 'How is this different from WhatsApp, Zoom, or Skype?',
@@ -194,6 +195,23 @@ export default function LandingPage() {
   // owns its own open state too, but reading it back in React would require a
   // ref per item — a small parallel Map is simpler and runs only on click.
   const [openFaqs, setOpenFaqs] = useState<Record<number, boolean>>({});
+
+  // iOS user-agent detection (dispatch 2026-05-25). Runs in useEffect so SSR
+  // emits the same HTML for every visitor — flipping `isIos` post-hydration
+  // is a clean React state update, not a hydration mismatch. We deliberately
+  // detect iPad too (iPadOS reports as Mac in Safari 13+, so MacIntel + touch
+  // is the modern iPad heuristic). Soft callout, no modal — discoverable hint
+  // that nudges iOS visitors toward /iphone without interrupting anyone.
+  const [isIos, setIsIos] = useState(false);
+  useEffect(() => {
+    if (typeof navigator === 'undefined') return;
+    const ua = navigator.userAgent || '';
+    const iosUa = /iPhone|iPad|iPod/i.test(ua);
+    // iPad on iPadOS 13+ presents as MacIntel — only count Macs with touch.
+    const isIpadOs =
+      ua.includes('Mac') && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
+    if (iosUa || isIpadOs) setIsIos(true);
+  }, []);
 
   // JSON-LD payloads — three @types in one @graph so we send a single tag.
   // Validated mentally against schema.org; Niki will run Google's Rich Results
@@ -313,22 +331,40 @@ export default function LandingPage() {
         }}
       >
         <div className="max-w-5xl mx-auto px-6 pt-20 pb-24 sm:pt-28 sm:pb-32 text-center">
+          {/* iOS-detected soft callout. Renders only when navigator.userAgent
+              matches iPhone/iPad/iPod (post-hydration — server skips it).
+              Soft, discoverable, dismissible-by-just-not-clicking. The pill
+              sits above the standard trust pill so iOS users see it within
+              the first eye-line without it dominating the hero. */}
+          {isIos && (
+            <Link
+              href="/iphone"
+              className="inline-flex items-center gap-2 px-3 py-1 mb-3 bg-blue-50 border border-blue-200 rounded-full text-blue-800 text-xs font-medium shadow-sm hover:bg-blue-100 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            >
+              <Apple className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>
+                On iPhone? Read our setup guide — works via Bluetooth
+              </span>
+              <ArrowRight className="w-3 h-3" aria-hidden="true" />
+            </Link>
+          )}
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             5-day free trial — no credit card required
           </div>
 
           <h1 className="mt-8 text-5xl sm:text-6xl md:text-7xl font-semibold tracking-[-0.03em] leading-[1.02] text-slate-900">
-            {PRIMARY_KEYWORD.slice(0, -1)}
+            Make phone calls from your phone
             <br />
             <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-              from your computer.
+              — from your computer.
             </span>
           </h1>
 
           <p className="mt-6 text-lg sm:text-xl text-slate-600 max-w-2xl mx-auto leading-relaxed">
-            ComputerCaller bridges your real phone number to your browser so you
-            can call any phone number, anywhere — without picking up your phone.
+            ComputerCaller connects your Android phone to your computer so you
+            can dial, talk, and message from your browser — without picking up
+            your phone.
           </p>
 
           <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">
@@ -790,6 +826,9 @@ export default function LandingPage() {
             </span>
           </div>
           <div className="flex items-center gap-5 text-sm text-slate-500">
+            <Link href="/iphone" className="hover:text-slate-900 transition-colors">
+              iPhone setup
+            </Link>
             <Link href="/privacy" className="hover:text-slate-900 transition-colors">
               Privacy
             </Link>
