@@ -118,8 +118,36 @@ android {
         // Backward compat is symmetric: new browser + v23 APK falls through
         // v23's else-warning branch (silent no-op, safe). Old browser +
         // v24 APK uses the legacy aliases (no behaviour change).
-        versionCode = 24
-        versionName = "1.0.2"
+        //
+        // Bundled APK v25 (2026-05-26): TWO orthogonal features in one ship
+        // because they both touch PhoneService.kt + build.gradle.kts —
+        // bundling avoids sequential-dispatch merge conflicts (Ken's call).
+        //
+        //   1. Sync-preview consolidated: GET_SYNC_ESTIMATE now accepts
+        //      since/until/types and returns range-aware totals. Per Dennis
+        //      pivot ("just make it available for users. If we want to cap
+        //      it later, we can add a new tier."), the 2,500-row default
+        //      cap on SmsHandler / CallLogsHandler / MmsHandler is REMOVED
+        //      (default flipped to Int.MAX_VALUE) and the response shape
+        //      drops the previously-specced cap / willTruncate fields.
+        //      Phone now returns every row in the chosen range — user can
+        //      see exact counts in the SyncSetupPanel before tapping Start
+        //      Sync. Browser-side panel UI lands in a follow-up Pixel
+        //      dispatch; this ship is the protocol + Android plumbing.
+        //
+        //   2. Disconnect-from-lobby: new toggle button in the main pane
+        //      lets the user fully detach the phone from the relay while
+        //      staying signed in. A persistent TokenStore flag
+        //      (KEY_USER_STAYED_DISCONNECTED) gates all three auto-dial
+        //      paths (onStartCommand ACTION_START, scheduleLobbyReconnect,
+        //      reconnectToRelay) so the "stay out" intent survives app
+        //      backgrounding, force-kill, OS service restart, and reboot.
+        //      Sign Out implicitly clears the flag via TokenStore.clear()
+        //      so a fresh sign-in starts in the connected/auto-dial state.
+        //      Per Dennis 2026-05-26 23:53 GMT+2: phone was auto-rejoining
+        //      lobby constantly and he wanted explicit control over it.
+        versionCode = 25
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
