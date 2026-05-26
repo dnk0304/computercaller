@@ -1130,13 +1130,27 @@ class PhoneService : Service() {
                 // webapp's room sees the phone immediately.
                 installSideEffects()
 
+                // Disconnect-from-lobby gate (v25, 2026-05-26). The user
+                // chose to stay disconnected last time they were on this
+                // screen; honor that across cold launches, OS restarts
+                // (START_STICKY), and any startService(...ACTION_START)
+                // call site. Token in TokenStore is left intact — the
+                // user stays signed in, just doesn't auto-dial. Cleared
+                // by tapping Rejoin Lobby (userRejoinLobby) or Sign Out
+                // (TokenStore.clear wipes everything for free).
                 val phoneToken = TokenStore.getPhoneToken(this)
-                if (!phoneToken.isNullOrBlank()) {
-                    val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
-                    android.util.Log.d("PhoneService", "Auto-dialing relay (token=${phoneToken.take(8)}…)")
-                    connectToRelay(relayUrl)
-                } else {
-                    android.util.Log.w("PhoneService", "No phoneToken in TokenStore — skipping relay auto-dial")
+                when {
+                    phoneToken.isNullOrBlank() -> {
+                        android.util.Log.w("PhoneService", "No phoneToken in TokenStore — skipping relay auto-dial")
+                    }
+                    TokenStore.isUserStayedDisconnected(this) -> {
+                        android.util.Log.d("PhoneService", "User chose to stay disconnected from lobby — skipping auto-dial")
+                    }
+                    else -> {
+                        val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
+                        android.util.Log.d("PhoneService", "Auto-dialing relay (token=${phoneToken.take(8)}…)")
+                        connectToRelay(relayUrl)
+                    }
                 }
 
                 val notificationIntent = Intent(this, MainActivity::class.java)
@@ -1159,6 +1173,15 @@ class PhoneService : Service() {
                     .build()
 
                 startForeground(NOTIFICATION_ID, notification)
+
+                // Disconnect-from-lobby (v25, 2026-05-26): keep the
+                // foreground notification copy honest when the user is in
+                // the stay-disconnected state. The default copy "Phone
+                // bridge is active" is misleading in that case — we ARE
+                // running, but on purpose NOT connected to anything.
+                if (TokenStore.isUserStayedDisconnected(this)) {
+                    updateNotification(getString(R.string.status_user_disconnected))
+                }
             }
             ACTION_STOP -> {
                 android.util.Log.d("PhoneService", "Stopping service...")
@@ -2052,6 +2075,20 @@ class PhoneService : Service() {
      */
     private fun scheduleLobbyReconnect(reason: String) {
         cancelLobbyReconnect()
+        // Disconnect-from-lobby gate (v25, 2026-05-26). If the user has
+        // chosen to stay disconnected, do NOT schedule a redial after an
+        // unintentional drop — that's the whole point of the flag. The
+        // userDisconnectFromLobby() entry point already calls
+        // cancelLobbyReconnect() and nulls clientRelayUrl, but this is a
+        // defensive belt-and-braces check in case a stray call path
+        // schedules a reconnect between the flag flip and the URL null-out.
+        if (TokenStore.isUserStayedDisconnected(this)) {
+            android.util.Log.d(
+                "PhoneService",
+                "Skip lobby reconnect — user stayed-disconnected flag set (reason=$reason)"
+            )
+            return
+        }
         android.util.Log.d(
             "PhoneService",
             "Lobby auto-reconnect scheduled in ${lobbyReconnectDelayMs}ms (reason=$reason)"
@@ -2145,6 +2182,15 @@ class PhoneService : Service() {
     }
 
     fun reconnectToRelay() {
+        // Disconnect-from-lobby gate (v25, 2026-05-26). Currently no
+        // user-facing surface calls this method (the v18+ disconnect/reset
+        // flow uses userDisconnectFromLobby / userRejoinLobby instead),
+        // but a future caller would silently re-dial without this check
+        // and undo the user's stay-disconnected intent.
+        if (TokenStore.isUserStayedDisconnected(this)) {
+            android.util.Log.d("PhoneService", "reconnectToRelay ignored — user stayed-disconnected flag set")
+            return
+        }
         android.util.Log.d("PhoneService", "Manual reconnect requested")
         val savedUrl = clientRelayUrl
         if (savedUrl != null) {
@@ -2189,6 +2235,70 @@ class PhoneService : Service() {
      * which has no inbound LEAVE_ACTIVE handler either). Surfaced as a
      * follow-up in the dispatch return.
      */
+    /**
+     * Disconnect-from-lobby (v25, 2026-05-26) — user-initiated lobby exit
+     * with persistence.
+     *
+     * Differs from [disconnectRelay] (Sign Out's relay-teardown step) in that
+     * the user STAYS SIGNED IN — the phoneToken in TokenStore is untouched.
+     * We just:
+     *   1. Set [TokenStore.setUserStayedDisconnected] = true so any future
+     *      auto-dial path (cold launch, OS START_STICKY restart,
+     *      scheduleLobbyReconnect, reconnectToRelay) bails out without
+     *      opening the relay socket.
+     *   2. Cancel any pending lobby-reconnect timer.
+     *   3. Drop any pending pair-request notifications (a stale Accept tap
+     *      after disconnect should NOT silently put us back in a pair).
+     *   4. Clear the last-error so the IDLE phase below doesn't paint a
+     *      stale FAILED state.
+     *   5. Close the WebSocket cleanly with code 1000 and a distinct reason
+     *      string ("user_disconnect_from_lobby") so server logs can
+     *      distinguish this from the Sign Out path's "user_disconnect".
+     *   6. Null out the in-memory state so a stray onClose callback can't
+     *      schedule a reconnect.
+     *   7. Flip the foreground notification copy to the disconnected variant.
+     *
+     * The flag clears via [userRejoinLobby] (explicit tap) or implicitly
+     * via [TokenStore.clear] on Sign Out (wipes everything for free).
+     */
+    fun userDisconnectFromLobby() {
+        android.util.Log.d("PhoneService", "User-initiated lobby disconnect (stay signed in)")
+        TokenStore.setUserStayedDisconnected(this, true)
+        cancelConnectTimeout()
+        cancelLobbyReconnect()
+        clearAllPendingPairings("user disconnect from lobby")
+        lastConnectionError = null
+        client?.close(1000, "user_disconnect_from_lobby")
+        client = null
+        // Null BEFORE the onClose callback fires so the scheduleLobbyReconnect
+        // call site (which null-checks clientRelayUrl) bails cleanly.
+        clientRelayUrl = null
+        isClientConnected = false
+        isPairActive = false
+        setRelayPhase(RelayPhase.IDLE)
+        updateNotification(getString(R.string.status_user_disconnected))
+    }
+
+    /**
+     * Disconnect-from-lobby (v25, 2026-05-26) — user-initiated rejoin.
+     *
+     * Clears the stay-disconnected flag and re-dials the relay using the
+     * still-saved phoneToken. If the token is somehow gone (mid-flight Sign
+     * Out / cleared from a different surface) we bail with a warn log
+     * instead of crashing — caller can retry after sign-in.
+     */
+    fun userRejoinLobby() {
+        android.util.Log.d("PhoneService", "User-initiated lobby rejoin")
+        TokenStore.setUserStayedDisconnected(this, false)
+        val phoneToken = TokenStore.getPhoneToken(this)
+        if (phoneToken.isNullOrBlank()) {
+            android.util.Log.w("PhoneService", "Rejoin requested but no phoneToken — cannot dial")
+            return
+        }
+        val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
+        connectToRelay(relayUrl)
+    }
+
     fun leaveActivePair() {
         android.util.Log.d("PhoneService", "User-initiated leave of active pair (relay stays connected)")
         // Send LEAVE_ACTIVE over the relay client. Format matches the

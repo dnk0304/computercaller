@@ -238,6 +238,19 @@
     <string name="action_disconnect_pair">Disconnect</string>
     <string name="action_disconnect_pair_hint">End this session but stay signed in</string>
 
+    <!-- Disconnect-from-lobby dispatch (v25, 2026-05-26).                -->
+    <!-- New toggle button above the Disconnect (active pair) button.    -->
+    <!-- Lets the user fully detach the phone from the relay lobby and   -->
+    <!-- stay disconnected across app launches / OS service restarts.    -->
+    <!-- The label flips based on TokenStore.isUserStayedDisconnected:   -->
+    <!-- "Disconnect from Lobby" when connected, "Rejoin Lobby" when     -->
+    <!-- disconnected. Sign Out implicitly clears the flag via           -->
+    <!-- TokenStore.clear() so a fresh sign-in starts in the connected   -->
+    <!-- auto-dial path again.                                            -->
+    <string name="action_disconnect_lobby">Disconnect from Lobby</string>
+    <string name="action_rejoin_lobby">Rejoin Lobby</string>
+    <string name="status_user_disconnected">Disconnected — tap Rejoin to reconnect</string>
+
     <!-- Relay-status surface — replaces the LAN-IP / QR plate after     -->
     <!-- Phase 4 lands. The Kotlin side feeds these into the status row. -->
     <string name="relay_status_waiting">Waiting for browser…</string>

@@ -126,6 +126,16 @@ class MainActivity : AppCompatActivity() {
     // failed states so the user doesn't see a dead button.
     private lateinit var disconnectPairButton: Button
 
+    // Disconnect-from-lobby dispatch (v25, 2026-05-26). Toggles between
+    // "Disconnect from Lobby" (when connected) and "Rejoin Lobby" (when
+    // the user has chosen to stay disconnected). Always visible in the
+    // main pane — no per-phase visibility gating — so the user can flip
+    // state at any time. Label is reconciled by refreshLobbyToggleLabel()
+    // on init, after each tap, and from the polling updateStatus() loop
+    // so external flag changes (e.g. Sign Out clearing it via
+    // TokenStore.clear()) keep the copy honest.
+    private lateinit var lobbyToggleButton: Button
+
     // Diagnostic surfacing for the LAN flow.
     // Target line + failure line stay GONE in steady-state; only the
     // CONNECTING / FAILED phases populate them. Useful when the user
@@ -421,6 +431,34 @@ class MainActivity : AppCompatActivity() {
         // Visibility is gated on PhoneService.isPairActive — initial
         // state is GONE (XML default) until updateStatus() picks up
         // the first LIVE poll after the service binds.
+        // Disconnect-from-lobby dispatch (v25, 2026-05-26). Toggle button
+        // wired here so the click handler can read live PhoneService state
+        // via the bound service reference. Label is set by
+        // refreshLobbyToggleLabel() which reads the persistent TokenStore
+        // flag — so on cold launch in the stay-disconnected state, the
+        // button paints as "Rejoin Lobby" before any service binding
+        // happens.
+        lobbyToggleButton = findViewById(R.id.lobbyToggleButton)
+        lobbyToggleButton.setOnClickListener {
+            val service = phoneService
+            if (service == null) {
+                android.util.Log.w("MainActivity", "lobbyToggleButton: service not bound yet — ignoring tap")
+                return@setOnClickListener
+            }
+            if (TokenStore.isUserStayedDisconnected(this)) {
+                android.util.Log.d("MainActivity", "Rejoin Lobby tapped")
+                service.userRejoinLobby()
+            } else {
+                android.util.Log.d("MainActivity", "Disconnect from Lobby tapped")
+                service.userDisconnectFromLobby()
+            }
+            // Repaint immediately so the user gets feedback without
+            // waiting for the 2s polling tick. updateStatus() will
+            // reconcile on its next cycle either way.
+            refreshLobbyToggleLabel()
+        }
+        refreshLobbyToggleLabel()
+
         disconnectPairButton = findViewById(R.id.disconnectPairButton)
         disconnectPairButton.setOnClickListener {
             val pairActive = phoneService?.getIsPairActive() == true
@@ -667,6 +705,28 @@ class MainActivity : AppCompatActivity() {
     private fun updateStatus() {
         android.util.Log.d("MainActivity", "updateStatus - serviceBound: $serviceBound, phoneService: ${phoneService != null}")
 
+        // Disconnect-from-lobby (v25, 2026-05-26): keep the toggle button
+        // label in sync with the persistent flag on every polling tick so
+        // any external flag change (e.g. Sign Out clearing it via
+        // TokenStore.clear, or a future surface flipping it) stays honest.
+        refreshLobbyToggleLabel()
+
+        // Disconnect-from-lobby (v25): when the user has chosen to stay
+        // disconnected, the status row paints the disconnected copy
+        // regardless of relay phase / service-bound state — the relay
+        // socket is intentionally closed, so any "Connecting" / "Waiting"
+        // would be a lie. Short-circuit BEFORE the phase / pair-active
+        // logic below since both would otherwise overwrite this.
+        if (TokenStore.isUserStayedDisconnected(this)) {
+            statusText.text = getString(R.string.status_user_disconnected)
+            setStatusVisual(ConnState.IDLE)
+            reconnectButton.visibility = View.GONE
+            if (::disconnectPairButton.isInitialized) {
+                disconnectPairButton.visibility = View.GONE
+            }
+            return
+        }
+
         // Dispatch #29 — Phase 4 finish. With the LAN PhoneServer gone,
         // updateStatus only paints the relay-side state. Phase-driven
         // paints (CONNECTING / FAILED) are owned by handleRelayPhaseChanged
@@ -749,6 +809,28 @@ class MainActivity : AppCompatActivity() {
             statusText.text = getString(R.string.status_service_not_running)
             setStatusVisual(ConnState.IDLE)
             android.util.Log.d("MainActivity", "Status updated: Service not running")
+        }
+    }
+
+    /**
+     * Disconnect-from-lobby (v25, 2026-05-26) — sync the lobby toggle
+     * button label to the persistent TokenStore flag.
+     *
+     * Called on init, after each tap, and from the polling updateStatus()
+     * loop so a flag change from any source (Sign Out implicitly clearing
+     * it via TokenStore.clear, or a future surface) keeps the copy honest.
+     *
+     * Guarded against being called before initializeMainPane() wires the
+     * button — early lifecycle paths (permissions pane, splash) can call
+     * updateStatus before the main pane initializes.
+     */
+    private fun refreshLobbyToggleLabel() {
+        if (!::lobbyToggleButton.isInitialized) return
+        val disconnected = TokenStore.isUserStayedDisconnected(this)
+        lobbyToggleButton.text = if (disconnected) {
+            getString(R.string.action_rejoin_lobby)
+        } else {
+            getString(R.string.action_disconnect_lobby)
         }
     }
 

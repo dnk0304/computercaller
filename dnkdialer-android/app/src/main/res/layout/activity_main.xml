@@ -192,6 +192,36 @@
             android:visibility="gone"
             android:layout_marginTop="@dimen/space_24" />
 
+        <!-- Disconnect-from-lobby — dispatch v25 / 2026-05-26.
+             Sits ABOVE the Disconnect (active pair) button. Always visible
+             when the user is signed in (not gated on pair-active state).
+             Tapping flips between two modes via MainActivity.lobbyToggleButton:
+               - "Disconnect from Lobby" when connected → calls
+                 PhoneService.userDisconnectFromLobby(): closes WS clean,
+                 cancels reconnect timers, sets TokenStore stay-disconnected
+                 flag so the service won't auto-dial on app/OS restart.
+               - "Rejoin Lobby" when disconnected → calls
+                 PhoneService.userRejoinLobby(): clears the flag and
+                 reconnects to the relay using the still-saved phoneToken.
+             Sign Out wipes the flag implicitly via TokenStore.clear() so
+             a fresh sign-in starts in the connected/auto-dial state.
+             Same styling as disconnectPairButton — small height, tertiary
+             text, ghost background — so it reads as a quieter control
+             than the big primary actions. -->
+        <Button
+            android:id="@+id/lobbyToggleButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/button_height_small"
+            android:text="@string/action_disconnect_lobby"
+            android:textSize="@dimen/text_body"
+            android:textAllCaps="false"
+            android:textColor="@color/text_tertiary"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="0.02"
+            android:background="@drawable/bg_button_ghost"
+            android:stateListAnimator="@null"
+            android:layout_marginTop="@dimen/space_24" />
+
         <!-- Disconnect (active pair) — dispatch #34 / v20.
              Sits ABOVE Sign Out in the action stack. Sign Out clears the
              saved login on the phone; Disconnect terminates the current

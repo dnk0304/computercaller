@@ -25,6 +25,18 @@ object TokenStore {
     private const val KEY_PHONE_TOKEN = "phone_token"
     private const val KEY_DEVICE_NAME = "device_name"
 
+    // Disconnect-from-lobby dispatch (v25, 2026-05-26). When true, the user
+    // explicitly tapped "Disconnect from Lobby" in the app and we should
+    // NOT auto-dial the relay on:
+    //   - cold app launch (onStartCommand ACTION_START)
+    //   - OS-driven service restart (START_STICKY after low-memory kill)
+    //   - the 5s scheduleLobbyReconnect retry after an unintentional drop
+    //   - the manual reconnectToRelay() helper
+    // The user clears the flag by tapping "Rejoin Lobby" in the same UI
+    // (PhoneService.userRejoinLobby), or implicitly by signing out — Sign
+    // Out's existing TokenStore.clear() wipes everything including this key.
+    private const val KEY_USER_STAYED_DISCONNECTED = "user_stayed_disconnected"
+
     private fun prefs(ctx: Context): SharedPreferences {
         return try {
             val masterKey = MasterKey.Builder(ctx)
@@ -59,4 +71,25 @@ object TokenStore {
     }
 
     fun hasToken(ctx: Context): Boolean = !getPhoneToken(ctx).isNullOrBlank()
+
+    /**
+     * Disconnect-from-lobby dispatch (v25, 2026-05-26).
+     *
+     * Returns true if the user explicitly tapped "Disconnect from Lobby" and
+     * has not yet tapped "Rejoin Lobby" (or signed out). PhoneService's
+     * auto-dial paths check this and bail before opening the relay socket
+     * when true, so a force-killed / cold-launched process honors the user's
+     * intent without needing any in-memory state.
+     */
+    fun isUserStayedDisconnected(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_USER_STAYED_DISCONNECTED, false)
+
+    /**
+     * Set the stay-disconnected flag. Called from PhoneService.userDisconnectFromLobby
+     * (true) and PhoneService.userRejoinLobby (false). Sign Out clears it
+     * implicitly via TokenStore.clear() — no separate write needed.
+     */
+    fun setUserStayedDisconnected(ctx: Context, value: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_USER_STAYED_DISCONNECTED, value).apply()
+    }
 }
