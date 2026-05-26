@@ -95,10 +95,21 @@ interface SyncProgress {
   callLogs: SyncTypeProgress;
 }
 
+// Per-category preview totals returned by the phone on GET_SYNC_ESTIMATE.
+// Shape is minimal — just a row count per category. Dennis pivoted away from
+// tier caps on 2026-05-26 ("just make it available for users. If we want to
+// cap it later, we can add a new tier. No limits now as things are.") so the
+// previous cap / willTruncate fields are gone. If a future tier ever needs a
+// cap surface, add it back as a separate `caps` block — don't re-introduce
+// it on the per-category totals.
 export interface SyncEstimate {
   contacts: { total: number };
   messages: { total: number };
   callLogs: { total: number };
+  // Echoed back by the phone when the browser supplied since/until on the
+  // request. Undefined for legacy phone responses (APK v24 and below) and
+  // for all-time estimates.
+  range?: { since?: number; until?: number };
 }
 
 export interface PhoneNotification {
@@ -1046,10 +1057,16 @@ export function usePhoneBridge() {
       }
 
       case 'SYNC_ESTIMATE': {
+        // Sync-preview dispatch (2026-05-26): payload optionally echoes the
+        // requested `range` block when the browser supplied since/until on
+        // GET_SYNC_ESTIMATE. Older APKs (v24 and below) return only the bare
+        // totals (no range) — `payload.range` is undefined in that case and
+        // the consumer panel just renders "X total" without the range hint.
         setSyncEstimate({
           contacts: { total: payload.contacts?.total ?? 0 },
           messages: { total: payload.messages?.total ?? 0 },
           callLogs: { total: payload.callLogs?.total ?? 0 },
+          range: payload.range,
         });
         // No auto-open here. The estimate just updates the totals visible in the
         // sync panel; the panel is opened by explicit user action from /app/settings
@@ -1468,6 +1485,36 @@ export function usePhoneBridge() {
   const setAudioSource = useCallback((source: 'phone' | 'pc') => {
     sendCommand('SET_AUDIO_SOURCE', { source });
   }, [sendCommand]);
+
+  // Sync preview (2026-05-26). Re-requests SYNC_ESTIMATE for a specific
+  // time window and/or category subset. Used by SyncSetupPanel when the
+  // user changes the range — the panel shows live counts so the user sees
+  // exactly how many rows will sync before they click Start Sync.
+  //
+  // Backward compat (new browser, old phone): APK v24 and below ignore the
+  // extra payload keys and return all-time totals with no `range` echo. The
+  // SYNC_ESTIMATE handler above defaults `range` to undefined in that case,
+  // and the panel renders the bare total without a range hint.
+  //
+  // Critically, this is a SEPARATE code path from the auto-fire-once-on-connect
+  // gated by estimateRequestedRef. The gate is only for the initial reflex
+  // request; re-fires from user-driven range changes are the whole point and
+  // must not be suppressed.
+  //
+  // Send is synchronous within the caller's event handler — no await before
+  // wsRef.current.send — so React batching can't drop the frame.
+  const requestSyncPreview = useCallback((opts?: {
+    since?: number;
+    until?: number;
+    types?: Array<'contacts' | 'messages' | 'callLogs'>;
+  }) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    const payload: Record<string, unknown> = {};
+    if (opts?.since !== undefined) payload.since = opts.since;
+    if (opts?.until !== undefined) payload.until = opts.until;
+    if (opts?.types !== undefined) payload.types = opts.types;
+    wsRef.current.send(`GET_SYNC_ESTIMATE:${JSON.stringify(payload)}`);
+  }, []);
 
   // Send a DTMF tone into an active call. The phone-side plays the tone into
   // the voice-call audio stream via ToneGenerator(STREAM_VOICE_CALL). Caller
@@ -2178,6 +2225,10 @@ export function usePhoneBridge() {
     dismissSyncPanel,
     openSyncPanel,
     quickSync,
+    // Sync preview (2026-05-26) — re-fires GET_SYNC_ESTIMATE with optional
+    // since/until/types so the SyncSetupPanel can show live counts as the
+    // user adjusts the range. Bypasses the one-shot auto-fire gate by design.
+    requestSyncPreview,
 
     // Notification-listener permission (RCS / Google Messages sync gate)
     notificationPermissionGranted,
