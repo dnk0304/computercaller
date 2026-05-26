@@ -87,8 +87,22 @@ android {
         // (API 31+ runtime grant — required to read device names + call
         // getProfileProxy / registerReceiver for HFP state) plus the
         // legacy BLUETOOTH + BLUETOOTH_ADMIN with maxSdkVersion=30.
-        versionCode = 22
-        versionName = "1.0.0"
+        //
+        // Device label in Accept dialog (FORGE-1, 2026-05-26): 22 → 23.
+        // Browser now sends a friendly `deviceLabel` field in the
+        // BROWSER_REQUEST_PAIRING / PAIRING_REQUEST payload — auto-derived
+        // from UA-CH + UA fallback, user-renameable in Settings. PhoneService
+        // parses the new field (nullable for backward compat with older
+        // browser builds), threads it into buildBrowserIdentity which now
+        // prefers deviceLabel over ua+ip when present. Notification body
+        // updated from "Web client at X wants to connect" to "X wants to
+        // connect" so the user sees "Chrome on macOS wants to connect" or
+        // their own rename rather than the raw user agent. Old browser
+        // builds without deviceLabel fall through to the legacy ua+ip
+        // identity — no crash, just less friendly copy. New APK against
+        // old web build: deviceLabel absent → generic fallback.
+        versionCode = 23
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

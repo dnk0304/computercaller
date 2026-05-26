@@ -1269,11 +1269,17 @@ class PhoneService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        // Dispatch FORGE-1 (2026-05-26) — `address` is now the friendly
+        // browser-identity built by buildBrowserIdentity (deviceLabel first,
+        // ua+ip fallback). Notification body matches the in-foreground
+        // dialog copy from R.string.pair_request_body_template: "X wants to
+        // connect" — concise + same string in both surfaces so users
+        // recognise the same wording in the shade and the dialog.
         val notification = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
             .setContentTitle("Connection request")
-            .setContentText("Web client at $address wants to connect")
+            .setContentText("$address wants to connect")
             .setStyle(NotificationCompat.BigTextStyle().bigText(
-                "Web client at $address wants to connect to your phone. " +
+                "$address is trying to connect to your phone. " +
                 "Approve only if you started this connection."
             ))
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
@@ -1378,14 +1384,28 @@ class PhoneService : Service() {
 
     /**
      * Compose a short browser-identity string for the heads-up
-     * notification body and AlertDialog message. The relay supplies
-     * `ua` (e.g. "Chrome on macOS") and `ip` (e.g. "203.0.113.45");
-     * we join them with a middle-dot separator. Either piece may be
-     * blank — we silently drop blanks rather than render leading /
-     * trailing punctuation. If both are blank we fall back to a
-     * localized "A browser wants to connect" string.
+     * notification body and AlertDialog message.
+     *
+     * Priority order:
+     *   1. `deviceLabel` — friendly browser-supplied label, e.g. "Chrome on
+     *      macOS" or a user-renamed "Dennis's office laptop". Added in
+     *      dispatch FORGE-1 (2026-05-26). Defensively truncated to 60 chars
+     *      and stripped of control chars in case the relay-side sanitizer
+     *      was bypassed somehow.
+     *   2. `ua + ip` — legacy path for browsers that don't ship deviceLabel
+     *      (backward compat). Either piece may be blank — we silently drop
+     *      blanks rather than render leading / trailing punctuation.
+     *   3. If everything is blank we fall back to a localized
+     *      "A browser wants to connect" string.
      */
-    private fun buildBrowserIdentity(ua: String, ip: String): String {
+    private fun buildBrowserIdentity(ua: String, ip: String, deviceLabel: String? = null): String {
+        if (!deviceLabel.isNullOrBlank()) {
+            // Belt-and-braces — relay should already have sanitized, but a
+            // malformed v22 + v23 mix or a future protocol shift could let
+            // a raw value through. Strip control chars + cap to 60.
+            val safe = deviceLabel.take(60).filter { !it.isISOControl() }.trim()
+            if (safe.isNotEmpty()) return safe
+        }
         val pieces = listOf(ua, ip).filter { it.isNotBlank() }
         return if (pieces.isEmpty()) {
             getString(R.string.pair_request_body_unknown)
@@ -2281,8 +2301,15 @@ class PhoneService : Service() {
                     }
                     val ua = (payload["ua"] as? String).orEmpty()
                     val ip = (payload["ip"] as? String).orEmpty()
-                    val identity = buildBrowserIdentity(ua, ip)
-                    android.util.Log.d("PhoneService", "PAIRING_REQUEST id=$pairingId identity=$identity")
+                    // Dispatch FORGE-1 (2026-05-26) — friendly browser-identity
+                    // label sent by the browser ("Chrome on macOS", "Edge on
+                    // Windows 11", or a user-supplied rename). Nullable for
+                    // backward compat with older browser builds that don't
+                    // send the field; in that case identity falls back to
+                    // ua+ip via buildBrowserIdentity.
+                    val deviceLabel = (payload["deviceLabel"] as? String)?.takeIf { it.isNotBlank() }
+                    val identity = buildBrowserIdentity(ua, ip, deviceLabel)
+                    android.util.Log.d("PhoneService", "PAIRING_REQUEST id=$pairingId identity=$identity label=$deviceLabel")
                     // Post heads-up notification with Accept/Decline
                     // action buttons. Reuses the same channel + receiver
                     // wiring that was built for the old LAN PhoneServer
