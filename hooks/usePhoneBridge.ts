@@ -243,9 +243,9 @@ export function usePhoneBridge() {
   // default" (which is what single-SIM phones always do).
   const [selectedSimId, setSelectedSimId] = useState<number | null>(null);
 
-  // 2-mode BT audio routing (2026-05-25): mirrors the phone's BT-HFP profile
-  // state so the AudioSourceToggle can gate "Speak through PC" mode on a
-  // real BT link being up. Pushed by Android via BT_HEADSET_STATUS:{connected,
+  // BT-HFP profile state (FORGE-2, 2026-05-26): mirrors the phone's BT-HFP
+  // profile state so the AudioSourceToggle can gate the "PC" pill on a real
+  // BT link being up. Pushed by Android via BT_HEADSET_STATUS:{connected,
   // deviceName} whenever the HFP connection state changes (ACTION_CONNECTION_
   // STATE_CHANGED broadcast on the phone side). Defaults to disconnected so
   // the toggle starts in the gated state and lights up the moment the user
@@ -1446,20 +1446,26 @@ export function usePhoneBridge() {
   // Toggle speakerphone mid-call. Android applies it live via AudioManager.
   // Legacy alias retained for any callers that haven't been migrated to the
   // new unified setAudioSource below. New code should call setAudioSource
-  // directly so the phone side gets a single command shape covering all
-  // three terminals (earpiece / speaker / bluetooth).
+  // with 'phone' | 'pc' instead.
   const setSpeaker = useCallback((enabled: boolean) => {
     sendCommand('SET_SPEAKER', { enabled });
   }, [sendCommand]);
 
-  // 2-mode BT audio routing (2026-05-25). Unified audio-source dispatcher.
-  // The phone receives one of "earpiece" | "speaker" | "bluetooth" and routes
-  // accordingly via applyAudioSource(source) — tearing down the other two
-  // routings before applying the target. Caller is responsible for gating
-  // "bluetooth" on btHeadsetConnected — if it's false, the phone will still
-  // try to start SCO and log a warning, but the call will stay on whatever
-  // route was active before.
-  const setAudioSource = useCallback((source: 'earpiece' | 'speaker' | 'bluetooth') => {
+  // Audio routing (FORGE-2, 2026-05-26 — simplified from the prior 3-mode
+  // shape). The phone receives one of "phone" | "pc" and routes accordingly
+  // via applyAudioSource(source):
+  //   - "phone" — phone-default routing (earpiece on most devices; OEM picks
+  //              the system default for MODE_IN_COMMUNICATION). Clears both
+  //              forced speakerphone AND BT-SCO so the system can pick.
+  //   - "pc"    — BT-HFP SCO link to the user's paired PC. Clears speaker
+  //              first to avoid stacking routes.
+  // Caller is responsible for gating "pc" on btHeadsetConnected — if it's
+  // false, the phone will still try to start SCO and log a warning, but the
+  // call will stay on whatever route was active before.
+  // Backward compat: PhoneService.kt v24+ accepts the new values AND retains
+  // 'earpiece'|'speaker'|'bluetooth' as aliases so old browser builds keep
+  // working against new APKs.
+  const setAudioSource = useCallback((source: 'phone' | 'pc') => {
     sendCommand('SET_AUDIO_SOURCE', { source });
   }, [sendCommand]);
 

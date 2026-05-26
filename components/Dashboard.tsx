@@ -474,15 +474,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // forward the new value to the phone via setAudioSource.
   const [audioSource, setAudioSourceLocal] = useState<AudioSource>(() => readAudioSourceDefault());
 
-  // Auto-revert PC mode to the user's last phone-mode choice when the BT-HFP
-  // link drops mid-call (or between calls). Without this, the user could pick
-  // up the next call with audioSource='bluetooth' but no actual SCO link —
-  // call would route silently / fail. The phone side defensively also drops
-  // SCO on disconnect (see PhoneService.kt registerBluetoothHeadsetObserver),
-  // but flipping the UI keeps the visual state honest.
+  // Auto-revert PC mode to Phone when the BT-HFP link drops mid-call (or
+  // between calls). Without this, the user could pick up the next call with
+  // audioSource='pc' but no actual SCO link — call would route silently /
+  // fail. The phone side defensively also drops SCO on disconnect (see
+  // PhoneService.kt registerBluetoothHeadsetObserver), but flipping the UI
+  // keeps the visual state honest.
   useEffect(() => {
-    if (!btHeadsetConnected && audioSource === 'bluetooth') {
-      const fallback: AudioSource = 'earpiece';
+    if (!btHeadsetConnected && audioSource === 'pc') {
+      const fallback: AudioSource = 'phone';
       setAudioSourceLocal(fallback);
       writeAudioSourceDefault(fallback);
       phoneAny.setAudioSource?.(fallback);
@@ -1784,45 +1784,62 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
 // ---------- Sub-components --------------------------------------------------
 
-// ---------- AudioSourceToggle (2-mode) ------------------------------------
+// ---------- AudioSourceToggle (2-mode: Phone | PC) -------------------------
 //
-// 2-mode layout (dispatch 2026-05-25, supersedes the prior 3-pill design):
+// 2-button layout (dispatch FORGE-2, 2026-05-26 — supersedes the prior
+// "Speak through phone (Earpiece|Speaker) | Speak through PC" nested design):
 //
-//   Mode 1: "Speak through phone"  (default, always available)
-//             └─ nested sub-toggle: Earpiece | Phone Speaker
-//   Mode 2: "Speak through PC"     (BT-HFP gated)
-//             └─ disabled with setup-guide modal until the user pairs their
-//                phone to their PC over Bluetooth. Auto-enables on
-//                BT_HEADSET_STATUS connected=true.
+//   Phone  (default, always available)
+//          └─ phone-default routing — earpiece on devices that have one
+//             (OEM picks the system default for MODE_IN_COMMUNICATION).
+//   PC     (BT-HFP gated)
+//          └─ disabled with inline setup guide until the user pairs their
+//             phone to their PC over Bluetooth. Auto-enables on
+//             BT_HEADSET_STATUS connected=true.
 //
-// Dennis's framing (verbatim): "If user chooses pc, they must connect their
-// phone to their pc so we can establish the bluetooth connection." So the
-// PC mode acts as a teaching surface as much as a routing toggle — the
-// first tap on a disabled "Speak through PC" opens the setup guide; the
-// toggle auto-lights when the pairing succeeds.
+// Dennis (verbatim, 2026-05-25): "in the quick dial. computercaller. Lets
+// just have the 'phone' and 'pc' simple buttons. Beneath, remove the ear-set
+// or speaker. User just picks Phone or PC to call, simple."
+//
+// Speaker mode KILLED. The nested Earpiece|Speaker sub-toggle is gone.
+// Speaker routing rarely wins against BT when both are options, and the
+// nested control was visual clutter for a value users seldom changed. The
+// phone side retains the legacy 'speaker' alias only so older browser
+// builds that still emit SET_SPEAKER continue to work — the NEW UI never
+// emits 'speaker' as a value.
 //
 // Source-of-truth lives in localStorage under `dnkdialer_audio_source_default`
-// so the last choice survives reloads. Legacy stored value 'pc' migrates to
-// 'earpiece' on read — the prior 3-pill PC option was a stub that never
-// actually routed audio, so persisting it post-migration would silently
-// route every new call to a non-functional mode.
+// so the last choice survives reloads. Legacy stored values migrate on read:
+//   'earpiece' | 'speaker'  → 'phone'   (no separate speaker mode any more)
+//   'bluetooth'             → 'pc'      (renamed, same routing)
+//   'pc'                    → 'pc'      (forward-compat with the original stub
+//                                        — never written historically but
+//                                        harmless if it ever appears)
+// We don't write-back on read; the next user toggle will persist the new
+// shape, so the migration is purely lossy-on-read and self-heals over time.
 //
-// Type widening: 'pc' (stub) → 'bluetooth' (real BT-HFP route). The phone
-// receives the new value via SET_AUDIO_SOURCE:earpiece|speaker|bluetooth.
+// Wire shape: phone receives SET_AUDIO_SOURCE:phone|pc from the new browser.
+// PhoneService.kt v24 accepts the new values AND retains the legacy
+// 'earpiece'|'speaker'|'bluetooth' as aliases for old-browser → new-APK.
 
-type AudioSource = 'earpiece' | 'speaker' | 'bluetooth';
+type AudioSource = 'phone' | 'pc';
 const AUDIO_SOURCE_KEY = 'dnkdialer_audio_source_default';
-const AUDIO_SOURCE_DEFAULT: AudioSource = 'earpiece';
+const AUDIO_SOURCE_DEFAULT: AudioSource = 'phone';
 
 function readAudioSourceDefault(): AudioSource {
   if (typeof window === 'undefined') return AUDIO_SOURCE_DEFAULT;
   try {
     const v = window.localStorage.getItem(AUDIO_SOURCE_KEY);
-    if (v === 'earpiece' || v === 'speaker' || v === 'bluetooth') return v;
-    // Legacy migration: prior 3-pill 'pc' value mapped to a stub that never
-    // routed audio. Map to 'earpiece' so the new default isn't a broken
-    // route. Don't re-write to storage here — the next user toggle will.
-    if (v === 'pc') return 'earpiece';
+    if (v === 'phone' || v === 'pc') return v;
+    // Legacy migration (FORGE-2, 2026-05-26). The prior 3-mode shape used
+    // 'earpiece'|'speaker'|'bluetooth'. Map them to the new 2-button shape:
+    //   'earpiece' | 'speaker' → 'phone' (speaker mode killed, user re-picks)
+    //   'bluetooth'            → 'pc'    (same routing, renamed)
+    // Don't re-write to storage here — the next user toggle will persist the
+    // new shape, and accepting BOTH shapes on read keeps multi-tab sessions
+    // sane during the migration window.
+    if (v === 'earpiece' || v === 'speaker') return 'phone';
+    if (v === 'bluetooth') return 'pc';
   } catch {
     // localStorage can throw in private-browsing / sandboxed iframes.
   }
@@ -1839,9 +1856,8 @@ function writeAudioSourceDefault(v: AudioSource): void {
 }
 
 const AUDIO_SOURCE_LABEL: Record<AudioSource, string> = {
-  earpiece: 'Phone Earpiece',
-  speaker: 'Phone Speaker',
-  bluetooth: 'PC Audio',
+  phone: 'Phone',
+  pc: 'PC',
 };
 
 // Read-only pill for the Quick Dial header — shows the current default at a
@@ -1865,7 +1881,7 @@ const AudioSourcePill: React.FC = () => {
     };
   }, []);
 
-  const Icon = current === 'speaker' || current === 'bluetooth' ? Volume2 : Phone;
+  const Icon = current === 'pc' ? Volume2 : Phone;
   return (
     <span
       className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-600 text-[10px] font-semibold px-2 py-0.5"
@@ -1901,35 +1917,31 @@ const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
   size = 'md',
 }) => {
   // Setup-guide visibility. Local state — opens when the user taps the
-  // disabled "Speak through PC" pill, closes on the explicit "Got it"
-  // button or backdrop click. Auto-closes (collapses back to its empty
-  // state) when BT-HFP connects so the user gets a clean transition
-  // from "here's how to pair" to "you're paired — tap to switch".
+  // disabled "PC" pill or the helper-text link, closes on the explicit
+  // X button. Auto-closes (collapses back to its empty state) when BT-HFP
+  // connects so the user gets a clean transition from "here's how to pair"
+  // to "you're paired — tap to switch".
   const [setupGuideOpen, setSetupGuideOpen] = useState(false);
   useEffect(() => {
     if (btHeadsetConnected && setupGuideOpen) setSetupGuideOpen(false);
   }, [btHeadsetConnected, setupGuideOpen]);
 
-  // Top-level mode is derived from the terminal value: phone-mode means
-  // "earpiece OR speaker", PC mode means "bluetooth".
-  const isPhoneMode = value === 'earpiece' || value === 'speaker';
-  const isPcMode = value === 'bluetooth';
+  // Two flat pills, no nesting (FORGE-2 simplification). The value is
+  // already the terminal route — 'phone' or 'pc' — so there's no derived
+  // top-level mode to compute any more.
+  const isPhone = value === 'phone';
+  const isPc = value === 'pc';
 
   const sizing =
     size === 'sm'
       ? { pad: 'px-2 py-1.5', text: 'text-[11px]', icon: 'w-3.5 h-3.5', gap: 'gap-1' }
       : { pad: 'px-3 py-2.5', text: 'text-xs', icon: 'w-4 h-4', gap: 'gap-1.5' };
 
-  // Phone sub-toggle uses smaller padding since it nests inside the active
-  // mode card. Avoids the nested control looking heavier than its parent.
-  const subSizing = { pad: 'px-2 py-1', text: 'text-[11px]', icon: 'w-3 h-3', gap: 'gap-1' };
-
   // `min-w-0` on each pill is load-bearing: this toggle lives inside the
   // Active Call card, which itself lives inside the bounded ~300px column 1
-  // grid track. Without `min-w-0` the pill's unbreakable label text
-  // ("Phone Earpiece" etc.) sets a min-content floor that would push the
-  // card wider than the track allows. With it, the pills shrink gracefully
-  // and the inner label `truncate`s.
+  // grid track. Without `min-w-0` the unbreakable label text sets a
+  // min-content floor that would push the card wider than the track allows.
+  // With it, the pills shrink gracefully and the inner label `truncate`s.
   const modePill = (active: boolean, disabled = false) =>
     clsx(
       'flex-1 min-w-0 inline-flex items-center justify-center rounded-lg font-semibold transition-colors',
@@ -1943,40 +1955,24 @@ const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
         : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
     );
 
-  const subPill = (active: boolean) =>
-    clsx(
-      'flex-1 min-w-0 inline-flex items-center justify-center rounded-md font-semibold transition-colors',
-      subSizing.pad,
-      subSizing.text,
-      subSizing.gap,
-      active
-        ? 'bg-white text-blue-700 shadow-sm'
-        : 'bg-transparent text-slate-600 hover:bg-white/60'
-    );
-
-  // Tap handler for "Speak through PC". When BT is connected we just switch
-  // routing. When it's NOT connected we open the setup guide AND do not
-  // change routing — Dennis's spec: "If user chooses pc, they must connect
-  // their phone to their pc so we can establish the bluetooth connection."
-  // Tapping the gated pill is therefore a teach-me action, not a route
-  // switch.
+  // Tap handler for "PC". When BT is connected we just switch routing.
+  // When it's NOT connected we open the setup guide AND do not change
+  // routing — Dennis's spec (2026-05-25): "If user chooses pc, they must
+  // connect their phone to their pc so we can establish the bluetooth
+  // connection." Tapping the gated pill is therefore a teach-me action,
+  // not a route switch.
   const handlePcTap = () => {
     if (btHeadsetConnected) {
-      onChange('bluetooth');
+      onChange('pc');
     } else {
       setSetupGuideOpen(true);
     }
   };
 
-  // Phone-mode handler. If the user is currently on PC mode, default the
-  // sub-route to their last phone-mode choice via localStorage; otherwise
-  // keep their current earpiece/speaker selection. We don't auto-flip to
-  // earpiece on every Phone-mode click — that would override the user's
-  // explicit speaker pick.
+  // Phone handler. Idempotent — re-tapping while already on phone is a no-op.
   const handlePhoneTap = () => {
-    if (isPhoneMode) return; // already in phone mode — no-op
-    const last = readAudioSourceDefault();
-    onChange(last === 'speaker' ? 'speaker' : 'earpiece');
+    if (isPhone) return;
+    onChange('phone');
   };
 
   return (
@@ -1985,26 +1981,26 @@ const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
         Audio Source
       </div>
 
-      {/* Top-level 2-mode row */}
+      {/* Two flat pills. No nesting — Dennis directive (FORGE-2). */}
       <div role="radiogroup" aria-label="Audio destination" className="flex items-stretch gap-1.5">
         <button
           type="button"
           role="radio"
-          aria-checked={isPhoneMode}
+          aria-checked={isPhone}
           onClick={handlePhoneTap}
-          className={modePill(isPhoneMode)}
-          title="Route call audio through the phone (earpiece or speaker)"
+          className={modePill(isPhone)}
+          title="Route call audio through the phone"
         >
           <Phone className={clsx(sizing.icon, 'flex-shrink-0')} aria-hidden="true" />
-          <span className="truncate">Speak through phone</span>
+          <span className="truncate">Phone</span>
         </button>
         <button
           type="button"
           role="radio"
-          aria-checked={isPcMode}
+          aria-checked={isPc}
           aria-disabled={!btHeadsetConnected}
           onClick={handlePcTap}
-          className={modePill(isPcMode, !btHeadsetConnected)}
+          className={modePill(isPc, !btHeadsetConnected)}
           title={
             btHeadsetConnected
               ? `Route call audio through your PC (${btHeadsetDeviceName || 'Bluetooth'})`
@@ -2012,49 +2008,19 @@ const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
           }
         >
           <Volume2 className={clsx(sizing.icon, 'flex-shrink-0')} aria-hidden="true" />
-          <span className="truncate">Speak through PC</span>
+          <span className="truncate">PC</span>
         </button>
       </div>
-
-      {/* Nested phone sub-toggle — only visible when phone mode is active. */}
-      {isPhoneMode && (
-        <div
-          role="radiogroup"
-          aria-label="Phone audio output"
-          className="mt-1.5 flex items-stretch gap-1 rounded-lg bg-slate-100 p-1"
-        >
-          <button
-            type="button"
-            role="radio"
-            aria-checked={value === 'earpiece'}
-            onClick={() => onChange('earpiece')}
-            className={subPill(value === 'earpiece')}
-          >
-            <Phone className={clsx(subSizing.icon, 'flex-shrink-0')} aria-hidden="true" />
-            <span className="truncate">Earpiece</span>
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={value === 'speaker'}
-            onClick={() => onChange('speaker')}
-            className={subPill(value === 'speaker')}
-          >
-            <Volume2 className={clsx(subSizing.icon, 'flex-shrink-0')} aria-hidden="true" />
-            <span className="truncate">Speaker</span>
-          </button>
-        </div>
-      )}
 
       {/* PC mode helper text — visible whenever the PC pill is the active mode
           (shows the connected device name) OR whenever PC mode is gated
           (single-line hint pointing the user at the setup guide). */}
-      {isPcMode && btHeadsetConnected && (
+      {isPc && btHeadsetConnected && (
         <p className="mt-1.5 text-[10px] text-slate-500">
           Routing through {btHeadsetDeviceName || 'your PC'}
         </p>
       )}
-      {!btHeadsetConnected && !isPcMode && (
+      {!btHeadsetConnected && !isPc && (
         <button
           type="button"
           onClick={() => setSetupGuideOpen(true)}
@@ -2085,7 +2051,7 @@ const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
             <li>Open your PC&apos;s Bluetooth settings, set it to discoverable.</li>
             <li>On your phone, scan for devices and select your PC.</li>
             <li>Confirm the pairing code on both devices.</li>
-            <li>Come back here and tap &ldquo;Speak through PC&rdquo;.</li>
+            <li>Come back here and tap &ldquo;PC&rdquo;.</li>
           </ol>
           <p className="mt-1.5 text-[10px] text-slate-500">
             This toggle will light up automatically once your PC is paired.

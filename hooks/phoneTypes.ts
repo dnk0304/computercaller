@@ -49,12 +49,13 @@ export type PhoneEventType =
   // a liveness signal — if pongs stop arriving for 30s the web flips the
   // phone to "stale" even when the relay socket is still TCP-alive.
   | 'APP_PONG'
-  // 2-mode BT audio routing (2026-05-25). Pushed by the phone whenever the
+  // BT-HFP profile state (FORGE-2, 2026-05-26 — copy refresh; topic unchanged
+  // since the 2026-05-25 introduction). Pushed by the phone whenever the
   // BT-HFP profile state transitions (paired/unpaired the PC, BT toggled
   // off, mid-call link drop, etc.). Payload: { connected: boolean,
-  // deviceName: string }. Gates the "Speak through PC" toggle in the
-  // browser AudioSourceToggle and auto-reverts an active 'bluetooth'
-  // routing back to 'earpiece' on disconnect.
+  // deviceName: string }. Gates the "PC" pill in the browser
+  // AudioSourceToggle and auto-reverts an active 'pc' routing back to
+  // 'phone' on disconnect.
   | 'BT_HEADSET_STATUS'
   // Lobby / Connect+Accept control plane (dispatch #32, 2026-05-25). All
   // pairing handshake events arrive over this channel; see lib/lobbyState.ts
@@ -89,12 +90,14 @@ export type PhoneCommandType =
   // is connected. Phone echoes back APP_PONG with the same `ts`. See
   // hooks/usePhoneBridge.ts for the timer + stale-detection logic.
   | 'APP_PING'
-  // 2-mode BT audio routing (2026-05-25). Unified audio-source command —
-  // payload: { source: 'earpiece' | 'speaker' | 'bluetooth' }. Replaces
-  // the legacy SET_SPEAKER toggle (which is retained on the phone side as
-  // an alias for backward compat). Caller is responsible for gating the
-  // 'bluetooth' value on btHeadsetConnected — the phone tries the route
-  // regardless and silently no-ops if SCO can't come up.
+  // Audio routing (FORGE-2, 2026-05-26 — simplified to 2 buttons: Phone | PC).
+  // payload: { source: 'phone' | 'pc' }. Replaces the legacy SET_SPEAKER
+  // toggle (which is retained on the phone side as an alias for backward
+  // compat). PhoneService v24+ also retains the legacy 'earpiece'|'speaker'|
+  // 'bluetooth' values as aliases so old browser builds keep working against
+  // new APKs. Caller is responsible for gating the 'pc' value on
+  // btHeadsetConnected — the phone tries the route regardless and silently
+  // no-ops if SCO can't come up.
   | 'SET_AUDIO_SOURCE';
 
 // Call states
