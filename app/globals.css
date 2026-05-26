@@ -25,12 +25,20 @@ body {
 }
 
 /* Post-signin splash (components/AuthSplash.tsx).
-   Two coordinated keyframes:
-   - cc-splash-fade-in: the full-screen white surface fades in fast so the
-     auth form behind it doesn't show through during transition.
-   - cc-splash-rise: the banner + subtitle lift slightly with a gentle ease,
-     mimicking a desktop app finishing launch (Linear, Things, Notion).
-   Both are gated by Tailwind's `motion-reduce:animate-none` and by an
+   Three coordinated keyframes drive a ~2100ms launch sequence that
+   cross-fades into the dashboard:
+   - cc-splash-fade-in   (0-250ms):    full-screen white surface fades in
+                                       so the auth form behind it doesn't
+                                       show through during transition.
+   - cc-splash-rise      (80-430ms):   banner + subtitle lift slightly with
+                                       a gentle ease, mimicking a desktop
+                                       app finishing launch.
+   - cc-splash-fade-out  (1300-2100ms):applied to a cloned DOM node that
+                                       survives the route change so the
+                                       splash fades AWAY over the dashboard
+                                       rendering underneath. See AuthSplash.tsx
+                                       for the handoff choreography.
+   All three are gated by Tailwind's `motion-reduce:animate-none` and by an
    in-component prefers-reduced-motion check that skips the splash entirely. */
 @keyframes cc-splash-fade-in {
   from { opacity: 0; }
@@ -45,4 +53,11 @@ body {
 }
 .animate-cc-splash-rise {
   animation: cc-splash-rise 350ms ease-out 80ms both;
+}
+/* Applied to the detached DOM clone after handoff. The transition (not a
+   keyframe) lets us flip opacity 1 -> 0 imperatively after a forced reflow,
+   guaranteeing the browser paints the starting state before the fade begins. */
+.cc-splash-fade-out {
+  transition: opacity 800ms ease-out;
+  pointer-events: none;
 }
