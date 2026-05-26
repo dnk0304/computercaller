@@ -8,7 +8,7 @@
  * /app — and crucially, cross-fade the splash AWAY over the dashboard so
  * the new route reveals underneath rather than slamming into view.
  *
- * Timing (~2100ms total — 3x the previous 700ms):
+ * Timing (~3700ms total — fade-out tripled per Dennis QA 2026-05-26):
  *   0-250ms      Phase 1: splash fades IN over the auth form
  *                (cc-splash-fade-in keyframe).
  *   80-430ms     Banner + subtitle lift up (cc-splash-rise, overlapping
@@ -20,10 +20,10 @@
  *                The React splash unmounts (its owner page navigates away),
  *                but the clone is now a free-standing DOM element that the
  *                React tree no longer controls.
- *   1300-2100ms  Phase 3: the cloned splash fades from opacity 1 -> 0 over
- *                800ms ease-out via a CSS transition. The dashboard, rendered
+ *   1300-3700ms  Phase 3: the cloned splash fades from opacity 1 -> 0 over
+ *                2400ms ease-out via a CSS transition. The dashboard, rendered
  *                underneath, becomes progressively visible.
- *   2100ms       transitionend fires; the clone removes itself from the DOM.
+ *   3700ms       transitionend fires; the clone removes itself from the DOM.
  *
  * Why the DOM clone? React-managed nodes inside the auth page unmount the
  * moment router.push() resolves the new route. To make the splash survive
@@ -58,7 +58,7 @@ interface AuthSplashProps {
 // Phase timings — declared as constants so the comment block above stays
 // in lockstep with the code if anyone tunes the durations later.
 const SPLASH_HOLD_MS = 1300; // duration until handoff fires (phase 1 + phase 2)
-const SPLASH_FADE_OUT_MS = 800; // duration of the post-handoff fade
+const SPLASH_FADE_OUT_MS = 2400; // duration of the post-handoff fade (3x slower per Dennis QA 2026-05-26 — keep in lockstep with .cc-splash-fade-out transition in globals.css)
 // Class used on the cloned DOM node so we can ensure no duplicate handoffs
 // run if the component remounts unexpectedly.
 const CLONE_MARKER_CLASS = 'cc-splash-clone';
@@ -171,10 +171,16 @@ export function AuthSplash({ onDone, subtitle = 'Welcome back' }: AuthSplashProp
       // also get launch feedback even without seeing the visual.
       role="status"
       aria-live="polite"
+      // Background gradient sampled from the banner PNG's top edge (#dfeaf3,
+      // light cool blue) to its bottom edge (#f6fbfd, near-white blue-tinted).
+      // This makes the banner's own internal gradient dissolve into the splash
+      // surface so there's no visible image edge — the whole screen reads as
+      // a single illustrated surface rather than "image on a white card".
+      // (Per Dennis QA 2026-05-26: "make the background match the banner".)
       className="
         fixed inset-0 z-50
         flex items-center justify-center
-        bg-white
+        bg-gradient-to-b from-[#dfeaf3] to-[#f6fbfd]
         animate-cc-splash-fade-in
         motion-reduce:animate-none
       "

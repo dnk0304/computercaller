@@ -25,15 +25,15 @@ body {
 }
 
 /* Post-signin splash (components/AuthSplash.tsx).
-   Three coordinated keyframes drive a ~2100ms launch sequence that
+   Three coordinated keyframes drive a ~3700ms launch sequence that
    cross-fades into the dashboard:
-   - cc-splash-fade-in   (0-250ms):    full-screen white surface fades in
-                                       so the auth form behind it doesn't
+   - cc-splash-fade-in   (0-250ms):    full-screen banner-tinted surface fades
+                                       in so the auth form behind it doesn't
                                        show through during transition.
    - cc-splash-rise      (80-430ms):   banner + subtitle lift slightly with
                                        a gentle ease, mimicking a desktop
                                        app finishing launch.
-   - cc-splash-fade-out  (1300-2100ms):applied to a cloned DOM node that
+   - cc-splash-fade-out  (1300-3700ms):applied to a cloned DOM node that
                                        survives the route change so the
                                        splash fades AWAY over the dashboard
                                        rendering underneath. See AuthSplash.tsx
@@ -56,9 +56,13 @@ body {
 }
 /* Applied to the detached DOM clone after handoff. The transition (not a
    keyframe) lets us flip opacity 1 -> 0 imperatively after a forced reflow,
-   guaranteeing the browser paints the starting state before the fade begins. */
+   guaranteeing the browser paints the starting state before the fade begins.
+   Duration MUST stay locked with SPLASH_FADE_OUT_MS in components/AuthSplash.tsx
+   — the cleanup setTimeout uses that constant as its backstop. If they drift,
+   the clone either rips out mid-fade (TS shorter) or lingers blocking input
+   (TS longer). 2400ms per Dennis QA 2026-05-26 (3x the prior 800ms). */
 .cc-splash-fade-out {
-  transition: opacity 800ms ease-out;
+  transition: opacity 2400ms ease-out;
   pointer-events: none;
 }
 
