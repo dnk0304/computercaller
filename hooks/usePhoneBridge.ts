@@ -23,10 +23,17 @@ const PAIRING_REQUEST_TTL_MS = 30_000;
 // require an explicit dismiss.
 const TRANSIENT_REASON_CLEAR_MS = 4000;
 // Distinct from HAS_SYNCED_KEY: legacy FIRST_PAIR_KEY removed in dispatch #32
-// (2026-05-25). The first-pair Full Sync auto-open behaviour is dropped because
-// the Connect+Accept flow already gives the user a clear "you just paired"
-// moment — a surprise modal on top of an explicit accept gesture is noise.
-// Users open Full Sync from /app/settings instead.
+// (2026-05-25). Dispatch #34 (2026-05-26, Dennis QA round 1) REVERSES the
+// #32 decision — Full Sync now auto-opens on EVERY lobbyState→'active'
+// transition (not just the first pair). Rationale shift: users were
+// forgetting to run Full Sync at all, leading to stale data on the
+// dashboard; the cost of a dismissable modal at connect-time is lower than
+// the cost of stale data. The panel's close button dismisses it; it does
+// not re-pop until the next disconnect+reconnect (edge-trigger semantics
+// enforced by prevLobbyStateRef in the dedicated effect below). Phone Mode
+// path: SyncSetupPanel is mounted at app/app/layout.tsx — sibling to
+// AppShell — so the modal renders over BOTH the dashboard chrome and the
+// PhoneModeShell. Phone Mode users see the same auto-open prompt.
 // Path-based relay (dispatch #26, 2026-05-24).
 //
 // The relay is mounted on the SAME http server as Next.js at /relay, so we
@@ -1673,6 +1680,33 @@ export function usePhoneBridge() {
 
   const dismissSyncPanel = useCallback(() => setShowSyncPanel(false), []);
   const openSyncPanel    = useCallback(() => setShowSyncPanel(true),  []);
+
+  // Auto-open Full Sync on lobbyState→'active' edge (dispatch #34 item 8).
+  //
+  // REVERSAL of dispatch #32's "no auto-modal" stance — see the comment
+  // block at the top of this file (around line 25) for the rationale shift.
+  // Dennis QA: "the full sync should also auto-pop up when we connect."
+  //
+  // Edge-trigger semantics: we ONLY fire on the transition INTO 'active',
+  // not on every render while already active. Without the ref, the effect
+  // would still happen to only fire on the dep change — but the ref makes
+  // the intent explicit and survives future refactors / lobbyState shape
+  // changes. Dismiss-then-stay-dismissed is enforced by the fact that
+  // re-pops require a fresh lobby→active transition, which only happens
+  // after the relay drops the pair and a new Connect+Accept lands.
+  //
+  // The panel itself (SyncSetupPanel) is mounted globally at
+  // app/app/layout.tsx, so this auto-open works in both desktop mode AND
+  // Phone Mode — Dennis's ask is universal "when we connect", not "when we
+  // connect in desktop mode".
+  const prevLobbyStateRef = useRef<LobbyState | null>(null);
+  useEffect(() => {
+    if (prevLobbyStateRef.current !== 'active' && lobbyState === 'active') {
+      console.log('[PhoneBridge] lobbyState→active edge — auto-opening Full Sync panel');
+      setShowSyncPanel(true);
+    }
+    prevLobbyStateRef.current = lobbyState;
+  }, [lobbyState]);
 
   /**
    * Quick background sync — fetches only the last 6 hours of messages and

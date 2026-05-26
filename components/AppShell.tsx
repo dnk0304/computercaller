@@ -2,12 +2,12 @@
 
 import React from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { RefreshCw, DatabaseBackup } from 'lucide-react';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
 import { PhoneModeShell } from '@/components/PhoneModeShell';
+import { SyncMenuButton } from '@/components/SyncMenuButton';
 import { usePhone, useDashboardTab, usePhoneMode, type DashboardTab } from '@/hooks';
 
 /**
@@ -79,14 +79,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // components/ProfileMenu.tsx now.
   const { phoneMode } = usePhoneMode();
 
-  // Phone bridge — header surfaces TWO sync affordances when a phone is
-  // connected:
-  //   1. "Quick" — six-hour incremental sync (calls + messages since the
-  //      last successful pass). Cheap, runs in the background, no modal.
-  //   2. "Full" — opens the Full Sync setup panel (SyncSetupPanel) so the
-  //      user can re-run the whole sync from scratch with per-row progress.
-  //      Added dispatch #9 (2026-05-22) — Dennis wanted the full-sync UI
-  //      reachable from the header without first opening a settings drawer.
+  // Phone bridge — header surfaces a single "Sync" affordance when a phone
+  // is connected, consolidated dispatch #34 (2026-05-26). The previous two
+  // header buttons ("Quick" + "Full") consolidated into <SyncMenuButton/>:
+  //   - Trigger: single Sync pill with chevron
+  //   - Popover: Quick (last 6 hours) + Full (re-sync everything)
   // Both methods are exposed defensively (loose cast) — the public hook type
   // hasn't been regenerated in every consumer build yet. Same pattern as the
   // sendDtmf cast in Dashboard.tsx.
@@ -182,38 +179,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="flex items-center gap-3">
             <PhoneStatusButton />
-            {isConnected && typeof quickSync === 'function' && (
-              <button
-                onClick={handleQuickSyncClick}
-                disabled={isQuickSyncing}
-                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors border border-slate-200 disabled:opacity-70 disabled:cursor-progress"
-                title={isQuickSyncing ? 'Syncing last 6 hours of messages and calls…' : 'Quick sync — last 6 hours'}
-                aria-label={isQuickSyncing ? 'Quick sync in progress' : 'Quick sync'}
-                aria-busy={isQuickSyncing}
-              >
-                <RefreshCw
-                  className={`w-3 h-3 ${isQuickSyncing ? 'animate-spin' : ''}`}
-                  aria-hidden="true"
-                />
-                {isQuickSyncing ? 'Syncing…' : 'Quick'}
-              </button>
-            )}
-            {/* Full Sync button — opens the SyncSetupPanel modal (the same
-                centered popup that auto-opens on first pair). Distinguishable
-                from Quick: DatabaseBackup icon vs RefreshCw, slate→indigo on
-                hover so the affordance reads "this is the bigger / heavier
-                operation". Added dispatch #9 (2026-05-22). */}
-            {isConnected && typeof openSyncPanel === 'function' && (
-              <button
-                onClick={openSyncPanel}
-                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 rounded-xl transition-colors border border-slate-200 hover:border-indigo-200"
-                title="Full sync — re-sync everything from the phone"
-                aria-label="Full sync"
-              >
-                <DatabaseBackup className="w-3 h-3" aria-hidden="true" />
-                Full
-              </button>
-            )}
+            {/* Sync — consolidated dropdown (dispatch #34 item 9, 2026-05-26).
+                Replaces the prior pair of separate Quick + Full buttons that
+                ate ~140-180px of header width. Renders null when no phone is
+                connected, so the header collapses cleanly. Quick + Full
+                callbacks are passed defensively (typeof === 'function')
+                because the public hook type isn't regenerated in every
+                build during a deploy ramp. */}
+            <SyncMenuButton
+              isConnected={isConnected}
+              isQuickSyncing={isQuickSyncing}
+              onQuickSync={typeof quickSync === 'function' ? handleQuickSyncClick : undefined}
+              onFullSync={typeof openSyncPanel === 'function' ? openSyncPanel : undefined}
+            />
             {/* Phone Mode entry was here until dispatch #34 (2026-05-26) —
                 Dennis moved it into the ProfileMenu dropdown (right side of
                 header, under the avatar) so the chrome stays tighter and the
