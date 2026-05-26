@@ -4,6 +4,13 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ExternalLink, ChevronDown, ChevronUp, RefreshCw, Zap, Smartphone, Download, Apple, X } from 'lucide-react';
 import { usePhone } from '@/hooks';
+import {
+  getDeviceLabel,
+  getDeviceLabelSync,
+  getDeviceLabelOverride,
+  setDeviceLabelOverride,
+  clearDeviceLabelOverride,
+} from '@/lib/deviceLabel';
 // SyncSetupPanel is mounted in app/app/layout.tsx — no import needed here.
 
 interface UserData {
@@ -82,6 +89,56 @@ export default function SettingsPage() {
   // a non-issue: by the time they navigate here, the connect is done.
   const [savedPhoneUrl, setSavedPhoneUrl] = useState<string | null>(null);
   const [forgetConfirmedAt, setForgetConfirmedAt] = useState<number | null>(null);
+
+  // Device label (dispatch FORGE-1, 2026-05-26) — friendly browser-identity
+  // string shown on the paired phone's Accept dialog. Auto-detected from
+  // UA-CH + UA fallback, user-renameable. Override beats auto-detected;
+  // empty input → revert to auto. The new label takes effect on the NEXT
+  // pairing request; currently-paired sessions don't refresh retroactively.
+  const [autoLabel, setAutoLabel] = useState<string>('');
+  const [overrideLabel, setOverrideLabel] = useState<string | null>(null);
+  const [labelEditing, setLabelEditing] = useState<boolean>(false);
+  const [labelDraft, setLabelDraft] = useState<string>('');
+  const [labelSavedAt, setLabelSavedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    // Sync seed — get a value on the screen before UA-CH resolves so the
+    // section isn't empty for the first paint.
+    setAutoLabel(getDeviceLabelSync());
+    setOverrideLabel(getDeviceLabelOverride());
+    // Then await UA-CH and upgrade the auto value.
+    void getDeviceLabel().then((label) => setAutoLabel(label));
+  }, []);
+
+  const handleLabelStartEdit = () => {
+    setLabelDraft(overrideLabel ?? autoLabel);
+    setLabelEditing(true);
+  };
+
+  const handleLabelSave = () => {
+    const draft = labelDraft.trim();
+    if (draft.length === 0) {
+      // Empty input → revert to auto.
+      clearDeviceLabelOverride();
+      setOverrideLabel(null);
+    } else {
+      setDeviceLabelOverride(draft);
+      // Re-read so what we display matches what was actually persisted
+      // (sanitize() inside lib/deviceLabel may have trimmed control chars).
+      setOverrideLabel(getDeviceLabelOverride());
+    }
+    setLabelEditing(false);
+    setLabelSavedAt(Date.now());
+    window.setTimeout(() => setLabelSavedAt(null), 3000);
+  };
+
+  const handleLabelRevert = () => {
+    clearDeviceLabelOverride();
+    setOverrideLabel(null);
+    setLabelEditing(false);
+    setLabelSavedAt(Date.now());
+    window.setTimeout(() => setLabelSavedAt(null), 3000);
+  };
 
   // iOS tip visibility (dispatch 2026-05-25). Authenticated users coming in
   // from iPhone get a one-time pointer to the /iphone setup guide. We detect
@@ -294,6 +351,121 @@ export default function SettingsPage() {
             aria-live="polite"
           >
             Saved phone cleared.
+          </p>
+        )}
+      </section>
+
+      {/* Device label (dispatch FORGE-1, 2026-05-26) — controls the friendly
+          browser-identity string shown on the paired phone's Accept dialog
+          when this browser requests pairing. Auto-detected from UA-CH + UA;
+          renameable here. Override beats auto. Empty input on Save reverts.
+          The new label takes effect on the NEXT pairing request — existing
+          paired sessions don't refresh retroactively (the label was sent at
+          pairing time and the APK already showed it). */}
+      <section
+        className="bg-white rounded-2xl border border-slate-200 p-5"
+        aria-labelledby="device-label-heading"
+      >
+        <h2
+          id="device-label-heading"
+          className="text-sm font-semibold text-slate-700 mb-1 flex items-center gap-2"
+        >
+          <span
+            aria-hidden="true"
+            className="w-6 h-6 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600 text-xs"
+          >
+            🏷️
+          </span>
+          This browser
+        </h2>
+        <p className="text-xs text-slate-500 leading-relaxed">
+          The name shown on your phone when you connect from this browser.
+        </p>
+
+        {!labelEditing ? (
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p
+                className="text-sm font-medium text-slate-800 truncate"
+                title={overrideLabel ?? autoLabel}
+              >
+                {overrideLabel ?? (autoLabel || 'This computer')}
+              </p>
+              <p className="text-[11px] text-slate-400">
+                {overrideLabel
+                  ? `Custom — auto-detected: ${autoLabel || 'unknown'}`
+                  : 'Auto-detected'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleLabelStartEdit}
+              className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 border border-slate-200 hover:border-slate-300 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30"
+              aria-label="Rename this browser"
+            >
+              Rename
+            </button>
+          </div>
+        ) : (
+          <div className="mt-3 space-y-2">
+            <input
+              type="text"
+              value={labelDraft}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleLabelSave();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setLabelEditing(false);
+                }
+              }}
+              maxLength={60}
+              placeholder="e.g. Dennis's office laptop"
+              autoFocus
+              className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+              aria-label="New browser label"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleLabelSave}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => setLabelEditing(false)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 border border-slate-200 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/30"
+              >
+                Cancel
+              </button>
+              {overrideLabel && (
+                <button
+                  type="button"
+                  onClick={handleLabelRevert}
+                  className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-slate-500 hover:text-red-700 hover:bg-red-50 border border-slate-200 hover:border-red-200 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30"
+                  title="Revert to the auto-detected label"
+                >
+                  Revert to auto
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Up to 60 characters. Empty input reverts to auto-detected.
+            </p>
+          </div>
+        )}
+
+        {labelSavedAt && (
+          <p
+            className="mt-2 text-[11px] text-emerald-600"
+            role="status"
+            aria-live="polite"
+          >
+            Browser label updated. Takes effect on the next Connect.
           </p>
         )}
       </section>

@@ -11,6 +11,10 @@ import type {
 } from './phoneTypes';
 import { findContactByNumber } from '@/lib/normalizeNumber';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
+import {
+  getDeviceLabel,
+  getEffectiveDeviceLabel,
+} from '@/lib/deviceLabel';
 
 const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
 // Defensive client-side TTL for a pending pair request. The relay enforces a
@@ -197,6 +201,10 @@ export function usePhoneBridge() {
   const [lastBrowserRequest, setLastBrowserRequest] = useState<{
     ua: string;
     ip: string;
+    // Dispatch FORGE-1 (2026-05-26) — friendly browser identity label that
+    // the APK shows on the Accept dialog. Optional for backward compat with
+    // any consumer reading older state shapes.
+    deviceLabel?: string;
     expiresAt: number;
     reason?: LobbyRejectedReason;
   } | null>(null);
@@ -332,6 +340,18 @@ export function usePhoneBridge() {
   // value; handleMessage only reads it inside async WS message dispatch (well
   // after commit), so the synchronisation timing is safe.
   useEffect(() => { isPhoneStaleRef.current = isPhoneStale; }, [isPhoneStale]);
+
+  // Prime the device-label cache on mount so the sync read inside
+  // requestPairing's click handler hits a UA-CH-resolved value rather than
+  // the UA-string fallback. UA-CH high-entropy hints (platform + version)
+  // return a Promise — we can't await inside requestPairing without losing
+  // the user-gesture context, so we resolve once on mount and cache the
+  // result. Idempotent. Browsers without UA-CH (Firefox, Safari) just
+  // populate the cache with the UA-string derivation immediately.
+  // (Dispatch FORGE-1, 2026-05-26.)
+  useEffect(() => {
+    void getDeviceLabel();
+  }, []);
 
   // Auto-reconnect watchdog REMOVED (2026-05-22, dispatch #3). The defensive
   // watchdog added earlier today was firing without explicit user intent and
@@ -1294,12 +1314,18 @@ export function usePhoneBridge() {
     }
 
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown';
+    // Friendly browser-identity label sent to the APK Accept dialog —
+    // user override (Settings → This browser) beats auto-detected UA-CH /
+    // UA fallback. Sync read at click time hits the UA-CH cache primed on
+    // hook mount; falls back to UA-string parse if not yet resolved. See
+    // lib/deviceLabel.ts. (Dispatch FORGE-1, 2026-05-26.)
+    const deviceLabel = getEffectiveDeviceLabel();
     // Client-supplied IP is intentionally always 'unknown' — the relay
     // overwrites it with req.socket.remoteAddress. We send the field anyway
     // to keep the protocol shape stable.
-    const payload = { ua, ip: 'unknown' };
+    const payload = { ua, ip: 'unknown', deviceLabel };
     const expiresAt = Date.now() + PAIRING_REQUEST_TTL_MS;
-    setLastBrowserRequest({ ua, ip: 'unknown', expiresAt });
+    setLastBrowserRequest({ ua, ip: 'unknown', deviceLabel, expiresAt });
     setLobbyState('requesting');
     setConnectionError(null);
 

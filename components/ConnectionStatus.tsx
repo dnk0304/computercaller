@@ -53,6 +53,8 @@ export const ConnectionStatus = () => {
     lastBrowserRequest?: {
       ua?: string;
       ip?: string;
+      // Dispatch FORGE-1 — friendly browser label shown in APK Accept dialog.
+      deviceLabel?: string;
       expiresAt?: number;
       reason?: LobbyRejectedReason;
       reasonText?: string;

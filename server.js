@@ -290,6 +290,18 @@ function startRelay(httpServer) {
     // a UI hint for the phone's accept prompt).
     const ip = browserIp;
 
+    // Dispatch FORGE-1 (2026-05-26) — friendly browser-identity label shown
+    // on the APK Accept dialog. Browser-supplied; we sanitize (strip control
+    // chars, cap to 60 chars) as belt-and-braces defense in case the browser
+    // sanitizer is bypassed or stale. Absent/blank → forward as undefined so
+    // the APK falls back to its generic copy (backward compat with v22).
+    let deviceLabel;
+    if (typeof payload?.deviceLabel === 'string') {
+      // eslint-disable-next-line no-control-regex
+      const cleaned = payload.deviceLabel.replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, 60);
+      if (cleaned.length > 0) deviceLabel = cleaned;
+    }
+
     const pairingId = crypto.randomUUID();
     const expiresAt = Date.now() + PAIRING_TTL_MS;
 
@@ -304,10 +316,15 @@ function startRelay(httpServer) {
       maybeReapRoom(room);
     }, PAIRING_TTL_MS);
 
-    room.pendingPairing = { id: pairingId, browserWs, ua, ip, expiresAt, timer };
+    room.pendingPairing = { id: pairingId, browserWs, ua, ip, deviceLabel, expiresAt, timer };
 
-    safeSend(phoneWs, `PAIRING_REQUEST:${JSON.stringify({ pairingId, ua, ip })}`);
-    console.log(`[Relay][${room.token}] Pairing request ${pairingId} forwarded to phone (ua=${ua.slice(0, 40)} ip=${ip})`);
+    // Build forward payload omitting deviceLabel when absent so older APK
+    // builds (v22 and below) parse the same shape they always did.
+    const forwardPayload = deviceLabel !== undefined
+      ? { pairingId, ua, ip, deviceLabel }
+      : { pairingId, ua, ip };
+    safeSend(phoneWs, `PAIRING_REQUEST:${JSON.stringify(forwardPayload)}`);
+    console.log(`[Relay][${room.token}] Pairing request ${pairingId} forwarded to phone (ua=${ua.slice(0, 40)} ip=${ip} label=${deviceLabel ?? '-'})`);
   }
 
   /**
