@@ -20,15 +20,23 @@
 //      auto-open trigger that originally motivated the un-mount is gone
 //      (removed from usePhoneBridge's STATUS handler), so re-mounting
 //      globally is safe: the modal only appears on explicit user action.
-import { DashboardTabProvider } from '@/hooks';
+import { DashboardTabProvider, PhoneModeProvider } from '@/hooks';
 import { AppShell } from '@/components/AppShell';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
 
+// PhoneModeProvider wraps DashboardTabProvider so the Phone Mode shell can
+// read dashboard tab selection if it ever needs to (currently it doesn't —
+// Phone Mode has its own 3-tab navigator — but the provider order keeps the
+// option open without a re-wiring later). All other dashboard providers live
+// in the root layout (PhoneProvider / DialerOpenProvider) so Phone Mode
+// inherits the same data sources as the dashboard.
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <DashboardTabProvider>
-      <AppShell>{children}</AppShell>
-      <SyncSetupPanel />
-    </DashboardTabProvider>
+    <PhoneModeProvider>
+      <DashboardTabProvider>
+        <AppShell>{children}</AppShell>
+        <SyncSetupPanel />
+      </DashboardTabProvider>
+    </PhoneModeProvider>
   );
 }

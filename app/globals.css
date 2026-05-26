@@ -61,3 +61,40 @@ body {
   transition: opacity 800ms ease-out;
   pointer-events: none;
 }
+
+/* ----- Phone Mode shell (components/PhoneModeShell.tsx) -------------------
+ * Two viewport-stability problems we solve here:
+ *
+ * 1) Mobile browser address-bar growth. `100vh` measures the LARGEST possible
+ *    viewport (URL bar collapsed); when the bar shows the layout overflows.
+ *    `100dvh` (dynamic viewport) tracks the visible height — modern Safari /
+ *    Chrome / Firefox / Samsung support it. Fallback `100vh` covers older WebKit.
+ *
+ * 2) On-screen keyboard lift. iOS Safari + Android Chrome raise the layout
+ *    viewport when an input focuses; sticky compose disappears behind the
+ *    keyboard without intervention. PhoneModeShell mirrors visualViewport.height
+ *    into the `--phone-mode-vvh` custom property; we prefer it when set so
+ *    the shell height matches what the user can actually see.
+ *
+ * Composition: min-height first ensures content can grow, then height caps it
+ * so sticky footers (compose) anchor to the visible bottom. */
+.phone-mode-shell {
+  min-height: 100vh;            /* legacy fallback (older WebKit) */
+  min-height: 100dvh;            /* modern: tracks address-bar collapse */
+  min-height: var(--phone-mode-vvh, 100dvh);  /* keyboard-aware override */
+  height: 100vh;
+  height: 100dvh;
+  height: var(--phone-mode-vvh, 100dvh);
+}
+
+/* Container query — the parent <main> column is the container, the shell
+ * adapts to *its* width rather than the window's. Reserved hook for future
+ * narrow-but-not-mobile contexts (split view, sidebar pinned). v1 reads
+ * window.innerWidth in usePhoneMode; this rule pre-stages the breakpoint
+ * so a future tightening doesn't touch the JS layer. */
+@container (max-width: 599px) {
+  .phone-mode-shell {
+    /* No styling here yet — keeping the rule as a documented hook so anyone
+       reading globals.css sees the contract: <600px is the Phone Mode breakpoint. */
+  }
+}

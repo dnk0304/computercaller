@@ -2,12 +2,13 @@
 
 import React from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { RefreshCw, DatabaseBackup } from 'lucide-react';
+import { RefreshCw, DatabaseBackup, Smartphone } from 'lucide-react';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
-import { usePhone, useDashboardTab, type DashboardTab } from '@/hooks';
+import { PhoneModeShell } from '@/components/PhoneModeShell';
+import { usePhone, useDashboardTab, usePhoneMode, type DashboardTab } from '@/hooks';
 
 /**
  * AppShell — the persistent chrome around every /app/* route.
@@ -66,6 +67,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { activeTab, setActiveTab } = useDashboardTab();
+  // Phone Mode — when active, swap the shell content for the compact
+  // mobile-shape navigator. Sidebar + header chrome are hidden; an Expand
+  // button inside PhoneModeHeader returns the user to the full dashboard.
+  // See hooks/usePhoneMode.tsx for the entry rules (auto-collapse at <600px
+  // + manual toggle with session-scoped hysteresis suppression).
+  const { phoneMode, enterManually } = usePhoneMode();
 
   // Phone bridge — header surfaces TWO sync affordances when a phone is
   // connected:
@@ -139,6 +146,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const wrapInScroll = shouldWrapInScrollContainer(pathname);
 
+  // Phone Mode short-circuit. We render the compact shell INSTEAD of the
+  // full Sidebar + header layout — same outer `h-screen overflow-hidden`
+  // box so the page still fills the window, but every dashboard chrome
+  // affordance (Sidebar, sync buttons, ProfileMenu, page header) is
+  // hidden. PhoneModeShell owns its own header (PhoneModeHeader) which
+  // surfaces ConnectionStatus + an Expand button so the user can return.
+  if (phoneMode) {
+    return (
+      <div className="flex h-screen overflow-hidden bg-slate-50 font-sans">
+        <main className="flex-1 min-w-0 overflow-hidden">
+          <PhoneModeShell />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
       <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
@@ -186,6 +209,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Full
               </button>
             )}
+            {/* Phone Mode entry — opens the compact mobile-shape view.
+                Insertion left of ConnectionStatus per Dennis dispatch
+                2026-05-26. Visible at all viewports — useful even on a wide
+                screen when the user wants a focused dialer (e.g. travelling
+                with a small laptop, or just preferring the compact UI).
+                Smartphone icon (lucide-react) carries the affordance at a
+                glance; text label is hidden below md to keep the header
+                tight when the window is just past the auto-collapse
+                threshold. */}
+            <button
+              type="button"
+              onClick={enterManually}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              title="Switch to Phone Mode — compact mobile-shape view"
+              aria-label="Switch to Phone Mode"
+            >
+              <Smartphone className="h-3.5 w-3.5" aria-hidden="true" />
+              <span className="hidden md:inline">Phone Mode</span>
+            </button>
             <ConnectionStatus />
             {/* ProfileMenu — days-left urgency chip beside the avatar, plus a
                 dropdown for Manage subscription / Sign out. Sign Out tears
