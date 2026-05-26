@@ -114,21 +114,21 @@ const howItWorks = [
     icon: Smartphone,
     title: 'Install the Android companion app',
     body:
-      "One-time install on your existing Android phone. The companion app pairs your phone to your ComputerCaller account using a secure token — no new SIM, no new number, no carrier setup.",
+      "One-time install on your existing phone. The companion app pairs your phone to your ComputerCaller account using a secure token — no new SIM, no new number, no carrier setup.",
   },
   {
     n: '02',
     icon: Laptop,
     title: 'Open ComputerCaller in your browser',
     body:
-      "Sign in at computercaller.com on any laptop or desktop. Hit Connect — your phone shows an Accept dialog. Tap it once and the bridge is live.",
+      "Sign in at computercaller.com on any laptop or desktop. Hit Connect — your phone shows an Accept dialog. Tap it once and you're connected.",
   },
   {
     n: '03',
     icon: Phone,
     title: 'Start calling',
     body:
-      "Dial any phone number from your computer. Your Android phone places the call through your existing carrier. You hear and speak through your laptop's microphone and speakers.",
+      "Dial any phone number from your computer. Your phone places the call through your existing carrier. You hear and speak through your laptop's microphone and speakers.",
   },
 ];
 
@@ -154,15 +154,15 @@ const whoItsFor = [
 const faqs = [
   {
     q: 'How does ComputerCaller let me make a phone call from my computer?',
-    a: "ComputerCaller bridges your existing Android phone to your browser. You install a small companion app on your phone, sign in to ComputerCaller in your browser, and the two pair through a secure encrypted relay. When you dial a number on your computer, your phone places the real call through your carrier — you just hear and speak through your laptop.",
+    a: "ComputerCaller connects your phone to your computer. You install a small companion app on your phone, sign in to ComputerCaller in your browser, and the two pair securely. When you dial a number on your computer, your phone places the real call through your carrier — you just hear and speak through your laptop.",
   },
   {
     q: 'Do I need a new phone number?',
-    a: "No. ComputerCaller uses your existing phone number through your Android phone. The person you call sees your real number on their caller ID — exactly the same as if you'd called from your phone directly.",
+    a: "No. ComputerCaller uses your existing phone number through your phone. The person you call sees your real number on their caller ID — exactly the same as if you'd called from your phone directly.",
   },
   {
     q: 'Do you store my messages, contacts, or call logs?',
-    a: "No. ComputerCaller is a bridge between your phone and your browser. Your messages, contacts, call logs, and call audio never get stored on our servers. Everything stays on your Android phone — we only relay the live connection while you're actively using it.",
+    a: "No. ComputerCaller simply connects your phone to your computer. Your messages, contacts, call logs, and call audio never get stored on our servers. Everything stays on your phone — we only carry the live connection while you're actively using it.",
   },
   {
     q: 'Is it free?',
@@ -174,15 +174,15 @@ const faqs = [
   },
   {
     q: 'Does this work without my phone?',
-    a: "No — your Android phone needs to be powered on and reachable (over WiFi or mobile data). ComputerCaller is a bridge, not a replacement carrier. The upside is you keep your existing number, your existing plan, and your existing call quality.",
+    a: "No — your phone needs to be powered on and reachable (over WiFi or mobile data). ComputerCaller is not a replacement carrier. The upside is you keep your existing number, your existing plan, and your existing call quality.",
   },
   {
     q: 'Can I call 911 from my computer?',
-    a: "Yes. When you dial an emergency number from your computer, your Android phone places the call to your local emergency service through your real carrier — the same as if you'd dialed it on your phone. We recommend keeping your phone nearby and confirming dispatch can hear you clearly through your laptop microphone.",
+    a: "Yes. When you dial an emergency number from your computer, your phone places the call to your local emergency service through your real carrier — the same as if you'd dialed it on your phone. We recommend keeping your phone nearby and confirming dispatch can hear you clearly through your laptop microphone.",
   },
   {
     q: 'Does it work on iPhone?',
-    a: "Yes, in beta. iPhone users pair their phone to their laptop via Bluetooth and dial through the iPhone's Phone app — full setup takes 2 minutes. Android remains our primary platform with full feature parity (SMS bridge, call log sync, one-click dial). See the iPhone setup guide at /iphone for details.",
+    a: "Yes, in beta. iPhone users pair their phone to their laptop via Bluetooth and dial through the iPhone's Phone app — full setup takes 2 minutes. Android remains our primary platform with full feature parity (SMS sync, call log sync, one-click dial). See the iPhone setup guide at /iphone for details.",
   },
   {
     q: 'How is this different from WhatsApp, Zoom, or Skype?',
@@ -233,7 +233,7 @@ export default function LandingPage() {
         '@id': 'https://computercaller.com/#software',
         name: 'ComputerCaller',
         description:
-          'Make phone calls from your computer. ComputerCaller bridges your Android phone to your browser so you can call any phone number from your laptop using your existing number — without storing your call logs, messages, or contacts on our servers.',
+          'Make phone calls from your computer. ComputerCaller connects your phone to your computer so you can call any phone number from your laptop using your existing number — without storing your call logs, messages, or contacts on our servers.',
         applicationCategory: 'CommunicationApplication',
         operatingSystem: 'Web, Android',
         url: 'https://computercaller.com',
@@ -348,22 +348,25 @@ export default function LandingPage() {
               <ArrowRight className="w-3 h-3" aria-hidden="true" />
             </Link>
           )}
+          <p className="text-sm sm:text-base font-medium text-slate-500 tracking-wide mb-3">
+            Connect. Call. SMS. Communicate. Seamlessly.
+          </p>
+
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             5-day free trial — no credit card required
           </div>
 
-          <h1 className="mt-8 text-5xl sm:text-6xl md:text-7xl font-semibold tracking-[-0.03em] leading-[1.02] text-slate-900">
-            Make phone calls from your phone
-            <br />
+          <h1 className="mt-8 text-4xl sm:text-5xl md:text-6xl font-semibold tracking-[-0.03em] leading-[1.05] text-slate-900 text-balance">
+            Make phone calls from your phone{' '}
             <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
               — from your computer.
             </span>
           </h1>
 
           <p className="mt-6 text-lg sm:text-xl text-slate-600 max-w-2xl mx-auto leading-relaxed">
-            ComputerCaller connects your Android phone to your computer so you
-            can dial, talk, and message from your browser — without picking up
+            ComputerCaller connects your phone to your computer so you can
+            dial, talk, and message from your browser — without picking up
             your phone.
           </p>
 
@@ -432,9 +435,9 @@ export default function LandingPage() {
               </h2>
 
               <p className="mt-4 text-slate-600 text-lg leading-relaxed max-w-2xl">
-                ComputerCaller is a bridge, not a database. We don&apos;t store
+                ComputerCaller is a connection, not a database. We don&apos;t store
                 your call logs, your messages, your contacts, or your audio.
-                Everything stays on your Android device — we only relay the
+                Everything stays on your device — we only carry the
                 live connection while you&apos;re actively using it.
               </p>
 
@@ -512,12 +515,12 @@ export default function LandingPage() {
               {
                 icon: Globe,
                 title: 'Works anywhere',
-                desc: 'Connect over your home WiFi or from anywhere via the secure relay.',
+                desc: 'Connect over your home WiFi or from anywhere via a secure connection.',
               },
               {
                 icon: ShieldCheck,
                 title: 'Private by design',
-                desc: "End-to-end encrypted relay. Nothing about your calls, SMS, or contacts is stored on our servers.",
+                desc: "End-to-end encrypted connection. Nothing about your calls, SMS, or contacts is stored on our servers.",
               },
             ].map(({ icon: Icon, title, desc }) => (
               <div
@@ -550,9 +553,9 @@ export default function LandingPage() {
             </h2>
             <p className="mt-4 text-slate-600 text-lg leading-relaxed">
               No new number. No new carrier. No new app on the receiving end.
-              ComputerCaller is a bridge between your Android phone and your
-              browser — the call still goes through your real phone, you just
-              hear and speak through your laptop.
+              ComputerCaller connects your phone to your computer — the call
+              still goes through your real phone, you just hear and speak
+              through your laptop.
             </p>
           </div>
 
@@ -587,6 +590,33 @@ export default function LandingPage() {
               Try it free for 5 days
               <ArrowRight className="w-4 h-4" />
             </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Recommended setup — slim Pro Tip callout between How It Works
+          and Use Cases. Single sentence per Dennis's brief: connect a
+          headset to your phone, then manage everything from the laptop
+          hands-free. White surface to break the alternation rhythm gently. */}
+      <section className="border-t border-slate-200 bg-white">
+        <div className="max-w-4xl mx-auto px-6 py-14 sm:py-16">
+          <div className="flex items-start gap-4 sm:gap-5">
+            <div className="flex-shrink-0 w-12 h-12 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center">
+              <Headphones className="w-5 h-5 text-blue-600" aria-hidden="true" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+                Recommended setup
+              </p>
+              <h2 className="mt-2 text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900">
+                Connect a headset to your phone.
+              </h2>
+              <p className="mt-3 text-slate-600 text-base sm:text-lg leading-relaxed">
+                Pair your favourite Bluetooth headset to your phone, then
+                manage everything through ComputerCaller — calls, SMS,
+                contacts, all hands-free from your computer.
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -789,7 +819,7 @@ export default function LandingPage() {
             Ready to call from your computer?
           </h2>
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
-            5 days free. No credit card. Pair your Android phone and you&apos;re
+            5 days free. No credit card. Pair your phone and you&apos;re
             calling from your browser in under two minutes.
           </p>
           <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
