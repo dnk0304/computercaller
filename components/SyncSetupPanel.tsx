@@ -1,18 +1,20 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Smartphone, Users, MessageSquare, PhoneCall, X, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
-import { capForRange, type RangeKey as CapRangeKey } from '@/lib/syncCaps';
+import { capForRange, type RangeKey } from '@/lib/syncCaps';
 
 // Time-range sync selection. The user picks how far back in time to pull
-// data (or "All time" for no cap). Sending a `since` timestamp lets Android
-// use an indexed WHERE clause instead of a full table scan — full scans
-// time out on large databases. The Android side enforces its own row cap,
-// so we don't need to send a `limit` from the client.
-type RangeKey = '7d' | '30d' | '3mo' | '6mo' | '1yr' | 'all';
+// data. Sending a `since` timestamp lets Android use an indexed WHERE clause
+// instead of a full table scan — full scans time out on large databases.
+//
+// `RangeKey` is the canonical four-key type owned by `@/lib/syncCaps` so the
+// UI options and the per-category cap map can never drift apart. "7 days" and
+// "All time" were intentionally removed (locked 2026-05-27) — these four are
+// the only supported ranges.
 
 interface RangeOption {
   value: RangeKey;
@@ -20,25 +22,20 @@ interface RangeOption {
 }
 
 const RANGE_OPTIONS: ReadonlyArray<RangeOption> = [
-  { value: '7d',  label: 'Last 7 days' },
   { value: '30d', label: 'Last 30 days' },
   { value: '3mo', label: 'Last 3 months' },
   { value: '6mo', label: 'Last 6 months' },
   { value: '1yr', label: 'Last 1 year' },
-  { value: 'all', label: 'All time' },
 ];
 
 const RANGE_TO_MS: Record<RangeKey, number> = {
-  '7d':  7   * 24 * 60 * 60 * 1000,
   '30d': 30  * 24 * 60 * 60 * 1000,
   '3mo': 90  * 24 * 60 * 60 * 1000,
   '6mo': 180 * 24 * 60 * 60 * 1000,
   '1yr': 365 * 24 * 60 * 60 * 1000,
-  'all': 0,
 };
 
 function rangeToSince(range: RangeKey): number {
-  if (range === 'all') return 0;
   return Date.now() - RANGE_TO_MS[range];
 }
 
@@ -51,6 +48,12 @@ interface SyncRowProps {
   onToggle: () => void;
   rangeControl?: React.ReactNode;
   fullSyncNote?: string;
+  /**
+   * Informative count line rendered beneath the description (e.g. how many
+   * messages fall in the chosen range, and the newest-N cap when the range
+   * exceeds it). Calm and neutral — this is expected behaviour, not a warning.
+   */
+  countLine?: React.ReactNode;
 }
 
 function SyncRow({
@@ -62,6 +65,7 @@ function SyncRow({
   onToggle,
   rangeControl,
   fullSyncNote,
+  countLine,
 }: SyncRowProps) {
   return (
     <label
@@ -133,6 +137,11 @@ function SyncRow({
           ) : null}
         </span>
         <span className="block text-xs text-slate-500 mt-0.5">{description}</span>
+        {countLine ? (
+          <span className="block text-xs text-slate-500 mt-1" aria-live="polite">
+            {countLine}
+          </span>
+        ) : null}
       </span>
     </label>
   );
@@ -142,8 +151,14 @@ export const SyncSetupPanel = () => {
   // Cast to `any` per the integration plan — the hook's type is being updated
   // by another agent in parallel. We intentionally avoid coupling to the
   // in-progress type to keep this component compiling.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { syncEstimate, showSyncPanel, dismissSyncPanel, syncData } = usePhone() as any;
+  const {
+    syncEstimate,
+    showSyncPanel,
+    dismissSyncPanel,
+    syncData,
+    requestSyncPreview,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } = usePhone() as any;
 
   // Memoize the dismiss callback so its identity is stable across renders
   // (the raw fallback `() => {}` would otherwise create a new function each
@@ -159,10 +174,32 @@ export const SyncSetupPanel = () => {
   const [callLogs, setCallLogs] = useState(true);
   // Default to "Last 3 months" — covers the typical user's recent communication
   // without pulling years of dormant data on first sync. Contacts is always
-  // a full sync (no range — see contactsNote below). "All time" is one click
-  // away if the user wants deeper history.
+  // a full sync (no range — see contactsNote below). A deeper range (up to
+  // 1 year) is one click away if the user wants more history.
   const [messageRange, setMessageRange] = useState<RangeKey>('3mo');
   const [callLogRange, setCallLogRange] = useState<RangeKey>('3mo');
+
+  // Per-row preview counts. We keep these LOCAL to each row rather than reading
+  // the shared `syncEstimate` live, because the phone's SYNC_ESTIMATE response
+  // only carries the categories we asked for and the hook zero-fills the rest —
+  // so a messages-only preview would otherwise clobber the call-logs count to 0
+  // (and vice versa). Each row caches its own last-known total and only updates
+  // when a response for ITS category arrives. `undefined` = not yet counted.
+  const [messageCount, setMessageCount] = useState<number | undefined>(undefined);
+  const [callLogCount, setCallLogCount] = useState<number | undefined>(undefined);
+  const [messageCounting, setMessageCounting] = useState(false);
+  const [callLogCounting, setCallLogCounting] = useState(false);
+
+  // Contacts has no range — its total comes from the initial all-categories
+  // estimate. Cache it locally so our subsequent single-category message /
+  // call-log previews (which zero-fill the categories they don't request)
+  // can't blank the contacts count out from under the row.
+  const [contactsCount, setContactsCount] = useState<number | undefined>(undefined);
+
+  // Which category the most recent in-flight preview was requested for. Used to
+  // route the shared SYNC_ESTIMATE response back to the right row and to ignore
+  // the zero-filled "other" category in that same response.
+  const pendingPreviewRef = useRef<'messages' | 'callLogs' | null>(null);
 
   // Portal guard — derived, not stateful, so React 19's set-state-in-effect
   // rule stays happy. document only exists client-side.
@@ -188,18 +225,132 @@ export const SyncSetupPanel = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [showSyncPanel, dismiss]);
 
+  // Debounced count preview — Messages row. When the panel is open, the row is
+  // enabled, and a preview function is available, re-count the chosen range
+  // ~400ms after the user stops changing it. The phone reports the TRUE total
+  // for the range; the cap line (rendered below) is derived separately from
+  // `capForRange`, so the count itself stays honest.
+  useEffect(() => {
+    if (!showSyncPanel || !messages || typeof requestSyncPreview !== 'function') return;
+    // `setCounting(true)` lives inside the timeout (async, not the effect's
+    // synchronous render path) so we (a) don't trip ESLint's set-state-in-effect
+    // rule and (b) only show "Counting…" once the request actually goes out —
+    // no flicker while the user is still dragging through ranges.
+    const t = setTimeout(() => {
+      setMessageCounting(true);
+      pendingPreviewRef.current = 'messages';
+      requestSyncPreview({
+        since: rangeToSince(messageRange),
+        until: Date.now(),
+        types: ['messages'],
+      });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [showSyncPanel, messages, messageRange, requestSyncPreview]);
+
+  // Debounced count preview — Call Logs row. Mirror of the Messages effect.
+  useEffect(() => {
+    if (!showSyncPanel || !callLogs || typeof requestSyncPreview !== 'function') return;
+    const t = setTimeout(() => {
+      setCallLogCounting(true);
+      pendingPreviewRef.current = 'callLogs';
+      requestSyncPreview({
+        since: rangeToSince(callLogRange),
+        until: Date.now(),
+        types: ['callLogs'],
+      });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [showSyncPanel, callLogs, callLogRange, requestSyncPreview]);
+
+  // Route a SYNC_ESTIMATE response to the row that asked for it. The shared
+  // estimate zero-fills categories we didn't request, so we only trust the
+  // total for the category named in `pendingPreviewRef` and leave the other
+  // row's cached count untouched. This is the legitimate React-as-sync-target
+  // pattern (external WS response → UI). We schedule the state updates on a
+  // setTimeout(0) microtask, matching PhoneModeShell's convention, so the
+  // writes happen OUT of the effect's synchronous render path — same observable
+  // behaviour, no set-state-in-effect cascading-render warning.
+  useEffect(() => {
+    if (!syncEstimate) return;
+    const target = pendingPreviewRef.current;
+    const contactsTotal: number | undefined = syncEstimate.contacts?.total;
+    const messagesTotal: number | undefined = syncEstimate.messages?.total;
+    const callLogsTotal: number | undefined = syncEstimate.callLogs?.total;
+    const id = window.setTimeout(() => {
+      if (target === 'messages') {
+        setMessageCount(messagesTotal ?? 0);
+        setMessageCounting(false);
+      } else if (target === 'callLogs') {
+        setCallLogCount(callLogsTotal ?? 0);
+        setCallLogCounting(false);
+      } else {
+        // No targeted preview in flight — this is the initial all-categories
+        // estimate. Seed each row's cached count, but only adopt a category's
+        // total when it's actually present and non-zero so a stale zero-fill
+        // can't wipe a previously-known count.
+        if (messagesTotal) setMessageCount((prev) => prev ?? messagesTotal);
+        if (callLogsTotal) setCallLogCount((prev) => prev ?? callLogsTotal);
+      }
+      // Contacts has no targeted preview path, so always keep its cache fresh
+      // whenever a response carries a real (non-zero) contacts total.
+      if (contactsTotal) setContactsCount(contactsTotal);
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [syncEstimate]);
+
   if (!mounted || !showSyncPanel) return null;
 
   // Panel opens immediately when phone connects — no blocking on estimate.
   // Estimate fires in the background; contactsTotal updates when it arrives.
   const isLoadingEstimate = false; // never block UI on estimate
 
-  const contactsTotal: number | undefined = syncEstimate?.contacts?.total;
-
   const contactsNote =
-    contactsTotal != null
-      ? `${contactsTotal.toLocaleString()} contacts — full sync`
+    contactsCount != null
+      ? `${contactsCount.toLocaleString()} contacts — full sync`
       : 'Contacts — full sync';
+
+  // Build the per-row count line. Calm and informative — never alarming. When
+  // the true total exceeds the range's cap, we say plainly that we'll sync the
+  // most recent N; this is normal, expected behaviour, not an error.
+  const renderCountLine = (
+    counting: boolean,
+    total: number | undefined,
+    range: RangeKey,
+    noun: string,
+  ): React.ReactNode => {
+    if (counting && total == null) {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-slate-400">
+          <Loader2 className="w-3 h-3 motion-safe:animate-spin" aria-hidden="true" />
+          Counting&hellip;
+        </span>
+      );
+    }
+    if (total == null) return null;
+    const cap = capForRange(range);
+    const totalLabel = total.toLocaleString();
+    if (total > cap) {
+      return (
+        <>
+          {totalLabel} {noun} in this range &middot; we&rsquo;ll sync the most recent{' '}
+          {cap.toLocaleString()}
+        </>
+      );
+    }
+    return (
+      <>
+        {totalLabel} {noun} in this range
+      </>
+    );
+  };
+
+  const messageCountLine = messages
+    ? renderCountLine(messageCounting, messageCount, messageRange, 'messages')
+    : null;
+  const callLogCountLine = callLogs
+    ? renderCountLine(callLogCounting, callLogCount, callLogRange, 'calls')
+    : null;
 
   const handleStartSync = () => {
     if (!syncData) {
@@ -213,10 +364,10 @@ export const SyncSetupPanel = () => {
       messageSince: messages ? rangeToSince(messageRange) : undefined,
       // Per-category newest-N cap. Bounds what actually transfers so a large
       // sync can't crash the device; the preview count stays truthful.
-      messageLimit: messages ? capForRange(messageRange as CapRangeKey) : undefined,
+      messageLimit: messages ? capForRange(messageRange) : undefined,
       callLogs,
       callLogSince: callLogs ? rangeToSince(callLogRange) : undefined,
-      callLogLimit: callLogs ? capForRange(callLogRange as CapRangeKey) : undefined,
+      callLogLimit: callLogs ? capForRange(callLogRange) : undefined,
     });
     dismiss();
   };
@@ -307,6 +458,7 @@ export const SyncSetupPanel = () => {
                     ariaLabel="Message time range"
                   />
                 }
+                countLine={messageCountLine}
               />
 
               <SyncRow
@@ -324,6 +476,7 @@ export const SyncSetupPanel = () => {
                     ariaLabel="Call log time range"
                   />
                 }
+                countLine={callLogCountLine}
               />
             </div>
 
