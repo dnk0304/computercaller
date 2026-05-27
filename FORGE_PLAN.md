@@ -78,8 +78,9 @@ NO binary commit, NO deploy.
 None — all settled by brief + v25 impl.
 
 ## Status
-- TASK-001: pending
-- TASK-002: pending
-- TASK-003: pending
-- TASK-004: pending
-- TASK-005: pending
+- TASK-001: DONE — LobbyActionReceiver.kt created.
+- TASK-002: DONE — field + onCreate register + onDestroy cleanup + buildForegroundNotification shared builder wired to both sites.
+- TASK-003: DONE — notif_action_disconnect / notif_action_reconnect added.
+- TASK-004: DONE — versionCode 27, versionName 1.0.5.
+- TASK-005: DONE — compileReleaseKotlin + clean assembleRelease bundleRelease BUILD SUCCESSFUL; aapt2 versionCode=27 versionName=1.0.5. APK 6,034,595 B + AAB 5,455,436 B left for Ken.
+- COMMITTED: 727b22c on feature/saas-multiuser (base fc3a99d). Binary NOT committed, NOT deployed.
