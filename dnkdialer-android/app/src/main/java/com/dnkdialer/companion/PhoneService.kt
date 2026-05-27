@@ -2660,11 +2660,17 @@ class PhoneService : Service() {
                     // Blank strings are treated as "no filter" to be defensive
                     // against the web client serialising an empty input.
                     val address = (payload?.get("address") as? String)?.takeIf { it.isNotBlank() }
+                    // Backward-paging upper bound (epoch-ms, exclusive). Set by the
+                    // web "Older messages" button to fetch the next page older than
+                    // the oldest currently-loaded message. 0L = no upper bound
+                    // (initial open / normal sync). Gson gives JSON numbers as
+                    // Double, so cast through it before toLong().
+                    val before = (payload?.get("before") as? Double)?.toLong() ?: 0L
                     // Combined SMS + MMS so group texts, picture messages, and voice
                     // notes all show up in the unified timeline. The merge happens
                     // on-device, so the web client sees a single sorted list.
-                    val messages = smsHandler.getMessagesWithMms(this, limit = limit, since = since, address = address)
-                    android.util.Log.d("PhoneService", "Got ${messages.size} messages (SMS+MMS, since=$since, limit=$limit, address=${address ?: "all"}), sending in chunks...")
+                    val messages = smsHandler.getMessagesWithMms(this, limit = limit, since = since, address = address, before = before)
+                    android.util.Log.d("PhoneService", "Got ${messages.size} messages (SMS+MMS, since=$since, limit=$limit, before=$before, address=${address ?: "all"}), sending in chunks...")
                     sendChunked("MESSAGES", messages, 25, viaClient, "messages")
                 }
                 "GET_MMS_FULL" -> {

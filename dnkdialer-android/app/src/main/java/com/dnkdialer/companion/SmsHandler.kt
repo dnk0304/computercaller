@@ -74,7 +74,14 @@ class SmsHandler(private val context: Context) {
     // catch-up tick passes limit = 50). The existing `effectiveLimit` math
     // below already handles `limit <= 0` as "no cap" so this is a default
     // flip only — no behavior change for explicit callers.
-    fun getMessages(limit: Int = Int.MAX_VALUE, since: Long = 0, address: String? = null): List<SmsMessage> {
+    // `before` (epoch-ms, exclusive upper bound) was added 2026-05-27 for the
+    // per-conversation "Older messages" backward-paging feature (Item 2). Unlike
+    // `since`, which is the lower bound and gets CLEARED when an address filter is
+    // set (open-thread default = full history), `before` is the UPPER bound and is
+    // ALWAYS honoured even with an address filter — that's the whole point of
+    // paging: "newest `limit` messages for this contact older than `before`".
+    // before == 0 means "no upper bound" (newest-first from the top).
+    fun getMessages(limit: Int = Int.MAX_VALUE, since: Long = 0, address: String? = null, before: Long = 0): List<SmsMessage> {
         val messages = mutableListOf<SmsMessage>()
 
         // When `since == 0L` ("All time"), do not cap results — return everything.
@@ -84,6 +91,9 @@ class SmsHandler(private val context: Context) {
         // When an address filter is supplied the caller wants ALL history for that
         // contact, regardless of the default "recent only" `since` window — clear
         // the time filter so we don't accidentally drop older messages.
+        // NOTE: this clears `since` (lower bound) only. `before` (upper bound) is
+        // never cleared here — backward paging relies on it surviving the address
+        // filter.
         val effectiveSince = if (!address.isNullOrBlank()) 0L else since
 
         // Query SMS content provider
@@ -119,6 +129,14 @@ class SmsHandler(private val context: Context) {
         if (!address.isNullOrBlank()) {
             whereParts.add("${Telephony.Sms.ADDRESS} = ?")
             argsList.add(address)
+        }
+        // Backward-paging upper bound: only rows strictly OLDER than `before`.
+        // Exclusive (`<`) so the boundary message the caller already has is not
+        // re-fetched — though even if it were, the web merge dedupes by id.
+        // Stays parameterized (no SQL injection surface).
+        if (before > 0) {
+            whereParts.add("${Telephony.Sms.DATE} < ?")
+            argsList.add(before.toString())
         }
         val selection = if (whereParts.isEmpty()) null else whereParts.joinToString(" AND ")
         val selectionArgs = if (argsList.isEmpty()) null else argsList.toTypedArray()
@@ -213,12 +231,16 @@ class SmsHandler(private val context: Context) {
         // Cap removed 2026-05-26 per Dennis pivot — see getMessages() above.
         limit: Int = Int.MAX_VALUE,
         since: Long = 0,
-        address: String? = null
+        address: String? = null,
+        // Backward-paging upper bound (epoch-ms, exclusive). See getMessages().
+        // For address-filtered paging this only affects the SMS path — MMS with
+        // an address filter is still skipped below (known SMS-only limitation).
+        before: Long = 0
     ): List<SmsMessage> {
         // Get SMS messages — pass the optional address filter through so the SQL
         // WHERE clause runs in the provider (fast, indexed) instead of us
         // post-filtering in Kotlin.
-        val smsMessages = getMessages(limit, since, address)
+        val smsMessages = getMessages(limit, since, address, before)
 
         // Get MMS messages. The MMS provider stores recipient addresses in a
         // separate `addr` sub-table keyed by message id, so an exact "address

@@ -146,8 +146,19 @@ android {
         //      so a fresh sign-in starts in the connected/auto-dial state.
         //      Per Dennis 2026-05-26 23:53 GMT+2: phone was auto-rejoining
         //      lobby constantly and he wanted explicit control over it.
-        versionCode = 25
-        versionName = "1.0.3"
+        //
+        // Per-conversation "Older messages" (Item 2, 2026-05-27): 25 → 26.
+        // SmsHandler.getMessages / getMessagesWithMms gain a `before` epoch-ms
+        // upper bound; PhoneService GET_MESSAGES parses payload.before and
+        // passes it through. Enables backward paging within a single thread —
+        // the web client opens a conversation at the newest 25 and the "Older
+        // messages" button pages older 25s by sending {address, before, limit}.
+        // `before` is honoured even when an address filter is set (the address
+        // short-circuit clears only the `since` lower bound). Option A page-size
+        // sentinel — no count query / GET_THREAD_INFO. MMS-with-address still
+        // skipped, so address-filtered paging is SMS-only (pre-existing limit).
+        versionCode = 26
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
