@@ -17,7 +17,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.dnkdialer.companion"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         // NOTE: applicationId is the Play Store package name and is
@@ -26,7 +26,7 @@ android {
         // alignment. (Ken dispatch #14, 2026-05-24.)
         applicationId = "com.dnkdialer.companion"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         // versionCode: monotonically increasing integer — bump every new APK
         // shipped (debug or release). Play Store requires strictly higher
         // than the highest one already on the track.
@@ -167,8 +167,28 @@ android {
         // now runs buildSyncEstimate + sendResponse on a background thread so the
         // cursor.count work no longer blocks the WebSocket read thread from
         // draining other inbound frames. Android-only; no web/protocol changes.
-        versionCode = 28
-        versionName = "1.0.6"
+        //
+        // API 34→35 target bump + edge-to-edge (2026-05-27): 28 → 29 /
+        // 1.0.6 → 1.0.7. Play Store rejected v27/v28 ("must target at least
+        // API level 35"). compileSdk + targetSdk 34→35 (targetSdk can't
+        // exceed compileSdk). On API 35 (Android 15) edge-to-edge is
+        // ENFORCED: the system no longer draws status-bar/nav-bar
+        // backgrounds and android:statusBarColor / android:navigationBarColor
+        // (themes.xml = @color/surface_base) are ignored — content draws
+        // under the bars. The three Activity surfaces (MainActivity main +
+        // permissions panes, SignInActivity) now call
+        // WindowCompat.setDecorFitsSystemWindows(window, false) and attach an
+        // androidx.core insets listener (see InsetsUtils.applySystemBarInsets)
+        // that pads the scroll content container by systemBars()+displayCutout()
+        // so the wordmark sits below the status bar and the bottom-most action
+        // sits above the gesture nav bar. The opaque surface_base
+        // windowBackground (bg_app_solid) continues to fill behind the bars —
+        // no white gap. Robust on API 35 AND non-regressing on minSdk 26–34
+        // (insets resolve to existing bar heights). windowLightStatusBar=false
+        // left intact so status-bar icons stay light on the near-black surface.
+        // No AGP/Gradle/Kotlin bump needed (AGP 8.13.2 supports compileSdk 35).
+        versionCode = 29
+        versionName = "1.0.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

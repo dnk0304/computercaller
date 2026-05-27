@@ -30,6 +30,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import android.content.res.ColorStateList
 import android.widget.Toast
 import com.dnkdialer.companion.R
@@ -394,6 +395,13 @@ class MainActivity : AppCompatActivity() {
         mainPaneInitialized = true
         inPermissionsRequiredPane = false
         setContentView(R.layout.activity_main)
+
+        // API 35 edge-to-edge: stop the decor from fitting system windows so
+        // the surface_base background fills behind the bars, then pad the
+        // scroll content so the wordmark clears the status bar and the
+        // bottom-most action (Sign Out / Hard Reset) clears the gesture nav.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        InsetsUtils.applySystemBarInsets(findViewById(R.id.mainContentContainer))
 
         statusText = findViewById(R.id.statusText)
         statusDot = findViewById(R.id.statusDot)
@@ -1319,6 +1327,11 @@ class MainActivity : AppCompatActivity() {
         if (!inPermissionsRequiredPane) {
             setContentView(R.layout.activity_permissions_required)
             inPermissionsRequiredPane = true
+            // API 35 edge-to-edge — same treatment as the main pane. Pads the
+            // permissions scroll content so the wordmark clears the status bar
+            // and the bottom buttons (Continue / Refresh) clear the nav bar.
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            InsetsUtils.applySystemBarInsets(findViewById(R.id.permsContentContainer))
         }
 
         // Partition the audit by kind. Runtime permissions go in one

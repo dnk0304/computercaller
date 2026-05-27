@@ -9,6 +9,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
 import com.google.gson.Gson
 import org.json.JSONObject
 import java.io.OutputStreamWriter
@@ -45,6 +46,12 @@ class SignInActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_signin)
+
+        // API 35 edge-to-edge: let the surface_base background fill behind the
+        // bars and pad the scroll content so the wordmark clears the status
+        // bar and the Sign In button / footer clear the gesture nav bar.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        InsetsUtils.applySystemBarInsets(findViewById(R.id.signinContentContainer))
 
         emailField = findViewById(R.id.emailField)
         passwordField = findViewById(R.id.passwordField)
