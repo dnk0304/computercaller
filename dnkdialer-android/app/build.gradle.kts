@@ -157,8 +157,13 @@ android {
         // short-circuit clears only the `since` lower bound). Option A page-size
         // sentinel — no count query / GET_THREAD_INFO. MMS-with-address still
         // skipped, so address-filtered paging is SMS-only (pre-existing limit).
-        versionCode = 26
-        versionName = "1.0.4"
+        //
+        // Notification-shade "Disconnect/Reconnect" action (2026-05-27): 26 → 27.
+        // Surfaces the existing v25 userDisconnectFromLobby/userRejoinLobby
+        // methods as state-aware action buttons on the persistent foreground
+        // notification (via new LobbyActionReceiver). No new disconnect logic.
+        versionCode = 27
+        versionName = "1.0.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

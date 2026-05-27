@@ -251,6 +251,15 @@
     <string name="action_rejoin_lobby">Rejoin Lobby</string>
     <string name="status_user_disconnected">Disconnected — tap Rejoin to reconnect</string>
 
+    <!-- SHORT variants for the persistent foreground-notification action    -->
+    <!-- buttons (a notification action row has limited width, so the in-APP  -->
+    <!-- "Disconnect from Lobby" / "Rejoin Lobby" labels above are too long). -->
+    <!-- State-aware: "Disconnect" shows when in lobby, "Reconnect" when the  -->
+    <!-- user has stayed disconnected. Both route through LobbyActionReceiver -->
+    <!-- to the existing userDisconnectFromLobby/userRejoinLobby methods.     -->
+    <string name="notif_action_disconnect">Disconnect</string>
+    <string name="notif_action_reconnect">Reconnect</string>
+
     <!-- Relay-status surface — replaces the LAN-IP / QR plate after     -->
     <!-- Phase 4 lands. The Kotlin side feeds these into the status row. -->
     <string name="relay_status_waiting">Waiting for browser…</string>

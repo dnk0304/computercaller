@@ -177,6 +177,16 @@ class PhoneService : Service() {
     private var connectionRequestReceiver: ConnectionRequestReceiver? = null
 
     /**
+     * Disconnect / Reconnect broadcasts from the persistent foreground
+     * notification's action buttons land here — routed back into
+     * [userDisconnectFromLobby] / [userRejoinLobby] via the shared
+     * lobbyActionHandler hook in [LobbyActionReceiver]. Held as a field so
+     * onDestroy can unregister cleanly. Separate from connectionRequestReceiver
+     * so the benign lobby toggle stays decoupled from the accept/decline path.
+     */
+    private var lobbyActionReceiver: LobbyActionReceiver? = null
+
+    /**
      * Auto-decline timers keyed by requestId. Started when the notification
      * is posted, cancelled on user Accept / Decline. If a timer fires we
      * treat it as a Decline so the webapp doesn't hang forever waiting on
@@ -1041,6 +1051,31 @@ class PhoneService : Service() {
             handleConnectionDecision(requestId, accept)
         }
 
+        // Register the lobby-toggle action receiver. Hooks the shared
+        // lobbyActionHandler so the foreground notification's Disconnect /
+        // Reconnect buttons route through here into the existing v25
+        // userDisconnectFromLobby() / userRejoinLobby() methods. Internal-only
+        // intents → NOT_EXPORTED on API 33+ so no other process can spoof a
+        // disconnect/rejoin against our service.
+        lobbyActionReceiver = LobbyActionReceiver()
+        val lobbyFilter = android.content.IntentFilter().apply {
+            addAction(LobbyActionReceiver.ACTION_DISCONNECT_LOBBY)
+            addAction(LobbyActionReceiver.ACTION_REJOIN_LOBBY)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                lobbyActionReceiver,
+                lobbyFilter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(lobbyActionReceiver, lobbyFilter)
+        }
+        LobbyActionReceiver.lobbyActionHandler = { rejoin ->
+            if (rejoin) userRejoinLobby() else userDisconnectFromLobby()
+        }
+
         // Register for real telephony state changes so we forward true call state
         // (ringing / active / ended) to the web app instead of fake responses tied
         // to MAKE_CALL handling.
@@ -1153,26 +1188,15 @@ class PhoneService : Service() {
                     }
                 }
 
-                val notificationIntent = Intent(this, MainActivity::class.java)
-                val pendingIntent = PendingIntent.getActivity(
-                    this, 0, notificationIntent,
-                    PendingIntent.FLAG_IMMUTABLE
+                // Single source of truth for the foreground notification —
+                // see buildForegroundNotification(). It attaches the
+                // state-aware Disconnect/Reconnect action and the brand color
+                // so this initial build and every updateNotification() rebuild
+                // stay identical apart from the body text.
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildForegroundNotification("Phone bridge is active")
                 )
-
-                val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("ComputerCaller")
-                    .setContentText("Phone bridge is active")
-                    .setSmallIcon(android.R.drawable.stat_sys_phone_call)
-                    // Round 7 — tint the notification chrome with the new
-                    // brand accent so the OS notification row reads as part
-                    // of the app rather than a generic system notification.
-                    .setColor(ContextCompat.getColor(this, R.color.accent_blue))
-                    .setColorized(false)
-                    .setContentIntent(pendingIntent)
-                    .setOngoing(true)
-                    .build()
-
-                startForeground(NOTIFICATION_ID, notification)
 
                 // Disconnect-from-lobby (v25, 2026-05-26): keep the
                 // foreground notification copy honest when the user is in
@@ -1489,24 +1513,89 @@ class PhoneService : Service() {
     }
 
     /**
-     * Replaces the persistent foreground notification's text so the user can see
-     * connection state at a glance ("Connected to PC — syncing data" vs the
-     * default "Phone bridge is active"). No accept/deny prompt — just visibility.
+     * Single source of truth for the persistent foreground-service
+     * notification. Both the initial startForeground() in onStartCommand and
+     * every updateNotification() rebuild go through here so the notification
+     * always carries (a) the brand color, and (b) the correct STATE-AWARE
+     * lobby action button.
+     *
+     * The action toggles off [TokenStore.isUserStayedDisconnected]:
+     *   - in lobby (false)         → "Disconnect" → ACTION_DISCONNECT_LOBBY (req 2001)
+     *   - stayed-disconnected (true) → "Reconnect"  → ACTION_REJOIN_LOBBY    (req 2002)
+     *
+     * Both fire PendingIntent.getBroadcast(...) to [LobbyActionReceiver],
+     * FLAG_IMMUTABLE + setPackage(packageName) so the intent can't be mutated
+     * or redirected. Request codes 2001/2002 are fixed + distinct from the
+     * connection-request accept/decline codes (requestId.hashCode-based) and
+     * the body contentIntent (code 0). One tap = instant, no confirmation
+     * dialog — mirrors the in-app lobbyToggleButton.
      */
-    private fun updateNotification(text: String) {
-        val notificationManager = getSystemService(NotificationManager::class.java)
+    private fun buildForegroundNotification(text: String): Notification {
         val notificationIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("ComputerCaller")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            // Round 7 — tint the notification chrome with the brand accent so
+            // the OS row reads as part of the app. (Folded into updateNotification
+            // too as of v27 — the old updateNotification dropped this.)
+            .setColor(ContextCompat.getColor(this, R.color.accent_blue))
+            .setColorized(false)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
-            .build()
-        notificationManager.notify(NOTIFICATION_ID, notification)
+
+        // State-aware lobby action. When the user has chosen to stay
+        // disconnected, the only useful action is Reconnect; otherwise the
+        // only useful action is Disconnect.
+        if (TokenStore.isUserStayedDisconnected(this)) {
+            val rejoinIntent = Intent(LobbyActionReceiver.ACTION_REJOIN_LOBBY).apply {
+                setPackage(packageName)
+            }
+            val rejoinPending = PendingIntent.getBroadcast(
+                this,
+                2002,
+                rejoinIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            builder.addAction(
+                android.R.drawable.ic_menu_rotate,
+                getString(R.string.notif_action_reconnect),
+                rejoinPending
+            )
+        } else {
+            val disconnectIntent = Intent(LobbyActionReceiver.ACTION_DISCONNECT_LOBBY).apply {
+                setPackage(packageName)
+            }
+            val disconnectPending = PendingIntent.getBroadcast(
+                this,
+                2001,
+                disconnectIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            builder.addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                getString(R.string.notif_action_disconnect),
+                disconnectPending
+            )
+        }
+
+        return builder.build()
+    }
+
+    /**
+     * Replaces the persistent foreground notification's text so the user can see
+     * connection state at a glance ("Connected to PC — syncing data" vs the
+     * default "Phone bridge is active"). No accept/deny prompt — just visibility.
+     * Routes through [buildForegroundNotification] so the state-aware lobby
+     * action button is re-attached on every connect/disconnect state change.
+     */
+    private fun updateNotification(text: String) {
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NOTIFICATION_ID, buildForegroundNotification(text))
     }
 
     /**
@@ -3158,6 +3247,17 @@ class PhoneService : Service() {
             android.util.Log.w("PhoneService", "connectionRequestReceiver was not registered: ${e.message}")
         }
         connectionRequestReceiver = null
+
+        // Mirror the above for the lobby-toggle receiver: clear the shared
+        // handler so a late Disconnect/Reconnect broadcast can't reach a dead
+        // service, then unregister.
+        LobbyActionReceiver.lobbyActionHandler = null
+        try {
+            lobbyActionReceiver?.let { unregisterReceiver(it) }
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "lobbyActionReceiver was not registered: ${e.message}")
+        }
+        lobbyActionReceiver = null
 
         // Release wake lock
         wakeLock?.let {
