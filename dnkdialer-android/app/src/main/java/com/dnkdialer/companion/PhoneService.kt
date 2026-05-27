@@ -2847,10 +2847,29 @@ class PhoneService : Service() {
                         ?.mapNotNull { it as? String }
                         ?.filter { it.isNotBlank() }
                         ?: listOf("contacts", "messages", "callLogs")
-                    android.util.Log.d("PhoneService", "Building sync estimate (since=$since, until=$until, types=$types)...")
-                    val estimate = buildSyncEstimate(since, until, types)
-                    android.util.Log.d("PhoneService", "Estimate built: $estimate")
-                    sendResponse("SYNC_ESTIMATE", estimate, viaClient)
+                    // Perf fix (v28, 2026-05-27): buildSyncEstimate runs
+                    // cursor.count over the SMS + call-log providers (100-300ms
+                    // on 50k+ row stores) plus an unbounded contacts count. This
+                    // handler executes on the single Java-WebSocket read thread,
+                    // so running the estimate inline blocked that thread from
+                    // draining ANY other inbound relay frame for the duration —
+                    // and the latency stacked on every date-range change. Moving
+                    // the count + response onto a background thread lets the read
+                    // thread return immediately and keep processing traffic.
+                    //
+                    // kotlin.concurrent.thread is used (not a coroutine) because
+                    // the service has no CoroutineScope and the codebase pulls in
+                    // no coroutines dependency — this is the minimal primitive
+                    // that doesn't introduce a new threading library. sendResponse
+                    // is safe off-thread: it gates on client?.isOpen and delegates
+                    // to java-websocket send(), which is thread-safe, inside a
+                    // try/catch that already tolerates a transient close race.
+                    kotlin.concurrent.thread(name = "sync-estimate") {
+                        android.util.Log.d("PhoneService", "Building sync estimate (since=$since, until=$until, types=$types)...")
+                        val estimate = buildSyncEstimate(since, until, types)
+                        android.util.Log.d("PhoneService", "Estimate built: $estimate")
+                        sendResponse("SYNC_ESTIMATE", estimate, viaClient)
+                    }
                 }
                 "PING" -> {
                     android.util.Log.d("PhoneService", "PING received, sending PONG")
@@ -3031,9 +3050,14 @@ class PhoneService : Service() {
         // Messages: range-aware via "date" column. cursor.count over the
         // SMS provider can take 100-300ms on large histories (50k+ rows) —
         // browser-side has a 400ms debounce so user-perceived latency stays
-        // well under 1s. If a future profile shows main-thread jank, wrap
-        // this branch in withContext(Dispatchers.IO) — handler is already
-        // called off the main thread, but worth a check before optimizing.
+        // well under 1s. As of v28 (2026-05-27) the GET_SYNC_ESTIMATE handler
+        // invokes this method on a dedicated background thread (see the
+        // kotlin.concurrent.thread wrapper there), so this count no longer
+        // blocks the WebSocket read thread from draining other inbound frames.
+        // cursor.count (rather than a SQL COUNT(_id) aggregate) is retained
+        // deliberately: content://sms does not reliably honor COUNT projections
+        // across OEMs, and a silently-ignored COUNT that returns all rows would
+        // be a regression. Revisit only if a real device confirms COUNT works.
         if ("messages" in types) {
             val (selection, args) = buildDateRangeSelection(since, until, "date")
             val messagesTotal = try {

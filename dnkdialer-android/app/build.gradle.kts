@@ -162,8 +162,13 @@ android {
         // Surfaces the existing v25 userDisconnectFromLobby/userRejoinLobby
         // methods as state-aware action buttons on the persistent foreground
         // notification (via new LobbyActionReceiver). No new disconnect logic.
-        versionCode = 27
-        versionName = "1.0.5"
+        //
+        // Sync count-preview perf fix (2026-05-27): 27 → 28. GET_SYNC_ESTIMATE
+        // now runs buildSyncEstimate + sendResponse on a background thread so the
+        // cursor.count work no longer blocks the WebSocket read thread from
+        // draining other inbound frames. Android-only; no web/protocol changes.
+        versionCode = 28
+        versionName = "1.0.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
