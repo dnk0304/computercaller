@@ -1062,12 +1062,27 @@ export function usePhoneBridge() {
         // GET_SYNC_ESTIMATE. Older APKs (v24 and below) return only the bare
         // totals (no range) — `payload.range` is undefined in that case and
         // the consumer panel just renders "X total" without the range hint.
-        setSyncEstimate({
-          contacts: { total: payload.contacts?.total ?? 0 },
-          messages: { total: payload.messages?.total ?? 0 },
-          callLogs: { total: payload.callLogs?.total ?? 0 },
+        //
+        // Merge-per-category (2026-05-27, Pixel cleanup): when the browser
+        // requests a category SUBSET via requestSyncPreview({ types }), the
+        // phone returns only those categories. Previously this fully replaced
+        // the estimate, zero-filling the non-requested categories. We now merge:
+        // a category present in the payload updates; a category ABSENT keeps its
+        // prior value. Presence is keyed on the payload object existing (not its
+        // total) so a genuine "0 rows for the requested category" still records 0.
+        setSyncEstimate(prev => ({
+          contacts: payload.contacts !== undefined
+            ? { total: payload.contacts.total ?? 0 }
+            : (prev?.contacts ?? { total: 0 }),
+          messages: payload.messages !== undefined
+            ? { total: payload.messages.total ?? 0 }
+            : (prev?.messages ?? { total: 0 }),
+          callLogs: payload.callLogs !== undefined
+            ? { total: payload.callLogs.total ?? 0 }
+            : (prev?.callLogs ?? { total: 0 }),
+          // range always reflects the latest request (or undefined for old APKs).
           range: payload.range,
-        });
+        }));
         // No auto-open here. The estimate just updates the totals visible in the
         // sync panel; the panel is opened by explicit user action from /app/settings
         // (Run Full Sync button). Previously this fired setShowSyncPanel(true) on
@@ -1599,17 +1614,20 @@ export function usePhoneBridge() {
   }, [sendCommand]);
 
   /**
-   * Fetch the last 6 months of messages for a specific contact (phone number)
-   * on demand. Used when opening a thread with sparse history — silently loads
-   * the recent conversation without re-syncing the entire message database.
-   * Results are merged into existing state (no replace). For full unbounded
-   * history use getContactFullHistory().
+   * Open a thread: fetch the NEWEST 25 messages for a contact on demand.
+   *
+   * Changed 2026-05-27 (Item 2): was a 6-month `since` window; now a clean
+   * "newest 25" page (no `since`, `limit: 25`). This is the head of the
+   * "newest 25, then page older 25s" model — the "Older messages" button
+   * (loadOlderMessages) walks backward from here. Android sorts DATE DESC and
+   * stops at the limit, so {address, limit: 25} == the 25 most-recent messages.
+   * Results are merged into existing state (no replace); the buffer is reset
+   * here because this is a fresh thread open, not an append.
    */
   const getContactMessages = useCallback((address: string) => {
     if (!address || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     messagesBufferRef.current = [];
-    const since6mo = Date.now() - 180 * 24 * 60 * 60 * 1000;
-    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address, since: since6mo })}`);
+    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address, limit: 25 })}`);
   }, []);
 
   /**
@@ -1623,6 +1641,29 @@ export function usePhoneBridge() {
     messagesBufferRef.current = [];
     // No `since` filter — fetches all history for this contact.
     wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address })}`);
+  }, []);
+
+  /**
+   * Backward paging within a single conversation (Item 2, 2026-05-27).
+   * Fetches the newest `limit` (default 25) messages OLDER than `before`
+   * (epoch-ms, the date of the oldest message currently loaded for this
+   * thread). ThreadView's "Older messages" button calls this.
+   *
+   * Option A page-size sentinel: a chunk of exactly `limit` means "maybe more,
+   * keep the button"; fewer than `limit` means "start of history, hide it".
+   * The caller (ThreadView) compares the returned count against `limit`.
+   *
+   * CRITICAL difference from getContactMessages / getContactFullHistory: this
+   * does NOT reset messagesBufferRef. We are APPENDING older history into the
+   * existing thread, not replacing it. The incoming chunk merges via the
+   * MESSAGES_CHUNK handler's merge branch, which dedupes by message `id` — so a
+   * re-fetched boundary message can never duplicate. (syncModeRef stays 'merge'
+   * here; we never flip it to 'replace', so the merge branch always runs.)
+   */
+  const loadOlderMessages = useCallback((address: string, before: number, limit = 25) => {
+    if (!address || wsRef.current?.readyState !== WebSocket.OPEN) return;
+    // Do NOT clear messagesBufferRef — append/merge into existing thread state.
+    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address, before, limit })}`);
   }, []);
 
   const syncAll = useCallback(() => {
@@ -2231,6 +2272,9 @@ export function usePhoneBridge() {
     getCallLogs,
     getContactMessages,
     getContactFullHistory,
+    // Per-conversation backward paging — ThreadView "Older messages" button.
+    // Sends GET_MESSAGES:{address, before, limit} WITHOUT clearing the buffer.
+    loadOlderMessages,
     syncAll,
     syncData,
     dismissSyncPanel,
