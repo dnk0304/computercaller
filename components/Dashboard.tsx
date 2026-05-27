@@ -569,8 +569,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   const quickSync: (() => void) | undefined = (phone as any).quickSync;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const getContactMessages = (phone as any).getContactMessages as ((address: string) => void) | undefined;
+  // Backward paging within a thread (Item 2). Fetches the newest `limit`
+  // messages OLDER than `before` (epoch-ms). Wired through the same defensive
+  // cast as the other bridge openers so the UI degrades gracefully if the
+  // field isn't present at runtime — the "Older messages" button is hidden
+  // whenever this is undefined.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const getContactFullHistory = (phone as any).getContactFullHistory as ((address: string) => void) | undefined;
+  const loadOlderMessages = (phone as any).loadOlderMessages as
+    | ((address: string, before: number, limit?: number) => void)
+    | undefined;
   // MMS full-media fetcher. The parallel bridge agent ships this on the hook
   // — keep the read defensive so the UI degrades gracefully (thumbnail-only)
   // when the field isn't there yet at runtime.
@@ -945,12 +952,73 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
   // Auto-scroll the open thread to the bottom on new messages / open.
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  // Scroll-preservation for "Older messages" (Item 2). When the user pages
+  // backward, `threadMessages.length` grows from PREPENDED history — the
+  // auto-scroll effect below would otherwise yank the view to the bottom.
+  // We flip `isPrependingRef` true around a load-more and snapshot the pre-load
+  // scroll metrics; the effect then restores scroll position instead of jumping
+  // to the bottom, so the message the user was reading stays put while the
+  // older messages appear above it. Cleared once the restore runs.
+  const isPrependingRef = useRef(false);
+  const prependScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   useEffect(() => {
     if (!selectedThread) return;
     const el = messageListRef.current;
     if (!el) return;
+    if (isPrependingRef.current) {
+      // Older messages were prepended — keep the user's viewport anchored to
+      // the message they were looking at by offsetting scrollTop by the height
+      // the new content added at the top.
+      const snapshot = prependScrollRef.current;
+      if (snapshot) {
+        el.scrollTop = snapshot.scrollTop + (el.scrollHeight - snapshot.scrollHeight);
+      }
+      isPrependingRef.current = false;
+      prependScrollRef.current = null;
+      return;
+    }
+    // New (incoming/sent) message or a fresh thread open — pin to the bottom.
     el.scrollTop = el.scrollHeight;
   }, [selectedThread, threadMessages.length]);
+
+  // Reset prepend state whenever the thread changes so a stale flag from one
+  // conversation can never suppress the bottom-pin on opening another.
+  useEffect(() => {
+    isPrependingRef.current = false;
+    prependScrollRef.current = null;
+  }, [selectedThread]);
+
+  /**
+   * "Older messages" click handler (Item 2). Snapshots the live scroll metrics
+   * and arms the prepend flag BEFORE asking the bridge for older history, so
+   * the auto-scroll effect restores position when the merged messages render.
+   * Passing `before` = the oldest currently-loaded message's `date` (threadMessages
+   * is sorted oldest→newest, so index 0 is the oldest).
+   */
+  const handleLoadOlderMessages = useCallback(
+    (oldestLoadedDate: number) => {
+      if (!selectedThread || !loadOlderMessages) return;
+      const el = messageListRef.current;
+      if (el) {
+        prependScrollRef.current = {
+          scrollHeight: el.scrollHeight,
+          scrollTop: el.scrollTop,
+        };
+        isPrependingRef.current = true;
+      }
+      loadOlderMessages(selectedThread, oldestLoadedDate, 25);
+      // Safety net: if the chunk never arrives (zero rows returned, or a WS
+      // hiccup) the length-change effect won't fire, leaving the prepend flag
+      // armed — which would wrongly suppress the bottom-pin on the NEXT genuine
+      // new message. Self-disarm after a generous window. (A successful merge
+      // clears the flag first, so this is a no-op in the happy path.)
+      window.setTimeout(() => {
+        isPrependingRef.current = false;
+        prependScrollRef.current = null;
+      }, 4000);
+    },
+    [selectedThread, loadOlderMessages]
+  );
 
   // Reset compose draft when switching threads.
   useEffect(() => {
@@ -1748,7 +1816,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             getMmsMedia={getMmsMedia}
             simList={simList}
             onGetContactMessages={getContactMessages}
-            onGetContactFullHistory={getContactFullHistory}
+            onLoadOlder={loadOlderMessages ? handleLoadOlderMessages : undefined}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 gap-3">
@@ -2780,8 +2848,11 @@ interface ThreadViewProps {
    *  this when the thread has fewer than 10 messages — silently fills sparse
    *  history in the background without any loading UI. */
   onGetContactMessages?: (address: string) => void;
-  /** Called when user requests full message history (older than 6 months). */
-  onGetContactFullHistory?: (address: string) => void;
+  /** Backward paging (Item 2). Fetches the newest 25 messages OLDER than
+   *  `oldestLoadedDate` (epoch-ms of the oldest currently-loaded message) and
+   *  prepends them while preserving scroll position. When undefined the bridge
+   *  doesn't support paging yet and the "Older messages" button is hidden. */
+  onLoadOlder?: (oldestLoadedDate: number) => void;
 }
 
 const ThreadView = React.memo(function ThreadView({
@@ -2799,7 +2870,7 @@ const ThreadView = React.memo(function ThreadView({
   getMmsMedia,
   simList,
   onGetContactMessages,
-  onGetContactFullHistory,
+  onLoadOlder,
 }: ThreadViewProps) {
   const displayName = contact?.name || address;
   const colorClass = getAvatarColor(displayName);
@@ -2811,6 +2882,60 @@ const ThreadView = React.memo(function ThreadView({
   const [templates, setTemplates] = useState<Template[]>([]);
   const templatesRef = useRef<HTMLDivElement | null>(null);
   const templatesButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  // ---- "Older messages" backward paging (Item 2) -------------------------
+  // Page-size sentinel (Q3 = Option A): a load that returns a full page (25)
+  // means "maybe more — keep the button"; fewer than 25 means "start of
+  // history — hide it". There is no count from the phone, so we infer the
+  // returned count from the GROWTH of the (already-deduped, oldest→newest)
+  // `messages` array between the click and the merge. `before` is an exclusive
+  // upper bound on the phone, so prepended messages never overlap what's
+  // loaded — the length delta equals the genuine returned count.
+  const PAGE_SIZE = 25;
+  // null = unknown (no load attempted yet) → button shown so the user can ask.
+  // true = last load was a full page → keep showing. false = short page → hide.
+  const [hasMoreHistory, setHasMoreHistory] = useState<boolean | null>(null);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  // messages.length captured at click time; the resolver effect compares the
+  // post-merge length against it to derive the sentinel. -1 = no load pending.
+  const pendingPrevLenRef = useRef(-1);
+
+  // Reset paging state when switching threads — a fresh conversation always
+  // starts with the button available and no load in flight.
+  useEffect(() => {
+    setHasMoreHistory(null);
+    setIsLoadingOlder(false);
+    pendingPrevLenRef.current = -1;
+  }, [address]);
+
+  // Resolve an in-flight load-more once the merged messages arrive. Runs on
+  // any messages.length change but no-ops unless a load is pending.
+  useEffect(() => {
+    if (pendingPrevLenRef.current < 0) return;
+    const delta = messages.length - pendingPrevLenRef.current;
+    // A full page back means there may be more; a short page is the start of
+    // history. delta === 0 (nothing came back) also means "no older history".
+    setHasMoreHistory(delta >= PAGE_SIZE);
+    setIsLoadingOlder(false);
+    pendingPrevLenRef.current = -1;
+  }, [messages.length]);
+
+  const handleOlderClick = useCallback(() => {
+    if (isLoadingOlder || !onLoadOlder || messages.length === 0) return;
+    const oldest = messages[0]; // oldest→newest sort: index 0 is oldest loaded
+    pendingPrevLenRef.current = messages.length;
+    setIsLoadingOlder(true);
+    onLoadOlder(oldest.date);
+    // Safety net mirroring the parent's prepend-flag timeout: if no chunk
+    // merges (zero rows / WS hiccup) the resolver effect never runs, so clear
+    // the spinner and treat it as "start of history" after the same window.
+    window.setTimeout(() => {
+      if (pendingPrevLenRef.current < 0) return; // already resolved by the merge
+      pendingPrevLenRef.current = -1;
+      setIsLoadingOlder(false);
+      setHasMoreHistory(false);
+    }, 4000);
+  }, [isLoadingOlder, onLoadOlder, messages]);
 
   // Read templates from localStorage whenever the dropdown is opened. This is
   // cheaper than a window 'storage' listener and keeps the list fresh if the
@@ -2933,25 +3058,65 @@ const ThreadView = React.memo(function ThreadView({
           />
         ) : (
           (() => {
-            // "Load older messages" affordance. Contact history fetches are
-            // capped to 6 months on demand — when the oldest visible message
-            // is older than that cap, surface an explicit way for the user to
-            // pull the rest. `messages` is sorted newest-first, so the oldest
-            // visible bubble sits at the tail.
-            const SIX_MONTHS_MS = 180 * 24 * 60 * 60 * 1000;
-            const oldestVisibleMsg = messages[messages.length - 1];
-            const hasOlderHistory =
-              oldestVisibleMsg && Date.now() - oldestVisibleMsg.date > SIX_MONTHS_MS;
+            // "Older messages" affordance (Item 2, page-size sentinel).
+            // `messages` is sorted oldest→newest, so index 0 is the oldest
+            // loaded bubble and the button belongs at the TOP of the list.
+            // Visibility:
+            //   • bridge must support paging (onLoadOlder defined), and
+            //   • the sentinel hasn't flipped to "start of history" (false), and
+            //   • before any paging (sentinel === null) we infer from the INITIAL
+            //     open: getContactMessages always requests the newest 25, so a
+            //     thread currently holding < 25 messages already got a short page
+            //     = start of history → no button (brand-new/short threads). Once
+            //     paged, the explicit sentinel governs and length no longer matters.
+            const initialPageWasFull = messages.length >= PAGE_SIZE;
+            const showOlderButton =
+              !!onLoadOlder &&
+              (hasMoreHistory === true ||
+                (hasMoreHistory === null && initialPageWasFull));
+            // When paging has reached the start of history, drop a subtle
+            // divider so the top of the thread reads as a deliberate beginning
+            // rather than a truncation. Only after an actual load resolved short.
+            const showBeginningDivider = hasMoreHistory === false;
+            const olderDisabled = !isConnected || isLoadingOlder;
             return (
               <>
-                {hasOlderHistory && onGetContactFullHistory && (
+                {showBeginningDivider && (
+                  <div className="flex items-center gap-3 py-2 px-2 select-none" aria-hidden="true">
+                    <span className="flex-1 h-px bg-slate-200" />
+                    <span className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">
+                      Beginning of conversation
+                    </span>
+                    <span className="flex-1 h-px bg-slate-200" />
+                  </div>
+                )}
+                {showOlderButton && (
                   <div className="flex justify-center py-3">
                     <button
                       type="button"
-                      onClick={() => onGetContactFullHistory(address)}
-                      className="px-4 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full transition-colors"
+                      onClick={handleOlderClick}
+                      disabled={olderDisabled}
+                      aria-busy={isLoadingOlder}
+                      title={
+                        !isConnected
+                          ? 'Connect your phone to load older messages'
+                          : undefined
+                      }
+                      className={clsx(
+                        'inline-flex items-center gap-2 px-4 py-1.5 text-xs font-medium rounded-full transition-colors',
+                        'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                        olderDisabled
+                          ? 'text-slate-400 bg-slate-100 opacity-70 cursor-not-allowed'
+                          : 'text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200'
+                      )}
                     >
-                      Load older messages
+                      {isLoadingOlder && (
+                        <span
+                          className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin motion-reduce:animate-none"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span>{isLoadingOlder ? 'Loading…' : 'Older messages'}</span>
                     </button>
                   </div>
                 )}
