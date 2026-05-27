@@ -1648,9 +1648,12 @@ export function usePhoneBridge() {
    * databases. With `since`, Android uses an indexed WHERE clause and the
    * query is fast.
    *
-   * The Android side enforces its own row cap, so we don't send a `limit`
-   * from the client — keeps the protocol simple and lets the device decide
-   * what's safe.
+   * Row caps: the caller may pass `messageLimit` / `callLogLimit` to bound how
+   * many rows the phone returns (newest-N — Android sorts DATE DESC and stops
+   * at the limit). The Full Sync panel passes a per-range cap via capForRange()
+   * so a large sync can't crash the device. When a limit is omitted the phone
+   * returns every row in the requested `since` window (its default is
+   * unbounded), so callers that want a ceiling MUST send one.
    *
    * Defaults when caller omits `since`:
    *   - 6 months back for both messages and call logs.
@@ -1664,8 +1667,10 @@ export function usePhoneBridge() {
     contacts?: boolean;
     messages?: boolean;
     messageSince?: number;   // unix timestamp ms; 0 = no time filter (all time)
+    messageLimit?: number;   // newest-N row cap for messages; omit = unbounded
     callLogs?: boolean;
     callLogSince?: number;   // unix timestamp ms; 0 = no time filter (all time)
+    callLogLimit?: number;   // newest-N row cap for call logs; omit = unbounded
   } = {}) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
@@ -1708,7 +1713,11 @@ export function usePhoneBridge() {
 
     if (opts.messages) {
       const since = opts.messageSince ?? rangeToSince('6mo');
-      const payload = since > 0 ? { since } : {};
+      const payload: Record<string, unknown> = {};
+      if (since > 0) payload.since = since;
+      // Only send `limit` when the caller asked for a ceiling — absent means
+      // the phone returns every row in the window (its unbounded default).
+      if (opts.messageLimit != null) payload.limit = opts.messageLimit;
       const delay = opts.contacts ? 300 : 0;
       const send = () => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1721,7 +1730,9 @@ export function usePhoneBridge() {
 
     if (opts.callLogs) {
       const logSince = opts.callLogSince ?? rangeToSince('6mo');
-      const logPayload = logSince > 0 ? { since: logSince } : {};
+      const logPayload: Record<string, unknown> = {};
+      if (logSince > 0) logPayload.since = logSince;
+      if (opts.callLogLimit != null) logPayload.limit = opts.callLogLimit;
       const delay = (opts.contacts ? 300 : 0) + (opts.messages ? 300 : 0);
       const send = () => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {

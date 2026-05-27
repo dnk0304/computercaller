@@ -1,3 +1,55 @@
+# FORGE_PLAN.md — Tiered sync caps (Dispatch A = ITEM 1)
+
+## Goal
+Re-introduce per-category, time-range-tiered row caps on the Full Sync flow. v25
+removed caps (Android default `limit = Int.MAX_VALUE`). Dennis is reversing that:
+caps come BACK, tiered by selected time range, enforced independently on messages
+and call logs, to prevent crash-risk on uncapped syncs. Preview count stays
+truthful; the cap is a ceiling on what actually transfers.
+
+## Architecture Overview
+Web (SyncSetupPanel) picks a range per category → `capForRange(range)` maps
+range→cap → `syncData()` puts `limit` into the `GET_MESSAGES` / `GET_CALL_LOGS`
+payload → Android handlers (already wired) read `payload.limit` and return the
+newest N rows (DATE DESC + break/take). NO Android change required.
+
+## Cap table (LOCKED 2026-05-27)
+| RangeKey | Window   | Cap (each: messages, call logs) |
+|----------|----------|---------------------------------|
+| `30d`    | 30 days  | 1,500   |
+| `3mo`    | 90 days  | 2,500   |
+| `6mo`    | 180 days | 5,000   |
+| `1yr`    | 365 days | 10,000  |
+
+## Task Breakdown
+- TASK-001 `lib/syncCaps.ts` (NEW): canonical 4-key `RangeKey` + `RANGE_CAP` map +
+  `capForRange(range)`. NO subscription/tier logic. ~20 lines. Lean.
+- TASK-002 `hooks/usePhoneBridge.ts`: extend `syncData` opts (`messageLimit?`,
+  `callLogLimit?`); inject `limit` into payloads when present. ~10 lines. Lean.
+- TASK-003 `components/SyncSetupPanel.tsx` (handleStartSync ONLY): pass caps via
+  `capForRange`. Pixel owns RANGE_OPTIONS / RangeKey decl / render. ~6 lines. Lean.
+- TASK-004 Android verification (read-only): confirm both handlers honour
+  `payload.limit` as newest-N. NO change.
+
+## Execution Order
+001 → 002 → 003 (003 imports 001). 004 read-only, parallel.
+
+## RangeKey coordination (Forge↔Pixel)
+Canonical `RangeKey` (4 locked keys) now lives in `lib/syncCaps.ts`. Forge ships
+first. Pixel rebases by importing `RangeKey` from `@/lib/syncCaps`, deleting the
+local 6-key decl + `7d`/`all` options. Pixel needs exported `capForRange`.
+
+## Status (Dispatch A)
+- [x] Plan written
+- [x] TASK-001 lib/syncCaps.ts
+- [x] TASK-002 usePhoneBridge.ts syncData opts + limit plumbing
+- [x] TASK-003 SyncSetupPanel.tsx handleStartSync
+- [x] TASK-004 Android verification — web-only confirmed
+- [x] tsc / eslint green
+- [x] Web commit (Ken deploys; no APK)
+
+---
+
 # FORGE_PLAN.md — Device label in APK Accept dialog (Dispatch FORGE-1)
 
 ## Goal

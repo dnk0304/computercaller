@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { Smartphone, Users, MessageSquare, PhoneCall, X, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
+import { capForRange, type RangeKey as CapRangeKey } from '@/lib/syncCaps';
 
 // Time-range sync selection. The user picks how far back in time to pull
 // data (or "All time" for no cap). Sending a `since` timestamp lets Android
@@ -210,8 +211,12 @@ export const SyncSetupPanel = () => {
       contacts,
       messages,
       messageSince: messages ? rangeToSince(messageRange) : undefined,
+      // Per-category newest-N cap. Bounds what actually transfers so a large
+      // sync can't crash the device; the preview count stays truthful.
+      messageLimit: messages ? capForRange(messageRange as CapRangeKey) : undefined,
       callLogs,
       callLogSince: callLogs ? rangeToSince(callLogRange) : undefined,
+      callLogLimit: callLogs ? capForRange(callLogRange as CapRangeKey) : undefined,
     });
     dismiss();
   };
