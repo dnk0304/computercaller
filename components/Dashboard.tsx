@@ -1190,9 +1190,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             //     inside this column it brought wider content (3-pill audio
             //     toggle, dialpad-style action grid) and the `auto` track
             //     grew to fit, jumping the whole layout sideways.
-            //     `minmax(300px, 340px)` keeps the floor wide enough for a
+            //     `minmax(270px, 306px)` keeps the floor wide enough for a
             //     full phone number and locks the ceiling so the in-call
             //     card lives within the same visual footprint as idle.
+            //     (2026-05-27: both bounds cut 10% — 300→270 / 340→306 — per
+            //     Dennis "make the quick dial column 10% less wide"; freed
+            //     ~34px flows to cols 2/3. Floor verified: all col-1 content
+            //     [Quick Dial input, 2-button Phone|PC audio toggle, Recent
+            //     Calls rows] uses fluid/truncating layout, no clip at 270px.)
             //   Col 2 (thread list)  — 0.88fr = 1.1fr * 0.8 (20% narrower
             //     baseline than the prior 1.1fr) with a 260px minimum.
             //   Col 3 (open thread)  — 1.8fr (unchanged) with 280px minimum.
@@ -1200,7 +1205,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             //     minimums; only after both bottom out does the grid
             //     overflow horizontally — phone numbers stay visible.
             // Pure CSS, no JS resize listener.
-            'grid-cols-[minmax(300px,340px)_minmax(260px,0.88fr)_minmax(280px,1.8fr)]'
+            'grid-cols-[minmax(270px,306px)_minmax(260px,0.88fr)_minmax(280px,1.8fr)]'
           )}
         >
       {/* ============================================================ */}
