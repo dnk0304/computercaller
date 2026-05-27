@@ -67,20 +67,19 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
+import { useTemplates } from '@/hooks/useTemplates';
+import type { TemplateDTO } from '@/lib/templates';
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
 }
 
-interface Template {
-  id: string;
-  name: string;
-  body: string;
-  createdAt: number;
-}
+// Item C2 — templates are now server-backed (TemplateDTO from the C1 API),
+// consumed via the shared useTemplates hook. Same fields the old localStorage
+// shape had, plus sortOrder. Aliased so existing call sites read unchanged.
+type Template = TemplateDTO;
 
 const FAVORITES_KEY = 'dnkdialer_favorites';
-const TEMPLATES_KEY = 'dnkdialer_templates';
 const MAX_FAVORITES = 6;
 
 // ---------- Pure helpers ----------------------------------------------------
@@ -2884,7 +2883,10 @@ const ThreadView = React.memo(function ThreadView({
   // anchored to the compose row — keeping the state co-located with the UI
   // means it resets cleanly when the user backs out to the thread list.
   const [templatesOpen, setTemplatesOpen] = useState(false);
-  const [templates, setTemplates] = useState<Template[]>([]);
+  // Item C2 — templates now come from the server-backed shared hook (was
+  // localStorage). The hook refetches on focus + on the cross-view change event,
+  // so the dropdown stays fresh without the old open-time localStorage read.
+  const { templates } = useTemplates();
   const templatesRef = useRef<HTMLDivElement | null>(null);
   const templatesButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -2941,28 +2943,6 @@ const ThreadView = React.memo(function ThreadView({
       setHasMoreHistory(false);
     }, 4000);
   }, [isLoadingOlder, onLoadOlder, messages]);
-
-  // Read templates from localStorage whenever the dropdown is opened. This is
-  // cheaper than a window 'storage' listener and keeps the list fresh if the
-  // user just edited their templates in another tab/route.
-  useEffect(() => {
-    if (!templatesOpen) return;
-    try {
-      const raw = window.localStorage.getItem(TEMPLATES_KEY);
-      const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-      if (Array.isArray(parsed)) {
-        // Defensive shape check — tolerate older saves that lacked fields.
-        const safe: Template[] = (parsed as Template[]).filter(
-          (t) => t && typeof t.name === 'string' && typeof t.body === 'string'
-        );
-        setTemplates(safe);
-      } else {
-        setTemplates([]);
-      }
-    } catch {
-      setTemplates([]);
-    }
-  }, [templatesOpen]);
 
   // Close on click-outside (mousedown is the right event — fires before the
   // button receives its own click and prevents toggle-flicker when reopening).
@@ -3805,32 +3785,29 @@ interface TemplatesCarouselProps {
   onInsert: (body: string) => void;
 }
 
-type TemplateItem = { id: string; name: string; body: string; createdAt?: number };
-
 /** Horizontally-scrollable row of template cards with drag-to-reorder.
- *  Reads/writes templates from localStorage (key: dnkdialer_templates).
- *  Renders nothing when no templates are saved. */
+ *  Item C2 — backed by the server API via the shared useTemplates hook
+ *  (was localStorage). Drag-to-reorder persists via PUT /api/templates/reorder,
+ *  debounced to the DROP event (not every dragOver tick). Renders nothing when
+ *  no templates are saved. */
 const TemplatesCarousel: React.FC<TemplatesCarouselProps> = ({ onInsert }) => {
-  const [templates, setTemplates] = React.useState<TemplateItem[]>([]);
+  const { templates: serverTemplates, reorder } = useTemplates();
+  // Local working order for live drag feedback. Seeded from the server list and
+  // re-synced whenever the server list changes (add/delete in the manager,
+  // refetch-on-focus) — but NOT mid-drag, so a focus refetch can't yank a card
+  // out from under the user's cursor.
+  const [order, setOrder] = React.useState<TemplateDTO[]>(serverTemplates);
   const dragIndexRef = React.useRef<number | null>(null);
+  const draggingRef = React.useRef(false);
 
   React.useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem('dnkdialer_templates');
-      const parsed = raw ? JSON.parse(raw) : [];
-      if (Array.isArray(parsed)) {
-        setTemplates(parsed.filter((t: unknown) => t && typeof (t as TemplateItem).name === 'string'));
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  const saveOrder = (reordered: TemplateItem[]) => {
-    setTemplates(reordered);
-    try { window.localStorage.setItem('dnkdialer_templates', JSON.stringify(reordered)); } catch { /* ignore */ }
-  };
+    if (draggingRef.current) return; // don't clobber an in-flight drag
+    setOrder(serverTemplates);
+  }, [serverTemplates]);
 
   const handleDragStart = (e: React.DragEvent, idx: number) => {
     dragIndexRef.current = idx;
+    draggingRef.current = true;
     e.dataTransfer.effectAllowed = 'move';
   };
 
@@ -3838,22 +3815,23 @@ const TemplatesCarousel: React.FC<TemplatesCarouselProps> = ({ onInsert }) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     if (dragIndexRef.current === null || dragIndexRef.current === idx) return;
-    // Live reorder as user drags
+    // Live reorder as user drags — local only, no network until drop.
     const from = dragIndexRef.current;
-    const reordered = [...templates];
+    const reordered = [...order];
     const [moved] = reordered.splice(from, 1);
     reordered.splice(idx, 0, moved);
     dragIndexRef.current = idx;
-    setTemplates(reordered);
+    setOrder(reordered);
   };
 
   const handleDrop = () => {
-    // Persist final order on drop
-    saveOrder(templates);
+    // Persist the final order ONCE, on drop (the debounce vs every dragOver tick).
+    draggingRef.current = false;
     dragIndexRef.current = null;
+    void reorder(order.map((t) => t.id));
   };
 
-  if (templates.length === 0) return null;
+  if (order.length === 0) return null;
 
   return (
     <div className="px-3 pb-2 flex-shrink-0">
@@ -3861,7 +3839,7 @@ const TemplatesCarousel: React.FC<TemplatesCarouselProps> = ({ onInsert }) => {
         Templates — drag to reorder
       </p>
       <div className="flex gap-2 overflow-x-auto pb-1" role="list">
-        {templates.map((t, idx) => (
+        {order.map((t, idx) => (
           <button
             key={t.id}
             type="button"

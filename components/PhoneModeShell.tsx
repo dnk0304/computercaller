@@ -58,6 +58,7 @@ import {
   type SmsMessage,
   type PhoneModeView,
 } from '@/hooks';
+import { useTemplates } from '@/hooks/useTemplates';
 
 // ---------- Lightweight helpers (module scope, pure) ------------------------
 
@@ -114,12 +115,14 @@ function appGlyph(pkg: string): string {
 // ---------- PhoneModeTemplates (compose ribbon) ----------------------------
 //
 // Compact horizontally-scrollable chip strip rendered above the sticky compose
-// in both ThreadView and ComposeView. Reads templates from the shared
-// `dnkdialer_templates` localStorage key — same contract as
-// `components/Templates.tsx` (load helper line 15) and `Dashboard.tsx`
-// (line 83). Re-reads on `storage` events so saving a template on the
-// dashboard side of the world (e.g. user expands, edits, returns to Phone
-// Mode) lands without a route change.
+// in both ThreadView and ComposeView.
+//
+// Item C2 (2026-05-27, Pixel) — now reads templates from the server-backed
+// shared useTemplates hook (was the `dnkdialer_templates` localStorage key +
+// a `storage`-event re-read hack). The hook refetches on window focus and on
+// the cross-view change event, so a template added/edited in the manager
+// reflects here without a route change or manual refresh. Read-only surface:
+// the strip inserts only, never creates, so no cap UI lives here.
 //
 // Tap behaviour: APPEND, not replace. If the user has already typed a draft
 // we don't want to obliterate it; separate with `\n\n` so concatenation reads
@@ -128,45 +131,12 @@ function appGlyph(pkg: string): string {
 // Renders nothing when zero templates saved — matches Dashboard's empty
 // behaviour (no ribbon noise for users who haven't curated any).
 
-const TEMPLATES_STORAGE_KEY = 'dnkdialer_templates';
-
-interface StoredTemplate {
-  id: string;
-  name: string;
-  body: string;
-  createdAt: number;
-}
-
-function loadStoredTemplates(): StoredTemplate[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = window.localStorage.getItem(TEMPLATES_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 interface PhoneModeTemplatesProps {
   onInsert: (body: string) => void;
 }
 
 const PhoneModeTemplates = React.memo(function PhoneModeTemplates({ onInsert }: PhoneModeTemplatesProps) {
-  const [templates, setTemplates] = useState<StoredTemplate[]>(loadStoredTemplates);
-
-  // Re-read on `storage` events. Triggers from OTHER tabs only per spec —
-  // but that's still useful: if the user keeps the dashboard open in one
-  // tab and Phone Mode (popup) in another, edits propagate live.
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key && e.key !== TEMPLATES_STORAGE_KEY) return;
-      setTemplates(loadStoredTemplates());
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
+  const { templates } = useTemplates();
 
   // Empty state — render nothing. Match Dashboard's `return null` behaviour
   // so users who haven't created any templates don't see an empty band.
