@@ -47,6 +47,31 @@ model User {
   googleId          String?   @unique
   authProvider      String    @default("email")
   subscription      Subscription?
+  // Message templates (Item C1, 2026-05-27). Per-user reusable SMS bodies that
+  // previously lived ONLY in browser localStorage (key `dnkdialer_templates`) and
+  // were wiped on cache clear. Now persisted server-side, capped at 15/user
+  // (enforced in app/api/templates). onDelete: Cascade so deleting a user removes
+  // their templates.
+  templates         Template[]
+}
+
+// Template (Item C1, 2026-05-27). One reusable SMS body per row, owned by a User.
+// Hard cap of 15 per user is enforced in the POST /api/templates handler (count
+// check → 409), NOT by a DB constraint. sortOrder persists the Dashboard
+// TemplatesCarousel drag-to-reorder; list endpoint returns sortOrder ASC,
+// createdAt DESC. body/name are unbounded String → Postgres text (multiline,
+// \n preserved).
+model Template {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  body      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
 
 model Subscription {

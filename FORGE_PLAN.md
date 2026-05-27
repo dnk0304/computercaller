@@ -1,86 +1,61 @@
-# FORGE_PLAN.md — Notification-shade "Disconnect from Lobby" action button (APK v27)
+# FORGE_PLAN.md — Item C1: Message templates server-side persistence + 15-cap (backend)
 
-> Supersedes prior Dispatch-B (Item 2 / v26) content. Base = branch tip `fc3a99d`.
+> Supersedes prior v27 notification-shade plan. Base = branch tip `effab61` on `feature/saas-multiuser`.
 
 ## Goal
-Surface the EXISTING v25 `userDisconnectFromLobby()` / `userRejoinLobby()` methods as
-state-aware action buttons on the persistent foreground-service notification, so Dennis can
-pull down the shade and disconnect from / reconnect to the lobby in one tap WITHOUT opening
-the app and WITHOUT killing the service. Android-only. No new disconnect logic.
+Move per-user message templates out of browser localStorage (`dnkdialer_templates`) into
+server-side Postgres storage keyed on the authenticated user, with a hard cap of 15
+templates per user enforced in the API. Deliver: Prisma `Template` model + migration +
+a CRUD API (list/create/update/delete/bulk-reorder). NO React changes (Pixel, part 2).
 
 ## Architecture Overview
 ```
-Notification action button (PendingIntent.getBroadcast, FLAG_IMMUTABLE, setPackage)
-        │  ACTION_DISCONNECT_LOBBY (req code 2001) / ACTION_REJOIN_LOBBY (2002)
-        ▼
-LobbyActionReceiver (NEW, RECEIVER_NOT_EXPORTED, thin pass-through)
-        │  lobbyActionHandler?.invoke(rejoin: Boolean)
-        ▼
-PhoneService.lobbyActionHandler (set in onCreate, nulled in onDestroy)
-        │  rejoin -> userRejoinLobby()  |  !rejoin -> userDisconnectFromLobby()  [REUSED AS-IS]
-        ▼
-TokenStore.setUserStayedDisconnected(...) + relay WS close/redial  ──► updateNotification(...)
-                                                                              │
-                          buildForegroundNotification(text) [shared builder]  ▼
-              state-aware action: isUserStayedDisconnected? "Reconnect" : "Disconnect"
+Browser (Pixel, part 2) ──auth_token cookie──▶ Next.js App Router route handlers
+                                                  │ validateSessionToken(token) → {userId}
+                                                  ▼
+                                        db.template.* (Prisma) ──▶ Postgres "Template" table
+                                                                    (FK userId → User, CASCADE)
 ```
-Both notification build sites (onStartCommand ACTION_START ~L1162 and `updateNotification` ~L1496)
-route through ONE new `buildForegroundNotification(text): Notification` so the correct action is
-always attached and the brand color is no longer dropped by updateNotification.
+Pattern follows `app/api/auth/me/route.ts`: cookie read → validateSessionToken → 401 on null → db call → JSON.
 
 ## Tech Stack Decision
-Kotlin / Android (existing). Reuse proven `ConnectionRequestReceiver` broadcast pattern.
-NEW separate `LobbyActionReceiver` (NOT extending ConnectionRequestReceiver) — keeps the benign
-lobby-toggle decoupled from the security-sensitive accept/decline path (Ken's preference) and
-keeps the @Volatile handler signatures distinct ((Boolean)->Unit vs (String,Boolean)->Unit).
+- Reuse existing: Next.js 16 App Router, Prisma 6.19 (postgresql), `@/lib/db`, `@/lib/auth`.
+- Auth: `validateSessionToken(auth_token)` (signature + sessionVersion), matches /api/auth/me. NOT bare verifyAccessToken.
+- No new deps. No Zod (existing routes hand-validate; keep consistent + zero new surface).
+- createdAt serialized as epoch-ms number so Pixel's existing `{createdAt: number}` type is unchanged.
 
 ## Task Breakdown
 
-### TASK-001: NEW LobbyActionReceiver.kt  [Low · SAFE ✅]
-Thin BroadcastReceiver modelled on ConnectionRequestReceiver. Two action constants +
-`@Volatile var lobbyActionHandler: ((Boolean) -> Unit)?`. onReceive maps
-ACTION_DISCONNECT_LOBBY→rejoin=false, ACTION_REJOIN_LOBBY→rejoin=true, invokes handler. ~55 lines.
+### TASK-001: Schema + migration  [Low · Lean ✅]
+- `prisma/schema.prisma`: +Template model, +User.templates back-relation.
+- NEW `prisma/migrations/<ts>_add_templates/migration.sql` — hand-authored to match Prisma postgres format. (Local DATABASE_URL is sqlite `file:` while provider is postgres; `migrate dev` can't run cross-provider, so SQL is authored to match existing migrations exactly.)
+- Verify: `npx prisma validate`, `npx prisma generate` (so client types exist for tsc).
 
-### TASK-002: PhoneService wiring  [Medium · SAFE ✅]
-- Field `private var lobbyActionReceiver: LobbyActionReceiver? = null`.
-- onCreate: register IntentFilter(2 actions) + RECEIVER_NOT_EXPORTED (API33+) mirroring the
-  ConnectionRequestReceiver block; set handler `{ rejoin -> if (rejoin) userRejoinLobby() else
-  userDisconnectFromLobby() }`.
-- onDestroy: null handler + unregister + null field (mirror serviceHandler cleanup).
-- Extract `buildForegroundNotification(text): Notification` — title/text, small icon,
-  setColor(accent_blue)+setColorized(false), contentIntent (req 0), ongoing, + ONE state-aware
-  action off `TokenStore.isUserStayedDisconnected(this)`:
-    false → "Disconnect" → getBroadcast(2001, ACTION_DISCONNECT_LOBBY, FLAG_IMMUTABLE, setPackage)
-    true  → "Reconnect"  → getBroadcast(2002, ACTION_REJOIN_LOBBY,  FLAG_IMMUTABLE, setPackage)
-- L1162 ACTION_START: startForeground(NOTIFICATION_ID, buildForegroundNotification("Phone bridge
-  is active")). Keep the post-start isUserStayedDisconnected→updateNotification(...) call.
-- updateNotification(text): notify(NOTIFICATION_ID, buildForegroundNotification(text)).
+### TASK-002: List + Create route  [Medium · Lean ✅]
+- `app/api/templates/route.ts` → GET (list, ordered sortOrder ASC, createdAt DESC) + POST (create; cap≥15 → 409; sortOrder=max+1).
 
-### TASK-003: Strings  [Low · SAFE ✅]
-res/values/strings.xml: `notif_action_disconnect`="Disconnect", `notif_action_reconnect`="Reconnect".
+### TASK-003: Update + Delete route  [Medium · Lean ✅]
+- `app/api/templates/[id]/route.ts` → PUT (partial name/body/sortOrder, ownership → 404) + DELETE (ownership → 404).
 
-### TASK-004: Version bump  [Low · SAFE ✅]
-build.gradle.kts versionCode 26→27, versionName "1.0.4"→"1.0.5".
+### TASK-004: Bulk reorder route  [Low · Lean ✅]
+- `app/api/templates/reorder/route.ts` → PUT `{orderedIds}` sets sortOrder=index for owned ids in one transaction.
 
-### TASK-005: Build + verify  [Medium]
-compileReleaseKotlin → clean assembleRelease bundleRelease → aapt dump badging (27 / 1.0.5).
-NO binary commit, NO deploy.
+### TASK-005: Verify  [Medium]
+- tsc --noEmit exit 0; prisma validate clean; eslint no-new on new files; reasoned cap walk-through (no postgres locally).
 
 ## Execution Order
-001 + 003 + 004 (parallelizable) → 002 (needs 001) → 005 → commit SOURCE on feature/saas-multiuser.
+001 → (002, 003, 004 independent after 001) → 005 → commit SOURCE on feature/saas-multiuser. NO deploy.
 
 ## Risk Flags
-- Request codes 2001/2002 distinct from accept/decline (requestId.hashCode) + contentIntent (0). Safe.
-- updateNotification previously dropped brand color; folding it in is intended (brief 3c).
-- IMPORTANCE_LOW channel still renders action buttons in expanded row — confirmed by brief.
+- Local DB sqlite `file:` vs postgres provider → cannot `migrate dev`. Mitigation: hand-author migration SQL matching existing migrations; Ken runs `prisma migrate deploy` on prod. Cap verified by walk-through.
 
 ## Open Decisions
-None — all settled by brief + v25 impl.
+None — brief is the approved spec. §4 import logic is Pixel's (out of scope).
 
 ## Status
-- TASK-001: DONE — LobbyActionReceiver.kt created.
-- TASK-002: DONE — field + onCreate register + onDestroy cleanup + buildForegroundNotification shared builder wired to both sites.
-- TASK-003: DONE — notif_action_disconnect / notif_action_reconnect added.
-- TASK-004: DONE — versionCode 27, versionName 1.0.5.
-- TASK-005: DONE — compileReleaseKotlin + clean assembleRelease bundleRelease BUILD SUCCESSFUL; aapt2 versionCode=27 versionName=1.0.5. APK 6,034,595 B + AAB 5,455,436 B left for Ken.
-- COMMITTED: 727b22c on feature/saas-multiuser (base fc3a99d). Binary NOT committed, NOT deployed.
+- TASK-001: DONE — schema.prisma (+Template model, +User.templates); migration prisma/migrations/20260527120000_add_templates/migration.sql. prisma validate clean (dummy pg URL); prisma generate OK.
+- TASK-002: DONE — app/api/templates/route.ts (GET list + POST create, cap 15 → 409).
+- TASK-003: DONE — app/api/templates/[id]/route.ts (PUT partial + DELETE, ownership → 404 via updateMany/deleteMany scoped by userId).
+- TASK-004: DONE — app/api/templates/reorder/route.ts (PUT {orderedIds} → sortOrder=index in one $transaction, non-owned ids no-op).
+- Shared: lib/templates.ts (TEMPLATE_LIMIT=15 + serializeTemplate → createdAt epoch-ms + sortOrder).
+- TASK-005: DONE — tsc --noEmit exit 0; eslint exit 0 on new files; cap walk-through PASS (count>=15 → 409, no create). No live postgres locally (sqlite file: URL vs pg provider) → Ken runs `prisma migrate deploy` on prod.
