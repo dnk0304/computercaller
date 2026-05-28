@@ -77,6 +77,27 @@ class PhoneService : Service() {
          * on a phone the user walked away from.
          */
         private const val PENDING_REQUEST_TIMEOUT_MS = 30_000L
+
+        /**
+         * Bundle C (2026-05-28) - Phase 4 audit fix M13. Phone numbers and
+         * MMS addresses are PII; release Log.d statements that previously
+         * included them in plaintext now use this helper.
+         *
+         *   - Debug build: returns the value unchanged so developers can
+         *     trace call routing in logcat.
+         *   - Release build: returns "***NNNN" (last 4 digits) so partial
+         *     correlation is still possible across log lines without leaking
+         *     the full number. Empty/null returns "<empty>".
+         *
+         * Use [redactNumber] for E.164 / national-format phone strings.
+         * Wrap broader PII-carrying log lines with `if (BuildConfig.DEBUG)`.
+         */
+        fun redactNumber(num: String?): String {
+            if (num.isNullOrEmpty()) return "<empty>"
+            if (BuildConfig.DEBUG) return num
+            val digits = num.filter { it.isDigit() }
+            return if (digits.length <= 4) "***" else "***${digits.takeLast(4)}"
+        }
     }
 
     /**
@@ -297,7 +318,7 @@ class PhoneService : Service() {
                                 if (callIncomingSentRef.compareAndSet(false, true)) {
                                     val isViaClient = client?.isOpen == true
                                     sendResponse("CALL_INCOMING", mapOf("number" to cachedOutgoing, "name" to ""), isViaClient)
-                                    android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[$cachedOutgoing] state=RINGING source=modern path=outgoing-cached")
+                                    android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[${redactNumber(cachedOutgoing)}] state=RINGING source=modern path=outgoing-cached")
                                 } else {
                                     android.util.Log.d("PhoneService", "TelephonyCallback RINGING — CALL_INCOMING already sent, skipping (source=modern)")
                                 }
@@ -313,7 +334,7 @@ class PhoneService : Service() {
                                         val isViaClient = client?.isOpen == true
                                         val fallbackNum = currentCallNumber ?: ""
                                         sendResponse("CALL_INCOMING", mapOf("number" to fallbackNum, "name" to ""), isViaClient)
-                                        android.util.Log.w("PhoneService", "CALL_INCOMING fired: number=[$fallbackNum] state=RINGING source=modern-fallback (legacy listener didn't deliver — number likely hidden)")
+                                        android.util.Log.w("PhoneService", "CALL_INCOMING fired: number=[${redactNumber(fallbackNum)}] state=RINGING source=modern-fallback (legacy listener didn't deliver — number likely hidden)")
                                     } else {
                                         android.util.Log.d("PhoneService", "TelephonyCallback modern-fallback skipped — legacy listener already delivered (source=modern-fallback)")
                                     }
@@ -326,7 +347,7 @@ class PhoneService : Service() {
                                 val isViaClient = client?.isOpen == true
                                 val num = currentCallNumber ?: ""
                                 sendResponse("CALL_ANSWERED", mapOf("number" to num), isViaClient)
-                                android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[$num] state=OFFHOOK source=modern")
+                                android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[${redactNumber(num)}] state=OFFHOOK source=modern")
 
                                 // Apply speakerphone preference — mirrors the legacy
                                 // listener so OFFHOOK from either path honors it.
@@ -349,7 +370,7 @@ class PhoneService : Service() {
                                 currentCallNumber = null
                                 currentCallSpeaker = false
                                 clearSpeakerphoneOnEnd()
-                                android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[$num] state=IDLE source=modern")
+                                android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[${redactNumber(num)}] state=IDLE source=modern")
                             } else {
                                 android.util.Log.d("PhoneService", "TelephonyCallback IDLE — CALL_ENDED already sent, skipping")
                             }
@@ -929,7 +950,7 @@ class PhoneService : Service() {
             val number = phoneNumber?.takeIf { it.isNotEmpty() } ?: currentCallNumber ?: ""
             when (state) {
                 android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
-                    android.util.Log.d("PhoneService", "PhoneStateListener state=RINGING phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
+                    android.util.Log.d("PhoneService", "PhoneStateListener state=RINGING phoneNumber=[${redactNumber(phoneNumber)}] resolvedNumber=[${redactNumber(number)}] source=legacy")
                     // New call beginning — clear CALL_ENDED + CALL_ANSWERED guards
                     // so the downstream transitions (whichever observer sees them
                     // first) can fire. CALL_INCOMING itself is guarded below.
@@ -947,18 +968,18 @@ class PhoneService : Service() {
                     if (callIncomingSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
                         sendResponse("CALL_INCOMING", mapOf("number" to number, "name" to ""), isViaClient)
-                        android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[$number] state=RINGING source=legacy")
+                        android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[${redactNumber(number)}] state=RINGING source=legacy")
                     } else {
                         android.util.Log.d("PhoneService", "PhoneStateListener RINGING — CALL_INCOMING already sent, skipping (source=legacy)")
                     }
                 }
                 android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
-                    android.util.Log.d("PhoneService", "PhoneStateListener state=OFFHOOK phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
+                    android.util.Log.d("PhoneService", "PhoneStateListener state=OFFHOOK phoneNumber=[${redactNumber(phoneNumber)}] resolvedNumber=[${redactNumber(number)}] source=legacy")
                     callEndedSentRef.set(false)
                     if (callAnsweredSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
                         sendResponse("CALL_ANSWERED", mapOf("number" to number), isViaClient)
-                        android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[$number] state=OFFHOOK source=legacy")
+                        android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[${redactNumber(number)}] state=OFFHOOK source=legacy")
                     } else {
                         android.util.Log.d("PhoneService", "PhoneStateListener OFFHOOK — CALL_ANSWERED already sent, skipping (source=legacy)")
                     }
@@ -1159,10 +1180,12 @@ class PhoneService : Service() {
                 // up the side-effects that used to live inside startServer
                 // (telephony callback, SMS receiver, content observers,
                 // notification listener bridge) and then auto-dial the
-                // SaaS relay. The user signed in via SignInActivity, the
-                // phoneToken is in TokenStore, we connect outbound to
-                // wss://computercaller.com/relay/phone?token=… so the
-                // webapp's room sees the phone immediately.
+                // SaaS relay.
+                //
+                // Bundle C (2026-05-28) — phoneToken moved from
+                // `?token=` URL query to `Authorization: Bearer` header
+                // (audit M3, APK side). Server.js accepts both for
+                // back-compat; v30 only uses the header.
                 installSideEffects()
 
                 // Disconnect-from-lobby gate (v25, 2026-05-26). The user
@@ -1182,9 +1205,9 @@ class PhoneService : Service() {
                         android.util.Log.d("PhoneService", "User chose to stay disconnected from lobby — skipping auto-dial")
                     }
                     else -> {
-                        val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
+                        val relayUrl = "wss://computercaller.com/relay/phone"
                         android.util.Log.d("PhoneService", "Auto-dialing relay (token=${phoneToken.take(8)}…)")
-                        connectToRelay(relayUrl)
+                        connectToRelay(relayUrl, mapOf("Authorization" to "Bearer $phoneToken"))
                     }
                 }
 
@@ -1253,7 +1276,14 @@ class PhoneService : Service() {
                 enableVibration(true)
                 enableLights(true)
                 setShowBadge(true)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                // Bundle C (2026-05-28) - audit fix L12. Channel default
+                // lockscreen visibility flipped from PUBLIC -> PRIVATE so the
+                // incoming-connection prompt body ("X wants to connect...")
+                // is hidden on the lockscreen. The per-notification builder
+                // sets setPublicVersion(...) with a redacted "Incoming
+                // connection" copy so the user still sees that something is
+                // happening - they just unlock to see the detail.
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
@@ -1340,6 +1370,25 @@ class PhoneService : Service() {
         // dialog copy from R.string.pair_request_body_template: "X wants to
         // connect" — concise + same string in both surfaces so users
         // recognise the same wording in the shade and the dialog.
+        //
+        // Bundle C (2026-05-28) — audit fix L12. Lockscreen no longer shows
+        // the browser identity. We build a small "public" version that says
+        // only "Incoming connection" + the app brand; the real notification
+        // is set to VISIBILITY_PRIVATE so the system substitutes the public
+        // version on the lockscreen. Action buttons still fire correctly
+        // (the platform invokes the actions from the underlying private
+        // notification once the user unlocks).
+        val publicNotif = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
+            .setContentTitle("ComputerCaller")
+            .setContentText("Incoming connection")
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(false)
+            .setOngoing(false)
+            .build()
+
         val notification = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
             .setContentTitle("Connection request")
             .setContentText("$address wants to connect")
@@ -1350,7 +1399,8 @@ class PhoneService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotif)
             .setAutoCancel(false)  // don't dismiss on tap — user must Accept or Decline
             .setOngoing(false)
             .setContentIntent(tapPending)
@@ -2000,7 +2050,11 @@ class PhoneService : Service() {
         }
     }
 
-    fun connectToRelay(relayUrl: String) {
+    fun connectToRelay(relayUrl: String, httpHeaders: Map<String, String> = emptyMap()) {
+        // Bundle C (2026-05-28) - the relayUrl is now logged without query
+        // parameters (the phoneToken used to live in `?token=`; closed by
+        // moving it to Authorization: Bearer). httpHeaders carries the
+        // bearer; do NOT log it.
         android.util.Log.d("PhoneService", "Connecting to relay: $relayUrl")
         clientRelayUrl = relayUrl
         lastRelayUrlAttempt = relayUrl
@@ -2085,7 +2139,8 @@ class PhoneService : Service() {
                 if (clientRelayUrl != null) {
                     scheduleLobbyReconnect("relay error code=$code")
                 }
-            }
+            },
+            httpHeaders = httpHeaders
         )
         client?.connectionLostTimeout = 15  // ping every 15 seconds
         client?.connect()
@@ -2194,7 +2249,16 @@ class PhoneService : Service() {
                 return@Runnable
             }
             android.util.Log.d("PhoneService", "Lobby reconnect firing")
-            connectToRelay(url)
+            // Bundle C — re-fetch the bearer from TokenStore on every reconnect.
+            // The token is long-lived but the v30 wire format keeps it in the
+            // Authorization header, not the URL — so the saved url has no auth
+            // in it and the headers must be reattached here.
+            val phoneToken = TokenStore.getPhoneToken(this@PhoneService)
+            if (phoneToken.isNullOrBlank()) {
+                android.util.Log.w("PhoneService", "Lobby reconnect: no phoneToken in TokenStore — bailing")
+                return@Runnable
+            }
+            connectToRelay(url, mapOf("Authorization" to "Bearer $phoneToken"))
         }
         reconnectRunnable = task
         reconnectHandler.postDelayed(task, lobbyReconnectDelayMs)
@@ -2283,10 +2347,18 @@ class PhoneService : Service() {
         android.util.Log.d("PhoneService", "Manual reconnect requested")
         val savedUrl = clientRelayUrl
         if (savedUrl != null) {
+            // Bundle C — Authorization Bearer header must be reattached on
+            // every dial. Token is fetched fresh from TokenStore in case it
+            // changed since the last connect (Sign Out + sign-in cycle).
+            val phoneToken = TokenStore.getPhoneToken(this)
+            if (phoneToken.isNullOrBlank()) {
+                android.util.Log.w("PhoneService", "Manual reconnect: no phoneToken in TokenStore — bailing")
+                return
+            }
             android.util.Log.d("PhoneService", "Reconnecting to: $savedUrl")
             client?.close()
             client = null
-            connectToRelay(savedUrl)
+            connectToRelay(savedUrl, mapOf("Authorization" to "Bearer $phoneToken"))
         } else {
             android.util.Log.w("PhoneService", "No saved relay URL to reconnect to")
         }
@@ -2384,8 +2456,9 @@ class PhoneService : Service() {
             android.util.Log.w("PhoneService", "Rejoin requested but no phoneToken — cannot dial")
             return
         }
-        val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
-        connectToRelay(relayUrl)
+        // Bundle C — phoneToken moved to Authorization: Bearer header (M3).
+        val relayUrl = "wss://computercaller.com/relay/phone"
+        connectToRelay(relayUrl, mapOf("Authorization" to "Bearer $phoneToken"))
     }
 
     fun leaveActivePair() {
@@ -2595,7 +2668,7 @@ class PhoneService : Service() {
                     // it before narrowing to Int. Null when the web didn't pick a SIM
                     // (single-SIM phones, or "default" selection).
                     val simId = (payload?.get("simId") as? Double)?.toInt()
-                    android.util.Log.d("PhoneService", "MAKE_CALL for: $number (speaker=$speaker, simId=$simId)")
+                    android.util.Log.d("PhoneService", "MAKE_CALL for: ${redactNumber(number)} (speaker=$speaker, simId=$simId)")
                     // Cache the requested number — PhoneStateListener uses this when the
                     // platform omits the number from state callbacks.
                     currentCallNumber = number

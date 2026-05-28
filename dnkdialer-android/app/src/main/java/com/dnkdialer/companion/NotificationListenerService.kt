@@ -17,6 +17,45 @@ import android.service.notification.StatusBarNotification
  * native reply PendingIntent.
  *
  * User must grant "Notification access" in Android Settings once.
+ *
+ * =====================================================================
+ * Bundle C (2026-05-28) - audit M15 - Onboarding scope disclosure.
+ *
+ * The user-facing onboarding screen (SignInActivity success -> MainActivity
+ * permissions pane) must clearly explain WHAT this service forwards before
+ * the user grants "Notification access" in Android Settings. The grant is
+ * extremely broad: once enabled, this service can read the title, body,
+ * action set, and reply RemoteInput of EVERY notification posted by EVERY
+ * app on the device - including 2FA codes, banking alerts, messaging app
+ * previews, calendar reminders, and system notifications.
+ *
+ * What we forward to the paired browser (per onNotificationPosted below):
+ *   - app package name + label
+ *   - notification title + text (or BigTextStyle / InboxStyle body)
+ *   - timestamp + status-bar key (so reply actions can target it)
+ *   - RemoteInput action result-keys (so a browser-side reply can fire
+ *     the native PendingIntent that posts the reply)
+ *
+ * What we do NOT forward:
+ *   - notifications from our own app (com.dnkdialer.companion)
+ *   - large icons / image attachments (text only)
+ *
+ * The browser also receives REMOVED events when a notification is dismissed
+ * on the phone, so the mirror stays in sync.
+ *
+ * The browser holds notifications in memory only; nothing is persisted
+ * server-side. When the relay socket closes, in-flight notifications are
+ * dropped on the browser.
+ *
+ * Permission discipline:
+ *   - The Notification Access grant is a separate, opt-in setting the user
+ *     toggles in Android system settings. Revocation is immediate.
+ *   - Users on a shared phone should weigh that any browser paired to their
+ *     ComputerCaller session can see every notification posted while paired.
+ *     The Bundle A relay-ticket flow (browser side) plus the v18 Accept /
+ *     Decline gate on every browser pairing both reduce the blast radius
+ *     of an unintended pairing.
+ * =====================================================================
  */
 class DnkNotificationListenerService : NotificationListenerService() {
 

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Bundle C (2026-05-28) - Phase 4 audit fix H11.
+
+  Pairs with android:allowBackup="false" + android:fullBackupContent="false"
+  + android:dataExtractionRules="@xml/data_extraction_rules" in
+  AndroidManifest.xml. allowBackup=false alone is enough on API < 31; the
+  dataExtractionRules attribute is required on API 31+ (Android 12) to
+  cover the new device-transfer ("clone to new device") flow that backup
+  rules don't speak for.
+
+  Excludes EVERYTHING from both cloud-backup and device-transfer. The
+  EncryptedSharedPreferences phoneToken in TokenStore must never leave the
+  device through either channel - the key material lives in the Android
+  Keystore (TEE/StrongBox) and the ciphertext is unrecoverable without it,
+  but a transferred copy would still be observable in a backup blob.
+
+  - "root" covers any file outside the other named domains.
+  - "file" / "database" / "sharedpref" / "external" cover the standard
+    per-app storage roots.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

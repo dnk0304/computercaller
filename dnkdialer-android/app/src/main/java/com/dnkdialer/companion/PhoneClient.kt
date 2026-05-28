@@ -10,9 +10,9 @@ import java.net.URI
  * owning PhoneService so it can drive the UI's connection-state machine.
  *
  * Callback contract:
- *   - [onConnectionChange] — fires on EVERY transition (open / close).
+ *   - [onConnectionChange] - fires on EVERY transition (open / close).
  *     The boolean is "are we currently open?".
- *   - [onConnectionError] — fires on close-with-non-normal-code AND on
+ *   - [onConnectionError] - fires on close-with-non-normal-code AND on
  *     the raw onError exception path. Carries the close code (or -1
  *     for pre-handshake exceptions) + best-effort reason string so the
  *     UI can map it to actionable user-facing copy (refused vs timed
@@ -23,13 +23,21 @@ import java.net.URI
  * client-connected flag. Splitting the error signal out means we don't
  * have to rewrite that wiring; the new onConnectionError handler exists
  * ONLY to fuel the FAILED state in MainActivity.
+ *
+ * Bundle C (2026-05-28) - the constructor takes an optional [httpHeaders]
+ * map that is forwarded to the underlying Java-WebSocket WebSocketClient
+ * via its (URI, Map<String,String>) constructor. The phoneToken now ships
+ * in `Authorization: Bearer <phoneToken>` instead of the WS URL's
+ * `?token=` query string (closes audit finding M3 APK side). Server.js
+ * accepts both paths for back-compat.
  */
 class PhoneClient(
     serverUri: URI,
     private val onCommand: (String, Map<String, Any>?) -> Unit,
     private val onConnectionChange: (Boolean) -> Unit,
-    private val onConnectionError: ((code: Int, reason: String?) -> Unit)? = null
-) : WebSocketClient(serverUri) {
+    private val onConnectionError: ((code: Int, reason: String?) -> Unit)? = null,
+    httpHeaders: Map<String, String> = emptyMap()
+) : WebSocketClient(serverUri, httpHeaders) {
 
     private val gson = Gson()
 
@@ -61,10 +69,10 @@ class PhoneClient(
     override fun onClose(code: Int, reason: String?, remote: Boolean) {
         android.util.Log.d("PhoneClient", "Disconnected from relay (code: $code, reason: $reason, remote: $remote)")
         onConnectionChange(false)
-        // Code 1000 is the normal-closure code. Anything else — including
+        // Code 1000 is the normal-closure code. Anything else - including
         // 1006 (abnormal closure, common when the server is unreachable),
         // 4401 (the relay's invalid-token close), 1001 (going away), etc.
-        // — should surface as a FAILED state to the user. Code 1000 with
+        // - should surface as a FAILED state to the user. Code 1000 with
         // a user-initiated disconnect path is handled separately in
         // PhoneService.disconnectRelay() which clears the error first.
         if (code != 1000) {

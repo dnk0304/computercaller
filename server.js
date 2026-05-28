@@ -565,15 +565,29 @@ function startRelay(httpServer) {
       userId = resolvedUserId;
       phoneToken = legacyToken;
     } else if (ticket) {
-      authVia = 'relay-ticket';
+      // Try ticket-JWT validation first (the browser + future native clients).
       const resolved = await validateTicket(ticket);
-      if (!resolved) {
-        console.log(`[Relay] Rejecting connection — invalid relay-ticket ${redactToken(ticket)}`);
-        try { ws.close(4401, 'invalid_ticket'); } catch (e) {}
-        return;
+      if (resolved) {
+        authVia = 'relay-ticket';
+        userId = resolved.userId;
+        phoneToken = resolved.phoneToken;
+      } else {
+        // Bundle C (2026-05-28) — v30 APK fallback. The Android client sends
+        // its long-lived phoneToken via `Authorization: Bearer <phoneToken>`
+        // (M3 closes "phoneToken in WS URL query"). If JWT verify fails the
+        // value can't be a relay-ticket — validate it as a legacy phoneToken
+        // before rejecting. Symmetric with the legacyToken/?token= branch
+        // above; same lookup, same room key, just sourced from the header.
+        const resolvedUserId = await validateToken(ticket);
+        if (!resolvedUserId) {
+          console.log(`[Relay] Rejecting connection — invalid bearer ${redactToken(ticket)}`);
+          try { ws.close(4401, 'invalid_token'); } catch (e) {}
+          return;
+        }
+        authVia = 'legacy-token-bearer';
+        userId = resolvedUserId;
+        phoneToken = ticket;
       }
-      userId = resolved.userId;
-      phoneToken = resolved.phoneToken;
     } else {
       console.log('[Relay] Rejecting connection — no auth in query/header');
       try { ws.close(4401, 'invalid_token'); } catch (e) {}

@@ -187,8 +187,22 @@ android {
         // (insets resolve to existing bar heights). windowLightStatusBar=false
         // left intact so status-bar icons stay light on the near-black surface.
         // No AGP/Gradle/Kotlin bump needed (AGP 8.13.2 supports compileSdk 35).
-        versionCode = 29
-        versionName = "1.0.7"
+        //
+        // Bundle C - Phase 4 Android security hardening (2026-05-28): 29 -> 30 /
+        // 1.0.7 -> 1.0.8. Closes audit findings H11 (allowBackup=true ->
+        // false + dataExtractionRules), H12 (usesCleartextTraffic=true ->
+        // network_security_config.xml with RFC1918-only cleartext), H13
+        // (release APK not minified -> R8 + isShrinkResources + populated
+        // proguard-rules.pro), M3 APK side (phoneToken moved from
+        // ?token= URL query to Authorization: Bearer header on WS upgrade -
+        // server.js Bundle A accepts both paths), M12 (TokenStore silent
+        // plaintext fallback on Keystore failure -> fail-closed with
+        // EncryptedSharedPreferencesUnavailableException), M13/M14 (PII in
+        // release Log.d -> BuildConfig.DEBUG-gated), L12 (incoming-connection
+        // notification VISIBILITY_PUBLIC -> PRIVATE + redacted public version).
+        // Deferred: TLS leaf SPKI pinning (needs backup-pin discipline).
+        versionCode = 30
+        versionName = "1.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -206,7 +220,17 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Bundle C (2026-05-28) - Phase 4 audit fix H13. R8 minification
+            // strips dead code + obfuscates names; isShrinkResources strips
+            // unreferenced resources discovered by minification. Together
+            // these (a) shrink the release APK, (b) make reverse-engineering
+            // markedly harder, and (c) discover dead code + accidentally
+            // exposed symbols at build time. proguard-rules.pro carries the
+            // -keep rules for Gson model classes, Java-WebSocket reflection
+            // entry points, and the manifest-referenced services /
+            // receivers / activities (all of which must survive R8).
+            isMinifyEnabled = true
+            isShrinkResources = true
             // Wire the release signing config so `assembleRelease` produces
             // a signed APK ready for Play Console + sideload.
             if (keystorePropertiesFile.exists()) {
@@ -217,6 +241,13 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+    // Bundle C (2026-05-28) - AGP 8 no longer generates the BuildConfig class
+    // unless this is opted in. PhoneService.kt + SignInActivity.kt gate their
+    // PII Log.d statements behind BuildConfig.DEBUG (M13/M14) which compiles
+    // away in release - this opt-in is what makes the constant exist.
+    buildFeatures {
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8

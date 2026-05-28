@@ -97,8 +97,21 @@ class SignInActivity : AppCompatActivity() {
                 setLoading(false)
                 when (result) {
                     is LoginResult.Success -> {
-                        TokenStore.save(this, result.phoneToken, result.deviceName)
-                        android.util.Log.d(TAG, "Sign-in OK — token stored (${result.phoneToken.take(8)}…)")
+                        // Bundle C (audit M12) - TokenStore now throws if the
+                        // Keystore-backed EncryptedSharedPreferences cannot be
+                        // opened. Catch and surface a user-facing error rather
+                        // than appearing to sign in successfully while the
+                        // token is silently lost.
+                        try {
+                            TokenStore.save(this, result.phoneToken, result.deviceName)
+                        } catch (e: TokenStore.EncryptedPrefsUnavailableException) {
+                            android.util.Log.e(TAG, "Sign-in OK but TokenStore unavailable: ${e.javaClass.simpleName}")
+                            showError(getString(R.string.signin_error_generic))
+                            return@runOnUiThread
+                        }
+                        if (BuildConfig.DEBUG) {
+                            android.util.Log.d(TAG, "Sign-in OK — token stored (${result.phoneToken.take(8)}…)")
+                        }
                         startActivity(Intent(this, MainActivity::class.java))
                         finish()
                     }
@@ -145,18 +158,29 @@ class SignInActivity : AppCompatActivity() {
                 401 -> LoginResult.InvalidCredentials
                 403 -> LoginResult.Unverified
                 else -> {
-                    android.util.Log.w(TAG, "Sign-in HTTP $code: $text")
+                    // Bundle C (audit M14) - response body may contain PII
+                    // (email echoed back, internal stack frames, DB hints).
+                    // Log the full body only in debug builds; release gets
+                    // a body-suppressed line.
+                    if (BuildConfig.DEBUG) {
+                        android.util.Log.w(TAG, "Sign-in HTTP $code: $text")
+                    } else {
+                        android.util.Log.w(TAG, "Sign-in HTTP $code - body suppressed in release")
+                    }
                     LoginResult.Generic
                 }
             }
         } catch (e: java.net.SocketTimeoutException) {
-            android.util.Log.w(TAG, "Sign-in timeout: ${e.message}")
+            android.util.Log.w(TAG, "Sign-in timeout")
             LoginResult.Network
         } catch (e: java.io.IOException) {
-            android.util.Log.w(TAG, "Sign-in IOException: ${e.message}")
+            // Exception class name only; message may include the target URL
+            // / cert details which are safe but the exception message can
+            // also include user-supplied input on some JDK versions.
+            android.util.Log.w(TAG, "Sign-in IOException: ${e.javaClass.simpleName}")
             LoginResult.Network
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Sign-in unexpected: ${e.message}", e)
+            android.util.Log.e(TAG, "Sign-in unexpected: ${e.javaClass.simpleName}")
             LoginResult.Generic
         } finally {
             conn?.disconnect()
