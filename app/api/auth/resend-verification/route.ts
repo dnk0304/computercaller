@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { signEmailToken } from '@/lib/auth';
+import { signEmailToken, requireSameOrigin } from '@/lib/auth';
 import { sendVerificationEmail } from '@/lib/email';
 
 // ratelimit-todo: production must rate-limit this endpoint (e.g. 3/hr per email +
@@ -14,6 +14,9 @@ const GENERIC_RESPONSE = {
 
 export async function POST(req: NextRequest) {
   try {
+    const csrf = requireSameOrigin(req);
+    if (!csrf.ok) return NextResponse.json({ error: 'CSRF check failed' }, { status: 403 });
+
     const { email } = await req.json();
 
     if (!email || typeof email !== 'string') {

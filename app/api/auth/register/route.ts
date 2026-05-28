@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-import { signEmailToken } from '@/lib/auth';
+import { signEmailToken, requireSameOrigin } from '@/lib/auth';
 import { sendVerificationEmail } from '@/lib/email';
 
 export async function POST(req: NextRequest) {
   try {
+    const csrf = requireSameOrigin(req);
+    if (!csrf.ok) return NextResponse.json({ error: 'CSRF check failed' }, { status: 403 });
+
     const { email, password } = await req.json();
 
     if (!email || !password) {

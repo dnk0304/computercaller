@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-import { signAccessToken } from '@/lib/auth';
+import { signAccessToken, requireSameOrigin } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   try {
+    const csrf = requireSameOrigin(req);
+    if (!csrf.ok) return NextResponse.json({ error: 'CSRF check failed' }, { status: 403 });
+
     const { email, password } = await req.json();
 
     const user = await db.user.findUnique({

@@ -1,7 +1,27 @@
 import jwt from 'jsonwebtoken';
 import { db } from '@/lib/db';
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-in-production';
+// Bundle B (2026-05-28) — H6 fix. Previously this fell back to a hardcoded
+// 'dev-secret-change-in-production' if JWT_SECRET was unset, which meant a
+// production deploy without the env var would silently sign tokens any
+// attacker could forge. Now: throw at module load if missing or < 32 chars.
+// IIFE so the check runs exactly once when the module is first imported.
+const JWT_SECRET = (() => {
+  const v = process.env.JWT_SECRET;
+  if (!v || v.length < 32) {
+    throw new Error(
+      'JWT_SECRET must be set and >=32 chars. Generate with: ' +
+        'node -e "console.log(crypto.randomBytes(48).toString(\'base64url\'))"',
+    );
+  }
+  return v;
+})();
+
+// Pin verification to HS256 — defeats the alg-confusion attack where an
+// attacker crafts a token with alg=none or alg=HS256-with-the-public-key-as-secret
+// and tricks jsonwebtoken into accepting it. We only ever SIGN with HS256, so
+// pinning here is loss-free.
+const JWT_VERIFY_OPTS = { algorithms: ['HS256' as const] };
 
 export interface JwtPayload {
   userId: string;
@@ -25,7 +45,7 @@ export function signAccessToken(payload: JwtPayload): string {
 
 export function verifyAccessToken(token: string): JwtPayload | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as JwtPayload;
+    return jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTS) as JwtPayload;
   } catch {
     return null;
   }
@@ -74,4 +94,59 @@ export function signEmailToken(userId: string): string {
 
 export function signResetToken(userId: string): string {
   return jwt.sign({ userId, purpose: 'reset-password' }, JWT_SECRET, { expiresIn: '1h' });
+}
+
+/**
+ * Bundle B (2026-05-28) — M1 fix. SameSite=Lax on auth_token blocks most
+ * cross-site form submissions, but a same-site attacker (subdomain, or any
+ * page on computercaller.com) can still craft a forged POST that rides the
+ * cookie. This helper layers an Origin/Referer check on top.
+ *
+ * Strategy:
+ *   - GET/HEAD/OPTIONS: always allow (no mutation).
+ *   - Other methods: require Origin == expected, OR (no Origin AND Referer
+ *     starts with expected). Browsers always set Origin on cross-origin
+ *     POST; some same-origin tools omit it but include Referer.
+ *
+ * The expected origin is computed from NODE_ENV:
+ *   - production → 'https://computercaller.com' (hardcoded; the canonical
+ *     deploy. If we ever multi-domain, replace with an env-driven allowlist.)
+ *   - other → 'http://<host>' from the Host header (lets dev work on
+ *     localhost:3000, 127.0.0.1:3000, LAN IPs, etc. without code changes).
+ *
+ * Returns a discriminated union so callers can log the reason without
+ * exposing it to the response body. Failure reason is logged server-side
+ * only — client gets a generic 403.
+ *
+ * IMPORTANT: not all mutating endpoints can use this. Exempted:
+ *   - /api/auth/google/callback — Google redirects with its origin
+ *   - /api/webhooks/whop — Whop's webhook, HMAC-protected separately
+ *   - /api/auth/apk-login — called by the Android native HTTP client which
+ *     does not set Origin. Auth on that endpoint is the email+password
+ *     credential pair, not the browser cookie.
+ */
+export function requireSameOrigin(
+  req: Request,
+): { ok: true } | { ok: false; reason: string } {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    return { ok: true };
+  }
+  const origin = req.headers.get('origin');
+  const referer = req.headers.get('referer');
+  const host = req.headers.get('host');
+  const expected =
+    process.env.NODE_ENV === 'production'
+      ? 'https://computercaller.com'
+      : `http://${host}`;
+  if (origin && origin === expected) return { ok: true };
+  // Same-origin fetches from some user agents omit Origin but always set
+  // Referer. Accept Referer as a fallback when (and only when) Origin is
+  // absent — never accept Referer alone if Origin is present-and-wrong.
+  if (!origin && referer && referer.startsWith(expected + '/')) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    reason: `bad-origin (origin=${origin ?? 'null'}, referer=${referer ?? 'null'}, expected=${expected})`,
+  };
 }

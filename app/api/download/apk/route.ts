@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAccessToken } from '@/lib/auth';
+import { validateSessionToken } from '@/lib/auth';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -57,7 +57,10 @@ export async function GET(req: NextRequest) {
   if (!token) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
   }
-  const payload = verifyAccessToken(token);
+  // Bundle B M10 fix — was verifyAccessToken (signature-only). Switched to
+  // validateSessionToken so a kicked session (sessionVersion bumped by a fresh
+  // login elsewhere) is rejected here too. Matches /api/auth/me's pattern.
+  const payload = await validateSessionToken(token);
   if (!payload) {
     return NextResponse.json({ error: 'Invalid or expired session' }, { status: 401 });
   }

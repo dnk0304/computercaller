@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateSessionToken } from '@/lib/auth';
+import { validateSessionToken, requireSameOrigin } from '@/lib/auth';
 import { db } from '@/lib/db';
 
 // Item C1 (2026-05-27) — bulk reorder templates (Ken's preference over per-row PUTs).
@@ -11,6 +11,9 @@ import { db } from '@/lib/db';
 //   Returns { ok: true }. The next GET reflects the new order (sortOrder ASC).
 export async function PUT(req: NextRequest) {
   try {
+    const csrf = requireSameOrigin(req);
+    if (!csrf.ok) return NextResponse.json({ error: 'CSRF check failed' }, { status: 403 });
+
     const token = req.cookies.get('auth_token')?.value;
     if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
