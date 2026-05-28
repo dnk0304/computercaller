@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Check } from 'lucide-react';
 import { AuthBackdrop } from '@/components/AuthBackdrop';
 import { AuthSplash } from '@/components/AuthSplash';
+import { sanitiseNext } from '@/lib/google';
 
 // Inline Google "G" logo SVG — avoids a network round-trip + zero new deps.
 // Coloured per Google's 2015 brand identity guidelines for the "G" mark.
@@ -49,7 +50,7 @@ function LoginForm() {
   const [signedIn, setSignedIn] = useState(false);
 
   const verified = params.get('verified') === '1';
-  const next = params.get('next') || '/app';
+  const next = sanitiseNext(params.get('next'));
   const oauthError = params.get('error');
 
   // Map Google callback error codes to friendly copy. Anything we don't
