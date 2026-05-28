@@ -31,7 +31,22 @@ model User {
   resetTokenExpiry  DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
-  phoneToken        String    @unique @default(cuid())  // WSS connection token for Android APK
+  // phoneToken — relay/WS auth bearer used by the Android APK.
+  //
+  // Bundle A (2026-05-28) Phase 4 fix (C2):
+  // The `cuid()` default was a non-cryptographic 25-char ID — predictable in
+  // structure, generated as User.phoneToken regardless of context. Now: NO db
+  // default; every app-code site that creates a User must explicitly populate
+  // phoneToken with `crypto.randomBytes(32).toString('base64url')` (≈43 chars
+  // of entropy, base64url-safe so it survives URL/query encoding).
+  //
+  // The accompanying migration (`phoneToken_random_default`) drops the SQL
+  // DEFAULT clause AND rotates every existing row's phoneToken to a fresh
+  // crypto-random value — invalidating every v29 APK token in one shot.
+  // Dennis (the only paying user) re-pairs via /api/auth/apk-login. Once
+  // Bundle C v30 lands the APK switches to relay-ticket and the legacy
+  // ?token= path can be deprecated.
+  phoneToken        String    @unique  // set in app code, never via @default
   // sessionVersion — monotonic counter, bumped on every successful login.
   // JWTs are signed with the post-bump value in their `ver` claim. Any token
   // whose `ver` no longer matches the DB column is rejected → effectively a

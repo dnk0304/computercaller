@@ -14,9 +14,14 @@ export async function GET(req: NextRequest) {
     const payload = await validateSessionToken(token);
     if (!payload) return NextResponse.json({ user: null }, { status: 401 });
 
+    // Bundle A (2026-05-28) Phase 4 fix (L9, C1): phoneToken removed from the
+    // select — over-disclosure on every browser /me poll exposed the relay
+    // bearer to any client-side cache or XSS. The browser now fetches a 30s
+    // relay-ticket from /api/auth/relay-ticket instead; the QR-pairing flow
+    // uses /api/auth/qr-token; APK reads phoneToken via /api/auth/apk-login.
     const user = await db.user.findUnique({
       where: { id: payload.userId },
-      select: { id: true, email: true, phoneToken: true, emailVerified: true, subscription: true },
+      select: { id: true, email: true, emailVerified: true, subscription: true },
     });
 
     if (!user) return NextResponse.json({ user: null }, { status: 401 });

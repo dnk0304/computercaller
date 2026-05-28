@@ -16,7 +16,11 @@ import {
 interface UserData {
   id: string;
   email: string;
-  phoneToken: string;
+  // Bundle A (2026-05-28): phoneToken removed from /api/auth/me response
+  // (Phase 4 fix L9 / C1). This page never rendered it (the comment near
+  // line 287 explicitly says no phoneToken or pairing metadata is shown).
+  // The relay bearer is now obtained per-connection via /api/auth/relay-
+  // ticket, and the QR pairing flow uses /api/auth/qr-token.
   subscription: {
     status: string;
     trialEndsAt: string;

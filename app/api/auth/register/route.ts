@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { signEmailToken, requireSameOrigin } from '@/lib/auth';
@@ -26,6 +27,14 @@ export async function POST(req: NextRequest) {
     const passwordHash = await bcrypt.hash(password, 12);
     const trialEndsAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days
 
+    // Bundle A (2026-05-28) Phase 4 fix (C2): generate phoneToken in
+    // application code — schema no longer carries a SQL default (the prior
+    // `cuid()` default produced non-cryptographic, structurally-predictable
+    // bearers). 32 random bytes encoded base64url ≈ 256 bits of entropy in
+    // 43 URL-safe characters. Same format the prior migration's bulk UPDATE
+    // produces for existing rows, so the column is uniform across the table.
+    const phoneToken = crypto.randomBytes(32).toString('base64url');
+
     // Dev-mode auto-verify: if no Resend API key is configured, skip the
     // email step entirely and mark the user as already verified. Lets us
     // run the full A→B flow on localhost with zero external deps. In
@@ -39,6 +48,7 @@ export async function POST(req: NextRequest) {
       data: {
         email: email.toLowerCase(),
         passwordHash,
+        phoneToken,
         emailVerified: skipEmailVerification,
         subscription: {
           create: { status: 'trial', trialEndsAt },

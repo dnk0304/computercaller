@@ -22,7 +22,29 @@ const { parse } = require('url');
 const { WebSocketServer, WebSocket } = require('ws');
 const os = require('os');
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
+
+// Bundle A (2026-05-28) — Phase 4 security review fix (H7).
+// Every server.js log site that previously included the raw phoneToken (and
+// every site that includes any user-supplied token, including the new
+// relay-ticket path) now runs the token through redactToken() first. Coolify
+// keeps container logs accessible at :8000 with the Coolify panel open, so
+// raw bearers in stdout were directly exfil-able by anyone who got panel
+// access — and the relay logs every connection event and every dropped
+// frame, so a single connect produced 5–10 raw-token lines per peer.
+//
+// Format: first 8 chars of the bearer + ':' + first 8 hex chars of
+// sha256(bearer). 8+8 is enough entropy to disambiguate users in a log
+// while being totally non-reversible (the hash is the truncated digest of
+// the full 32-byte token, not a prefix lookup). Matches the standard
+// convention used by other audited log redactions (Stripe, GitHub APIs).
+function redactToken(t) {
+  if (!t || typeof t !== 'string') return '<no-token>';
+  const prefix = t.slice(0, 8);
+  const hash = crypto.createHash('sha256').update(t).digest('hex').slice(0, 8);
+  return `${prefix}:${hash}`;
+}
 
 const NEXT_PORT = parseInt(process.env.PORT || '3000', 10);
 const RELAY_PORT = parseInt(process.env.RELAY_PORT || '3001', 10);
@@ -154,7 +176,7 @@ function startRelay(httpServer) {
     if (room.active.browser || room.active.phone) return;
     if (room.pendingPairing) return;
     rooms.delete(room.token);
-    console.log(`[Relay] Reaped empty room ${room.token}`);
+    console.log(`[Relay] Reaped empty room ${redactToken(room.token)}`);
   }
 
   function safeSend(ws, msg) {
@@ -220,7 +242,7 @@ function startRelay(httpServer) {
   function terminateActivePair(room, reason) {
     const { browser, phone } = room.active;
     if (!browser && !phone) return;
-    console.log(`[Relay][${room.token}] terminateActivePair: ${reason}`);
+    console.log(`[Relay][${redactToken(room.token)}] terminateActivePair: ${reason}`);
     room.active = { browser: null, phone: null };
 
     const payload = JSON.stringify({ reason });
@@ -308,7 +330,7 @@ function startRelay(httpServer) {
     const timer = setTimeout(() => {
       // 30 s elapsed with no answer. Tell both sides and clear state.
       if (room.pendingPairing?.id !== pairingId) return; // raced — already resolved
-      console.log(`[Relay][${room.token}] Pairing ${pairingId} timed out`);
+      console.log(`[Relay][${redactToken(room.token)}] Pairing ${pairingId} timed out`);
       const pending = room.pendingPairing;
       room.pendingPairing = null;
       safeSend(pending.browserWs, `PAIRING_TIMEOUT:${JSON.stringify({})}`);
@@ -324,7 +346,7 @@ function startRelay(httpServer) {
       ? { pairingId, ua, ip, deviceLabel }
       : { pairingId, ua, ip };
     safeSend(phoneWs, `PAIRING_REQUEST:${JSON.stringify(forwardPayload)}`);
-    console.log(`[Relay][${room.token}] Pairing request ${pairingId} forwarded to phone (ua=${ua.slice(0, 40)} ip=${ip} label=${deviceLabel ?? '-'})`);
+    console.log(`[Relay][${redactToken(room.token)}] Pairing request ${pairingId} forwarded to phone (ua=${ua.slice(0, 40)} ip=${ip} label=${deviceLabel ?? '-'})`);
   }
 
   /**
@@ -335,11 +357,11 @@ function startRelay(httpServer) {
   function handleAcceptPairing(room, phoneWs, payload) {
     const pending = room.pendingPairing;
     if (!pending) {
-      console.log(`[Relay][${room.token}] ACCEPT_PAIRING ignored — no pending`);
+      console.log(`[Relay][${redactToken(room.token)}] ACCEPT_PAIRING ignored — no pending`);
       return;
     }
     if (!payload?.pairingId || payload.pairingId !== pending.id) {
-      console.log(`[Relay][${room.token}] ACCEPT_PAIRING ignored — id mismatch (got=${payload?.pairingId} expected=${pending.id})`);
+      console.log(`[Relay][${redactToken(room.token)}] ACCEPT_PAIRING ignored — id mismatch (got=${payload?.pairingId} expected=${pending.id})`);
       return;
     }
     const browserWs = pending.browserWs;
@@ -349,7 +371,7 @@ function startRelay(httpServer) {
     // termination to the phone immediately — accepting an empty handshake
     // would leave the phone stuck in "active" while the browser is gone.
     if (!browserWs || browserWs.readyState !== WebSocket.OPEN) {
-      console.log(`[Relay][${room.token}] ACCEPT_PAIRING but browser is gone — notifying phone`);
+      console.log(`[Relay][${redactToken(room.token)}] ACCEPT_PAIRING but browser is gone — notifying phone`);
       safeSend(phoneWs, `PAIRING_TERMINATED:${JSON.stringify({ reason: 'browser_gone' })}`);
       maybeReapRoom(room);
       return;
@@ -368,7 +390,7 @@ function startRelay(httpServer) {
     const deviceName = phoneWs.deviceName ?? null;
     safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
     safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: pending.ua, ip: pending.ip })}`);
-    console.log(`[Relay][${room.token}] Pairing ${pending.id} ACTIVE — browser ↔ phone`);
+    console.log(`[Relay][${redactToken(room.token)}] Pairing ${pending.id} ACTIVE — browser ↔ phone`);
   }
 
   /**
@@ -383,7 +405,7 @@ function startRelay(httpServer) {
     if (browserWs) {
       safeSend(browserWs, `PAIRING_DECLINED:${JSON.stringify({})}`);
     }
-    console.log(`[Relay][${room.token}] Pairing ${pending.id} declined by phone`);
+    console.log(`[Relay][${redactToken(room.token)}] Pairing ${pending.id} declined by phone`);
     maybeReapRoom(room);
   }
 
@@ -409,20 +431,47 @@ function startRelay(httpServer) {
   // ---------------------------------------------------------------------------
 
   /**
-   * Extract phoneToken from the connection request URL.
-   *   /relay?token=XYZ       → ('XYZ', '/')         browser
-   *   /relay/phone?token=XYZ → ('XYZ', '/phone')    phone
-   * Dispatch #28: missing token is rejected at the connection handler
-   * (close 4401). No fallback room anymore.
+   * Extract the auth material from a relay upgrade request.
+   *
+   * Bundle A (2026-05-28) — accepts TWO distinct credentials:
+   *   • legacyToken — ?token=<phoneToken>           the long-lived bearer
+   *                                                  every v29 APK already
+   *                                                  has in its TokenStore.
+   *   • ticket     — ?ticket=<jwt>                   a 30s HS256 JWT minted
+   *                  OR Authorization: Bearer <jwt>  by /api/auth/relay-
+   *                                                  ticket. Used by the
+   *                                                  browser today, and by
+   *                                                  Bundle-C v30 APK.
+   *
+   * The Authorization header path exists for symmetry / future native
+   * clients — current browsers cannot set Authorization on a WS upgrade
+   * via JS, so the ?ticket= path is what the browser actually uses.
+   *
+   * Routing layout (unchanged):
+   *   /relay         → '/' (browser)
+   *   /relay/phone   → '/phone' (phone)
+   *
+   * Returns nulls for absent fields. Validation happens in the caller.
    */
   function parseConnection(req) {
     const parsed = parse(req.url || '/', true);
     const pathname = parsed.pathname || '/';
-    const rawToken = parsed.query?.token;
-    const token = (typeof rawToken === 'string' && rawToken.trim().length > 0)
-      ? rawToken.trim()
+    const rawLegacy = parsed.query?.token;
+    const rawTicketQ = parsed.query?.ticket;
+    const legacyToken = (typeof rawLegacy === 'string' && rawLegacy.trim().length > 0)
+      ? rawLegacy.trim()
       : null;
-    return { pathname, token };
+    const ticketQuery = (typeof rawTicketQ === 'string' && rawTicketQ.trim().length > 0)
+      ? rawTicketQ.trim()
+      : null;
+    const authHeader = req.headers?.authorization || req.headers?.Authorization;
+    const ticketHeader = (typeof authHeader === 'string' && authHeader.startsWith('Bearer '))
+      ? authHeader.slice('Bearer '.length).trim()
+      : null;
+    // Query wins if both present (deterministic; ticketHeader is here for
+    // future native clients that prefer headers).
+    const ticket = ticketQuery || ticketHeader;
+    return { pathname, legacyToken, ticket };
   }
 
   /**
@@ -444,27 +493,97 @@ function startRelay(httpServer) {
     }
   }
 
-  wss.on('connection', async (ws, req) => {
-    const { pathname, token: rawToken } = parseConnection(req);
+  /**
+   * Bundle A (2026-05-28) — resolve a relay-ticket JWT to a phoneToken.
+   *
+   * The relay's room key is the user's phoneToken (preserved for back-compat
+   * with the legacy ?token= path, which lands rooms keyed by that value).
+   * When a ticket-authed peer connects we resolve userId → phoneToken so
+   * legacy + ticket peers for the same account always land in the SAME room.
+   *
+   * Returns null on:
+   *   • signature failure / expired ticket
+   *   • alg confusion (only HS256 accepted)
+   *   • wrong purpose claim
+   *   • user row missing
+   *   • DB error (treat as auth fail — same belt-and-braces stance
+   *     validateSessionToken in lib/auth.ts uses)
+   */
+  async function validateTicket(ticket) {
+    const secret = process.env.JWT_SECRET;
+    if (!secret || secret.length < 32) {
+      // lib/auth.ts enforces this at every signing site, but server.js is
+      // a separate Node process with its own require graph — fail closed if
+      // someone deploys without the env var rather than accepting unsigned
+      // tokens. Mirror the lib/auth.ts behaviour exactly.
+      console.error('[Relay] JWT_SECRET unset or <32 chars — refusing all ticket auth');
+      return null;
+    }
+    let claims;
+    try {
+      claims = jwt.verify(ticket, secret, { algorithms: ['HS256'] });
+    } catch (err) {
+      console.log(`[Relay] Ticket verify failed: ${err.message}`);
+      return null;
+    }
+    if (!claims || typeof claims !== 'object') return null;
+    if (claims.purpose !== 'relay-ticket') {
+      console.log(`[Relay] Ticket rejected — wrong purpose: ${claims.purpose}`);
+      return null;
+    }
+    if (!claims.userId || typeof claims.userId !== 'string') return null;
+    try {
+      const user = await db.user.findUnique({
+        where: { id: claims.userId },
+        select: { id: true, phoneToken: true },
+      });
+      return user ? { userId: user.id, phoneToken: user.phoneToken } : null;
+    } catch (err) {
+      console.error(`[Relay] Ticket user lookup failed: ${err.message}`);
+      return null;
+    }
+  }
 
-    // Dispatch #28 (2026-05-24): every relay upgrade must arrive with a
-    // ?token=<phoneToken> query that resolves to a real User row. Both the
-    // webapp and the APK authenticate the user first and pass the resulting
-    // token before opening the WS.
-    if (!rawToken) {
-      console.log('[Relay] Rejecting connection — no token in query');
+  wss.on('connection', async (ws, req) => {
+    const { pathname, legacyToken, ticket } = parseConnection(req);
+
+    // Auth gate. Both paths produce a (userId, phoneToken) pair — the
+    // phoneToken serves as the relay room key in either case so legacy
+    // (?token=) and new (?ticket=) peers for the same account always pair
+    // in the same room.
+    let userId;
+    let phoneToken;
+    let authVia;
+    if (legacyToken) {
+      authVia = 'legacy-token';
+      const resolvedUserId = await validateToken(legacyToken);
+      if (!resolvedUserId) {
+        console.log(`[Relay] Rejecting connection — invalid legacy token ${redactToken(legacyToken)}`);
+        try { ws.close(4401, 'invalid_token'); } catch (e) {}
+        return;
+      }
+      userId = resolvedUserId;
+      phoneToken = legacyToken;
+    } else if (ticket) {
+      authVia = 'relay-ticket';
+      const resolved = await validateTicket(ticket);
+      if (!resolved) {
+        console.log(`[Relay] Rejecting connection — invalid relay-ticket ${redactToken(ticket)}`);
+        try { ws.close(4401, 'invalid_ticket'); } catch (e) {}
+        return;
+      }
+      userId = resolved.userId;
+      phoneToken = resolved.phoneToken;
+    } else {
+      console.log('[Relay] Rejecting connection — no auth in query/header');
       try { ws.close(4401, 'invalid_token'); } catch (e) {}
       return;
     }
-    const userId = await validateToken(rawToken);
-    if (!userId) {
-      console.log(`[Relay] Rejecting connection — invalid token: ${rawToken.substring(0, 8)}...`);
-      try { ws.close(4401, 'invalid_token'); } catch (e) {}
-      return;
-    }
-    const token = rawToken;
+
+    const token = phoneToken;
     ws.userId = userId;
     ws.phoneToken = token;
+    console.log(`[Relay] Connection authed user=${userId} via ${authVia} room=${redactToken(token)}`);
 
     const room = getRoom(token);
 
@@ -482,7 +601,7 @@ function startRelay(httpServer) {
       room.lobby.add(ws);
 
       const lobbyCounts = countLobby(room);
-      console.log(`[Relay][${token}] Phone joined lobby (browsers=${lobbyCounts.browsers}, active=${!!room.active.phone})`);
+      console.log(`[Relay][${redactToken(token)}] Phone joined lobby (browsers=${lobbyCounts.browsers}, active=${!!room.active.phone})`);
 
       // 1. Tell the phone how many browsers are already waiting in this
       //    lobby so its UI can render an "approve incoming" affordance
@@ -496,7 +615,7 @@ function startRelay(httpServer) {
 
       ws.on('message', (data) => {
         const msg = data.toString();
-        rlog(`[Relay][${token}] Phone ->`, msg.substring(0, 80));
+        rlog(`[Relay][${redactToken(token)}] Phone ->`, msg.substring(0, 80));
 
         // DEVICE_INFO is special — capture deviceName so a subsequent
         // PAIRING_ACTIVE can include it. Phones send DEVICE_INFO inside
@@ -508,7 +627,7 @@ function startRelay(httpServer) {
           try {
             const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
             if (payload?.deviceName) ws.deviceName = String(payload.deviceName).slice(0, 128);
-            console.log(`[Relay][${token}] Phone device name: ${ws.deviceName}`);
+            console.log(`[Relay][${redactToken(token)}] Phone device name: ${ws.deviceName}`);
           } catch (e) { /* ignore malformed */ }
           // If pair is active and this frame came from the active phone,
           // forward to the browser so its UI updates. Otherwise drop.
@@ -524,7 +643,7 @@ function startRelay(httpServer) {
             const payload = JSON.parse(msg.substring('ACCEPT_PAIRING:'.length));
             handleAcceptPairing(room, ws, payload);
           } catch (e) {
-            console.log(`[Relay][${token}] Malformed ACCEPT_PAIRING: ${e.message}`);
+            console.log(`[Relay][${redactToken(token)}] Malformed ACCEPT_PAIRING: ${e.message}`);
           }
           return;
         }
@@ -533,7 +652,7 @@ function startRelay(httpServer) {
             const payload = JSON.parse(msg.substring('DECLINE_PAIRING:'.length));
             handleDeclinePairing(room, ws, payload);
           } catch (e) {
-            console.log(`[Relay][${token}] Malformed DECLINE_PAIRING: ${e.message}`);
+            console.log(`[Relay][${redactToken(token)}] Malformed DECLINE_PAIRING: ${e.message}`);
           }
           return;
         }
@@ -546,7 +665,7 @@ function startRelay(httpServer) {
           if (ws === room.active.phone) {
             terminateActivePair(room, 'user_left');
           } else {
-            console.log(`[Relay][${token}] LEAVE_ACTIVE from non-active phone — ignored`);
+            console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active phone — ignored`);
           }
           return;
         }
@@ -554,14 +673,14 @@ function startRelay(httpServer) {
         // Data plane — only allowed when this socket is the active phone.
         if (ws === room.active.phone) {
           if (!forwardDataPlane(room, ws, msg)) {
-            rlog(`[Relay][${token}] Phone data frame dropped — no active browser`);
+            rlog(`[Relay][${redactToken(token)}] Phone data frame dropped — no active browser`);
           }
           return;
         }
 
         // Frame from a lobby phone that wasn't a recognised control frame.
         // Drop + log so misbehaving APKs surface in the relay log.
-        console.log(`[Relay][${token}] Dropping lobby-phone frame: ${msg.substring(0, 60)}`);
+        console.log(`[Relay][${redactToken(token)}] Dropping lobby-phone frame: ${msg.substring(0, 60)}`);
       });
 
       ws.on('close', () => {
@@ -585,17 +704,17 @@ function startRelay(httpServer) {
             broadcastToLobbyBrowsers(room, `PHONE_ABSENT:${JSON.stringify({})}`);
           }
         }
-        console.log(`[Relay][${token}] Phone disconnected (was_active=${wasActive})`);
+        console.log(`[Relay][${redactToken(token)}] Phone disconnected (was_active=${wasActive})`);
         maybeReapRoom(room);
       });
 
       ws.on('error', (err) => {
-        console.log(`[Relay][${token}] Phone error: ${err.message}`);
+        console.log(`[Relay][${redactToken(token)}] Phone error: ${err.message}`);
       });
 
       ws.on('pong', () => {
         ws.isAlive = true;
-        rlog(`[Relay][${token}] Phone pong received`);
+        rlog(`[Relay][${redactToken(token)}] Phone pong received`);
       });
 
       return;
@@ -608,7 +727,7 @@ function startRelay(httpServer) {
 
     const counts = countLobby(room);
     const alreadyActive = !!(room.active.browser || room.active.phone);
-    console.log(`[Relay][${token}] Browser joined lobby (phones=${counts.phones}, active=${alreadyActive})`);
+    console.log(`[Relay][${redactToken(token)}] Browser joined lobby (phones=${counts.phones}, active=${alreadyActive})`);
 
     // Tell the browser whether it can act on the Connect button right away
     // and whether an active pair already exists in this room (browser will
@@ -620,7 +739,7 @@ function startRelay(httpServer) {
 
     ws.on('message', (data) => {
       const msg = data.toString();
-      rlog(`[Relay][${token}] Browser ->`, msg.substring(0, 80));
+      rlog(`[Relay][${redactToken(token)}] Browser ->`, msg.substring(0, 80));
 
       // Control plane — pairing kickoff.
       if (msg.startsWith('BROWSER_REQUEST_PAIRING:')) {
@@ -628,7 +747,7 @@ function startRelay(httpServer) {
           const payload = JSON.parse(msg.substring('BROWSER_REQUEST_PAIRING:'.length));
           handleBrowserRequestPairing(room, ws, payload, peerIp);
         } catch (e) {
-          console.log(`[Relay][${token}] Malformed BROWSER_REQUEST_PAIRING: ${e.message}`);
+          console.log(`[Relay][${redactToken(token)}] Malformed BROWSER_REQUEST_PAIRING: ${e.message}`);
         }
         return;
       }
@@ -637,7 +756,7 @@ function startRelay(httpServer) {
         if (ws === room.active.browser) {
           terminateActivePair(room, 'user_left');
         } else {
-          console.log(`[Relay][${token}] LEAVE_ACTIVE from non-active browser — ignored`);
+          console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active browser — ignored`);
         }
         return;
       }
@@ -645,14 +764,14 @@ function startRelay(httpServer) {
       // Data plane — only allowed when this socket is the active browser.
       if (ws === room.active.browser) {
         if (!forwardDataPlane(room, ws, msg)) {
-          rlog(`[Relay][${token}] Browser data frame dropped — no active phone`);
+          rlog(`[Relay][${redactToken(token)}] Browser data frame dropped — no active phone`);
         }
         return;
       }
 
       // Anything else from a lobby browser (e.g. legacy CONNECT_TO from a
       // stale tab, stray data frames). Drop + log.
-      console.log(`[Relay][${token}] Dropping lobby-browser frame: ${msg.substring(0, 60)}`);
+      console.log(`[Relay][${redactToken(token)}] Dropping lobby-browser frame: ${msg.substring(0, 60)}`);
     });
 
     ws.on('close', () => {
@@ -673,12 +792,12 @@ function startRelay(httpServer) {
       if (wasActive) {
         terminateActivePair(room, 'socket_closed');
       }
-      console.log(`[Relay][${token}] Browser disconnected (was_active=${wasActive})`);
+      console.log(`[Relay][${redactToken(token)}] Browser disconnected (was_active=${wasActive})`);
       maybeReapRoom(room);
     });
 
     ws.on('error', (err) => {
-      console.log(`[Relay][${token}] Browser error: ${err.message}`);
+      console.log(`[Relay][${redactToken(token)}] Browser error: ${err.message}`);
     });
 
     ws.on('pong', () => {

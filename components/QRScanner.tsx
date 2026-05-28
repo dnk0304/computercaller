@@ -23,10 +23,16 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
   // Derive the QR URL from the current page's origin (dispatch #26) and
   // append the logged-in user's phoneToken (dispatch #28) so a phone that
   // scans the QR lands in the correct multi-tenant room without needing to
-  // sign in inside the APK. Token fetch is the same one usePhoneBridge does;
-  // we tolerate a missing token gracefully (encode the URL without it so
-  // the relay close 4401 surfaces immediately rather than silently dropping
-  // into a non-existent default room).
+  // sign in inside the APK.
+  //
+  // Bundle A (2026-05-28) — the phoneToken came from /api/auth/me until L9
+  // (over-disclosure) was closed by removing it from that endpoint's
+  // response. The QR rendering is the only legitimate client path that
+  // still needs the long-lived phoneToken (the scanning v29 APK uses it
+  // as its WS bearer), so a narrow dedicated endpoint /api/auth/qr-token
+  // replaces the bulk /me read. Failure is tolerated gracefully — we
+  // encode the URL without the token so the relay's 4401 close surfaces
+  // immediately rather than silently dropping into a non-existent room.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     let cancelled = false;
@@ -34,11 +40,11 @@ export const QRDisplay: React.FC<QRDisplayProps> = ({ onClose }) => {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const base = `${proto}//${window.location.host}/relay/phone`;
       try {
-        const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        const res = await fetch('/api/auth/qr-token', { credentials: 'same-origin' });
         if (cancelled) return;
         if (res.ok) {
           const json = await res.json();
-          const token: string | null = json?.user?.phoneToken ?? null;
+          const token: string | null = json?.phoneToken ?? null;
           if (token) {
             setRelayUrl(`${base}?token=${encodeURIComponent(token)}`);
             setLoading(false);

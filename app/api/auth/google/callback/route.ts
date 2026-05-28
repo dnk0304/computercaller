@@ -24,6 +24,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'node:crypto';
 import { db } from '@/lib/db';
 import { signAccessToken } from '@/lib/auth';
 import {
@@ -117,10 +118,16 @@ export async function GET(req: NextRequest) {
       } else {
         // Branch c: brand-new user. Create with trial subscription, no password.
         const trialEndsAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days
+        // Bundle A (2026-05-28) — schema no longer auto-generates phoneToken
+        // (was cuid() default; fix C2). Every user-create path now mints a
+        // crypto-random 32-byte base64url value in app code. Same generation
+        // used in /api/auth/register so the format is uniform.
+        const phoneToken = crypto.randomBytes(32).toString('base64url');
         user = await db.user.create({
           data: {
             email,
             passwordHash: null,
+            phoneToken,
             emailVerified: true,
             googleId,
             authProvider: 'google',

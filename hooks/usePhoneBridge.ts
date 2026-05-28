@@ -50,21 +50,27 @@ const TRANSIENT_REASON_CLEAR_MS = 4000;
 // `window.location` is always defined by the time this module executes
 // inside the React tree (`use client` at the top of the file guarantees it).
 //
-// Dispatch #28 (2026-05-24): we now append the logged-in user's phoneToken
-// as a query param so the relay can route this browser into the correct
-// multi-tenant room. The relay's new gate (also part of #28) closes any
-// upgrade that arrives without a valid token — so we must NOT attempt the
-// WS connection until /api/auth/me has resolved and we have a real token.
-// The hook fetches the token on mount and only kicks off the relay connect
-// once it lands.
-function deriveRelayUrl(token: string | null): string {
+// Dispatch #28 (2026-05-24) put `?token=<phoneToken>` on the relay URL.
+//
+// Bundle A (2026-05-28) — Phase 4 fix (C1 + M3 browser half). The browser no
+// longer carries the long-lived phoneToken; the relay accepts a 30 s
+// `?ticket=<jwt>` minted by POST /api/auth/relay-ticket instead. The relay
+// server still accepts the legacy ?token= path so v29 APKs keep working
+// (Bundle C migrates the Android side).
+//
+// We MUST NOT attempt the WS until /api/auth/relay-ticket has resolved.
+// On expiry (>30 s between mint and WS upgrade) the relay closes 4401 —
+// the user-initiated reconnect flow re-fetches a fresh ticket on the next
+// mount-effect run. Auto-reconnect was deliberately removed in dispatch
+// #32, so a ticket-expiry close is recoverable via the Connect button.
+function deriveRelayUrl(ticket: string | null): string {
   const base = (() => {
     if (typeof window === 'undefined') return 'ws://localhost:3000/relay';
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/relay`;
   })();
-  if (!token) return base;
-  return `${base}?token=${encodeURIComponent(token)}`;
+  if (!ticket) return base;
+  return `${base}?ticket=${encodeURIComponent(ticket)}`;
 }
 
 // Map a coarse range key to a `since` unix-ms timestamp. Sending `since`
@@ -140,8 +146,8 @@ export function usePhoneBridge() {
   // the layout level and SURVIVES route transitions — without a pathname dep
   // the original mount-only effect runs BEFORE the auth cookie is set during
   // the signin redirect, and never retries. Re-firing on every path change is
-  // cheap because we guard with phoneTokenRef.current and short-circuit once
-  // the token is loaded.
+  // cheap because we guard with relayTicketRef.current and short-circuit once
+  // the ticket is loaded.
   const pathname = usePathname();
   // State — split into individual useState calls so each update only re-renders
   // components that consume the changed slice (e.g. call-timer ticks don't
@@ -287,18 +293,17 @@ export function usePhoneBridge() {
   const wsRef = useRef<WebSocket | null>(null);
   // callTimerRef removed — duration is computed locally in display components
 
-  // Dispatch #28 (2026-05-24): the user's phoneToken, fetched once on mount
-  // from /api/auth/me. Held in a ref so the stable connect/connectPhone
-  // useCallbacks can always read the latest value without re-binding the
-  // ws.onmessage handler whenever the token resolves. Also held in state so
-  // an effect can kick the initial connect once the token lands. A small
-  // `isRelayUrl(url)` helper below normalises the equality checks (we used
-  // to compare against the module-level RELAY_URL constant, but now the
-  // URL string is dynamic per user). isRelayUrl uses a prefix match — the
-  // base relay URL (with no query string) is a strict prefix of every URL
-  // we ever pass to `connect()`, so prefix-startsWith is enough.
-  const phoneTokenRef = useRef<string | null>(null);
-  const [phoneTokenState, setPhoneTokenState] = useState<string | null>(null);
+  // Dispatch #28 (2026-05-24) — Bundle A (2026-05-28). What this ref stores
+  // is now a short-lived (30 s) relay-ticket JWT from POST
+  // /api/auth/relay-ticket, not the long-lived phoneToken. Kept in both a
+  // ref (so the stable connect/connectPhone useCallbacks can read the
+  // latest value without re-binding ws.onmessage on every resolve) and in
+  // React state (so an effect can fire the initial connect once the ticket
+  // lands). The base-URL prefix-match helper `isRelayUrl(url)` is unchanged
+  // — the base path is still `/relay`, only the query string switched from
+  // `?token=...` to `?ticket=...`.
+  const relayTicketRef = useRef<string | null>(null);
+  const [relayTicketState, setRelayTicketState] = useState<string | null>(null);
   const relayUrlBase = (() => {
     if (typeof window === 'undefined') return 'ws://localhost:3000/relay';
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -337,12 +342,12 @@ export function usePhoneBridge() {
   // isPhoneStale]. Every time isPhoneStale flipped, handleMessage got a new
   // reference, which gave `connect` a new reference (deps [handleMessage,
   // isRelayUrl]), which made the auto-relay-connect effect at line ~1958
-  // (deps [connect, phoneTokenState]) re-run. The effect's cleanup sends
+  // (deps [connect, relayTicketState]) re-run. The effect's cleanup sends
   // DISCONNECT_PHONE + close(1000) over the relay WS, and the new effect body
   // opens a fresh WS — producing the tight loop Dennis hit on 2026-05-25 where
   // the browser cycled the phone connection many times per second. Using a ref
   // breaks the dep chain at the source: handleMessage becomes stable, connect
-  // becomes stable, the connect effect only fires once on phoneTokenState
+  // becomes stable, the connect effect only fires once on relayTicketState
   // resolution (and once on unmount). isPhoneStale still drives UI rendering
   // via the state value below.
   const isPhoneStaleRef = useRef(false);
@@ -2040,29 +2045,40 @@ export function usePhoneBridge() {
   // the relay stayed gated. Re-running on every pathname change is safe and
   // cheap because the guard below short-circuits once a token is loaded.
   useEffect(() => {
-    // Once the token is loaded, subsequent route changes are no-ops. Keeps
-    // this from spamming /api/auth/me on every client-side navigation.
-    if (phoneTokenRef.current) return;
+    // Once a relay ticket is in hand, subsequent route changes are no-ops.
+    // Keeps this from spamming /api/auth/relay-ticket on every client-side
+    // navigation. The ticket has a 30 s expiry but it only needs to live
+    // long enough for the WS upgrade below to complete — usually <1 s.
+    if (relayTicketRef.current) return;
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        // Bundle A (2026-05-28) — was /api/auth/me + json.user.phoneToken.
+        // Now: ask the dedicated /api/auth/relay-ticket endpoint for a
+        // short-lived JWT (purpose: relay-ticket, expiresIn: 30s). The
+        // browser no longer touches the long-lived phoneToken.
+        // POST is required — the endpoint enforces same-origin (Origin or
+        // Referer must match) to defeat CSRF on the ticket-mint hop.
+        const res = await fetch('/api/auth/relay-ticket', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
         if (!res.ok) {
-          console.warn(`[PhoneBridge] /api/auth/me returned ${res.status} — relay connect deferred`);
+          console.warn(`[PhoneBridge] /api/auth/relay-ticket returned ${res.status} — relay connect deferred`);
           return;
         }
         const json = await res.json();
-        const token: string | null = json?.user?.phoneToken ?? null;
+        const ticket: string | null = json?.ticket ?? null;
         if (cancelled) return;
-        if (!token) {
-          console.warn('[PhoneBridge] No phoneToken on user — relay connect deferred');
+        if (!ticket) {
+          console.warn('[PhoneBridge] No ticket in response — relay connect deferred');
           return;
         }
-        phoneTokenRef.current = token;
-        setPhoneTokenState(token);
-        console.log(`[PhoneBridge] phoneToken loaded (${token.slice(0, 8)}…) — relay connect will kick from effect`);
+        relayTicketRef.current = ticket;
+        setRelayTicketState(ticket);
+        console.log('[PhoneBridge] relay-ticket minted — relay connect will kick from effect');
       } catch (e) {
-        console.warn('[PhoneBridge] /api/auth/me fetch failed:', e);
+        console.warn('[PhoneBridge] /api/auth/relay-ticket fetch failed:', e);
       }
     })();
     return () => { cancelled = true; };
@@ -2080,17 +2096,19 @@ export function usePhoneBridge() {
   // forward CONNECT_TO frames. Any failure here is silent (no banner) — the
   // onclose/onerror handlers log a warn and the existing retry loop covers it.
   //
-  // Dispatch #28 (2026-05-24): effect now depends on phoneTokenState so it
-  // fires AFTER the token resolves — opens the relay with ?token=<phoneToken>
-  // and gets accepted by the relay's new auth gate. If the token never lands
-  // (anonymous user / failed /api/auth/me) the effect skips the connect entirely.
+  // Dispatch #28 (2026-05-24) — Bundle A (2026-05-28): effect depends on
+  // relayTicketState so it fires AFTER the ticket lands — opens the relay
+  // with ?ticket=<jwt>. The relay still accepts legacy ?token=<phoneToken>
+  // (v29 APK path) on the same upgrade endpoint, so back-compat is preserved
+  // until Bundle C migrates the Android side. If the ticket never lands
+  // (anonymous user / failed mint / network) the effect skips connect.
   useEffect(() => {
-    if (!phoneTokenState) {
-      console.log('[PhoneBridge] Awaiting phoneToken before opening relay');
+    if (!relayTicketState) {
+      console.log('[PhoneBridge] Awaiting relay-ticket before opening relay');
       return;
     }
-    console.log('[PhoneBridge] Auto-connecting to relay server (silent, token-gated)');
-    connect(deriveRelayUrl(phoneTokenState));
+    console.log('[PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)');
+    connect(deriveRelayUrl(relayTicketState));
 
     // Page-unload teardown. Fires on F5 / Ctrl+R, tab close, browser close,
     // and same-tab navigation away. Dispatch #32 (2026-05-25): under the
@@ -2130,7 +2148,7 @@ export function usePhoneBridge() {
       }
       wsRef.current = null;
     };
-  }, [connect, phoneTokenState]);
+  }, [connect, relayTicketState]);
 
   // App-level liveness ping. While `isConnected` is true, send APP_PING every
   // 15s. The phone echoes APP_PONG back which bumps lastPongAtRef (see handler

@@ -58,8 +58,14 @@ export async function POST(req: NextRequest) {
       ver: bumped.sessionVersion,
     });
 
+    // Bundle A (2026-05-28) Phase 4 fix (C1, M11): phoneToken is the WS relay
+    // bearer for the Android APK and MUST NOT travel to the browser. The
+    // browser now obtains a short-lived ticket via POST /api/auth/relay-ticket
+    // for its own WS connection; the APK gets phoneToken via POST
+    // /api/auth/apk-login (unchanged). Anything that needs to render the QR
+    // pairing code calls GET /api/auth/qr-token explicitly.
     const response = NextResponse.json({
-      user: { id: user.id, email: user.email, phoneToken: user.phoneToken },
+      user: { id: user.id, email: user.email },
       subscription: user.subscription,
     });
 
