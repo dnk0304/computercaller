@@ -409,20 +409,38 @@ function startRelay(httpServer) {
   // ---------------------------------------------------------------------------
 
   /**
-   * Extract phoneToken from the connection request URL.
-   *   /relay?token=XYZ       → ('XYZ', '/')         browser
-   *   /relay/phone?token=XYZ → ('XYZ', '/phone')    phone
+   * Extract phoneToken from the connection request URL OR Authorization header.
+   *   /relay?token=XYZ                          → ('XYZ', '/', 'query')        browser
+   *   /relay/phone?token=XYZ                    → ('XYZ', '/phone', 'query')   phone (v29)
+   *   /relay/phone  + "Authorization: Bearer X" → ('X',   '/phone', 'bearer')  phone (v30)
    * Dispatch #28: missing token is rejected at the connection handler
    * (close 4401). No fallback room anymore.
+   *
+   * prod-hotfix-bearer-fallback (2026-05-28): v30 APK sends the long-lived
+   * phoneToken in `Authorization: Bearer <phoneToken>` (Bundle C audit
+   * fix M3). Bundle B's server doesn't read the header — so v30 falls
+   * back to a `?token=` query that the APK no longer sets and the WS
+   * upgrade gets rejected with 4401 invalid_token. This patch accepts
+   * either source for the SAME long-lived phoneToken; query wins if
+   * both are present. No JWT, no relay-ticket — pure additive auth-
+   * source extension. Bundle A's redesigned ticket flow is NOT part of
+   * this hotfix (rolled back; will be re-introduced via Forge forward-
+   * fix). `via` is returned only for log observability.
    */
   function parseConnection(req) {
     const parsed = parse(req.url || '/', true);
     const pathname = parsed.pathname || '/';
     const rawToken = parsed.query?.token;
-    const token = (typeof rawToken === 'string' && rawToken.trim().length > 0)
+    const queryToken = (typeof rawToken === 'string' && rawToken.trim().length > 0)
       ? rawToken.trim()
       : null;
-    return { pathname, token };
+    const authHeader = req.headers?.authorization || req.headers?.Authorization;
+    const bearerToken = (typeof authHeader === 'string' && authHeader.startsWith('Bearer '))
+      ? authHeader.slice('Bearer '.length).trim()
+      : null;
+    const token = queryToken || (bearerToken && bearerToken.length > 0 ? bearerToken : null);
+    const via = queryToken ? 'query' : (bearerToken ? 'bearer' : 'none');
+    return { pathname, token, via };
   }
 
   /**
@@ -445,26 +463,29 @@ function startRelay(httpServer) {
   }
 
   wss.on('connection', async (ws, req) => {
-    const { pathname, token: rawToken } = parseConnection(req);
+    const { pathname, token: rawToken, via } = parseConnection(req);
 
     // Dispatch #28 (2026-05-24): every relay upgrade must arrive with a
-    // ?token=<phoneToken> query that resolves to a real User row. Both the
-    // webapp and the APK authenticate the user first and pass the resulting
-    // token before opening the WS.
+    // phoneToken that resolves to a real User row. Both the webapp and the
+    // APK authenticate the user first and pass the resulting token.
+    // prod-hotfix-bearer-fallback (2026-05-28): the source can be either
+    // a `?token=` query (v29 APK + browser) or an `Authorization: Bearer`
+    // header (v30 APK). parseConnection unifies both into `rawToken`.
     if (!rawToken) {
-      console.log('[Relay] Rejecting connection — no token in query');
+      console.log('[Relay] Rejecting connection — no token in query or bearer header');
       try { ws.close(4401, 'invalid_token'); } catch (e) {}
       return;
     }
     const userId = await validateToken(rawToken);
     if (!userId) {
-      console.log(`[Relay] Rejecting connection — invalid token: ${rawToken.substring(0, 8)}...`);
+      console.log(`[Relay] Rejecting connection — invalid token (via=${via}): ${rawToken.substring(0, 8)}...`);
       try { ws.close(4401, 'invalid_token'); } catch (e) {}
       return;
     }
     const token = rawToken;
     ws.userId = userId;
     ws.phoneToken = token;
+    console.log(`[Relay] Connected user=${userId} via=${via} (bearer-fallback hotfix)`);
 
     const room = getRoom(token);
 
