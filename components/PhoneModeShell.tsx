@@ -451,9 +451,13 @@ function TextsView() {
     const q = search.trim().toLowerCase();
     if (!q) return threads;
     return threads.filter(t =>
-      t.name.toLowerCase().includes(q) ||
-      t.number.includes(q) ||
-      t.lastBody.toLowerCase().includes(q),
+      // Guard each field — MMS rows without text bodies surface as
+      // t.lastBody === undefined at runtime (lastBody = last.body) even
+      // though the type says string. Same defensive pattern as the
+      // Dashboard threadBodyIndex hotfix.
+      (t.name ?? '').toLowerCase().includes(q) ||
+      (t.number ?? '').includes(q) ||
+      (t.lastBody ?? '').toLowerCase().includes(q),
     );
   }, [threads, search]);
 

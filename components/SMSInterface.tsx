@@ -310,9 +310,14 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
     if (!debouncedSearchQuery) return conversations;
     const query = debouncedSearchQuery.toLowerCase();
     return conversations.filter(c =>
-      c.name.toLowerCase().includes(query) ||
-      c.number.includes(query) ||
-      c.lastMessage.toLowerCase().includes(query)
+      // Guard each field — MMS rows without text bodies surface as
+      // c.lastMessage === undefined at runtime even though the type says
+      // string (lastMessage = lastMsg.body). Same defensive pattern as the
+      // Dashboard threadBodyIndex hotfix — undefined.toLowerCase() inside
+      // this useMemo would abort the parent render and unmount /app.
+      (c.name ?? '').toLowerCase().includes(query) ||
+      (c.number ?? '').includes(query) ||
+      (c.lastMessage ?? '').toLowerCase().includes(query)
     );
   }, [conversations, debouncedSearchQuery]);
 

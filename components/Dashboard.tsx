@@ -871,7 +871,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     for (const m of messages) {
       const key = digitsTail(m.address) || (m.address ?? '').toLowerCase();
       const prev = idx.get(key);
-      const next = prev ? prev + '  ' + m.body.toLowerCase() : m.body.toLowerCase();
+      // Guard m.body — MMS rows without text bodies (and some draft/outbound rows
+      // pre-status-update) arrive with body undefined/null at runtime even though the
+      // TS type says `body: string`. Calling .toLowerCase() on undefined throws inside
+      // this useMemo, aborts the parent render, and unmounts the whole /app tree
+      // (PhoneBridge cleanup logs are the visible aftermath).
+      const body = (m.body ?? '').toLowerCase();
+      const next = prev ? prev + '  ' + body : body;
       idx.set(key, next);
     }
     return idx;
