@@ -4,9 +4,17 @@ import { db } from '@/lib/db';
 // Bundle B (2026-05-28) — H6 fix. Previously this fell back to a hardcoded
 // 'dev-secret-change-in-production' if JWT_SECRET was unset, which meant a
 // production deploy without the env var would silently sign tokens any
-// attacker could forge. Now: throw at module load if missing or < 32 chars.
-// IIFE so the check runs exactly once when the module is first imported.
-const JWT_SECRET = (() => {
+// attacker could forge. Now: throw on first sign/verify if missing or < 32 chars.
+//
+// Hotfix (2026-05-28): the check used to run inside an IIFE at module-load,
+// but Next 16's "Collect page data" build step imports every server module
+// without runtime env present (Coolify's nixpacks build only passes build-args
+// + NEXT_PUBLIC_* into the build context — runtime secrets are intentionally
+// excluded). Defer validation to first call so the build can statically
+// analyse the module while still failing closed at runtime.
+let _jwtSecretCache: string | undefined;
+export function getJwtSecret(): string {
+  if (_jwtSecretCache) return _jwtSecretCache;
   const v = process.env.JWT_SECRET;
   if (!v || v.length < 32) {
     throw new Error(
@@ -14,8 +22,9 @@ const JWT_SECRET = (() => {
         'node -e "console.log(crypto.randomBytes(48).toString(\'base64url\'))"',
     );
   }
+  _jwtSecretCache = v;
   return v;
-})();
+}
 
 // Pin verification to HS256 — defeats the alg-confusion attack where an
 // attacker crafts a token with alg=none or alg=HS256-with-the-public-key-as-secret
@@ -40,12 +49,12 @@ export interface JwtPayload {
 }
 
 export function signAccessToken(payload: JwtPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: '24h' });
 }
 
 export function verifyAccessToken(token: string): JwtPayload | null {
   try {
-    return jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTS) as JwtPayload;
+    return jwt.verify(token, getJwtSecret(), JWT_VERIFY_OPTS) as JwtPayload;
   } catch {
     return null;
   }
@@ -89,11 +98,11 @@ export async function validateSessionToken(token: string): Promise<JwtPayload | 
 }
 
 export function signEmailToken(userId: string): string {
-  return jwt.sign({ userId, purpose: 'verify-email' }, JWT_SECRET, { expiresIn: '24h' });
+  return jwt.sign({ userId, purpose: 'verify-email' }, getJwtSecret(), { expiresIn: '24h' });
 }
 
 export function signResetToken(userId: string): string {
-  return jwt.sign({ userId, purpose: 'reset-password' }, JWT_SECRET, { expiresIn: '1h' });
+  return jwt.sign({ userId, purpose: 'reset-password' }, getJwtSecret(), { expiresIn: '1h' });
 }
 
 /**

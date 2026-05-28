@@ -20,22 +20,18 @@
  */
 
 import jwt from 'jsonwebtoken';
+import { getJwtSecret } from '@/lib/auth';
 
 // Bundle B (2026-05-28) — H6 fix. Same JWT_SECRET as lib/auth.ts (single
 // shared HMAC key for the entire app). Mirror the fail-closed pattern so
-// this module also refuses to load if the secret is missing or weak.
+// this module also refuses to mint/verify state tokens if the secret is
+// missing or weak. Imported from lib/auth.ts to keep one source of truth.
+//
+// Hotfix (2026-05-28): validation is deferred to first call (see lib/auth.ts
+// for rationale — Next 16 build pipeline imports server modules without
+// runtime env present, so any top-level process.env.JWT_SECRET read breaks
+// "Collect page data").
 // Pin verification to HS256 to prevent algorithm-confusion attacks (M4).
-const JWT_SECRET = (() => {
-  const v = process.env.JWT_SECRET;
-  if (!v || v.length < 32) {
-    throw new Error(
-      'JWT_SECRET must be set and >=32 chars. Generate with: ' +
-        'node -e "console.log(crypto.randomBytes(48).toString(\'base64url\'))"',
-    );
-  }
-  return v;
-})();
-
 const JWT_VERIFY_OPTS = { algorithms: ['HS256' as const] };
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -205,7 +201,7 @@ export function sanitiseNext(next: string | null | undefined): string {
 
 /** Sign a 10-minute state JWT for the OAuth round-trip. */
 export function signOAuthState(payload: Omit<OAuthStatePayload, 'purpose'>): string {
-  return jwt.sign({ ...payload, purpose: 'google-oauth-state' as const }, JWT_SECRET, {
+  return jwt.sign({ ...payload, purpose: 'google-oauth-state' as const }, getJwtSecret(), {
     expiresIn: '10m',
   });
 }
@@ -213,7 +209,7 @@ export function signOAuthState(payload: Omit<OAuthStatePayload, 'purpose'>): str
 /** Verify a state JWT. Returns null on any failure — caller treats as CSRF reject. */
 export function verifyOAuthState(token: string): OAuthStatePayload | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTS) as OAuthStatePayload;
+    const decoded = jwt.verify(token, getJwtSecret(), JWT_VERIFY_OPTS) as OAuthStatePayload;
     if (decoded.purpose !== 'google-oauth-state') return null;
     if (typeof decoded.n !== 'string' || !decoded.n) return null;
     return decoded;
