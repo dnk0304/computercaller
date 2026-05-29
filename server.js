@@ -20,7 +20,6 @@ const next = require('next');
 const http = require('http');
 const { parse } = require('url');
 const { WebSocketServer, WebSocket } = require('ws');
-const os = require('os');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
@@ -48,7 +47,8 @@ function redactToken(t) {
 
 const NEXT_PORT = parseInt(process.env.PORT || '3000', 10);
 const RELAY_PORT = parseInt(process.env.RELAY_PORT || '3001', 10);
-const HOSTNAME = os.hostname();
+// F-5 (2026-05-29): we no longer expose os.hostname() to clients; HELLO frames
+// use a stable literal instead (see the HELLO emit site).
 const dev = process.env.NODE_ENV !== 'production';
 
 // LEGACY_RELAY_PORT=1 opt-in safety net (dispatch #26, 2026-05-24).
@@ -151,6 +151,85 @@ function startRelay(httpServer) {
 
   // token -> Room
   const rooms = new Map();
+
+  // F-A (2026-05-29) — single-active-session WEB enforcement.
+  //
+  // Index of every CURRENTLY-OPEN web browser WS, keyed by userId, used by
+  // `supersedeWebSessions(userId)` to kick a stale browser the instant a new
+  // login for the same userId bumps sessionVersion. We populate this index
+  // ONLY for connections where authVia === 'relay-ticket' — i.e. browsers.
+  // Phone APK sockets (legacy-token / legacy-token-bearer) are NEVER added
+  // and NEVER kicked. apk-login deliberately does not bump sessionVersion,
+  // so the phone bearer remains valid through any web login storm.
+  //
+  // Cardinality: typically <=1 ws per user (we kick prior ones), occasionally
+  // 2 transiently during the kick (old browser still closing while new one
+  // connects). A Set per user is overkill capacity but cheap and race-safe.
+  //
+  // Cross-process: the Next.js Route Handlers (e.g. /api/auth/login) need to
+  // call into this map after the sessionVersion increment. They run in the
+  // SAME Node process as this custom server, so we expose the kick function
+  // via globalThis. This is the documented pattern for custom Next.js
+  // servers; no IPC, no message bus, single-process atomic.
+  const userIdToWebSockets = new Map();
+
+  function indexWebSocket(userId, ws) {
+    if (!userId || !ws) return;
+    let set = userIdToWebSockets.get(userId);
+    if (!set) {
+      set = new Set();
+      userIdToWebSockets.set(userId, set);
+    }
+    set.add(ws);
+  }
+  function unindexWebSocket(userId, ws) {
+    if (!userId) return;
+    const set = userIdToWebSockets.get(userId);
+    if (!set) return;
+    set.delete(ws);
+    if (set.size === 0) userIdToWebSockets.delete(userId);
+  }
+
+  /**
+   * Kick every open WEB browser WS for the given userId. Sends the contract
+   * frame FIRST (so the client has a reason even if the close race is lost),
+   * then closes with WS code 4001 reason 'session_superseded'. Phone sockets
+   * are NOT touched — they are not in this index. Idempotent: calling on a
+   * userId with no open web sockets is a no-op.
+   *
+   * Wire contract (WIRE-CONTRACT.md §1):
+   *   1. `SESSION_SUPERSEDED:{"reason":"signed_in_elsewhere"}`
+   *   2. ws.close(4001, "session_superseded")
+   */
+  function supersedeWebSessions(userId) {
+    const set = userIdToWebSockets.get(userId);
+    if (!set || set.size === 0) return 0;
+    const payload = JSON.stringify({ reason: 'signed_in_elsewhere' });
+    const frame = `SESSION_SUPERSEDED:${payload}`;
+    let kicked = 0;
+    // Snapshot to a list before iterating — close() triggers ws.on('close')
+    // synchronously in some ws versions which mutates the Set under us.
+    const snapshot = Array.from(set);
+    for (const ws of snapshot) {
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          safeSend(ws, frame);
+        }
+        // Allow a tick for the frame to flush, then close. ws.close() on an
+        // already-closing socket is a no-op, safe.
+        try { ws.close(4001, 'session_superseded'); } catch (_) {}
+        kicked += 1;
+      } catch (err) {
+        console.error(`[Relay] supersedeWebSessions: failed to kick ws for user=${userId}: ${err.message}`);
+      }
+    }
+    console.log(`[Relay] supersedeWebSessions(${userId}) → kicked ${kicked} web socket(s)`);
+    return kicked;
+  }
+
+  // Single-process global handle for the Route Handlers.
+  // eslint-disable-next-line no-undef
+  globalThis.__supersedeWebSessions = supersedeWebSessions;
 
   function getRoom(token) {
     let room = rooms.get(token);
@@ -597,6 +676,13 @@ function startRelay(httpServer) {
     const token = phoneToken;
     ws.userId = userId;
     ws.phoneToken = token;
+    ws.authVia = authVia;
+    // F-A: only browser sessions (relay-ticket) are subject to the
+    // single-active-session kick. Phone sockets (legacy-token /
+    // legacy-token-bearer) are NEVER indexed and NEVER kicked.
+    if (authVia === 'relay-ticket') {
+      indexWebSocket(userId, ws);
+    }
     console.log(`[Relay] Connection authed user=${userId} via ${authVia} room=${redactToken(token)}`);
 
     const room = getRoom(token);
@@ -610,7 +696,14 @@ function startRelay(httpServer) {
     // ---- PHONE PATH ---------------------------------------------------------
     if (pathname === '/phone') {
       ws.role = 'phone';
-      ws.isAlive = true;
+      // F-C (2026-05-29): replaced one-shot isAlive boolean with a missed-pong
+      // counter. We terminate at >=2 missed pongs (~30s tolerance @ 15s tick)
+      // instead of 1. Cellular phones routinely miss one ping on background-
+      // app transitions or carrier handoff; killing the socket on a single
+      // miss caused user-visible disconnect blips even when the line was fine.
+      // Any inbound DATA frame ALSO resets the counter (live traffic is
+      // stronger proof of liveness than a pong).
+      ws.missedPongs = 0;
       ws.deviceName = null;
       room.lobby.add(ws);
 
@@ -621,13 +714,26 @@ function startRelay(httpServer) {
       //    lobby so its UI can render an "approve incoming" affordance
       //    (if browserCount > 0) or "waiting for desktop" (if 0).
       safeSend(ws, `LOBBY_STATUS:${JSON.stringify({ browserCount: lobbyCounts.browsers })}`);
-      safeSend(ws, `HELLO:${JSON.stringify({ hostname: HOSTNAME })}`);
+      // F-5 (2026-05-29): HELLO frame's hostname value is the only place the
+      // container's real OS hostname leaked to clients. APK only matches on
+      // `HELLO:` prefix — value is decorative. Use a stable literal to avoid
+      // exposing infra naming (container/host names show up in support pings
+      // and bug reports). Kept the frame for backward-compat with APK <=v29.
+      safeSend(ws, `HELLO:${JSON.stringify({ hostname: 'computercaller' })}`);
 
       // 2. Tell every browser in the lobby a phone just showed up. Drives
       //    the Connect button visibility on the browser side.
       broadcastToLobbyBrowsers(room, `PHONE_PRESENT:${JSON.stringify({})}`);
 
       ws.on('message', (data) => {
+        // F-C: inbound traffic is liveness proof. Reset before the body runs.
+        ws.missedPongs = 0;
+        // F-D (2026-05-29): wrap each handler branch body in try/catch so a
+        // throw inside (e.g. forwardDataPlane sees a closing peer, JSON parse
+        // explodes, handleAcceptPairing hits an unexpected state) logs and
+        // drops THE FRAME — not the socket. The 'ws' lib bubbles handler
+        // exceptions up to the connection and tears it down; we don't want
+        // a bad single message to evict a healthy peer.
         const msg = data.toString();
         rlog(`[Relay][${redactToken(token)}] Phone ->`, msg.substring(0, 80));
 
@@ -639,14 +745,16 @@ function startRelay(httpServer) {
         // from the lobby).
         if (msg.startsWith('DEVICE_INFO:')) {
           try {
-            const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
-            if (payload?.deviceName) ws.deviceName = String(payload.deviceName).slice(0, 128);
-            console.log(`[Relay][${redactToken(token)}] Phone device name: ${ws.deviceName}`);
-          } catch (e) { /* ignore malformed */ }
-          // If pair is active and this frame came from the active phone,
-          // forward to the browser so its UI updates. Otherwise drop.
-          if (ws === room.active.phone) {
-            forwardDataPlane(room, ws, msg);
+            try {
+              const payload = JSON.parse(msg.substring('DEVICE_INFO:'.length));
+              if (payload?.deviceName) ws.deviceName = String(payload.deviceName).slice(0, 128);
+              console.log(`[Relay][${redactToken(token)}] Phone device name: ${ws.deviceName}`);
+            } catch (e) { /* ignore malformed payload */ }
+            if (ws === room.active.phone) {
+              forwardDataPlane(room, ws, msg);
+            }
+          } catch (err) {
+            console.error(`[Relay][${redactToken(token)}] DEVICE_INFO handler crashed: ${err.message}`);
           }
           return;
         }
@@ -657,7 +765,7 @@ function startRelay(httpServer) {
             const payload = JSON.parse(msg.substring('ACCEPT_PAIRING:'.length));
             handleAcceptPairing(room, ws, payload);
           } catch (e) {
-            console.log(`[Relay][${redactToken(token)}] Malformed ACCEPT_PAIRING: ${e.message}`);
+            console.log(`[Relay][${redactToken(token)}] ACCEPT_PAIRING handler dropped frame: ${e.message}`);
           }
           return;
         }
@@ -666,7 +774,7 @@ function startRelay(httpServer) {
             const payload = JSON.parse(msg.substring('DECLINE_PAIRING:'.length));
             handleDeclinePairing(room, ws, payload);
           } catch (e) {
-            console.log(`[Relay][${redactToken(token)}] Malformed DECLINE_PAIRING: ${e.message}`);
+            console.log(`[Relay][${redactToken(token)}] DECLINE_PAIRING handler dropped frame: ${e.message}`);
           }
           return;
         }
@@ -676,18 +784,26 @@ function startRelay(httpServer) {
         // PAIRING_TERMINATED:{reason:'user_left'} to the browser so its UI
         // flips back to the lobby state.
         if (msg.startsWith('LEAVE_ACTIVE:')) {
-          if (ws === room.active.phone) {
-            terminateActivePair(room, 'user_left');
-          } else {
-            console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active phone — ignored`);
+          try {
+            if (ws === room.active.phone) {
+              terminateActivePair(room, 'user_left');
+            } else {
+              console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active phone — ignored`);
+            }
+          } catch (e) {
+            console.error(`[Relay][${redactToken(token)}] LEAVE_ACTIVE handler crashed: ${e.message}`);
           }
           return;
         }
 
         // Data plane — only allowed when this socket is the active phone.
         if (ws === room.active.phone) {
-          if (!forwardDataPlane(room, ws, msg)) {
-            rlog(`[Relay][${redactToken(token)}] Phone data frame dropped — no active browser`);
+          try {
+            if (!forwardDataPlane(room, ws, msg)) {
+              rlog(`[Relay][${redactToken(token)}] Phone data frame dropped — no active browser`);
+            }
+          } catch (e) {
+            console.error(`[Relay][${redactToken(token)}] forwardDataPlane crashed: ${e.message}`);
           }
           return;
         }
@@ -698,6 +814,9 @@ function startRelay(httpServer) {
       });
 
       ws.on('close', () => {
+        // F-A: defensive — phone branch will not have indexed itself, but
+        // unindex is a no-op when absent.
+        if (ws.authVia === 'relay-ticket') unindexWebSocket(ws.userId, ws);
         room.lobby.delete(ws);
         const wasActive = (ws === room.active.phone);
         const wasPendingPhone = !!room.pendingPairing && room.pendingPairing.phoneWs === ws;
@@ -727,7 +846,7 @@ function startRelay(httpServer) {
       });
 
       ws.on('pong', () => {
-        ws.isAlive = true;
+        ws.missedPongs = 0;
         rlog(`[Relay][${redactToken(token)}] Phone pong received`);
       });
 
@@ -736,7 +855,8 @@ function startRelay(httpServer) {
 
     // ---- BROWSER PATH -------------------------------------------------------
     ws.role = 'browser';
-    ws.isAlive = true;
+    // F-C: see phone-path note. Same counter semantics on the browser side.
+    ws.missedPongs = 0;
     room.lobby.add(ws);
 
     const counts = countLobby(room);
@@ -752,6 +872,10 @@ function startRelay(httpServer) {
     })}`);
 
     ws.on('message', (data) => {
+      // F-C: inbound traffic is liveness proof. Reset before the body runs.
+      ws.missedPongs = 0;
+      // F-D: same try/catch envelope as the phone branch — drop frame on
+      // handler throw, keep socket alive.
       const msg = data.toString();
       rlog(`[Relay][${redactToken(token)}] Browser ->`, msg.substring(0, 80));
 
@@ -761,24 +885,32 @@ function startRelay(httpServer) {
           const payload = JSON.parse(msg.substring('BROWSER_REQUEST_PAIRING:'.length));
           handleBrowserRequestPairing(room, ws, payload, peerIp);
         } catch (e) {
-          console.log(`[Relay][${redactToken(token)}] Malformed BROWSER_REQUEST_PAIRING: ${e.message}`);
+          console.log(`[Relay][${redactToken(token)}] BROWSER_REQUEST_PAIRING handler dropped frame: ${e.message}`);
         }
         return;
       }
       // Control plane — explicit user-leaves-pair signal.
       if (msg.startsWith('LEAVE_ACTIVE:')) {
-        if (ws === room.active.browser) {
-          terminateActivePair(room, 'user_left');
-        } else {
-          console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active browser — ignored`);
+        try {
+          if (ws === room.active.browser) {
+            terminateActivePair(room, 'user_left');
+          } else {
+            console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active browser — ignored`);
+          }
+        } catch (e) {
+          console.error(`[Relay][${redactToken(token)}] LEAVE_ACTIVE handler crashed: ${e.message}`);
         }
         return;
       }
 
       // Data plane — only allowed when this socket is the active browser.
       if (ws === room.active.browser) {
-        if (!forwardDataPlane(room, ws, msg)) {
-          rlog(`[Relay][${redactToken(token)}] Browser data frame dropped — no active phone`);
+        try {
+          if (!forwardDataPlane(room, ws, msg)) {
+            rlog(`[Relay][${redactToken(token)}] Browser data frame dropped — no active phone`);
+          }
+        } catch (e) {
+          console.error(`[Relay][${redactToken(token)}] forwardDataPlane crashed: ${e.message}`);
         }
         return;
       }
@@ -789,6 +921,9 @@ function startRelay(httpServer) {
     });
 
     ws.on('close', () => {
+      // F-A: scrub the userId → ws index so the next supersede call doesn't
+      // try to re-kick a half-closed socket.
+      if (ws.authVia === 'relay-ticket') unindexWebSocket(ws.userId, ws);
       room.lobby.delete(ws);
       const wasActive = (ws === room.active.browser);
       const wasPendingBrowser = !!room.pendingPairing && room.pendingPairing.browserWs === ws;
@@ -815,7 +950,7 @@ function startRelay(httpServer) {
     });
 
     ws.on('pong', () => {
-      ws.isAlive = true;
+      ws.missedPongs = 0;
     });
   });
 
@@ -879,6 +1014,14 @@ function startRelay(httpServer) {
   // Keep every connection alive and detect silent disconnects. We ping
   // both lobby and active sockets — a stale phone in either slot needs to
   // surface as gone so its peers can update.
+  //
+  // F-C (2026-05-29): two-strike policy. Each tick:
+  //   1. terminate any socket whose missedPongs is already >=2
+  //   2. otherwise, increment its missedPongs and send a fresh ping
+  // 'pong' handler and inbound message handler both reset missedPongs=0.
+  // Net effect: a socket must be silent across TWO 15s ticks (>= 30s) before
+  // termination, instead of the previous one-tick guillotine.
+  const MAX_MISSED_PONGS = 2;
   const keepaliveInterval = setInterval(() => {
     const allSockets = [];
     rooms.forEach((room) => {
@@ -888,12 +1031,13 @@ function startRelay(httpServer) {
     });
     for (const ws of allSockets) {
       if (!ws || ws.readyState !== WebSocket.OPEN) continue;
-      if (ws.isAlive === false) {
-        console.log(`[Relay] ${ws.role} missed heartbeat — terminating stale connection`);
+      if (typeof ws.missedPongs !== 'number') ws.missedPongs = 0;
+      if (ws.missedPongs >= MAX_MISSED_PONGS) {
+        console.log(`[Relay] ${ws.role} missed ${ws.missedPongs} heartbeats — terminating stale connection`);
         ws.terminate(); // fires 'close' → cleanup
         continue;
       }
-      ws.isAlive = false;
+      ws.missedPongs += 1;
       try { ws.ping(); } catch (e) { /* ignore */ }
     }
   }, 15000);
@@ -905,6 +1049,61 @@ function startRelay(httpServer) {
   wss.on('error', (err) => {
     console.error(`[Relay] Server error: ${err.message}`);
   });
+
+  // F-B (2026-05-29) — Graceful drain on deploy.
+  //
+  // Coolify rolling deploys send SIGTERM to the old container before swapping
+  // it for the new one. Without this handler the close manifests on the
+  // client as a hard transport error (code 1006) — indistinguishable from a
+  // phone going to sleep, which made every deploy look like the phone
+  // disconnected. With the SERVER_RESTART frame + close 1012 the client knows
+  // it's a deploy and reconnects calmly (WIRE-CONTRACT.md §2 + §3 RETRY).
+  //
+  // Idempotent — multiple SIGTERMs (or SIGINT in dev) collapse to one drain.
+  // 400ms flush window: enough for a TLS-layer SERVER_RESTART frame to clear
+  // the socket buffer on a slow link, short enough that Coolify's 10s SIGKILL
+  // timer never triggers. process.exit(0) is the success path.
+  let draining = false;
+  function gracefulDrain(signal) {
+    if (draining) return;
+    draining = true;
+    console.log(`[Relay] ${signal} received — draining ${userIdToWebSockets.size} indexed users, broadcasting SERVER_RESTART`);
+    const allSockets = [];
+    rooms.forEach((room) => {
+      room.lobby.forEach((ws) => allSockets.push(ws));
+      if (room.active.browser) allSockets.push(room.active.browser);
+      if (room.active.phone) allSockets.push(room.active.phone);
+    });
+    const frame = `SERVER_RESTART:${JSON.stringify({})}`;
+    for (const ws of allSockets) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+      try { safeSend(ws, frame); } catch (_) {}
+      try { ws.close(1012, 'server_restart'); } catch (_) {}
+    }
+    // Give the close frames ~400ms to flush before exiting. setTimeout keeps
+    // the loop alive long enough for the writes to complete on slow links.
+    setTimeout(() => {
+      try { clearInterval(keepaliveInterval); } catch (_) {}
+      console.log('[Relay] Drain complete — exiting');
+      process.exit(0);
+    }, 400);
+  }
+  // Guard against double-binding under hot reload. We tag the listener on
+  // the function object itself so subsequent startRelay() invocations skip
+  // re-registration. (Process-wide flag — not per-wss — because process
+  // signals are global.)
+  function sigtermListener() { gracefulDrain('SIGTERM'); }
+  function sigintListener() { gracefulDrain('SIGINT'); }
+  sigtermListener.__forgeDrain = true;
+  sigintListener.__forgeDrain = true;
+  if (!process.listeners('SIGTERM').some((fn) => fn.__forgeDrain)) {
+    process.on('SIGTERM', sigtermListener);
+  }
+  if (!process.listeners('SIGINT').some((fn) => fn.__forgeDrain)) {
+    // SIGINT (Ctrl-C) in dev gets the same treatment so the local tester
+    // sees the SERVER_RESTART path without spinning up a deploy.
+    process.on('SIGINT', sigintListener);
+  }
 
   return wss;
 }

@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import os from 'os';
 
+// F-3 (2026-05-29): /api/local-ip enumerates the host's network interfaces and
+// returns a LAN IP. In dev this drives the QR-code value (so a phone on the
+// same Wi-Fi can scan and reach the dev server). In production this endpoint
+// has no use — the QR uses the public APP_URL — and an unauthenticated probe
+// of the container's network topology is information leakage. Hard 404 in
+// production; leave the original behavior in dev untouched.
 const PRIORITY_NAMES = ['Wi-Fi', 'Ethernet', 'en0', 'en1', 'eth0', 'wlan0'];
 const VIRTUAL_PATTERNS = /vEthernet|VMware|VirtualBox|Docker|Hyper-V|WSL|Loopback|vboxnet|br-|virbr|Tailscale|tailscale|ZeroTier|nordlynx|ProtonVPN|ExpressVPN|NordVPN/i;
 
@@ -17,6 +23,12 @@ function isVpnIp(ip: string): boolean {
 }
 
 export async function GET() {
+  // F-3: not for production. Return 404 so the route is indistinguishable
+  // from any other unknown path to an external prober.
+  if (process.env.NODE_ENV === 'production') {
+    return new NextResponse('Not Found', { status: 404 });
+  }
+
   const interfaces = os.networkInterfaces();
   let localIp = 'localhost';
 

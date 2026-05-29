@@ -149,6 +149,18 @@ export async function GET(req: NextRequest) {
       select: { sessionVersion: true },
     });
 
+    // F-A (2026-05-29) — instant kick of any prior browser WS for this user.
+    // See /api/auth/login for the full rationale. Phone APK sockets are NOT
+    // affected (index only holds relay-ticket-authed connections).
+    try {
+      const supersede = (globalThis as { __supersedeWebSessions?: (userId: string) => number }).__supersedeWebSessions;
+      if (typeof supersede === 'function') {
+        supersede(user.id);
+      }
+    } catch (err) {
+      console.error('[Auth] supersedeWebSessions failed (lazy check still in force):', err);
+    }
+
     const token = signAccessToken({
       userId: user.id,
       email: user.email,

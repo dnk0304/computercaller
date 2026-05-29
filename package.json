@@ -7,7 +7,6 @@
     "build": "next build",
     "start": "node server.js",
     "lint": "eslint",
-    "relay": "node relay-server.js",
     "dev:all": "node server.js",
     "postinstall": "prisma generate"
   },

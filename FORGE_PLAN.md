@@ -1,117 +1,112 @@
-# FORGE_PLAN.md — Bundle C (Android v30 / 1.0.8) security hardening
+# FORGE_PLAN.md — ComputerCaller server-side security/stability fixes
 
-(Bundle A's plan archived in commit f5bc7bd; this file overwritten for Bundle C.)
+Branch: `feature/saas-multiuser` @ d66aa98 | Date: 2026-05-29 | Author: Forge
 
 ## Goal
-Ship signed APK + AAB v30 (1.0.8) that closes Phase 4 Android findings (H11/H12/H13, M3 APK side, M12–M15, L12). Includes a tiny additive server.js patch so the Bearer-header WS auth path works with the long-lived phoneToken (resolves a gap in Bundle A's actual implementation).
+Implement Ken's DISPATCH-BRIEF-FORGE.md tasks F-A..F-D plus mechanical cleanups
+F-1, F-2, F-3, F-5. Web-only single-session kick (SESSION_SUPERSEDED + close 4001),
+graceful drain on SIGTERM (SERVER_RESTART + close 1012), relaxed keepalive
+(1→2 missed pongs), defensive try/catch per WS handler branch. NO DEPLOY.
 
 ## Architecture Overview
-```
-Phone (v30)                                Server (Node+Next.js)
------------                                ---------------------
-  TokenStore.kt (Keystore-only, fail-closed)
-        |
-  phoneToken (long-lived bearer)
-        |
-  PhoneClient (Java-WebSocket) --Authorization: Bearer <phoneToken>-->  parseConnection()
-                                                                              |
-                                                                       validateTicket(JWT)? -> no
-                                                                              | fallback
-                                                                       validateToken(phoneToken) -> userId
-                                                                              |
-                                                                       room = phoneToken (same as legacy ?token=)
-```
+Server-side only. Touches:
+- `server.js` — relay WS server (custom Next.js server, same process as Next routes)
+- `lib/auth.ts` — JWT helpers
+- `app/api/auth/login/route.ts` + `app/api/auth/google/callback/route.ts` —
+  call into relay after sessionVersion bump to kick stale web socket
+- `app/api/auth/relay-ticket/route.ts` — 409 on stale-version (lazy path)
+- `app/api/local-ip/route.ts` — gate behind non-production
+- `package.json` + `relay-server.js` — delete dead code
+
+Cross-process IPC: server.js exposes a kick function via `globalThis.__supersedeWebSessions`
+(safe because Next route handlers run in the same Node process as the custom server).
 
 ## Tech Stack Decision
-- AGP 8.13.2, compileSdk/targetSdk 35, minSdk 26 (no change).
-- R8 release minification + resource shrinking enabled (was off).
-- Java-WebSocket 1.5.4 -> use `WebSocketClient(URI, Map<String,String> headers)` constructor for the Bearer header.
-- Network Security Config: cleartext only for RFC1918 / loopback; HTTPS-only for computercaller.com (no SPKI pin -- deferred).
-- No new library deps.
+No new deps. Stay with existing `ws`, `jsonwebtoken`, Prisma. Same wire format
+(`TYPE:jsonPayload`).
 
 ## Task Breakdown
 
-### TASK-001: server.js -- additive Bearer-token fallback (UNBLOCKER)
-- Type: Service
-- Description: Server's Bundle A Bearer-header path only accepts a JWT (purpose='relay-ticket'). Add an additive fallback so if JWT verify fails, validate the Bearer value as a legacy long-lived phoneToken. Back-compat: existing ticket flow untouched (JWT still tried first); only the rejection path widens.
-- Files: `server.js` (one block in `wss.on('connection')` ticket branch)
-- Lines: ~10 added
-- Budget: 2 files read / ~10 lines written -- LEAN
-- Status: REQUIRED for the APK's Bearer header to be accepted by the live relay.
+### TASK-001: Mechanical cleanups (F-1, F-3, F-5)
+- Delete `relay-server.js`; remove `"relay"` script from `package.json`;
+  gate `/api/local-ip` to non-production (404 otherwise); HELLO frame uses
+  literal `'computercaller'`.
 
-### TASK-002: AndroidManifest backup + cleartext + NSC
-- Type: Config
-- Files: `dnkdialer-android/app/src/main/AndroidManifest.xml`
-- Lines: ~5 changed
-- Budget: LEAN
+### TASK-002: F-2 — verifyAccessToken purpose param (backward-compat)
+- Add optional `purpose?: 'access'` to verifyAccessToken; add `purpose: 'access'`
+  to signAccessToken; absent claim treated as 'access' (compat).
 
-### TASK-003: New res/xml/network_security_config.xml + data_extraction_rules.xml
-- Type: Config
-- Files: 2 new XML resources
-- Lines: ~30
-- Budget: LEAN
+### TASK-003: F-C — keepalive 1→2 missed pongs + reset on inbound message
+- Counter not boolean; reset on pong AND inbound message; terminate at ≥2.
 
-### TASK-004: build.gradle.kts -- versionCode 30, versionName 1.0.8, isMinifyEnabled=true, isShrinkResources=true, buildConfig=true
-- Type: Config
-- Files: `dnkdialer-android/app/build.gradle.kts`
-- Lines: ~10 changed
-- Budget: LEAN
+### TASK-004: F-D — defensive try/catch per WS handler branch
+- Wrap each control-frame branch body in try/catch.
 
-### TASK-005: proguard-rules.pro -- populate keep rules
-- Type: Config
-- Files: `dnkdialer-android/app/proguard-rules.pro`
-- Lines: ~50 added
-- Budget: LEAN
+### TASK-005: F-A part 1 — web-socket index + supersede mechanism
+- `userIdToWebSockets: Map<userId, Set<WS>>` populated ONLY when
+  `authVia === 'relay-ticket'`. Phone sockets excluded.
+- `globalThis.__supersedeWebSessions = (userId) => …` sends frame, then
+  closes with code 4001 reason 'session_superseded'.
 
-### TASK-006: PhoneClient.kt -- accept headers; PhoneService.kt -- call WS via Authorization: Bearer
-- Type: Service (WS auth cutover)
-- Files: `PhoneClient.kt`, `PhoneService.kt` (lines 1185, 2387 region)
-- Lines: ~30 changed
-- Budget: LEAN
+### TASK-006: F-A part 2 — login + google/callback call supersede after bump
+- After `db.user.update({sessionVersion: increment:1})`, call
+  `(globalThis as any).__supersedeWebSessions?.(user.id)` in try/catch.
 
-### TASK-007: TokenStore.kt -- fail-closed on Keystore failure
-- Type: Auth/Storage
-- Files: `TokenStore.kt`
-- Lines: ~20 changed
-- Budget: LEAN
+### TASK-007: F-A part 3 — 409 on stale relay-ticket
+- Split signature-verify vs version-check; 401 vs 409.
 
-### TASK-008: PII redaction -- PhoneService.kt + SignInActivity.kt (BuildConfig.DEBUG guard)
-- Type: Logging
-- Files: `PhoneService.kt`, `SignInActivity.kt`
-- Lines: ~30 changed
-- Budget: NORMAL
+### TASK-008: F-B — SIGTERM graceful drain
+- Broadcast `SERVER_RESTART:{}` + close 1012 to all sockets, flush ~400ms,
+  exit 0. Idempotent.
 
-### TASK-009: Notification VISIBILITY_PRIVATE + setPublicVersion (L12)
-- Type: UX/Privacy
-- Files: `PhoneService.kt` line 1353 region + channel at 1256
-- Lines: ~20 changed
-- Budget: LEAN
-
-### TASK-010: NotificationListenerService onboarding doc (M15)
-- Type: Doc
-- Files: `NotificationListenerService.kt` header comment
-- Lines: ~15 added
-- Budget: LEAN
-
-### TASK-011: Build, sign, verify, hash
-- Type: Build
-- Commands: `./gradlew clean assembleRelease bundleRelease`; `aapt2 dump badging`; sha256
-- Iterate proguard-rules if R8 strips a class.
-- Budget: build artifact only; no source changes.
+### TASK-009: Verify tsc + build
+- `npx tsc --noEmit` clean; spot-check `next build` if quick.
 
 ## Execution Order
-TASK-001 (server) -> independent.
-TASK-002, TASK-003, TASK-004, TASK-005 -- config edits, parallel-safe.
-TASK-006, TASK-007, TASK-008, TASK-009, TASK-010 -- source edits, parallel-safe (different functions/files).
-TASK-011 last (build + verify).
+T-001 → T-002 → T-003 → T-004 → T-005 → T-006 → T-007 → T-008 → T-009. Serial.
 
 ## Risk Flags
-- R8 might strip a Gson model class we didn't enumerate; iterate proguard-rules.
-- Bundle A's migration rotated every existing phoneToken -- Dennis's v29 APK already re-signed-in once. v30 will use whatever's in TokenStore at install time; if the user re-signs-in, they'll get a new token. Verify v30 actually authenticates with the relay before declaring done.
-- BuildConfig.DEBUG only exists if `buildFeatures { buildConfig = true }` is set on AGP 8+.
-
-## Open Decisions
-- None -- proceeding under the brief's stated scope + the additive server.js patch needed to make Bundle A's Bearer path accept the long-lived phoneToken.
+- `verify-email/route.ts` uses verifyAccessToken on a verify-email token.
+  Mitigation: purpose param is OPT-IN; existing call sites unchanged.
+- Login route → globalThis works because custom server + route handlers share
+  one Node process (standalone build preserved).
+- SIGTERM handler must not double-bind on hot reload in dev. Guard before adding.
 
 ## Status
-Executing under dispatch authority (Ken/Niki); no further plan-approval ping.
+- [x] T-001 mechanical cleanups
+- [x] T-002 verifyAccessToken purpose
+- [x] T-003 keepalive 1→2
+- [x] T-004 defensive try/catch
+- [x] T-005 supersede mechanism
+- [x] T-006 wire login + google
+- [x] T-007 relay-ticket 409
+- [x] T-008 SIGTERM drain
+- [x] T-009 tsc + build — both clean (tsc no output, next build success)
+
+## Acceptance Results
+- npx tsc --noEmit: clean (no output)
+- npm run build: success — "Compiled successfully in 5.9s"; all 32 routes generated
+- node --check server.js: OK
+- Smoke (a) startRelay() boots; mounts /relay; no-auth WS rejected with code 4401: PASS
+- Smoke (b) globalThis.__supersedeWebSessions registered as function: PASS
+- Smoke (c) supersede('unknown-user') returns 0 without crash: PASS
+- Smoke (d) SIGTERM handler fires, logs drain, broadcasts SERVER_RESTART, exits 0: PASS
+  (verified by invoking listener directly — Windows kill(SIGTERM) bypasses listener)
+- Smoke (e) SIGTERM listener registered exactly once (no double-bind): PASS (count=1)
+- Smoke (f) verifyAccessToken purpose semantics: PASS (T1–T5 all green)
+  - T1 sign+verify(access): OK
+  - T2 sign+verify(no-arg): OK (backward-compat)
+  - T3 legacy-token (no purpose claim) + verify(access): OK (absent treated as access)
+  - T4 verify-email token + verify(no-arg): OK (existing call site preserved)
+  - T5 verify-email token + verify(access): correctly rejected
+
+## Deviations from WIRE-CONTRACT
+None.
+
+## Manual checks NOT executed (require running Next + DB + 2 browsers)
+- (a) two web logins → first tab receives SESSION_SUPERSEDED frame then close 4001
+- (b) kicked tab's relay-ticket POST returns 409
+- (e) phone socket stays connected through web supersede + keepalive change
+These are end-to-end browser flows; the unit-level smokes above prove the
+mechanism. Ken / Dennis: run in dev with two browser windows to verify the
+client-side handlers (which Pixel is building in parallel).

@@ -52,6 +52,28 @@ export async function POST(req: NextRequest) {
       select: { sessionVersion: true },
     });
 
+    // F-A (2026-05-29) — Option C instant flip. The sessionVersion bump above
+    // is the LAZY path: it makes any already-issued cookie stale on next API
+    // call. The relay separately tracks every open browser WS by userId; ask
+    // it to push a SESSION_SUPERSEDED frame + close 4001 to the prior tab
+    // RIGHT NOW so the kicked browser flips to the locked-out card without
+    // waiting for its next /api/* call. Phone APK sockets are NOT in the
+    // index and stay untouched (apk-login deliberately does not bump
+    // sessionVersion, so the phone bearer remains valid through web logins).
+    //
+    // server.js (the custom Next.js server) and this Route Handler run in the
+    // SAME Node process — globalThis is the documented single-process IPC.
+    // Wrapped in try/catch so a relay hiccup never breaks login. The lazy
+    // sessionVersion check still enforces the kick on the next request.
+    try {
+      const supersede = (globalThis as { __supersedeWebSessions?: (userId: string) => number }).__supersedeWebSessions;
+      if (typeof supersede === 'function') {
+        supersede(user.id);
+      }
+    } catch (err) {
+      console.error('[Auth] supersedeWebSessions failed (lazy check still in force):', err);
+    }
+
     const token = signAccessToken({
       userId: user.id,
       email: user.email,

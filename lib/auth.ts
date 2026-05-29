@@ -46,15 +46,47 @@ export interface JwtPayload {
    * pre-existing session stays valid until the next login bumps the counter.
    */
   ver?: number;
+  /**
+   * F-2 (2026-05-29). Purpose-claim discipline. Access tokens (the 24h auth_token
+   * cookie) are signed with `purpose: 'access'`; verify-email tokens use
+   * `purpose: 'verify-email'`; reset-password uses `purpose: 'reset-password'`;
+   * relay-ticket uses `purpose: 'relay-ticket'`. Verifiers can pin the purpose
+   * to reject a token presented at the wrong site. Absent on tokens minted
+   * before this dispatch — treated as 'access' for backward compat with live
+   * 24h cookies.
+   */
+  purpose?: 'access' | 'verify-email' | 'reset-password' | 'relay-ticket';
 }
 
 export function signAccessToken(payload: JwtPayload): string {
-  return jwt.sign(payload, getJwtSecret(), { expiresIn: '24h' });
+  // Always stamp purpose: 'access' going forward. Backward compat: existing
+  // 24h cookies in flight have no purpose claim — verifyAccessToken treats
+  // absent === 'access' so they continue to validate until they expire.
+  return jwt.sign({ ...payload, purpose: 'access' }, getJwtSecret(), { expiresIn: '24h' });
 }
 
-export function verifyAccessToken(token: string): JwtPayload | null {
+/**
+ * Verify the signature of an access (or other-purpose) JWT.
+ *
+ * @param token  the raw JWT string
+ * @param purpose  if supplied, also enforce `claims.purpose === purpose`.
+ *                 Absent claim is treated as `'access'` for backward compat
+ *                 with cookies minted before purpose was added. Callers that
+ *                 must accept any signed token (e.g. the email-verify route
+ *                 which verifies a verify-email-purpose token) omit this arg
+ *                 and get the pre-existing signature-only behavior.
+ */
+export function verifyAccessToken(
+  token: string,
+  purpose?: 'access',
+): JwtPayload | null {
   try {
-    return jwt.verify(token, getJwtSecret(), JWT_VERIFY_OPTS) as JwtPayload;
+    const claims = jwt.verify(token, getJwtSecret(), JWT_VERIFY_OPTS) as JwtPayload;
+    if (purpose !== undefined) {
+      const claimPurpose = claims.purpose ?? 'access';
+      if (claimPurpose !== purpose) return null;
+    }
+    return claims;
   } catch {
     return null;
   }
