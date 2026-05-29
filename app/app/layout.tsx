@@ -23,6 +23,8 @@
 import { DashboardTabProvider, PhoneModeProvider } from '@/hooks';
 import { AppShell } from '@/components/AppShell';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { KickedSessionGate } from '@/components/KickedSessionGate';
 
 // PhoneModeProvider wraps DashboardTabProvider so the Phone Mode shell can
 // read dashboard tab selection if it ever needs to (currently it doesn't —
@@ -30,12 +32,30 @@ import { SyncSetupPanel } from '@/components/SyncSetupPanel';
 // option open without a re-wiring later). All other dashboard providers live
 // in the root layout (PhoneProvider / DialerOpenProvider) so Phone Mode
 // inherits the same data sources as the dashboard.
+//
+// ErrorBoundary placement (2026-05-29, Pixel build P-A):
+//   The boundary wraps <AppShell> + <SyncSetupPanel> + <KickedSessionGate> —
+//   i.e. EVERYTHING inside the /app layout but OUTSIDE the providers. A
+//   child render crash falls into the boundary's calm fallback while
+//   PhoneProvider (mounted in the root layout) and the relay WebSocket
+//   continue running uninterrupted. The previous behaviour was a child
+//   throw → AppShell unmounts → PhoneProvider unmounts → relay WS closes.
+//
+// KickedSessionGate placement:
+//   Mounted INSIDE the providers (so it can read PhoneContext via usePhone)
+//   but as a sibling of AppShell. When kickedReason is set the gate
+//   suppresses the app tree visually (renders only its calm card) while
+//   leaving the providers and the phone-side socket completely intact.
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <PhoneModeProvider>
       <DashboardTabProvider>
-        <AppShell>{children}</AppShell>
-        <SyncSetupPanel />
+        <ErrorBoundary scope="app-shell">
+          <KickedSessionGate>
+            <AppShell>{children}</AppShell>
+            <SyncSetupPanel />
+          </KickedSessionGate>
+        </ErrorBoundary>
       </DashboardTabProvider>
     </PhoneModeProvider>
   );

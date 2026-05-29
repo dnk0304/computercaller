@@ -10,6 +10,7 @@ import type {
   CallLogEntry
 } from './phoneTypes';
 import { findContactByNumber } from '@/lib/normalizeNumber';
+import { normalizePayload } from '@/lib/normalizePayload';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 import {
   getDeviceLabel,
@@ -290,7 +291,49 @@ export function usePhoneBridge() {
   // WS dies the user must click Connect again (a page refresh re-opens the
   // socket through the mount effect). There is no IP-based phone URL because
   // the phone connects directly to the relay over WSS via its own sign-in.
+  //
+  // P-C (2026-05-29, WIRE-CONTRACT §3): bounded auto-reconnect is BACK,
+  // strictly scoped to non-terminal WS closes. See the onclose handler in
+  // connect() for the RETRY/STOP classifier. Refs below own the reconnect
+  // state — kept as refs (not React state) so a reconnect doesn't trigger a
+  // re-render storm and so the connect() useCallback stays stable.
   const wsRef = useRef<WebSocket | null>(null);
+  // setTimeout id of the next pending reconnect attempt. Cleared on every
+  // successful open / terminal close / explicit user disconnect.
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Current backoff delay in ms. Doubles after each failed open up to
+  // RECONNECT_CAP_MS, resets to RECONNECT_BASE_MS on a successful open.
+  const reconnectDelayRef = useRef<number>(500);
+  // True after a TERMINAL event (4001 / SESSION_SUPERSEDED frame / explicit
+  // disconnect / logout / HTTP 409). Halts the reconnect loop permanently
+  // for the life of this component instance. Reset on a fresh ticket mint.
+  const terminalReconnectRef = useRef<boolean>(false);
+  // True when the most recent ws.close() was initiated by the user (Disconnect,
+  // Sign Out, page unload) — distinguishes "we closed it deliberately" from
+  // "the connection dropped". Cleared on the next open.
+  const userInitiatedCloseRef = useRef<boolean>(false);
+
+  // Bridge health state surfaced to the UI via ReconnectionPill.
+  //   idle              — initial state / no ticket yet
+  //   connected         — WS open, lobby/active
+  //   reconnecting      — non-terminal close, backoff retrying
+  //   phone_unresponsive — relay OK but no APP_PONG in >30s
+  const [bridgeStatus, setBridgeStatus] = useState<
+    'idle' | 'connected' | 'reconnecting' | 'phone_unresponsive'
+  >('idle');
+  // Kicked-session reason. When non-null:
+  //   - reconnect is permanently halted (terminalReconnectRef is also true)
+  //   - <KickedSessionGate> renders its calm full-screen card
+  //   - the phone side keeps running untouched
+  // Sources: SESSION_SUPERSEDED data frame, WS close 4001, HTTP 409 from
+  // /api/auth/relay-ticket on a reconnect attempt.
+  const [kickedReason, setKickedReason] = useState<'session_superseded' | null>(null);
+
+  // Reconnect tuning constants — backoff base/cap from WIRE-CONTRACT §3.
+  // Jitter is a multiplicative 0.5x–1.5x to spread reconnect storms across
+  // clients after a server restart.
+  const RECONNECT_BASE_MS = 500;
+  const RECONNECT_CAP_MS = 30_000;
   // callTimerRef removed — duration is computed locally in display components
 
   // Dispatch #28 (2026-05-24) — Bundle A (2026-05-28). What this ref stores
@@ -472,7 +515,19 @@ export function usePhoneBridge() {
     const parsed = parseMessage(data);
     if (!parsed) return;
 
-    const { type, payload } = parsed;
+    const { type } = parsed;
+    // P-B (2026-05-29): Ingress normalization. The phone is allowed to send
+    // rows with null/undefined string fields; downstream consumers call
+    // `.toLowerCase()` / `.startsWith()` / `.charAt()` on them and crash the
+    // React tree. We coerce every phone-sourced string → '' and array → []
+    // ONCE here, so every switch branch + every downstream consumer can
+    // rely on safe types. Control-plane frames (PAIRING_*, STATUS, etc.) pass
+    // through unchanged because they don't carry row data. The cast back to
+    // the parser's `payload` type matches the rest of this file's idiom —
+    // parseMessage returns `payload: any` already (line 498), so normalize
+    // -> any is structurally identical and keeps every switch branch typed
+    // the same as before.
+    const payload = normalizePayload(type, parsed.payload) as typeof parsed.payload;
     console.log('[PhoneBridge] Handling message type:', type, 'payload:', payload);
 
     // Local helper — called from each *_CHUNK completion branch with the
@@ -512,6 +567,38 @@ export function usePhoneBridge() {
     };
 
     switch (type) {
+      // ---------- Single-session kick / server restart control plane ----------
+      // WIRE-CONTRACT §1 + §2 (2026-05-29). Both frames arrive BEFORE the
+      // server's close, so the client has the reason in hand even if the
+      // close race is lost. SESSION_SUPERSEDED is terminal (kicked card);
+      // SERVER_RESTART is a normal reconnect trigger.
+
+      case 'SESSION_SUPERSEDED': {
+        // A new web login for the same user superseded this socket. Render
+        // the calm kicked card and STOP all reconnect attempts. The close
+        // frame (code 4001) will follow within a few ms; the onclose
+        // handler also sets terminalReconnectRef, so a race here is benign.
+        console.warn('[PhoneBridge] SESSION_SUPERSEDED — entering kicked-session terminal state');
+        terminalReconnectRef.current = true;
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
+        setKickedReason('session_superseded');
+        setBridgeStatus('idle');
+        break;
+      }
+
+      case 'SERVER_RESTART': {
+        // Coolify deploy / SIGTERM drain. The server closes with 1012 right
+        // after this. We don't need to do anything special here — the
+        // onclose handler classifies 1012 as RETRY, and the reconnect loop
+        // takes over. Log so the dev console reflects what happened.
+        console.log('[PhoneBridge] SERVER_RESTART frame — graceful drain, reconnect imminent');
+        setBridgeStatus('reconnecting');
+        break;
+      }
+
       // ---------- Lobby / Connect+Accept control plane ----------
       // Dispatch #32 (2026-05-25). The relay sends these BEFORE any data
       // plane is opened. All transitions to/from 'active' are gated through
@@ -1230,13 +1317,117 @@ export function usePhoneBridge() {
     // to the relay). See the loop write-up in the isPhoneStaleRef block.
   }, [startCallTimer, stopCallTimer]);
 
+  // Mint a fresh 30s relay-ticket. Stable callback — used by both the
+  // initial mount effect and the reconnect scheduler. Returns the new
+  // ticket string on success, or null on failure (network / non-200).
+  //
+  // HTTP 409 handling (WIRE-CONTRACT §1): when the server returns 409 it
+  // means this session is superseded — flip to terminal kicked state and
+  // do NOT keep retrying.
+  const mintRelayTicket = useCallback(async (): Promise<string | null> => {
+    try {
+      const res = await fetch('/api/auth/relay-ticket', {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      if (res.status === 409) {
+        console.warn('[PhoneBridge] relay-ticket → 409 — session superseded, halting reconnect');
+        terminalReconnectRef.current = true;
+        setKickedReason('session_superseded');
+        setBridgeStatus('idle');
+        return null;
+      }
+      if (!res.ok) {
+        console.warn(`[PhoneBridge] /api/auth/relay-ticket returned ${res.status}`);
+        return null;
+      }
+      const json = await res.json();
+      const ticket: string | null = json?.ticket ?? null;
+      if (!ticket) {
+        console.warn('[PhoneBridge] /api/auth/relay-ticket: no ticket in response');
+        return null;
+      }
+      relayTicketRef.current = ticket;
+      // Don't setRelayTicketState here — that would re-fire the connect
+      // effect. The reconnect loop manages its own connect() call directly.
+      return ticket;
+    } catch (e) {
+      console.warn('[PhoneBridge] /api/auth/relay-ticket fetch failed:', e);
+      return null;
+    }
+  }, []);
+
+  // Schedule the next reconnect attempt. Exponential backoff with multiplicative
+  // jitter (0.5x–1.5x), base 500ms, cap 30s. Mints a fresh ticket ~at attempt
+  // time (tickets are 30s TTL so they must be live when the WS upgrade lands).
+  //
+  // STOP conditions checked at every entry:
+  //   - terminalReconnectRef (set by 4001 / SESSION_SUPERSEDED / 409 / user
+  //     disconnect / logout)
+  //   - userInitiatedCloseRef (set by the close() in disconnect / unload)
+  // Either being true short-circuits and leaves the WS dormant.
+  //
+  // We accept `doConnect` as an arg (not a closure capture) to avoid a
+  // circular dep with connect — connect's onclose calls scheduleReconnect
+  // with `connect` itself, and the setTimeout closure carries it forward
+  // for the actual ws.open call. This keeps both useCallbacks stable.
+  const scheduleReconnect = useCallback((doConnect: (url?: string) => void) => {
+    if (terminalReconnectRef.current) {
+      console.log('[PhoneBridge] Reconnect skipped — terminal state');
+      return;
+    }
+    if (userInitiatedCloseRef.current) {
+      console.log('[PhoneBridge] Reconnect skipped — user-initiated close');
+      return;
+    }
+    if (reconnectTimeoutRef.current) {
+      // A reconnect is already scheduled; don't pile up duplicates.
+      return;
+    }
+
+    const delay = reconnectDelayRef.current;
+    // Multiplicative jitter spreads reconnect storms across clients after a
+    // server restart. Range [0.5x, 1.5x] of the nominal delay.
+    const jittered = Math.round(delay * (0.5 + Math.random()));
+    console.log(`[PhoneBridge] Scheduling reconnect in ~${jittered}ms (base ${delay}ms)`);
+    setBridgeStatus('reconnecting');
+
+    reconnectTimeoutRef.current = setTimeout(async () => {
+      reconnectTimeoutRef.current = null;
+      // Re-check terminal flags at fire time — a SESSION_SUPERSEDED could
+      // have arrived during the timeout window.
+      if (terminalReconnectRef.current || userInitiatedCloseRef.current) {
+        return;
+      }
+      // Mint a fresh ticket (30s TTL → must be brand new at connect time).
+      const ticket = await mintRelayTicket();
+      if (!ticket) {
+        // Either 409 (terminal — handled inside mintRelayTicket) or a
+        // transient network error. For transient errors, bump backoff and
+        // try again.
+        if (!terminalReconnectRef.current) {
+          reconnectDelayRef.current = Math.min(delay * 2, RECONNECT_CAP_MS);
+          scheduleReconnect(doConnect);
+        }
+        return;
+      }
+      // Bump the backoff for the NEXT failure before issuing connect.
+      // A successful open will reset it back to base in onopen.
+      reconnectDelayRef.current = Math.min(delay * 2, RECONNECT_CAP_MS);
+      doConnect(deriveRelayUrl(ticket));
+    }, jittered);
+  }, [mintRelayTicket]);
+
   // Open the relay WebSocket. Dispatch #32 (2026-05-25): heavily simplified.
-  // The only URL we ever open is the relay /relay endpoint with the user's
-  // phoneToken in the query string. There is NO auto-reconnect — if the
-  // socket dies the user must click Connect (or refresh) to re-open it. The
-  // page-mount effect opens the socket once on initial load; from then on
-  // it stays open for the life of the page.
-  const connect = useCallback((url?: string) => {
+  //
+  // P-C (2026-05-29): auto-reconnect REINSTATED with strict STOP-list scoping.
+  // See WIRE-CONTRACT §3 — RETRY for any non-terminal close (1006 abnormal,
+  // 1012 SERVER_RESTART, 1011 internal, missed pongs, network blips); STOP
+  // for 4001 (SESSION_SUPERSEDED), 1000 user-initiated, HTTP 409 on ticket
+  // mint. The CAUTION from dispatch #3/#32 still applies — that removal was
+  // about ghost reconnects after EXPLICIT teardown. Those remain terminal
+  // here via userInitiatedCloseRef + the 1000 close-code check below.
+  const connect = useCallback(function connectImpl(url?: string): void {
     // Don't open a duplicate socket if one is already up.
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       console.log('[PhoneBridge] Already connected');
@@ -1245,6 +1436,11 @@ export function usePhoneBridge() {
     if (!url) {
       console.log('[PhoneBridge] connect() called without URL — ignoring');
       return;
+    }
+    // Cancel any scheduled reconnect — we're trying to connect right now.
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
 
     setIsRelayConnection(isRelayUrl(url));
@@ -1257,6 +1453,10 @@ export function usePhoneBridge() {
         console.log('[PhoneBridge] Relay WebSocket open — entering lobby');
         setConnectionError(null);
         setIsBridgeConnected(true);
+        setBridgeStatus('connected');
+        // Successful open — reset backoff back to base for the NEXT failure.
+        reconnectDelayRef.current = RECONNECT_BASE_MS;
+        userInitiatedCloseRef.current = false;
         // Dispatch #32: lobbyState defaults to 'lobby' immediately on WS
         // open. The relay's LOBBY_STATUS frame will arrive a moment later
         // with phonePresent.
@@ -1278,18 +1478,16 @@ export function usePhoneBridge() {
         handleMessage(event.data);
       };
 
-      ws.onclose = () => {
-        console.log('[PhoneBridge] Relay WebSocket closed');
+      ws.onclose = (event: CloseEvent) => {
+        const { code, reason } = event;
+        console.log(`[PhoneBridge] Relay WebSocket closed (code=${code}, reason="${reason}")`);
         setIsBridgeConnected(false);
         // If we were active, downgrade to lobby so the UI doesn't lie about
-        // the data plane being live. We do NOT auto-reconnect — user clicks
-        // Connect (or refreshes) to recover.
+        // the data plane being live.
         setLobbyState((prev) => (prev === 'active' ? 'lobby' : prev));
         setIsConnected(false);
         setPhoneName(null);
         setPhonePresentInLobby(false);
-        // Cancel any pending pair-request timer — the relay is gone, the
-        // request can never resolve.
         if (pairingTimerRef.current) {
           clearTimeout(pairingTimerRef.current);
           pairingTimerRef.current = null;
@@ -1298,21 +1496,61 @@ export function usePhoneBridge() {
           clearTimeout(transientClearTimerRef.current);
           transientClearTimerRef.current = null;
         }
-        console.warn('[PhoneBridge] Relay socket closed — no auto-reconnect. Refresh or click Connect.');
+
+        // STOP classification (WIRE-CONTRACT §3):
+        //   code 4001 — single-web-session kick. The SESSION_SUPERSEDED frame
+        //     usually arrives first and sets terminalReconnectRef already; this
+        //     is the belt-and-braces path for when the close race is lost.
+        //   code 1000 — explicit user close (disconnect / sign out / page
+        //     unload). userInitiatedCloseRef is also set by the caller.
+        //   terminalReconnectRef already true — a prior path (409, SESSION_
+        //     SUPERSEDED frame) has already pinned us to terminal.
+        if (code === 4001 || reason === 'session_superseded') {
+          console.warn('[PhoneBridge] Close 4001 (session_superseded) — terminal, kicked card.');
+          terminalReconnectRef.current = true;
+          setKickedReason('session_superseded');
+          setBridgeStatus('idle');
+          return;
+        }
+        if (code === 1000 || userInitiatedCloseRef.current) {
+          console.log('[PhoneBridge] Close 1000 (user-initiated) — no reconnect.');
+          setBridgeStatus('idle');
+          return;
+        }
+        if (terminalReconnectRef.current) {
+          console.log('[PhoneBridge] Close — terminal flag already set, not reconnecting.');
+          setBridgeStatus('idle');
+          return;
+        }
+
+        // RETRY classification: every other close (1006, 1011, 1012, blips,
+        // missed pongs) falls here. Schedule a reconnect attempt with
+        // bounded backoff + jitter. Ticket is freshly minted inside the
+        // scheduler so the upgrade carries a live 30s JWT. We pass
+        // connectImpl by name so the scheduler can call connect recursively
+        // without needing a ref-indirection layer.
+        console.warn(
+          `[PhoneBridge] Non-terminal close (code=${code}) — scheduling auto-reconnect with backoff.`,
+        );
+        scheduleReconnect(connectImpl);
       };
 
       ws.onerror = (error) => {
         console.error('[PhoneBridge] Relay WebSocket error:', error);
         // Per dispatch #27, relay errors are silent — onclose will fire
-        // right after and do the state cleanup.
+        // right after and do the state cleanup + retry classification.
       };
 
       wsRef.current = ws;
     } catch (error) {
       console.error('[PhoneBridge] Relay connection error:', error);
-      // No auto-retry — same rationale as onclose.
+      // Treat a synchronous construction failure the same as a close — try
+      // again with backoff unless we're terminal.
+      if (!terminalReconnectRef.current && !userInitiatedCloseRef.current) {
+        scheduleReconnect(connectImpl);
+      }
     }
-  }, [handleMessage, isRelayUrl]);
+  }, [handleMessage, isRelayUrl, scheduleReconnect]);
 
   // Send command to phone
   const sendCommand = useCallback((type: string, payload: object = {}) => {
@@ -2006,6 +2244,17 @@ export function usePhoneBridge() {
   const disconnect = useCallback(() => {
     console.log('[PhoneBridge] disconnect() — delegating to leaveActive()');
     leaveActive();
+    // P-C (2026-05-29): explicit user-initiated close is TERMINAL under the
+    // reconnect spec (WIRE-CONTRACT §3 STOP list). Flip both flags BEFORE
+    // calling close() so the onclose handler skips the reconnect path. Also
+    // cancel any in-flight scheduled reconnect.
+    userInitiatedCloseRef.current = true;
+    terminalReconnectRef.current = true;
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    setBridgeStatus('idle');
     // Sign Out callers expect a stronger semantic — they don't just want to
     // leave the active pair, they want to sever the relay socket entirely so
     // the next sign-in starts fresh. Honour that by also closing the relay
@@ -2050,39 +2299,20 @@ export function usePhoneBridge() {
     // navigation. The ticket has a 30 s expiry but it only needs to live
     // long enough for the WS upgrade below to complete — usually <1 s.
     if (relayTicketRef.current) return;
+    // If we're already in the kicked terminal state (e.g. user landed on a
+    // sub-route after the kick), don't try to mint — the endpoint would
+    // 409 again and we'd burn cycles.
+    if (terminalReconnectRef.current) return;
     let cancelled = false;
     (async () => {
-      try {
-        // Bundle A (2026-05-28) — was /api/auth/me + json.user.phoneToken.
-        // Now: ask the dedicated /api/auth/relay-ticket endpoint for a
-        // short-lived JWT (purpose: relay-ticket, expiresIn: 30s). The
-        // browser no longer touches the long-lived phoneToken.
-        // POST is required — the endpoint enforces same-origin (Origin or
-        // Referer must match) to defeat CSRF on the ticket-mint hop.
-        const res = await fetch('/api/auth/relay-ticket', {
-          method: 'POST',
-          credentials: 'same-origin',
-        });
-        if (!res.ok) {
-          console.warn(`[PhoneBridge] /api/auth/relay-ticket returned ${res.status} — relay connect deferred`);
-          return;
-        }
-        const json = await res.json();
-        const ticket: string | null = json?.ticket ?? null;
-        if (cancelled) return;
-        if (!ticket) {
-          console.warn('[PhoneBridge] No ticket in response — relay connect deferred');
-          return;
-        }
-        relayTicketRef.current = ticket;
-        setRelayTicketState(ticket);
-        console.log('[PhoneBridge] relay-ticket minted — relay connect will kick from effect');
-      } catch (e) {
-        console.warn('[PhoneBridge] /api/auth/relay-ticket fetch failed:', e);
-      }
+      const ticket = await mintRelayTicket();
+      if (cancelled || !ticket) return;
+      // setRelayTicketState fires the auto-connect effect below.
+      setRelayTicketState(ticket);
+      console.log('[PhoneBridge] relay-ticket minted — relay connect will kick from effect');
     })();
     return () => { cancelled = true; };
-  }, [pathname]);
+  }, [pathname, mintRelayTicket]);
 
   // Do NOT auto-send CONNECT_TO with a saved phone URL. Reasons:
   // 1. If phone is connected via QR, the relay already knows — no CONNECT_TO needed.
@@ -2118,6 +2348,15 @@ export function usePhoneBridge() {
     // calls terminateActivePair() if this socket was in active.browser.
     const handleBeforeUnload = () => {
       console.log('[PhoneBridge] beforeunload — closing relay WS');
+      // P-C (2026-05-29): unload is TERMINAL — we're going away. Flip the
+      // flag so the onclose handler (if it manages to fire) doesn't try to
+      // reconnect during the unwind.
+      userInitiatedCloseRef.current = true;
+      terminalReconnectRef.current = true;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
         try { wsRef.current.close(1000, 'page_unload'); } catch { /* CONNECTING-state close throws in some browsers — ignore */ }
       }
@@ -2128,27 +2367,55 @@ export function usePhoneBridge() {
       setLobbyState('lobby');
       setLastBrowserRequest(null);
     };
+    // P-C (2026-05-29): tab returns to foreground — if we're disconnected
+    // / reconnecting, kick a reconnect attempt IMMEDIATELY instead of
+    // waiting for the next backoff tick. Improves the "sleep laptop for
+    // 10 min then come back" UX where backoff might be at its 30s cap.
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (terminalReconnectRef.current || userInitiatedCloseRef.current) return;
+      const readyState = wsRef.current?.readyState;
+      const isLive = readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING;
+      if (isLive) return;
+      console.log('[PhoneBridge] visibilitychange → visible — kicking immediate reconnect');
+      // Reset backoff so the immediate attempt isn't delayed by the cap.
+      reconnectDelayRef.current = RECONNECT_BASE_MS;
+      // Clear any pending scheduled attempt so we don't double-fire.
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      scheduleReconnect(connect);
+    };
     // pagehide covers the bfcache case where beforeunload doesn't fire
     // (iOS Safari, modern Chrome with back/forward cache). Registering
     // both is safe — only one will fire per unload, and the handler is
     // idempotent (re-running it on an already-null wsRef is a no-op).
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('pagehide', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       console.log('[PhoneBridge] Cleaning up — closing relay WS on unmount');
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
       if (callStatusTimeoutRef.current) clearTimeout(callStatusTimeoutRef.current);
       if (pairingTimerRef.current) clearTimeout(pairingTimerRef.current);
       if (transientClearTimerRef.current) clearTimeout(transientClearTimerRef.current);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      // Unmount is also user-initiated (component teardown / route change).
+      userInitiatedCloseRef.current = true;
       if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
         try { wsRef.current.close(1000, 'unmount'); } catch { /* ignore */ }
       }
       wsRef.current = null;
     };
-  }, [connect, relayTicketState]);
+  }, [connect, relayTicketState, scheduleReconnect]);
 
   // App-level liveness ping. While `isConnected` is true, send APP_PING every
   // 15s. The phone echoes APP_PONG back which bumps lastPongAtRef (see handler
@@ -2193,10 +2460,23 @@ export function usePhoneBridge() {
         console.warn(`[PhoneBridge] No APP_PONG for ${Math.round(ageMs/1000)}s — marking phone stale`);
         setIsPhoneStale(true);
         setIsConnected(false);
+        // P-C (2026-05-29): surface the calm yellow pill so the user
+        // understands why their actions aren't reaching the phone. Only
+        // overwrite if we're not already in 'reconnecting' — relay being
+        // down is a worse condition that should win the pill.
+        setBridgeStatus((prev) => (prev === 'reconnecting' ? prev : 'phone_unresponsive'));
       }
     }, 5000);
     return () => clearInterval(id);
   }, [isConnected]);
+
+  // P-C (2026-05-29): clear phone_unresponsive when a fresh pong arrives.
+  // The APP_PONG handler in the message switch resets lastPongAtRef +
+  // isPhoneStale; mirror that here so bridgeStatus gets back to 'connected'.
+  useEffect(() => {
+    if (isPhoneStale) return;
+    setBridgeStatus((prev) => (prev === 'phone_unresponsive' ? 'connected' : prev));
+  }, [isPhoneStale]);
 
   // Auto-reconnect watchdog REMOVED (2026-05-22, dispatch #3). See the note at
   // the top of the hook where the refs/state used to live. Hard-kill on user
@@ -2247,6 +2527,22 @@ export function usePhoneBridge() {
     // phone hasn't responded to APP_PING in >30s. UI uses this to surface a
     // "Phone: waiting…" state instead of the misleading green pill.
     isPhoneStale,
+
+    // P-C/P-D (2026-05-29, WIRE-CONTRACT §1-§3). Bridge health surface for
+    // the calm ReconnectionPill in the header, plus the kicked-session
+    // terminal flag for KickedSessionGate.
+    //   bridgeStatus:
+    //     'idle'              — no relay-ticket yet, or terminal close
+    //     'connected'         — relay WS open
+    //     'reconnecting'      — non-terminal close, backoff retrying
+    //     'phone_unresponsive' — relay up but phone APP_PONG silent >30s
+    //   kickedReason:
+    //     null  — happy path
+    //     'session_superseded' — another web tab signed into this account;
+    //                            reconnect is permanently halted and the
+    //                            full-screen <KickedSessionGate> renders.
+    bridgeStatus,
+    kickedReason,
 
     // Lobby / Connect+Accept state (dispatch #32, 2026-05-25). Pixel renders
     // the entire pair-handshake UI off these fields. See lib/lobbyState.ts.

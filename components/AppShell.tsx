@@ -8,6 +8,8 @@ import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
 import { PhoneModeShell } from '@/components/PhoneModeShell';
 import { SyncMenuButton } from '@/components/SyncMenuButton';
+import { ReconnectionPill } from '@/components/ReconnectionPill';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { usePhone, useDashboardTab, usePhoneMode, type DashboardTab } from '@/hooks';
 
 /**
@@ -192,6 +194,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               onQuickSync={typeof quickSync === 'function' ? handleQuickSyncClick : undefined}
               onFullSync={typeof openSyncPanel === 'function' ? openSyncPanel : undefined}
             />
+            {/* ReconnectionPill (P-C, 2026-05-29) — calm header surface for
+                transient bridge-health states (Reconnecting / Phone
+                unresponsive). Renders null on healthy states so the existing
+                ConnectionStatus owns the green happy-path pill. Never blocks
+                an action; never a modal. */}
+            <ReconnectionPill />
             {/* Phone Mode entry was here until dispatch #34 (2026-05-26) —
                 Dennis moved it into the ProfileMenu dropdown (right side of
                 header, under the avatar) so the chrome stays tighter and the
@@ -217,11 +225,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex-1 p-6 overflow-x-auto overflow-y-hidden relative min-w-[640px]">
           <div className="absolute inset-0 bg-gradient-to-tr from-blue-50/50 via-indigo-50/30 to-purple-50/50 pointer-events-none" />
           <div className="relative h-full z-0">
-            {wrapInScroll ? (
-              <div className="h-full overflow-y-auto">{children}</div>
-            ) : (
-              children
-            )}
+            {/* Per-route children boundary (P-A, 2026-05-29). The Sidebar
+                + header chrome live OUTSIDE this wrapper, so a render
+                crash in the route page falls into a calm fallback while
+                the nav stays mounted and usable. PhoneProvider (root
+                layout) was already outside this scope, so the WebSocket
+                survives independently. resetKey=pathname so navigating
+                to a different route clears any prior boundary error
+                state automatically. */}
+            <ErrorBoundary scope="route-content" resetKey={pathname ?? ''}>
+              {wrapInScroll ? (
+                <div className="h-full overflow-y-auto">{children}</div>
+              ) : (
+                children
+              )}
+            </ErrorBoundary>
           </div>
         </div>
       </main>

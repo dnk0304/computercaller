@@ -75,7 +75,19 @@ export type PhoneEventType =
   | 'PAIRING_DECLINED'
   | 'PAIRING_TIMEOUT'
   | 'PAIRING_REJECTED'
-  | 'PAIRING_TERMINATED';
+  | 'PAIRING_TERMINATED'
+  // Single-web-session kick (WIRE-CONTRACT §1, 2026-05-29). Server emits this
+  // frame BEFORE closing with code 4001 when a new web login for the same user
+  // bumps sessionVersion and supersedes this socket. Client sets
+  // kickedReason='session_superseded' and stops all reconnect attempts.
+  //   payload: { reason: 'signed_in_elsewhere' }
+  | 'SESSION_SUPERSEDED'
+  // Graceful drain on Coolify deploy / SIGTERM (WIRE-CONTRACT §2, 2026-05-29).
+  // Server emits this frame BEFORE closing with code 1012 so the client knows
+  // a restart is happening (vs a kick). Treated as a normal reconnect trigger
+  // — the auto-reconnect backoff handles it.
+  //   payload: {}
+  | 'SERVER_RESTART';
 
 // Message types to phone
 export type PhoneCommandType =

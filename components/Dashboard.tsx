@@ -67,6 +67,7 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
 
@@ -1216,6 +1217,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
       {/* ============================================================ */}
       {/* COLUMN 1 — Quick Dial + Favorites + Recent Calls              */}
       {/* ============================================================ */}
+      {/* Per-column ErrorBoundary (P-A, 2026-05-29): a render crash in
+          the dial / favorites / call log subtree falls into the calm
+          fallback without taking down columns 2/3 or the relay WS. */}
+      <ErrorBoundary scope="dashboard-col1-calls">
       <section
         className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-0 h-full"
         aria-label="Quick dial and recent calls"
@@ -1627,10 +1632,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
           )}
         </div>
       </section>
+      </ErrorBoundary>
 
       {/* ============================================================ */}
       {/* COLUMN 2 — Thread list (always visible)                        */}
       {/* ============================================================ */}
+      <ErrorBoundary scope="dashboard-col2-threads">
       <section
         className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-0 h-full"
         aria-label="Conversations"
@@ -1789,10 +1796,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
           )}
         </div>
       </section>
+      </ErrorBoundary>
 
       {/* ============================================================ */}
       {/* COLUMN 3 — Chat view (always visible)                          */}
       {/* ============================================================ */}
+      {/* resetKey=selectedThread so a crash in one thread doesn't lock
+          the user out of OTHER threads — switching threads resets the
+          boundary's error state. */}
+      <ErrorBoundary scope="dashboard-col3-chat" resetKey={selectedThread ?? '__none'}>
       <section
         className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-0 h-full"
         aria-label="Conversation"
@@ -1836,6 +1848,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
           </div>
         )}
       </section>
+      </ErrorBoundary>
         </div>
       </div>
 
@@ -3168,11 +3181,27 @@ const ThreadView = React.memo(function ThreadView({
                     )}
                   >
                     {isMms ? (
-                      <MmsBubble
-                        message={m}
-                        isSent={isSent}
-                        getMmsMedia={getMmsMedia}
-                      />
+                      // Per-MMS-row ErrorBoundary (P-A, 2026-05-29). MMS bubbles
+                      // touch the most surface area of phone-sourced data
+                      // (body, thumbnails, async media fetch). A malformed
+                      // row should NOT take down the whole thread — fall back
+                      // to a tiny inline notice and let the rest of the
+                      // conversation keep rendering.
+                      <ErrorBoundary
+                        scope="mms-row"
+                        resetKey={m.id}
+                        fallback={
+                          <span className="text-xs text-slate-400 italic">
+                            (this message couldn&apos;t be rendered)
+                          </span>
+                        }
+                      >
+                        <MmsBubble
+                          message={m}
+                          isSent={isSent}
+                          getMmsMedia={getMmsMedia}
+                        />
+                      </ErrorBoundary>
                     ) : (
                       <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                         {m.body}
