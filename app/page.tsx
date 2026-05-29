@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   Apple,
 } from 'lucide-react';
+import Reviews from '@/components/Reviews';
 
 /**
  * Landing page — SEO + content rewrite (dispatch 2026-05-25, revised 2026-05-25
@@ -825,6 +826,21 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
+
+      {/* Reviews / testimonials — placed between FAQ (white) and the final
+          CTA (gradient) so the rhythm reads white → slate-50 (reviews) →
+          gradient (CTA). Social proof sits as the last objection-handler
+          before the conversion ask.
+
+          IMPORTANT: the reviews currently shipping in <Reviews /> are
+          ILLUSTRATIVE placeholder copy authored by marketing — not real
+          customer quotes. See the HONESTY NOTICE at the top of
+          components/Reviews.tsx before publishing publicly.
+
+          `showAggregate` is intentionally OFF (default false) — the
+          "4.8/5 from early users" line must NOT render until backed by
+          real ratings. Flip it on once Dennis approves. */}
+      <Reviews />
 
       {/* Final CTA */}
       <section className="border-t border-slate-200 bg-gradient-to-b from-blue-50 to-white">
