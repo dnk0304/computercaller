@@ -54,18 +54,23 @@ import Reviews from '@/components/Reviews';
  *   2. Privacy by default        ← differentiator vs. WhatsApp/Zoom/Skype
  *   3. Features (KSP)            ← lifted from #5 so the "what's in the box"
  *                                  reveal lands inside the first scroll-and-a-half
- *   4. How It Works
+ *   3b. Magic-moment band        ← single hero-grade product visual (2026-05-30)
+ *   4. How It Works              ← three steps + embedded 4-step infographic
+ *   4b. A closer look            ← recommended-setup tip + 2 feature spotlights
+ *                                  (Messages/templates + Phone Mode)
  *   5. Use Cases
  *   6. Who It's For
  *   7. Pricing
  *   8. FAQ                       ← includes new privacy Q&A; mirrored in JSON-LD
- *   9. Final CTA
- *   10. Footer
+ *   9. Reviews (component)
+ *   10. Final CTA
+ *   11. Footer
  *
  * Background alternation: hero(gradient) → privacy(white) → features(slate-50) →
- * how-it-works(white) → use-cases(slate-50) → who-its-for(white) → pricing(slate-50)
- * → faq(white) → cta(gradient) → footer(slate-50). Every section seam is a real
- * value seam, never two white surfaces in a row.
+ * magic-moment(white) → how-it-works(slate-50) → closer-look(white) →
+ * use-cases(slate-50) → who-its-for(white) → pricing(slate-50) → faq(white) →
+ * cta(gradient) → footer(slate-50). Every section seam is a real value seam,
+ * never two white surfaces in a row.
  */
 
 const PRIMARY_KEYWORD = 'Make phone calls from your computer.';
@@ -553,11 +558,65 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* Magic-moment visual band — full-width product visualisation that sits
+          between the Features grid (what you get) and the How It Works steps
+          (how it happens). Lets the reader exhale on a single emotional image
+          before the explainer takes over. Generated art (1344x768, ~16:9) of
+          a phone syncing data into a laptop dashboard — abstract enough to
+          age well, branded with the blue→indigo gradient that already runs
+          through the H1 and wordmark.
+
+          Layout: white surface continues from the previous section's natural
+          rhythm via the seam border, BUT the inner card is `max-w-6xl` with
+          generous py and a soft slate border + shadow so the image feels like
+          a "screenshot of the magic moment" rather than wallpaper. next/image
+          gets explicit width/height (1344/768) to lock the aspect ratio at
+          parse time → zero CLS. `priority` is intentionally OFF — this band
+          is mid-page, well below the fold, so eager loading would steal LCP
+          budget from the hero. Default lazy + AVIF/WebP via Next 16 image
+          optimisation pipeline. `sizes` reflects the actual rendered width:
+          full viewport on mobile, capped at ~1152px (max-w-6xl minus padding)
+          on desktop. */}
+      <section
+        aria-labelledby="magic-moment-heading"
+        className="border-t border-slate-200 bg-white"
+      >
+        <div className="max-w-6xl mx-auto px-6 py-16 sm:py-20">
+          <div className="max-w-2xl mb-8">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              The magic moment
+            </p>
+            <h2
+              id="magic-moment-heading"
+              className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900"
+            >
+              Your phone&apos;s world, on your laptop.
+            </h2>
+            <p className="mt-3 text-slate-600 text-lg leading-relaxed">
+              Calls, messages, contacts — everything that lived on a 6-inch
+              screen, mirrored to a real keyboard and a real display in
+              real time.
+            </p>
+          </div>
+
+          <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-slate-50 shadow-sm">
+            <Image
+              src="/marketing/magic-moment-sync.png"
+              alt="A phone on the left syncing live call, message, and contact data into a laptop dashboard on the right via a blue gradient data arc — illustrating ComputerCaller mirroring your phone to your computer."
+              width={1344}
+              height={768}
+              sizes="(min-width: 1280px) 1152px, (min-width: 640px) 92vw, 100vw"
+              className="w-full h-auto block"
+            />
+          </div>
+        </div>
+      </section>
+
       {/* How it works — three-step explainer. The mental model the user needs
           to understand BEFORE signing up: companion app on phone + browser
           dashboard + real calls through real carrier. White surface, sandwiched
           between features (slate) above and use-cases (slate) below. */}
-      <section id="how-it-works" className="border-t border-slate-200 scroll-mt-24">
+      <section id="how-it-works" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-12">
             <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
@@ -597,6 +656,30 @@ export default function LandingPage() {
             ))}
           </ol>
 
+          {/* Recommended usage infographic — Dennis's brief: a 4-step visual
+              (take phone → connect → headset → talk through computer) that
+              reinforces the three-card explainer above with the practical
+              "best setup" extension (headset). Sits inside How It Works so
+              the visual + the text are in one mental unit. White card on the
+              slate-50 section surface to make the infographic feel like a
+              "frame" worth pausing on. Same CLS-safe Next/Image sizing pattern
+              as the magic-moment band. 1344x768 source; rendered up to ~1152px
+              wide on desktop (max-w-6xl minus 48px padding). */}
+          <figure className="mt-12 relative overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+            <Image
+              src="/marketing/recommended-usage.png"
+              alt="Four-step infographic: 1) take your phone, 2) connect it to your computer through ComputerCaller, 3) plug a headset into your phone, 4) talk through your computer hands-free."
+              width={1344}
+              height={768}
+              sizes="(min-width: 1280px) 1152px, (min-width: 640px) 92vw, 100vw"
+              className="w-full h-auto block"
+            />
+            <figcaption className="sr-only">
+              Recommended setup at a glance: phone, ComputerCaller connection,
+              Bluetooth headset, hands-free calling from your laptop.
+            </figcaption>
+          </figure>
+
           <div className="mt-10 flex justify-center">
             <Link
               href="/auth/register"
@@ -609,13 +692,25 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Recommended setup — slim Pro Tip callout between How It Works
-          and Use Cases. Single sentence per Dennis's brief: connect a
-          headset to your phone, then manage everything from the laptop
-          hands-free. White surface to break the alternation rhythm gently. */}
-      <section className="border-t border-slate-200 bg-white">
-        <div className="max-w-4xl mx-auto px-6 py-14 sm:py-16">
-          <div className="flex items-start gap-4 sm:gap-5">
+      {/* A closer look — combined section that absorbs the prior slim
+          Recommended-setup callout AND introduces the two feature spotlight
+          shots (Messages with templates + Phone Mode dialer). The Headphones
+          tip leads in as the copy column; the two product visuals sit in a
+          2-col grid beneath it. Same white surface as the prior callout, so
+          background alternation with the slate-50 How It Works above and the
+          slate-50 Use Cases below is preserved.
+
+          The two images are 4:3 (1152x896) — letting them sit side by side
+          at sm: keeps them readable without crushing the detail. On mobile
+          they stack and each gets a sensible figcaption-style label below
+          rather than overlay text (overlays are fragile against varying
+          aspect ratios). */}
+      <section
+        aria-labelledby="closer-look-heading"
+        className="border-t border-slate-200 bg-white"
+      >
+        <div className="max-w-6xl mx-auto px-6 py-16 sm:py-20">
+          <div className="flex items-start gap-4 sm:gap-5 max-w-3xl mb-12">
             <div className="flex-shrink-0 w-12 h-12 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center">
               <Headphones className="w-5 h-5 text-blue-600" aria-hidden="true" />
             </div>
@@ -623,7 +718,10 @@ export default function LandingPage() {
               <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
                 Recommended setup
               </p>
-              <h2 className="mt-2 text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900">
+              <h2
+                id="closer-look-heading"
+                className="mt-2 text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900"
+              >
                 Connect a headset to your phone.
               </h2>
               <p className="mt-3 text-slate-600 text-base sm:text-lg leading-relaxed">
@@ -632,6 +730,63 @@ export default function LandingPage() {
                 contacts, all hands-free from your computer.
               </p>
             </div>
+          </div>
+
+          {/* Two feature spotlights — Messages/templates on the left, Phone
+              Mode dialer on the right. Each is a figure with the image as the
+              visual lead and a small label block beneath. The whole grid is
+              decorative-but-informative; the alt text carries the meaning for
+              SR users, so the label blocks add taste, not redundancy.
+
+              Both PNGs are 4:3 (1152x896). The `sizes` calc reflects the
+              real rendered width: full viewport on mobile (single column),
+              ~half viewport on sm+ (two-column grid inside max-w-6xl). */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <figure className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition-shadow hover:shadow-md">
+              <Image
+                src="/marketing/message-templates.png"
+                alt="ComputerCaller messages interface showing an SMS thread with a row of saved templates underneath — one-click insert for common replies like greeting, follow-up, and meeting confirmation."
+                width={1152}
+                height={896}
+                sizes="(min-width: 1280px) 552px, (min-width: 768px) 46vw, 92vw"
+                className="w-full h-auto block"
+              />
+              <figcaption className="p-5 border-t border-slate-200 bg-white">
+                <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+                  Messages
+                </p>
+                <p className="mt-1.5 font-semibold text-slate-900">
+                  Templates for the replies you send every day.
+                </p>
+                <p className="mt-1.5 text-slate-600 text-sm leading-relaxed">
+                  Save up to 15 SMS templates. One click drops them into any
+                  thread — keyboard-first, no thumb gymnastics.
+                </p>
+              </figcaption>
+            </figure>
+
+            <figure className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition-shadow hover:shadow-md">
+              <Image
+                src="/marketing/phone-mode.png"
+                alt="ComputerCaller Phone Mode running in a narrow window with a full dialer keypad, recent calls list, and active call controls — the entire phone experience reshaped to a vertical pane next to your other work."
+                width={1152}
+                height={896}
+                sizes="(min-width: 1280px) 552px, (min-width: 768px) 46vw, 92vw"
+                className="w-full h-auto block"
+              />
+              <figcaption className="p-5 border-t border-slate-200 bg-white">
+                <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+                  Phone Mode
+                </p>
+                <p className="mt-1.5 font-semibold text-slate-900">
+                  A pocket-shaped window next to everything else.
+                </p>
+                <p className="mt-1.5 text-slate-600 text-sm leading-relaxed">
+                  Pop ComputerCaller into a narrow window. Dial, text, and
+                  pick up calls without leaving the app you&apos;re working in.
+                </p>
+              </figcaption>
+            </figure>
           </div>
         </div>
       </section>
