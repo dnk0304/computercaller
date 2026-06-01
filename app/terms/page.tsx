@@ -6,6 +6,11 @@ export const metadata = {
   title: 'Terms of Service — ComputerCaller',
   description:
     'The agreement between you and ComputerCaller when you use the service.',
+  // Per-route canonical — see /privacy for the full rationale. Root layout
+  // cascades `canonical: "/"` to every child unless overridden here.
+  alternates: {
+    canonical: '/terms',
+  },
 };
 
 // Terms of Service — plain-language, EU-defensible (Europe-based operator).

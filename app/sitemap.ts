@@ -2,18 +2,22 @@ import type { MetadataRoute } from 'next';
 
 /**
  * Sitemap — generated at /sitemap.xml by Next's app-router metadata file
- * convention. Run on every request (re-generated at build time on Vercel).
+ * convention. Re-generated at build time.
  *
- * Includes the live public surface today (`/`, auth pages, legal) plus the
- * four marketing routes from dispatch B (`/pricing`, `/about`, `/how-it-works`,
- * `/use-cases`). Those routes do not exist yet — when dispatch B lands they
- * will resolve. Listing them here is intentional: Google will start crawling
- * the moment they ship, and we avoid a second sitemap update.
+ * Includes only routes that actually exist and resolve 200: the homepage,
+ * the iPhone setup guide, the two auth landing pages (Google sometimes ranks
+ * `/auth/login` as a branded-search landing), and the two legal pages.
  *
  * Auth pages are included because Google sometimes ranks `/auth/login` as a
- * branded-search landing; including them ensures it picks the canonical URL.
- * Robots.ts blocks `/app/*` from indexing — the product surface is behind
- * auth and has no SEO value.
+ * branded-search landing; listing them ensures it picks the correct canonical
+ * URL. Robots.ts blocks `/app/*`, `/api/*`, `/messenger/*` from indexing —
+ * the product surface is behind auth and has no SEO value.
+ *
+ * When new marketing routes ship (e.g. /pricing, /about, /how-it-works,
+ * /use-cases), add them here AT THE SAME TIME you ship their pages, and make
+ * sure each new page sets its own `alternates.canonical` (the root layout
+ * cascades `canonical: "/"` to every child unless overridden). Listing a
+ * non-existent route here pollutes GSC coverage reports with soft 404s.
  */
 
 const BASE_URL = 'https://computercaller.com';
@@ -28,38 +32,14 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1.0,
     },
     {
-      url: `${BASE_URL}/how-it-works`,
-      lastModified: now,
-      changeFrequency: 'monthly',
-      priority: 0.9,
-    },
-    {
-      url: `${BASE_URL}/use-cases`,
-      lastModified: now,
-      changeFrequency: 'monthly',
-      priority: 0.9,
-    },
-    {
-      url: `${BASE_URL}/pricing`,
-      lastModified: now,
-      changeFrequency: 'monthly',
-      priority: 0.9,
-    },
-    {
       // iPhone setup guide — iOS-leaning keyword cluster ("call from computer
       // iphone", "iphone bluetooth computer calls"). Priority 0.8 because it's
       // a real content page with HowTo + FAQPage rich-snippet eligibility, but
-      // a notch below the primary marketing routes (Android remains the lead).
+      // a notch below the homepage (Android remains the lead).
       url: `${BASE_URL}/iphone`,
       lastModified: now,
       changeFrequency: 'monthly',
       priority: 0.8,
-    },
-    {
-      url: `${BASE_URL}/about`,
-      lastModified: now,
-      changeFrequency: 'monthly',
-      priority: 0.6,
     },
     {
       url: `${BASE_URL}/auth/register`,

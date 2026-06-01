@@ -6,6 +6,13 @@ export const metadata = {
   title: 'Privacy Policy — ComputerCaller',
   description:
     'How ComputerCaller handles your data. We sync your phone to your browser; we do not sell, share, or train AI on your data.',
+  // Per-route canonical — without this, the root layout's `alternates.canonical: "/"`
+  // cascades and every child page tells Google its canonical is the homepage. That
+  // triggered GSC "Alternative page with proper canonical tag" warnings on
+  // /privacy, /terms, /auth/*. Fix: each indexable page pins its own canonical.
+  alternates: {
+    canonical: '/privacy',
+  },
 };
 
 // Privacy policy — written in plain language Dennis can defend.
