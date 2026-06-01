@@ -45,7 +45,14 @@ function formatDuration(seconds: number = 0): string {
 }
 
 function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
+  if (!Number.isFinite(ts) || ts <= 0) return 'Just now';
+  // Defensive seconds-vs-ms normalization. Android emits CallLog.Calls.DATE
+  // as epoch ms, but historic MMS bugs in this codebase encoded seconds; if
+  // a value below 10^12 (≈ year 2001 in ms) slips through, treat as seconds.
+  const tsMs = ts < 1e12 ? ts * 1000 : ts;
+  // Clamp negative diffs (clock skew between phone and browser) to "Just now"
+  // instead of rendering "Nm ago" with a wildly wrong N.
+  const diff = Math.max(0, Date.now() - tsMs);
   if (diff < 60000) return 'Just now';
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;

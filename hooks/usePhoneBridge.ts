@@ -141,6 +141,104 @@ export function getNotificationIcon(packageName: string): string | undefined {
   return _notifIconCache.get(packageName);
 }
 
+// -------------------- Call-log normalization & dedup --------------------
+//
+// 2026-06-01 (Forge, Recent Calls dup+wrong-time bugfix):
+// Both the live CALL_LOG_ENTRY path and the bulk CALL_LOGS_CHUNK path produce
+// the same CallLogEntry shape, but historically a single real call has been
+// rendering as multiple rows. Two failure modes have been observed or are
+// plausible:
+//   (a) OEM/dual-SIM split — some Android devices write a single logical
+//       call as multiple CallLog rows with distinct _ID values (e.g. one row
+//       per SIM, or missed/rejected as a sibling row). Dedup-by-id can't
+//       collapse these.
+//   (b) Overlapping sync windows — Quick Sync (6h) fires from PAIRING_ACTIVE,
+//       and other paths (syncAll/manual) may fire before the previous chunk
+//       sequence finishes. If two sync responses interleave, `incoming`
+//       inside CALL_LOGS_CHUNK can contain the same row twice (intra-array
+//       duplication that the existing merge does not catch).
+// We also defensively normalize `date` to epoch ms at ingest — Android emits
+// CallLog.Calls.DATE as Long ms in both paths, but the MMS code path has
+// historically had a seconds-vs-ms drift, so we coerce here as a chokepoint
+// and clamp obviously-bad values. This is the same pattern used for MMS.
+
+/**
+ * Coerce a wire `date` value into epoch milliseconds, or undefined if it
+ * is unusable. Accepts number / numeric string / undefined. Heuristic for
+ * the seconds-vs-ms guard: any positive value below 10^12 (≈ 2001 in ms,
+ * but ≈ year 33658 in seconds) is treated as seconds and multiplied.
+ */
+function normalizeCallLogDate(raw: unknown): number | undefined {
+  let n: number | undefined;
+  if (typeof raw === 'number' && Number.isFinite(raw)) n = raw;
+  else if (typeof raw === 'string' && raw.trim() !== '') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) n = parsed;
+  }
+  if (n === undefined || n <= 0) return undefined;
+  // Seconds-encoded? Below 10^12 = before 2001 in ms; treat as seconds.
+  if (n < 1e12) n = n * 1000;
+  return Math.floor(n);
+}
+
+/**
+ * Composite dedup signature for a call-log row: number + direction. We
+ * collapse OEM-split / observer-replay rows that share this signature AND
+ * occur within COMPOSITE_WINDOW_MS of an already-kept row. The window is
+ * wide enough to absorb staged-row UPDATE timing jitter (a single logical
+ * call's _ID rows can land seconds apart as Android backfills DURATION /
+ * CACHED_NAME / TYPE) but tight enough that two real back-to-back calls
+ * to the same number ~30s apart stay distinct. Documented trade-off:
+ * retries to the same number within ~5s collapse to one Recent Calls row.
+ */
+const COMPOSITE_WINDOW_MS = 5000;
+
+function callLogCompositeSig(entry: CallLogEntry): string {
+  return `${entry.number || ''}|${entry.type || ''}`;
+}
+
+/**
+ * Merge two CallLogEntry arrays with dedup. `incoming` takes precedence
+ * over `prev` on id collision. We also collapse OEM-split rows: any entry
+ * whose (number, type) matches an already-kept row's signature within
+ * COMPOSITE_WINDOW_MS is dropped. This catches:
+ *   • observer re-fires for the same call (same _ID, dedup-by-id)
+ *   • OEM/dual-SIM split (distinct _IDs, same number/type, close in time)
+ *   • intra-`incoming` duplication from overlapping sync windows
+ *
+ * Time complexity is O((p+i)^2 / window) in the worst case but the call-
+ * log lists are bounded (Recent Calls slices to 10 for display; full state
+ * is typically a few hundred rows), so the linear scan is fine.
+ */
+function mergeCallLogs(
+  prev: CallLogEntry[],
+  incoming: CallLogEntry[],
+): CallLogEntry[] {
+  const byId = new Set<string>();
+  // sigBuckets: composite signature -> list of accepted dates (ms). A
+  // candidate matches if any kept date is within COMPOSITE_WINDOW_MS.
+  const sigBuckets = new Map<string, number[]>();
+  const out: CallLogEntry[] = [];
+  const accept = (e: CallLogEntry) => {
+    if (!e || !e.id) return;
+    if (byId.has(e.id)) return;
+    const sig = callLogCompositeSig(e);
+    const d = e.date || 0;
+    const bucket = sigBuckets.get(sig);
+    if (bucket && bucket.some(prevDate => Math.abs(prevDate - d) <= COMPOSITE_WINDOW_MS)) {
+      return; // OEM-split duplicate — drop.
+    }
+    byId.add(e.id);
+    if (bucket) bucket.push(d);
+    else sigBuckets.set(sig, [d]);
+    out.push(e);
+  };
+  // Incoming first so it wins on collision.
+  for (const e of incoming) accept(e);
+  for (const e of prev) accept(e);
+  return out.sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+}
+
 export function usePhoneBridge() {
   // Dispatch #30 (2026-05-25): we depend on pathname so the token-fetch effect
   // re-fires when the user navigates (e.g. /signin → /). The hook mounts at
@@ -663,6 +761,13 @@ export function usePhoneBridge() {
             quickSyncScheduledRef.current = false;
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               const since6h = Date.now() - 6 * 60 * 60 * 1000;
+              // Reset chunk buffers — other quick-sync entry points
+              // (syncAll, getCallLogs, manual quick sync) do this; this
+              // PAIRING_ACTIVE path historically did not, so a prior
+              // sync's leftover chunks could accumulate and produce
+              // duplicate rows on merge. (Forge, 2026-06-01.)
+              messagesBufferRef.current = [];
+              callLogsBufferRef.current = [];
               wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
               setTimeout(() => {
                 if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -964,11 +1069,15 @@ export function usePhoneBridge() {
         const entryResolvedName =
           entryContactMatch?.name
           ?? (entryRawName && !entryLooksLikeNumber ? entryRawName : undefined);
+        // Normalize date at ingest — single chokepoint, mirrors MmsHandler.
+        // Falls back to Date.now() only if the wire frame omits a usable date
+        // (should never happen for CallLog rows but guards the type system).
+        const entryDate = normalizeCallLogDate(payload.date) ?? Date.now();
         const entry: CallLogEntry = {
           id: String(payload.id ?? Date.now()),
           number: entryNumber,
           name: entryResolvedName || undefined,
-          date: payload.date ?? Date.now(),
+          date: entryDate,
           duration: payload.duration ?? 0,
           type: (payload.type as CallLogEntry['type']) ?? 'unknown',
           // PhoneAccount id from CallLog.PHONE_ACCOUNT_ID. Stays undefined when
@@ -976,9 +1085,10 @@ export function usePhoneBridge() {
           simId: typeof payload.simId === 'string' && payload.simId ? payload.simId : undefined,
         };
         setCallLogs(prev => {
-          // Avoid duplicates — observer can fire multiple times for the same write.
-          if (prev.some(e => e.id === entry.id)) return prev;
-          return [entry, ...prev].sort((a, b) => b.date - a.date);
+          // Dedup via composite key — catches both observer re-fires (same
+          // _ID) and OEM-split rows (same number/type/~5s window, different
+          // _IDs). See mergeCallLogs() commentary for the trade-off.
+          return mergeCallLogs(prev, [entry]);
         });
         // Bump missed-call badge if this entry is a missed call.
         if (entry.type === 'missed') {
@@ -1016,11 +1126,20 @@ export function usePhoneBridge() {
         setIsConnected(true); // Mark as connected when we receive data
         break;
 
-      case 'CALL_LOGS':
+      case 'CALL_LOGS': {
         console.log('[PhoneBridge] Received call logs:', payload.callLogs?.length || 0);
-        setCallLogs(payload.callLogs || []);
+        // Normalize date + dedup composite even on the bare full-replace path
+        // — defense in depth against OEM-split rows landing in the same payload.
+        const raw: CallLogEntry[] = payload.callLogs || [];
+        const normalized = raw.map(l => ({
+          ...l,
+          id: String(l.id ?? Date.now()),
+          date: normalizeCallLogDate(l.date) ?? Date.now(),
+        }));
+        setCallLogs(mergeCallLogs([], normalized));
         setIsConnected(true); // Mark as connected when we receive data
         break;
+      }
 
       case 'CONTACTS_CHUNK': {
         const { page, total_pages, total_count, contacts: chunk } = payload;
@@ -1128,20 +1247,26 @@ export function usePhoneBridge() {
           }
         }
         if (isComplete) {
-          const incoming = callLogsBufferRef.current;
+          const rawIncoming = callLogsBufferRef.current;
           callLogsBufferRef.current = [];
+          // Normalize at the chunk chokepoint — every CallLogEntry that
+          // reaches state has a numeric `date` in ms and a String `id`.
+          const incoming: CallLogEntry[] = rawIncoming.map(l => ({
+            ...l,
+            id: String(l.id ?? Date.now()),
+            date: normalizeCallLogDate(l.date) ?? Date.now(),
+          }));
           setIsConnected(true);
           // Non-urgent: call log list update yields to user interactions.
           // Critical for CALL_ENDED — the call card clears immediately,
           // the log list updates in background without blocking the UI.
           startTransition(() => {
             setCallLogs(prev => {
-              if (syncModeRef.current === 'replace') return incoming;
-              const incomingIds = new Set(incoming.map(l => l.id));
-              return [
-                ...prev.filter(l => !incomingIds.has(l.id)),
-                ...incoming,
-              ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+              // mergeCallLogs collapses both intra-incoming duplicates
+              // (overlapping sync windows) and prev/incoming collisions
+              // (live + bulk sync of the same call) via composite key.
+              if (syncModeRef.current === 'replace') return mergeCallLogs([], incoming);
+              return mergeCallLogs(prev, incoming);
             });
           });
         }

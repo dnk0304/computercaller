@@ -87,8 +87,14 @@ const MAX_FAVORITES = 6;
 
 /** Format a relative call time. Matches the conventions used in app/page.tsx. */
 function formatCallTime(timestamp: number, now: number): string {
-  const date = new Date(timestamp);
-  const diffSec = Math.floor((now - timestamp) / 1000);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'Just now';
+  // Defensive seconds-vs-ms normalization — see relativeTime() in
+  // GlobalDialer.tsx for the precedent. Android sends ms; this guards
+  // against any upstream path that ever encodes seconds.
+  const tsMs = timestamp < 1e12 ? timestamp * 1000 : timestamp;
+  const date = new Date(tsMs);
+  // Clamp negative diffs (phone/browser clock skew) to "Just now".
+  const diffSec = Math.max(0, Math.floor((now - tsMs) / 1000));
   if (diffSec < 60) return 'Just now';
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m`;
   const diffHours = diffSec / 3600;
