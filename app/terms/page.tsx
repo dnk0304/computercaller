@@ -83,7 +83,7 @@ export default function TermsPage() {
             </h2>
             <ul className="list-disc list-inside space-y-2">
               <li>
-                The service offers a 5-day free trial. No credit card required to
+                The service offers a 14-day free trial. No credit card required to
                 start.
               </li>
               <li>

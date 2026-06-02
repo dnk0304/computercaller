@@ -130,7 +130,7 @@ export default function RegisterPage() {
             Create your account
           </h1>
           <p className="mt-1.5 text-slate-500 text-sm">
-            5-day free trial. No credit card required.
+            14-day free trial. No credit card required.
           </p>
 
           {/* Google sign-up — primary affordance. Anchored as a real <a> so

@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const trialEndsAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days
+    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
 
     // Bundle A (2026-05-28) Phase 4 fix (C2): generate phoneToken in
     // application code — schema no longer carries a SQL default (the prior

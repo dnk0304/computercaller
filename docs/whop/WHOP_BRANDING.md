@@ -45,7 +45,7 @@ WHAT YOUR SUBSCRIPTION INCLUDES
 • Use it from any computer
 • Priority email support
 
-5-DAY FREE TRIAL
+14-DAY FREE TRIAL
 Start free, no credit card required. After the trial: €7.99 per month.
 Cancel any time from your Whop account.
 
@@ -81,13 +81,13 @@ brand asset per surface — that's how the visual identity drifts.
 |---|---|
 | Price | €7.99 / month |
 | Billing cycle | Monthly |
-| Trial length | 5 days |
+| Trial length | 14 days |
 | Trial requires credit card | No |
 | Currency | EUR (primary). Whop auto-converts to local on display. |
 | Tax handling | Whop handles VAT — leave on default. |
 
-The 5-day trial matches the in-app trial set in `app/api/auth/register/route.ts`
-(line 24, `5 * 24 * 60 * 60 * 1000`). If you change one, change the
+The 14-day trial matches the in-app trial set in `app/api/auth/register/route.ts`
+(line 28, `14 * 24 * 60 * 60 * 1000`). If you change one, change the
 other — they MUST stay in sync or users see a different trial length on
 the product page vs. inside the product.
 

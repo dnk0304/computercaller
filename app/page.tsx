@@ -172,7 +172,7 @@ const faqs = [
   },
   {
     q: 'Is it free?',
-    a: "ComputerCaller comes with a 5-day free trial — no credit card required. After the trial, it's €7.99 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
+    a: "ComputerCaller comes with a 14-day free trial — no credit card required. After the trial, it's €7.99 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -374,7 +374,7 @@ export default function LandingPage() {
 
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            5-day free trial — no credit card required
+            14-day free trial — no credit card required
           </div>
 
           <h1 className="mt-8 text-4xl sm:text-5xl md:text-6xl font-semibold tracking-[-0.03em] leading-[1.05] text-slate-900 text-balance">
@@ -395,7 +395,7 @@ export default function LandingPage() {
               href="/auth/register"
               className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
-              Start 5-day free trial
+              Start 14-day free trial
               <ArrowRight className="w-4 h-4" />
             </Link>
             <a
@@ -685,7 +685,7 @@ export default function LandingPage() {
               href="/auth/register"
               className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
-              Try it free for 5 days
+              Try it free for 14 days
               <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
@@ -899,7 +899,7 @@ export default function LandingPage() {
                 'Real-time notification mirror',
                 'Unlimited contacts & history',
                 'Works from any device, anywhere',
-                '5-day free trial',
+                '14-day free trial',
               ].map((f) => (
                 <li key={f} className="flex items-start gap-2.5">
                   <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
@@ -914,7 +914,7 @@ export default function LandingPage() {
               href="/auth/register"
               className="mt-8 flex items-center justify-center gap-1.5 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-center shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
-              Start 5-day free trial
+              Start 14-day free trial
               <ArrowRight className="w-4 h-4" />
             </Link>
             <p className="mt-3 text-center text-slate-500 text-xs">
@@ -1004,7 +1004,7 @@ export default function LandingPage() {
             Ready to call from your computer?
           </h2>
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
-            5 days free. No credit card. Pair your phone and you&apos;re
+            14 days free. No credit card. Pair your phone and you&apos;re
             calling from your browser in under two minutes.
           </p>
           <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">

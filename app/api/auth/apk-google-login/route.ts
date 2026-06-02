@@ -20,7 +20,7 @@ import { sendNewSignupAdminEmail } from '@/lib/email';
  *   b) else findUnique by email → link Google identity (this closes the
  *      apk-login gap where existing email/password users couldn't sign into
  *      the APK with Google — see apk-login route lines 47-60).
- *   c) else create user with passwordHash=null, fresh phoneToken, 5-day trial.
+ *   c) else create user with passwordHash=null, fresh phoneToken, 14-day trial.
  *
  * Critical divergences from /api/auth/google/callback (intentional):
  *   • NO cookie set — the APK has no browser session model.
@@ -92,9 +92,9 @@ export async function POST(req: NextRequest) {
         });
       } else {
         // Branch c — brand-new user. Mirror /api/auth/google/callback exactly:
-        // passwordHash=null, fresh 32-byte base64url phoneToken, 5-day trial.
+        // passwordHash=null, fresh 32-byte base64url phoneToken, 14-day trial.
         // Dennis approved auto-create at dispatch time.
-        const trialEndsAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
+        const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
         const phoneToken = crypto.randomBytes(32).toString('base64url');
         user = await db.user.create({
           data: {
