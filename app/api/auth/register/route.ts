@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { signEmailToken, requireSameOrigin } from '@/lib/auth';
-import { sendVerificationEmail } from '@/lib/email';
+import { sendVerificationEmail, sendNewSignupAdminEmail } from '@/lib/email';
 
 export async function POST(req: NextRequest) {
   try {
@@ -55,6 +55,18 @@ export async function POST(req: NextRequest) {
         },
       },
     });
+
+    // Admin notify on brand-new signup. Try/catch — must NEVER block signup.
+    // In dev (no RESEND_API_KEY) getResend() throws; the catch swallows it.
+    try {
+      await sendNewSignupAdminEmail({
+        userEmail: user.email,
+        method: 'email',
+        createdAt: user.createdAt ?? new Date(),
+      });
+    } catch (e) {
+      console.error('[Auth] admin signup notify failed:', e);
+    }
 
     if (skipEmailVerification) {
       console.log(`[Auth] DEV MODE — auto-verified ${user.email} (no RESEND_API_KEY set).`);

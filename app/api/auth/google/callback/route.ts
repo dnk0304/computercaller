@@ -33,6 +33,7 @@ import {
   verifyOAuthState,
   sanitiseNext,
 } from '@/lib/google';
+import { sendNewSignupAdminEmail } from '@/lib/email';
 
 const STATE_COOKIE = 'g_oauth_state';
 
@@ -137,6 +138,18 @@ export async function GET(req: NextRequest) {
           },
           include: { subscription: true },
         });
+
+        // Admin notify — brand-new user only (Branch c). Try/catch swallows
+        // any failure so the signup never breaks on notify error.
+        try {
+          await sendNewSignupAdminEmail({
+            userEmail: user.email,
+            method: 'google',
+            createdAt: user.createdAt ?? new Date(),
+          });
+        } catch (e) {
+          console.error('[Auth] admin signup notify failed:', e);
+        }
       }
     }
 

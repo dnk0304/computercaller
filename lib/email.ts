@@ -54,6 +54,30 @@ export async function sendVerificationEmail(email: string, token: string) {
   });
 }
 
+// Admin notification — fires on brand-new signup only (NOT login, NOT link).
+// Recipient via ADMIN_NOTIFY_EMAIL env; default is hello@computercaller.com
+// (the same verified-domain inbox Dennis monitors — Dispatch 2026-06-01).
+// Caller MUST wrap in try/catch — a notify failure must never break signup.
+export async function sendNewSignupAdminEmail(opts: {
+  userEmail: string;
+  method: 'email' | 'google';
+  createdAt: Date;
+}) {
+  const to = process.env.ADMIN_NOTIFY_EMAIL ?? 'hello@computercaller.com';
+  await getResend().emails.send({
+    from: FROM,
+    to,
+    replyTo: REPLY_TO,
+    subject: `New ComputerCaller signup: ${opts.userEmail}`,
+    html: `
+      <h2>New ComputerCaller signup</h2>
+      <p><strong>Email:</strong> ${opts.userEmail}</p>
+      <p><strong>Method:</strong> ${opts.method}</p>
+      <p><strong>When:</strong> ${opts.createdAt.toISOString()}</p>
+    `,
+  });
+}
+
 export async function sendPasswordResetEmail(email: string, token: string) {
   const url = `${APP_URL}/auth/reset-password?token=${token}`;
   await getResend().emails.send({
