@@ -161,6 +161,202 @@ t(
   bAfter.length === 2 && bAfter.every((m) => ['b2', 'b3'].includes(m.id)),
 );
 
+// ── 9. Message-DUPLICATES fix (2026-06-03 follow-up to 3c02462).
+//     The scoped-replace branch in MESSAGES_CHUNK was appending `incoming`
+//     verbatim, so when Android's SMS provider returned the same logical
+//     message twice (dual-SIM / OEM row-split / observer+receiver), both
+//     copies persisted. mergeMessages() now dedupes by id OR composite
+//     (conversationKey + type + body) within a 10s window. Mirrors the
+//     repro shape and helpers below — kept in sync with hooks/usePhoneBridge.ts.
+
+const MESSAGE_COMPOSITE_WINDOW_MS = 10000;
+
+function messageCompositeSig(m) {
+  return `${conversationKey(m.address)}|${m.type || ''}|${(m.body || '').trim()}`;
+}
+
+function mergeMessages(prev, incoming) {
+  const byId = new Set();
+  const sigBuckets = new Map();
+  const out = [];
+  const accept = (m) => {
+    if (!m || !m.id) return;
+    if (byId.has(m.id)) return;
+    const sig = messageCompositeSig(m);
+    const d = m.date || 0;
+    const bucket = sigBuckets.get(sig);
+    if (bucket && bucket.some((pd) => Math.abs(pd - d) <= MESSAGE_COMPOSITE_WINDOW_MS)) return;
+    byId.add(m.id);
+    if (bucket) bucket.push(d);
+    else sigBuckets.set(sig, [d]);
+    out.push(m);
+  };
+  for (const m of incoming) accept(m);
+  for (const m of prev) accept(m);
+  return out.sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+}
+
+// Simulate the scoped-replace branch with the FIX applied.
+function scopedReplaceWithFix(prev, incoming, scopedKey) {
+  const filteredPrev = prev.filter((m) => conversationKey(m.address) !== scopedKey);
+  const dedupedIncoming = mergeMessages([], incoming);
+  return [...filteredPrev, ...dedupedIncoming].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+}
+
+// Simulate the OLD scoped-replace branch from 3c02462 (the regression).
+function scopedReplaceOLD(prev, incoming, scopedKey) {
+  return [
+    ...prev.filter((m) => conversationKey(m.address) !== scopedKey),
+    ...incoming,
+  ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+}
+
+const baseDate = 1717420000000;
+
+// ── 9A. Same `_id` re-emitted (observer + receiver double-fire).
+{
+  const incomingDupSameId = [
+    { id: 'm1', address: phoneA, body: 'Hello dup', date: baseDate, type: 'inbox' },
+    { id: 'm1', address: phoneA, body: 'Hello dup', date: baseDate, type: 'inbox' },
+  ];
+  const oldResult = scopedReplaceOLD([], incomingDupSameId, conversationKey(phoneA));
+  const fixResult = scopedReplaceWithFix([], incomingDupSameId, conversationKey(phoneA));
+  t(
+    'OLD scoped-replace: same-_id dup renders TWICE (REGRESSION)',
+    oldResult.length === 2,
+    `len=${oldResult.length}`,
+  );
+  t(
+    'FIX scoped-replace: same-_id dup renders ONCE',
+    fixResult.length === 1 && fixResult[0].id === 'm1',
+    `len=${fixResult.length}`,
+  );
+}
+
+// ── 9B. SIM-split: different `_id` per SIM row, same logical message.
+//     Composite (conv+type+body) + 10s window catches it; id-only set misses.
+{
+  const incomingSimSplit = [
+    { id: 'sim1-a', address: phoneA, body: 'SIM-split body', date: baseDate, type: 'inbox' },
+    { id: 'sim1-b', address: phoneA, body: 'SIM-split body', date: baseDate + 2000, type: 'inbox' },
+  ];
+  const oldResult = scopedReplaceOLD([], incomingSimSplit, conversationKey(phoneA));
+  const fixResult = scopedReplaceWithFix([], incomingSimSplit, conversationKey(phoneA));
+  t(
+    'OLD scoped-replace: SIM-split (diff ids, same body, 2s apart) renders TWICE (REGRESSION)',
+    oldResult.length === 2,
+  );
+  t(
+    'FIX scoped-replace: SIM-split logical dup renders ONCE',
+    fixResult.length === 1,
+    `len=${fixResult.length}`,
+  );
+}
+
+// ── 9C. ANTI-REGRESSION: two genuinely DISTINCT messages in same convo.
+//     Different body → must BOTH be kept.
+{
+  const incomingDistinct = [
+    { id: 'd1', address: phoneA, body: 'First message', date: baseDate, type: 'inbox' },
+    { id: 'd2', address: phoneA, body: 'Second message', date: baseDate + 1000, type: 'inbox' },
+  ];
+  const fixResult = scopedReplaceWithFix([], incomingDistinct, conversationKey(phoneA));
+  t(
+    'FIX: two DISTINCT messages (different body) in same convo — BOTH kept',
+    fixResult.length === 2,
+    `len=${fixResult.length}`,
+  );
+}
+
+// ── 9D. ANTI-REGRESSION: same body but FAR apart (>10s) — both kept.
+//     A genuine "ok" sent twice an hour apart must not collapse.
+{
+  const incomingFarApart = [
+    { id: 'f1', address: phoneA, body: 'ok', date: baseDate, type: 'inbox' },
+    { id: 'f2', address: phoneA, body: 'ok', date: baseDate + 3_600_000, type: 'inbox' },
+  ];
+  const fixResult = scopedReplaceWithFix([], incomingFarApart, conversationKey(phoneA));
+  t(
+    'FIX: same body, >10s apart — BOTH kept (genuine repeat is not a dup)',
+    fixResult.length === 2,
+  );
+}
+
+// ── 9E. ANTI-REGRESSION (chat-mixing): same body in DIFFERENT conversations
+//     must NEVER collapse, even within the time window. conversationKey is
+//     part of the composite signature so the namespaces stay disjoint.
+{
+  const incomingCrossConv = [
+    { id: 'x1', address: phoneA, body: 'identical body', date: baseDate, type: 'inbox' },
+    { id: 'x2', address: phoneB, body: 'identical body', date: baseDate + 1000, type: 'inbox' },
+  ];
+  const merged = mergeMessages([], incomingCrossConv);
+  t(
+    'FIX: same body across DIFFERENT conversations — never merged (chat-mixing stays fixed)',
+    merged.length === 2 &&
+      merged.some((m) => m.address === phoneA) &&
+      merged.some((m) => m.address === phoneB),
+  );
+}
+
+// ── 9F. SMS_RECEIVED prepend + same message in subsequent fetched page.
+//     Existing prev contains the live-prepended row; the chunk fetch returns
+//     it again (different `_id` because the fetched page got the provider's
+//     committed id). mergeMessages must collapse to one.
+{
+  const liveRow = { id: 'live-tmp', address: phoneA, body: 'just got this', date: baseDate, type: 'inbox' };
+  const fetchedPage = [
+    { id: 'provider-99', address: phoneA, body: 'just got this', date: baseDate + 500, type: 'inbox' },
+    { id: 'provider-98', address: phoneA, body: 'earlier message', date: baseDate - 60_000, type: 'inbox' },
+  ];
+  const result = scopedReplaceWithFix([liveRow], fetchedPage, conversationKey(phoneA));
+  t(
+    'FIX: live SMS_RECEIVED + same msg in fetched page — present ONCE',
+    result.filter((m) => m.body === 'just got this').length === 1,
+    `count=${result.filter((m) => m.body === 'just got this').length}`,
+  );
+  t(
+    'FIX: live + fetched page — distinct "earlier message" still kept',
+    result.some((m) => m.body === 'earlier message'),
+  );
+}
+
+// ── 9G. Merge branch (loadOlderMessages paging) — SIM-split dup across
+//     paging boundary. Old code did id-only set → missed it. New code via
+//     mergeMessages catches it.
+{
+  const prev = [
+    { id: 'old-a', address: phoneA, body: 'paged body', date: baseDate, type: 'inbox' },
+  ];
+  const incomingOlderPage = [
+    { id: 'old-b', address: phoneA, body: 'paged body', date: baseDate + 1500, type: 'inbox' }, // SIM-split of old-a
+    { id: 'old-c', address: phoneA, body: 'genuinely older', date: baseDate - 100_000, type: 'inbox' },
+  ];
+  const result = mergeMessages(prev, incomingOlderPage);
+  t(
+    'FIX merge branch: SIM-split across paging boundary — collapsed to ONE',
+    result.filter((m) => m.body === 'paged body').length === 1,
+  );
+  t(
+    'FIX merge branch: genuinely older distinct row — kept',
+    result.some((m) => m.id === 'old-c'),
+  );
+}
+
+// ── 9H. Different `type` (inbox vs sent) with same body — kept distinct.
+//     A user replying "ok" to an inbox "ok" should never collapse.
+{
+  const incoming = [
+    { id: 'in1', address: phoneA, body: 'ok', date: baseDate, type: 'inbox' },
+    { id: 'out1', address: phoneA, body: 'ok', date: baseDate + 500, type: 'sent' },
+  ];
+  const result = mergeMessages([], incoming);
+  t(
+    'FIX: same body, different type (inbox vs sent) — BOTH kept',
+    result.length === 2,
+  );
+}
+
 const failed = tests.filter((x) => !x.ok);
 console.log(`\n${tests.length - failed.length}/${tests.length} passed`);
 if (failed.length) {

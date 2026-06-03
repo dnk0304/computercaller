@@ -198,6 +198,74 @@ function callLogCompositeSig(entry: CallLogEntry): string {
 }
 
 /**
+ * Composite dedup window for SMS rows. Mirrors the existing SMS_RECEIVED
+ * dedupe (~:1044) which already uses a 10s tolerance between observer /
+ * receiver / SIM-split re-fires. A logical message that lands twice always
+ * arrives within seconds of itself; two genuinely-distinct messages with
+ * the same body in the same conversation are virtually never <10s apart.
+ */
+const MESSAGE_COMPOSITE_WINDOW_MS = 10000;
+
+/**
+ * Composite dedup signature for an SMS row: conversationKey(address) +
+ * direction + normalized body. Direction is included so a sent+inbox row
+ * with identical body never collapses (autoreply / loopback). Body is
+ * trimmed to absorb whitespace noise from OEM row-splits.
+ *
+ * Conversation grouping stays via `conversationKey` — DO NOT collapse
+ * cross-conversation rows here. The body+window component only distinguishes
+ * MESSAGES within an already-matching conversation; the conversationKey
+ * prefix ('p:' / 's:' / '#') keeps the three namespaces disjoint.
+ */
+function messageCompositeSig(m: SmsMessage): string {
+  return `${conversationKey(m.address)}|${m.type || ''}|${(m.body || '').trim()}`;
+}
+
+/**
+ * Merge two SmsMessage arrays with per-MESSAGE dedup. `incoming` takes
+ * precedence over `prev` on id collision. We also collapse logical-row
+ * duplicates: any entry whose (conversationKey, type, body) signature
+ * matches an already-kept row's signature within MESSAGE_COMPOSITE_WINDOW_MS
+ * is dropped. This catches:
+ *   • observer re-fires for the same message (same id — dedup-by-id)
+ *   • OEM/dual-SIM split (distinct ids, same conv+body, close in time)
+ *   • intra-`incoming` duplication from overlapping sync windows / the
+ *     thread-open fetch page returning a SIM-split logical message twice
+ *
+ * Mirrors mergeCallLogs() — same shape, same trade-off documented there.
+ * The conversation grouping key stays in `conversationKey`; this helper
+ * only ADDS per-message identity on top so two DISTINCT messages in the
+ * same conversation are still kept. Cross-conversation collisions remain
+ * impossible by construction (conversationKey namespace prefixes).
+ */
+function mergeMessages(
+  prev: SmsMessage[],
+  incoming: SmsMessage[],
+): SmsMessage[] {
+  const byId = new Set<string>();
+  const sigBuckets = new Map<string, number[]>();
+  const out: SmsMessage[] = [];
+  const accept = (m: SmsMessage) => {
+    if (!m || !m.id) return;
+    if (byId.has(m.id)) return;
+    const sig = messageCompositeSig(m);
+    const d = m.date || 0;
+    const bucket = sigBuckets.get(sig);
+    if (bucket && bucket.some(prevDate => Math.abs(prevDate - d) <= MESSAGE_COMPOSITE_WINDOW_MS)) {
+      return; // SIM-split / observer-replay logical duplicate — drop.
+    }
+    byId.add(m.id);
+    if (bucket) bucket.push(d);
+    else sigBuckets.set(sig, [d]);
+    out.push(m);
+  };
+  // Incoming first so it wins on id collision (newer / authoritative).
+  for (const m of incoming) accept(m);
+  for (const m of prev) accept(m);
+  return out.sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+}
+
+/**
  * Merge two CallLogEntry arrays with dedup. `incoming` takes precedence
  * over `prev` on id collision. We also collapse OEM-split rows: any entry
  * whose (number, type) matches an already-kept row's signature within
@@ -1140,9 +1208,11 @@ export function usePhoneBridge() {
         // Per PhoneService.kt:2836 Android only ever sends MESSAGES_CHUNK in
         // practice; this bare-replace path is legacy/defensive. If it does
         // fire it always means "full replace", so clear any pending scoped
-        // key so the next chunked fetch isn't misinterpreted.
+        // key so the next chunked fetch isn't misinterpreted. Route through
+        // mergeMessages([], …) to self-dedupe — defense in depth against
+        // SIM-split / OEM-split logical dups landing in the same payload.
         pendingThreadFetchKeyRef.current = null;
-        setMessages(payload.messages || []);
+        setMessages(mergeMessages([], payload.messages || []));
         setIsConnected(true); // Mark as connected when we receive data
         break;
 
@@ -1234,7 +1304,10 @@ export function usePhoneBridge() {
           // Non-urgent: the list re-render can yield to user interactions.
           startTransition(() => {
             setMessages(prev => {
-              if (syncModeRef.current === 'replace') return incoming;
+              // Replace sync: full page swap. Still self-dedupe via
+              // mergeMessages — the fetched page itself can carry SIM-split
+              // logical dups (same address+body, different _id per SIM row).
+              if (syncModeRef.current === 'replace') return mergeMessages([], incoming);
               if (scopedKey) {
                 // Scoped replace for the just-opened thread: drop every
                 // existing row whose conversationKey equals this thread's
@@ -1244,18 +1317,27 @@ export function usePhoneBridge() {
                 // store. This is what stops messages from a previously-open
                 // thread lingering in the rendered view (chat-mixing bug,
                 // 2026-06-03).
-                return [
-                  ...prev.filter(m => conversationKey(m.address) !== scopedKey),
-                  ...incoming,
-                ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+                //
+                // CRITICAL (message-DUPLICATES fix, 2026-06-03 follow-up):
+                // route `incoming` through mergeMessages([], incoming) to
+                // self-dedupe before append. The fetched page can contain
+                // the same logical message twice (Android SMS provider
+                // dual-SIM / OEM row-split / observer+receiver double-fire
+                // — same class as the Recent Calls dup fixed in c562d07).
+                // A raw append here let both copies persist; mergeMessages
+                // collapses them by composite (conv+type+body+10s window)
+                // OR by id. conversationKey grouping is unchanged.
+                const filteredPrev = prev.filter(m => conversationKey(m.address) !== scopedKey);
+                const dedupedIncoming = mergeMessages([], incoming);
+                return [...filteredPrev, ...dedupedIncoming].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
               }
-              // Merge: incoming wins on id conflict (newer data), keep existing otherwise.
-              // Used by older-message paging and silent incremental syncs.
-              const incomingIds = new Set(incoming.map(m => m.id));
-              return [
-                ...prev.filter(m => !incomingIds.has(m.id)),
-                ...incoming,
-              ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+              // Merge: incoming wins on id conflict (newer data), keep
+              // existing otherwise. Used by older-message paging and
+              // silent incremental syncs. mergeMessages dedupes by id AND
+              // by composite — protects loadOlderMessages paging from
+              // SIM-split logical dups that the old incomingIds set missed
+              // (different `_id` per SIM row slips past an id-only check).
+              return mergeMessages(prev, incoming);
             });
           });
         }
