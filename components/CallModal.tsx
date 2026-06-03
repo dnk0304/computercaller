@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Phone, PhoneOff, Maximize2, Minimize2, MessageSquare, Send, Check, ChevronLeft } from 'lucide-react';
 import { usePhone } from '@/hooks';
+import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
 
 // Item B (2026-06-03, Pixel) — incoming-call quick-reply UI.
 //
@@ -20,16 +21,14 @@ import { usePhone } from '@/hooks';
 //   per-call targeting that v1 doesn't support; we hide Reply to avoid
 //   accidentally rejecting the foreground/active call.
 //
-// Templates source (decision):
-//   v1 ships HARDCODED defaults — NOT wired to the existing `useTemplates`
-//   hook. The brief floated reusing the general-purpose templates store, but
-//   Dennis subsequently locked a SEPARATE store for these chips (see in-flight
-//   dispatch CC-quickreply-templates-v2 — schema stub: QuickReplyTemplate, cap
-//   5/user, distinct from the general 15/user Template table). Wiring this
-//   modal to `useTemplates` now would have to be ripped out the moment the
-//   `useQuickReplies` hook lands. Hardcoded defaults are good UX out of the
-//   box and the right v1 floor; replace the DEFAULT_QUICK_REPLIES read with
-//   `useQuickReplies()` once that hook is built and the API ships.
+// Templates source (mgmt-v2 update, 2026-06-03):
+//   Chips now read from the SEPARATE quick-reply store via
+//   `useQuickReplyTemplates()` (per-user, cap 5, distinct from useTemplates'
+//   general 15-cap SMS-templates store). The four hardcoded
+//   DEFAULT_QUICK_REPLIES are kept as FALLBACK ONLY — they render when the
+//   user has zero saved quick replies, so the affordance is useful out of
+//   the box. As soon as the user creates ≥1 quick reply, their list takes
+//   over entirely (no mixing). Dennis-locked.
 //
 // "Message sent" feedback:
 //   declineWithMessage triggers SMS dispatch then endCall(); endCall clears
@@ -55,6 +54,10 @@ const DEFAULT_QUICK_REPLIES: ReadonlyArray<QuickReply> = [
 
 export const CallModal = () => {
   const { currentCall, waitingCall, answerCall, endCall, declineWithMessage } = usePhone();
+  // Mgmt-v2: read user's quick-reply templates. Defaults fall back ONLY when
+  // the user has saved zero of their own. Once they have ≥1, theirs render
+  // exclusively — no mixing with the hardcoded defaults.
+  const { quickReplies } = useQuickReplyTemplates();
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Reply panel sub-state. 'hidden' = default Answer/Decline/Reply row,
@@ -161,6 +164,15 @@ export const CallModal = () => {
     }, SENT_NOTICE_MS);
   };
 
+  // Resolved chip source: user's saved quick replies if any, otherwise the
+  // hardcoded defaults. Each chip carries `name` (label shown on the pill)
+  // and `body` (the SMS sent on tap). For user rows the chip falls back to
+  // body when label is null — same behavior as the management sub-section.
+  const resolvedChips: ReadonlyArray<QuickReply> =
+    quickReplies.length > 0
+      ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
+      : DEFAULT_QUICK_REPLIES;
+
   // ---- Reusable: the quick-reply panel (chips + Custom entry). ----
   // Rendered inside both the compact widget and the expanded modal so the
   // affordance is consistent across layouts. Caller passes `compact` to scale
@@ -236,7 +248,7 @@ export const CallModal = () => {
           className="flex flex-wrap gap-1.5"
           aria-label="Quick reply messages"
         >
-          {DEFAULT_QUICK_REPLIES.map((reply) => (
+          {resolvedChips.map((reply) => (
             <li key={reply.name}>
               <button
                 type="button"

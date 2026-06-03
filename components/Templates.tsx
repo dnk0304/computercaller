@@ -6,6 +6,7 @@ import { Plus, Edit2, Copy, Trash2, X, Check, FileText } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
+import { QuickReplyTemplates } from './QuickReplyTemplates';
 
 // Item C2 (2026-05-27, Pixel) — manager page now reads/writes the server API
 // via the shared useTemplates hook instead of localStorage. Templates persist
@@ -279,6 +280,12 @@ export const Templates = () => {
           })}
         </ul>
       )}
+
+      {/* Separate sub-section for quick-reply templates — distinct store, distinct
+          API, distinct cap (5). Visually divided from the SMS-templates list above
+          by a top border + spacing inside the QuickReplyTemplates component itself
+          so the user reads them as two coordinated but independent collections. */}
+      <QuickReplyTemplates />
 
       {/* Inline "Copied!" toast — anchored bottom-right of viewport */}
       {copiedId !== null && typeof document !== 'undefined' && createPortal(
