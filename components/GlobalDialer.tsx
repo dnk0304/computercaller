@@ -11,6 +11,9 @@ import {
   X,
   Delete,
   MessageSquare,
+  Send,
+  Check,
+  ChevronLeft,
   Hash,
   ArrowDownLeft,
   ArrowUpRight,
@@ -18,6 +21,35 @@ import {
 import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
 import type { CallLogEntry, SmsMessage } from '@/hooks/phoneTypes';
+import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
+
+// Dispatch CC-quickreply-templates-mgmt-v2 PART C (2026-06-03, Pixel) — the
+// incoming-call quick-reply Reply affordance lives on the LIVE call surface
+// (CallSessionView inside this file's GlobalDialer panel), not in CallModal
+// — production calls don't mount CallModal. CallSessionView gets a Reply
+// button next to Decline that reveals a stacked chip list sourced from
+// useQuickReplyTemplates() with the four hardcoded defaults as fallback when
+// the user has zero saved quick replies. Gating mirrors CallModal's:
+//   state === 'ringing' && isIncoming && waitingCall == null
+// Tapping a chip fires declineWithMessage(number, body) — Forge's atomic
+// bridge call (SMS then hangup, correct order). A "Message sent" snapshot
+// keeps the panel visible for SENT_NOTICE_MS so the confirmation registers
+// before currentCall clears and the panel auto-closes.
+
+// Duration (ms) the "Message sent" confirmation stays visible after a quick
+// reply tap, before currentCall clears. Matches CallModal's SENT_NOTICE_MS.
+const SENT_NOTICE_MS = 1400;
+
+// Default quick-reply chips shown ONLY when the user has zero saved entries
+// in the QuickReplyTemplate store. Once they have ≥1 their list takes over
+// entirely — no mixing.
+interface CallSurfaceQuickReply { name: string; body: string }
+const DEFAULT_QUICK_REPLIES: ReadonlyArray<CallSurfaceQuickReply> = [
+  { name: "Can't talk right now", body: "Can't talk right now" },
+  { name: "I'll call you back",   body: "I'll call you back" },
+  { name: 'On my way',            body: 'On my way' },
+  { name: 'Call you later',       body: 'Call you later' },
+];
 
 type Tab = 'calls' | 'texts';
 
@@ -68,9 +100,11 @@ export const GlobalDialer = () => {
   const {
     isConnected,
     currentCall,
+    waitingCall,
     makeCall,
     answerCall,
     endCall,
+    declineWithMessage,
     callLogs,
     messages,
   } = usePhone();
@@ -107,6 +141,36 @@ export const GlobalDialer = () => {
   // rule stays happy. createPortal needs document, which only exists client-side.
   const mounted = typeof document !== 'undefined';
 
+  // ----- Quick-reply send: "Message sent" snapshot -----
+  // declineWithMessage triggers SMS dispatch then endCall(); endCall clears
+  // currentCall and would unmount CallSessionView (and auto-close the panel)
+  // immediately. Hold a frozen snapshot for SENT_NOTICE_MS so the user sees
+  // the confirmation before the panel collapses. Lives in GlobalDialer (not
+  // CallSessionView) because the auto-close logic below needs to honor it.
+  interface SentNotice {
+    body: string;
+    number: string;
+    name?: string;
+  }
+  const [sentNotice, setSentNotice] = useState<SentNotice | null>(null);
+  const sentTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
+    };
+  }, []);
+  const fireQuickReply = useCallback((to: string, body: string, displayName?: string) => {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    setSentNotice({ body: trimmed, number: to, name: displayName });
+    declineWithMessage(to, trimmed);
+    if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
+    sentTimerRef.current = window.setTimeout(() => {
+      setSentNotice(null);
+      sentTimerRef.current = null;
+    }, SENT_NOTICE_MS);
+  }, [declineWithMessage]);
+
   // Auto-expand on incoming call. React's documented "adjust state during
   // render" pattern: track the previous value in useState (NOT useRef — React 19
   // forbids ref reads during render), and trigger edge logic when it changes.
@@ -119,14 +183,30 @@ export const GlobalDialer = () => {
       setTab('calls');
       setShowDialpad(false);
     }
-    // Auto-close panel when call ends (active/ringing/dialing → null)
+    // Auto-close panel when call ends (active/ringing/dialing → null).
+    // Suppress the auto-close while a "Message sent" notice is active so
+    // the user sees the confirmation; the notice's own timer flips it off
+    // and the next render handles cleanup.
     if (
       callState === null &&
-      (prevCallState === 'active' || prevCallState === 'ringing' || prevCallState === 'dialing')
+      (prevCallState === 'active' || prevCallState === 'ringing' || prevCallState === 'dialing') &&
+      sentNotice === null
     ) {
       close();
     }
   }
+
+  // When the sent notice expires, if currentCall has already cleared we still
+  // need to close the panel (the prev/curr transition fired earlier and was
+  // suppressed). Watching sentNotice flipping to null after a non-null phase
+  // is the trigger.
+  const prevSentRef = useRef<SentNotice | null>(null);
+  useEffect(() => {
+    if (prevSentRef.current !== null && sentNotice === null && currentCall == null) {
+      close();
+    }
+    prevSentRef.current = sentNotice;
+  }, [sentNotice, currentCall, close]);
 
   // ----- Drag state -----
   const [pos, setPos] = useState<{ top: number; right: number } | null>(_savedDialerPos);
@@ -216,7 +296,11 @@ export const GlobalDialer = () => {
   if (!mounted || !isConnected) return null;
 
   const hasActiveSession =
-    callState === 'ringing' || callState === 'dialing' || callState === 'active';
+    callState === 'ringing' || callState === 'dialing' || callState === 'active' ||
+    // Keep the call view mounted during the "Message sent" notice window
+    // even after currentCall clears, so the confirmation reads instead of
+    // the panel snapping back to the dialer list.
+    sentNotice !== null;
 
   // ----- Expanded panel -----
   const panel = isOpen ? (
@@ -257,12 +341,23 @@ export const GlobalDialer = () => {
 
       {hasActiveSession ? (
         <CallSessionView
-          state={callState!}
-          number={currentCall?.number ?? ''}
-          name={currentCall?.name}
+          // During the "Message sent" notice window currentCall may already be
+          // null — fall back to the snapshot held in sentNotice so the panel
+          // can render its confirmation surface. Default state to 'ringing'
+          // since the notice only fires from a ringing-state quick reply.
+          // The hasActiveSession gate above guarantees callState is one of
+          // ringing/dialing/active (never 'idle' here) when sentNotice is
+          // null, so the narrow cast below is sound.
+          state={(callState === 'ringing' || callState === 'dialing' || callState === 'active') ? callState : 'ringing'}
+          number={currentCall?.number ?? sentNotice?.number ?? ''}
+          name={currentCall?.name ?? sentNotice?.name}
           duration={liveDuration}
+          isIncoming={currentCall?.isIncoming ?? false}
+          hasWaitingCall={waitingCall != null}
           onAnswer={answerCall}
           onEnd={endCall}
+          onQuickReply={fireQuickReply}
+          sentNotice={sentNotice?.body ?? null}
         />
       ) : (
         <>
@@ -403,8 +498,17 @@ interface CallSessionViewProps {
   number: string;
   name?: string;
   duration: number;
+  /** True when currentCall came from a CALL_INCOMING (not an outgoing makeCall). */
+  isIncoming: boolean;
+  /** True when a second-line call is also active — gates the Reply affordance off
+   *  per Forge's v1 declineWithMessage contract (can't target a specific waiting call). */
+  hasWaitingCall: boolean;
   onAnswer: () => void;
   onEnd: () => void;
+  /** Fires an atomic SMS + reject. Parent owns the optimistic "Message sent" snapshot. */
+  onQuickReply: (to: string, body: string, displayName?: string) => void;
+  /** Non-null while the parent is showing the "Message sent" confirmation. */
+  sentNotice: string | null;
 }
 
 function CallSessionView({
@@ -412,19 +516,65 @@ function CallSessionView({
   number,
   name,
   duration,
+  isIncoming,
+  hasWaitingCall,
   onAnswer,
   onEnd,
+  onQuickReply,
+  sentNotice,
 }: CallSessionViewProps) {
   const isRinging = state === 'ringing';
   const isActive = state === 'active';
   const isDialing = state === 'dialing';
 
-  const statusLabel = isRinging
+  // Reply panel sub-state for the live call surface. Mirrors CallModal's:
+  //   'hidden' = default Answer/Reply/Decline row
+  //   'chips'  = stacked chip list + Custom… entry
+  //   'custom' = custom-text composer
+  type ReplyView = 'hidden' | 'chips' | 'custom';
+  const [replyView, setReplyView] = useState<ReplyView>('hidden');
+  const [customText, setCustomText] = useState('');
+
+  // Reset the reply panel whenever the call surface itself changes (new
+  // incoming call, prior call ended). Using the documented "adjust state
+  // during render" pattern (React 19) rather than a useEffect — the latter
+  // trips react-hooks/set-state-in-effect because the reset is derived from
+  // a prop change, not a side effect.
+  const [prevNumber, setPrevNumber] = useState(number);
+  if (prevNumber !== number) {
+    setPrevNumber(number);
+    setReplyView('hidden');
+    setCustomText('');
+  }
+
+  // Resolved chip source: user's saved quick replies if any, otherwise the
+  // four hardcoded defaults. Mirrors CallModal's chip-source rule exactly.
+  const { quickReplies } = useQuickReplyTemplates();
+  const resolvedChips: ReadonlyArray<CallSurfaceQuickReply> =
+    quickReplies.length > 0
+      ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
+      : DEFAULT_QUICK_REPLIES;
+
+  // Reply affordance gating — per Forge's v1 contract. Only the simple
+  // ringing case. Hidden while the confirmation is showing so the row
+  // doesn't flicker mid-dismiss.
+  const showReplyAffordance =
+    sentNotice == null && isRinging && isIncoming && !hasWaitingCall;
+
+  const handleQuickReply = (body: string) => {
+    onQuickReply(number, body, name);
+  };
+
+  const statusLabel = sentNotice
+    ? 'Sent'
+    : isRinging
     ? 'Incoming'
     : isActive
     ? 'In call'
     : 'Calling…';
-  const statusColor = isRinging
+  const statusColor = sentNotice
+    ? 'text-emerald-600'
+    : isRinging
     ? 'text-rose-600'
     : isActive
     ? 'text-emerald-600'
@@ -434,7 +584,7 @@ function CallSessionView({
     <div className="px-2.5 py-3 flex flex-col items-center text-center">
       {/* Avatar with pulsing ring while ringing */}
       <div className="relative mb-2.5">
-        {isRinging && (
+        {isRinging && !sentNotice && (
           <span
             aria-hidden="true"
             className="absolute inset-0 rounded-full ring-4 ring-emerald-400/40 animate-pulse"
@@ -443,14 +593,18 @@ function CallSessionView({
         <div
           className={clsx(
             'relative w-12 h-12 rounded-full flex items-center justify-center',
-            isRinging
+            sentNotice
+              ? 'bg-emerald-50 ring-4 ring-emerald-200'
+              : isRinging
               ? 'bg-emerald-50 ring-4 ring-emerald-200'
               : isActive
               ? 'bg-emerald-50'
               : 'bg-blue-50'
           )}
         >
-          {isRinging ? (
+          {sentNotice ? (
+            <Check className="w-5 h-5 text-emerald-600" />
+          ) : isRinging ? (
             <PhoneIncoming className="w-5 h-5 text-emerald-600" />
           ) : isActive ? (
             <PhoneCall className="w-5 h-5 text-emerald-600" />
@@ -489,27 +643,186 @@ function CallSessionView({
         </p>
       )}
 
-      <div className="flex items-center justify-center gap-2.5 mt-3">
-        {isRinging && (
+      {/* While "Message sent" is showing, the confirmation copy replaces the
+          action row + reply panel so the modal-collapse feels resolved. */}
+      {sentNotice ? (
+        <p className="mt-3 text-[10px] text-emerald-600 font-medium px-1 max-w-full break-words">
+          “{sentNotice}”
+        </p>
+      ) : (
+        <>
+          <div className="flex items-center justify-center gap-2 mt-3">
+            {isRinging && (
+              <button
+                type="button"
+                onClick={onAnswer}
+                className="w-9 h-9 rounded-full bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-emerald-500/30 transition-all"
+                aria-label="Answer call"
+              >
+                <Phone className="w-4 h-4" />
+              </button>
+            )}
+
+            {/* Reply affordance — ringing + incoming + no waiting call.
+                Hidden once chips/custom panel is open (it owns the row below). */}
+            {showReplyAffordance && replyView === 'hidden' && (
+              <button
+                type="button"
+                onClick={() => setReplyView('chips')}
+                className="w-9 h-9 rounded-full bg-blue-500 hover:bg-blue-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-blue-500/30 transition-all"
+                aria-label="Reply with message and decline"
+                title="Reply with message"
+              >
+                <MessageSquare className="w-4 h-4" />
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={onEnd}
+              className="w-9 h-9 rounded-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-rose-500/30 transition-all"
+              aria-label={isRinging ? 'Decline call' : isDialing ? 'Cancel call' : 'End call'}
+            >
+              <PhoneOff className="w-4 h-4" />
+            </button>
+          </div>
+
+          {replyView !== 'hidden' && (
+            <CallReplyPanel
+              view={replyView}
+              chips={resolvedChips}
+              customText={customText}
+              onChangeCustomText={setCustomText}
+              onPickChip={handleQuickReply}
+              onPickCustom={() => setReplyView('custom')}
+              onBackToChips={() => setReplyView('chips')}
+              onCancel={() => setReplyView('hidden')}
+              onSendCustom={() => handleQuickReply(customText)}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ----- Reply chip panel: tight stacked layout for the 208px-wide dialer panel.
+// Mirrors CallModal's `renderReplyPanel(compact)` but the dialer panel is much
+// narrower than CallModal's compact widget, so we render chips as a vertical
+// stack (truncated) rather than a flex-wrap row. Tapping a chip fires the
+// SMS+reject via onPickChip; Custom… switches to a textarea + Send button.
+interface CallReplyPanelProps {
+  view: 'chips' | 'custom';
+  chips: ReadonlyArray<CallSurfaceQuickReply>;
+  customText: string;
+  onChangeCustomText: (v: string) => void;
+  onPickChip: (body: string) => void;
+  onPickCustom: () => void;
+  onBackToChips: () => void;
+  onCancel: () => void;
+  onSendCustom: () => void;
+}
+
+function CallReplyPanel({
+  view,
+  chips,
+  customText,
+  onChangeCustomText,
+  onPickChip,
+  onPickCustom,
+  onBackToChips,
+  onCancel,
+  onSendCustom,
+}: CallReplyPanelProps) {
+  if (view === 'custom') {
+    return (
+      <div className="mt-3 w-full text-left space-y-1.5">
+        <div className="flex items-center gap-1">
           <button
             type="button"
-            onClick={onAnswer}
-            className="w-9 h-9 rounded-full bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-emerald-500/30 transition-all"
-            aria-label="Answer call"
+            onClick={onBackToChips}
+            aria-label="Back to quick replies"
+            className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
           >
-            <Phone className="w-4 h-4" />
+            <ChevronLeft className="w-3 h-3" />
           </button>
-        )}
-
+          <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+            Custom message
+          </span>
+        </div>
+        <textarea
+          value={customText}
+          onChange={(e) => onChangeCustomText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              if (customText.trim()) onSendCustom();
+            }
+          }}
+          rows={2}
+          autoFocus
+          placeholder="Type a message…"
+          aria-label="Custom reply message"
+          className="w-full px-2 py-1.5 text-[11px] border border-slate-200 rounded-md text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-300 resize-none leading-snug"
+        />
         <button
           type="button"
-          onClick={onEnd}
-          className="w-9 h-9 rounded-full bg-rose-500 hover:bg-rose-600 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-rose-500/30 transition-all"
-          aria-label={isRinging ? 'Decline call' : isDialing ? 'Cancel call' : 'End call'}
+          onClick={onSendCustom}
+          disabled={!customText.trim()}
+          aria-label="Send message and decline call"
+          className={clsx(
+            'w-full h-7 rounded text-[10px] font-semibold flex items-center justify-center gap-1 transition-colors',
+            customText.trim()
+              ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-500/30'
+              : 'bg-slate-200 text-slate-400 cursor-not-allowed',
+          )}
         >
-          <PhoneOff className="w-4 h-4" />
+          <Send className="w-3 h-3" />
+          Send &amp; decline
         </button>
       </div>
+    );
+  }
+
+  // view === 'chips' — stacked one-per-row for the narrow panel.
+  return (
+    <div className="mt-3 w-full text-left space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+          Quick reply
+        </span>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-[9px] text-slate-400 hover:text-slate-600 transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+      <ul className="space-y-1" aria-label="Quick reply messages">
+        {chips.map((reply) => (
+          <li key={reply.name}>
+            <button
+              type="button"
+              onClick={() => onPickChip(reply.body)}
+              title={reply.body}
+              className="w-full text-left px-2 py-1.5 bg-slate-50 hover:bg-blue-50 active:bg-blue-100 text-slate-700 hover:text-blue-700 text-[11px] rounded-md border border-slate-200 hover:border-blue-200 transition-colors truncate"
+            >
+              {reply.name}
+            </button>
+          </li>
+        ))}
+        <li>
+          <button
+            type="button"
+            onClick={onPickCustom}
+            className="w-full text-left px-2 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] rounded-md border border-blue-200 transition-colors inline-flex items-center gap-1"
+          >
+            <MessageSquare className="w-3 h-3" />
+            Custom…
+          </button>
+        </li>
+      </ul>
     </div>
   );
 }
