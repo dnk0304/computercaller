@@ -68,6 +68,12 @@ model User {
   // (enforced in app/api/templates). onDelete: Cascade so deleting a user removes
   // their templates.
   templates         Template[]
+  // Quick-reply templates (2026-06-03, dispatch CC-quickreply-templates-v2).
+  // SEPARATE store from the normal SMS templates above. Hard-capped at 5/user
+  // (enforced in app/api/quick-replies POST → 409). Used ONLY for the
+  // reply-and-hangup chips on an incoming call — never general SMS, never
+  // surfaced in the normal templates list or composer. onDelete: Cascade.
+  quickReplyTemplates QuickReplyTemplate[]
 }
 
 // Template (Item C1, 2026-05-27). One reusable SMS body per row, owned by a User.
@@ -82,6 +88,29 @@ model Template {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String
   body      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// QuickReplyTemplate (2026-06-03, dispatch CC-quickreply-templates-v2).
+// SEPARATE entity from Template — Dennis-locked: "we gotta separate them
+// though." One quick-reply per row, owned by a User. MAX 5 per user; enforced
+// in the POST /api/quick-replies handler (count → 409), NOT a DB constraint
+// (matches Template-cap pattern so it can change without a migration).
+// Only used for reply-and-hangup on incoming calls; never general SMS, never
+// in the normal templates list or composer.
+//   body  — the SMS text sent when the chip is tapped (required).
+//   label — optional short display label; if null/empty, UI falls back to body.
+//   sortOrder — stable chip order; list endpoint returns sortOrder ASC, createdAt DESC.
+model QuickReplyTemplate {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  body      String
+  label     String?
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
