@@ -70,6 +70,7 @@ import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
+import { conversationKey, sameConversation } from '@/lib/normalizeNumber';
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
@@ -907,33 +908,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   }, [threads, debouncedThreadSearch, threadBodyIndex]);
 
   // Messages for the currently selected thread, oldest → newest.
-  // Match by last 8 digits so the same conversation resolves whether the address
-  // is stored as "+4745720075", "4745720075", or "45720075" — Android's SMS
-  // provider exposes any of those depending on how the number was sent.
+  //
+  // CRITICAL: matching MUST go through `conversationKey` (lib/normalizeNumber).
+  // The previous implementation used a Math.min(len, 10) digit-tail compare,
+  // which collapsed to as few as 4 digits for short codes and let messages
+  // from different people / service senders bleed into each other's threads
+  // (chat-mixing bug, 2026-06-03). `conversationKey` is the single source of
+  // truth used here AND in the thread-list `isSelected` check below AND in
+  // the SMS_RECEIVED dedupe inside `usePhoneBridge` — keeping all three sites
+  // in lock-step is what makes the match safe.
   const threadMessages: SmsMessage[] = useMemo(() => {
     if (!selectedThread) return [];
-    const digits = (n: string) => (n || '').replace(/\D/g, '');
-    const targetDigits = digits(selectedThread);
-
-    // Non-numeric sender (alphanumeric service ID like "Cube", "Google", "PayPal").
-    // Android stores these as-is — match by case-insensitive exact address.
-    if (!targetDigits) {
-      const lowerTarget = selectedThread.toLowerCase();
-      return deferredMessages
-        .filter((m) => (m.address ?? '').toLowerCase() === lowerTarget)
-        .sort((a, b) => a.date - b.date);
-    }
-
-    const matchLen = Math.min(targetDigits.length, 10);
-    const targetTail = targetDigits.slice(-matchLen);
+    const targetKey = conversationKey(selectedThread);
+    if (!targetKey) return [];
     return deferredMessages
-      .filter((m) => {
-        const addrDigits = digits(m.address);
-        // If the stored address is also non-numeric, try exact match
-        if (!addrDigits) return (m.address ?? '').toLowerCase() === selectedThread.toLowerCase();
-        const addrTail = addrDigits.slice(-matchLen);
-        return addrTail === targetTail;
-      })
+      .filter((m) => conversationKey(m.address) === targetKey)
       .sort((a, b) => a.date - b.date); // oldest first, newest at bottom
   // deferredMessages: O(n) filter runs in background, not blocking main thread.
   // New messages appear within ~1 frame — acceptable tradeoff vs main thread jank.
@@ -1723,17 +1712,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                 // drafts don't blow out the row height.
                 const preview = buildThreadPreview(thread.lastMessage.body);
                 const colorClass = getAvatarColor(displayName);
-                // Highlight the active thread. Compare by digits-tail so a
-                // thread keyed as "+47..." still matches a selectedThread of
-                // "47..." (Android exposes either format depending on source).
-                const threadDigits = thread.address.replace(/\D/g, '');
-                const selectedDigits = (selectedThread ?? '').replace(/\D/g, '');
+                // Highlight the active thread. MUST use `sameConversation`
+                // (shared canonical key from lib/normalizeNumber) so this
+                // highlight rule is byte-identical with the threadMessages
+                // filter above and the SMS_RECEIVED dedupe in usePhoneBridge.
+                // Previously this was a Math.min(len, 10) digit-tail compare
+                // which collapsed to 4 digits for short codes and visually
+                // co-highlighted two unrelated conversations (part of the
+                // chat-mixing bug, 2026-06-03).
                 const isSelected =
                   !composingNew &&
-                  selectedDigits.length > 0 &&
-                  threadDigits.length > 0 &&
-                  threadDigits.slice(-Math.min(threadDigits.length, selectedDigits.length, 10)) ===
-                    selectedDigits.slice(-Math.min(threadDigits.length, selectedDigits.length, 10));
+                  sameConversation(thread.address, selectedThread);
                 return (
                   <li key={thread.address}>
                     <button

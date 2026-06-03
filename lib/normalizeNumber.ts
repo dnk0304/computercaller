@@ -1,6 +1,62 @@
 import type { Contact } from '@/hooks/phoneTypes';
 
 /**
+ * Canonical key used to decide whether two address strings represent the
+ * SAME conversation. This is the single source of truth for matching across
+ * the web layer (threadMessages filter, thread-list isSelected, SMS_RECEIVED
+ * dedupe). Every call site MUST use this — not a hand-rolled tail compare.
+ *
+ * Rules (chosen so two distinct people can never collide, including the
+ * short-code / service-sender case that was bleeding chats together):
+ *  - Empty / nullish → ''.
+ *  - Address with NO digits (alphanumeric service ID like "Google", "PayPal",
+ *    "Cube") → lowercased, trimmed exact string. These match only themselves.
+ *  - Address WITH digits:
+ *      * If total digits ≥ 7 (a real phone number — international,
+ *        national, or local format), the key is "p:" + last 7 digits.
+ *        Last-7 is the "same subscriber" threshold already used by
+ *        findContactByNumber below; it absorbs country-code prefix
+ *        variation ("+4745720075" / "4745720075" / "45720075" all collapse
+ *        to p:5720075) while two genuinely-distinct subscribers virtually
+ *        never share their last 7 digits.
+ *      * If total digits < 7 (short code like "2226" or "22 26", or a
+ *        truncated stored address), the key is "s:" + the full digit string.
+ *        Short codes match ONLY the exact same short code — a 4-digit
+ *        short code "2226" can never match a real phone whose tail
+ *        happens to be "...2226" because the namespace prefix differs
+ *        ('s:' vs 'p:').
+ *
+ * Prefixes ('p:' / 's:' / a leading '#' for alpha) keep the three namespaces
+ * disjoint so cross-namespace collisions are impossible by construction.
+ * This is what closed the chat-mixing bug (2026-06-03) where the previous
+ * Math.min(len, 10) digit-tail collapsed to as few as 4 digits AND ignored
+ * the short-code vs phone distinction, causing two unrelated senders to
+ * resolve to the same thread.
+ */
+export function conversationKey(raw: string | undefined | null): string {
+  if (!raw) return '';
+  const trimmed = String(raw).trim();
+  if (!trimmed) return '';
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return `#${trimmed.toLowerCase()}`;
+  if (digits.length >= 7) return `p:${digits.slice(-7)}`;
+  return `s:${digits}`;
+}
+
+/**
+ * True iff `a` and `b` belong to the same conversation per `conversationKey`.
+ * Use this everywhere instead of ad-hoc digit-tail compares.
+ */
+export function sameConversation(
+  a: string | undefined | null,
+  b: string | undefined | null,
+): boolean {
+  const ka = conversationKey(a);
+  const kb = conversationKey(b);
+  return ka !== '' && ka === kb;
+}
+
+/**
  * Normalise a phone number to digits-only, optionally preserving a leading '+'.
  *
  * Goal: the same physical person should produce the same suffix regardless of

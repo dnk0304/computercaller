@@ -9,7 +9,7 @@ import type {
   SmsMessage,
   CallLogEntry
 } from './phoneTypes';
-import { findContactByNumber } from '@/lib/normalizeNumber';
+import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
 import { normalizePayload } from '@/lib/normalizePayload';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 import {
@@ -534,6 +534,16 @@ export function usePhoneBridge() {
   const messagesBufferRef = useRef<SmsMessage[]>([]);
   const callLogsBufferRef = useRef<CallLogEntry[]>([]);
 
+  // Set by `getContactMessages` / `getContactFullHistory` / `loadOlderMessages`
+  // to the conversationKey of the address being fetched. When the matching
+  // MESSAGES_CHUNK stream completes, the chunk handler does a SCOPED REPLACE:
+  // it evicts every existing row whose conversationKey equals this value and
+  // substitutes the freshly-fetched rows. This prevents stale rows from a
+  // previously-open conversation lingering in the rendered thread (the
+  // chat-mixing bug, 2026-06-03) while still leaving rows for OTHER
+  // conversations untouched in the global store. Cleared after each commit.
+  const pendingThreadFetchKeyRef = useRef<string | null>(null);
+
   // Mirror of `contacts` state, kept in a ref so the CALL_INCOMING /
   // CALL_LOG_ENTRY handlers below can look up a caller's contact name without
   // forcing `handleMessage` (a useCallback) to re-bind on every contacts
@@ -1024,15 +1034,20 @@ export function usePhoneBridge() {
           // recent messages. Duplicates from SmsReceiver/ContentObserver always
           // arrive within seconds of each other, never years apart, so scanning
           // the full array (potentially 10,000+) is wasteful and causes lag.
-          const digTail = (n: string) => (n || '').replace(/\D/g, '').slice(-10);
-          const newTail = digTail(newSms.address);
+          //
+          // Conversation match MUST go through `conversationKey` (the single
+          // canonical-key helper in lib/normalizeNumber) so this dedupe agrees
+          // with the threadMessages filter and the thread-list isSelected
+          // check in Dashboard. Previous code used a Math.min(len, 10) digit-
+          // tail which could collapse to 4 digits and conflate two distinct
+          // senders (chat-mixing bug, 2026-06-03).
+          const newKey = conversationKey(newSms.address);
           const window = prev.length > 200 ? prev.slice(0, 200) : prev;
           const isDuplicate = window.some(m =>
             m.id === newSms.id ||
-            (m.body === newSms.body &&
-             (newTail
-               ? digTail(m.address) === newTail
-               : (m.address ?? '').toLowerCase() === (newSms.address ?? '').toLowerCase())
+            (m.body === newSms.body
+             && conversationKey(m.address) === newKey
+             && newKey !== ''
              && Math.abs(m.date - newSms.date) < 10000)
           );
           if (isDuplicate) return prev;
@@ -1122,6 +1137,11 @@ export function usePhoneBridge() {
 
       case 'MESSAGES':
         console.log('[PhoneBridge] Received messages:', payload.messages?.length || 0);
+        // Per PhoneService.kt:2836 Android only ever sends MESSAGES_CHUNK in
+        // practice; this bare-replace path is legacy/defensive. If it does
+        // fire it always means "full replace", so clear any pending scoped
+        // key so the next chunked fetch isn't misinterpreted.
+        pendingThreadFetchKeyRef.current = null;
         setMessages(payload.messages || []);
         setIsConnected(true); // Mark as connected when we receive data
         break;
@@ -1205,12 +1225,32 @@ export function usePhoneBridge() {
         if (isComplete) {
           const incoming = messagesBufferRef.current;
           messagesBufferRef.current = [];
+          // Snapshot + clear the per-thread scoped-replace key BEFORE the
+          // setMessages updater fires so a second open-thread call landing in
+          // the same microtask doesn't see a stale value.
+          const scopedKey = pendingThreadFetchKeyRef.current;
+          pendingThreadFetchKeyRef.current = null;
           setIsConnected(true);
           // Non-urgent: the list re-render can yield to user interactions.
           startTransition(() => {
             setMessages(prev => {
               if (syncModeRef.current === 'replace') return incoming;
-              // Merge: incoming wins on id conflict (newer data), keep existing otherwise
+              if (scopedKey) {
+                // Scoped replace for the just-opened thread: drop every
+                // existing row whose conversationKey equals this thread's
+                // key, then commit the freshly-fetched page as the
+                // authoritative slice for that conversation. Rows belonging
+                // to OTHER conversations are kept intact in the global
+                // store. This is what stops messages from a previously-open
+                // thread lingering in the rendered view (chat-mixing bug,
+                // 2026-06-03).
+                return [
+                  ...prev.filter(m => conversationKey(m.address) !== scopedKey),
+                  ...incoming,
+                ].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+              }
+              // Merge: incoming wins on id conflict (newer data), keep existing otherwise.
+              // Used by older-message paging and silent incremental syncs.
               const incomingIds = new Set(incoming.map(m => m.id));
               return [
                 ...prev.filter(m => !incomingIds.has(m.id)),
@@ -1995,6 +2035,11 @@ export function usePhoneBridge() {
   const getContactMessages = useCallback((address: string) => {
     if (!address || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     messagesBufferRef.current = [];
+    // Scope the upcoming MESSAGES_CHUNK stream to THIS conversation only —
+    // the chunk handler will evict any stale rows for this key before
+    // committing the fresh page, so messages from a previously-open thread
+    // can't linger in the rendered list.
+    pendingThreadFetchKeyRef.current = conversationKey(address);
     wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address, limit: 25 })}`);
   }, []);
 
@@ -2007,6 +2052,8 @@ export function usePhoneBridge() {
   const getContactFullHistory = useCallback((address: string) => {
     if (!address || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     messagesBufferRef.current = [];
+    // Same scoped-replace semantics as getContactMessages above.
+    pendingThreadFetchKeyRef.current = conversationKey(address);
     // No `since` filter — fetches all history for this contact.
     wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address })}`);
   }, []);
