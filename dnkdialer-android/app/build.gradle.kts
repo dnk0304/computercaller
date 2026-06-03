@@ -201,8 +201,8 @@ android {
         // release Log.d -> BuildConfig.DEBUG-gated), L12 (incoming-connection
         // notification VISIBILITY_PUBLIC -> PRIVATE + redacted public version).
         // Deferred: TLS leaf SPKI pinning (needs backup-pin discipline).
-        versionCode = 30
-        versionName = "1.0.8"
+        versionCode = 32
+        versionName = "1.0.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
