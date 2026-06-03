@@ -1109,6 +1109,109 @@ function startRelay(httpServer) {
 }
 
 // ---------------------------------------------------------------------------
+// Staging access gate (2026-06-03)
+//
+// Private preview environment guard for staging.computercaller.com. Active
+// ONLY when `process.env.STAGING === 'true'`. When STAGING is unset/false the
+// wrapper is a pure pass-through — production runs the same binary and is
+// byte-for-byte unaffected (the wrapper short-circuits before touching the
+// response).
+//
+// When STAGING === 'true', every inbound HTTP request:
+//   1. Gets `X-Robots-Tag: noindex, nofollow` on the response (keeps the
+//      preview out of Google's index even if a link leaks).
+//   2. Must carry valid HTTP Basic credentials matching env
+//      `STAGING_BASIC_AUTH_USER` / `STAGING_BASIC_AUTH_PASS`. Missing/wrong
+//      creds → 401 with `WWW-Authenticate: Basic realm="ComputerCaller Staging"`.
+//   3. Carve-outs (bypass auth, still get the noindex header):
+//        • /api/health, /health — Coolify/uptime probes. No-op if route
+//          doesn't exist (Next.js still returns its own 404, just unauthed).
+//      The WebSocket upgrade path is NOT touched by this wrapper — it lives
+//      on the same httpServer but `upgrade` is a distinct event handled by
+//      startRelay() above. Basic-auth on a WS upgrade would break the phone
+//      bridge, so by construction the upgrade path is excluded.
+//
+// Constant-time compare on equal-length buffers — matches the security bar
+// already set by redactToken() / lib/auth.ts.
+// ---------------------------------------------------------------------------
+
+const STAGING_GATE_ENABLED = process.env.STAGING === 'true';
+const STAGING_BASIC_AUTH_USER = process.env.STAGING_BASIC_AUTH_USER || '';
+const STAGING_BASIC_AUTH_PASS = process.env.STAGING_BASIC_AUTH_PASS || '';
+const STAGING_HEALTH_PATHS = new Set(['/api/health', '/health']);
+
+function stagingCredsMatch(suppliedUser, suppliedPass) {
+  // Length-guard first — timingSafeEqual throws on size mismatch. Comparing
+  // the lengths leaks length only, not content, which is acceptable here:
+  // an attacker who already knows the expected username/password length is
+  // no closer to guessing the secret.
+  if (typeof suppliedUser !== 'string' || typeof suppliedPass !== 'string') return false;
+  const expU = Buffer.from(STAGING_BASIC_AUTH_USER, 'utf8');
+  const expP = Buffer.from(STAGING_BASIC_AUTH_PASS, 'utf8');
+  const gotU = Buffer.from(suppliedUser, 'utf8');
+  const gotP = Buffer.from(suppliedPass, 'utf8');
+  if (gotU.length !== expU.length) return false;
+  if (gotP.length !== expP.length) return false;
+  // Both compares MUST run regardless of the first result — early-return on
+  // user-mismatch would leak via timing which half failed.
+  const userOk = crypto.timingSafeEqual(gotU, expU);
+  const passOk = crypto.timingSafeEqual(gotP, expP);
+  return userOk && passOk;
+}
+
+function parseBasicAuthHeader(authHeader) {
+  if (typeof authHeader !== 'string') return null;
+  if (!authHeader.startsWith('Basic ')) return null;
+  const b64 = authHeader.slice('Basic '.length).trim();
+  if (!b64) return null;
+  let decoded;
+  try {
+    decoded = Buffer.from(b64, 'base64').toString('utf8');
+  } catch (_) {
+    return null;
+  }
+  const idx = decoded.indexOf(':');
+  if (idx < 0) return null;
+  return { user: decoded.slice(0, idx), pass: decoded.slice(idx + 1) };
+}
+
+/**
+ * Apply the staging gate to a single HTTP request. Returns true when the
+ * gate has fully handled the response (request must NOT be passed on to
+ * Next.js), false when the caller should continue normal handling.
+ *
+ * No-op (returns false immediately) when STAGING_GATE_ENABLED is false.
+ */
+function applyStagingGate(req, res) {
+  if (!STAGING_GATE_ENABLED) return false;
+
+  // noindex on every response — set it BEFORE any branch can return early,
+  // including the 401 path. Search engines that hit the 401 still see the
+  // header on the error response.
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+
+  // Carve-out: health probes bypass the auth check (still get noindex).
+  // We parse pathname defensively — a malformed URL shouldn't crash the gate.
+  let pathname = '/';
+  try {
+    pathname = parse(req.url || '/', true).pathname || '/';
+  } catch (_) { /* fall through with default */ }
+  if (STAGING_HEALTH_PATHS.has(pathname)) return false;
+
+  const supplied = parseBasicAuthHeader(req.headers?.authorization);
+  if (supplied && stagingCredsMatch(supplied.user, supplied.pass)) {
+    // Authed — let Next.js handle it (noindex already set above).
+    return false;
+  }
+
+  res.statusCode = 401;
+  res.setHeader('WWW-Authenticate', 'Basic realm="ComputerCaller Staging"');
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.end('Staging — authorized access only\n');
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Next.js + relay startup
 // ---------------------------------------------------------------------------
 
@@ -1128,6 +1231,12 @@ async function main() {
   await app.prepare();
 
   const httpServer = http.createServer((req, res) => {
+    // Staging gate (2026-06-03): no-op when STAGING !== 'true'. When the gate
+    // takes over (401 response on missing/wrong creds) it returns true and we
+    // do NOT forward to Next.js. The WS upgrade path is on a separate
+    // `upgrade` event handler in startRelay() and is NOT routed through here,
+    // so the phone bridge is structurally outside the gate.
+    if (applyStagingGate(req, res)) return;
     const parsedUrl = parse(req.url || '/', true);
     handle(req, res, parsedUrl);
   });
