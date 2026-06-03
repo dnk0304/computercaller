@@ -1,7 +1,21 @@
 package com.dnkdialer.companion
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.provider.Telephony
+import android.telephony.SmsManager
+import androidx.core.content.FileProvider
+import com.google.android.mms.pdu_alt.CharacterSets
+import com.google.android.mms.pdu_alt.EncodedStringValue
+import com.google.android.mms.pdu_alt.PduBody
+import com.google.android.mms.pdu_alt.PduComposer
+import com.google.android.mms.pdu_alt.PduHeaders
+import com.google.android.mms.pdu_alt.PduPart
+import com.google.android.mms.pdu_alt.SendReq
+import java.io.File
+import java.io.FileOutputStream
 
 data class MmsMessage(
     val id: String,
@@ -251,6 +265,257 @@ class MmsHandler(private val context: Context) {
             android.util.Log.w("MmsHandler", "Full media read failed: ${e.message}")
             null
         }
+    }
+
+    /**
+     * MMS SEND (2026-06-03) — assemble an M-Send.req PDU containing an image
+     * (and optional caption text) and ship it via
+     * SmsManager.sendMultimediaMessage(contentUri, ..., sentIntent).
+     *
+     * Works WITHOUT ComputerCaller being the default SMS app: the
+     * SmsManager.sendMultimediaMessage path delegates to the platform
+     * com.android.mms.service, which composes and ships the PDU regardless
+     * of the caller's default-SMS-app status — only direct SMS_PROVIDER
+     * writes (which we never perform) require default-app since KitKat.
+     * Same surface ComputerCaller already uses to send plain SMS without
+     * being default (see SmsHandler.sendSms).
+     *
+     * Multi-SIM caveat: if `subId` is null and the device has no default
+     * outgoing subscription, sentIntent fires RESULT_NO_DEFAULT_SMS_APP.
+     * Pass an explicit `subId` (the simId the web user picked) to route
+     * through a specific SIM and skip the default-sub lookup.
+     *
+     * Caller (PhoneService SEND_MMS handler) supplies the raw image bytes
+     * already (browser downscales to ~800KB JPEG before sending). We do
+     * NOT downscale again here — the web side controls payload size.
+     *
+     * @param to           recipient MSISDN (raw or +CC-prefixed; carrier
+     *                     normalises)
+     * @param body         optional caption text; null/blank → no text part
+     * @param mediaBytes   raw image bytes (JPEG/PNG/etc.)
+     * @param mimeType     media MIME (e.g. "image/jpeg")
+     * @param clientMsgId  correlation id from the web — surfaces in the
+     *                     SMS_SEND_STATUS lifecycle frame
+     * @param subId        optional subscription id (dual-SIM routing); null
+     *                     → SmsManager.getDefault() uses the default sub
+     */
+    fun sendMms(
+        to: String,
+        body: String?,
+        mediaBytes: ByteArray,
+        mimeType: String,
+        clientMsgId: String,
+        subId: Int? = null
+    ) {
+        // Set up the cache subdirectory FileProvider exposes (mms-out/).
+        // We write the serialized PDU here, hand a content:// URI to the
+        // MMS service, and rely on SmsStatusReceiver.MMS_SENT to clean up.
+        val cacheDir = File(context.cacheDir, "mms-out").apply { mkdirs() }
+        // Filename incorporates clientMsgId so SmsStatusReceiver can match
+        // the sent file back to its callback by extra without holding state.
+        val pduFile = File(cacheDir, "pdu_${sanitize(clientMsgId)}_${System.currentTimeMillis()}.dat")
+
+        try {
+            val pduBytes = composePdu(to, body, mediaBytes, mimeType)
+            FileOutputStream(pduFile).use { it.write(pduBytes) }
+
+            val contentUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.mmsfileprovider",
+                pduFile
+            )
+            // Grant the system MMS service temporary read on the PDU file.
+            // The send call ALSO grants via the sendMultimediaMessage API
+            // contract, but belt-and-braces against OEM quirks.
+            context.grantUriPermission(
+                "com.android.mms.service",
+                contentUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+
+            // sentIntent broadcast — SmsStatusReceiver picks this up and
+            // emits SMS_SEND_STATUS back to the web client. Carrying the
+            // PDU file path so the receiver can delete the cache file on
+            // completion regardless of success/failure.
+            val sendIntent = Intent("MMS_SENT").apply {
+                putExtra("clientMsgId", clientMsgId)
+                putExtra("to", to)
+                putExtra("pduFilePath", pduFile.absolutePath)
+                `package` = context.packageName
+            }
+            val sentPI = PendingIntent.getBroadcast(
+                context,
+                ("mms-" + clientMsgId).hashCode(),
+                sendIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            // Pick the SmsManager: per-subscription when the web picked a
+            // SIM, otherwise the system default. createForSubscriptionId
+            // is API 22+ which is well under our minSdk 26.
+            val manager: SmsManager = if (subId != null && subId >= 0) {
+                try {
+                    context.getSystemService(SmsManager::class.java)
+                        .createForSubscriptionId(subId)
+                } catch (e: Exception) {
+                    android.util.Log.w(
+                        "MmsHandler",
+                        "createForSubscriptionId($subId) failed, falling back to default: ${e.message}"
+                    )
+                    context.getSystemService(SmsManager::class.java)
+                }
+            } else {
+                context.getSystemService(SmsManager::class.java)
+            }
+
+            android.util.Log.d(
+                "MmsHandler",
+                "sendMms: to=$to clientMsgId=$clientMsgId pdu=${pduBytes.size}B subId=${subId ?: "default"}"
+            )
+
+            manager.sendMultimediaMessage(
+                context,
+                contentUri,
+                null,        // locationUrl = null → MmsService reads the carrier MMSC from APN config
+                null,        // configOverrides — leave null, use platform defaults
+                sentPI
+            )
+        } catch (e: SecurityException) {
+            android.util.Log.e("MmsHandler", "sendMms: SEND_SMS permission denied", e)
+            // Surface as a synthetic failure so the web bubble doesn't
+            // stay pending forever. SmsStatusReceiver normally emits this
+            // via the sentIntent, but if SmsManager rejected the call
+            // outright we have to fire it ourselves.
+            broadcastFailure(clientMsgId, to, "Permission denied (SEND_SMS)")
+            pduFile.delete()
+        } catch (e: Exception) {
+            android.util.Log.e("MmsHandler", "sendMms: PDU composition / dispatch failed", e)
+            broadcastFailure(clientMsgId, to, "PDU build failed: ${e.message ?: e.javaClass.simpleName}")
+            pduFile.delete()
+        }
+    }
+
+    /**
+     * Compose the M-Send.req PDU bytes for a single-recipient image MMS.
+     *
+     * Layout: SMIL slide with one image region (and a text region when
+     * `body` is non-blank) + the image PduPart + an optional text PduPart.
+     * The SMIL is what every other MMS app uses — it's how the recipient's
+     * client knows to render the image (and caption) together as one
+     * slide. Most carriers accept image-only PDUs too, but including a
+     * SMIL is the canonical/maximum-compatibility path.
+     */
+    private fun composePdu(
+        to: String,
+        body: String?,
+        mediaBytes: ByteArray,
+        mimeType: String
+    ): ByteArray {
+        val pduBody = PduBody()
+
+        // SMIL part (presentation layer). Content-ID="<smil>", Content-Location="smil.xml",
+        // ContentType="application/smil". MUST be the first part by convention so
+        // recipient clients find it before the media parts.
+        val smilXml = if (!body.isNullOrBlank()) {
+            "<smil><head><layout>" +
+                "<root-layout/>" +
+                "<region id=\"Image\" top=\"0\" left=\"0\" height=\"80%\" width=\"100%\"/>" +
+                "<region id=\"Text\" top=\"80%\" left=\"0\" height=\"20%\" width=\"100%\"/>" +
+                "</layout></head><body><par dur=\"5000ms\">" +
+                "<img src=\"image\" region=\"Image\"/>" +
+                "<text src=\"text\" region=\"Text\"/>" +
+                "</par></body></smil>"
+        } else {
+            "<smil><head><layout>" +
+                "<root-layout/>" +
+                "<region id=\"Image\" top=\"0\" left=\"0\" height=\"100%\" width=\"100%\"/>" +
+                "</layout></head><body><par dur=\"5000ms\">" +
+                "<img src=\"image\" region=\"Image\"/>" +
+                "</par></body></smil>"
+        }
+        // Explicit setters (not Kotlin property syntax) for PduPart fields —
+        // same rationale as SendReq below: avoid name-collision ambiguity
+        // with the outer `body` parameter / Kotlin's property-write
+        // resolution against the Java setter set.
+        val smilPart = PduPart()
+        smilPart.setContentType("application/smil".toByteArray())
+        smilPart.setContentLocation("smil.xml".toByteArray())
+        smilPart.setContentId("<smil>".toByteArray())
+        smilPart.setData(smilXml.toByteArray())
+        pduBody.addPart(smilPart)
+
+        // Image part. ContentLocation matches the SMIL `src` so the receiver
+        // can wire the part to the slide. contentId is required by some
+        // carriers; angle-brackets per RFC 2392.
+        val imagePart = PduPart()
+        imagePart.setContentType(mimeType.toByteArray())
+        imagePart.setContentLocation("image".toByteArray())
+        imagePart.setContentId("<image>".toByteArray())
+        imagePart.setData(mediaBytes)
+        pduBody.addPart(imagePart)
+
+        // Optional text part.
+        if (!body.isNullOrBlank()) {
+            val textPart = PduPart()
+            textPart.setContentType("text/plain".toByteArray())
+            textPart.setCharset(CharacterSets.UTF_8)
+            textPart.setContentLocation("text".toByteArray())
+            textPart.setContentId("<text>".toByteArray())
+            textPart.setData(body.toByteArray(Charsets.UTF_8))
+            pduBody.addPart(textPart)
+        }
+
+        // SendReq envelope. Use explicit setX(...) calls (not Kotlin
+        // property syntax) so the outer `body: String?` function parameter
+        // doesn't shadow setBody(PduBody) — Kotlin's property-assignment
+        // resolution gets ambiguous when a Java setter and a captured
+        // local share a name. Mirrors qksms / klinker reference usage.
+        val sendReq = SendReq()
+        // Recipient. EncodedStringValue handles WSP encoding.
+        sendReq.addTo(EncodedStringValue(to))
+        // No subject — most carriers/clients ignore it for image MMS.
+        // Date is auto-stamped by SendReq.
+        sendReq.setMessageClass("personal".toByteArray())
+        sendReq.setExpiry((7 * 24 * 60 * 60).toLong())          // 7 days; carrier caps anyway
+        sendReq.setPriority(PduHeaders.PRIORITY_NORMAL)         // 0x81
+        // Delivery + read reports off — same default as the platform
+        // Messages app for everyday picture messages.
+        sendReq.setDeliveryReport(PduHeaders.VALUE_NO)
+        sendReq.setReadReport(PduHeaders.VALUE_NO)
+        // Bind the body.
+        sendReq.setBody(pduBody)
+
+        // Serialize.
+        val composer = PduComposer(context, sendReq)
+        return composer.make()
+            ?: throw IllegalStateException("PduComposer.make() returned null — composition failed")
+    }
+
+    /**
+     * Sanitize a clientMsgId for use in a filename (strip everything that
+     * isn't alphanumeric / dash / underscore). The id format we ship is
+     * `${Date.now()}-${random36}`, so this is defensive only.
+     */
+    private fun sanitize(id: String): String =
+        id.replace(Regex("[^A-Za-z0-9_-]"), "_").take(40)
+
+    /**
+     * Fire a synthetic MMS_SENT broadcast as failure when we couldn't even
+     * reach the SmsManager dispatch (permission denial, PDU build error).
+     * SmsStatusReceiver picks this up and emits SMS_SEND_STATUS:failed back
+     * to the web bubble so it doesn't stay pending forever.
+     */
+    private fun broadcastFailure(clientMsgId: String, to: String, reason: String) {
+        val intent = Intent("MMS_SENT").apply {
+            putExtra("clientMsgId", clientMsgId)
+            putExtra("to", to)
+            putExtra("synthetic_failure_reason", reason)
+            `package` = context.packageName
+        }
+        // sendBroadcast goes through the ordered intent path the same way
+        // PendingIntent.send would, so the receiver's resultCode stays at
+        // its default (Activity.RESULT_CANCELED) → treated as failure.
+        context.sendBroadcast(intent)
     }
 
     private fun transcodeAmrToAac(amrBytes: ByteArray): Pair<String, ByteArray>? {

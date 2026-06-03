@@ -201,8 +201,25 @@ android {
         // release Log.d -> BuildConfig.DEBUG-gated), L12 (incoming-connection
         // notification VISIBILITY_PUBLIC -> PRIVATE + redacted public version).
         // Deferred: TLS leaf SPKI pinning (needs backup-pin discipline).
-        versionCode = 30
-        versionName = "1.0.8"
+        //
+        // MMS SEND (2026-06-03): 30 -> 31 / 1.0.8 -> 1.0.9. Adds web->phone
+        // MMS sending without requiring ComputerCaller to be the default SMS
+        // app. New SEND_MMS WS frame, new MmsHandler.sendMms() that builds an
+        // M-Send.req PDU via klinker's pdu_alt package and ships it through
+        // SmsManager.sendMultimediaMessage(contentUri, ..., sentIntent). Reuses
+        // the existing SMS_SEND_STATUS lifecycle frame (SmsStatusReceiver now
+        // also handles MMS_SENT). New FileProvider authority
+        // ${applicationId}.mmsfileprovider exposes the cached PDU file to
+        // com.android.mms.service; cache-cleanup happens on the sentIntent
+        // callback. Non-default-app verdict: confirmed — SmsManager.send*
+        // delegates to MmsService which composes/ships PDUs regardless of the
+        // caller's default-SMS-app status; only the SMS_PROVIDER WRITE path
+        // (which we never touch) requires default-app. Multi-SIM edge:
+        // sentIntent fires RESULT_NO_DEFAULT_SMS_APP if getDefault() can't
+        // pick a sub — mitigated by per-subscription createForSubscriptionId
+        // when the web supplies simId.
+        versionCode = 31
+        versionName = "1.0.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -292,6 +309,25 @@ dependencies {
     // EncryptedSharedPreferences (AES-256-GCM, keys held in the Android
     // Keystore / TEE). See TokenStore.kt for the wrapper.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // MMS SEND (2026-06-03) — klinker's android-smsmms provides the
+    // com.google.android.mms.pdu_alt package: PduComposer + SendReq +
+    // PduPart + PduBody used by MmsHandler.sendMms() to assemble the
+    // M-Send.req PDU we hand off to SmsManager.sendMultimediaMessage().
+    // We use ONLY the pdu_alt classes (the higher-level Transaction layer
+    // is intentionally bypassed — we drive SmsManager ourselves so the
+    // sentIntent flows back through our existing SmsStatusReceiver).
+    // Maven Central, Apache 2.0, ~150KB. Pinning to a published version
+    // (not jitpack) so reproducible builds don't depend on a third-party
+    // bridge service.
+    implementation("com.klinkerapps:android-smsmms:5.2.6")
+
+    // MMS SEND — AndroidX FileProvider is the supported way to expose the
+    // serialized PDU cache file as a content:// URI that we can grant
+    // read-permission to com.android.mms.service. Already transitively
+    // available via androidx.core but declaring explicitly so dependency
+    // resolution doesn't break on a future androidx.core bump.
+    implementation("androidx.core:core:1.12.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

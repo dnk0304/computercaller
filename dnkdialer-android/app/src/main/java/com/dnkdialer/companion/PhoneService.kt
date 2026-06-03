@@ -1117,16 +1117,22 @@ class PhoneService : Service() {
         // Use RECEIVER_NOT_EXPORTED on API 33+ — these intents are internal-only and
         // exporting them would let any app spoof send/delivery status.
         smsStatusReceiver = SmsStatusReceiver()
+        // MMS SEND (2026-06-03): register the new MMS_SENT action on the
+        // same receiver. PendingIntents on sendMultimediaMessage land here
+        // and the receiver routes the result through the existing
+        // onSmsSent callback → unified SMS_SEND_STATUS frame on the web.
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(smsStatusReceiver, android.content.IntentFilter().apply {
                 addAction("SMS_SENT")
                 addAction("SMS_DELIVERED")
+                addAction("MMS_SENT")
             }, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             registerReceiver(smsStatusReceiver, android.content.IntentFilter().apply {
                 addAction("SMS_SENT")
                 addAction("SMS_DELIVERED")
+                addAction("MMS_SENT")
             })
         }
 
@@ -2753,6 +2759,90 @@ class PhoneService : Service() {
                     val body = payload?.get("body") as? String ?: return
                     val clientMsgId = payload?.get("clientMsgId") as? String ?: ""
                     smsHandler.sendSms(to, body, clientMsgId)
+                }
+                "SEND_MMS" -> {
+                    // MMS SEND (2026-06-03). Web hands us:
+                    //   to            recipient MSISDN
+                    //   body          optional caption text (may be missing / blank)
+                    //   mediaBase64   base64 (no data: URI prefix, NO_WRAP) of the
+                    //                 already-downscaled image
+                    //   mimeType      media MIME (web picks based on the canvas
+                    //                 export format; we default to image/jpeg if absent)
+                    //   clientMsgId   correlation id; surfaces in SMS_SEND_STATUS
+                    //   simId         optional dual-SIM routing (matches SEND_SMS shape)
+                    //
+                    // Permission gate: SEND_SMS covers the multimedia send path
+                    // too on Android — same manifest entry that already lets us
+                    // ship plain SMS without being the default SMS app.
+                    if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                        android.util.Log.w("PhoneService", "SEND_MMS: SEND_SMS permission missing")
+                        val clientMsgId = payload?.get("clientMsgId") as? String ?: ""
+                        sendResponse(
+                            "SMS_SEND_STATUS",
+                            mapOf(
+                                "clientMsgId" to clientMsgId,
+                                "status" to "failed",
+                                "error" to "SEND_SMS permission denied"
+                            ),
+                            viaClient
+                        )
+                        return
+                    }
+
+                    val to = payload?.get("to") as? String
+                    val mediaBase64 = payload?.get("mediaBase64") as? String
+                    val clientMsgId = payload?.get("clientMsgId") as? String ?: ""
+                    if (to.isNullOrBlank() || mediaBase64.isNullOrBlank()) {
+                        android.util.Log.w("PhoneService", "SEND_MMS: missing to/mediaBase64")
+                        sendResponse(
+                            "SMS_SEND_STATUS",
+                            mapOf(
+                                "clientMsgId" to clientMsgId,
+                                "status" to "failed",
+                                "error" to "Missing recipient or media"
+                            ),
+                            viaClient
+                        )
+                        return
+                    }
+                    val body = payload["body"] as? String
+                    val mimeType = (payload["mimeType"] as? String)?.takeIf { it.isNotBlank() }
+                        ?: "image/jpeg"
+                    // Gson serialises JSON numbers as Double in Map<String,Any>;
+                    // cast through it before toInt. Negative / absent → null
+                    // → MmsHandler uses the platform default subscription.
+                    val simId = (payload["simId"] as? Double)?.toInt()?.takeIf { it >= 0 }
+
+                    val mediaBytes = try {
+                        android.util.Base64.decode(mediaBase64, android.util.Base64.DEFAULT)
+                    } catch (e: IllegalArgumentException) {
+                        android.util.Log.w("PhoneService", "SEND_MMS: base64 decode failed: ${e.message}")
+                        sendResponse(
+                            "SMS_SEND_STATUS",
+                            mapOf(
+                                "clientMsgId" to clientMsgId,
+                                "status" to "failed",
+                                "error" to "Invalid base64 media"
+                            ),
+                            viaClient
+                        )
+                        return
+                    }
+
+                    android.util.Log.d(
+                        "PhoneService",
+                        "SEND_MMS: to=$to bodyLen=${body?.length ?: 0} media=${mediaBytes.size}B mime=$mimeType clientMsgId=$clientMsgId simId=${simId ?: "default"}"
+                    )
+
+                    val mmsHandler = MmsHandler(this)
+                    mmsHandler.sendMms(
+                        to = to,
+                        body = body,
+                        mediaBytes = mediaBytes,
+                        mimeType = mimeType,
+                        clientMsgId = clientMsgId,
+                        subId = simId
+                    )
                 }
                 "GET_CONTACTS" -> {
                     android.util.Log.d("PhoneService", "Getting contacts...")

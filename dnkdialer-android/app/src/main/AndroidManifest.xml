@@ -135,6 +135,29 @@
             android:name=".SmsStatusReceiver"
             android:exported="false" />
 
+        <!--
+          MMS SEND (2026-06-03) — FileProvider for the M-Send.req PDU cache
+          file.
+
+          SmsManager.sendMultimediaMessage(contentUri, ...) requires a
+          content:// URI it can hand to com.android.mms.service. The
+          provider exposes ONLY the cache subdirectory `mms-out/` (declared
+          in res/xml/mms_file_paths.xml) and grantUriPermissions=true lets
+          MmsHandler.sendMms() temporarily grant read access to the MMS
+          service for the lifetime of the send. Not exported and no
+          intent-filter — only callers with the explicit content:// URI
+          we mint can access the file, and only after our flag-grant.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.mmsfileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/mms_file_paths" />
+        </provider>
+
         <service
             android:name=".PhoneService"
             android:enabled="true"

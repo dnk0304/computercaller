@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MMS SEND (2026-06-03) — FileProvider path config.
+
+  Exposes ONLY a single subdirectory of internal cache:
+    <internal-cache-root>/mms-out/
+
+  MmsHandler.sendMms() writes the serialized M-Send.req PDU here and
+  hands the resulting content:// URI to SmsManager.sendMultimediaMessage().
+  The MMS system service reads the file under our temporary read-grant,
+  ships the PDU to the carrier, and our sentIntent callback deletes the
+  file on completion.
+
+  We do NOT expose external storage paths, image originals, or anything
+  else — narrowest scope possible. The PDU itself already contains a
+  base64 copy of the user's image; that's the only data leaving the
+  device through this provider.
+-->
+<paths>
+    <cache-path
+        name="mms_out"
+        path="mms-out/" />
+</paths>

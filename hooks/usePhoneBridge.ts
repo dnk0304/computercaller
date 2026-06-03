@@ -239,6 +239,72 @@ function mergeCallLogs(
   return out.sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
 }
 
+/**
+ * MMS SEND (2026-06-03) — client-side downscale helper.
+ *
+ * Reads `file` into a canvas, scales so the longest side is at most
+ * `maxDimension` px, encodes JPEG at `initialQuality`, then iteratively
+ * drops quality by 0.05 until under `targetMaxBytes`. Returns the raw
+ * base64 string (no `data:` prefix), the encoded mime type, and the
+ * data URL form (used as the optimistic preview in the sent bubble).
+ *
+ * Pure browser API (canvas + FileReader + Image) — no third-party deps.
+ * Errors propagate via Promise rejection; sendMms() catches and surfaces
+ * them as a failed bubble.
+ */
+async function downscaleImageToBase64(
+  file: File,
+  opts: { maxDimension: number; targetMaxBytes: number; initialQuality: number }
+): Promise<{ base64: string; mimeType: string; previewDataUrl: string }> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('FileReader failed'));
+    reader.onload = () => resolve(reader.result as string);
+    reader.readAsDataURL(file);
+  });
+
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image();
+    i.onerror = () => reject(new Error('Image decode failed'));
+    i.onload = () => resolve(i);
+    i.src = dataUrl;
+  });
+
+  // Compute scaled dimensions. Never upscale.
+  const scale = Math.min(
+    opts.maxDimension / img.width,
+    opts.maxDimension / img.height,
+    1
+  );
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('2D canvas context unavailable');
+  ctx.drawImage(img, 0, 0, w, h);
+
+  // Iterate quality DOWN until under the byte ceiling. Floor at 0.30 —
+  // anything below that is visibly bad and we'd rather fail loudly.
+  const mimeType = 'image/jpeg';
+  let quality = opts.initialQuality;
+  let outDataUrl = canvas.toDataURL(mimeType, quality);
+  // base64 size ≈ (rawBytes * 4 / 3). Reverse to estimate raw size.
+  const rawSizeOf = (du: string): number => {
+    const b64 = du.replace(/^data:[^;]+;base64,/, '');
+    return Math.floor((b64.length * 3) / 4);
+  };
+  while (rawSizeOf(outDataUrl) > opts.targetMaxBytes && quality > 0.30) {
+    quality = Math.max(0.30, quality - 0.05);
+    outDataUrl = canvas.toDataURL(mimeType, quality);
+  }
+
+  const base64 = outDataUrl.replace(/^data:[^;]+;base64,/, '');
+  return { base64, mimeType, previewDataUrl: outDataUrl };
+}
+
 export function usePhoneBridge() {
   // Dispatch #30 (2026-05-25): we depend on pathname so the token-fetch effect
   // re-fires when the user navigates (e.g. /signin → /). The hook mounts at
@@ -1997,6 +2063,108 @@ export function usePhoneBridge() {
     setMessages(prev => [newMsg, ...prev]);
   }, [sendCommand, selectedSimId]);
 
+  /**
+   * MMS SEND (2026-06-03) — send an image (+optional caption) through the
+   * user's own Android phone.
+   *
+   * The phone ships the MMS via SmsManager.sendMultimediaMessage — same
+   * surface that already lets us send plain SMS without being the default
+   * SMS app. Lifecycle mirrors sendSms: an optimistic bubble lands first
+   * (status: 'pending'), then SMS_SEND_STATUS frames advance status to
+   * 'sent' or 'failed'. No 'delivered' for MMS — most carriers don't ship
+   * MMS delivery reports, and even when they do they arrive minutes later
+   * via a separate notification path the platform doesn't expose to us.
+   *
+   * Downscale strategy:
+   *   - longest side capped at 1280px (most MMS carriers cap inbound at
+   *     ~1.2MB raw before they reject / re-encode hard)
+   *   - JPEG quality 0.75, iterated DOWN by 0.05 until under target if the
+   *     first pass is too large
+   *   - target ceiling: 600KB raw → ~800KB after base64
+   *   - GIFs / animated content: we collapse to a still frame (first
+   *     decoded frame) — animated GIF MMS works on some carriers but the
+   *     phone-side PDU composer doesn't preserve the GIF container when
+   *     re-encoding through canvas. Static is the safe minimum here.
+   *
+   * Compose UI (paperclip, preview, send-enable) is Pixel's scope — this
+   * action is the exposed contract. Call site (Pixel C):
+   *
+   *   await sendMms(threadAddress, captionOrEmpty, fileFromInput)
+   *
+   * @returns the clientMsgId (correlates with the optimistic bubble) on
+   *          success, or null when the file couldn't be read/encoded.
+   */
+  const sendMms = useCallback(async (
+    to: string,
+    body: string,
+    file: File
+  ): Promise<string | null> => {
+    if (!to || !file) {
+      console.warn('[PhoneBridge] sendMms: missing to/file');
+      return null;
+    }
+
+    const clientMsgId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+    let downscaled: { base64: string; mimeType: string; previewDataUrl: string };
+    try {
+      downscaled = await downscaleImageToBase64(file, {
+        maxDimension: 1280,
+        targetMaxBytes: 600 * 1024,
+        initialQuality: 0.75,
+      });
+    } catch (err) {
+      console.error('[PhoneBridge] sendMms: downscale failed:', err);
+      // Optimistically insert a failed bubble so the user sees what
+      // happened — same pattern sendSms uses on send failure.
+      const failed: SmsMessage = {
+        id: clientMsgId,
+        address: to,
+        body: body || '📷 [Image]',
+        date: Date.now(),
+        type: 'sent',
+        status: 'failed',
+        simId: selectedSimId ?? undefined,
+      };
+      setMessages(prev => [failed, ...prev]);
+      return null;
+    }
+
+    // Ship the frame. payload kept symmetric with SEND_SMS where possible.
+    sendCommand('SEND_MMS', {
+      to,
+      body: body || '',
+      mediaBase64: downscaled.base64,
+      mimeType: downscaled.mimeType,
+      clientMsgId,
+      simId: selectedSimId,
+    });
+
+    // Optimistic bubble. The body is the caption + a 📷 prefix so the row
+    // matches the visual convention used everywhere else for image MMS
+    // (see SmsHandler.getMessagesWithMms in the Android code:
+    // image MMS bodies are prefixed with 📷). We also store a local
+    // preview data URL on the message so the thread view can show the
+    // image immediately — the recipient's phone (and the phone's own
+    // SMS provider after the carrier ACK) holds the canonical copy.
+    const newMsg: SmsMessage & { thumbnail?: string } = {
+      id: clientMsgId,
+      address: to,
+      body: body.trim().length > 0 ? `📷 ${body.trim()}` : '📷 [Image]',
+      date: Date.now(),
+      type: 'sent',
+      status: 'pending',
+      simId: selectedSimId ?? undefined,
+      // Strip the leading "data:image/...;base64," prefix so the thumbnail
+      // field matches the same raw-base64 shape Android emits via
+      // MmsHandler.getThumbnail() — the ThreadView renders both the same.
+      thumbnail: downscaled.previewDataUrl.replace(/^data:[^;]+;base64,/, ''),
+    };
+    setMessages(prev => [newMsg, ...prev]);
+
+    return clientMsgId;
+  }, [sendCommand, selectedSimId]);
+
   const getContacts = useCallback(() => {
     // Silent incremental sync — no progress bar. Clears buffer for clean reassembly.
     contactsBufferRef.current = [];
@@ -2753,6 +2921,14 @@ export function usePhoneBridge() {
     answerCall,
     endCall,
     sendSms,
+    // MMS SEND (2026-06-03) — async (to, body, file) → clientMsgId | null.
+    // Web downscales the image client-side (canvas, max 1280px / target
+    // ~600KB / JPEG q ≥ 0.30 floor), base64s it, and emits SEND_MMS over
+    // WS. Lifecycle mirrors sendSms: optimistic 'pending' bubble lands
+    // immediately, status advances via SMS_SEND_STATUS handler.
+    // Compose UI (paperclip + preview) is Pixel's scope — this is the
+    // contract.
+    sendMms,
     getContacts,
     getMessages,
     getCallLogs,
