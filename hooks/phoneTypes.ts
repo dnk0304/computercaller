@@ -1,6 +1,12 @@
 // Message types from phone
 export type PhoneEventType =
   | 'CALL_INCOMING'
+  // Item A (2026-06-03) — second incoming call arriving WHILE a call is
+  // already active. Carries {number, name}. Browser routes this into
+  // `waitingCall` instead of overwriting `currentCall`. Legacy APKs (v29/v30)
+  // do NOT emit this — browser also handles a bare CALL_INCOMING arriving
+  // while currentCall is active as a "treat as waiting" fallback.
+  | 'CALL_WAITING'
   | 'CALL_ANSWERED'
   | 'CALL_ENDED'
   | 'SMS_RECEIVED'
@@ -174,6 +180,12 @@ export interface PhoneState {
   isBridgeConnected: boolean;
   phoneName: string | null;
   currentCall: CallInfo | null;
+  // Item A (2026-06-03). Second call arriving while `currentCall` is active.
+  // null when no waiting call exists. Pixel's incoming-call quick-reply UI
+  // reads this to render the "waiting call" mini-banner over the active call.
+  // When the active call ends, the waiting call is promoted into `currentCall`
+  // (via the CALL_ENDED:{number} routing) and this clears.
+  waitingCall: CallInfo | null;
   contacts: Contact[];
   messages: SmsMessage[];
   callLogs: CallLogEntry[];

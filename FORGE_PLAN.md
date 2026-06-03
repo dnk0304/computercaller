@@ -1,112 +1,79 @@
-# FORGE_PLAN.md — ComputerCaller server-side security/stability fixes
+# FORGE_PLAN.md — ComputerCaller call-waiting fix (Item A) + reply-and-hangup (Item B)
 
-Branch: `feature/saas-multiuser` @ d66aa98 | Date: 2026-05-29 | Author: Forge
+Branch: `feature/saas-multiuser` @ `0005ce3` | Date: 2026-06-03 | Author: Forge
 
 ## Goal
-Implement Ken's DISPATCH-BRIEF-FORGE.md tasks F-A..F-D plus mechanical cleanups
-F-1, F-2, F-3, F-5. Web-only single-session kick (SESSION_SUPERSEDED + close 4001),
-graceful drain on SIGTERM (SERVER_RESTART + close 1012), relaxed keepalive
-(1→2 missed pongs), defensive try/catch per WS handler branch. NO DEPLOY.
+Two interlocking phone-bridge fixes:
+- **Item A** — second incoming call while in an active call must be visible in the
+  webapp without clobbering the active call's state. Per-call identity end-to-end
+  via a new `CALL_WAITING` frame and a `number` payload on `CALL_ENDED`.
+- **Item B** — atomic browser bridge method `declineWithMessage(number, body)` —
+  send SMS first, then `END_CALL`. v1 scope: ringing-only (not waiting calls).
 
 ## Architecture Overview
-Server-side only. Touches:
-- `server.js` — relay WS server (custom Next.js server, same process as Next routes)
-- `lib/auth.ts` — JWT helpers
-- `app/api/auth/login/route.ts` + `app/api/auth/google/callback/route.ts` —
-  call into relay after sessionVersion bump to kick stale web socket
-- `app/api/auth/relay-ticket/route.ts` — 409 on stale-version (lazy path)
-- `app/api/local-ip/route.ts` — gate behind non-production
-- `package.json` + `relay-server.js` — delete dead code
-
-Cross-process IPC: server.js exposes a kick function via `globalThis.__supersedeWebSessions`
-(safe because Next route handlers run in the same Node process as the custom server).
+- Browser: `hooks/usePhoneBridge.ts` (state + handlers), `hooks/phoneTypes.ts`
+  (CallInfo shape + new event types).
+- Android: `dnkdialer-android/.../PhoneService.kt` (call-state observers + relay
+  emission). No `CallHandler.kt` change needed — `telecomManager.endCall()` already
+  rejects a ringing call.
+- Relay: zero changes. `server.js` is a blind pipe; it already forwards unknown
+  frame types within an active pair.
 
 ## Tech Stack Decision
-No new deps. Stay with existing `ws`, `jsonwebtoken`, Prisma. Same wire format
-(`TYPE:jsonPayload`).
+**Lighter listener+call-list approach over full InCallService adoption.** Reasoning:
+- Adopting InCallService requires the app to become the default dialer (or default
+  companion InCallService) — UX cost (system prompt), Play Store review surface,
+  and a non-trivial migration of the existing telephony observers.
+- The lighter path keeps both existing observers (legacy `PhoneStateListener` +
+  modern `TelephonyCallback`) and adds a **new `callWaitingSentRef` guard** plus a
+  RINGING-while-already-active branch that emits a distinct `CALL_WAITING` frame.
+- Per-call targeting for rejecting a specific waiting call (which only
+  InCallService can do cleanly via `Call.reject()`) is explicitly **deferred** to a
+  follow-up. v1 reply-and-hangup is ringing-only.
 
 ## Task Breakdown
 
-### TASK-001: Mechanical cleanups (F-1, F-3, F-5)
-- Delete `relay-server.js`; remove `"relay"` script from `package.json`;
-  gate `/api/local-ip` to non-production (404 otherwise); HELLO frame uses
-  literal `'computercaller'`.
+### TASK-A1 (Android): emit CALL_WAITING + per-call CALL_ENDED
+- File: `dnkdialer-android/.../PhoneService.kt`
+- Add `callWaitingSentRef: AtomicBoolean`.
+- In both observers, RINGING while `callAnsweredSentRef == true` -> emit
+  `CALL_WAITING:{number,name}`.
+- `CALL_ENDED` carries `{number}` (the active number known to the service).
+- Reset `callWaitingSentRef` on IDLE.
+- Backward compat: legacy `CALL_ENDED:{}` still accepted by the browser.
 
-### TASK-002: F-2 — verifyAccessToken purpose param (backward-compat)
-- Add optional `purpose?: 'access'` to verifyAccessToken; add `purpose: 'access'`
-  to signAccessToken; absent claim treated as 'access' (compat).
+### TASK-A2 (Browser): track waitingCall + non-clobbering CALL_INCOMING
+- Files: `hooks/usePhoneBridge.ts`, `hooks/phoneTypes.ts`
+- Add `'CALL_WAITING'` to `PhoneEventType`.
+- Add `waitingCall: CallInfo | null` state slice.
+- `CALL_INCOMING`: route into `waitingCall` if `currentCall` already active.
+- `CALL_WAITING`: writes to `waitingCall` only.
+- `CALL_ENDED`: if payload `number` matches active -> clear and promote waiting;
+  if matches waiting -> clear waiting. No `number` -> legacy behavior (clear active).
+- Expose `waitingCall` via the hook return so Pixel reads it through `usePhone()`.
 
-### TASK-003: F-C — keepalive 1→2 missed pongs + reset on inbound message
-- Counter not boolean; reset on pong AND inbound message; terminate at ≥2.
+### TASK-B1 (Browser): declineWithMessage(number, body)
+- File: `hooks/usePhoneBridge.ts`
+- `sendSms(number, body)` then `endCall()`. Order matters.
+- v1 ringing-only — JSDoc warns that `endCall()` can't target a waiting call.
 
-### TASK-004: F-D — defensive try/catch per WS handler branch
-- Wrap each control-frame branch body in try/catch.
-
-### TASK-005: F-A part 1 — web-socket index + supersede mechanism
-- `userIdToWebSockets: Map<userId, Set<WS>>` populated ONLY when
-  `authVia === 'relay-ticket'`. Phone sockets excluded.
-- `globalThis.__supersedeWebSessions = (userId) => …` sends frame, then
-  closes with code 4001 reason 'session_superseded'.
-
-### TASK-006: F-A part 2 — login + google/callback call supersede after bump
-- After `db.user.update({sessionVersion: increment:1})`, call
-  `(globalThis as any).__supersedeWebSessions?.(user.id)` in try/catch.
-
-### TASK-007: F-A part 3 — 409 on stale relay-ticket
-- Split signature-verify vs version-check; 401 vs 409.
-
-### TASK-008: F-B — SIGTERM graceful drain
-- Broadcast `SERVER_RESTART:{}` + close 1012 to all sockets, flush ~400ms,
-  exit 0. Idempotent.
-
-### TASK-009: Verify tsc + build
-- `npx tsc --noEmit` clean; spot-check `next build` if quick.
+### TASK-B2 (Android confirmation): END_CALL rejects ringing
+- No Android change. `telecomManager.endCall()` rejects the ringing call per
+  Android docs. Documented in the Niki return note.
 
 ## Execution Order
-T-001 → T-002 → T-003 → T-004 → T-005 → T-006 → T-007 → T-008 → T-009. Serial.
+A1 -> A2 -> B1. Sequential.
 
 ## Risk Flags
-- `verify-email/route.ts` uses verifyAccessToken on a verify-email token.
-  Mitigation: purpose param is OPT-IN; existing call sites unchanged.
-- Login route → globalThis works because custom server + route handlers share
-  one Node process (standalone build preserved).
-- SIGTERM handler must not double-bind on hot reload in dev. Guard before adding.
+- OEM variance on Samsung One UI: aggregate `onCallStateChanged` may not re-fire
+  RINGING for a second call. If neither observer sees the RINGING transition while
+  OFFHOOK, `CALL_WAITING` won't emit — InCallService is the only fully reliable
+  path. Flagged to Ken.
+- v29/v30 APKs in the field never send `CALL_WAITING` and send `CALL_ENDED:{}`.
+  Browser remains compatible.
 
 ## Status
-- [x] T-001 mechanical cleanups
-- [x] T-002 verifyAccessToken purpose
-- [x] T-003 keepalive 1→2
-- [x] T-004 defensive try/catch
-- [x] T-005 supersede mechanism
-- [x] T-006 wire login + google
-- [x] T-007 relay-ticket 409
-- [x] T-008 SIGTERM drain
-- [x] T-009 tsc + build — both clean (tsc no output, next build success)
-
-## Acceptance Results
-- npx tsc --noEmit: clean (no output)
-- npm run build: success — "Compiled successfully in 5.9s"; all 32 routes generated
-- node --check server.js: OK
-- Smoke (a) startRelay() boots; mounts /relay; no-auth WS rejected with code 4401: PASS
-- Smoke (b) globalThis.__supersedeWebSessions registered as function: PASS
-- Smoke (c) supersede('unknown-user') returns 0 without crash: PASS
-- Smoke (d) SIGTERM handler fires, logs drain, broadcasts SERVER_RESTART, exits 0: PASS
-  (verified by invoking listener directly — Windows kill(SIGTERM) bypasses listener)
-- Smoke (e) SIGTERM listener registered exactly once (no double-bind): PASS (count=1)
-- Smoke (f) verifyAccessToken purpose semantics: PASS (T1–T5 all green)
-  - T1 sign+verify(access): OK
-  - T2 sign+verify(no-arg): OK (backward-compat)
-  - T3 legacy-token (no purpose claim) + verify(access): OK (absent treated as access)
-  - T4 verify-email token + verify(no-arg): OK (existing call site preserved)
-  - T5 verify-email token + verify(access): correctly rejected
-
-## Deviations from WIRE-CONTRACT
-None.
-
-## Manual checks NOT executed (require running Next + DB + 2 browsers)
-- (a) two web logins → first tab receives SESSION_SUPERSEDED frame then close 4001
-- (b) kicked tab's relay-ticket POST returns 409
-- (e) phone socket stays connected through web supersede + keepalive change
-These are end-to-end browser flows; the unit-level smokes above prove the
-mechanism. Ken / Dennis: run in dev with two browser windows to verify the
-client-side handlers (which Pixel is building in parallel).
+- [x] TASK-A1
+- [x] TASK-A2
+- [x] TASK-B1
+- [x] TASK-B2 (no change, documented)

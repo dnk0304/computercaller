@@ -323,6 +323,13 @@ export function usePhoneBridge() {
   const [isBridgeConnected, setIsBridgeConnected] = useState(false);
   const [phoneName, setPhoneName] = useState<string | null>(null);
   const [currentCall, setCurrentCall] = useState<CallInfo | null>(null);
+  // Item A (2026-06-03). Second call arriving while `currentCall` is in a
+  // non-idle state. Kept as a SEPARATE state slice so a CALL_WAITING (or a
+  // collision-CALL_INCOMING from a legacy APK) cannot clobber the active call.
+  // Cleared when: (a) CALL_ENDED carries the waiting number, (b) CALL_ENDED
+  // ends the active call and the waiting call is promoted into currentCall,
+  // (c) pairing is torn down, (d) explicit disconnect / unload.
+  const [waitingCall, setWaitingCall] = useState<CallInfo | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [messages, setMessages] = useState<SmsMessage[]>([]);
   const [callLogs, setCallLogs] = useState<CallLogEntry[]>([]);
@@ -618,6 +625,15 @@ export function usePhoneBridge() {
   // update — which would tear down and reattach ws.onmessage on every sync
   // chunk. Synced from the canonical state via a useEffect further down.
   const contactsRef = useRef<Contact[]>([]);
+
+  // Item A (2026-06-03). Mirror currentCall / waitingCall into refs so
+  // CALL_INCOMING (waiting-fallback branch) and CALL_ENDED (per-number routing)
+  // can read the latest call-state slices without putting them in the
+  // handleMessage dep list. Same rationale as contactsRef above — keeping
+  // handleMessage stable is load-bearing for not retearing-down the relay WS
+  // on every state update (see dispatch #31 comment further up).
+  const currentCallRef = useRef<CallInfo | null>(null);
+  const waitingCallRef = useRef<CallInfo | null>(null);
 
   // MMS_MEDIA_CHUNK reassembly. Android slices each `GET_MMS_FULL` response
   // into 64 KB base64 chunks; we collect them keyed by messageId, then resolve
@@ -948,6 +964,7 @@ export function usePhoneBridge() {
         estimateRequestedRef.current = false;
         quickSyncScheduledRef.current = false;
         setCurrentCall(null);
+        setWaitingCall(null);
         setContacts([]);
         setMessages([]);
         setCallLogs([]);
@@ -982,6 +999,7 @@ export function usePhoneBridge() {
             console.warn('[PhoneBridge] Call heartbeat timeout — clearing stale call state');
             stopCallTimer();
             setCurrentCall(null);
+            setWaitingCall(null);
           }, 12000);
         }
         break;
@@ -1000,9 +1018,6 @@ export function usePhoneBridge() {
 
       case 'CALL_INCOMING': {
         console.log('[PhoneBridge] Incoming call from:', payload.number);
-        lastCallWasAnsweredRef.current = false;
-        callStartTimeRef.current = Date.now();
-        stopCallTimer();
         // Name resolution: lookup-first. The webapp's contacts list is the
         // source of truth — the user manages those names directly. The phone's
         // CACHED_NAME (which populates payload.name) is often stale, formatted
@@ -1036,12 +1051,50 @@ export function usePhoneBridge() {
           contactMatchedName: contactMatch?.name ?? null,
           resolvedName,
         });
-        setCurrentCall({
+        // ITEM A (2026-06-03) — defensive call-waiting fallback. If a call is
+        // already active OR dialing, route this CALL_INCOMING into the waiting
+        // slot rather than clobber the active call. New APKs send a distinct
+        // CALL_WAITING frame for this case; legacy v29/v30 APKs do not, so
+        // routing CALL_INCOMING into waitingCall when currentCall is non-idle
+        // is the backward-compat path.
+        const newCall: CallInfo = {
           number: incomingNumber,
           name: resolvedName,
           isIncoming: true,
           startTime: Date.now(),
           // duration omitted — computed locally in display components
+          state: 'ringing'
+        };
+        const activeNow = currentCallRef.current;
+        if (activeNow && (activeNow.state === 'active' || activeNow.state === 'dialing')) {
+          console.log('[PhoneBridge] CALL_INCOMING while active — routing to waitingCall');
+          setWaitingCall(newCall);
+          break;
+        }
+        lastCallWasAnsweredRef.current = false;
+        callStartTimeRef.current = Date.now();
+        stopCallTimer();
+        setCurrentCall(newCall);
+        break;
+      }
+
+      case 'CALL_WAITING': {
+        // Item A (2026-06-03). Distinct frame from CALL_INCOMING: emitted by
+        // PhoneService v32+ when a NEW ringing call arrives while a call is
+        // already active. Always writes to `waitingCall` — never touches the
+        // active call's timer or state.
+        console.log('[PhoneBridge] Call-waiting from:', payload.number);
+        const waitingNumber: string = payload.number ?? '';
+        const rawName = typeof payload.name === 'string' ? payload.name.trim() : '';
+        const looksLikeNumber = rawName !== '' && /^[+\d\s\-()]+$/.test(rawName);
+        const contactMatch = findContactByNumber(waitingNumber, contactsRef.current);
+        const resolvedName =
+          contactMatch?.name ?? (rawName && !looksLikeNumber ? rawName : undefined);
+        setWaitingCall({
+          number: waitingNumber,
+          name: resolvedName,
+          isIncoming: true,
+          startTime: Date.now(),
           state: 'ringing'
         });
         break;
@@ -1057,19 +1110,57 @@ export function usePhoneBridge() {
         startCallTimer();
         break;
 
-      case 'CALL_ENDED':
-        console.log('[PhoneBridge] Call ended');
-        stopCallTimer();
+      case 'CALL_ENDED': {
+        // ITEM A (2026-06-03). Per-call identity routing.
+        //
+        // New APKs (v32+) send `{number}` on CALL_ENDED so we can match the
+        // ended call to the active vs waiting state slice. Legacy v29/v30 APKs
+        // send `{}` — in that case we fall back to the original behavior of
+        // clearing the active call, which is correct for the single-call case
+        // those APKs are limited to.
+        //
+        // Normalization: compare by digits-only (last 8 chars), tolerant of
+        // formatting differences between what the phone reports here and what
+        // the browser stored on the original CALL_INCOMING / CALL_WAITING.
+        const endedNumber: string | undefined =
+          typeof payload.number === 'string' && payload.number.length > 0
+            ? payload.number
+            : undefined;
+        console.log('[PhoneBridge] Call ended', endedNumber ? `(number=${endedNumber})` : '(no number — legacy frame)');
+        const norm = (s: string | undefined) =>
+          (s ?? '').replace(/\D/g, '').slice(-8);
+        const endedNorm = norm(endedNumber);
+
         // Cancel the heartbeat watchdog — the call is over by an explicit
         // signal, no need for the timeout fallback.
         if (callStatusTimeoutRef.current) {
           clearTimeout(callStatusTimeoutRef.current);
           callStatusTimeoutRef.current = null;
         }
+
+        // Three cases:
+        //   1. endedNumber matches the waiting call -> clear waiting only.
+        //   2. endedNumber matches the active call (or is absent / legacy) ->
+        //      stop timer, clear active, promote waiting -> active if any.
+        //   3. endedNumber doesn't match either -> safest is the legacy
+        //      "clear active" fall-back (don't strand state).
+        const activeNow = currentCallRef.current;
+        const waitingNow = waitingCallRef.current;
+        if (endedNumber && waitingNow && norm(waitingNow.number) === endedNorm
+            && (!activeNow || norm(activeNow.number) !== endedNorm)) {
+          // Case 1: waiting call ended (e.g. caller hung up, or user rejected
+          // it via declineWithMessage on a future InCallService build).
+          console.log('[PhoneBridge] CALL_ENDED matched waitingCall — clearing waitingCall only');
+          if (waitingNow.isIncoming) {
+            setTimeout(() => setMissedCallCount(c => c + 1), 0);
+          }
+          setWaitingCall(null);
+          break;
+        }
+
+        // Case 2 / 3: active call ended (or unknown -> treat as active).
+        stopCallTimer();
         setCurrentCall(prev => {
-          // If the call that just ended was incoming and was never answered,
-          // count it as a missed call. Schedule the bump outside the setState
-          // callback to avoid nesting state updates.
           if (prev?.isIncoming && !lastCallWasAnsweredRef.current) {
             setTimeout(() => setMissedCallCount(c => c + 1), 0);
           }
@@ -1077,7 +1168,18 @@ export function usePhoneBridge() {
           return null;
         });
         callStartTimeRef.current = null;
+        // Promote the waiting call into the active slot if one was queued.
+        // The phone's OFFHOOK transition for the promoted call will fire its
+        // own CALL_ANSWERED (when the user answers it) and the timer restarts.
+        setWaitingCall(prev => {
+          if (prev) {
+            console.log('[PhoneBridge] Promoting waitingCall -> currentCall');
+            setCurrentCall(prev);
+          }
+          return null;
+        });
         break;
+      }
 
       case 'SMS_RECEIVED': {
         // Two senders for this event:
@@ -1904,6 +2006,7 @@ export function usePhoneBridge() {
     estimateRequestedRef.current = false;
     quickSyncScheduledRef.current = false;
     setCurrentCall(null);
+    setWaitingCall(null);
     setContacts([]);
     setMessages([]);
     setCallLogs([]);
@@ -2078,6 +2181,42 @@ export function usePhoneBridge() {
     };
     setMessages(prev => [newMsg, ...prev]);
   }, [sendCommand, selectedSimId]);
+
+  /**
+   * Item B (2026-06-03). Atomic "decline with message" — sends an SMS to the
+   * caller, THEN rejects the call. Order is load-bearing: dispatch the text
+   * before rejecting so a failed reject (race with the line going OFFHOOK by
+   * itself, etc.) does not lose the message.
+   *
+   * v1 SCOPE — RINGING-ONLY: the underlying END_CALL command maps to
+   * `telecomManager.endCall()`, which rejects the currently-ringing call when
+   * one exists. It does NOT support targeting a specific waiting call: with a
+   * call already active AND a second call ringing, `endCall()` will end the
+   * WRONG (active/foreground) call. Pixel's UI MUST gate this method to:
+   *
+   *   currentCall?.state === 'ringing' && waitingCall == null
+   *
+   * Per-call targeting for a waiting call (rejecting just call #2 while call
+   * #1 stays connected) requires InCallService adoption + `Call.reject()` —
+   * flagged as a follow-up. For now the UI hides the quick-reply panel on the
+   * waiting call.
+   *
+   * SMS feedback: the existing SMS_SEND_STATUS pipeline advances the optimistic
+   * outbound message to sent / delivered / failed (see SMS_SEND_STATUS handler
+   * above). Pixel can subscribe to the `messages` slice and show a "Message
+   * sent" confirmation toast off that.
+   */
+  const declineWithMessage = useCallback((to: string, body: string): void => {
+    // 1. Dispatch the SMS first. Reuses the existing sendSms code path which
+    //    generates a clientMsgId, optimistically adds the message to local
+    //    state, and routes the SEND_SMS frame through the bridge.
+    sendSms(to, body);
+    // 2. Reject the call. `endCall()` sends END_CALL:{} which Android maps to
+    //    `telecomManager.endCall()`. When the device is in RINGING state, that
+    //    call rejects the ringing call. Confirmed on SM-S911B (Android docs +
+    //    code path PhoneService.kt:2699 -> CallHandler.kt:74 -> telecomManager.endCall()).
+    endCall();
+  }, [sendSms, endCall]);
 
   const getContacts = useCallback(() => {
     // Silent incremental sync — no progress bar. Clears buffer for clean reassembly.
@@ -2531,6 +2670,11 @@ export function usePhoneBridge() {
     contactsRef.current = contacts;
   }, [contacts]);
 
+  // Item A (2026-06-03). Mirror call-state slices into refs — see the
+  // currentCallRef / waitingCallRef declarations further up for rationale.
+  useEffect(() => { currentCallRef.current = currentCall; }, [currentCall]);
+  useEffect(() => { waitingCallRef.current = waitingCall; }, [waitingCall]);
+
   // Dispatch #28 (2026-05-24): fetch the user's phoneToken from /api/auth/me
   // so the relay URL can be built with ?token=<phoneToken>. The relay closes
   // any upgrade that arrives without a valid token (auth gate), so we MUST
@@ -2618,6 +2762,7 @@ export function usePhoneBridge() {
       setIsConnected(false);
       setIsBridgeConnected(false);
       setCurrentCall(null);
+      setWaitingCall(null);
       setLobbyState('lobby');
       setLastBrowserRequest(null);
     };
@@ -2769,6 +2914,10 @@ export function usePhoneBridge() {
     isBridgeConnected,
     phoneName,
     currentCall,
+    // Item A (2026-06-03). Second incoming call arriving while `currentCall`
+    // is active. Pixel's incoming-call-quickreply UI reads this off the same
+    // usePhone() context. null when no second call exists.
+    waitingCall,
     contacts,
     messages,
     callLogs,
@@ -2835,6 +2984,10 @@ export function usePhoneBridge() {
     answerCall,
     endCall,
     sendSms,
+    // Item B (2026-06-03). Atomic "decline with message" — send SMS, then
+    // reject the ringing call. v1 ringing-only: caller MUST gate to
+    // `currentCall?.state === 'ringing' && waitingCall == null`.
+    declineWithMessage,
     getContacts,
     getMessages,
     getCallLogs,
