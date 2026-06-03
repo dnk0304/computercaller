@@ -177,7 +177,7 @@ export function requireSameOrigin(
   const host = req.headers.get('host');
   const expected =
     process.env.NODE_ENV === 'production'
-      ? 'https://computercaller.com'
+      ? (process.env.NEXT_PUBLIC_APP_URL ?? 'https://computercaller.com')
       : `http://${host}`;
   if (origin && origin === expected) return { ok: true };
   // Same-origin fetches from some user agents omit Origin but always set

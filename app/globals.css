@@ -66,6 +66,107 @@ body {
   pointer-events: none;
 }
 
+/* ----- Reviews marquee (components/Reviews.tsx) ---------------------------
+ * Endless one-row sideways auto-scroll for the landing-page testimonials.
+ *
+ * Why CSS-driven, not JS rAF: this site ships a strict CSP (no `unsafe-eval`)
+ * and Next.js 16's Turbopack chunks for separately-bundled client components
+ * fail to hydrate under that policy. The marquee must work without any
+ * client-side JS — so the loop, the seamless wrap, and the pause-on-hover
+ * all live in CSS. JS only ENHANCES the experience when hydration does run
+ * (drag-to-scrub via `data-scrub`).
+ *
+ * Layout: the track contains two identical copies of the cards. The animation
+ * translates the track from 0 to -50%, then resets — because both halves are
+ * identical, the visual jump at the loop point is invisible. Duration is
+ * tied to the original card count (9 cards × ~370px ≈ 3340px) targeting
+ * ~22 px/sec ≈ 150s per full loop.
+ *
+ * Pause-on-hover: `.cc-reviews-marquee:hover .cc-reviews-track` halts the
+ * animation. Cards underneath stay clickable / focusable.
+ *
+ * Drag-to-scrub: when JS hydrates and a pointer drag crosses 5px, JS sets
+ * `data-scrub="1"` on the wrapper. The CSS pauses the keyframe animation
+ * for that state and JS translates the track imperatively (re-syncing the
+ * `--cc-marquee-offset` custom property). On release JS drops the flag and
+ * the keyframe resumes from the CURRENT scroll position — no snap-back —
+ * because the cached negative `transform` becomes the animation's effective
+ * start via `animation-delay: calc(<offset>)`. Implementation in Reviews.tsx.
+ *
+ * Reduced-motion: a media query disables the keyframe entirely. The wrapper
+ * keeps `overflow-x: auto` so the row becomes a native horizontal scroller.
+ * Cards keep `scroll-snap-align: start` so flick-scrolling lands cleanly. */
+@keyframes cc-reviews-marquee {
+  from { transform: translate3d(0, 0, 0); }
+  /* The track is rendered twice. Translating exactly -50% loops back to the
+     visually-identical starting point — the wrap is invisible. */
+  to   { transform: translate3d(-50%, 0, 0); }
+}
+
+.cc-reviews-marquee {
+  /* Wrapper. `overflow-x: hidden` clips the off-screen card halves so the
+     row never adds a horizontal page scrollbar. The reduced-motion media
+     query flips this to `auto` so the user can still scroll the row. */
+  overflow-x: hidden;
+  overflow-y: hidden;
+  /* Soft edge fade so cards don't pop in/out at hard borders. */
+  -webkit-mask-image: linear-gradient(to right, transparent, black 32px, black calc(100% - 32px), transparent);
+          mask-image: linear-gradient(to right, transparent, black 32px, black calc(100% - 32px), transparent);
+  /* Let vertical page scroll pass through on touch — we only own horizontal
+     drag. Never block the user's scroll-down gesture. */
+  touch-action: pan-y;
+  cursor: grab;
+}
+.cc-reviews-marquee[data-scrub="1"] {
+  cursor: grabbing;
+}
+
+.cc-reviews-track {
+  display: flex;
+  gap: 1rem; /* 16px between cards */
+  width: max-content;
+  will-change: transform;
+  animation: cc-reviews-marquee var(--cc-reviews-duration, 150s) linear infinite;
+}
+
+/* Pause-on-hover (and keyboard focus-within). Halts the keyframe without
+   resetting position — `animation-play-state: paused` freezes the current
+   transform. */
+.cc-reviews-marquee:hover .cc-reviews-track,
+.cc-reviews-marquee:focus-within .cc-reviews-track {
+  animation-play-state: paused;
+}
+
+/* While the user is actively drag-scrubbing, suspend the keyframe so JS can
+   own the transform without fighting the animation. JS clears the flag on
+   pointerup; the animation resumes from the current transform (which JS
+   wrote inline). */
+.cc-reviews-marquee[data-scrub="1"] .cc-reviews-track {
+  animation-play-state: paused;
+}
+
+/* OS reduced-motion: disable the keyframe entirely and flip the wrapper to
+   a native horizontal scroller. Cards keep snap-align so flick-scrolling
+   lands cleanly. We never ship motion the OS setting can't stop. */
+@media (prefers-reduced-motion: reduce) {
+  .cc-reviews-marquee {
+    overflow-x: auto;
+    -webkit-mask-image: none;
+            mask-image: none;
+    cursor: default;
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: 1.5rem;
+  }
+  .cc-reviews-track {
+    animation: none;
+    /* When paused via reduced-motion, we don't want the track to extend
+       beyond its natural width — width: max-content stays correct. */
+  }
+  .cc-reviews-card {
+    scroll-snap-align: start;
+  }
+}
+
 /* ----- Phone Mode shell (components/PhoneModeShell.tsx) -------------------
  * Two viewport-stability problems we solve here:
  *

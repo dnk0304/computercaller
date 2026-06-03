@@ -55,7 +55,7 @@ import Reviews from '@/components/Reviews';
  *   3. Features (KSP)            ← lifted from #5 so the "what's in the box"
  *                                  reveal lands inside the first scroll-and-a-half
  *   3b. Magic-moment band        ← single hero-grade product visual (2026-05-30)
- *   4. How It Works              ← three steps + embedded 4-step infographic
+ *   4. How It Works              ← three steps + 4-step recap row
  *   4b. A closer look            ← recommended-setup tip + 2 feature spotlights
  *                                  (Messages/templates + Phone Mode)
  *   5. Use Cases
@@ -137,6 +137,40 @@ const howItWorks = [
       "Dial any phone number from your computer. Your phone places the call through your existing carrier. You hear and speak through your laptop's microphone and speakers.",
   },
 ];
+
+// Four-step recap row that sits BELOW the three-card "How it works" cards.
+// Replaces the old AI-generated `recommended-usage.png` (deprecated 2026-06-03
+// — bad copy + broken step sequence). Copy authored with Gemini Pro live and
+// hand-tuned to match the voice of the three light cards above. Numbering is
+// guaranteed 1·2·3·4 by deriving `n` from the array index at render time
+// rather than a hand-typed label, so we can't repeat the prior "Step 1, 2, 4,
+// 4" bug if cards are reordered.
+const recapSteps = [
+  {
+    n: 1,
+    icon: Smartphone,
+    title: 'Install the companion app',
+    body: 'One-time install on your existing Android phone. No new SIM, no new number.',
+  },
+  {
+    n: 2,
+    icon: Laptop,
+    title: 'Sign in on your computer',
+    body: 'Open computercaller.com in any browser and sign in to your account.',
+  },
+  {
+    n: 3,
+    icon: ShieldCheck,
+    title: 'Pair phone to computer',
+    body: 'Tap Accept on your phone. The call line is now securely bridged to your laptop.',
+  },
+  {
+    n: 4,
+    icon: MessageSquare,
+    title: 'Call and text from your computer',
+    body: 'Dial, talk, and message from your desktop — your real carrier handles the call.',
+  },
+] as const;
 
 const whoItsFor = [
   {
@@ -656,29 +690,51 @@ export default function LandingPage() {
             ))}
           </ol>
 
-          {/* Recommended usage infographic — Dennis's brief: a 4-step visual
-              (take phone → connect → headset → talk through computer) that
-              reinforces the three-card explainer above with the practical
-              "best setup" extension (headset). Sits inside How It Works so
-              the visual + the text are in one mental unit. White card on the
-              slate-50 section surface to make the infographic feel like a
-              "frame" worth pausing on. Same CLS-safe Next/Image sizing pattern
-              as the magic-moment band. 1344x768 source; rendered up to ~1152px
-              wide on desktop (max-w-6xl minus 48px padding). */}
-          <figure className="mt-12 relative overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-            <Image
-              src="/marketing/recommended-usage.png"
-              alt="Four-step infographic: 1) take your phone, 2) connect it to your computer through ComputerCaller, 3) plug a headset into your phone, 4) talk through your computer hands-free."
-              width={1344}
-              height={768}
-              sizes="(min-width: 1280px) 1152px, (min-width: 640px) 92vw, 100vw"
-              className="w-full h-auto block"
-            />
-            <figcaption className="sr-only">
-              Recommended setup at a glance: phone, ComputerCaller connection,
-              Bluetooth headset, hands-free calling from your laptop.
-            </figcaption>
-          </figure>
+          {/* Four-step dark-blue card row — REPLACES the prior AI-generated
+              `recommended-usage.png` infographic (2026-06-03). The old PNG had
+              garbled body copy and a broken step sequence (Step 1, 2, 4, 4 —
+              no Step 3). Re-implemented as coded JSX so:
+                · text is real, accessible, SEO-indexable, and translatable
+                · the step numbering is guaranteed 1 · 2 · 3 · 4 in source order
+                · brand colour (blue-600/700) is a single Tailwind token, not
+                  a flattened pixel bake
+                · the section is keyboard- and screen-reader-friendly via the
+                  semantic <ol>/<li> grouping and a single aria-label
+              Copy authored with Gemini Pro (live, 2026-06-03) refined to match
+              the voice of the three light cards above. Dark-blue surface
+              against the slate-50 section background gives the row the same
+              "visual punctuation" Dennis wanted from the original infographic
+              without trusting AI to render type. */}
+          <ol
+            aria-label="Four-step recap of how ComputerCaller works"
+            className="mt-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5"
+          >
+            {recapSteps.map(({ n, icon: Icon, title, body }) => (
+              <li
+                key={n}
+                className="relative flex flex-col p-6 sm:p-7 rounded-2xl bg-gradient-to-b from-blue-600 to-blue-700 text-white shadow-md shadow-blue-900/10 ring-1 ring-blue-500/30"
+              >
+                <div className="flex items-center justify-between mb-5">
+                  <span
+                    aria-hidden="true"
+                    className="text-3xl font-semibold tracking-tight text-white/85 tabular-nums"
+                  >
+                    {n}
+                  </span>
+                  <span className="w-11 h-11 rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur-sm flex items-center justify-center">
+                    <Icon className="w-5 h-5 text-white" aria-hidden="true" />
+                  </span>
+                </div>
+                <h3 className="font-semibold text-white text-base sm:text-lg leading-snug">
+                  <span className="sr-only">{`Step ${n}: `}</span>
+                  {title}
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-blue-50/90">
+                  {body}
+                </p>
+              </li>
+            ))}
+          </ol>
 
           <div className="mt-10 flex justify-center">
             <Link
