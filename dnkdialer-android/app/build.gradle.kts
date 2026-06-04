@@ -187,8 +187,8 @@ android {
         // (insets resolve to existing bar heights). windowLightStatusBar=false
         // left intact so status-bar icons stay light on the near-black surface.
         // No AGP/Gradle/Kotlin bump needed (AGP 8.13.2 supports compileSdk 35).
-        versionCode = 29
-        versionName = "1.0.7"
+        versionCode = 33
+        versionName = "1.0.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -268,6 +268,26 @@ class PhoneService : Service() {
                     android.util.Log.d("PhoneService", "TelephonyCallback state: $state source=modern")
                     when (state) {
                         android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
+                            // ITEM A (2026-06-03) — call-waiting branch. If a call
+                            // is already active (callAnsweredSentRef==true) when
+                            // RINGING fires, this is the call-waiting case (call #2
+                            // arriving while call #1 is OFFHOOK). Emit CALL_WAITING
+                            // instead of clobbering the active-call guards. The modern
+                            // listener does NOT carry the phone number, so we defer
+                            // the emit so the legacy listener (which does have the
+                            // number) can win. If the legacy listener never fires we
+                            // ship CALL_WAITING with number="" as last resort.
+                            if (callAnsweredSentRef.get()) {
+                                android.util.Log.d("PhoneService", "TelephonyCallback RINGING during active call — call-waiting path (source=modern)")
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    if (callWaitingSentRef.compareAndSet(false, true)) {
+                                        val isViaClient = client?.isOpen == true
+                                        sendResponse("CALL_WAITING", mapOf("number" to "", "name" to ""), isViaClient)
+                                        android.util.Log.w("PhoneService", "CALL_WAITING fired: number=[] state=RINGING source=modern-fallback (legacy didn't deliver)")
+                                    }
+                                }, 600L)
+                                return
+                            }
                             // New call — clear downstream guards. CallStateListener
                             // does NOT receive the phone number (that's the legacy
                             // PhoneStateListener with stricter permissions). So for
@@ -345,7 +365,12 @@ class PhoneService : Service() {
                             if (callEndedSentRef.compareAndSet(false, true)) {
                                 val isViaClient = client?.isOpen == true
                                 val num = currentCallNumber ?: ""
-                                sendResponse("CALL_ENDED", mapOf<String, Any>(), isViaClient)
+                                // ITEM A (2026-06-03): include the active-call number so
+                                // the browser can match the ended call to the right state
+                                // slice (active vs waiting). Legacy v29/v30 APKs send {}
+                                // and the browser falls back to clearing the active call.
+                                val endedPayload: Map<String, Any> = if (num.isNotEmpty()) mapOf("number" to num) else emptyMap()
+                                sendResponse("CALL_ENDED", endedPayload, isViaClient)
                                 currentCallNumber = null
                                 currentCallSpeaker = false
                                 clearSpeakerphoneOnEnd()
@@ -353,9 +378,10 @@ class PhoneService : Service() {
                             } else {
                                 android.util.Log.d("PhoneService", "TelephonyCallback IDLE — CALL_ENDED already sent, skipping")
                             }
-                            // Reset incoming/answered guards so the next call starts clean.
+                            // Reset incoming/answered/waiting guards so the next call starts clean.
                             callIncomingSentRef.set(false)
                             callAnsweredSentRef.set(false)
+                            callWaitingSentRef.set(false)
                         }
                     }
                 }
@@ -910,6 +936,20 @@ class PhoneService : Service() {
     private var callAnsweredSentRef = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
+     * Call-waiting guard (Item A, 2026-06-03). A SEPARATE atomic from
+     * callIncomingSentRef so a second incoming call arriving WHILE a call is
+     * already active (callAnsweredSentRef==true) can fire its own
+     * CALL_WAITING:{number,name} frame without colliding with the original
+     * CALL_INCOMING. Reset to false on IDLE (back to single-call baseline).
+     *
+     * Why two guards instead of one: the original callIncomingSentRef is set to
+     * true the moment call #1 begins ringing and is only cleared on IDLE. If we
+     * reused it, the second ringing transition would no-op ("already sent,
+     * skipping") — which is the exact root cause of the call-waiting bug.
+     */
+    private var callWaitingSentRef = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
      * Modern call-state observer (Android 12+ / API 31+). Held so we can
      * unregister in onDestroy. The single-thread executor backing it is also
      * tracked here so we can shut it down cleanly.
@@ -930,6 +970,23 @@ class PhoneService : Service() {
             when (state) {
                 android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
                     android.util.Log.d("PhoneService", "PhoneStateListener state=RINGING phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
+                    // ITEM A (2026-06-03) — call-waiting branch. If a call is
+                    // already active when RINGING fires, this is the call-waiting
+                    // case. Emit CALL_WAITING with the waiting number; do NOT
+                    // touch callIncomingSentRef/callAnsweredSentRef (those belong
+                    // to the active call). The legacy listener DOES carry the
+                    // phone number so this is the authoritative path for the
+                    // waiting number on Samsung One UI / API 31+.
+                    if (callAnsweredSentRef.get()) {
+                        if (callWaitingSentRef.compareAndSet(false, true)) {
+                            val isViaClient = client?.isOpen == true
+                            sendResponse("CALL_WAITING", mapOf("number" to number, "name" to ""), isViaClient)
+                            android.util.Log.d("PhoneService", "CALL_WAITING fired: number=[$number] state=RINGING source=legacy")
+                        } else {
+                            android.util.Log.d("PhoneService", "PhoneStateListener RINGING — CALL_WAITING already sent, skipping (source=legacy)")
+                        }
+                        return
+                    }
                     // New call beginning — clear CALL_ENDED + CALL_ANSWERED guards
                     // so the downstream transitions (whichever observer sees them
                     // first) can fire. CALL_INCOMING itself is guarded below.
@@ -977,8 +1034,14 @@ class PhoneService : Service() {
                     // transition. First-writer wins.
                     if (callEndedSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
-                        sendResponse("CALL_ENDED", mapOf<String, Any>(), isViaClient)
-                        android.util.Log.d("PhoneService", "CALL_ENDED fired: state=IDLE source=legacy")
+                        // ITEM A (2026-06-03): carry the active number so the
+                        // browser can route the teardown to the right state slice.
+                        // Legacy v29/v30 APKs sent {} — browser falls back to
+                        // clearing the active call when number is absent.
+                        val endedNum = currentCallNumber ?: number
+                        val endedPayload: Map<String, Any> = if (endedNum.isNotEmpty()) mapOf("number" to endedNum) else emptyMap()
+                        sendResponse("CALL_ENDED", endedPayload, isViaClient)
+                        android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[$endedNum] state=IDLE source=legacy")
                         currentCallNumber = null
                         currentCallSpeaker = false
                         clearSpeakerphoneOnEnd()
@@ -987,16 +1050,17 @@ class PhoneService : Service() {
                         // event semantics (idempotent CALL_ENDED), so a duplicate is safe.
                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                             if (client?.isOpen == true) {
-                                sendResponse("CALL_ENDED", mapOf<String, Any>(), true)
+                                sendResponse("CALL_ENDED", endedPayload, true)
                             }
                         }, 800)
                     } else {
                         android.util.Log.d("PhoneService", "PhoneStateListener IDLE — CALL_ENDED already sent, skipping")
                     }
-                    // Reset incoming/answered guards so the NEXT call starts clean,
-                    // regardless of which observer fired the CALL_ENDED above.
+                    // Reset incoming/answered/waiting guards so the NEXT call starts
+                    // clean, regardless of which observer fired the CALL_ENDED above.
                     callIncomingSentRef.set(false)
                     callAnsweredSentRef.set(false)
+                    callWaitingSentRef.set(false)
                 }
             }
         }
