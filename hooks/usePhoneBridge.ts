@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, startTransition } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, startTransition } from 'react';
 import { usePathname } from 'next/navigation';
 import type {
   PhoneEventType,
   Contact,
   CallInfo,
+  CallState,
   SmsMessage,
   CallLogEntry
 } from './phoneTypes';
@@ -322,17 +323,115 @@ export function usePhoneBridge() {
   const [isConnected, setIsConnected] = useState(false);
   const [isBridgeConnected, setIsBridgeConnected] = useState(false);
   const [phoneName, setPhoneName] = useState<string | null>(null);
-  const [currentCall, setCurrentCall] = useState<CallInfo | null>(null);
-  // Item A (2026-06-03). Second call arriving while `currentCall` is in a
-  // non-idle state. Kept as a SEPARATE state slice so a CALL_WAITING (or a
-  // collision-CALL_INCOMING from a legacy APK) cannot clobber the active call.
-  // Cleared when: (a) CALL_ENDED carries the waiting number, (b) CALL_ENDED
-  // ends the active call and the waiting call is promoted into currentCall,
-  // (c) pairing is torn down, (d) explicit disconnect / unload.
-  const [waitingCall, setWaitingCall] = useState<CallInfo | null>(null);
+  // Multi-call QUEUE (Phase 1, 2026-06-09). `calls` is now the CANONICAL
+  // source of truth for every in-flight call — an arbitrary-length array keyed
+  // by callId. It REPLACES the old two fixed slots (currentCall + waitingCall),
+  // whose root-cause bug was that a 3rd call clobbered the 2nd (waitingCall was
+  // a single slot, overwritten by every CALL_WAITING). Now each call UPSERTS
+  // into the array, so 2nd/3rd/Nth calls all survive and surface.
+  //
+  // BACKWARD-COMPAT SHIM: `currentCall` and `waitingCall` are DERIVED from this
+  // array (deriveCurrentCall / deriveWaitingCall useMemos below) and exposed
+  // UNCHANGED on the public API, so the dozens of existing consumers — above
+  // all GlobalDialer, the LIVE call surface — keep working with zero edits.
+  // With 0–1 calls the derived values are identical to the old behavior; the
+  // queue UI only appears at 2+ calls. This is the top regression guard.
+  const [calls, setCalls] = useState<CallInfo[]>([]);
+
+  // ---- calls[] reducer helpers ----------------------------------------
+  // All mutations to the call list go through these so upsert/patch/remove
+  // semantics live in one place and the legacy + new wire frames share them.
+
+  // Digits-only last-8 number matcher — the existing tolerance used by the
+  // legacy CALL_ENDED routing, hoisted so every helper + handler matches the
+  // same way regardless of formatting differences between phone and browser.
+  const normNum = (s: string | undefined) => (s ?? '').replace(/\D/g, '').slice(-8);
+
+  // Pure foreground picker — MUST match the deriveCurrentCall useMemo below so
+  // handlers reading callsRef synchronously agree with the rendered currentCall.
+  const foregroundOf = (list: CallInfo[]): CallInfo | undefined => {
+    if (list.length === 0) return undefined;
+    if (list.length === 1) return list[0];
+    return (
+      list.find(c => c.state === 'active') ??
+      list.find(c => c.state === 'dialing') ??
+      list[0]
+    );
+  };
+
+  // Upsert by callId: patch in place if present (preserving fields the new
+  // frame doesn't override), else append (oldest-first — the queue renders
+  // top-to-bottom by arrival). 'idle'/'ended' are never stored as live rows.
+  // NOTE: each helper keeps `callsRef.current` in lockstep with the state it
+  // commits (assigned BEFORE returning the new array). The stable handleMessage
+  // callback reads callsRef synchronously when a frame arrives, so it must not
+  // lag a render behind — hence the in-updater assignment rather than an effect.
+  // (callsRef is declared in the refs block further down but hoisted via var
+  //  binding; the assignment runs at call time, long after declaration.)
+  const upsertCall = useCallback((call: CallInfo) => {
+    setCalls(prev => {
+      const idx = prev.findIndex(c => c.callId === call.callId);
+      const next =
+        idx !== -1
+          ? prev.map((c, i) => (i === idx ? { ...c, ...call } : c))
+          : [...prev, call];
+      callsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  // Patch a call's mutable fields by callId. No-op if the call is gone (e.g. a
+  // CALL_ANSWERED that races a CALL_ENDED).
+  const patchCall = useCallback((callId: string, patch: Partial<CallInfo>) => {
+    setCalls(prev => {
+      const idx = prev.findIndex(c => c.callId === callId);
+      if (idx === -1) return prev;
+      const next = prev.map((c, i) => (i === idx ? { ...c, ...patch } : c));
+      callsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  // Remove a call by callId.
+  const removeCall = useCallback((callId: string) => {
+    setCalls(prev => {
+      const next = prev.filter(c => c.callId !== callId);
+      callsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  // Clear ALL calls (disconnect / unload / leaveActive teardown).
+  const clearAllCalls = useCallback(() => {
+    callsRef.current = [];
+    setCalls([]);
+  }, []);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [messages, setMessages] = useState<SmsMessage[]>([]);
   const [callLogs, setCallLogs] = useState<CallLogEntry[]>([]);
+
+  // ---- DERIVED call slices (backward-compat shim) ----------------------
+  // currentCall = the FOREGROUND call: the first 'active' call, else the first
+  // 'dialing' call (outgoing not yet connected), else the sole remaining call,
+  // else null. This reproduces the old single-slot semantics exactly when
+  // calls.length <= 1, so every existing consumer is byte-identical to before.
+  const currentCall = useMemo<CallInfo | null>(
+    () => foregroundOf(calls) ?? null,
+    [calls]
+  );
+
+  // waitingCall = the most relevant BACKGROUND call (the legacy "second line"
+  // banner reads this). Picks the first call that is NOT the derived
+  // currentCall, preferring a ringing one (the classic call-waiting case).
+  // null when there are 0–1 calls — identical to the old behavior, so no
+  // single-call regression. The full multi-call list lives in `calls`.
+  const waitingCall = useMemo<CallInfo | null>(() => {
+    if (calls.length < 2) return null;
+    const fg = currentCall;
+    const others = calls.filter(c => c.callId !== fg?.callId);
+    if (others.length === 0) return null;
+    return others.find(c => c.state === 'ringing') ?? others[0];
+  }, [calls, currentCall]);
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [isRelayConnection, setIsRelayConnection] = useState<boolean>(true);
@@ -634,6 +733,10 @@ export function usePhoneBridge() {
   // on every state update (see dispatch #31 comment further up).
   const currentCallRef = useRef<CallInfo | null>(null);
   const waitingCallRef = useRef<CallInfo | null>(null);
+  // Multi-call QUEUE (2026-06-09). Latest `calls[]` snapshot for the stable
+  // handleMessage callback — same rationale as the refs above. The legacy-frame
+  // mappers read this to dedupe-by-number and to resolve match-by-number.
+  const callsRef = useRef<CallInfo[]>([]);
 
   // MMS_MEDIA_CHUNK reassembly. Android slices each `GET_MMS_FULL` response
   // into 64 KB base64 chunks; we collect them keyed by messageId, then resolve
@@ -963,8 +1066,7 @@ export function usePhoneBridge() {
         setPhoneNotifications([]);
         estimateRequestedRef.current = false;
         quickSyncScheduledRef.current = false;
-        setCurrentCall(null);
-        setWaitingCall(null);
+        clearAllCalls();
         setContacts([]);
         setMessages([]);
         setCallLogs([]);
@@ -998,8 +1100,7 @@ export function usePhoneBridge() {
           callStatusTimeoutRef.current = setTimeout(() => {
             console.warn('[PhoneBridge] Call heartbeat timeout — clearing stale call state');
             stopCallTimer();
-            setCurrentCall(null);
-            setWaitingCall(null);
+            clearAllCalls();
           }, 12000);
         }
         break;
@@ -1016,168 +1117,227 @@ export function usePhoneBridge() {
         console.warn('[PhoneBridge] Received legacy STATUS frame — ignored. Payload:', payload);
         break;
 
-      case 'CALL_INCOMING': {
-        console.log('[PhoneBridge] Incoming call from:', payload.number);
-        // Name resolution: lookup-first. The webapp's contacts list is the
-        // source of truth — the user manages those names directly. The phone's
-        // CACHED_NAME (which populates payload.name) is often stale, formatted
-        // differently than the number, or simply echoes the number itself.
+      case 'CALL_INCOMING':
+      case 'CALL_WAITING': {
+        // Multi-call QUEUE (Phase 1, 2026-06-09). LEGACY-FRAME MAPPING.
         //
-        // Priority:
-        //   1. contacts list match (authoritative — user manages this)
-        //   2. payload.name, IF it's a non-empty string that doesn't look like
-        //      a phone number (regex catches "12 34 56 78", "+47 12345678",
-        //      "(555) 123-4567", etc.)
-        //   3. undefined → UI falls through to displaying the raw number, which
-        //      is strictly better than showing a reformatted version of that
-        //      same number as a fake "name".
+        // Both frames now funnel into the SAME path: synthesize a stable callId
+        // and UPSERT into `calls[]`. This is the fix for the root-cause bug —
+        // the old code wrote CALL_WAITING into a single `waitingCall` slot, so a
+        // 3rd ringing call clobbered the 2nd and 2nd-call UI barely showed.
+        // Upserting means every distinct caller survives as its own queue row.
+        //
+        // CALL_INCOMING vs CALL_WAITING are treated identically here: the phone
+        // emits WAITING for a call arriving while another is active, INCOMING
+        // otherwise (and legacy v29/v30 APKs emit a bare INCOMING in both
+        // cases). Either way it's "a new ringing call" — the array model no
+        // longer needs the active/idle branch the two-slot model required.
         const incomingNumber: string = payload.number ?? '';
+        // Name resolution: lookup-first (unchanged from the pre-queue build).
+        //   1. contacts list match (authoritative — user manages this)
+        //   2. payload.name, IF it doesn't look like a phone number
+        //   3. undefined → UI shows the raw number
         const rawName = typeof payload.name === 'string' ? payload.name.trim() : '';
-        // Matches strings that contain ONLY phone-number characters: digits,
-        // leading '+', spaces, hyphens, parentheses. A real contact name like
-        // "Mom" or "John Doe" contains letters and will not match.
         const looksLikeNumber = rawName !== '' && /^[+\d\s\-()]+$/.test(rawName);
         const contactMatch = findContactByNumber(incomingNumber, contactsRef.current);
         const resolvedName =
           contactMatch?.name ?? (rawName && !looksLikeNumber ? rawName : undefined);
-        // Diagnostic — added 2026-05-20, updated for lookup-first refactor.
-        // Paste this whole line from the browser console to Niki on the next
-        // incoming-call repro. Remove once the cause is identified.
-        console.log('[PhoneBridge][diag CALL_INCOMING]', {
-          rawName,
-          incomingNumber,
-          looksLikeNumber,
-          contactsCount: contactsRef.current.length,
-          contactMatchedName: contactMatch?.name ?? null,
-          resolvedName,
-        });
-        // ITEM A (2026-06-03) — defensive call-waiting fallback. If a call is
-        // already active OR dialing, route this CALL_INCOMING into the waiting
-        // slot rather than clobber the active call. New APKs send a distinct
-        // CALL_WAITING frame for this case; legacy v29/v30 APKs do not, so
-        // routing CALL_INCOMING into waitingCall when currentCall is non-idle
-        // is the backward-compat path.
-        const newCall: CallInfo = {
+        console.log(`[PhoneBridge] ${type} from:`, incomingNumber, '| resolvedName:', resolvedName ?? null);
+
+        // DEDUPE-BY-NUMBER: legacy frames carry no callId, and the phone may
+        // re-emit INCOMING/WAITING for a still-ringing number (reconnect,
+        // duplicate broadcast). If a live call with the same number already
+        // exists, reuse its callId so we PATCH instead of creating a twin row.
+        const existing = callsRef.current.find(
+          c => normNum(c.number) === normNum(incomingNumber) && incomingNumber !== ''
+        );
+        // Synthesized callId: number + first-seen timestamp. Stable for the
+        // life of this ringing call (we reuse `existing.callId` on repeats).
+        // WIRE-CONTRACT NOTE: a future APK emitting CALL_ADD supplies its own
+        // real callId; this synthetic id is the legacy-path fallback only.
+        const callId = existing?.callId ?? `legacy:${normNum(incomingNumber) || 'unknown'}:${Date.now()}`;
+
+        lastCallWasAnsweredRef.current = false;
+        // Preserve the historical single-call side-effects so the foreground
+        // call's local duration timer behaves exactly as before when this is
+        // the ONLY call. (No-ops are harmless when a call is already active.)
+        if (callsRef.current.length === 0) {
+          callStartTimeRef.current = Date.now();
+          stopCallTimer();
+        }
+        upsertCall({
+          callId,
           number: incomingNumber,
           name: resolvedName,
           isIncoming: true,
-          startTime: Date.now(),
-          // duration omitted — computed locally in display components
-          state: 'ringing'
-        };
-        const activeNow = currentCallRef.current;
-        if (activeNow && (activeNow.state === 'active' || activeNow.state === 'dialing')) {
-          console.log('[PhoneBridge] CALL_INCOMING while active — routing to waitingCall');
-          setWaitingCall(newCall);
-          break;
-        }
-        lastCallWasAnsweredRef.current = false;
-        callStartTimeRef.current = Date.now();
-        stopCallTimer();
-        setCurrentCall(newCall);
-        break;
-      }
-
-      case 'CALL_WAITING': {
-        // Item A (2026-06-03). Distinct frame from CALL_INCOMING: emitted by
-        // PhoneService v32+ when a NEW ringing call arrives while a call is
-        // already active. Always writes to `waitingCall` — never touches the
-        // active call's timer or state.
-        console.log('[PhoneBridge] Call-waiting from:', payload.number);
-        const waitingNumber: string = payload.number ?? '';
-        const rawName = typeof payload.name === 'string' ? payload.name.trim() : '';
-        const looksLikeNumber = rawName !== '' && /^[+\d\s\-()]+$/.test(rawName);
-        const contactMatch = findContactByNumber(waitingNumber, contactsRef.current);
-        const resolvedName =
-          contactMatch?.name ?? (rawName && !looksLikeNumber ? rawName : undefined);
-        setWaitingCall({
-          number: waitingNumber,
-          name: resolvedName,
-          isIncoming: true,
-          startTime: Date.now(),
-          state: 'ringing'
+          startTime: existing?.startTime ?? Date.now(),
+          state: 'ringing',
         });
         break;
       }
 
-      case 'CALL_ANSWERED':
-        console.log('[PhoneBridge] Call answered');
+      case 'CALL_ANSWERED': {
+        // Multi-call QUEUE (2026-06-09). Legacy frame carries no callId, so it
+        // refers to "the call that just connected" — the foreground ringing or
+        // dialing call. New APKs should send CALL_UPDATE:{callId,state:'active'}
+        // instead (handled below). Match strategy:
+        //   1. payload.number (if present) → by last-8 number match
+        //   2. else the foreground call (first dialing, else first ringing)
+        console.log('[PhoneBridge] Call answered', payload?.number ? `(number=${payload.number})` : '(legacy frame)');
         lastCallWasAnsweredRef.current = true;
         if (!callStartTimeRef.current) callStartTimeRef.current = Date.now();
-        setCurrentCall(prev =>
-          prev ? { ...prev, startTime: Date.now(), state: 'active', duration: 0 } : null
-        );
+        const answeredNumber: string | undefined =
+          typeof payload?.number === 'string' && payload.number.length > 0 ? payload.number : undefined;
+        const list = callsRef.current;
+        const target =
+          (answeredNumber && list.find(c => normNum(c.number) === normNum(answeredNumber))) ||
+          list.find(c => c.state === 'dialing') ||
+          list.find(c => c.state === 'ringing') ||
+          list[0];
+        if (target) {
+          patchCall(target.callId, { state: 'active', startTime: Date.now(), duration: 0 });
+        }
         startCallTimer();
         break;
+      }
 
       case 'CALL_ENDED': {
-        // ITEM A (2026-06-03). Per-call identity routing.
+        // Multi-call QUEUE (2026-06-09). REMOVE the ended call from `calls[]`.
         //
-        // New APKs (v32+) send `{number}` on CALL_ENDED so we can match the
-        // ended call to the active vs waiting state slice. Legacy v29/v30 APKs
-        // send `{}` — in that case we fall back to the original behavior of
-        // clearing the active call, which is correct for the single-call case
-        // those APKs are limited to.
-        //
-        // Normalization: compare by digits-only (last 8 chars), tolerant of
-        // formatting differences between what the phone reports here and what
-        // the browser stored on the original CALL_INCOMING / CALL_WAITING.
+        // New APKs (v32+) send `{number}`; we match by digits-only last-8 (the
+        // same tolerant matcher used pre-queue). Legacy v29/v30 send `{}` — in
+        // that case the ended call is the FOREGROUND call (active, else
+        // dialing, else ringing, else the sole/oldest row). This preserves the
+        // old single-call "clear the active call" behavior exactly, and for
+        // multi-call it implements Dennis's "hang up one at a time, the next
+        // steps up" model: removing the foreground row lets the derived
+        // currentCall promote the next call automatically.
         const endedNumber: string | undefined =
           typeof payload.number === 'string' && payload.number.length > 0
             ? payload.number
             : undefined;
         console.log('[PhoneBridge] Call ended', endedNumber ? `(number=${endedNumber})` : '(no number — legacy frame)');
-        const norm = (s: string | undefined) =>
-          (s ?? '').replace(/\D/g, '').slice(-8);
-        const endedNorm = norm(endedNumber);
 
-        // Cancel the heartbeat watchdog — the call is over by an explicit
-        // signal, no need for the timeout fallback.
+        // Cancel the heartbeat watchdog — the call is over by explicit signal.
         if (callStatusTimeoutRef.current) {
           clearTimeout(callStatusTimeoutRef.current);
           callStatusTimeoutRef.current = null;
         }
 
-        // Three cases:
-        //   1. endedNumber matches the waiting call -> clear waiting only.
-        //   2. endedNumber matches the active call (or is absent / legacy) ->
-        //      stop timer, clear active, promote waiting -> active if any.
-        //   3. endedNumber doesn't match either -> safest is the legacy
-        //      "clear active" fall-back (don't strand state).
-        const activeNow = currentCallRef.current;
-        const waitingNow = waitingCallRef.current;
-        if (endedNumber && waitingNow && norm(waitingNow.number) === endedNorm
-            && (!activeNow || norm(activeNow.number) !== endedNorm)) {
-          // Case 1: waiting call ended (e.g. caller hung up, or user rejected
-          // it via declineWithMessage on a future InCallService build).
-          console.log('[PhoneBridge] CALL_ENDED matched waitingCall — clearing waitingCall only');
-          if (waitingNow.isIncoming) {
-            setTimeout(() => setMissedCallCount(c => c + 1), 0);
-          }
-          setWaitingCall(null);
-          break;
+        const list = callsRef.current;
+        let target: CallInfo | undefined;
+        if (endedNumber) {
+          target = list.find(c => normNum(c.number) === normNum(endedNumber));
+        }
+        if (!target) {
+          // Legacy / no-match: the foreground call.
+          target =
+            list.find(c => c.state === 'active') ||
+            list.find(c => c.state === 'dialing') ||
+            list.find(c => c.state === 'ringing') ||
+            list[0];
+        }
+        if (!target) break; // nothing to end
+
+        // Missed-call accounting: an incoming call that ended without ever
+        // being answered. We only know "answered" for the foreground call via
+        // lastCallWasAnsweredRef; a background ringing call that ends is a miss.
+        const wasForeground = target.callId === foregroundOf(callsRef.current)?.callId;
+        const neverAnswered = wasForeground ? !lastCallWasAnsweredRef.current : target.state !== 'active';
+        if (target.isIncoming && neverAnswered) {
+          setTimeout(() => setMissedCallCount(c => c + 1), 0);
         }
 
-        // Case 2 / 3: active call ended (or unknown -> treat as active).
-        stopCallTimer();
-        setCurrentCall(prev => {
-          if (prev?.isIncoming && !lastCallWasAnsweredRef.current) {
-            setTimeout(() => setMissedCallCount(c => c + 1), 0);
-          }
+        removeCall(target.callId);
+
+        // If we just removed the foreground call, reset its local-timer refs so
+        // the promoted next call (now the derived foreground) starts clean.
+        if (wasForeground) {
+          stopCallTimer();
           lastCallWasAnsweredRef.current = false;
-          return null;
-        });
-        callStartTimeRef.current = null;
-        // Promote the waiting call into the active slot if one was queued.
-        // The phone's OFFHOOK transition for the promoted call will fire its
-        // own CALL_ANSWERED (when the user answers it) and the timer restarts.
-        setWaitingCall(prev => {
-          if (prev) {
-            console.log('[PhoneBridge] Promoting waitingCall -> currentCall');
-            setCurrentCall(prev);
-          }
-          return null;
-        });
+          callStartTimeRef.current = null;
+        }
+        break;
+      }
+
+      // --- NEW per-call frames (future APK; dual-path with legacy above) ----
+      case 'CALL_ADD': {
+        // A future APK supplies a REAL stable callId. Prefer it; fall back to a
+        // synthetic one if the frame somehow omits it (defensive). Same name
+        // resolution as the legacy path.
+        const number: string = payload.number ?? '';
+        const rawName = typeof payload.name === 'string' ? payload.name.trim() : '';
+        const looksLikeNumber = rawName !== '' && /^[+\d\s\-()]+$/.test(rawName);
+        const contactMatch = findContactByNumber(number, contactsRef.current);
+        const resolvedName =
+          contactMatch?.name ?? (rawName && !looksLikeNumber ? rawName : undefined);
+        const callId: string =
+          (typeof payload.callId === 'string' && payload.callId) ||
+          `legacy:${normNum(number) || 'unknown'}:${Date.now()}`;
+        const isIncoming = payload.isIncoming !== false; // default true
+        const state: CallState =
+          typeof payload.state === 'string' ? (payload.state as CallState) : (isIncoming ? 'ringing' : 'dialing');
+        console.log('[PhoneBridge] CALL_ADD', { callId, number, state });
+        if (callsRef.current.length === 0) {
+          callStartTimeRef.current = Date.now();
+          stopCallTimer();
+        }
+        lastCallWasAnsweredRef.current = false;
+        upsertCall({ callId, number, name: resolvedName, isIncoming, startTime: Date.now(), state });
+        break;
+      }
+
+      case 'CALL_UPDATE': {
+        // Patch an existing call by callId (preferred) or number (fallback).
+        const callId: string | undefined =
+          typeof payload.callId === 'string' && payload.callId ? payload.callId : undefined;
+        const number: string | undefined =
+          typeof payload.number === 'string' && payload.number ? payload.number : undefined;
+        const newState: CallState | undefined =
+          typeof payload.state === 'string' ? (payload.state as CallState) : undefined;
+        const target =
+          (callId && callsRef.current.find(c => c.callId === callId)) ||
+          (number && callsRef.current.find(c => normNum(c.number) === normNum(number))) ||
+          undefined;
+        if (!target) { console.warn('[PhoneBridge] CALL_UPDATE no match', { callId, number }); break; }
+        const patch: Partial<CallInfo> = {};
+        if (newState) patch.state = newState;
+        if (typeof payload.name === 'string' && payload.name.trim()) patch.name = payload.name.trim();
+        // When a call transitions to 'active' it becomes the foreground call
+        // (active wins in foregroundOf), so reset its timer baseline.
+        if (newState === 'active') {
+          patch.startTime = Date.now();
+          patch.duration = 0;
+          lastCallWasAnsweredRef.current = true;
+          startCallTimer();
+        }
+        console.log('[PhoneBridge] CALL_UPDATE', { callId: target.callId, patch });
+        patchCall(target.callId, patch);
+        break;
+      }
+
+      case 'CALL_REMOVE': {
+        const callId: string | undefined =
+          typeof payload.callId === 'string' && payload.callId ? payload.callId : undefined;
+        const number: string | undefined =
+          typeof payload.number === 'string' && payload.number ? payload.number : undefined;
+        const target =
+          (callId && callsRef.current.find(c => c.callId === callId)) ||
+          (number && callsRef.current.find(c => normNum(c.number) === normNum(number))) ||
+          undefined;
+        if (!target) { console.warn('[PhoneBridge] CALL_REMOVE no match', { callId, number }); break; }
+        const wasForeground = target.callId === foregroundOf(callsRef.current)?.callId;
+        const neverAnswered = wasForeground ? !lastCallWasAnsweredRef.current : target.state !== 'active';
+        if (target.isIncoming && neverAnswered) {
+          setTimeout(() => setMissedCallCount(c => c + 1), 0);
+        }
+        console.log('[PhoneBridge] CALL_REMOVE', { callId: target.callId });
+        removeCall(target.callId);
+        if (wasForeground) {
+          stopCallTimer();
+          lastCallWasAnsweredRef.current = false;
+          callStartTimeRef.current = null;
+        }
         break;
       }
 
@@ -2005,8 +2165,7 @@ export function usePhoneBridge() {
     setPhoneNotifications([]);
     estimateRequestedRef.current = false;
     quickSyncScheduledRef.current = false;
-    setCurrentCall(null);
-    setWaitingCall(null);
+    clearAllCalls();
     setContacts([]);
     setMessages([]);
     setCallLogs([]);
@@ -2035,7 +2194,7 @@ export function usePhoneBridge() {
       callStatusTimeoutRef.current = null;
     }
     console.log('[PhoneBridge] leaveActive — back in lobby');
-  }, [lobbyState]);
+  }, [lobbyState, clearAllCalls]);
 
   const makeCall = useCallback((number: string, speaker: boolean = false): boolean => {
     // Check if WebSocket is connected before making call
@@ -2046,14 +2205,24 @@ export function usePhoneBridge() {
 
     console.log('[PhoneBridge] Initiating call to:', number, 'speaker:', speaker, 'simId:', selectedSimId);
 
-    // Set state to dialing immediately
-    setCurrentCall({
+    // Multi-call QUEUE (2026-06-09). Add an outgoing 'dialing' call to calls[].
+    // When this is the only call, the derived currentCall is exactly this row,
+    // so the single-call dialing experience is unchanged. The synthesized
+    // callId mirrors the legacy-incoming scheme so CALL_ANSWERED / CALL_ENDED
+    // (which come back with this number, or bare) resolve it correctly.
+    if (callsRef.current.length === 0) {
+      callStartTimeRef.current = Date.now();
+      stopCallTimer();
+    }
+    lastCallWasAnsweredRef.current = false;
+    upsertCall({
+      callId: `legacy:${number.replace(/\D/g, '').slice(-8) || 'unknown'}:${Date.now()}`,
       number,
       name: undefined,
       isIncoming: false,
       startTime: Date.now(),
       duration: 0,
-      state: 'dialing'
+      state: 'dialing',
     });
 
     // Send the command and log success. The Android side reads `speaker` and
@@ -2066,7 +2235,7 @@ export function usePhoneBridge() {
     console.log('[PhoneBridge] MAKE_CALL command sent successfully');
 
     return true;
-  }, [selectedSimId]);
+  }, [selectedSimId, upsertCall, stopCallTimer]);
 
   // Toggle speakerphone mid-call. Android applies it live via AudioManager.
   // Legacy alias retained for any callers that haven't been migrated to the
@@ -2151,11 +2320,27 @@ export function usePhoneBridge() {
     sendCommand('ANSWER_CALL', {});
   }, [sendCommand]);
 
+  // Multi-call QUEUE (2026-06-09). Hang up the FOREGROUND call. END_CALL:{}
+  // maps on the phone to telecomManager.endCall(), which ends the active (or
+  // ringing) call — it CANNOT target a specific background call (that needs
+  // default-dialer / InCallService, out of Phase-1 scope). So this always acts
+  // on the derived foreground call: we optimistically remove that row locally
+  // (snappy UI; matches the old setCurrentCall(null)), and the phone's
+  // CALL_ENDED frame is then a harmless no-op (row already gone). As the
+  // foreground row clears, the derived currentCall promotes the next call —
+  // Dennis's "hang up one at a time, the next steps up" model.
   const endCall = useCallback(() => {
     stopCallTimer();
     sendCommand('END_CALL', {});
-    setCurrentCall(null);
-  }, [sendCommand, stopCallTimer]);
+    const fg = foregroundOf(callsRef.current);
+    if (fg) {
+      removeCall(fg.callId);
+    } else {
+      clearAllCalls();
+    }
+    lastCallWasAnsweredRef.current = false;
+    callStartTimeRef.current = null;
+  }, [sendCommand, stopCallTimer, removeCall, clearAllCalls]);
 
   const sendSms = useCallback((to: string, body: string) => {
     // Generate a clientMsgId so we can correlate the send/delivery PendingIntent
@@ -2761,8 +2946,7 @@ export function usePhoneBridge() {
       wsRef.current = null;
       setIsConnected(false);
       setIsBridgeConnected(false);
-      setCurrentCall(null);
-      setWaitingCall(null);
+      clearAllCalls();
       setLobbyState('lobby');
       setLastBrowserRequest(null);
     };
@@ -2913,10 +3097,15 @@ export function usePhoneBridge() {
     isConnected,
     isBridgeConnected,
     phoneName,
+    // Multi-call QUEUE (Phase 1, 2026-06-09). CANONICAL list of all in-flight
+    // calls — CallQueue renders off this. `currentCall` / `waitingCall` below
+    // are DERIVED from it for backward compat (see deriveCurrentCall memo).
+    calls,
     currentCall,
     // Item A (2026-06-03). Second incoming call arriving while `currentCall`
     // is active. Pixel's incoming-call-quickreply UI reads this off the same
-    // usePhone() context. null when no second call exists.
+    // usePhone() context. null when no second call exists. Now derived from
+    // calls[] — the most relevant background call.
     waitingCall,
     contacts,
     messages,
