@@ -9,6 +9,29 @@ export type PhoneEventType =
   | 'CALL_WAITING'
   | 'CALL_ANSWERED'
   | 'CALL_ENDED'
+  // Multi-call QUEUE (Phase 1, 2026-06-09). Per-call lifecycle frames a FUTURE
+  // APK (parallel Forge Android task on feature/android-call-queue) will emit
+  // so the web side can track an arbitrary number of simultaneous calls by a
+  // real, phone-supplied `callId` instead of synthesizing one from number +
+  // first-seen time. These are PURELY ADDITIVE — legacy CALL_INCOMING /
+  // CALL_WAITING / CALL_ANSWERED / CALL_ENDED keep working unchanged, and the
+  // bridge maps BOTH wire shapes into the same `calls[]` array (dual-path).
+  //
+  //   CALL_ADD     a new call entered the system. Payload:
+  //                { callId, number, name?, isIncoming, state? }
+  //   CALL_UPDATE  an existing call changed state. Payload:
+  //                { callId, state, number?, name? } — patch by callId.
+  //   CALL_REMOVE  a call left the system. Payload: { callId } (number? as
+  //                a fallback match key for resilience).
+  //
+  // WIRE-CONTRACT NOTE for the Forge Android side: `callId` MUST be stable for
+  // the lifetime of a single call (same id across ADD → UPDATE* → REMOVE). The
+  // web upserts/patches/removes keyed on it. If the APK can't supply a stable
+  // id it should keep emitting the legacy frames instead — do NOT emit CALL_ADD
+  // with a per-frame-random id.
+  | 'CALL_ADD'
+  | 'CALL_UPDATE'
+  | 'CALL_REMOVE'
   | 'SMS_RECEIVED'
   | 'SMS_SEND_STATUS'
   | 'CONTACTS'
@@ -118,8 +141,23 @@ export type PhoneCommandType =
   // no-ops if SCO can't come up.
   | 'SET_AUDIO_SOURCE';
 
-// Call states
-export type CallState = 'idle' | 'ringing' | 'dialing' | 'active';
+// Call states.
+//   idle    — no call (legacy sentinel; a call in `calls[]` is never 'idle')
+//   ringing — incoming call alerting, not yet answered
+//   dialing — outgoing call placed, not yet connected
+//   active  — connected / in conversation (the foreground call)
+//   held    — connected but backgrounded (multi-call; reserved for a future
+//             APK that can actually hold a line — Phase 1 web never SETS this
+//             itself, but the type admits it so CALL_UPDATE can carry it)
+//   ended   — terminal; used transiently if a frame reports an ended state
+//             before the matching CALL_REMOVE / CALL_ENDED removes the row
+export type CallState =
+  | 'idle'
+  | 'ringing'
+  | 'dialing'
+  | 'active'
+  | 'held'
+  | 'ended';
 
 // Data structures
 export interface Contact {
@@ -129,6 +167,13 @@ export interface Contact {
 }
 
 export interface CallInfo {
+  // Multi-call QUEUE (Phase 1, 2026-06-09). Stable identity for a single call
+  // across its whole lifecycle. For NEW APK frames this is the phone-supplied
+  // callId. For LEGACY frames (CALL_INCOMING / CALL_WAITING) the bridge
+  // synthesizes it from `number + first-seen timestamp` so a 2nd/3rd call no
+  // longer overwrites the 1st. Used as the React list key and the reducer's
+  // upsert/patch/remove key.
+  callId: string;
   number: string;
   name?: string;
   isIncoming: boolean;
@@ -179,6 +224,17 @@ export interface PhoneState {
   isConnected: boolean;
   isBridgeConnected: boolean;
   phoneName: string | null;
+  // Multi-call QUEUE (Phase 1, 2026-06-09). The CANONICAL source of truth for
+  // all in-flight calls — an arbitrary-length list keyed by `callId`. Ordered
+  // oldest-first (insertion order); the foreground call is the first 'active'
+  // one (or the sole call). `currentCall` and `waitingCall` below are DERIVED
+  // from this array for backward compatibility — see the bridge's deriveCall*
+  // memo. With 0–1 calls the UI is byte-for-byte identical to the pre-queue
+  // build; the CallQueue surface only appears at 2+.
+  calls: CallInfo[];
+  // DERIVED (do not set directly): first 'active' call, else the sole call,
+  // else null. Kept on PhoneState so the dozens of existing consumers
+  // (GlobalDialer, CallModal, Dashboard, …) compile and behave unchanged.
   currentCall: CallInfo | null;
   // Item A (2026-06-03). Second call arriving while `currentCall` is active.
   // null when no waiting call exists. Pixel's incoming-call quick-reply UI

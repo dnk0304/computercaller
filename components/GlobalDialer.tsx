@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
-import type { CallLogEntry, SmsMessage } from '@/hooks/phoneTypes';
+import type { CallLogEntry, SmsMessage, CallInfo } from '@/hooks/phoneTypes';
 import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
 
 // Dispatch CC-quickreply-templates-mgmt-v2 PART C (2026-06-03, Pixel) — the
@@ -99,12 +99,17 @@ function miniInitials(address: string): string {
 export const GlobalDialer = () => {
   const {
     isConnected,
+    // Multi-call QUEUE (Phase 1, 2026-06-09). `calls` is the canonical list;
+    // currentCall/waitingCall are still consumed below (derived, unchanged) so
+    // the single-call path is byte-identical to before.
+    calls,
     currentCall,
     waitingCall,
     makeCall,
     answerCall,
     endCall,
     declineWithMessage,
+    sendSms,
     callLogs,
     messages,
   } = usePhone();
@@ -302,6 +307,11 @@ export const GlobalDialer = () => {
     // the panel snapping back to the dialer list.
     sentNotice !== null;
 
+  // Multi-call QUEUE (Phase 1, 2026-06-09). The queue surface only appears at
+  // 2+ simultaneous calls. With 0–1 calls this is false and the panel takes the
+  // EXACT same single-call code path as before — the top regression guard.
+  const showQueue = calls.length >= 2;
+
   // ----- Expanded panel -----
   const panel = isOpen ? (
     <div
@@ -315,7 +325,9 @@ export const GlobalDialer = () => {
         'bg-white rounded-2xl shadow-2xl shadow-slate-900/20 border border-slate-200',
         'overflow-hidden flex flex-col',
         'animate-in fade-in slide-in-from-top-4 duration-200',
-        'max-h-72'
+        // The queue can hold several cards — give it more vertical room (and
+        // it scrolls internally). Single-call/dialer keeps the original cap.
+        showQueue ? 'max-h-[28rem]' : 'max-h-72'
       )}
     >
       {/* Header — drag handle + close button. */}
@@ -327,7 +339,7 @@ export const GlobalDialer = () => {
           aria-hidden="true"
           className="text-[9px] font-semibold uppercase tracking-wider text-slate-400 pl-1"
         >
-          {hasActiveSession ? 'Call' : 'Phone'}
+          {showQueue ? `Calls · ${calls.length}` : hasActiveSession ? 'Call' : 'Phone'}
         </span>
         <button
           type="button"
@@ -339,7 +351,16 @@ export const GlobalDialer = () => {
         </button>
       </div>
 
-      {hasActiveSession ? (
+      {showQueue ? (
+        <CallQueue
+          calls={calls}
+          foregroundCallId={currentCall?.callId ?? null}
+          foregroundDuration={liveDuration}
+          onAnswer={answerCall}
+          onEndForeground={endCall}
+          onSendSms={sendSms}
+        />
+      ) : hasActiveSession ? (
         <CallSessionView
           // During the "Message sent" notice window currentCall may already be
           // null — fall back to the snapshot held in sentNotice so the panel
@@ -706,6 +727,223 @@ function CallSessionView({
   );
 }
 
+// =====================================================================
+// CallQueue (Multi-call QUEUE, Phase 1 — 2026-06-09)
+// =====================================================================
+// Rendered ONLY when 2+ calls are in flight (GlobalDialer.showQueue). A
+// vertical stack of cards:
+//   • FOREGROUND card  — the active/dialing call (or the first call). Reuses
+//     the full CallSessionView (avatar, live duration, Answer/End). Its
+//     decline-with-message reply affordance is suppressed (hasWaitingCall=true)
+//     because declineWithMessage can't target a specific call in a multi-call
+//     situation — per Forge's v1 contract.
+//   • BACKGROUND cards — compact rows for every other call: name/number, a
+//     state badge, [Send SMS] (plain sendSms, NO reject), and [Hang up].
+//
+// Hang-up semantics (Dennis's accepted Phase-1 scope): END_CALL on the phone
+// targets the foreground call only (a specific background call needs default-
+// dialer / InCallService — out of scope). So EVERY Hang up button here ends the
+// FOREGROUND call; as it clears, the next call steps up. The background-card
+// button is labelled honestly ("Hang up current call") so we never imply we can
+// drop a specific background line.
+interface CallQueueProps {
+  calls: CallInfo[];
+  foregroundCallId: string | null;
+  foregroundDuration: number;
+  onAnswer: () => void;
+  /** Ends the FOREGROUND call (the only thing END_CALL can target). */
+  onEndForeground: () => void;
+  onSendSms: (to: string, body: string) => void;
+}
+
+function CallQueue({
+  calls,
+  foregroundCallId,
+  foregroundDuration,
+  onAnswer,
+  onEndForeground,
+  onSendSms,
+}: CallQueueProps) {
+  const foreground = calls.find((c) => c.callId === foregroundCallId) ?? calls[0];
+  const background = calls.filter((c) => c.callId !== foreground?.callId);
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100">
+      {/* Foreground call — full session view. onQuickReply is a no-op here:
+          hasWaitingCall=true hides the reply affordance, so it never fires. */}
+      {foreground && (
+        <div className="bg-emerald-50/30">
+          <CallSessionView
+            state={
+              foreground.state === 'ringing' ||
+              foreground.state === 'dialing' ||
+              foreground.state === 'active'
+                ? foreground.state
+                : 'active'
+            }
+            number={foreground.number}
+            name={foreground.name}
+            duration={foregroundDuration}
+            isIncoming={foreground.isIncoming}
+            hasWaitingCall={true}
+            onAnswer={onAnswer}
+            onEnd={onEndForeground}
+            onQuickReply={() => {}}
+            sentNotice={null}
+          />
+        </div>
+      )}
+
+      {/* Background cards — compact, one per queued call. */}
+      <ul aria-label="Waiting calls" className="divide-y divide-slate-100">
+        {background.map((call) => (
+          <li key={call.callId}>
+            <QueueCard
+              call={call}
+              onSendSms={onSendSms}
+              onHangUpForeground={onEndForeground}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// State badge copy + color for a queued (background) call.
+function queueBadge(state: CallInfo['state']): { label: string; cls: string } {
+  switch (state) {
+    case 'ringing':
+      return { label: 'Ringing', cls: 'bg-rose-100 text-rose-700' };
+    case 'dialing':
+      return { label: 'Dialing', cls: 'bg-blue-100 text-blue-700' };
+    case 'active':
+      return { label: 'On call', cls: 'bg-emerald-100 text-emerald-700' };
+    case 'held':
+      return { label: 'On hold', cls: 'bg-amber-100 text-amber-700' };
+    default:
+      return { label: 'Waiting', cls: 'bg-slate-100 text-slate-600' };
+  }
+}
+
+interface QueueCardProps {
+  call: CallInfo;
+  onSendSms: (to: string, body: string) => void;
+  /** Ends the foreground call (END_CALL can't target a background line). */
+  onHangUpForeground: () => void;
+}
+
+function QueueCard({ call, onSendSms, onHangUpForeground }: QueueCardProps) {
+  type SmsView = 'hidden' | 'chips' | 'custom';
+  const [smsView, setSmsView] = useState<SmsView>('hidden');
+  const [customText, setCustomText] = useState('');
+  // Brief "Sent" confirmation after dispatching a text, so the card gives
+  // feedback without leaving the queue.
+  const [justSent, setJustSent] = useState(false);
+  const sentTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (sentTimer.current !== null) window.clearTimeout(sentTimer.current); }, []);
+
+  const { quickReplies } = useQuickReplyTemplates();
+  const chips: ReadonlyArray<CallSurfaceQuickReply> =
+    quickReplies.length > 0
+      ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
+      : DEFAULT_QUICK_REPLIES;
+
+  const fireSms = (body: string) => {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    onSendSms(call.number, trimmed);
+    setSmsView('hidden');
+    setCustomText('');
+    setJustSent(true);
+    if (sentTimer.current !== null) window.clearTimeout(sentTimer.current);
+    sentTimer.current = window.setTimeout(() => {
+      setJustSent(false);
+      sentTimer.current = null;
+    }, SENT_NOTICE_MS);
+  };
+
+  const badge = queueBadge(call.state);
+  const hasNumber = call.number.trim().length > 0;
+
+  return (
+    <div className="px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center flex-shrink-0">
+          <PhoneIncoming className="w-3.5 h-3.5 text-slate-500" aria-hidden="true" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold text-slate-900 truncate">
+            {call.name || call.number || 'Number hidden'}
+          </p>
+          {call.name && (
+            <p className="text-[9px] text-slate-500 truncate">{call.number}</p>
+          )}
+        </div>
+        <span
+          className={clsx(
+            'text-[8px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full flex-shrink-0',
+            badge.cls
+          )}
+        >
+          {badge.label}
+        </span>
+      </div>
+
+      {justSent ? (
+        <p className="mt-1.5 text-[10px] text-emerald-600 font-medium inline-flex items-center gap-1">
+          <Check className="w-3 h-3" aria-hidden="true" /> Message sent
+        </p>
+      ) : smsView === 'hidden' ? (
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSmsView('chips')}
+            disabled={!hasNumber}
+            aria-label={`Send a text to ${call.name || call.number || 'this caller'}`}
+            className={clsx(
+              'flex-1 h-6 rounded text-[10px] font-semibold inline-flex items-center justify-center gap-1 transition-colors',
+              hasNumber
+                ? 'bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200'
+                : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+            )}
+          >
+            <MessageSquare className="w-3 h-3" aria-hidden="true" />
+            Send SMS
+          </button>
+          <button
+            type="button"
+            onClick={onHangUpForeground}
+            // Honest label: END_CALL can only drop the current foreground call,
+            // not this specific background line. Hanging up clears the active
+            // call and the next one steps up.
+            aria-label="Hang up current call — the next call steps up"
+            title="Hangs up the current call; the next call steps up"
+            className="h-6 px-2 rounded text-[10px] font-semibold inline-flex items-center justify-center gap-1 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 transition-colors"
+          >
+            <PhoneOff className="w-3 h-3" aria-hidden="true" />
+            Hang up
+          </button>
+        </div>
+      ) : (
+        <CallReplyPanel
+          view={smsView}
+          chips={chips}
+          customText={customText}
+          onChangeCustomText={setCustomText}
+          onPickChip={fireSms}
+          onPickCustom={() => setSmsView('custom')}
+          onBackToChips={() => setSmsView('chips')}
+          onCancel={() => setSmsView('hidden')}
+          onSendCustom={() => fireSms(customText)}
+          sendLabel="Send"
+          sendAriaLabel={`Send message to ${call.name || call.number || 'this caller'}`}
+        />
+      )}
+    </div>
+  );
+}
+
 // ----- Reply chip panel: tight stacked layout for the 208px-wide dialer panel.
 // Mirrors CallModal's `renderReplyPanel(compact)` but the dialer panel is much
 // narrower than CallModal's compact widget, so we render chips as a vertical
@@ -721,6 +959,10 @@ interface CallReplyPanelProps {
   onBackToChips: () => void;
   onCancel: () => void;
   onSendCustom: () => void;
+  /** Custom-mode send-button copy. Defaults to the ringing-call "Send & decline"
+   *  semantics; the multi-call queue card passes a plain "Send" (no reject). */
+  sendLabel?: string;
+  sendAriaLabel?: string;
 }
 
 function CallReplyPanel({
@@ -733,6 +975,8 @@ function CallReplyPanel({
   onBackToChips,
   onCancel,
   onSendCustom,
+  sendLabel = 'Send & decline',
+  sendAriaLabel = 'Send message and decline call',
 }: CallReplyPanelProps) {
   if (view === 'custom') {
     return (
@@ -769,7 +1013,7 @@ function CallReplyPanel({
           type="button"
           onClick={onSendCustom}
           disabled={!customText.trim()}
-          aria-label="Send message and decline call"
+          aria-label={sendAriaLabel}
           className={clsx(
             'w-full h-7 rounded text-[10px] font-semibold flex items-center justify-center gap-1 transition-colors',
             customText.trim()
@@ -778,7 +1022,7 @@ function CallReplyPanel({
           )}
         >
           <Send className="w-3 h-3" />
-          Send &amp; decline
+          {sendLabel}
         </button>
       </div>
     );
