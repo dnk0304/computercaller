@@ -61,6 +61,13 @@ model User {
   //                 and later linked the other on the same email.
   googleId          String?   @unique
   authProvider      String    @default("email")
+  // isAdmin (2026-06-09). Sole-admin flag. ADDITIVE, non-breaking: default
+  // false so every existing + future row is a non-admin unless explicitly
+  // promoted. Currently TRUE for exactly one account (dennis.kotlenko@gmail.com)
+  // — set via a one-off prod UPDATE, NOT seeded in code. Coolify's pre-deploy
+  // `prisma db push` applies this column cleanly (adds a NOT NULL column with a
+  // default, no data loss). Gate any admin-only feature/route on this flag.
+  isAdmin           Boolean   @default(false)
   subscription      Subscription?
   // Message templates (Item C1, 2026-05-27). Per-user reusable SMS bodies that
   // previously lived ONLY in browser localStorage (key `dnkdialer_templates`) and

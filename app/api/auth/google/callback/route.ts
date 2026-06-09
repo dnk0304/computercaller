@@ -188,7 +188,7 @@ export async function GET(req: NextRequest) {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 86400, // 24h — matches /api/auth/login
+      maxAge: 2592000, // 30 days — LOCKSTEP with signAccessToken '30d' + /api/auth/login (2026-06-09)
       path: '/',
     });
 

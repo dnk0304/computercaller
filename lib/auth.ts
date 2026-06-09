@@ -60,9 +60,20 @@ export interface JwtPayload {
 
 export function signAccessToken(payload: JwtPayload): string {
   // Always stamp purpose: 'access' going forward. Backward compat: existing
-  // 24h cookies in flight have no purpose claim — verifyAccessToken treats
+  // cookies in flight have no purpose claim — verifyAccessToken treats
   // absent === 'access' so they continue to validate until they expire.
-  return jwt.sign({ ...payload, purpose: 'access' }, getJwtSecret(), { expiresIn: '24h' });
+  //
+  // Session TTL 24h → 30d (2026-06-09). The old 24h expiry forced a daily
+  // logout: once the JWT expired, proxy.ts cleared the cookie + bounced to
+  // /auth/login, and /api/templates 401'd (templates rendered as silently
+  // empty) until re-login minted a fresh token. 30d removes the daily
+  // friction. Kept in LOCKSTEP with the cookie maxAge (2592000s) in
+  // /api/auth/login and /api/auth/google/callback. The sessionVersion kill
+  // switch (validateSessionToken) still invalidates a session on the next
+  // login elsewhere, so a longer TTL does NOT weaken logout/security.
+  // Only the SESSION signer changed — signEmailToken ('24h') and
+  // signResetToken ('1h') deliberately stay short-lived.
+  return jwt.sign({ ...payload, purpose: 'access' }, getJwtSecret(), { expiresIn: '30d' });
 }
 
 /**
