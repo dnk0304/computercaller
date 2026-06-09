@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 86400, // 24 hours
+      maxAge: 2592000, // 30 days — LOCKSTEP with signAccessToken expiresIn '30d' (2026-06-09)
       path: '/',
     });
 
