@@ -201,8 +201,16 @@ android {
         // release Log.d -> BuildConfig.DEBUG-gated), L12 (incoming-connection
         // notification VISIBILITY_PUBLIC -> PRIVATE + redacted public version).
         // Deferred: TLS leaf SPKI pinning (needs backup-pin discipline).
-        versionCode = 32
-        versionName = "1.0.9"
+        // v34 (2026-06-09): multi-call QUEUE Phase 1 — in-memory call registry
+        // + per-call CALL_ADD/CALL_UPDATE/CALL_REMOVE events (dual-emitted
+        // alongside legacy CALL_INCOMING/WAITING/ANSWERED/ENDED). Removes the
+        // single-callWaitingSentRef 2-call ceiling so 3+ calls queue.
+        // NOTE: versionCode jumps 32 -> 34 ON PURPOSE. versionCode 33 was
+        // already consumed by the divergent apk-v33-off-v29 branch (shipped
+        // computercaller-v33.apk, versionName 1.0.10). feature/saas-multiuser's
+        // gradle still read 32, so 34 is the next collision-free integer.
+        versionCode = 34
+        versionName = "1.0.11"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
