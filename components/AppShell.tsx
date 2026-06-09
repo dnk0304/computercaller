@@ -204,8 +204,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Dennis moved it into the ProfileMenu dropdown (right side of
                 header, under the avatar) so the chrome stays tighter and the
                 affordance lives next to the rest of the per-user surfaces.
-                See components/ProfileMenu.tsx for the new menu item + the
-                "Open in popup window" sub-action that ships beside it. */}
+                Dispatch #34 task 3 (2026-06-08): the menu item now AUTO-opens
+                Phone Mode in a popup window; the separate "Open in popup
+                window" sub-action was removed. See components/ProfileMenu.tsx. */}
             <ConnectionStatus />
             {/* ProfileMenu — days-left urgency chip beside the avatar, plus a
                 dropdown for Manage subscription / Sign out. Sign Out tears

@@ -2,18 +2,28 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { LogOut, CreditCard, ExternalLink, Loader2, Smartphone } from 'lucide-react';
+import { LogOut, CreditCard, ExternalLink, Loader2, Smartphone, ChevronDown } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, usePhoneMode } from '@/hooks';
 
 /**
- * ProfileMenu — avatar-circle trigger + dropdown card.
+ * ProfileMenu — avatar (account link) + caret (dropdown trigger).
  *
- * UX rationale (Ken verdict, 2026-05-22; revised dispatch #4):
- *   - Avatar-initial circle is the menu trigger (Google / Linear / Vercel /
- *     Notion / Stripe convention). Clicking the avatar opens/closes the
- *     dropdown.
- *   - Header chrome is JUST the avatar — no external pill. Dennis's
+ * UX rationale (Ken verdict, 2026-05-22; revised dispatch #4; dispatch #34
+ * task 4, 2026-06-08):
+ *   - Dispatch #34 task 4: clicking the AVATAR now navigates to the account
+ *     hub (`/app/settings`) for ALL users — the GitHub / Vercel / Linear
+ *     convention where the avatar is your account, not a menu toggle. The
+ *     dropdown actions (subscription, Phone Mode, sign out) are NOT stranded:
+ *     a small caret button sits immediately to the avatar's right and is the
+ *     dedicated dropdown trigger. Splitting the trigger keeps both affordances
+ *     one click away while making the avatar's destination predictable.
+ *   - `/app/settings` is the right destination: it already is the account hub
+ *     (Subscription, account email, Sign out, Android app, device label, phone
+ *     connection). No new page warranted. Today it's only reachable buried
+ *     inside the inline Settings panel's "Pair phone & account" link, so the
+ *     avatar shortcut also surfaces an otherwise hard-to-find page.
+ *   - Header chrome is JUST the avatar + caret — no external pill. Dennis's
  *     dispatch #4 directive: "remove the 'days left' pill in the header."
  *     Original dispatch #1 verdict surfaced the urgency chip beside the
  *     avatar so trial countdown was always visible; Dennis prefers the
@@ -38,7 +48,8 @@ import { usePhone, usePhoneMode } from '@/hooks';
  *     rows are. The Subscription row IS the route.
  *
  * Open/close behavior:
- *   - Click avatar to toggle.
+ *   - Click the avatar → navigate to /app/settings (does NOT open the menu).
+ *   - Click the caret → toggle the dropdown.
  *   - Click outside the dropdown card OR press Escape to close.
  *   - Clicking any action row closes the menu (after triggering its action).
  */
@@ -76,7 +87,12 @@ export const ProfileMenu = () => {
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // Both the avatar (account link) and the caret (menu toggle) must be
+  // excluded from the outside-click-to-close handler, otherwise a click on
+  // the caret would both toggle the menu open AND immediately register as an
+  // outside click that closes it.
+  const avatarRef = useRef<HTMLAnchorElement | null>(null);
+  const caretRef = useRef<HTMLButtonElement | null>(null);
 
   // The phone bridge's full WS teardown helper. Sign Out MUST call this BEFORE
   // hitting /api/auth/logout — Next's router.push('/') is an SPA
@@ -91,10 +107,12 @@ export const ProfileMenu = () => {
   const phoneDisconnect = (phone as unknown as { disconnect?: () => void }).disconnect;
 
   // Dispatch #34 (2026-05-26): Phone Mode entry moved here from AppShell
-  // header. We need both the synchronous "flip to Phone Mode" action and the
-  // popup-opener which has strict popup-blocker constraints (must be called
-  // synchronously from a user click — no async hop, no await before
-  // window.open).
+  // header. Dispatch #34 task 3 (2026-06-08): entering Phone Mode now AUTO-
+  // opens it in the dedicated popup window — the separate "Open in popup
+  // window" sub-action was removed as redundant. openInPopup() MUST be called
+  // synchronously inside the click handler (no await before window.open) or
+  // the browser's popup blocker rejects it; enterManually() is the in-window
+  // fallback used only when the popup is blocked.
   const { enterManually, openInPopup } = usePhoneMode();
 
   // Hydrate from /api/auth/me on mount. Silently swallow errors — the
@@ -118,7 +136,8 @@ export const ProfileMenu = () => {
       const target = e.target as Node | null;
       if (!target) return;
       if (cardRef.current?.contains(target)) return;
-      if (triggerRef.current?.contains(target)) return;
+      if (avatarRef.current?.contains(target)) return;
+      if (caretRef.current?.contains(target)) return;
       setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -204,16 +223,24 @@ export const ProfileMenu = () => {
   };
 
   return (
-    <div className="flex items-center relative">
-      {/* Days-left chip removed 2026-05-22 (dispatch #4). The avatar is now
-          the sole header affordance for the profile/subscription surface. */}
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label="Account menu"
+    <div className="flex items-center gap-1 relative">
+      {/* Avatar — account link (dispatch #34 task 4). Clicking the avatar
+          navigates to the account hub for ALL users. Rendered as an <a> so it
+          gets native link semantics (open-in-new-tab, middle-click, focusable,
+          announced as a link by screen readers); router.push handles the SPA
+          nav on plain click. The caret to the right owns the dropdown so the
+          menu actions are never stranded. */}
+      <a
+        ref={avatarRef}
+        href="/app/settings"
+        onClick={(e) => {
+          // Let modifier/middle clicks fall through to native new-tab behavior.
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          e.preventDefault();
+          setOpen(false);
+          router.push('/app/settings');
+        }}
+        aria-label="Account"
         className={clsx(
           'w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold',
           'bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-sm',
@@ -222,6 +249,26 @@ export const ProfileMenu = () => {
         )}
       >
         {initial}
+      </a>
+      {/* Caret — dedicated dropdown trigger. Separated from the avatar so the
+          avatar's destination (account hub) is predictable. */}
+      <button
+        ref={caretRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Account menu"
+        className={clsx(
+          'w-5 h-8 flex items-center justify-center rounded-md text-slate-400',
+          'hover:text-slate-600 hover:bg-slate-100 transition-colors',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2'
+        )}
+      >
+        <ChevronDown
+          className={clsx('w-4 h-4 transition-transform', open && 'rotate-180')}
+          aria-hidden="true"
+        />
       </button>
 
       {open && (
@@ -345,48 +392,45 @@ export const ProfileMenu = () => {
               device/mode surface. */}
           <div className="border-t border-slate-100" aria-hidden="true" />
 
-          {/* Phone Mode — opens the compact mobile-shape view in the same
-              window. Moved here from the AppShell header per dispatch #34
-              (2026-05-26) so the header stays tighter. The dropdown closes
-              first, then enterManually flips the shell — closing first
-              matters because the menu's outside-click handler would otherwise
-              fight the shell swap. */}
+          {/* Phone Mode — dispatch #34 task 3 (2026-06-08): entering Phone
+              Mode now AUTO-opens it in the dedicated ~380x760 popup window.
+              The separate "Open in popup window" sub-action was removed as
+              redundant.
+
+              POPUP-BLOCKER CRITICAL PATH: openInPopup() calls window.open()
+              and MUST run synchronously inside this click handler — the
+              browser only honours window.open() while still on the user-
+              gesture call stack. There is NO await/Promise/setTimeout between
+              the click and window.open(); openInPopup() is fully synchronous
+              (see hooks/usePhoneMode.tsx). The popup loads /app at ~380px,
+              which is below AUTO_COLLAPSE_BELOW_PX, so it auto-collapses into
+              Phone Mode on its own — the OPENER window deliberately stays on
+              the full desktop dashboard (we do NOT call enterManually() on the
+              opener), giving the user a true phone-sized window alongside the
+              dashboard.
+
+              FALLBACK: if the popup is blocked, openInPopup() returns null —
+              we then fall back to enterManually() so the action never silently
+              no-ops (the user gets in-window Phone Mode instead). setOpen runs
+              AFTER, keeping the gesture chain unbroken for the window.open. */}
           <button
             type="button"
             role="menuitem"
-            onClick={() => { setOpen(false); enterManually(); }}
+            onClick={() => {
+              const popup = openInPopup();
+              if (!popup) enterManually();
+              setOpen(false);
+            }}
             className={clsx(
               'w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700',
               'hover:bg-slate-50 transition-colors',
               'focus:outline-none focus:bg-slate-50'
             )}
+            title="Open Phone Mode in a separate phone-sized window"
           >
             <Smartphone className="w-4 h-4 text-slate-500" aria-hidden="true" />
             <span className="flex-1 text-left">Phone Mode</span>
-          </button>
-
-          {/* Open in popup window — sub-action of Phone Mode. Indented (pl-11
-              matches the gap-3 + 4 icon width of the parent row so the label
-              left-edge aligns with the parent label). Smaller font cues
-              "variant of the above" rather than independent action.
-              CRITICAL: window.open() in usePhoneMode.openInPopup() MUST run
-              synchronously inside this click handler — async work between the
-              user gesture and window.open() makes popup blockers reject the
-              call. We close the menu AFTER triggering openInPopup() so the
-              gesture chain stays unbroken. */}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => { openInPopup(); setOpen(false); }}
-            className={clsx(
-              'w-full flex items-center gap-3 pl-11 pr-4 py-2 text-xs text-slate-500',
-              'hover:bg-slate-50 transition-colors',
-              'focus:outline-none focus:bg-slate-50'
-            )}
-            title="Open Phone Mode in a separate ~380x760 browser window"
-          >
-            <span className="flex-1 text-left">Open in popup window</span>
-            <ExternalLink className="w-3 h-3 text-slate-400" aria-hidden="true" />
+            <ExternalLink className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
           </button>
 
           {/* Soft divider */}
