@@ -907,6 +907,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     });
   }, [threads, debouncedThreadSearch, threadBodyIndex]);
 
+  // Paginated thread list — mirrors the Recent Calls display-count cap above
+  // (callLogDisplayCount). This is a purely CLIENT-SIDE slice of the already-
+  // synced thread list — it does NOT fetch from the phone. (Distinct from the
+  // per-thread `onLoadOlder` GET_MESSAGES fetch inside an OPEN conversation,
+  // which pulls older messages for one thread — that path is untouched.)
+  //
+  // Starts at 50 so a typical user sees a full column of conversations with no
+  // "Load more" on small/medium message histories (nothing visually regresses
+  // vs. the prior uncapped render for those users), while capping the number of
+  // React elements evaluated per re-render on very large thread lists. Each tap
+  // reveals +500 — large enough to clear a big backlog in a tap or two.
+  const [threadDisplayCount, setThreadDisplayCount] = useState(50);
+  const displayedThreads = useMemo(
+    () => filteredThreads.slice(0, threadDisplayCount),
+    [filteredThreads, threadDisplayCount]
+  );
+  const hasMoreThreads = filteredThreads.length > threadDisplayCount;
+
   // Messages for the currently selected thread, oldest → newest.
   //
   // CRITICAL: matching MUST go through `conversationKey` (lib/normalizeNumber).
@@ -1703,7 +1721,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         <div className="flex-1 min-h-0 overflow-y-auto p-2">
           {filteredThreads.length > 0 ? (
             <ul className="divide-y divide-slate-100">
-              {filteredThreads.map((thread) => {
+              {displayedThreads.map((thread) => {
                 const displayName =
                   thread.contact?.name || thread.address || 'Unknown';
                 // MMS bodies arrive with an emoji prefix (📷/🎵/🎬/📎) — the
@@ -1788,6 +1806,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                   : 'Connect your phone and sync to see conversations.'
               }
             />
+          )}
+          {/* Load more — client-side display cap on the thread list, mirrors
+              Recent Calls. Reveals +500 conversations per tap, no phone fetch. */}
+          {hasMoreThreads && (
+            <button
+              type="button"
+              onClick={() => setThreadDisplayCount(prev => prev + 500)}
+              className="w-full py-2 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-xl transition-colors mt-1"
+            >
+              Load 500 more ({filteredThreads.length - threadDisplayCount} remaining)
+            </button>
           )}
         </div>
       </section>
