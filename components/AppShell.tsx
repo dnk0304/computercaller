@@ -9,6 +9,7 @@ import { ProfileMenu } from '@/components/ProfileMenu';
 import { PhoneModeShell } from '@/components/PhoneModeShell';
 import { SyncMenuButton } from '@/components/SyncMenuButton';
 import { ReconnectionPill } from '@/components/ReconnectionPill';
+import { CallQueueBand } from '@/components/CallQueueBand';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { usePhone, useDashboardTab, usePhoneMode, type DashboardTab } from '@/hooks';
 
@@ -215,6 +216,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <ProfileMenu />
           </div>
         </header>
+
+        {/* Incoming-call queue band (Pixel, 2026-06-11). Sits BETWEEN the
+            sticky header and the dashboard content slot — the exact gap Dennis
+            marked in the placement mockup. flex-shrink-0 inside the flex-col
+            <main>, so it holds its height and never scrolls with the columns
+            below, and can't overlap the sticky header (it's in normal flow
+            beneath it). Renders null at 0 calls, so the idle dashboard is
+            unchanged — no dead space. Per-call gating is Path A (no default-
+            dialer): full controls on the foreground call, Answer-only on
+            background calls (a background hang-up would end the foreground
+            call). See components/CallQueueBand.tsx. Wrapped in its own
+            ErrorBoundary so a render fault in the band can never take down the
+            dashboard or the header chrome. */}
+        <ErrorBoundary scope="call-queue-band" resetKey={pathname ?? ''}>
+          <CallQueueBand />
+        </ErrorBoundary>
 
         {/* Content slot.
             For the dashboard, children = a fragment of tab content that
