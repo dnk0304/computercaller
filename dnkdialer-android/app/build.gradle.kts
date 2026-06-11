@@ -187,8 +187,15 @@ android {
         // (insets resolve to existing bar heights). windowLightStatusBar=false
         // left intact so status-bar icons stay light on the near-black surface.
         // No AGP/Gradle/Kotlin bump needed (AGP 8.13.2 supports compileSdk 35).
-        versionCode = 35
-        versionName = "1.0.12"
+        // Multicall-teardown fix (2026-06-11): 35 → 36. registryOnIdle() blanket
+        // callRegistry.clear() on aggregate IDLE wiped EVERY tracked call, so
+        // hanging up an active call also killed the waiting call(s). Replaced
+        // with per-call teardown (end only the foreground) + a 1200ms debounced
+        // sweep that survives the transient IDLE of a call-waiting hang-up.
+        // PATH A (no InCallService / no default-dialer — Dennis-approved).
+        // isMinifyEnabled stays false (6.0MB un-minified v34/v35 lineage).
+        versionCode = 36
+        versionName = "1.0.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

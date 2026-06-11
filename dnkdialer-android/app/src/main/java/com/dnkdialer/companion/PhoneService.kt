@@ -394,8 +394,12 @@ class PhoneService : Service() {
                                 // and the browser falls back to clearing the active call.
                                 val endedPayload: Map<String, Any> = if (num.isNotEmpty()) mapOf("number" to num) else emptyMap()
                                 sendResponse("CALL_ENDED", endedPayload, isViaClient)
-                                // QUEUE (v34): aggregate IDLE -> remove all.
-                                registryOnIdle("idle")
+                                // QUEUE (v36 multicall-teardown fix): IDLE is the
+                                // AGGREGATE state but during a call-waiting hang-up it
+                                // is transient — end ONLY the foreground call and arm a
+                                // debounced sweep for genuine leftovers. Was
+                                // registryOnIdle("idle") which wiped ALL calls.
+                                registryOnIdleEndForeground("idle")
                                 currentCallNumber = null
                                 currentCallSpeaker = false
                                 clearSpeakerphoneOnEnd()
@@ -1063,6 +1067,10 @@ class PhoneService : Service() {
      * calls only. Caller need NOT hold the lock — this method takes it.
      */
     private fun registryOnRinging(number: String, direction: String) {
+        // A fresh call is arriving — if a debounced idle-sweep is pending (we just
+        // ended the foreground of a multi-call set), cancel it: the survivors are
+        // real and the line is NOT idle.
+        cancelIdleSweep()
         val entry: CallEntry
         val isNew: Boolean
         synchronized(callRegistryLock) {
@@ -1095,6 +1103,9 @@ class PhoneService : Service() {
      * Emits CALL_UPDATE for the chosen entry.
      */
     private fun registryOnOffhook(number: String, direction: String) {
+        // A leg stepped up to active — cancel any pending idle-sweep so the
+        // survivors of a transient IDLE are not torn down.
+        cancelIdleSweep()
         val entry: CallEntry
         synchronized(callRegistryLock) {
             val byNumber = if (number.isNotEmpty()) findEntryByNumber(number) else null
@@ -1117,18 +1128,102 @@ class PhoneService : Service() {
         emitCallUpdate(entry.callId, entry.state)
     }
 
+    // -----------------------------------------------------------------------
+    // PER-CALL DEBOUNCED TEARDOWN (2026-06-11, multicall-teardown fix)
+    // -----------------------------------------------------------------------
+    // THE BUG this replaces: the previous registryOnIdle() assumed "IDLE is
+    // AGGREGATE — zero calls remain", so it did callRegistry.clear() + a
+    // CALL_REMOVE for EVERY entry. That assumption is FALSE during a multi-call
+    // transition: when the user ends call #1 while call #2 is still waiting/held,
+    // the listener momentarily reports CALL_STATE_IDLE (the active leg dropped)
+    // BEFORE re-reporting OFFHOOK/RINGING for the call stepping up. The old code
+    // wiped call #2 on that transient IDLE — Dennis's reported bug.
+    //
+    // PATH A FIX (no InCallService / no default-dialer — Dennis-approved):
+    //   1. On IDLE, end ONLY the foreground entry (prefer state=="active", else
+    //      the most-recently-added non-ended entry). Emit CALL_REMOVE for that
+    //      ONE call. Survivors stay in the registry.
+    //   2. Arm a short debounced "sweep" (IDLE_SWEEP_MS). If a fresh
+    //      RINGING/OFFHOOK arrives within the window, the next call stepped up —
+    //      cancel the sweep, survivors are real. If the line is STILL idle when
+    //      the sweep fires, those leftovers are a genuine all-calls-ended case —
+    //      clear them (CALL_REMOVE each).
+    //
+    // LIMITATION (documented for Ken): this does NOT make the HANG-UP itself
+    // per-call targetable — telecomManager.endCall() is still phone-wide. But it
+    // fixes the reported bug: ending one call no longer wipes the others from the
+    // queue, because teardown is now per-call + debounced instead of a blanket
+    // registry clear. Robust per-call targeting requires InCallService (Path B,
+    // deferred — see FORGE résumé).
+    //
+    // 0-1 call case is byte-identical to the old clear(): the sole call is the
+    // foreground → removed in step 1 → sweep finds an empty registry → no-op.
+
+    /** Debounce window for the "all calls really ended" sweep. Long enough for
+     *  the next leg to re-report OFFHOOK/RINGING on Samsung One UI after a
+     *  call-waiting hang-up; short enough to feel instant if the line is dead. */
+    private val IDLE_SWEEP_MS = 1200L
+    private val idleSweepHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var idleSweepRunnable: Runnable? = null
+
     /**
-     * Tear down ALL tracked calls on an IDLE transition. IDLE is AGGREGATE —
-     * it means zero calls remain on the device, so every entry is removed.
-     * Emits one CALL_REMOVE per entry.
+     * IDLE teardown — PER-CALL. End ONLY the foreground call, then arm a debounced
+     * sweep for any genuine leftovers. Replaces the old blanket registryOnIdle().
      */
-    private fun registryOnIdle(reason: String) {
-        val toRemove: List<CallEntry>
+    private fun registryOnIdleEndForeground(reason: String) {
+        val ended: CallEntry?
         synchronized(callRegistryLock) {
-            toRemove = callRegistry.values.toList()
-            callRegistry.clear()
+            // Pick the call that just ended deterministically:
+            //   1. the active (foreground) entry — One UI hang-up ends the active leg,
+            //   2. else the most-recently-added non-ended entry (best-effort).
+            // Best-effort without InCallService — documented in the registry header.
+            ended = callRegistry.values.lastOrNull { it.state == "active" }
+                ?: callRegistry.values.lastOrNull { it.state != "ended" }
+            if (ended != null) callRegistry.remove(ended.callId)
         }
-        for (e in toRemove) emitCallRemove(e.callId, reason)
+        if (ended != null) {
+            emitCallRemove(ended.callId, reason)
+            android.util.Log.d("PhoneService", "registryOnIdle: ended ONLY foreground callId=${ended.callId} state=${ended.state} reason=$reason — survivors kept, arming ${IDLE_SWEEP_MS}ms sweep")
+        } else {
+            android.util.Log.d("PhoneService", "registryOnIdle: registry already empty — no foreground to end (reason=$reason)")
+        }
+        scheduleIdleSweep(reason)
+    }
+
+    /**
+     * Arm (or re-arm) the debounced sweep. If, after IDLE_SWEEP_MS, the registry
+     * still holds entries AND no fresh RINGING/OFFHOOK cancelled us, the line is
+     * genuinely idle and those are stale leftovers — clear them per-call.
+     */
+    private fun scheduleIdleSweep(reason: String) {
+        idleSweepRunnable?.let { idleSweepHandler.removeCallbacks(it) }
+        val r = Runnable {
+            val leftovers: List<CallEntry>
+            synchronized(callRegistryLock) {
+                leftovers = callRegistry.values.toList()
+                callRegistry.clear()
+            }
+            if (leftovers.isNotEmpty()) {
+                android.util.Log.d("PhoneService", "idle-sweep fired: line still idle after ${IDLE_SWEEP_MS}ms — clearing ${leftovers.size} stale leftover(s)")
+                for (e in leftovers) emitCallRemove(e.callId, "$reason-sweep")
+            }
+            idleSweepRunnable = null
+        }
+        idleSweepRunnable = r
+        idleSweepHandler.postDelayed(r, IDLE_SWEEP_MS)
+    }
+
+    /**
+     * Cancel a pending idle-sweep. Called when a fresh RINGING/OFFHOOK arrives —
+     * the next call stepped up, so the survivors in the registry are REAL and must
+     * NOT be swept away.
+     */
+    private fun cancelIdleSweep() {
+        idleSweepRunnable?.let {
+            idleSweepHandler.removeCallbacks(it)
+            idleSweepRunnable = null
+            android.util.Log.d("PhoneService", "idle-sweep cancelled — fresh call stepped up, survivors are real")
+        }
     }
 
     /** Emit CALL_ADD for a new call. */
@@ -1262,10 +1357,13 @@ class PhoneService : Service() {
                         val endedPayload: Map<String, Any> = if (endedNum.isNotEmpty()) mapOf("number" to endedNum) else emptyMap()
                         sendResponse("CALL_ENDED", endedPayload, isViaClient)
                         android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[$endedNum] state=IDLE source=legacy")
-                        // QUEUE (v34): IDLE is aggregate -> tear down EVERY tracked
-                        // call (we cannot end one call at a time at this layer; see
-                        // registry header). Emits CALL_REMOVE each.
-                        registryOnIdle("idle")
+                        // QUEUE (v36 multicall-teardown fix): IDLE can be TRANSIENT
+                        // during a call-waiting hang-up (active leg drops to IDLE
+                        // before the next leg re-reports OFFHOOK/RINGING). End ONLY
+                        // the foreground call + arm a debounced sweep, so a waiting
+                        // call survives the transient IDLE. Was registryOnIdle("idle")
+                        // which cleared EVERY tracked call — Dennis's reported bug.
+                        registryOnIdleEndForeground("idle")
                         currentCallNumber = null
                         currentCallSpeaker = false
                         clearSpeakerphoneOnEnd()
@@ -3489,6 +3587,10 @@ class PhoneService : Service() {
         // Tear down ContentObservers FIRST so they can't fire mid-shutdown and try
         // to send through a server/client that's already being closed below.
         stopContentObservers()
+
+        // Cancel any pending multicall idle-sweep so its Handler runnable doesn't
+        // wake up post-onDestroy holding a reference back into this dead Service.
+        cancelIdleSweep()
 
         // Unregister telephony state listener — must mirror the registration in onCreate
         // or we leak a reference to this Service.
