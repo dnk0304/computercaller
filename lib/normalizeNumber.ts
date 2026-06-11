@@ -77,27 +77,39 @@ export function normalizeNumber(raw: string | undefined | null): string {
 }
 
 /**
- * Match a phone number against the contacts list using a digit-suffix heuristic
- * tolerant of country-code / formatting differences. Returns the first matching
+ * Match a phone number against the contacts list. Returns the first matching
  * Contact or undefined.
  *
- * Heuristic: compare the last min(a.length, target.length, 7) digits — 7 is the
- * standard "same person" threshold and covers:
- *   "+1 415 555 1212"  vs  "415-555-1212"  vs  "5551212"
- *   "+47 12 34 56 78"  vs  "12 34 56 78"
- * It deliberately ignores the country-code prefix because the phone-side
- * resolver and the contacts table often disagree on whether to include it.
+ * Rules (Issue 2 fix, 2026-06-11 — the "spelinfo" bug):
+ *   1. Both sides have ≥ 7 digits (real phone numbers) → match on the last 7
+ *      digits. Absorbs country-code / formatting variation:
+ *        "+1 415 555 1212"  vs  "415-555-1212"  vs  "5551212"
+ *        "+47 12 34 56 78"  vs  "12 34 56 78"
+ *   2. Either side has < 7 digits (short code / service number) → match ONLY
+ *      on full exact digit-string equality. Never partial / suffix. The old
+ *      `min(a.len, target.len, 7)` suffix compare let a stored 4-digit
+ *      shortcode (e.g. "2226") claim ANY real caller whose number happened to
+ *      end in those digits, mislabeling live calls with the shortcode's name.
+ *   3. No digits on either side → no match.
+ *
+ * Implemented via `conversationKey` — the same namespaced key (`p:` last-7 vs
+ * `s:` full shortcode) that closed the 2026-06-03 chat-mixing bug — so contact
+ * matching and thread matching can never disagree. Equivalence verified:
+ * `normalizeNumber(x).replace(/^\+/, '')` and conversationKey's
+ * `replace(/\D/g, '')` produce the same digit string ('+' is a non-digit),
+ * and both inputs are guarded non-empty-digits, so keys are always `p:`/`s:`
+ * forms whose equality is exactly rules 1–2.
  */
 export function findContactByNumber(
   number: string | undefined | null,
   contacts: ReadonlyArray<Contact>,
 ): Contact | undefined {
   const target = normalizeNumber(number).replace(/^\+/, '');
-  if (!target) return undefined;
+  if (!target) return undefined; // rule 3: no digits → no match
+  const targetKey = conversationKey(number);
   return contacts.find((c) => {
     const a = normalizeNumber(c.number).replace(/^\+/, '');
-    if (!a) return false;
-    const min = Math.min(a.length, target.length, 7);
-    return a.slice(-min) === target.slice(-min);
+    if (!a) return false; // rule 3: stored entry without digits never matches
+    return conversationKey(c.number) === targetKey;
   });
 }
