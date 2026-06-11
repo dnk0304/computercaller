@@ -83,6 +83,20 @@ const rlog = (...args) => { if (RELAY_VERBOSE) console.log(...args); };
 // browser-side fallback timer.
 const PAIRING_TTL_MS = 30_000;
 
+// Auto-resume window (Issue 3, 2026-06-11). When an ACTIVE pair dies because
+// a socket dropped (reason 'socket_closed' — connection blip, NOT a user
+// clicking Disconnect), the relay remembers the broken pair for this long.
+// If the dropped side reconnects within the window while its counterpart is
+// still around, the relay silently re-links them — no browser Connect click,
+// no phone Accept tap. 120 s covers the observed prod gaps (42 s phone-side,
+// 6 s browser-side, 2026-06-11 logs) with headroom for a slow cellular
+// re-attach, while staying short enough that a genuinely-gone peer doesn't
+// hold a phantom resume claim. Security: resume is scoped to the same room
+// token (the shared secret both sides already authenticated with), is only
+// armed by a non-user-initiated close, and expires — no new attack surface
+// beyond what a normal Connect+Accept inside the same room already grants.
+const RESUME_WINDOW_MS = 120_000;
+
 /**
  * Relay state machine — Connect+Accept lobby model (dispatch #32, 2026-05-25).
  *
@@ -254,6 +268,10 @@ function startRelay(httpServer) {
     if (room.lobby.size > 0) return;
     if (room.active.browser || room.active.phone) return;
     if (room.pendingPairing) return;
+    // Issue 3: keep the room alive while a resume claim is live so the
+    // both-sides-dropped case can still auto-resume when they return.
+    // Worst case the room lingers RESUME_WINDOW_MS past empty.
+    if (room.resumable && Date.now() <= room.resumable.expiresAt) return;
     rooms.delete(room.token);
     console.log(`[Relay] Reaped empty room ${redactToken(room.token)}`);
   }
@@ -324,6 +342,32 @@ function startRelay(httpServer) {
     console.log(`[Relay][${redactToken(room.token)}] terminateActivePair: ${reason}`);
     room.active = { browser: null, phone: null };
 
+    // Issue 3 (2026-06-11): arm the auto-resume window ONLY for connection
+    // drops. A deliberate teardown ('user_left' — Disconnect button on either
+    // side, or any other explicit reason) must NEVER silently re-link, so it
+    // clears any prior claim instead.
+    if (reason === 'socket_closed') {
+      const phoneOpen = phone && phone.readyState === WebSocket.OPEN;
+      // In the socket_closed path exactly one side just closed (its close
+      // handler called us). If somehow both are gone, record 'phone' — the
+      // resume check itself requires BOTH roles back in the lobby, so the
+      // recorded role only affects logging, not correctness.
+      const droppedRole = !phoneOpen ? 'phone' : 'browser';
+      room.resumable = {
+        droppedRole,
+        droppedAt: Date.now(),
+        expiresAt: Date.now() + RESUME_WINDOW_MS,
+        // Identity stash captured at pair formation (handleAcceptPairing /
+        // tryAutoResume): { ua, ip, deviceLabel, deviceName }. Needed to
+        // rebuild the original PAIRING_ACTIVE payloads — the rejoining
+        // socket is brand new and carries none of this.
+        identity: room.pairIdentity ?? null,
+      };
+      console.log(`[Relay][${redactToken(room.token)}] resume window armed (droppedRole=${droppedRole}, window=${RESUME_WINDOW_MS}ms)`);
+    } else {
+      room.resumable = null;
+    }
+
     const payload = JSON.stringify({ reason });
     if (browser) {
       safeSend(browser, `PAIRING_TERMINATED:${payload}`);
@@ -346,6 +390,73 @@ function startRelay(httpServer) {
         safeSend(phone, `LOBBY_STATUS:${JSON.stringify({ browserCount: browsers })}`);
       }
     }
+  }
+
+  /**
+   * Issue 3 (2026-06-11) — silent re-link after a transient connection drop.
+   *
+   * Called at lobby-join time (phone path and browser path). If the room has
+   * a live `resumable` claim (armed by terminateActivePair on
+   * 'socket_closed' only) and BOTH roles are now present in the lobby with
+   * OPEN sockets, the pair is re-formed immediately: both sockets move
+   * lobby → active and each receives a PAIRING_ACTIVE frame with the SAME
+   * payload shape handleAcceptPairing sends — the web's and APK's existing
+   * handlers accept it without a Connect click or Accept tap.
+   *
+   * Requiring both roles present (rather than strictly joiner.role ===
+   * droppedRole) also covers the both-sides-dropped case: the first returner
+   * finds no counterpart and falls through to the normal lobby flow leaving
+   * the claim intact; the second returner completes the resume.
+   *
+   * Guards:
+   *  - expired claim → cleared lazily here, normal flow.
+   *  - a pendingPairing handshake in flight → the explicit human handshake
+   *    wins; the resume claim is dropped.
+   *  - 'user_left' never arms a claim (see terminateActivePair).
+   *
+   * Returns true if the pair was resumed (caller should skip its normal
+   * lobby-join messaging for the joiner — PAIRING_ACTIVE replaces
+   * LOBBY_STATUS so the client never sees a lobby frame after the resume).
+   */
+  function tryAutoResume(room) {
+    const claim = room.resumable;
+    if (!claim) return false;
+    if (Date.now() > claim.expiresAt) {
+      room.resumable = null;
+      return false;
+    }
+    if (room.pendingPairing) {
+      // A normal Connect→Accept handshake is mid-flight — it wins.
+      room.resumable = null;
+      return false;
+    }
+    let phoneWs = null;
+    let browserWs = null;
+    for (const s of room.lobby) {
+      if (s.role === 'phone' && !phoneWs && s.readyState === WebSocket.OPEN) phoneWs = s;
+      else if (s.role === 'browser' && !browserWs && s.readyState === WebSocket.OPEN) browserWs = s;
+    }
+    // Counterpart not back yet (or both dropped and only one returned) —
+    // keep the claim armed and fall through to the normal lobby flow.
+    if (!phoneWs || !browserWs) return false;
+
+    room.lobby.delete(phoneWs);
+    room.lobby.delete(browserWs);
+    room.active.browser = browserWs;
+    room.active.phone = phoneWs;
+    room.resumable = null;
+
+    const id = claim.identity ?? {};
+    // Prefer the live socket's deviceName (a surviving phone keeps it); fall
+    // back to the pair-time stash for a rejoined phone whose DEVICE_INFO
+    // hasn't arrived yet.
+    const deviceName = phoneWs.deviceName ?? id.deviceName ?? null;
+    room.pairIdentity = { ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', deviceLabel: id.deviceLabel, deviceName };
+    // IDENTICAL payload shapes to handleAcceptPairing's PAIRING_ACTIVE pair.
+    safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
+    safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown' })}`);
+    console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, droppedRole=${claim.droppedRole})`);
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -467,6 +578,12 @@ function startRelay(httpServer) {
     // sends DEVICE_INFO; for the initial PAIRING_ACTIVE payload we omit it
     // unless we already have it stashed on ws.deviceName.
     const deviceName = phoneWs.deviceName ?? null;
+    // Issue 3: stash the pair's identity fields on the room so a later
+    // socket_closed teardown can rebuild both PAIRING_ACTIVE payloads for a
+    // silent resume (the rejoining socket carries none of this). A freshly
+    // completed normal handshake also supersedes any stale resume claim.
+    room.pairIdentity = { ua: pending.ua, ip: pending.ip, deviceLabel: pending.deviceLabel, deviceName };
+    room.resumable = null;
     safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
     safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: pending.ua, ip: pending.ip })}`);
     console.log(`[Relay][${redactToken(room.token)}] Pairing ${pending.id} ACTIVE — browser ↔ phone`);
@@ -710,10 +827,18 @@ function startRelay(httpServer) {
       const lobbyCounts = countLobby(room);
       console.log(`[Relay][${redactToken(token)}] Phone joined lobby (browsers=${lobbyCounts.browsers}, active=${!!room.active.phone})`);
 
-      // 1. Tell the phone how many browsers are already waiting in this
-      //    lobby so its UI can render an "approve incoming" affordance
-      //    (if browserCount > 0) or "waiting for desktop" (if 0).
-      safeSend(ws, `LOBBY_STATUS:${JSON.stringify({ browserCount: lobbyCounts.browsers })}`);
+      // Issue 3: a phone returning within the resume window re-links
+      // silently. Attempted BEFORE any lobby messaging — on resume the
+      // PAIRING_ACTIVE frame REPLACES LOBBY_STATUS for this socket, so the
+      // client never sees a lobby frame that could race its active state.
+      const phoneResumed = tryAutoResume(room);
+
+      if (!phoneResumed) {
+        // 1. Tell the phone how many browsers are already waiting in this
+        //    lobby so its UI can render an "approve incoming" affordance
+        //    (if browserCount > 0) or "waiting for desktop" (if 0).
+        safeSend(ws, `LOBBY_STATUS:${JSON.stringify({ browserCount: lobbyCounts.browsers })}`);
+      }
       // F-5 (2026-05-29): HELLO frame's hostname value is the only place the
       // container's real OS hostname leaked to clients. APK only matches on
       // `HELLO:` prefix — value is decorative. Use a stable literal to avoid
@@ -721,9 +846,14 @@ function startRelay(httpServer) {
       // and bug reports). Kept the frame for backward-compat with APK <=v29.
       safeSend(ws, `HELLO:${JSON.stringify({ hostname: 'computercaller' })}`);
 
-      // 2. Tell every browser in the lobby a phone just showed up. Drives
-      //    the Connect button visibility on the browser side.
-      broadcastToLobbyBrowsers(room, `PHONE_PRESENT:${JSON.stringify({})}`);
+      if (!phoneResumed) {
+        // 2. Tell every browser in the lobby a phone just showed up. Drives
+        //    the Connect button visibility on the browser side. Skipped on
+        //    resume — the phone went straight to active, lobby browsers
+        //    (there are none involved in the resumed pair) must not be told
+        //    a pairable phone is present.
+        broadcastToLobbyBrowsers(room, `PHONE_PRESENT:${JSON.stringify({})}`);
+      }
 
       ws.on('message', (data) => {
         // F-C: inbound traffic is liveness proof. Reset before the body runs.
@@ -863,13 +993,19 @@ function startRelay(httpServer) {
     const alreadyActive = !!(room.active.browser || room.active.phone);
     console.log(`[Relay][${redactToken(token)}] Browser joined lobby (phones=${counts.phones}, active=${alreadyActive})`);
 
-    // Tell the browser whether it can act on the Connect button right away
-    // and whether an active pair already exists in this room (browser will
-    // render distinct copy in that case).
-    safeSend(ws, `LOBBY_STATUS:${JSON.stringify({
-      phonePresent: counts.phones > 0,
-      alreadyActive,
-    })}`);
+    // Issue 3: a browser returning within the resume window (its WS layer
+    // auto-reconnects) re-links silently. Attempted BEFORE LOBBY_STATUS —
+    // on resume PAIRING_ACTIVE REPLACES LOBBY_STATUS for this socket so the
+    // web hook never processes a 'lobby' frame after going active.
+    if (!tryAutoResume(room)) {
+      // Tell the browser whether it can act on the Connect button right away
+      // and whether an active pair already exists in this room (browser will
+      // render distinct copy in that case).
+      safeSend(ws, `LOBBY_STATUS:${JSON.stringify({
+        phonePresent: counts.phones > 0,
+        alreadyActive,
+      })}`);
+    }
 
     ws.on('message', (data) => {
       // F-C: inbound traffic is liveness proof. Reset before the body runs.
