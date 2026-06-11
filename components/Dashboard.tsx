@@ -70,7 +70,12 @@ import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
-import { conversationKey, sameConversation } from '@/lib/normalizeNumber';
+import {
+  conversationKey,
+  sameConversation,
+  normalizeNumber,
+  findContactByNumber,
+} from '@/lib/normalizeNumber';
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
@@ -160,33 +165,9 @@ function getAvatarColor(seed: string): string {
   return palette[code % palette.length];
 }
 
-/** Normalise a phone number to digits only (with leading +) so we can match
- *  the same person across contacts / call-logs / SMS even when format differs. */
-function normalizeNumber(raw: string | undefined | null): string {
-  if (!raw) return '';
-  const trimmed = raw.trim();
-  const hasPlus = trimmed.startsWith('+');
-  const digits = trimmed.replace(/\D/g, '');
-  return hasPlus ? `+${digits}` : digits;
-}
-
-/** Match a phone number against the contacts list (digit-suffix match,
- *  tolerant of country-code differences in the way Android exposes them). */
-function findContactByNumber(
-  number: string,
-  contacts: Contact[]
-): Contact | undefined {
-  const target = normalizeNumber(number).replace(/^\+/, '');
-  if (!target) return undefined;
-  return contacts.find((c) => {
-    const a = normalizeNumber(c.number).replace(/^\+/, '');
-    if (!a) return false;
-    // Last 7 digits is the standard "same person" heuristic — covers
-    // "+1 415 555 1212" vs "415-555-1212" vs "5551212".
-    const min = Math.min(a.length, target.length, 7);
-    return a.slice(-min) === target.slice(-min);
-  });
-}
+// normalizeNumber / findContactByNumber now come from lib/normalizeNumber —
+// the tightened canonical matcher (ce562fa, 'spelinfo' bug): real numbers
+// (≥7 digits) match on last-7; short codes exact-match only; no suffix bleed.
 
 // ---------- MMS detection ---------------------------------------------------
 
@@ -546,25 +527,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   const deferredMessages = useDeferredValue(messages);
   const deferredCallLogs = useDeferredValue(callLogs);
 
-  // O(1) contact lookup — keyed by last-7-digit tail so findContactByNumber's
-  // O(n) linear scan doesn't run 500× contacts per render (500 threads × 2000
-  // contacts = 1,000,000 regex calls = main thread lockup).
+  // O(1) contact lookup — keyed by `conversationKey` (lib/normalizeNumber) so
+  // findContactByNumber's O(n) linear scan doesn't run 500× contacts per render
+  // (500 threads × 2000 contacts = 1,000,000 regex calls = main thread lockup).
+  // Keying on conversationKey (not raw last-7 tails) keeps this cache exactly
+  // consistent with the tightened matcher: 'p:' last-7 for real numbers,
+  // 's:' exact digits for short codes — no suffix collisions ('spelinfo' bug).
   const contactByTail = useMemo(() => {
     const map = new Map<string, Contact>();
     for (const c of contacts) {
-      const norm = (c.number || '').replace(/\D/g, '');
-      if (!norm) continue;
-      const tail = norm.slice(-7);
-      if (!map.has(tail)) map.set(tail, c);
+      const key = conversationKey(c.number);
+      if (!key || key.startsWith('#')) continue; // no digits → never matchable
+      if (!map.has(key)) map.set(key, c);
     }
     return map;
   }, [contacts]);
 
   function findContactFast(number: string): Contact | undefined {
-    const norm = (number || '').replace(/\D/g, '');
-    if (!norm) return undefined;
-    const min = Math.min(norm.length, 7);
-    return contactByTail.get(norm.slice(-min));
+    const key = conversationKey(number);
+    if (!key || key.startsWith('#')) return undefined;
+    return contactByTail.get(key);
   }
   // Spec: read missed-call badge + sync opener via a loose cast so Dashboard
   // works whether or not the hook field is in place yet. Falls back to safe
