@@ -40,6 +40,7 @@ function pct(done: number, total: number) {
 export const SyncProgressBar = () => {
   const phone = usePhone() as ReturnType<typeof usePhone> & {
     isSyncing?: boolean;
+    quietSyncing?: boolean;
     syncTimedOut?: boolean;
     syncCompleteNotification?: SyncCompleteCounts | null;
     clearSyncNotification?: () => void;
@@ -50,6 +51,7 @@ export const SyncProgressBar = () => {
   };
 
   const isSyncing = phone.isSyncing ?? false;
+  const quietSyncing = phone.quietSyncing ?? false;
   const syncTimedOut = phone.syncTimedOut ?? false;
   const syncCompleteNotification = phone.syncCompleteNotification ?? null;
   const syncProgress = phone.syncProgress ?? null;
@@ -172,6 +174,36 @@ export const SyncProgressBar = () => {
             >
               <X className="w-4 h-4" />
             </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── 2.5 Quiet sync — subtle inline banner for the auto-connect quicksync
+  //
+  // Issue 1 (2026-06-11): the auto-connect quicksync must show its count
+  // WITHOUT the heavy floating modal. Thin passive top banner, same family as
+  // the timeout/completion banners: no backdrop, no blur, no buttons, does
+  // not block clicks, auto-vanishes when quietSyncing flips false. The modal
+  // wins if both flags are somehow true (manual sync started mid-quicksync).
+  if (quietSyncing && !isSyncing) {
+    const msg = syncProgress?.messages;
+    const hasCount = !!msg && msg.total > 0;
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="fixed top-0 left-0 right-0 z-40 pointer-events-none"
+      >
+        <div className="bg-slate-900/95 text-slate-200 shadow-md border-b border-slate-800">
+          <div className="px-5 py-2 flex items-center gap-2.5">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400 flex-shrink-0" />
+            <span className="text-xs font-medium">
+              {hasCount
+                ? `Syncing recent messages… ${msg.done.toLocaleString()} / ${msg.total.toLocaleString()}`
+                : 'Syncing recent activity…'}
+            </span>
           </div>
         </div>
       </div>

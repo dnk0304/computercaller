@@ -453,6 +453,14 @@ export function usePhoneBridge() {
   // Sync progress UI state — shown during a manual sync, dismissed by user / auto.
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  // Quiet-sync signal (Issue 1, Forge 2026-06-11). `isSyncing` was overloaded:
+  // it meant BOTH "a sync is running" AND "render the big floating modal".
+  // The auto-connect quicksync (PAIRING_ACTIVE) must show its count WITHOUT
+  // the modal, so it sets THIS flag instead. SyncProgressBar renders a thin
+  // passive top banner off `quietSyncing` and keeps the modal on `isSyncing`.
+  // Reactive mirror of autoConnectSyncInFlightRef: set true exactly where the
+  // ref is set, false wherever the ref is cleared.
+  const [quietSyncing, setQuietSyncing] = useState(false);
   const [showSyncPanel, setShowSyncPanel] = useState(false);
   const [syncEstimate, setSyncEstimate] = useState<SyncEstimate | null>(null);
   const [syncTimedOut, setSyncTimedOut] = useState(false);
@@ -921,7 +929,10 @@ export function usePhoneBridge() {
         clearTimeout(autoConnectTimeoutRef.current);
         autoConnectTimeoutRef.current = null;
       }
-      setIsSyncing(false);
+      // Issue 1: clear the QUIET flag, not isSyncing — the auto-connect run
+      // never sets isSyncing anymore, and clearing isSyncing here would kill
+      // the manual modal if a quicksync completion raced a manual sync.
+      setQuietSyncing(false);
     };
 
     switch (type) {
@@ -1050,7 +1061,11 @@ export function usePhoneBridge() {
                 callLogs: { done: 0, total: syncEstimate?.callLogs?.total ?? 0, complete: false },
               });
               setSyncTimedOut(false);
-              setIsSyncing(true);
+              // Issue 1: QUIET signal, not isSyncing — the auto-connect run
+              // shows a subtle inline banner (SyncProgressBar quiet branch),
+              // never the big floating modal. isSyncing(true) stays exclusive
+              // to the manual syncData path.
+              setQuietSyncing(true);
               // Dedicated safety timeout — NOT syncTimeoutRef (chunk handlers
               // clear that one on every chunk). If no completion in 15s (e.g. a
               // link flap mid-run), tear the bar down so it never sticks.
@@ -1165,6 +1180,11 @@ export function usePhoneBridge() {
         // the in-flight flag so a reconnect starts clean (and the bar isn't
         // left stuck on a half-finished auto-connect run).
         endAutoConnectSync();
+        // Issue 1: endAutoConnectSync now clears only the quiet flag. A
+        // disconnect mid-MANUAL-sync must still tear down the floating modal
+        // (pre-Issue-1 behavior, previously an incidental side effect of
+        // endAutoConnectSync's setIsSyncing(false)).
+        setIsSyncing(false);
         clearAllCalls();
         setContacts([]);
         setMessages([]);
@@ -2820,6 +2840,9 @@ export function usePhoneBridge() {
       try { wsRef.current.send('SYNC_CANCEL:{}'); } catch { /* non-fatal */ }
     }
     setIsSyncing(false);
+    // Issue 1: mirror the in-flight ref clear above — the quiet banner must
+    // also vanish on cancel.
+    setQuietSyncing(false);
     setSyncProgress(null);
     setSyncTimedOut(false);
     syncModeRef.current = 'merge';
@@ -3345,6 +3368,10 @@ export function usePhoneBridge() {
     // Sync state
     syncProgress,
     isSyncing,
+    // Issue 1 (2026-06-11): true ONLY during the auto-connect quicksync.
+    // SyncProgressBar renders a thin passive top banner off this — never the
+    // floating modal (that stays gated on isSyncing / manual syncData).
+    quietSyncing,
     showSyncPanel,
     syncEstimate,
     syncTimedOut,
