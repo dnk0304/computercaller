@@ -701,6 +701,32 @@ export function usePhoneBridge() {
   // Chunk handlers read this to decide whether to replace or merge state.
   const syncModeRef = useRef<'replace' | 'merge'>('merge');
 
+  // Auto-connect quicksync visibility (Issue 2, Forge 2026-06-11).
+  // The PAIRING_ACTIVE quicksync runs in MERGE mode and was silent — no
+  // progress bar, no count. Dennis wants to SEE the count during that quick
+  // background sync WITHOUT re-introducing the reverted auto-FULL-sync.
+  // This flag scopes the progress-UI population to ONLY that one auto-connect
+  // run: it is set true when the PAIRING_ACTIVE quicksync fires, read in the
+  // MESSAGES_CHUNK / CALL_LOGS_CHUNK handlers to populate counts in merge
+  // mode, and cleared on completion / disconnect / cancel. syncAll,
+  // loadOlderMessages, per-thread fetches and every other silent merge stay
+  // silent because they never set this flag.
+  const autoConnectSyncInFlightRef = useRef<boolean>(false);
+  // Per-row completion tracker for the auto-connect run. The run fetches
+  // messages + callLogs only (NOT contacts). When both report complete we
+  // clear isSyncing — WITHOUT firing the full-sync completion toast (that
+  // belongs to manual syncData only; a toast every reconnect would be noisy).
+  const autoConnectDoneRef = useRef<{ messages: boolean; callLogs: boolean }>({
+    messages: false,
+    callLogs: false,
+  });
+  // Dedicated safety timeout for the auto-connect run. NOT syncTimeoutRef —
+  // the chunk handlers clear syncTimeoutRef on every chunk, which would cancel
+  // a shared safety timer. This one is cleared only on completion / cancel /
+  // disconnect, so a flapped link that delivers a partial run still tears the
+  // bar down after ~15s instead of leaving it stuck.
+  const autoConnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // Chunk accumulation buffers — chunks land here as they arrive, then get committed
   // to React state in a single update once total_pages have been received. Keeps
   // re-renders to one per dataset instead of one per chunk.
@@ -861,6 +887,22 @@ export function usePhoneBridge() {
       }
     };
 
+    // Tear down the auto-connect quicksync visibility (Issue 2). Clears the
+    // in-flight flag, the per-row tracker and the safety timeout, then hides
+    // the bar. Deliberately does NOT fire syncCompleteNotification — the
+    // auto-connect run is silent-completion by design (only manual syncData
+    // toasts). Idempotent: safe to call from chunk-complete, cancel, and the
+    // disconnect reset.
+    const endAutoConnectSync = () => {
+      autoConnectSyncInFlightRef.current = false;
+      autoConnectDoneRef.current = { messages: false, callLogs: false };
+      if (autoConnectTimeoutRef.current) {
+        clearTimeout(autoConnectTimeoutRef.current);
+        autoConnectTimeoutRef.current = null;
+      }
+      setIsSyncing(false);
+    };
+
     switch (type) {
       // ---------- Single-session kick / server restart control plane ----------
       // WIRE-CONTRACT §1 + §2 (2026-05-29). Both frames arrive BEFORE the
@@ -965,6 +1007,38 @@ export function usePhoneBridge() {
               // duplicate rows on merge. (Forge, 2026-06-01.)
               messagesBufferRef.current = [];
               callLogsBufferRef.current = [];
+
+              // Issue 2 (Forge 2026-06-11): make the count VISIBLE during this
+              // auto-connect quicksync. We turn ON the progress UI and scope a
+              // flag so the MESSAGES_CHUNK / CALL_LOGS_CHUNK handlers populate
+              // counts for THIS merge run only. We do NOT call syncData() and
+              // do NOT flip syncModeRef to 'replace' — WHAT gets pulled is
+              // unchanged (since6h, merge mode). Only the visual turns on.
+              //
+              // Run = messages + callLogs (contacts are NOT fetched by the
+              // quicksync). Seed contacts complete=true / total=0 so the bar's
+              // contacts row reads "done", not a hung spinner — mirrors
+              // syncData's `complete: !opts.contacts` convention.
+              autoConnectSyncInFlightRef.current = true;
+              autoConnectDoneRef.current = { messages: false, callLogs: false };
+              setSyncProgress({
+                contacts: { done: 0, total: 0, complete: true },
+                // total comes from the chunk's own 6h-window total_count when
+                // it lands; until then 0 → the bar shows an honest spinner.
+                messages: { done: 0, total: syncEstimate?.messages?.total ?? 0, complete: false },
+                callLogs: { done: 0, total: syncEstimate?.callLogs?.total ?? 0, complete: false },
+              });
+              setSyncTimedOut(false);
+              setIsSyncing(true);
+              // Dedicated safety timeout — NOT syncTimeoutRef (chunk handlers
+              // clear that one on every chunk). If no completion in 15s (e.g. a
+              // link flap mid-run), tear the bar down so it never sticks.
+              if (autoConnectTimeoutRef.current) clearTimeout(autoConnectTimeoutRef.current);
+              autoConnectTimeoutRef.current = setTimeout(() => {
+                autoConnectTimeoutRef.current = null;
+                if (autoConnectSyncInFlightRef.current) endAutoConnectSync();
+              }, 15000);
+
               wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
               setTimeout(() => {
                 if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1066,6 +1140,10 @@ export function usePhoneBridge() {
         setPhoneNotifications([]);
         estimateRequestedRef.current = false;
         quickSyncScheduledRef.current = false;
+        // Issue 2: a disconnect mid-quicksync must tear the bar down and clear
+        // the in-flight flag so a reconnect starts clean (and the bar isn't
+        // left stuck on a half-finished auto-connect run).
+        endAutoConnectSync();
         clearAllCalls();
         setContacts([]);
         setMessages([]);
@@ -1537,19 +1615,40 @@ export function usePhoneBridge() {
         const isComplete = page >= total_pages;
         if (syncTimeoutRef.current) { clearTimeout(syncTimeoutRef.current); syncTimeoutRef.current = null; }
         setSyncTimedOut(false);
-        // Only update sync progress UI during a full replace sync.
-        // Merge/quick syncs run silently — no banner, no completion toast.
-        if (syncModeRef.current === 'replace') {
+        // Update the progress UI during a full replace sync OR the scoped
+        // auto-connect quicksync (Issue 2). Every OTHER merge — syncAll,
+        // loadOlderMessages, per-thread fetches — stays silent because
+        // autoConnectSyncInFlightRef is only true for the PAIRING_ACTIVE run.
+        if (syncModeRef.current === 'replace' || autoConnectSyncInFlightRef.current) {
+          const isAutoConnect = syncModeRef.current !== 'replace';
           const now2 = Date.now();
           if (isComplete || now2 - lastProgressFlushRef.current > 300) {
             lastProgressFlushRef.current = now2;
             setSyncProgress(prev => {
+              // Denominator: for the auto-connect run the chunk's own
+              // total_count is the count of messages in the 6h window — the
+              // most ACCURATE "X / Y" for what's actually being pulled. Fall
+              // back to the all-time syncEstimate total only if the chunk
+              // omits/zeroes total_count. (Replace sync keeps total_count.)
+              const msgTotal = isAutoConnect
+                ? (total_count || prev?.messages?.total || syncEstimate?.messages?.total || 0)
+                : total_count;
               const next: SyncProgress = {
-                contacts: prev?.contacts ?? { done: 0, total: 0, complete: false },
-                messages: { done, total: total_count, complete: isComplete },
+                contacts: prev?.contacts ?? { done: 0, total: 0, complete: isAutoConnect },
+                messages: { done, total: msgTotal, complete: isComplete },
                 callLogs: prev?.callLogs ?? { done: 0, total: 0, complete: false },
               };
-              if (isComplete) checkAllComplete(next);
+              // Auto-connect: clear isSyncing only when BOTH fetched rows
+              // (messages + callLogs) finish — NO completion toast. Replace:
+              // checkAllComplete handles isSyncing + the toast.
+              if (isComplete) {
+                if (isAutoConnect) {
+                  autoConnectDoneRef.current.messages = true;
+                  if (autoConnectDoneRef.current.callLogs) endAutoConnectSync();
+                } else {
+                  checkAllComplete(next);
+                }
+              }
               return next;
             });
           }
@@ -1613,19 +1712,30 @@ export function usePhoneBridge() {
         const isComplete = page >= total_pages;
         if (syncTimeoutRef.current) { clearTimeout(syncTimeoutRef.current); syncTimeoutRef.current = null; }
         setSyncTimedOut(false);
-        // Only update sync progress UI during a full replace sync.
-        // Merge/quick syncs run silently — no banner, no completion toast.
-        if (syncModeRef.current === 'replace') {
+        // Update the progress UI during a full replace sync OR the scoped
+        // auto-connect quicksync (Issue 2). Mirror of the MESSAGES_CHUNK gate.
+        if (syncModeRef.current === 'replace' || autoConnectSyncInFlightRef.current) {
+          const isAutoConnect = syncModeRef.current !== 'replace';
           const now3 = Date.now();
           if (isComplete || now3 - lastProgressFlushRef.current > 300) {
             lastProgressFlushRef.current = now3;
             setSyncProgress(prev => {
+              const logTotal = isAutoConnect
+                ? (total_count || prev?.callLogs?.total || syncEstimate?.callLogs?.total || 0)
+                : total_count;
               const next: SyncProgress = {
-                contacts: prev?.contacts ?? { done: 0, total: 0, complete: false },
+                contacts: prev?.contacts ?? { done: 0, total: 0, complete: isAutoConnect },
                 messages: prev?.messages ?? { done: 0, total: 0, complete: false },
-                callLogs: { done, total: total_count, complete: isComplete },
+                callLogs: { done, total: logTotal, complete: isComplete },
               };
-              if (isComplete) checkAllComplete(next);
+              if (isComplete) {
+                if (isAutoConnect) {
+                  autoConnectDoneRef.current.callLogs = true;
+                  if (autoConnectDoneRef.current.messages) endAutoConnectSync();
+                } else {
+                  checkAllComplete(next);
+                }
+              }
               return next;
             });
           }
@@ -2615,6 +2725,16 @@ export function usePhoneBridge() {
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
       syncTimeoutRef.current = null;
+    }
+    // Issue 2: Cancel during an auto-connect quicksync must also clear the
+    // in-flight flag + its dedicated safety timeout, otherwise the next
+    // MESSAGES_CHUNK would re-populate the (now hidden) bar and the timer
+    // would later fire setIsSyncing(false) on a stale run.
+    autoConnectSyncInFlightRef.current = false;
+    autoConnectDoneRef.current = { messages: false, callLogs: false };
+    if (autoConnectTimeoutRef.current) {
+      clearTimeout(autoConnectTimeoutRef.current);
+      autoConnectTimeoutRef.current = null;
     }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       try { wsRef.current.send('SYNC_CANCEL:{}'); } catch { /* non-fatal */ }

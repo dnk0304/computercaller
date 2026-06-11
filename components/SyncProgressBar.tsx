@@ -248,6 +248,16 @@ export const SyncProgressBar = () => {
                           <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
                           {total.toLocaleString()}
                         </span>
+                      ) : complete ? (
+                        // Complete with no rows to pull (e.g. contacts during
+                        // the auto-connect quicksync, which fetches messages +
+                        // call logs only). Show a calm "done" check, NOT a
+                        // spinner — a complete row must never appear to be
+                        // still working. (Issue 2, Forge 2026-06-11.)
+                        <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
+                          <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                          Done
+                        </span>
                       ) : total > 0 ? (
                         `${done.toLocaleString()} / ${total.toLocaleString()}`
                       ) : (
