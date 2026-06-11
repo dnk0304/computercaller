@@ -773,22 +773,6 @@ export function usePhoneBridge() {
   // + double GET_CALL_LOGS arriving simultaneously → freeze/crash.
   const quickSyncScheduledRef = useRef<boolean>(false);
 
-  // Mirror of the latest `syncData` callback so the stable `handleMessage`
-  // useCallback can invoke a FULL auto-sync on the PAIRING_ACTIVE edge without
-  // taking `syncData` as a dependency (which would re-bind ws.onmessage on
-  // every render — the exact thrash the contactsRef/currentCallRef mirrors
-  // exist to avoid). Assigned in a useEffect once `syncData` is declared.
-  // (Auto-full-on-every-(re)connect — dispatch: autosync-on-reconnect.)
-  const syncDataRef = useRef<((opts?: {
-    contacts?: boolean;
-    messages?: boolean;
-    messageSince?: number;
-    messageLimit?: number;
-    callLogs?: boolean;
-    callLogSince?: number;
-    callLogLimit?: number;
-  }) => void) | null>(null);
-
   // After a successful sync, don't auto-show the sync panel on reconnect —
   // the user can still open it manually via the Sync button. Persisted to
   // localStorage so it survives relay reconnects and page refreshes within
@@ -964,36 +948,29 @@ export function usePhoneBridge() {
         }
         setConnectionError(null);
 
-        // Auto FULL sync on EVERY (re)connect (dispatch: autosync-on-reconnect).
-        //
-        // This SUPERSEDES the old 6-hour quicksync. A full pull of the newest
-        // 2,000 messages + 2,000 call logs + ALL contacts already covers the
-        // last 6h (and far beyond), so firing the 6h quicksync as well would be
-        // a pure redundant double-fetch — and the simultaneous double
-        // GET_MESSAGES is the exact freeze/crash the quickSyncScheduledRef guard
-        // exists to prevent. So we reuse that SAME guard + 2000ms settle delay
-        // + buffer-clear, but dispatch a full `syncData(...)` instead of the
-        // raw 6h GET_* frames. Because the guard is set true here and only
-        // re-armed (reset to false) on disconnect (PAIRING_TERMINATED L~1068 and
-        // leaveActive L~2167), exactly ONE auto-full fires per connection and a
-        // fresh reconnect re-arms it. `syncData` is invoked via syncDataRef so
-        // this stable handler never takes it as a dependency.
+        // Kick the initial data catch-up (previously fired off
+        // STATUS:connected:true). Wrapped in the same dedup guard so any
+        // duplicate PAIRING_ACTIVE during a reconnect race fires only one
+        // sync. 6-hour catch-up matches the prior behaviour.
         if (!quickSyncScheduledRef.current) {
           quickSyncScheduledRef.current = true;
           setTimeout(() => {
-            // NOTE: we intentionally do NOT reset quickSyncScheduledRef to false
-            // here (unlike the old quicksync). Keeping it true for the life of
-            // the connection means a duplicate PAIRING_ACTIVE during a reconnect
-            // race cannot schedule a second auto-full. The ref is re-armed on
-            // the disconnect/leave paths so the NEXT reconnect syncs again.
+            quickSyncScheduledRef.current = false;
             if (wsRef.current?.readyState === WebSocket.OPEN) {
-              // syncData() clears the chunk buffers itself before dispatching,
-              // so no manual buffer reset is needed here.
-              syncDataRef.current?.({
-                contacts: true,                                  // ALL contacts — unbounded
-                messages: true,  messageSince: 0,  messageLimit: 2000,  // newest 2,000, all-time window
-                callLogs: true,  callLogSince: 0,  callLogLimit: 2000,  // newest 2,000, all-time window
-              });
+              const since6h = Date.now() - 6 * 60 * 60 * 1000;
+              // Reset chunk buffers — other quick-sync entry points
+              // (syncAll, getCallLogs, manual quick sync) do this; this
+              // PAIRING_ACTIVE path historically did not, so a prior
+              // sync's leftover chunks could accumulate and produce
+              // duplicate rows on merge. (Forge, 2026-06-01.)
+              messagesBufferRef.current = [];
+              callLogsBufferRef.current = [];
+              wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
+              setTimeout(() => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since6h })}`);
+                }
+              }, 300);
             }
           }, 2000);
         }
@@ -2656,31 +2633,29 @@ export function usePhoneBridge() {
   const dismissSyncPanel = useCallback(() => setShowSyncPanel(false), []);
   const openSyncPanel    = useCallback(() => setShowSyncPanel(true),  []);
 
-  // Mirror the latest `syncData` into syncDataRef so the stable handleMessage
-  // (PAIRING_ACTIVE auto-full path) can call it without depending on it. Same
-  // ref-mirror pattern as contactsRef / currentCallRef above — keeps
-  // handleMessage stable so ws.onmessage isn't torn down on every render.
-  useEffect(() => {
-    syncDataRef.current = syncData;
-  }, [syncData]);
-
-  // lobbyState→'active' edge.
+  // Auto-open Full Sync on lobbyState→'active' edge (dispatch #34 item 8).
   //
-  // HISTORY: this effect used to auto-OPEN the Full Sync panel
-  // (setShowSyncPanel(true)) on every connect (dispatch #34 item 8). That is
-  // now REMOVED (dispatch: autosync-on-reconnect). On every (re)connect we
-  // instead auto-run a FULL sync (see the PAIRING_ACTIVE handler above), and
-  // the global SyncProgressBar (mounted in app/layout.tsx) shows the live
-  // progress — so yanking the panel open on top of that is redundant and would
-  // double up the UI. The selective/manual panel is still reachable any time
-  // via its manual trigger (SyncMenuButton / Settings → Run Full Sync).
+  // REVERSAL of dispatch #32's "no auto-modal" stance — see the comment
+  // block at the top of this file (around line 25) for the rationale shift.
+  // Dennis QA: "the full sync should also auto-pop up when we connect."
   //
-  // We keep the edge-tracking ref so the transition is still observable for
-  // logging / future hooks, but it no longer opens the panel.
+  // Edge-trigger semantics: we ONLY fire on the transition INTO 'active',
+  // not on every render while already active. Without the ref, the effect
+  // would still happen to only fire on the dep change — but the ref makes
+  // the intent explicit and survives future refactors / lobbyState shape
+  // changes. Dismiss-then-stay-dismissed is enforced by the fact that
+  // re-pops require a fresh lobby→active transition, which only happens
+  // after the relay drops the pair and a new Connect+Accept lands.
+  //
+  // The panel itself (SyncSetupPanel) is mounted globally at
+  // app/app/layout.tsx, so this auto-open works in both desktop mode AND
+  // Phone Mode — Dennis's ask is universal "when we connect", not "when we
+  // connect in desktop mode".
   const prevLobbyStateRef = useRef<LobbyState | null>(null);
   useEffect(() => {
     if (prevLobbyStateRef.current !== 'active' && lobbyState === 'active') {
-      console.log('[PhoneBridge] lobbyState→active edge — auto-full sync will fire from PAIRING_ACTIVE');
+      console.log('[PhoneBridge] lobbyState→active edge — auto-opening Full Sync panel');
+      setShowSyncPanel(true);
     }
     prevLobbyStateRef.current = lobbyState;
   }, [lobbyState]);
