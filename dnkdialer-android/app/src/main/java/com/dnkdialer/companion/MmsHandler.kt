@@ -19,15 +19,32 @@ class MmsHandler(private val context: Context) {
     // now: Int.MAX_VALUE (effectively unbounded). Explicit callers (e.g. the
     // 50-row MMS catch-up tick in PhoneService.processNewMms) keep their
     // tight bounds since they pass `limit` explicitly.
-    fun getMessages(limit: Int = Int.MAX_VALUE, since: Long = 0): List<MmsMessage> {
+    fun getMessages(limit: Int = Int.MAX_VALUE, since: Long = 0, before: Long = 0): List<MmsMessage> {
         val messages = mutableListOf<MmsMessage>()
 
         try {
             // Query the MMS table.
             // MMS dates are stored in SECONDS since epoch (unlike SMS which uses ms),
-            // so divide the caller-supplied `since` (epoch ms) by 1000 before comparing.
-            val selection = if (since > 0) "${Telephony.Mms.DATE} > ?" else null
-            val selectionArgs = if (since > 0) arrayOf((since / 1000).toString()) else null
+            // so divide the caller-supplied `since`/`before` (epoch ms) by 1000 before
+            // comparing.
+            //  - `since`  : lower bound — only MMS newer than this epoch-ms timestamp.
+            //  - `before` : upper bound (exclusive) — only MMS strictly OLDER than this.
+            //               Added 2026-06-11 (Issue 1, global deeper-fetch) so a
+            //               backward GLOBAL page pulls older MMS instead of always
+            //               re-returning the newest `limit` MMS. Mirrors the SmsHandler
+            //               `DATE < ?` clause. Stays parameterized (no SQL injection).
+            val whereParts = mutableListOf<String>()
+            val argsList = mutableListOf<String>()
+            if (since > 0) {
+                whereParts.add("${Telephony.Mms.DATE} > ?")
+                argsList.add((since / 1000).toString())
+            }
+            if (before > 0) {
+                whereParts.add("${Telephony.Mms.DATE} < ?")
+                argsList.add((before / 1000).toString())
+            }
+            val selection = if (whereParts.isEmpty()) null else whereParts.joinToString(" AND ")
+            val selectionArgs = if (argsList.isEmpty()) null else argsList.toTypedArray()
 
             val cursor = context.contentResolver.query(
                 Telephony.Mms.CONTENT_URI,

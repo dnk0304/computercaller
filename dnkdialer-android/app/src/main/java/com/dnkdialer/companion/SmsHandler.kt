@@ -253,7 +253,12 @@ class SmsHandler(private val context: Context) {
         val mmsMessages = if (!address.isNullOrBlank()) {
             emptyList()
         } else {
-            mmsHandler.getMessages(limit, since)
+            // Thread `before` into the MMS path too (Issue 1, 2026-06-11). The global
+            // deeper-fetch pages backward by `before` with NO address; without this the
+            // MMS branch ignored the cursor and always re-returned the newest `limit`
+            // MMS, wasting page slots on already-loaded rows. `before` is an exclusive
+            // upper bound (epoch-ms) — MmsHandler converts to seconds internally.
+            mmsHandler.getMessages(limit, since, before)
         }
 
         // Convert MMS to SmsMessage format (reuse existing type so the web client

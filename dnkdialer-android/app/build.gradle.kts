@@ -209,8 +209,19 @@ android {
         // already consumed by the divergent apk-v33-off-v29 branch (shipped
         // computercaller-v33.apk, versionName 1.0.10). feature/saas-multiuser's
         // gradle still read 32, so 34 is the next collision-free integer.
-        versionCode = 34
-        versionName = "1.0.11"
+        // Issue 1 — on-demand deeper message fetch / Path B (2026-06-11): 34 -> 35 /
+        // 1.0.11 -> 1.0.12. Global (all-threads) backward paging: the web thread-list
+        // "Load 500 more" button, once the client-side slice is exhausted, sends an
+        // ADDRESS-LESS `before`-cursor GET_MESSAGES so the phone returns the newest
+        // `limit` messages OLDER than `before` across ALL threads (WHERE DATE < before,
+        // DESC). Android change is minimal: MmsHandler.getMessages gains a `before`
+        // upper bound (epoch-ms, exclusive; converted to the MMS table's seconds) and
+        // getMessagesWithMms threads it into the MMS path so the global page pulls older
+        // MMS instead of re-returning the newest. SMS path + the address-filtered
+        // per-thread path are unchanged (L97 short-circuit untouched). No protocol
+        // shape change — `before` was already parsed by the v26 per-thread paging.
+        versionCode = 35
+        versionName = "1.0.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -585,6 +585,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   const loadOlderMessages = (phone as any).loadOlderMessages as
     | ((address: string, before: number, limit?: number) => void)
     | undefined;
+  // GLOBAL deeper-fetch (Issue 1 / Path B). Thread-LIST "Load older messages
+  // from phone" button. Address-less backward page across ALL threads. Same
+  // defensive cast as loadOlderMessages — the button falls back to reveal-only
+  // (no fetch mode) if the bridge hasn't shipped these yet at runtime.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const loadOlderThreads = (phone as any).loadOlderThreads as
+    | ((before: number, limit?: number) => void)
+    | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hasMoreOlderOnPhone: boolean = (phone as any).hasMoreOlderOnPhone ?? true;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const isLoadingOlderThreads: boolean = (phone as any).isLoadingOlderThreads ?? false;
   // MMS full-media fetcher. The parallel bridge agent ships this on the hook
   // — keep the read defensive so the UI degrades gracefully (thumbnail-only)
   // when the field isn't there yet at runtime.
@@ -924,6 +936,40 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     [filteredThreads, threadDisplayCount]
   );
   const hasMoreThreads = filteredThreads.length > threadDisplayCount;
+
+  // GLOBAL deeper-fetch cursor (Issue 1 / Path B). The `before` for the next
+  // backward page = the date of the OLDEST message currently in the global
+  // store across ALL threads. After a global fetch merges in older rows this
+  // min recomputes LOWER, so the next tap pages further back. Derived from the
+  // raw `messages` array (not deferredMessages — we want the freshest cursor
+  // the instant a merge lands). Guarded for the empty case → null when there's
+  // nothing loaded yet (button stays in reveal/hidden mode, never fetches with
+  // a bogus cursor). Using a reduce instead of Math.min(...map) avoids a
+  // call-stack blowout on very large arrays (spread arg limit).
+  const oldestLoadedThreadMessageDate = useMemo<number | null>(() => {
+    let min: number | null = null;
+    for (const m of messages) {
+      const d = m.date;
+      if (typeof d === 'number' && (min === null || d < min)) min = d;
+    }
+    return min;
+  }, [messages]);
+
+  // Whether the thread-list button should offer a REAL phone fetch. Two gates:
+  //   1. The client-side slice is exhausted (!hasMoreThreads) — nothing left to
+  //      cheaply reveal from the already-synced store.
+  //   2. The phone still has older history (hasMoreOlderOnPhone) AND the bridge
+  //      exposes the fetcher AND we have a valid cursor to page back from.
+  const canFetchOlderThreads =
+    !hasMoreThreads &&
+    hasMoreOlderOnPhone &&
+    Boolean(loadOlderThreads) &&
+    oldestLoadedThreadMessageDate !== null;
+
+  const handleLoadOlderThreads = useCallback(() => {
+    if (!loadOlderThreads || oldestLoadedThreadMessageDate === null) return;
+    loadOlderThreads(oldestLoadedThreadMessageDate, 500);
+  }, [loadOlderThreads, oldestLoadedThreadMessageDate]);
 
   // Messages for the currently selected thread, oldest → newest.
   //
@@ -1807,9 +1853,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               }
             />
           )}
-          {/* Load more — client-side display cap on the thread list, mirrors
-              Recent Calls. Reveals +500 conversations per tap, no phone fetch. */}
-          {hasMoreThreads && (
+          {/* Load more — two-stage (Issue 1 / Path B, 2026-06-11).
+              Stage 1 (reveal): while there are still already-synced threads
+              beyond the slice, the button is a cheap CLIENT-SIDE reveal of +500
+              — no phone fetch. Stage 2 (fetch): once the slice is exhausted
+              (!hasMoreThreads) AND the phone still has older history, the button
+              becomes a REAL global backward fetch (loadOlderThreads) that pulls
+              the next page of OLDER messages across ALL threads and merges them
+              in. Hidden entirely when nothing is left in the store OR on the
+              phone. */}
+          {hasMoreThreads ? (
             <button
               type="button"
               onClick={() => setThreadDisplayCount(prev => prev + 500)}
@@ -1817,7 +1870,36 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             >
               Load 500 more ({filteredThreads.length - threadDisplayCount} remaining)
             </button>
-          )}
+          ) : canFetchOlderThreads ? (
+            <button
+              type="button"
+              onClick={handleLoadOlderThreads}
+              disabled={!isConnected || isLoadingOlderThreads}
+              aria-busy={isLoadingOlderThreads}
+              title={
+                !isConnected
+                  ? 'Connect your phone to load older messages'
+                  : undefined
+              }
+              className={clsx(
+                'w-full py-2 inline-flex items-center justify-center gap-2 text-xs font-medium rounded-xl transition-colors mt-1',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                !isConnected || isLoadingOlderThreads
+                  ? 'text-slate-400 opacity-70 cursor-not-allowed'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+              )}
+            >
+              {isLoadingOlderThreads && (
+                <span
+                  className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+              )}
+              <span>
+                {isLoadingOlderThreads ? 'Loading…' : 'Load older messages from phone'}
+              </span>
+            </button>
+          ) : null}
         </div>
       </section>
       </ErrorBoundary>
