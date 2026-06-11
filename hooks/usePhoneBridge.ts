@@ -458,6 +458,27 @@ export function usePhoneBridge() {
   const [syncTimedOut, setSyncTimedOut] = useState(false);
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Issue 1 (2026-06-11) — GLOBAL on-demand deeper fetch (Path B).
+  // `loadOlderThreads(before, limit)` sends an ADDRESS-LESS `before`-cursor
+  // GET_MESSAGES so the phone returns the newest `limit` messages OLDER than
+  // `before` across ALL threads. These two pieces of UI state let the
+  // thread-list "Load older messages from phone" button show a spinner and
+  // hide itself once the phone has nothing older left.
+  //   - hasMoreOlderOnPhone: true until a global fetch returns FEWER than
+  //     `limit` rows (start of history). Initial true = "assume more exists".
+  //   - isLoadingOlderThreads: true between send and the matching
+  //     MESSAGES_CHUNK completion (or a 6s safety timeout) so the button can
+  //     disable + spin and not double-fire.
+  const [hasMoreOlderOnPhone, setHasMoreOlderOnPhone] = useState(true);
+  const [isLoadingOlderThreads, setIsLoadingOlderThreads] = useState(false);
+  // Set when loadOlderThreads fires; read+cleared in the MESSAGES_CHUNK
+  // isComplete branch so ONLY a global deeper-fetch completion updates
+  // hasMoreOlderOnPhone / isLoadingOlderThreads. Mirrors the ref-flag style of
+  // pendingThreadFetchKeyRef / quickSyncScheduledRef. Carries the page `limit`
+  // requested so the completion can compare batch size against it.
+  const globalOlderFetchInFlightRef = useRef<number | null>(null);
+  const globalOlderFetchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // Sync completion notification — fires once when all three datasets finish.
   // The UI shows a toast banner; dismissing it clears this state. Decoupled
   // from `syncProgress` so we can drop intermediate progress re-renders entirely
@@ -1661,6 +1682,26 @@ export function usePhoneBridge() {
           // the same microtask doesn't see a stale value.
           const scopedKey = pendingThreadFetchKeyRef.current;
           pendingThreadFetchKeyRef.current = null;
+          // GLOBAL deeper-fetch completion (Issue 1). Read+clear the in-flight
+          // flag set by loadOlderThreads. Only THIS path updates the
+          // thread-list sentinel / loading state — normal sync, per-thread
+          // fetch, and quicksync all leave the flag null and skip this block.
+          // Page-size sentinel (mirrors loadOlderMessages' Option A): a full
+          // `limit`-sized raw page means "maybe more, keep the button"; fewer
+          // rows means we've reached the start of phone history → hide it.
+          // We measure the RAW fetched page (incoming.length), not the merged
+          // delta, so dedup of an already-loaded boundary row can't falsely
+          // signal end-of-history.
+          const globalOlderLimit = globalOlderFetchInFlightRef.current;
+          if (globalOlderLimit !== null) {
+            globalOlderFetchInFlightRef.current = null;
+            if (globalOlderFetchTimeoutRef.current) {
+              clearTimeout(globalOlderFetchTimeoutRef.current);
+              globalOlderFetchTimeoutRef.current = null;
+            }
+            setHasMoreOlderOnPhone(incoming.length >= globalOlderLimit);
+            setIsLoadingOlderThreads(false);
+          }
           setIsConnected(true);
           // Non-urgent: the list re-render can yield to user interactions.
           startTransition(() => {
@@ -2597,6 +2638,45 @@ export function usePhoneBridge() {
     wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ address, before, limit })}`);
   }, []);
 
+  /**
+   * GLOBAL backward paging across ALL threads (Issue 1 / Path B, 2026-06-11).
+   * Sends an ADDRESS-LESS `before`-cursor GET_MESSAGES — the phone returns the
+   * newest `limit` messages OLDER than `before` across the whole history
+   * (SmsHandler WHERE `DATE < before` DESC, no address filter → L97's
+   * effectiveSince=since branch with since=0 means no lower bound). The
+   * returned batch merges into the global store via the MESSAGES_CHUNK
+   * isComplete MERGE branch (no scopedKey, syncModeRef stays 'merge').
+   *
+   * This is the thread-LIST "Load older messages from phone" button — it fires
+   * with NO thread open, so:
+   *   - messagesBufferRef is NOT cleared (we append/merge into existing state).
+   *   - syncModeRef stays 'merge' (NEVER flipped to 'replace' here — a replace
+   *     would wipe the global store). The merge branch is the target.
+   *   - pendingThreadFetchKeyRef stays null (no scoped replace) — it already is
+   *     unless an open-thread fetch is mid-flight, which can't happen from the
+   *     list view. The MESSAGES_CHUNK handler's scopedKey path is thus skipped.
+   *
+   * Sentinel: globalOlderFetchInFlightRef carries `limit`; the chunk-completion
+   * branch compares the merged batch size against it to set hasMoreOlderOnPhone.
+   */
+  const loadOlderThreads = useCallback((before: number, limit = 500) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    // Mark a global deeper-fetch in flight (carries the requested page size so
+    // the completion can size-compare). Do NOT clear messagesBufferRef.
+    globalOlderFetchInFlightRef.current = limit;
+    setIsLoadingOlderThreads(true);
+    // Safety timeout: if the MESSAGES_CHUNK completion never lands (WS hiccup /
+    // zero rows / dropped frame) clear the loading + in-flight flags so the
+    // button re-arms instead of spinning forever. The happy path clears these
+    // first, making this a no-op.
+    if (globalOlderFetchTimeoutRef.current) clearTimeout(globalOlderFetchTimeoutRef.current);
+    globalOlderFetchTimeoutRef.current = setTimeout(() => {
+      globalOlderFetchInFlightRef.current = null;
+      setIsLoadingOlderThreads(false);
+    }, 6000);
+    wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ before, limit })}`);
+  }, []);
+
   const syncAll = useCallback(() => {
     // syncAll is a silent incremental sync — no progress bar.
     // Contacts are excluded: they change rarely and are only fetched via full syncData().
@@ -3305,6 +3385,13 @@ export function usePhoneBridge() {
     // Per-conversation backward paging — ThreadView "Older messages" button.
     // Sends GET_MESSAGES:{address, before, limit} WITHOUT clearing the buffer.
     loadOlderMessages,
+    // GLOBAL backward paging — thread-LIST "Load older messages from phone"
+    // button (Issue 1 / Path B). Address-less GET_MESSAGES:{before, limit}.
+    // hasMoreOlderOnPhone hides the button at start-of-history;
+    // isLoadingOlderThreads drives the spinner/disable.
+    loadOlderThreads,
+    hasMoreOlderOnPhone,
+    isLoadingOlderThreads,
     syncAll,
     syncData,
     dismissSyncPanel,

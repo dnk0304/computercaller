@@ -1,79 +1,52 @@
-# FORGE_PLAN.md — ComputerCaller call-waiting fix (Item A) + reply-and-hangup (Item B)
+# FORGE_PLAN.md — Issue 1: On-demand deeper message fetch (Path B)
 
-Branch: `feature/saas-multiuser` @ `0005ce3` | Date: 2026-06-03 | Author: Forge
+Branch: `feature/deeper-fetch-pathb` off `79374a6` (Issue 2 merge — current prod tip).
+Date: 2026-06-11 | Author: Forge | Ends in: signed v35 APK.
 
 ## Goal
-Two interlocking phone-bridge fixes:
-- **Item A** — second incoming call while in an active call must be visible in the
-  webapp without clobbering the active call's state. Per-call identity end-to-end
-  via a new `CALL_WAITING` frame and a `number` payload on `CALL_ENDED`.
-- **Item B** — atomic browser bridge method `declineWithMessage(number, body)` —
-  send SMS first, then `END_CALL`. v1 scope: ringing-only (not waiting calls).
+Make the Dashboard thread-list "Load 500 more" button perform a REAL global backward
+fetch from the phone once the client-side slice is exhausted — pulling the next page of
+OLDER messages across ALL threads and merging them into the global store (Path B).
 
-## Architecture Overview
-- Browser: `hooks/usePhoneBridge.ts` (state + handlers), `hooks/phoneTypes.ts`
-  (CallInfo shape + new event types).
-- Android: `dnkdialer-android/.../PhoneService.kt` (call-state observers + relay
-  emission). No `CallHandler.kt` change needed — `telecomManager.endCall()` already
-  rejects a ringing call.
-- Relay: zero changes. `server.js` is a blind pipe; it already forwards unknown
-  frame types within an active pair.
+## Architecture (verified, not assumed)
+- PhoneService `GET_MESSAGES` already parses since/limit/address/before and passes all
+  four to getMessagesWithMms. No change.
+- SmsHandler.getMessages honors `before` as exclusive `DATE < ?`. L97
+  `effectiveSince = if(addr) 0 else since` → global path (addr=null, since=0, before=X)
+  yields WHERE `DATE < X` only, DESC, capped. CORRECT as-is; no change.
+- getMessagesWithMms MMS branch passes `since` but NOT `before` → fix needed.
+- Web MESSAGES_CHUNK isComplete already has the merge branch (no scopedKey, merge mode)
+  → mergeMessages(prev, incoming). Global path reuses it.
 
-## Tech Stack Decision
-**Lighter listener+call-list approach over full InCallService adoption.** Reasoning:
-- Adopting InCallService requires the app to become the default dialer (or default
-  companion InCallService) — UX cost (system prompt), Play Store review surface,
-  and a non-trivial migration of the existing telephony observers.
-- The lighter path keeps both existing observers (legacy `PhoneStateListener` +
-  modern `TelephonyCallback`) and adds a **new `callWaitingSentRef` guard** plus a
-  RINGING-while-already-active branch that emits a distinct `CALL_WAITING` frame.
-- Per-call targeting for rejecting a specific waiting call (which only
-  InCallService can do cleanly via `Call.reject()`) is explicitly **deferred** to a
-  follow-up. v1 reply-and-hangup is ringing-only.
+## Tech decisions
+- MMS: ADD `before` to MmsHandler.getMessages (complete, preferred over skip-MMS). Mirrors
+  the existing parameterized `since` clause; MMS dates are SECONDS so before/1000.
+- Sentinel: explicit hook state `hasMoreOlderOnPhone`, set in MESSAGES_CHUNK isComplete
+  via `globalOlderFetchInFlightRef` flag.
+- Loading: `isLoadingOlderThreads` state + 6s safety timeout.
 
-## Task Breakdown
+## Tasks
+- [x] TASK-001 Android MmsHandler `before` (MmsHandler.kt + getMessagesWithMms call). DONE.
+- [x] TASK-002 versionCode 34→35, versionName 1.0.12 (build.gradle.kts). DONE.
+- [x] TASK-003 Web loadOlderThreads + refs/state + chunk-handler wiring + export. DONE.
+- [x] TASK-004 Dashboard two-mode Load-500-more rewire + oldest-date memo. DONE.
+- [x] TASK-005 Gates + signed v35 APK. DONE.
 
-### TASK-A1 (Android): emit CALL_WAITING + per-call CALL_ENDED
-- File: `dnkdialer-android/.../PhoneService.kt`
-- Add `callWaitingSentRef: AtomicBoolean`.
-- In both observers, RINGING while `callAnsweredSentRef == true` -> emit
-  `CALL_WAITING:{number,name}`.
-- `CALL_ENDED` carries `{number}` (the active number known to the service).
-- Reset `callWaitingSentRef` on IDLE.
-- Backward compat: legacy `CALL_ENDED:{}` still accepted by the browser.
+## Outcome
+- tsc --noEmit: exit 0. next build: exit 0, 34 routes (incl /app, /app/settings).
+- eslint: NO new findings (usePhoneBridge 11 [1 err,10 warn], Dashboard 32 [5 err,27 warn]
+  — identical to 79374a6 baseline). Android assembleRelease: BUILD SUCCESSFUL.
+- APK: apk-releases/computercaller-v35.apk, 3,745,114 bytes,
+  sha256 68b196debcb1745114a77eb64e869ed962a79e6c25df5f3f6604ad6a9cb0e944,
+  versionCode 35 / 1.0.12 / targetSdk 35, signer cert SHA-256 3fc108197ec681... (matches
+  v34 / OAuth cert). SIGNED in-env (keystore reachable).
+- MMS decision: ADDED `before` to MmsHandler.getMessages (complete option).
+- L97: unchanged (confirmed correct for global address-less path).
 
-### TASK-A2 (Browser): track waitingCall + non-clobbering CALL_INCOMING
-- Files: `hooks/usePhoneBridge.ts`, `hooks/phoneTypes.ts`
-- Add `'CALL_WAITING'` to `PhoneEventType`.
-- Add `waitingCall: CallInfo | null` state slice.
-- `CALL_INCOMING`: route into `waitingCall` if `currentCall` already active.
-- `CALL_WAITING`: writes to `waitingCall` only.
-- `CALL_ENDED`: if payload `number` matches active -> clear and promote waiting;
-  if matches waiting -> clear waiting. No `number` -> legacy behavior (clear active).
-- Expose `waitingCall` via the hook return so Pixel reads it through `usePhone()`.
+Order: 001→002 ; 003→004 ; 005 last.
 
-### TASK-B1 (Browser): declineWithMessage(number, body)
-- File: `hooks/usePhoneBridge.ts`
-- `sendSms(number, body)` then `endCall()`. Order matters.
-- v1 ringing-only — JSDoc warns that `endCall()` can't target a waiting call.
-
-### TASK-B2 (Android confirmation): END_CALL rejects ringing
-- No Android change. `telecomManager.endCall()` rejects the ringing call per
-  Android docs. Documented in the Niki return note.
-
-## Execution Order
-A1 -> A2 -> B1. Sequential.
-
-## Risk Flags
-- OEM variance on Samsung One UI: aggregate `onCallStateChanged` may not re-fire
-  RINGING for a second call. If neither observer sees the RINGING transition while
-  OFFHOOK, `CALL_WAITING` won't emit — InCallService is the only fully reliable
-  path. Flagged to Ken.
-- v29/v30 APKs in the field never send `CALL_WAITING` and send `CALL_ENDED:{}`.
-  Browser remains compatible.
-
-## Status
-- [x] TASK-A1
-- [x] TASK-A2
-- [x] TASK-B1
-- [x] TASK-B2 (no change, documented)
+## Risk flags
+- L97 must NOT change (breaks per-thread). Confirmed unchanged.
+- Stay out of: quicksync (Issue 2), per-thread loadOlderMessages, mergeMessages,
+  conversationKey grouping, auto-sync-on-connect.
+- Keystore reachable in-env → CAN sign v35.
