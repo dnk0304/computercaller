@@ -17,6 +17,12 @@ import {
   getDeviceLabel,
   getEffectiveDeviceLabel,
 } from '@/lib/deviceLabel';
+import {
+  RINGING_TTL_MS,
+  RINGING_SWEEP_INTERVAL_MS,
+  expiredRingingCallIds,
+  findEmptyNumberActiveFold,
+} from '@/lib/callQueueGuards';
 
 const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
 // Defensive client-side TTL for a pending pair request. The relay enforces a
@@ -369,6 +375,7 @@ export function usePhoneBridge() {
   // (callsRef is declared in the refs block further down but hoisted via var
   //  binding; the assignment runs at call time, long after declaration.)
   const upsertCall = useCallback((call: CallInfo) => {
+    lastCallEventAtRef.current.set(call.callId, Date.now());
     setCalls(prev => {
       const idx = prev.findIndex(c => c.callId === call.callId);
       const next =
@@ -383,6 +390,7 @@ export function usePhoneBridge() {
   // Patch a call's mutable fields by callId. No-op if the call is gone (e.g. a
   // CALL_ANSWERED that races a CALL_ENDED).
   const patchCall = useCallback((callId: string, patch: Partial<CallInfo>) => {
+    lastCallEventAtRef.current.set(callId, Date.now());
     setCalls(prev => {
       const idx = prev.findIndex(c => c.callId === callId);
       if (idx === -1) return prev;
@@ -394,6 +402,7 @@ export function usePhoneBridge() {
 
   // Remove a call by callId.
   const removeCall = useCallback((callId: string) => {
+    lastCallEventAtRef.current.delete(callId);
     setCalls(prev => {
       const next = prev.filter(c => c.callId !== callId);
       callsRef.current = next;
@@ -403,6 +412,7 @@ export function usePhoneBridge() {
 
   // Clear ALL calls (disconnect / unload / leaveActive teardown).
   const clearAllCalls = useCallback(() => {
+    lastCallEventAtRef.current.clear();
     callsRef.current = [];
     setCalls([]);
   }, []);
@@ -792,6 +802,11 @@ export function usePhoneBridge() {
   // handleMessage callback — same rationale as the refs above. The legacy-frame
   // mappers read this to dedupe-by-number and to resolve match-by-number.
   const callsRef = useRef<CallInfo[]>([]);
+  // Staleness TTL (B1, 2026-06-12). callId → timestamp of the last bridge
+  // event that touched the row (upsert/patch). The sweep effect below expires
+  // RINGING rows the phone has gone silent on — web-side safety net for
+  // pre-v37 APKs that never emit CALL_REMOVE for an abandoned background leg.
+  const lastCallEventAtRef = useRef<Map<string, number>>(new Map());
 
   // MMS_MEDIA_CHUNK reassembly. Android slices each `GET_MMS_FULL` response
   // into 64 KB base64 chunks; we collect them keyed by messageId, then resolve
@@ -843,6 +858,57 @@ export function usePhoneBridge() {
   // currentCall.startTime via their own private setInterval.
   const startCallTimer = useCallback(() => { /* no-op — local timers used */ }, []);
   const stopCallTimer  = useCallback(() => { /* no-op — local timers used */ }, []);
+
+  // ---- Local-removal teardown (TTL expiry + manual ✕ dismiss) -----------
+  // Shared removal path that mirrors the CALL_REMOVE handler's bookkeeping
+  // (missed-call accounting + foreground timer-ref reset) WITHOUT sending any
+  // frame to the phone — these are browser-local removals only.
+  const removeCallLocally = useCallback((callId: string, countMissed: boolean) => {
+    const target = callsRef.current.find(c => c.callId === callId);
+    if (!target) return;
+    const wasForeground = target.callId === foregroundOf(callsRef.current)?.callId;
+    // Missed accounting only applies to TTL expiry (an incoming call that was
+    // never answered). Manual dismiss is a deliberate UI act — no badge bump.
+    if (countMissed && target.isIncoming && target.state !== 'active') {
+      setTimeout(() => setMissedCallCount(c => c + 1), 0);
+    }
+    removeCall(callId);
+    if (wasForeground) {
+      stopCallTimer();
+      lastCallWasAnsweredRef.current = false;
+      callStartTimeRef.current = null;
+    }
+  }, [removeCall, stopCallTimer]);
+
+  // B2 (2026-06-12): manual ✕ dismiss on a queue chip. LOCAL removal only —
+  // NO frame is sent to the phone; if the call is real it continues on the
+  // handset. This is a UI dismiss, not a hang-up.
+  const dismissCall = useCallback((callId: string) => {
+    console.log('[PhoneBridge] dismissCall (local UI removal)', { callId });
+    removeCallLocally(callId, false);
+  }, [removeCallLocally]);
+
+  // B1 (2026-06-12): RINGING-chip staleness sweep. Any ringing row with no
+  // bridge event for RINGING_TTL_MS auto-expires as a missed call. ACTIVE
+  // rows are never TTL'd (long real calls get no updates by design). The
+  // interval only runs while a ringing row exists.
+  useEffect(() => {
+    if (!calls.some(c => c.state === 'ringing')) return;
+    const sweep = () => {
+      const expired = expiredRingingCallIds(
+        callsRef.current,
+        lastCallEventAtRef.current,
+        Date.now(),
+        RINGING_TTL_MS
+      );
+      for (const id of expired) {
+        console.warn('[PhoneBridge] ringing chip TTL-expired — removing as missed', { callId: id });
+        removeCallLocally(id, true);
+      }
+    };
+    const timer = setInterval(sweep, RINGING_SWEEP_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [calls, removeCallLocally]);
 
   // Parse incoming message
   const parseMessage = (data: string): { type: PhoneEventType; payload: any } | null => {
@@ -1415,12 +1481,20 @@ export function usePhoneBridge() {
         // subsequent CALL_UPDATE / CALL_REMOVE (which target by callId) hit it.
         // We fold only rows currently present in calls[] — already-removed ids
         // (e.g. v36 transient-IDLE teardown) are never resurrected.
+        // B3 (2026-06-12): empty-number ACTIVE+ACTIVE collapse. A pre-v37 APK
+        // can mint one registry entry per repeated empty-number OFFHOOK (the
+        // WhatsApp/VoIP flood) — each arrives as a distinct active CALL_ADD
+        // with number ''. Two active empty-number rows are physically
+        // impossible for SIM calls (aggregate OFFHOOK = one active leg), so
+        // fold instead of inserting a twin. Two RINGING '' rows still coexist
+        // (real SIM call-waiting — 973536e semantics preserved).
         const existing =
-          number !== ''
+          (number !== ''
             ? callsRef.current.find(
                 c => c.callId !== callId && normNum(c.number) === normNum(number)
               )
-            : undefined;
+            : undefined) ??
+          findEmptyNumberActiveFold(callsRef.current, callId, number, state);
         // Stronger state wins: if the local row already went 'active' (legacy
         // CALL_ANSWERED landed first), a trailing ringing/dialing CALL_ADD for
         // the same call must not demote it.
@@ -3454,6 +3528,9 @@ export function usePhoneBridge() {
     sendDtmf,
     answerCall,
     endCall,
+    // B2 (2026-06-12): local-only chip dismiss for the call-queue band. Never
+    // sends a frame to the phone — UI removal, not a hang-up.
+    dismissCall,
     sendSms,
     // Item B (2026-06-03). Atomic "decline with message" — send SMS, then
     // reject the ringing call. v1 ringing-only: caller MUST gate to

@@ -92,6 +92,7 @@ export function CallQueueBand() {
     endCall,
     declineWithMessage,
     sendSms,
+    dismissCall,
   } = usePhone();
 
   // "Message sent" snapshot, keyed by callId, so a chip can confirm a quick
@@ -174,6 +175,7 @@ export function CallQueueBand() {
                 onHangUpForeground={endCall}
                 onQuickReply={fireQuickReply}
                 onSendSms={fireSms}
+                onDismiss={dismissCall}
                 hasOtherCalls={calls.length > 1}
               />
             </li>
@@ -201,6 +203,10 @@ interface CallChipProps {
   onQuickReply: (callId: string, to: string, body: string) => void;
   /** Plain SMS to this call's number (non-destructive). */
   onSendSms: (callId: string, to: string, body: string) => void;
+  /** B2 (2026-06-12): LOCAL removal of this chip from calls[] — no frame is
+   *  sent to the phone (a real call continues on the handset). UI dismiss,
+   *  not a hang-up. Available on EVERY chip as the stale-chip escape hatch. */
+  onDismiss: (callId: string) => void;
   /** True when 2+ calls are in flight — gates the foreground quick-reply off
    *  (declineWithMessage can't target a specific leg then). */
   hasOtherCalls: boolean;
@@ -214,6 +220,7 @@ function CallChip({
   onHangUpForeground,
   onQuickReply,
   onSendSms,
+  onDismiss,
   hasOtherCalls,
 }: CallChipProps) {
   // Reply/SMS sub-panel state, mirroring the GlobalDialer call surface:
@@ -387,6 +394,20 @@ function CallChip({
             )}
           </div>
         )}
+
+        {/* B2 (2026-06-12): ✕ dismiss — on EVERY chip, outside the sent-notice
+            swap so it is always reachable. LOCAL list removal only; never
+            sends a frame to the phone. Ghost styling + 32px hit target keeps
+            the single-line compact height (689b7e0) intact. */}
+        <button
+          type="button"
+          onClick={() => onDismiss(call.callId)}
+          aria-label="Dismiss from list"
+          title="Dismiss from list"
+          className="h-8 w-6 -mr-1 rounded-md inline-flex items-center justify-center flex-shrink-0 text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+        >
+          <X className="w-3.5 h-3.5" aria-hidden="true" />
+        </button>
       </div>
 
       {/* Transient composer — expands the chip downward while open. */}
