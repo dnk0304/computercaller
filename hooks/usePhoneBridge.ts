@@ -11,6 +11,7 @@ import type {
   CallLogEntry
 } from './phoneTypes';
 import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
+import { isPlaceholderAddress, evictHealedPlaceholders } from '@/lib/messagePlaceholders';
 import { normalizePayload } from '@/lib/normalizePayload';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 import {
@@ -269,7 +270,13 @@ function mergeMessages(
   // Incoming first so it wins on id collision (newer / authoritative).
   for (const m of incoming) accept(m);
   for (const m of prev) accept(m);
-  return out.sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+  // Self-heal pass (2026-06-12 "Unknown thread" bug): once a properly-
+  // addressed copy of a message is in the merged set, drop any placeholder-
+  // addressed copy of the same message (same direction + body, close date).
+  // See lib/messagePlaceholders.ts for the Android-side root cause.
+  return evictHealedPlaceholders(
+    out.sort((a, b) => (b.date ?? 0) - (a.date ?? 0))
+  );
 }
 
 /**
@@ -782,6 +789,15 @@ export function usePhoneBridge() {
   // chat-mixing bug, 2026-06-03) while still leaving rows for OTHER
   // conversations untouched in the global store. Cleared after each commit.
   const pendingThreadFetchKeyRef = useRef<string | null>(null);
+
+  // Rate limiter for the placeholder-address self-heal refetch (2026-06-12
+  // "Unknown thread" bug). When a live SMS_RECEIVED frame arrives WITHOUT a
+  // usable sender address (Android MMS observer racing the messaging app's
+  // staged provider write, or a broadcast with null originatingAddress), we
+  // schedule ONE quiet merge refetch so the properly-addressed provider row
+  // replaces the placeholder. This ref holds the last time such a refetch
+  // was armed; at most one per 30s.
+  const placeholderRefetchAtRef = useRef(0);
 
   // Mirror of `contacts` state, kept in a ref so the CALL_INCOMING /
   // CALL_LOG_ENTRY handlers below can look up a caller's contact name without
@@ -1607,6 +1623,36 @@ export function usePhoneBridge() {
           // omit it, in which case the field stays undefined.
           simId: typeof payload.simId === 'number' ? payload.simId : undefined,
         };
+        // 2026-06-12 "Unknown thread" bug: a live frame can arrive WITHOUT a
+        // usable sender address — Android's MMS observer races the messaging
+        // app's staged provider write (addr rows land after the pdu row, so
+        // MmsHandler falls back to the literal "Unknown"), and SmsReceiver has
+        // the same fallback for a null originatingAddress. Fixed at the source
+        // in APK v38 (pushNewMmsEntries holds the watermark + retries), but
+        // v36/v37 devices still ship the placeholder. Self-heal: keep the
+        // message (don't lose data) and schedule ONE quiet merge refetch of
+        // the recent window — the provider row carries the real address by
+        // then, and mergeMessages/evictHealedPlaceholders drops the
+        // placeholder copy. The 4s delay gives the messaging app time to
+        // finish its staged write before the phone re-reads the provider.
+        if (newSms.type === 'inbox' && isPlaceholderAddress(newSms.address)) {
+          console.warn('[PhoneBridge] SMS_RECEIVED with placeholder sender — scheduling self-heal refetch', {
+            id: newSms.id, date: newSms.date,
+          });
+          const nowMs = Date.now();
+          if (nowMs - placeholderRefetchAtRef.current > 30_000) {
+            placeholderRefetchAtRef.current = nowMs;
+            setTimeout(() => {
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                // Merge-mode fetch: no buffers cleared, syncModeRef stays
+                // 'merge', no scoped key — same contract as loadOlderThreads.
+                wsRef.current.send(
+                  `GET_MESSAGES:${JSON.stringify({ since: Date.now() - 10 * 60 * 1000, limit: 50 })}`
+                );
+              }
+            }, 4000);
+          }
+        }
         setMessages(prev => {
           // Dedupe by ID (fast path) OR by content — only scan the 200 most
           // recent messages. Duplicates from SmsReceiver/ContentObserver always
@@ -1629,7 +1675,12 @@ export function usePhoneBridge() {
              && Math.abs(m.date - newSms.date) < 10000)
           );
           if (isDuplicate) return prev;
-          return [newSms, ...prev];
+          // Self-heal pass: if this frame carries the REAL address for a
+          // message that previously landed with a placeholder address (or
+          // vice versa), drop the placeholder copy so no "Unknown" thread
+          // lingers. No-op (same reference semantics) when no placeholder
+          // rows exist.
+          return evictHealedPlaceholders([newSms, ...prev]);
         });
         break;
       }
