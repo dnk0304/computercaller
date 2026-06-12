@@ -152,17 +152,16 @@ export function CallQueueBand() {
       // beneath it in normal flow, so it can't overlap.
       className="flex-shrink-0 border-b border-slate-200 bg-white/70 backdrop-blur-sm"
     >
-      <div className="px-6 py-2.5">
-        <div className="flex items-center gap-2 mb-1.5">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-            {calls.length === 1 ? 'Active call' : `Active calls · ${calls.length}`}
-          </span>
-        </div>
+      {/* Compact band (2026-06-12): the separate "Active calls · N" label row
+          was dropped to hit Dennis's ~50% height target — the count lives in
+          the list's aria-label instead. */}
+      <div className="px-4 py-1.5">
         {/* Single horizontal band. Chips never wrap (flex-shrink-0 + nowrap);
             overflow scrolls horizontally so the dashboard columns below are
             never pushed down unpredictably. */}
         <ul
-          className="flex items-stretch gap-2.5 overflow-x-auto pb-1 -mb-1"
+          aria-label={calls.length === 1 ? '1 active call' : `${calls.length} active calls`}
+          className="flex items-stretch gap-2 overflow-x-auto pb-1 -mb-1"
           style={{ scrollbarWidth: 'thin' }}
         >
           {calls.map((call) => (
@@ -262,17 +261,25 @@ function CallChip({
     setCustomText('');
   };
 
+  // Compact pass (2026-06-12, Dennis): ONE row per chip — identity, state and
+  // actions inline. Actions are icon-only (h-8/w-8 = 32px touch targets, aria-
+  // labels + titles carry the verb). The secondary number line was dropped;
+  // when a contact name is shown the number moves to the identity title attr.
+  // The reply/sent sub-states still expand the chip downward — transient only.
+  const displayName = call.name || call.number || 'Number hidden';
+
   return (
     <div
       className={clsx(
-        'relative w-60 rounded-xl border px-3 py-2.5 transition-colors',
+        'relative rounded-lg border px-2 py-1.5 transition-colors',
+        replyView !== 'hidden' ? 'w-56' : 'max-w-[14rem]',
         isForeground
           ? 'border-emerald-200 bg-emerald-50/60 ring-1 ring-emerald-200/60'
           : 'border-slate-200 bg-white',
       )}
     >
-      {/* Identity row */}
-      <div className="flex items-center gap-2">
+      {/* Single line: avatar · name/number · state · actions */}
+      <div className="flex items-center gap-1.5">
         <div className="relative flex-shrink-0">
           {isRinging && (
             <span
@@ -282,7 +289,7 @@ function CallChip({
           )}
           <div
             className={clsx(
-              'relative w-8 h-8 rounded-full flex items-center justify-center',
+              'relative w-6 h-6 rounded-full flex items-center justify-center',
               isRinging
                 ? 'bg-emerald-50 ring-2 ring-emerald-200'
                 : isActive
@@ -291,41 +298,99 @@ function CallChip({
             )}
           >
             {isRinging ? (
-              <PhoneIncoming className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+              <PhoneIncoming className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
             ) : isActive ? (
-              <PhoneCall className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+              <PhoneCall className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
             ) : (
-              <Phone className="w-4 h-4 text-slate-500" aria-hidden="true" />
+              <Phone className="w-3.5 h-3.5 text-slate-500" aria-hidden="true" />
             )}
           </div>
         </div>
 
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-bold text-slate-900 truncate">
-            {call.name || call.number || 'Number hidden'}
-          </p>
-          {call.name && (
-            <p className="text-[10px] text-slate-500 truncate">{call.number}</p>
-          )}
-        </div>
+        <p
+          className="min-w-0 flex-1 text-xs font-bold text-slate-900 truncate"
+          title={call.name ? `${call.name} · ${call.number}` : undefined}
+        >
+          {displayName}
+        </p>
 
         <span
           className={clsx(
-            'text-[8px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full flex-shrink-0',
+            'text-[9px] font-semibold uppercase tracking-wide px-1.5 py-px rounded-full flex-shrink-0',
             badge.cls,
           )}
         >
           {badge.label}
         </span>
+
+        {/* Inline action cluster (sent-notice swaps in for it). */}
+        {sentNotice ? (
+          <span className="text-[10px] text-emerald-600 font-medium inline-flex items-center gap-1 max-w-[7rem] flex-shrink-0">
+            <Check className="w-3 h-3 flex-shrink-0" aria-hidden="true" />
+            <span className="truncate">Sent</span>
+          </span>
+        ) : (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {/* Answer — shown for any ringing call (foreground OR background).
+                answerCall() answers the ringing call; this is the ONE action
+                that's safe on a background chip under Path A. */}
+            {isRinging && (
+              <button
+                type="button"
+                onClick={onAnswer}
+                aria-label={`Answer call from ${call.name || call.number || 'unknown caller'}`}
+                title="Answer"
+                className="h-8 w-8 rounded-lg inline-flex items-center justify-center bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white shadow-sm shadow-emerald-500/30 transition-all"
+              >
+                <Phone className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            )}
+
+            {/* Message affordance:
+                • foreground ringing sole-call → quick-reply + decline.
+                • otherwise → plain Send SMS (non-destructive).
+                Always safe — never ends a call by itself. Disabled with no
+                number to text. */}
+            <button
+              type="button"
+              onClick={() => setReplyView('chips')}
+              disabled={!hasNumber}
+              aria-label={
+                quickReplyIsDecline
+                  ? `Reply with a message and decline call from ${call.name || call.number || 'this caller'}`
+                  : `Send a text to ${call.name || call.number || 'this caller'}`
+              }
+              title={quickReplyIsDecline ? 'Reply with message & decline' : 'Send a text'}
+              className={clsx(
+                'h-8 w-8 rounded-lg inline-flex items-center justify-center transition-colors',
+                hasNumber
+                  ? 'bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200'
+                  : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed',
+              )}
+            >
+              <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+
+            {/* Hang up / Decline — FOREGROUND ONLY. Path A: endCall() targets
+                the foreground call, so a hang-up on a background chip would end
+                the WRONG call. Background chips deliberately omit this. */}
+            {isForeground && (
+              <button
+                type="button"
+                onClick={onHangUpForeground}
+                aria-label={isRinging ? 'Decline the current call' : 'Hang up the current call'}
+                title={isRinging ? 'Decline the current call' : 'Hang up the current call'}
+                className="h-8 w-8 rounded-lg inline-flex items-center justify-center bg-rose-500 hover:bg-rose-600 active:scale-95 text-white shadow-sm shadow-rose-500/30 transition-all"
+              >
+                <PhoneOff className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Action area */}
-      {sentNotice ? (
-        <p className="mt-2 text-[10px] text-emerald-600 font-medium inline-flex items-center gap-1 max-w-full">
-          <Check className="w-3 h-3 flex-shrink-0" aria-hidden="true" />
-          <span className="truncate">Sent: “{sentNotice}”</span>
-        </p>
-      ) : replyView !== 'hidden' ? (
+      {/* Transient composer — expands the chip downward while open. */}
+      {!sentNotice && replyView !== 'hidden' && (
         <ChipReplyPanel
           view={replyView}
           chips={chips}
@@ -343,81 +408,6 @@ function CallChip({
               : `Send message to ${call.name || call.number || 'this caller'}`
           }
         />
-      ) : (
-        <div className="mt-2 flex items-center gap-1.5">
-          {/* Answer — shown for any ringing call (foreground OR background).
-              answerCall() answers the ringing call; this is the ONE action
-              that's safe on a background chip under Path A. */}
-          {isRinging && (
-            <button
-              type="button"
-              onClick={onAnswer}
-              aria-label={`Answer call from ${call.name || call.number || 'unknown caller'}`}
-              className="flex-1 h-7 rounded-lg text-[11px] font-semibold inline-flex items-center justify-center gap-1 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white shadow-sm shadow-emerald-500/30 transition-all"
-            >
-              <Phone className="w-3 h-3" aria-hidden="true" />
-              Answer
-            </button>
-          )}
-
-          {/* Message affordance:
-              • foreground ringing sole-call → quick-reply + decline.
-              • otherwise → plain Send SMS (non-destructive).
-              Always safe — never ends a call by itself. Disabled with no
-              number to text. */}
-          <button
-            type="button"
-            onClick={() => setReplyView('chips')}
-            disabled={!hasNumber}
-            aria-label={
-              quickReplyIsDecline
-                ? `Reply with a message and decline call from ${call.name || call.number || 'this caller'}`
-                : `Send a text to ${call.name || call.number || 'this caller'}`
-            }
-            title={quickReplyIsDecline ? 'Reply with message & decline' : 'Send a text'}
-            className={clsx(
-              'h-7 px-2 rounded-lg text-[11px] font-semibold inline-flex items-center justify-center gap-1 transition-colors',
-              hasNumber
-                ? 'bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200'
-                : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed',
-            )}
-          >
-            <MessageSquare className="w-3 h-3" aria-hidden="true" />
-            {quickReplyIsDecline ? 'Reply' : 'Text'}
-          </button>
-
-          {/* Hang up — FOREGROUND ONLY. Path A: endCall() targets the
-              foreground call, so a hang-up on a background chip would end the
-              WRONG call. Background chips deliberately omit this. The label is
-              honest about call-stepping. */}
-          {isForeground && !isRinging && (
-            <button
-              type="button"
-              onClick={onHangUpForeground}
-              aria-label="Hang up the current call"
-              title="Hang up the current call"
-              className="h-7 px-2 rounded-lg text-[11px] font-semibold inline-flex items-center justify-center gap-1 bg-rose-500 hover:bg-rose-600 active:scale-95 text-white shadow-sm shadow-rose-500/30 transition-all"
-            >
-              <PhoneOff className="w-3 h-3" aria-hidden="true" />
-              Hang up
-            </button>
-          )}
-
-          {/* When the foreground call is RINGING (an outgoing/incoming foreground
-              that's still ringing), a Decline ends it. Still foreground-only,
-              still safe — it's the call endCall() targets. */}
-          {isForeground && isRinging && (
-            <button
-              type="button"
-              onClick={onHangUpForeground}
-              aria-label="Decline the current call"
-              title="Decline the current call"
-              className="h-7 w-7 rounded-lg inline-flex items-center justify-center bg-rose-500 hover:bg-rose-600 active:scale-95 text-white shadow-sm shadow-rose-500/30 transition-all flex-shrink-0"
-            >
-              <PhoneOff className="w-3 h-3" aria-hidden="true" />
-            </button>
-          )}
-        </div>
       )}
     </div>
   );
@@ -426,9 +416,9 @@ function CallChip({
 // =====================================================================
 // ChipReplyPanel — compact quick-reply / SMS composer for a band chip.
 // =====================================================================
-// Horizontal-band variant of GlobalDialer's CallReplyPanel. The band chip is
-// 240px wide, so chips render as a tight vertical stack inside the chip rather
-// than a flex-wrap row.
+// Horizontal-band variant of GlobalDialer's CallReplyPanel. While the panel is
+// open the chip locks to w-56 (224px), so chips render as a tight vertical
+// stack inside the chip rather than a flex-wrap row.
 interface ChipReplyPanelProps {
   view: 'chips' | 'custom';
   chips: ReadonlyArray<BandQuickReply>;
