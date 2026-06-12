@@ -31,16 +31,21 @@ import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
  *   design language and the SAME `calls[]` shape + bridge methods — no new
  *   call-state logic, no shape change.
  *
- * ULTRA-COMPACT pass (2026-06-12, Dennis: "50% of what it is now vertically
- * and 40% smaller horizontally. lock it in."):
- *   • Band ≈29px tall: py-px on the inner wrapper, chips are a single 24px
- *     row + 1px borders. No label row, no badge text.
- *   • Chips ≤134px wide (max-w-[134px]).
+ * LOCKED layout (2026-06-12, Dennis — FINAL, after the ultra-compact pass
+ * truncated numbers to "+47…": "Make it so it's exactly high enough so the
+ * number fits and our buttons right under. Lock that. So I can see the whole
+ * number."):
+ *   • TWO-ROW chip. Row 1 = the FULL number (or name) — NEVER truncated, no
+ *     max-width clamp; the chip is fit-content (w-max) and grows to whatever
+ *     the identity needs. Row 2 = the action buttons directly beneath.
+ *   • Band height = exactly those two compact rows + minimal padding:
+ *     20px identity row + 24px action row + 2px chip borders + 2px band
+ *     padding ≈ 48px total. Nothing more.
  *   • Avatar circle → 8px status dot (color = state; ringing pulses).
  *     State text lives in sr-only + the chip's title attr.
  *   • Actions are 24×24px icon buttons. DELIBERATE tradeoff: below the 32px
  *     touch ideal, but Dennis's density spec wins; aria-labels + titles kept.
- *   • Quick-reply / custom SMS no longer inflates the chip — it opens as an
+ *   • Quick-reply / custom SMS never inflates the chip — it opens as an
  *     absolutely-positioned popover BELOW the band (z-30). While any popover
  *     is open the chip list switches from overflow-x-auto to overflow-visible
  *     so the popover isn't clipped by the scroll container; horizontal scroll
@@ -178,8 +183,9 @@ export function CallQueueBand() {
       // beneath it in normal flow, so it can't overlap.
       className="flex-shrink-0 border-b border-slate-200 bg-white/70 backdrop-blur-sm"
     >
-      {/* Ultra-compact band: py-px + 26px chips ≈ 29px total. The count lives
-          in the list's aria-label; there is no visible label row. */}
+      {/* LOCKED band: py-px + 46px two-row chips ≈ 48px total — exactly the
+          identity row + the action row, nothing more. The count lives in the
+          list's aria-label; there is no visible label row. */}
       <div className="px-3 py-px">
         {/* Single horizontal band. Chips never wrap (flex-shrink-0 + nowrap);
             overflow scrolls horizontally — EXCEPT while a reply popover is
@@ -312,25 +318,25 @@ function CallChip({
     setCustomText('');
   };
 
-  // Ultra-compact (2026-06-12, Dennis): ONE 24px row — status dot, truncated
-  // identity, 24×24 icon actions. State text is sr-only; the chip's title attr
-  // carries name · number · state for hover. KNOWN tradeoff: on a foreground
-  // ringing chip the action cluster (4 buttons) eats most of the 134px, so the
-  // visible name is minimal — aria/title carry full identity.
+  // LOCKED layout (2026-06-12, Dennis — FINAL): two rows. Row 1 = dot + the
+  // FULL number/name (whitespace-nowrap, NO truncate, NO max-width — the chip
+  // is w-max and grows to fit) + ✕ dismiss. Row 2 = the action buttons
+  // directly beneath. Dennis: "exactly high enough so the number fits and our
+  // buttons right under. Lock that."
   const displayName = call.name || call.number || 'Number hidden';
 
   return (
     <div
       className={clsx(
-        'relative rounded-md border px-1 max-w-[134px] transition-colors',
+        'relative rounded-md border px-1.5 w-max transition-colors',
         isForeground
           ? 'border-emerald-200 bg-emerald-50/60'
           : 'border-slate-200 bg-white',
       )}
       title={`${call.name ? `${call.name} · ${call.number}` : displayName} · ${dot.label}`}
     >
-      {/* Single 24px line: dot · name/number · actions */}
-      <div className="flex h-6 items-center gap-1">
+      {/* Row 1 (20px): dot · FULL name/number · dismiss. Never truncates. */}
+      <div className="flex h-5 items-center gap-1">
         <span className="relative flex-shrink-0 w-2 h-2" aria-hidden="true">
           {isRinging && (
             <span className="absolute -inset-0.5 rounded-full ring-2 ring-emerald-400/50 animate-pulse" />
@@ -339,18 +345,35 @@ function CallChip({
         </span>
         <span className="sr-only">{dot.label}.</span>
 
-        <p className="min-w-0 flex-1 text-xs font-semibold text-slate-900 truncate">
+        <p className="text-xs font-semibold text-slate-900 whitespace-nowrap leading-none">
           {displayName}
         </p>
 
-        {/* Inline action cluster (sent-notice swaps in for it). */}
+        {/* B2 (2026-06-12): ✕ dismiss — on EVERY chip, outside the sent-notice
+            swap so it is always reachable. LOCAL list removal only; never
+            sends a frame to the phone. Sits at the end of the identity row so
+            row 2 stays pure actions. */}
+        <button
+          type="button"
+          onClick={() => onDismiss(call.callId)}
+          aria-label="Dismiss from list"
+          title="Dismiss from list"
+          className="ml-auto h-5 w-5 -mr-1 rounded-md inline-flex items-center justify-center flex-shrink-0 text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+        >
+          <X className="w-3 h-3" aria-hidden="true" />
+        </button>
+      </div>
+
+      {/* Row 2 (24px): action buttons directly under the number
+          (sent-notice swaps in for them). */}
+      <div className="flex h-6 items-center gap-0.5 pb-0.5">
         {sentNotice ? (
           <span className="text-[10px] text-emerald-600 font-medium inline-flex items-center gap-0.5 flex-shrink-0">
             <Check className="w-3 h-3 flex-shrink-0" aria-hidden="true" />
             Sent
           </span>
         ) : (
-          <div className="flex items-center flex-shrink-0">
+          <>
             {/* Answer — shown for any ringing call (foreground OR background).
                 answerCall() answers the ringing call; this is the ONE action
                 that's safe on a background chip under Path A. */}
@@ -406,21 +429,8 @@ function CallChip({
                 <PhoneOff className="w-3 h-3" aria-hidden="true" />
               </button>
             )}
-          </div>
+          </>
         )}
-
-        {/* B2 (2026-06-12): ✕ dismiss — on EVERY chip, outside the sent-notice
-            swap so it is always reachable. LOCAL list removal only; never
-            sends a frame to the phone. 24×24 hit target. */}
-        <button
-          type="button"
-          onClick={() => onDismiss(call.callId)}
-          aria-label="Dismiss from list"
-          title="Dismiss from list"
-          className="h-6 w-6 -mr-1 rounded-md inline-flex items-center justify-center flex-shrink-0 text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-        >
-          <X className="w-3 h-3" aria-hidden="true" />
-        </button>
       </div>
 
       {/* Reply popover — floats BELOW the band (never inflates it). */}
