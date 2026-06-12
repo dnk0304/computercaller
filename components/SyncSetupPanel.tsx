@@ -172,12 +172,12 @@ export const SyncSetupPanel = () => {
   const [contacts, setContacts] = useState(true);
   const [messages, setMessages] = useState(true);
   const [callLogs, setCallLogs] = useState(true);
-  // Default to "Last 3 months" — covers the typical user's recent communication
-  // without pulling years of dormant data on first sync. Contacts is always
+  // Default to "Last 30 days" — covers the typical user's recent communication
+  // without pulling months of dormant data on first sync. Contacts is always
   // a full sync (no range — see contactsNote below). A deeper range (up to
   // 1 year) is one click away if the user wants more history.
-  const [messageRange, setMessageRange] = useState<RangeKey>('3mo');
-  const [callLogRange, setCallLogRange] = useState<RangeKey>('3mo');
+  const [messageRange, setMessageRange] = useState<RangeKey>('30d');
+  const [callLogRange, setCallLogRange] = useState<RangeKey>('30d');
 
   // Per-row preview counts. We keep these LOCAL to each row rather than reading
   // the shared `syncEstimate` live, because the phone's SYNC_ESTIMATE response
