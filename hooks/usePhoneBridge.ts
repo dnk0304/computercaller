@@ -1396,10 +1396,65 @@ export function usePhoneBridge() {
         const isIncoming = payload.isIncoming !== false; // default true
         const state: CallState =
           typeof payload.state === 'string' ? (payload.state as CallState) : (isIncoming ? 'ringing' : 'dialing');
-        console.log('[PhoneBridge] CALL_ADD', { callId, number, state });
+
+        // DEDUPE-BY-NUMBER FOLD (2026-06-12). The same physical call can reach
+        // the web TWICE: once as a locally-inserted row (makeCall's synthetic
+        // `legacy:` id on web-dial, or a legacy CALL_INCOMING row from the
+        // dual-emit APK) and once as this CALL_ADD with the registry's real
+        // callId. Without this fold the queue renders twin chips for one call.
+        // Same matcher as the legacy CALL_INCOMING/CALL_WAITING dedupe path;
+        // never match on '' — two hidden-number calls must not merge.
+        //
+        // INVARIANT: `calls[]` holds LIVE calls only (ended rows are removed,
+        // never stored), so a number-match here is by construction the SAME
+        // physical call — a sequential call from the same number can only
+        // match after its predecessor's row was removed, so no timestamp
+        // window is needed and sequential calls never merge.
+        //
+        // Registry wins: the surviving row MUST carry the registry callId so
+        // subsequent CALL_UPDATE / CALL_REMOVE (which target by callId) hit it.
+        // We fold only rows currently present in calls[] — already-removed ids
+        // (e.g. v36 transient-IDLE teardown) are never resurrected.
+        const existing =
+          number !== ''
+            ? callsRef.current.find(
+                c => c.callId !== callId && normNum(c.number) === normNum(number)
+              )
+            : undefined;
+        // Stronger state wins: if the local row already went 'active' (legacy
+        // CALL_ANSWERED landed first), a trailing ringing/dialing CALL_ADD for
+        // the same call must not demote it.
+        const mergedState: CallState = existing?.state === 'active' ? 'active' : state;
+        console.log('[PhoneBridge] CALL_ADD', {
+          callId,
+          number,
+          state: mergedState,
+          ...(existing ? { foldedFrom: existing.callId } : {}),
+        });
         if (callsRef.current.length === 0) {
           callStartTimeRef.current = Date.now();
           stopCallTimer();
+        }
+        if (existing) {
+          // Migrate the row to the registry callId, preserving what the local
+          // row already knew: earliest startTime, resolved name, direction
+          // (a web-dialed row is authoritative that this call is OUTGOING),
+          // and elapsed duration when it was already active.
+          removeCall(existing.callId);
+          upsertCall({
+            callId,
+            number,
+            name: existing.name ?? resolvedName,
+            isIncoming: existing.isIncoming,
+            startTime: Math.min(existing.startTime, Date.now()),
+            duration: existing.duration,
+            state: mergedState,
+          });
+          // Do NOT reset lastCallWasAnsweredRef on a fold — folding into an
+          // already-answered call must not re-flag it as unanswered (missed-
+          // call accounting on CALL_ENDED/CALL_REMOVE depends on this).
+          if (mergedState !== 'active') lastCallWasAnsweredRef.current = false;
+          break;
         }
         lastCallWasAnsweredRef.current = false;
         upsertCall({ callId, number, name: resolvedName, isIncoming, startTime: Date.now(), state });
