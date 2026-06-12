@@ -202,8 +202,13 @@ android {
         // every aggregate callback + 5s tick; A4 self-managed VoIP calls
         // (WhatsApp/Telegram: OFFHOOK, no number, no prior RINGING) ignored —
         // no registry mint, no CALL_ANSWERED.
-        versionCode = 37
-        versionName = "1.0.14"
+        // v38 (1.0.15) — "Unknown thread" fix: pushNewMmsEntries no longer
+        // ships a live MMS frame with the literal "Unknown" sender when the
+        // ContentObserver races the messaging app's staged addr-table write;
+        // the watermark is held below the unresolved row and a 3s retry
+        // re-reads it once complete (60s grace, then give up + push as-is).
+        versionCode = 38
+        versionName = "1.0.15"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

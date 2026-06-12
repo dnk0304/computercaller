@@ -2586,7 +2586,26 @@ class PhoneService : Service() {
      * resolves address + parts), pushes each as an SMS_RECEIVED frame so the web
      * client doesn't need a separate code path, then advances the watermark.
      * MmsHandler internally handles the seconds-vs-ms unit conversion.
+     *
+     * v38 "Unknown thread" fix (2026-06-12): the MMS ContentObserver fires the
+     * moment the messaging app inserts the pdu row — BEFORE its staged write of
+     * the `addr` table lands — so getMmsAddress() resolved null and the frame
+     * shipped the literal "Unknown" sender; the watermark then advanced past
+     * the row and the completed row was never re-pushed. The web rendered a
+     * permanent "Unknown" thread until a manual Resync re-read the (by then
+     * complete) provider row. Fix: iterate ASCENDING and STOP at the first
+     * young inbox row whose address is still unresolved, WITHOUT advancing the
+     * watermark past it; schedule a 3s retry so the row is re-read once the
+     * addr write lands (the addr insert also re-fires the observer — the timer
+     * is a belt-and-braces fallback). Rows older than 60s are pushed as-is so
+     * a genuinely addressless MMS can never wedge the watermark.
      */
+    private val mmsRetryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var mmsRetryPending = false
+
+    /** Max age for holding back an address-unresolved inbox MMS before giving up. */
+    private val MMS_ADDR_RESOLVE_GRACE_MS = 60_000L
+
     private fun pushNewMmsEntries() {
         if (checkSelfPermission(Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
             android.util.Log.w("PhoneService", "pushNewMmsEntries skipped — READ_SMS denied")
@@ -2596,7 +2615,24 @@ class PhoneService : Service() {
         try {
             val mmsHandler = MmsHandler(this)
             val newMms = mmsHandler.getMessages(limit = 50, since = lastMmsTimestamp)
-            for (mms in newMms) {
+            // Ascending so the watermark only ever advances past rows we have
+            // actually pushed — a held-back row keeps the watermark below it.
+            for (mms in newMms.sortedBy { it.date }) {
+                val unresolved = mms.address.isBlank() || mms.address == "Unknown"
+                val young = System.currentTimeMillis() - mms.date < MMS_ADDR_RESOLVE_GRACE_MS
+                if (unresolved && mms.type == "inbox" && young) {
+                    android.util.Log.w(
+                        "PhoneService",
+                        "MMS ${mms.id} addr not yet resolved (staged provider write) — holding watermark, retrying"
+                    )
+                    // Roll the watermark below this row (second granularity on
+                    // MMS dates) so the retry query definitely re-reads it even
+                    // if a same-second sibling was already pushed. Re-pushed
+                    // siblings dedupe web-side by id.
+                    if (lastMmsTimestamp > mms.date - 1001) lastMmsTimestamp = mms.date - 1001
+                    scheduleMmsRetry()
+                    break
+                }
                 val data = mapOf(
                     "id" to mms.id,
                     "from" to mms.address,
@@ -2610,6 +2646,15 @@ class PhoneService : Service() {
         } catch (e: Exception) {
             android.util.Log.e("PhoneService", "Error pushing new MMS: ${e.message}")
         }
+    }
+
+    private fun scheduleMmsRetry() {
+        if (mmsRetryPending) return
+        mmsRetryPending = true
+        mmsRetryHandler.postDelayed({
+            mmsRetryPending = false
+            pushNewMmsEntries()
+        }, 3_000L)
     }
 
     fun connectToRelay(relayUrl: String) {
