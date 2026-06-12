@@ -268,6 +268,9 @@ class PhoneService : Service() {
                     android.util.Log.d("PhoneService", "TelephonyCallback state: $state source=modern")
                     when (state) {
                         android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
+                            // v37 (A3): reconcile expired ringing entries on every
+                            // aggregate state callback.
+                            reconcileRingingExpiry("modern-RINGING")
                             // ITEM A (2026-06-03) — call-waiting branch. If a call
                             // is already active (callAnsweredSentRef==true) when
                             // RINGING fires, this is the call-waiting case (call #2
@@ -360,14 +363,24 @@ class PhoneService : Service() {
                         }
                         android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
                             callEndedSentRef.set(false)
-                            if (callAnsweredSentRef.compareAndSet(false, true)) {
+                            // v37 (A3): reconcile expired ringing entries first.
+                            reconcileRingingExpiry("modern-OFFHOOK")
+                            val num = currentCallNumber ?: ""
+                            // QUEUE (v34→v37): the registry pass now runs on EVERY
+                            // modern OFFHOOK (not just the first CAS winner) —
+                            // mirroring the legacy listener — because v37/A1 makes
+                            // it idempotent: repeated empty-number OFFHOOKs while a
+                            // call is active are re-asserts (skipped), and
+                            // empty-number OFFHOOKs with no ringing entry are
+                            // self-managed VoIP calls (ignored, v37/A4). No more
+                            // mint-per-callback flood.
+                            val offhookOutcome = registryOnOffhook(num, if (num.isNotEmpty()) "outgoing" else "incoming")
+                            if (offhookOutcome == OffhookOutcome.VOIP_IGNORED && currentCallNumber == null) {
+                                // v37 (A4): mirror the legacy suppression — no
+                                // CALL_ANSWERED for an untracked VoIP call.
+                                android.util.Log.d("PhoneService", "TelephonyCallback OFFHOOK — self-managed VoIP call (no number, no tracked call) — suppressing CALL_ANSWERED (source=modern)")
+                            } else if (callAnsweredSentRef.compareAndSet(false, true)) {
                                 val isViaClient = client?.isOpen == true
-                                val num = currentCallNumber ?: ""
-                                // QUEUE (v34): promote to active. Modern path has no
-                                // incoming number, so num is "" for inbound;
-                                // registryOnOffhook then falls back to the most-
-                                // recently-ringing entry (best-effort).
-                                registryOnOffhook(num, if (num.isNotEmpty()) "outgoing" else "incoming")
                                 sendResponse("CALL_ANSWERED", mapOf("number" to num), isViaClient)
                                 android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[$num] state=OFFHOOK source=modern")
 
@@ -385,6 +398,9 @@ class PhoneService : Service() {
                             }
                         }
                         android.telephony.TelephonyManager.CALL_STATE_IDLE -> {
+                            // v37 (A3): expired ringing entries leave as "missed"
+                            // before the foreground-end + sweep runs.
+                            reconcileRingingExpiry("modern-IDLE")
                             if (callEndedSentRef.compareAndSet(false, true)) {
                                 val isViaClient = client?.isOpen == true
                                 val num = currentCallNumber ?: ""
@@ -1041,7 +1057,16 @@ class PhoneService : Service() {
         var name: String,
         val direction: String,
         var state: String,
-        val startTime: Long
+        val startTime: Long,
+        // v37 (A2): epoch-ms after which a STILL-RINGING entry is considered
+        // abandoned/missed/answered-elsewhere and is reconciled away (Path A
+        // has no per-leg end event, so without an expiry a background ringing
+        // leg that gives up mid-call would persist forever). 0 = no expiry
+        // (entries minted directly as "active"). Refreshed on every ringing
+        // re-confirmation; shortened to RINGING_AMBIGUOUS_EXPIRY_MS when the
+        // ambiguous RINGING→OFFHOOK-while-active transition fires (see
+        // registryOnOffhook). Only consulted while state == "ringing".
+        var ringingExpiresAt: Long = 0L
     )
 
     /** callId -> entry. Guarded by [callRegistryLock]; both the legacy and the
@@ -1077,7 +1102,11 @@ class PhoneService : Service() {
             val existing = findEntryByNumber(number)
             if (existing != null && existing.state == "ringing") {
                 // Same call still ringing (duplicate transition from the other
-                // observer) — no new entry, no duplicate CALL_ADD.
+                // observer) — no new entry, no duplicate CALL_ADD. v37 (A2):
+                // a ringing RE-CONFIRMATION refreshes the expiry clock, so a
+                // genuinely still-ringing call is never expired out from under
+                // the caller.
+                existing.ringingExpiresAt = System.currentTimeMillis() + RINGING_EXPIRY_MS
                 return
             }
             entry = CallEntry(
@@ -1086,46 +1115,223 @@ class PhoneService : Service() {
                 name = "",
                 direction = direction,
                 state = "ringing",
-                startTime = System.currentTimeMillis()
+                startTime = System.currentTimeMillis(),
+                // v37 (A2): every ringing entry is born with an expiry.
+                ringingExpiresAt = System.currentTimeMillis() + RINGING_EXPIRY_MS
             )
             callRegistry[entry.callId] = entry
             isNew = true
         }
         if (isNew) emitCallAdd(entry)
+        // v37 (A2): a ringing entry now exists — make sure the periodic
+        // reconcile tick is armed (belt-and-braces against missed callbacks).
+        rearmRingingReconcileTick()
+    }
+
+    /** Outcome of an OFFHOOK registry pass — drives legacy-frame suppression
+     *  at the call sites (A4: no CALL_ANSWERED for an untracked VoIP call). */
+    private enum class OffhookOutcome {
+        /** An entry was promoted/minted — normal path, emit CALL_UPDATE/ANSWERED. */
+        PROMOTED,
+        /** v37 (A1): empty-number OFFHOOK while an ACTIVE entry exists — the
+         *  aggregate state re-asserting. NOT promoted, NOT minted. */
+        REASSERT_SKIPPED,
+        /** v37 (A4): empty-number OFFHOOK with NO ringing and NO active entry —
+         *  self-managed VoIP call (WhatsApp/Telegram). Ignored entirely. */
+        VOIP_IGNORED
     }
 
     /**
      * Mark a call ACTIVE on an OFFHOOK transition. Because the platform does
      * not tell us WHICH call went off-hook, we pick the best candidate:
      *   1. the entry matching `number` (the legacy listener's number, if any),
-     *   2. else the most-recently-added ringing entry,
-     *   3. else (outgoing with no prior RINGING on some OEMs) create one.
+     *   2. else — ONLY when no entry is already active (v37/A1) — the
+     *      most-recently-added ringing entry,
+     *   3. else (outgoing with no prior RINGING on some OEMs) create one —
+     *      ONLY for a non-empty number (v37/A4: an empty-number OFFHOOK with
+     *      no ringing entry is a self-managed VoIP call — never minted).
      * Emits CALL_UPDATE for the chosen entry.
+     *
+     * v37 (A1) — the false-promotion fix: RINGING→OFFHOOK with an empty number
+     * while a call is already active is AMBIGUOUS under Path A — it can mean
+     * "the waiting caller gave up" OR "the user answered the waiting call on
+     * the handset". We cannot distinguish them, so we choose expiry over
+     * persistence: do NOT promote (a falsely-ACTIVE stale chip was Dennis's
+     * bug), and shorten every ringing entry's expiry to
+     * RINGING_AMBIGUOUS_EXPIRY_MS so a genuine handset swap-answer has a brief
+     * survival window (rescued by ringing re-confirmation) while abandoned
+     * ringers clear fast. Unambiguous answers still promote: web-ANSWER goes
+     * through registryPromoteOldestRingingOnWebAnswer(), and a number-carrying
+     * OFFHOOK matches byNumber above.
      */
-    private fun registryOnOffhook(number: String, direction: String) {
+    private fun registryOnOffhook(number: String, direction: String): OffhookOutcome {
         // A leg stepped up to active — cancel any pending idle-sweep so the
-        // survivors of a transient IDLE are not torn down.
+        // survivors of a transient IDLE are not torn down. This runs on EVERY
+        // outcome (including the skip/ignore branches): the aggregate line is
+        // demonstrably not idle.
         cancelIdleSweep()
-        val entry: CallEntry
+        val entry: CallEntry?
+        val outcome: OffhookOutcome
         synchronized(callRegistryLock) {
             val byNumber = if (number.isNotEmpty()) findEntryByNumber(number) else null
-            val chosen = byNumber
-                ?: callRegistry.values.lastOrNull { it.state == "ringing" }
-                ?: CallEntry(
-                    callId = synthCallId(),
-                    number = number,
-                    name = "",
-                    direction = direction,
-                    state = "active",
-                    startTime = System.currentTimeMillis()
-                ).also { callRegistry[it.callId] = it; emitCallAdd(it) }
-            if (chosen.state != "active") {
-                chosen.state = "active"
-                if (chosen.number.isEmpty() && number.isNotEmpty()) chosen.number = number
+            val hasActive = callRegistry.values.any { it.state == "active" }
+            if (byNumber != null) {
+                // Number-carrying OFFHOOK is unambiguous — promote that entry.
+                if (byNumber.state != "active") byNumber.state = "active"
+                entry = byNumber
+                outcome = OffhookOutcome.PROMOTED
+            } else if (number.isEmpty() && hasActive) {
+                // v37 (A1): aggregate re-assert while a call is already active.
+                // Do NOT promote, do NOT mint. Shorten ringing expiries (A2) —
+                // this is the ambiguous "ringing stopped" transition.
+                val now = System.currentTimeMillis()
+                var shortened = 0
+                for (e in callRegistry.values) {
+                    if (e.state == "ringing") {
+                        val cap = now + RINGING_AMBIGUOUS_EXPIRY_MS
+                        if (e.ringingExpiresAt == 0L || e.ringingExpiresAt > cap) {
+                            e.ringingExpiresAt = cap
+                            shortened++
+                        }
+                    }
+                }
+                android.util.Log.d("PhoneService", "registryOnOffhook: empty-number OFFHOOK with an active entry — aggregate re-assert, skipping promotion (A1); shortened expiry of $shortened ringing entr(ies) to ${RINGING_AMBIGUOUS_EXPIRY_MS}ms")
+                entry = null
+                outcome = OffhookOutcome.REASSERT_SKIPPED
+            } else {
+                val ringing = callRegistry.values.lastOrNull { it.state == "ringing" }
+                if (ringing != null) {
+                    // No active entry exists — the classic hidden-number answer.
+                    ringing.state = "active"
+                    if (ringing.number.isEmpty() && number.isNotEmpty()) ringing.number = number
+                    entry = ringing
+                    outcome = OffhookOutcome.PROMOTED
+                } else if (number.isNotEmpty()) {
+                    // Outgoing with no prior RINGING on some OEMs — mint.
+                    entry = CallEntry(
+                        callId = synthCallId(),
+                        number = number,
+                        name = "",
+                        direction = direction,
+                        state = "active",
+                        startTime = System.currentTimeMillis()
+                    ).also { callRegistry[it.callId] = it; emitCallAdd(it) }
+                    outcome = OffhookOutcome.PROMOTED
+                } else {
+                    // v37 (A4): OFFHOOK with no number and no ringing entry —
+                    // a genuine hidden-number SIM call ALWAYS rings first, so
+                    // this is a self-managed VoIP call (WhatsApp/Telegram).
+                    // The app is a SIM mirror — it cannot answer/end/SMS-reply
+                    // a VoIP call, so it must not appear in the queue.
+                    android.util.Log.d("PhoneService", "OFFHOOK with no number and no ringing entry — assuming self-managed VoIP call, ignoring (registry)")
+                    entry = null
+                    outcome = OffhookOutcome.VOIP_IGNORED
+                }
             }
-            entry = chosen
         }
-        emitCallUpdate(entry.callId, entry.state)
+        if (entry != null) emitCallUpdate(entry.callId, entry.state)
+        return outcome
+    }
+
+    /**
+     * v37 (A1 exception): the web sent ANSWER_CALL. Unlike the aggregate
+     * OFFHOOK heuristics, a web-initiated answer is UNAMBIGUOUS — the user
+     * answered a ringing call. acceptRingingCall() targets the platform's
+     * current ringing call, which is the OLDEST one we registered, so promote
+     * the oldest ringing entry. (Plumbing a specific callId through the
+     * ANSWER_CALL command was considered and rejected: the web's answerCall()
+     * surface is call-agnostic under Path A anyway — documented tradeoff.)
+     * Optimistic: if the platform answer fails, the entry is rescued back by
+     * ringing re-confirmation or expired by A2 — never stuck.
+     */
+    private fun registryPromoteOldestRingingOnWebAnswer() {
+        val promoted: CallEntry?
+        synchronized(callRegistryLock) {
+            promoted = callRegistry.values.firstOrNull { it.state == "ringing" }
+            promoted?.state = "active"
+        }
+        if (promoted != null) {
+            emitCallUpdate(promoted.callId, "active")
+            android.util.Log.d("PhoneService", "web-ANSWER: promoted oldest ringing entry callId=${promoted.callId} to active (unambiguous answer)")
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RINGING-ENTRY EXPIRY + RECONCILE (v37, A2/A3)
+    // -----------------------------------------------------------------------
+    // Path A has NO per-leg end event: a background ringing caller that hangs
+    // up mid-call produces only RINGING→OFFHOOK on the aggregate listener —
+    // IDLE never fires, so registryOnIdleEndForeground never runs and the
+    // entry would persist for the whole foreground call (Dennis's stale-chip
+    // bug). Expiry is the chosen tradeoff: a falsely-expired chip is
+    // recoverable and low-harm; a falsely-persisting chip is the bug.
+
+    /** Hard ceiling for a ringing entry that never transitions to active.
+     *  Android's unanswered-ring timeout is ~30s; 65s gives ample margin for
+     *  long custom ring durations before we declare the call missed. */
+    private val RINGING_EXPIRY_MS = 65_000L
+
+    /** Shortened expiry applied when the ambiguous RINGING→OFFHOOK-while-
+     *  active transition fires (waiting caller gave up OR handset swap-
+     *  answer — indistinguishable). Long enough for a genuine swap-answer to
+     *  be rescued by a ringing/OFFHOOK re-confirmation; short enough that an
+     *  abandoned ringer clears fast. */
+    private val RINGING_AMBIGUOUS_EXPIRY_MS = 10_000L
+
+    /** Periodic reconcile cadence while ringing entries exist — belt-and-
+     *  braces against missed/jittered telephony callbacks (Doze, handler
+     *  delays). Reconcile ALSO runs synchronously on every aggregate state
+     *  callback (A3). */
+    private val RINGING_RECONCILE_TICK_MS = 5_000L
+    private val ringingReconcileHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var ringingReconcileRunnable: Runnable? = null
+
+    /**
+     * Remove every ringing entry whose expiry has passed (A2), emitting
+     * CALL_REMOVE("missed") for each. Cheap: O(registry size), no allocation
+     * on the happy path. Re-arms (or disarms) the periodic tick afterwards.
+     */
+    private fun reconcileRingingExpiry(trigger: String) {
+        val now = System.currentTimeMillis()
+        val expired: List<CallEntry>
+        synchronized(callRegistryLock) {
+            expired = callRegistry.values.filter {
+                it.state == "ringing" && it.ringingExpiresAt in 1..now
+            }
+            for (e in expired) callRegistry.remove(e.callId)
+        }
+        for (e in expired) {
+            android.util.Log.d("PhoneService", "ringing expiry: callId=${e.callId} number=[${e.number}] exceeded its expiry — removing as missed (trigger=$trigger)")
+            emitCallRemove(e.callId, "missed")
+        }
+        rearmRingingReconcileTick()
+    }
+
+    /** Arm the periodic reconcile tick iff a ringing entry exists; disarm
+     *  otherwise. Idempotent — safe to call from any path. */
+    private fun rearmRingingReconcileTick() {
+        val anyRinging = synchronized(callRegistryLock) {
+            callRegistry.values.any { it.state == "ringing" }
+        }
+        if (!anyRinging) {
+            cancelRingingReconcileTick()
+            return
+        }
+        if (ringingReconcileRunnable != null) return // already armed
+        val r = Runnable {
+            ringingReconcileRunnable = null
+            reconcileRingingExpiry("tick")
+        }
+        ringingReconcileRunnable = r
+        ringingReconcileHandler.postDelayed(r, RINGING_RECONCILE_TICK_MS)
+    }
+
+    /** Cancel the periodic reconcile tick (no ringing entries / onDestroy). */
+    private fun cancelRingingReconcileTick() {
+        ringingReconcileRunnable?.let {
+            ringingReconcileHandler.removeCallbacks(it)
+            ringingReconcileRunnable = null
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1265,6 +1471,10 @@ class PhoneService : Service() {
             when (state) {
                 android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
                     android.util.Log.d("PhoneService", "PhoneStateListener state=RINGING phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
+                    // v37 (A3): reconcile expired ringing entries on every
+                    // aggregate state callback — belt-and-braces in case the
+                    // periodic tick was delayed (Doze/handler jitter).
+                    reconcileRingingExpiry("legacy-RINGING")
                     // ITEM A (2026-06-03) — call-waiting branch. If a call is
                     // already active when RINGING fires, this is the call-waiting
                     // case. Emit CALL_WAITING with the waiting number; do NOT
@@ -1322,12 +1532,24 @@ class PhoneService : Service() {
                 android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
                     android.util.Log.d("PhoneService", "PhoneStateListener state=OFFHOOK phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
                     callEndedSentRef.set(false)
-                    // QUEUE (v34): promote the matching (or most-recent ringing)
-                    // call to active. Best-effort — see registry header for the
-                    // "which call went off-hook?" ambiguity.
+                    // v37 (A3): reconcile expired ringing entries first.
+                    reconcileRingingExpiry("legacy-OFFHOOK")
+                    // QUEUE (v34→v37): promote the matching (or, when no entry
+                    // is active yet, the most-recent ringing) call to active.
+                    // v37/A1 kills the false promotion (empty-number OFFHOOK
+                    // while active = re-assert, skipped); v37/A4 ignores
+                    // self-managed VoIP calls (empty number, no ringing entry).
                     val offhookDir = if (!currentCallNumber.isNullOrEmpty() && currentCallNumber == number) "outgoing" else "incoming"
-                    registryOnOffhook(number, offhookDir)
-                    if (callAnsweredSentRef.compareAndSet(false, true)) {
+                    val offhookOutcome = registryOnOffhook(number, offhookDir)
+                    if (offhookOutcome == OffhookOutcome.VOIP_IGNORED && currentCallNumber == null) {
+                        // v37 (A4): suppress the legacy CALL_ANSWERED too — the
+                        // web must not light up the single-call UI for a
+                        // WhatsApp call. callAnsweredSentRef stays false so a
+                        // real SIM call afterwards still fires normally; the
+                        // eventual IDLE emits CALL_ENDED:{} which the web
+                        // treats as an idempotent no-op with no live calls.
+                        android.util.Log.d("PhoneService", "PhoneStateListener OFFHOOK — self-managed VoIP call (no number, no tracked call) — suppressing CALL_ANSWERED (source=legacy)")
+                    } else if (callAnsweredSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
                         sendResponse("CALL_ANSWERED", mapOf("number" to number), isViaClient)
                         android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[$number] state=OFFHOOK source=legacy")
@@ -1345,6 +1567,10 @@ class PhoneService : Service() {
                 }
                 android.telephony.TelephonyManager.CALL_STATE_IDLE -> {
                     android.util.Log.d("PhoneService", "PhoneStateListener state=IDLE source=legacy")
+                    // v37 (A3): reconcile expired ringing entries on IDLE too —
+                    // expired ones leave as "missed" rather than being swept as
+                    // generic leftovers below.
+                    reconcileRingingExpiry("legacy-IDLE")
                     // Single guard — TelephonyCallback (12+) may also observe this
                     // transition. First-writer wins.
                     if (callEndedSentRef.compareAndSet(false, true)) {
@@ -3008,6 +3234,12 @@ class PhoneService : Service() {
                 }
                 "ANSWER_CALL" -> {
                     callHandler.answerCall()
+                    // v37 (A1 exception): a web-initiated answer is UNAMBIGUOUS —
+                    // promote the oldest ringing registry entry to active so its
+                    // chip flips to ACTIVE even though the subsequent aggregate
+                    // OFFHOOK (empty number, active already present) is skipped
+                    // by the A1 re-assert rule.
+                    registryPromoteOldestRingingOnWebAnswer()
                 }
                 "END_CALL" -> {
                     callHandler.endCall()
@@ -3591,6 +3823,9 @@ class PhoneService : Service() {
         // Cancel any pending multicall idle-sweep so its Handler runnable doesn't
         // wake up post-onDestroy holding a reference back into this dead Service.
         cancelIdleSweep()
+
+        // v37 (A2): same for the ringing-expiry reconcile tick.
+        cancelRingingReconcileTick()
 
         // Unregister telephony state listener — must mirror the registration in onCreate
         // or we leak a reference to this Service.

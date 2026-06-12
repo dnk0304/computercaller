@@ -194,8 +194,16 @@ android {
         // sweep that survives the transient IDLE of a call-waiting hang-up.
         // PATH A (no InCallService / no default-dialer — Dennis-approved).
         // isMinifyEnabled stays false (6.0MB un-minified v34/v35 lineage).
-        versionCode = 36
-        versionName = "1.0.13"
+        //
+        // Stale-queue + VoIP-filter consolidated fix (2026-06-12): 36 → 37.
+        // A1 false-ACTIVE promotion killed (empty-number OFFHOOK while active
+        // = re-assert, skipped); A2 ringing-entry expiry (65s, 10s after the
+        // ambiguous RINGING→OFFHOOK-while-active transition); A3 reconcile on
+        // every aggregate callback + 5s tick; A4 self-managed VoIP calls
+        // (WhatsApp/Telegram: OFFHOOK, no number, no prior RINGING) ignored —
+        // no registry mint, no CALL_ANSWERED.
+        versionCode = 37
+        versionName = "1.0.14"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
