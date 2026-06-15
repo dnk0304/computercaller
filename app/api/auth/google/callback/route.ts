@@ -26,7 +26,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db } from '@/lib/db';
-import { signAccessToken, isEmailAllowed } from '@/lib/auth';
+import { signAccessToken, isEmailAllowed, isWaitlistMode } from '@/lib/auth';
 import {
   exchangeCodeForTokens,
   verifyIdToken,
@@ -128,6 +128,11 @@ export async function GET(req: NextRequest) {
       } else {
         // Branch c: brand-new user. Create with trial subscription, no password.
         const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
+        // WAITLIST_MODE gate (2026-06-15). When engaged (default, pre-Play-
+        // Store) we suppress the trial grant — account mints, no trial/payment
+        // entitlement. Flip WAITLIST_MODE=off in Coolify to restore. Original
+        // trial logic flagged, not deleted. See lib/auth.ts isWaitlistMode.
+        const grantTrial = !isWaitlistMode();
         // Bundle A (2026-05-28) — schema no longer auto-generates phoneToken
         // (was cuid() default; fix C2). Every user-create path now mints a
         // crypto-random 32-byte base64url value in app code. Same generation
@@ -141,9 +146,10 @@ export async function GET(req: NextRequest) {
             emailVerified: true,
             googleId,
             authProvider: 'google',
-            subscription: {
-              create: { status: 'trial', trialEndsAt },
-            },
+            // Original behavior (restored by WAITLIST_MODE=off): 14-day trial.
+            ...(grantTrial
+              ? { subscription: { create: { status: 'trial', trialEndsAt } } }
+              : {}),
           },
           include: { subscription: true },
         });

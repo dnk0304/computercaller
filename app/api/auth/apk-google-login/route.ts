@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { db } from '@/lib/db';
 import { verifyIdToken } from '@/lib/google';
 import { sendNewSignupAdminEmail } from '@/lib/email';
-import { isEmailAllowed } from '@/lib/auth';
+import { isEmailAllowed, isWaitlistMode } from '@/lib/auth';
 
 /**
  * POST /api/auth/apk-google-login — APK Google sign-in endpoint.
@@ -109,6 +109,11 @@ export async function POST(req: NextRequest) {
         // Dennis approved auto-create at dispatch time.
         const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
         const phoneToken = crypto.randomBytes(32).toString('base64url');
+        // WAITLIST_MODE gate (2026-06-15). When engaged (default, pre-Play-
+        // Store) suppress the trial grant — account mints, no trial/payment
+        // entitlement. Flip WAITLIST_MODE=off in Coolify to restore. Original
+        // trial logic flagged, not deleted. See lib/auth.ts isWaitlistMode.
+        const grantTrial = !isWaitlistMode();
         user = await db.user.create({
           data: {
             email,
@@ -117,9 +122,10 @@ export async function POST(req: NextRequest) {
             emailVerified: true,
             googleId,
             authProvider: 'google',
-            subscription: {
-              create: { status: 'trial', trialEndsAt },
-            },
+            // Original behavior (restored by WAITLIST_MODE=off): 14-day trial.
+            ...(grantTrial
+              ? { subscription: { create: { status: 'trial', trialEndsAt } } }
+              : {}),
           },
           include: { subscription: true },
         });

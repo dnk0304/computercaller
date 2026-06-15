@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-import { signEmailToken, requireSameOrigin, isEmailAllowed } from '@/lib/auth';
+import { signEmailToken, requireSameOrigin, isEmailAllowed, isWaitlistMode } from '@/lib/auth';
 import { sendVerificationEmail, sendNewSignupAdminEmail } from '@/lib/email';
 
 export async function POST(req: NextRequest) {
@@ -37,6 +37,13 @@ export async function POST(req: NextRequest) {
     const passwordHash = await bcrypt.hash(password, 12);
     const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
 
+    // WAITLIST_MODE gate (2026-06-15). When engaged (default, pre-Play-Store)
+    // we do NOT provision a free trial. Account still mints (allowlist already
+    // gated who gets here), but no trial/payment entitlement is granted. Flip
+    // WAITLIST_MODE=off in Coolify to restore the original 14-day trial with
+    // zero code redeploy. See lib/auth.ts isWaitlistMode.
+    const grantTrial = !isWaitlistMode();
+
     // Bundle A (2026-05-28) Phase 4 fix (C2): generate phoneToken in
     // application code — schema no longer carries a SQL default (the prior
     // `cuid()` default produced non-cryptographic, structurally-predictable
@@ -60,9 +67,11 @@ export async function POST(req: NextRequest) {
         passwordHash,
         phoneToken,
         emailVerified: skipEmailVerification,
-        subscription: {
-          create: { status: 'trial', trialEndsAt },
-        },
+        // Original behavior (restored by WAITLIST_MODE=off): provision a
+        // 14-day trial on signup. Flagged, not deleted.
+        ...(grantTrial
+          ? { subscription: { create: { status: 'trial', trialEndsAt } } }
+          : {}),
       },
     });
 

@@ -173,6 +173,41 @@ export function isEmailAllowed(email: string | null | undefined): boolean {
   return list.includes(email.toLowerCase());
 }
 
+/**
+ * WAITLIST_MODE — payment/free-trial kill switch (2026-06-15).
+ *
+ * Dennis: "make sure people dont get sent to whop, we need to take away the
+ * payment/free trial and re-activate it once we have things sorted with google
+ * play store." This is the BACKEND half of that switch (the frontend hides the
+ * Whop/"Start free trial" CTAs behind NEXT_PUBLIC_WAITLIST_MODE; Pixel owns
+ * that). Both must be set in Coolify at deploy.
+ *
+ * When ON (the default while we are pre-Play-Store), the backend refuses to
+ * PROVISION a new 14-day trial subscription on user-create. The original
+ * trial-grant logic is NOT deleted — it is wrapped in `if (!isWaitlistMode())`,
+ * so re-activation after Play Store approval is a single env flip
+ * (WAITLIST_MODE=off) with ZERO code redeploy.
+ *
+ * DEFAULT-ON semantics: trial is suppressed UNLESS the env var is explicitly
+ * one of the "off" tokens below. A missing/blank/typo'd var fails SAFE
+ * (waitlist on, no trials granted) — we would rather a misconfig withhold a
+ * trial than accidentally re-open paid signups before Play Store is sorted.
+ *
+ * Scope: this gates NEW checkout/trial INITIATION only. It does NOT touch:
+ *   - /api/webhooks/whop  — incoming payment/membership confirmations for
+ *     EXISTING paying users (HMAC-verified; keeps real subscribers working).
+ *   - any returning-user login / phoneToken bearer flow.
+ * Read at call-time (process.env), so flipping it in Coolify takes effect on
+ * the next request without a code redeploy.
+ */
+export function isWaitlistMode(): boolean {
+  const raw = process.env.WAITLIST_MODE?.trim().toLowerCase();
+  // Explicit opt-out tokens turn the trial/payment flow back ON. Anything
+  // else (including unset) keeps WAITLIST_MODE engaged = no trials granted.
+  const OFF_TOKENS = new Set(['off', 'false', '0', 'no', 'disabled']);
+  return !(raw !== undefined && OFF_TOKENS.has(raw));
+}
+
 export function signEmailToken(userId: string): string {
   return jwt.sign({ userId, purpose: 'verify-email' }, getJwtSecret(), { expiresIn: '24h' });
 }
