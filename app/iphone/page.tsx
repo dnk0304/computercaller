@@ -19,6 +19,8 @@ import {
   Apple,
   Bot,
 } from 'lucide-react';
+import WaitlistCTA from '@/components/WaitlistCTA';
+import { WAITLIST_MODE } from '@/lib/waitlistMode';
 
 /**
  * iPhone setup guide — dedicated landing for iOS users (dispatch 2026-05-25).
@@ -241,19 +243,25 @@ export default function IphonePage() {
             </Link>
           </nav>
           <div className="flex items-center gap-2">
-            <Link
-              href="/auth/login"
-              className="hidden sm:inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
-            >
-              Sign in
-            </Link>
-            <Link
-              href="/auth/register"
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Start free trial
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
+            {WAITLIST_MODE ? (
+              <WaitlistCTA variant="nav" />
+            ) : (
+              <>
+                <Link
+                  href="/auth/login"
+                  className="hidden sm:inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/auth/register"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                >
+                  Start free trial
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -289,21 +297,36 @@ export default function IphonePage() {
             phone.
           </p>
 
-          <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">
-            <Link
-              href="/auth/register"
-              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Start free trial
-              <ArrowRight className="w-4 h-4" />
-            </Link>
-            <a
-              href="#setup"
-              className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              See setup steps
-            </a>
-          </div>
+          {WAITLIST_MODE ? (
+            <div className="mt-10 mx-auto max-w-xl">
+              <WaitlistCTA variant="inline" />
+              <p className="mt-3 text-sm text-slate-500">
+                Get a bonus free trial when we launch.{' '}
+                <a
+                  href="#setup"
+                  className="text-blue-600 hover:text-blue-700 font-medium underline underline-offset-2"
+                >
+                  See setup steps
+                </a>
+              </p>
+            </div>
+          ) : (
+            <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">
+              <Link
+                href="/auth/register"
+                className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                Start free trial
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+              <a
+                href="#setup"
+                className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                See setup steps
+              </a>
+            </div>
+          )}
 
           {/* Android-primary nudge — soft, not pushy. Anyone on this page who
               also owns an Android device should know that's the better path.
@@ -632,25 +655,39 @@ export default function IphonePage() {
             Want early access?
           </h2>
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
-            Sign in with your email and we&apos;ll notify you when the native
-            iPhone companion app is ready. In the meantime, try the Bluetooth
-            beta — it works today.
+            {WAITLIST_MODE
+              ? "Join the waitlist and we'll notify you the moment ComputerCaller opens — including the native iPhone companion app."
+              : "Sign in with your email and we'll notify you when the native iPhone companion app is ready. In the meantime, try the Bluetooth beta — it works today."}
           </p>
-          <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
-            <Link
-              href="/auth/register"
-              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Sign up to be notified
-              <ArrowRight className="w-4 h-4" />
-            </Link>
-            <Link
-              href="/"
-              className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Back to homepage
-            </Link>
-          </div>
+          {WAITLIST_MODE ? (
+            <div className="mt-8 mx-auto max-w-xl">
+              <WaitlistCTA variant="inline" />
+              <p className="mt-4 text-sm text-slate-500">
+                <Link
+                  href="/"
+                  className="text-blue-600 hover:text-blue-700 font-medium underline underline-offset-2"
+                >
+                  Back to homepage
+                </Link>
+              </p>
+            </div>
+          ) : (
+            <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
+              <Link
+                href="/auth/register"
+                className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                Sign up to be notified
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+              <Link
+                href="/"
+                className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                Back to homepage
+              </Link>
+            </div>
+          )}
         </div>
       </section>
 

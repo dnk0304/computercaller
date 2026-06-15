@@ -27,6 +27,8 @@ import {
   Apple,
 } from 'lucide-react';
 import Reviews from '@/components/Reviews';
+import WaitlistCTA from '@/components/WaitlistCTA';
+import { WAITLIST_MODE } from '@/lib/waitlistMode';
 
 /**
  * Landing page — SEO + content rewrite (dispatch 2026-05-25, revised 2026-05-25
@@ -342,19 +344,27 @@ export default function LandingPage() {
             </a>
           </nav>
           <div className="flex items-center gap-2">
-            <Link
-              href="/auth/login"
-              className="hidden sm:inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
-            >
-              Sign in
-            </Link>
-            <Link
-              href="/auth/register"
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Start free trial
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
+            {WAITLIST_MODE ? (
+              // Waitlist mode: no public sign-in link, no register/trial link —
+              // the only header action is joining the waitlist.
+              <WaitlistCTA variant="nav" />
+            ) : (
+              <>
+                <Link
+                  href="/auth/login"
+                  className="hidden sm:inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/auth/register"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                >
+                  Start free trial
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -408,7 +418,7 @@ export default function LandingPage() {
 
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            14-day free trial — no credit card required
+            {WAITLIST_MODE ? 'Launching soon — join the waitlist' : '14-day free trial — no credit card required'}
           </div>
 
           <h1 className="mt-8 text-4xl sm:text-5xl md:text-6xl font-semibold tracking-[-0.03em] leading-[1.05] text-slate-900 text-balance">
@@ -424,21 +434,36 @@ export default function LandingPage() {
             your phone.
           </p>
 
-          <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">
-            <Link
-              href="/auth/register"
-              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Start 14-day free trial
-              <ArrowRight className="w-4 h-4" />
-            </Link>
-            <a
-              href="#how-it-works"
-              className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              See how it works
-            </a>
-          </div>
+          {WAITLIST_MODE ? (
+            <div className="mt-10 mx-auto max-w-xl">
+              <WaitlistCTA variant="inline" />
+              <p className="mt-3 text-sm text-slate-500">
+                Get a bonus free trial when we launch.{' '}
+                <a
+                  href="#how-it-works"
+                  className="text-blue-600 hover:text-blue-700 font-medium underline underline-offset-2"
+                >
+                  See how it works
+                </a>
+              </p>
+            </div>
+          ) : (
+            <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">
+              <Link
+                href="/auth/register"
+                className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                Start 14-day free trial
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+              <a
+                href="#how-it-works"
+                className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                See how it works
+              </a>
+            </div>
+          )}
 
           {/* Trust strip — three short factual claims. Bullets are visual,
               the items themselves are an unordered list semantically. The
@@ -737,13 +762,19 @@ export default function LandingPage() {
           </ol>
 
           <div className="mt-10 flex justify-center">
-            <Link
-              href="/auth/register"
-              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Try it free for 14 days
-              <ArrowRight className="w-4 h-4" />
-            </Link>
+            {WAITLIST_MODE ? (
+              <div className="w-full max-w-xl">
+                <WaitlistCTA variant="inline" />
+              </div>
+            ) : (
+              <Link
+                href="/auth/register"
+                className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                Try it free for 14 days
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+            )}
           </div>
         </div>
       </section>
@@ -966,16 +997,27 @@ export default function LandingPage() {
               ))}
             </ul>
 
-            <Link
-              href="/auth/register"
-              className="mt-8 flex items-center justify-center gap-1.5 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-center shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Start 14-day free trial
-              <ArrowRight className="w-4 h-4" />
-            </Link>
-            <p className="mt-3 text-center text-slate-500 text-xs">
-              No credit card required to start.
-            </p>
+            {WAITLIST_MODE ? (
+              <div className="mt-8">
+                <WaitlistCTA variant="inline" />
+                <p className="mt-3 text-center text-slate-500 text-xs">
+                  Join the waitlist — get a bonus free trial when we launch.
+                </p>
+              </div>
+            ) : (
+              <>
+                <Link
+                  href="/auth/register"
+                  className="mt-8 flex items-center justify-center gap-1.5 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-center shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                >
+                  Start 14-day free trial
+                  <ArrowRight className="w-4 h-4" />
+                </Link>
+                <p className="mt-3 text-center text-slate-500 text-xs">
+                  No credit card required to start.
+                </p>
+              </>
+            )}
           </div>
         </div>
       </section>
@@ -1060,24 +1102,31 @@ export default function LandingPage() {
             Ready to call from your computer?
           </h2>
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
-            14 days free. No credit card. Pair your phone and you&apos;re
-            calling from your browser in under two minutes.
+            {WAITLIST_MODE
+              ? "We're opening the doors soon. Join the waitlist and get a bonus free trial when we launch."
+              : '14 days free. No credit card. Pair your phone and you’re calling from your browser in under two minutes.'}
           </p>
-          <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
-            <Link
-              href="/auth/register"
-              className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Start free trial
-              <ArrowRight className="w-4 h-4" />
-            </Link>
-            <Link
-              href="/auth/login"
-              className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              Sign in
-            </Link>
-          </div>
+          {WAITLIST_MODE ? (
+            <div className="mt-8 mx-auto max-w-xl">
+              <WaitlistCTA variant="inline" />
+            </div>
+          ) : (
+            <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
+              <Link
+                href="/auth/register"
+                className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                Start free trial
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+              <Link
+                href="/auth/login"
+                className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                Sign in
+              </Link>
+            </div>
+          )}
         </div>
       </section>
 
