@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { db } from '@/lib/db';
 import { verifyIdToken } from '@/lib/google';
 import { sendNewSignupAdminEmail } from '@/lib/email';
+import { isEmailAllowed } from '@/lib/auth';
 
 /**
  * POST /api/auth/apk-google-login — APK Google sign-in endpoint.
@@ -62,6 +63,18 @@ export async function POST(req: NextRequest) {
 
     const email = claims.email.toLowerCase();
     const googleId = claims.sub;
+
+    // Auth allowlist (2026-06-15). Block non-allowed Google emails BEFORE any
+    // find/link/create — critically blocking branch-c auto-create. 403 JSON
+    // (the APK shows a generic error). The phoneToken bearer flow is untouched.
+    // See lib/auth.ts isEmailAllowed.
+    if (!isEmailAllowed(email)) {
+      console.warn(`[APKGoogleLogin] Blocked non-allowlisted email: ${email}`);
+      return NextResponse.json(
+        { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
+        { status: 403 },
+      );
+    }
 
     // Branch a — exact match on Google's stable subject ID wins.
     let user = await db.user.findUnique({

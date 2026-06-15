@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
+import { isEmailAllowed } from '@/lib/auth';
 
 /**
  * Dispatch #28 (2026-05-24) — APK sign-in endpoint.
@@ -31,6 +32,17 @@ export async function POST(req: NextRequest) {
 
     if (typeof email !== 'string' || typeof password !== 'string') {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+    }
+
+    // Auth allowlist (2026-06-15). Block non-allowed emails BEFORE bcrypt, same
+    // as the web login. This is the interactive APK password login — gating it
+    // does NOT touch the phoneToken bearer flow (which is not an interactive
+    // login and stays working for Dennis's paired phone). See lib/auth.ts.
+    if (!isEmailAllowed(email)) {
+      return NextResponse.json(
+        { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
+        { status: 403 },
+      );
     }
 
     const user = await db.user.findUnique({

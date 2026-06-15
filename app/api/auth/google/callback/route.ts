@@ -26,7 +26,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db } from '@/lib/db';
-import { signAccessToken } from '@/lib/auth';
+import { signAccessToken, isEmailAllowed } from '@/lib/auth';
 import {
   exchangeCodeForTokens,
   verifyIdToken,
@@ -87,6 +87,15 @@ export async function GET(req: NextRequest) {
 
     const email = claims.email.toLowerCase();
     const googleId = claims.sub;
+
+    // Auth allowlist (2026-06-15). Redirect flow, so a non-allowed Google email
+    // bounces to the login page with an error param — BEFORE any find/link/
+    // create branch, critically blocking branch-c auto-create. See lib/auth.ts
+    // isEmailAllowed (env AUTH_ALLOWLIST + hardcoded Dennis+reviewer fallback).
+    if (!isEmailAllowed(email)) {
+      console.warn(`[GoogleCallback] Blocked non-allowlisted email: ${email}`);
+      return loginErrorRedirect('closed');
+    }
 
     // Branch a: look up by googleId first — exact match wins regardless of email.
     let user = await db.user.findUnique({

@@ -78,6 +78,27 @@ export async function sendNewSignupAdminEmail(opts: {
   });
 }
 
+// Waitlist admin notification (2026-06-15, dispatch forge/waitlist-and-auth-
+// allowlist). Fires on a brand-new waitlist signup only (NOT on a dedupe hit).
+// Recipient via ADMIN_NOTIFY_EMAIL env; default hello@computercaller.com (the
+// verified-domain inbox Dennis monitors). Mirrors sendNewSignupAdminEmail.
+// Caller MUST wrap in try/catch — a notify failure must never break the
+// waitlist POST.
+export async function sendNewWaitlistAdminEmail(email: string) {
+  const to = process.env.ADMIN_NOTIFY_EMAIL ?? 'hello@computercaller.com';
+  await getResend().emails.send({
+    from: FROM,
+    to,
+    replyTo: REPLY_TO,
+    subject: `New ComputerCaller waitlist signup: ${email}`,
+    html: `
+      <h2>New ComputerCaller waitlist signup</h2>
+      <p><strong>Email:</strong> ${email}</p>
+      <p><strong>When:</strong> ${new Date().toISOString()}</p>
+    `,
+  });
+}
+
 export async function sendPasswordResetEmail(email: string, token: string) {
   const url = `${APP_URL}/auth/reset-password?token=${token}`;
   await getResend().emails.send({

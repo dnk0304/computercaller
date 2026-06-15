@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-import { signAccessToken, requireSameOrigin } from '@/lib/auth';
+import { signAccessToken, requireSameOrigin, isEmailAllowed } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,6 +9,17 @@ export async function POST(req: NextRequest) {
     if (!csrf.ok) return NextResponse.json({ error: 'CSRF check failed' }, { status: 403 });
 
     const { email, password } = await req.json();
+
+    // Auth allowlist (2026-06-15). Block non-allowed emails BEFORE bcrypt so a
+    // non-allowed user learns nothing about whether the account exists, and
+    // before any session work. See lib/auth.ts isEmailAllowed for the no-lockout
+    // guarantee (env AUTH_ALLOWLIST with a hardcoded Dennis+reviewer fallback).
+    if (!isEmailAllowed(email)) {
+      return NextResponse.json(
+        { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
+        { status: 403 },
+      );
+    }
 
     const user = await db.user.findUnique({
       where: { email: email?.toLowerCase() },

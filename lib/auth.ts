@@ -140,6 +140,39 @@ export async function validateSessionToken(token: string): Promise<JwtPayload | 
   }
 }
 
+/**
+ * Auth allowlist (2026-06-15, dispatch forge/waitlist-and-auth-allowlist).
+ *
+ * The app is pre-Play-Store, so the public must NOT be able to register or log
+ * in. Rather than gate on the `isAdmin` DB flag (a wrong flag = Dennis locked
+ * out of his own app with no fast recovery + a risky migration), we gate on an
+ * env-driven email allowlist. Rollback is zero-rebuild: edit AUTH_ALLOWLIST in
+ * Coolify and redeploy-free for the next request.
+ *
+ * NO-LOCKOUT GUARANTEE: when AUTH_ALLOWLIST is unset/empty/whitespace, we fall
+ * back to a HARDCODED default that always includes Dennis + the Play reviewer.
+ * A missing or fat-fingered env var can therefore never lock Dennis out, and
+ * the reviewer@ account stays allowed so Google Play "App access" review keeps
+ * working. Ken sets AUTH_ALLOWLIST explicitly in Coolify to the same value, but
+ * the built-in default is the safety net.
+ *
+ * Enforced at ALL FIVE interactive auth entry points (login, register,
+ * google/callback, apk-login, apk-google-login) BEFORE any user create/link/
+ * session issue. The phone bearer (phoneToken) flow, /api/auth/me, relay,
+ * logout are NOT gated — they are not interactive logins.
+ */
+const AUTH_ALLOWLIST_FALLBACK = 'dennis.kotlenko@gmail.com,reviewer@computercaller.com';
+
+export function isEmailAllowed(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const raw = process.env.AUTH_ALLOWLIST?.trim();
+  const list = (raw && raw.length > 0 ? raw : AUTH_ALLOWLIST_FALLBACK)
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return list.includes(email.toLowerCase());
+}
+
 export function signEmailToken(userId: string): string {
   return jwt.sign({ userId, purpose: 'verify-email' }, getJwtSecret(), { expiresIn: '24h' });
 }

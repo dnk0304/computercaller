@@ -125,6 +125,20 @@ model QuickReplyTemplate {
   @@index([userId])
 }
 
+// Waitlist (2026-06-15, dispatch forge/waitlist-and-auth-allowlist). Email
+// capture for the public landing page while the app is pre-Play-Store. ADDITIVE
+// and fully isolated — no relation to User/Subscription, so Coolify's pre-deploy
+// `prisma db push` applies it cleanly (new table only, zero data loss, no FK).
+//   email  — @unique so re-submits dedupe at the DB level; the POST handler
+//            treats a unique-collision as success (alreadyOnList), never an error.
+//   source — optional attribution tag ('landing' etc.) for future analytics.
+model Waitlist {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  source    String?
+  createdAt DateTime @default(now())
+}
+
 model Subscription {
   id                String    @id @default(cuid())
   userId            String    @unique

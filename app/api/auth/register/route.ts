@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-import { signEmailToken, requireSameOrigin } from '@/lib/auth';
+import { signEmailToken, requireSameOrigin, isEmailAllowed } from '@/lib/auth';
 import { sendVerificationEmail, sendNewSignupAdminEmail } from '@/lib/email';
 
 export async function POST(req: NextRequest) {
@@ -17,6 +17,16 @@ export async function POST(req: NextRequest) {
     }
     if (password.length < 8) {
       return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 });
+    }
+
+    // Auth allowlist (2026-06-15). Hard-block public signup BEFORE any
+    // db.user.create — only allowlisted emails may ever mint an account while
+    // the app is pre-Play-Store. See lib/auth.ts isEmailAllowed.
+    if (!isEmailAllowed(email)) {
+      return NextResponse.json(
+        { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
+        { status: 403 },
+      );
     }
 
     const existing = await db.user.findUnique({ where: { email: email.toLowerCase() } });
