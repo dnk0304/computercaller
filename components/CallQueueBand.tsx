@@ -51,18 +51,31 @@ import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
  *     so the popover isn't clipped by the scroll container; horizontal scroll
  *     is suspended for that transient moment only.
  *
- * CRITICAL GATING — Path A (no default-dialer), confirmed by Dennis + Forge:
- *   `endCall()` / `declineWithMessage()` map to a phone-WIDE
- *   `telecomManager.endCall()` — it acts on the FOREGROUND call, never a
- *   specific background leg. So:
- *     • FOREGROUND chip (what endCall targets) → FULL controls: Answer (if
- *       ringing), Hang up, and quick-reply ONLY when it is the sole
- *       ringing+incoming call.
- *     • BACKGROUND chips → ANSWER-ONLY plus a non-destructive Send-SMS
- *       affordance (targets a specific number, always safe). No hang-up —
- *       tapping it would end the FOREGROUND call instead.
- *   This mirrors Forge's per-call-targeting limitation exactly; revisit when
- *   Path B / InCallService lands.
+ * SINGLE-SLOT MODEL (2026-06-16, Dennis — two-row LOCK lifted, Forge's state
+ * cap landed in 287e8ed): `calls[]` now holds AT MOST 2 rows by construction —
+ * one foreground call + at most one WAITING (ringing) call. The old
+ * arbitrary-length multi-call scroll list, the `hasOtherCalls` gating, the
+ * background "Answer-only + non-destructive SMS" Path-A dance, and the
+ * overflow-x-auto popover-clip suspension are all GONE. The band renders
+ * exactly two states:
+ *
+ *   • ONE call (foreground only) → ONE chip, FULL controls: Answer (if
+ *     ringing), reply-with-message (atomic decline when it's the sole ringing
+ *     incoming call), Hang up.
+ *   • ONE active + ONE waiting → the foreground chip (full controls) AND a
+ *     waiting chip whose ONLY action is "Reply with a message" → which sends a
+ *     quick-reply / custom SMS AND declines the waiting leg. NO Answer button,
+ *     NO separate Hang-up on the waiting chip. One action: reply-&-decline.
+ *
+ * Why the waiting chip's single reply is now SAFE (Forge's 287e8ed):
+ *   `declineWithMessage(to, body)` resolves the target call by number and
+ *   branches internally — END_CALL:{} for a lone ringing call, but
+ *   DECLINE_CALL:{callId} for a TRUE waiting call (a ringing leg behind a
+ *   different active call). So it rejects the WAITING leg and keeps the active
+ *   call up; it can no longer hang up the wrong call. Against the current v36
+ *   APK (no DECLINE_CALL handler) it degrades gracefully: the SMS still sends
+ *   and the waiting call rings out — Ken's new APK enables the on-device
+ *   per-leg reject. Either way the UI is identical.
  */
 
 // Duration (ms) the "Sent" confirmation stays visible after a quick reply /
@@ -107,14 +120,13 @@ export function CallQueueBand() {
     answerCall,
     endCall,
     declineWithMessage,
-    sendSms,
     dismissCall,
   } = usePhone();
 
   // "Message sent" snapshot, keyed by callId, so a chip can confirm a quick
-  // reply / SMS dispatch in place without the band reflowing. declineWithMessage
-  // tears the foreground call down, so without a held snapshot the chip would
-  // vanish before the confirmation registers.
+  // reply in place without the band reflowing. declineWithMessage drops the
+  // target call, so without a held snapshot the chip would vanish before the
+  // confirmation registers.
   const [sentByCall, setSentByCall] = useState<Record<string, string>>({});
   const sentTimers = useRef<Record<string, number>>({});
   useEffect(() => {
@@ -122,19 +134,6 @@ export function CallQueueBand() {
     return () => {
       for (const id of Object.keys(timers)) window.clearTimeout(timers[id]);
     };
-  }, []);
-
-  // CallIds with an open reply popover. While non-empty the chip list must be
-  // overflow-visible (not overflow-x-auto) or the popover gets clipped by the
-  // scroll container.
-  const [openPanels, setOpenPanels] = useState<ReadonlySet<string>>(new Set());
-  const setPanelOpen = useCallback((callId: string, open: boolean) => {
-    setOpenPanels((prev) => {
-      if (open === prev.has(callId)) return prev;
-      const next = new Set(prev);
-      if (open) next.add(callId); else next.delete(callId);
-      return next;
-    });
   }, []);
 
   const markSent = useCallback((callId: string, body: string) => {
@@ -151,29 +150,37 @@ export function CallQueueBand() {
     }, SENT_NOTICE_MS);
   }, []);
 
-  // Quick-reply on the foreground ringing call: atomic SMS-then-decline.
-  const fireQuickReply = useCallback((callId: string, to: string, body: string) => {
+  // Reply-with-message — used by BOTH chips. Forge's declineWithMessage
+  // (287e8ed) resolves the right leg by number and branches internally:
+  // END_CALL for a lone ringing call, DECLINE_CALL for a true waiting leg. So
+  // it's always safe to call with the chip's own number — the foreground
+  // ringing sole-call atomically declines, the waiting leg is rejected while
+  // the active call stays up. No more plain-SMS fallback / hasOtherCalls gate.
+  const fireReply = useCallback((callId: string, to: string, body: string) => {
     const trimmed = body.trim();
     if (!trimmed) return;
     markSent(callId, trimmed);
     declineWithMessage(to, trimmed);
   }, [declineWithMessage, markSent]);
 
-  // Plain SMS on a background chip (non-destructive — targets a specific
-  // number, never ends a call).
-  const fireSms = useCallback((callId: string, to: string, body: string) => {
-    const trimmed = body.trim();
-    if (!trimmed) return;
-    markSent(callId, trimmed);
-    sendSms(to, trimmed);
-  }, [sendSms, markSent]);
-
   // Render nothing unless a phone is connected AND there's at least one call.
   // The band must vanish on the idle dashboard — no dead space (mockup).
   if (!isConnected || calls.length < 1) return null;
 
+  // Single-slot model: at most one foreground + at most one waiting chip
+  // (Forge caps calls[] to <=2). Derive the two slots explicitly rather than
+  // mapping an arbitrary list. Foreground = the bridge's derived currentCall;
+  // waiting = any other call (the lone ringing leg behind it). With the cap
+  // there is at most one of each, so this is exhaustive.
   const foregroundId = currentCall?.callId ?? null;
-  const anyPanelOpen = openPanels.size > 0;
+  const foregroundCall = foregroundId
+    ? calls.find((c) => c.callId === foregroundId) ?? null
+    : null;
+  const waitingCall = calls.find((c) => c.callId !== foregroundId) ?? null;
+  // Defensive: if there's no derived currentCall but a call exists (e.g. a sole
+  // ringing call the bridge hasn't promoted to currentCall yet), treat the
+  // first call as the foreground so it still gets full controls.
+  const primaryCall = foregroundCall ?? calls[0] ?? null;
 
   return (
     <section
@@ -181,40 +188,57 @@ export function CallQueueBand() {
       // flex-shrink-0 → the band keeps its height and never scrolls with the
       // dashboard columns below. The header above is sticky/z-10; this sits
       // beneath it in normal flow, so it can't overlap.
-      className="flex-shrink-0 border-b border-slate-200 bg-white/70 backdrop-blur-sm"
+      //
+      // LAYERING FIX (2026-06-16, Dennis bug #3): `backdrop-blur-sm` makes this
+      // section its OWN stacking context. Without an explicit z-index the
+      // section painted with z-auto, so the dashboard content slot below
+      // (AppShell's `relative z-0` wrapper, which holds the Quick Dial card)
+      // painted AFTER it — burying the reply popover (a child of THIS section)
+      // behind Quick Dial. `relative z-20` lifts the whole band stacking
+      // context above the content slot (z-0) so the popover, which drops down
+      // into the content region, sits ABOVE Quick Dial. Still below modals/
+      // toasts (z-40/z-50) and harmless vs. the sticky header (z-10) — the band
+      // sits beneath the header in flow and never overlaps it.
+      className="relative z-20 flex-shrink-0 border-b border-slate-200 bg-white/70 backdrop-blur-sm"
     >
-      {/* LOCKED band: py-px + 46px two-row chips ≈ 48px total — exactly the
-          identity row + the action row, nothing more. The count lives in the
-          list's aria-label; there is no visible label row. */}
+      {/* Compact band: py-px + 46px two-row chips ≈ 48px total — exactly the
+          identity row + the action row, nothing more. At most two chips
+          (foreground + waiting) sit side by side; no scroll plumbing needed
+          since the cap guarantees they fit. The reply popover drops BELOW the
+          band and is no longer clipped by any overflow container. */}
       <div className="px-3 py-px">
-        {/* Single horizontal band. Chips never wrap (flex-shrink-0 + nowrap);
-            overflow scrolls horizontally — EXCEPT while a reply popover is
-            open, when the list goes overflow-visible so the popover escapes
-            the scroll clip. */}
         <ul
-          aria-label={calls.length === 1 ? '1 active call' : `${calls.length} active calls`}
-          className={clsx(
-            'flex items-stretch gap-1.5',
-            anyPanelOpen ? 'overflow-visible' : 'overflow-x-auto',
-          )}
-          style={{ scrollbarWidth: 'thin' }}
+          aria-label={waitingCall ? '2 active calls' : '1 active call'}
+          className="flex items-stretch gap-1.5"
         >
-          {calls.map((call) => (
-            <li key={call.callId} className="flex-shrink-0">
+          {/* Foreground chip — the active / sole-ringing call. FULL controls. */}
+          {primaryCall && (
+            <li key={primaryCall.callId} className="flex-shrink-0">
               <CallChip
-                call={call}
-                isForeground={call.callId === foregroundId}
-                sentNotice={sentByCall[call.callId] ?? null}
+                call={primaryCall}
+                variant="foreground"
+                sentNotice={sentByCall[primaryCall.callId] ?? null}
                 onAnswer={answerCall}
-                onHangUpForeground={endCall}
-                onQuickReply={fireQuickReply}
-                onSendSms={fireSms}
+                onHangUp={endCall}
+                onReply={fireReply}
                 onDismiss={dismissCall}
-                onPanelOpenChange={setPanelOpen}
-                hasOtherCalls={calls.length > 1}
               />
             </li>
-          ))}
+          )}
+
+          {/* Waiting chip — the lone ringing leg behind the active call. Its
+              ONLY action is reply-&-decline (no Answer, no Hang-up). */}
+          {waitingCall && (
+            <li key={waitingCall.callId} className="flex-shrink-0">
+              <CallChip
+                call={waitingCall}
+                variant="waiting"
+                sentNotice={sentByCall[waitingCall.callId] ?? null}
+                onReply={fireReply}
+                onDismiss={dismissCall}
+              />
+            </li>
+          )}
         </ul>
       </div>
     </section>
@@ -224,62 +248,44 @@ export function CallQueueBand() {
 // =====================================================================
 // CallChip — one call in the band.
 // =====================================================================
+type ChipVariant = 'foreground' | 'waiting';
+
 interface CallChipProps {
   call: CallInfo;
-  /** True for the call that `endCall()` actually targets (the bridge's
-   *  derived currentCall). Only this chip may expose a hang-up. */
-  isForeground: boolean;
+  /** 'foreground' = the active / sole-ringing call (full controls).
+   *  'waiting'    = the lone ringing leg behind the active call (reply only). */
+  variant: ChipVariant;
   /** Non-null while showing the in-chip "Sent" confirmation. */
   sentNotice: string | null;
-  onAnswer: () => void;
-  /** Ends the FOREGROUND call — the only thing END_CALL can target. */
-  onHangUpForeground: () => void;
-  /** Atomic SMS + decline on the foreground ringing call. */
-  onQuickReply: (callId: string, to: string, body: string) => void;
-  /** Plain SMS to this call's number (non-destructive). */
-  onSendSms: (callId: string, to: string, body: string) => void;
+  /** Answer the ringing call. Foreground-only (waiting chip has no Answer). */
+  onAnswer?: () => void;
+  /** Ends the FOREGROUND call. Foreground-only (waiting chip has no Hang-up). */
+  onHangUp?: () => void;
+  /** Reply-with-message → declineWithMessage. Resolves the right leg
+   *  internally (END_CALL for lone ringing, DECLINE_CALL for a waiting leg). */
+  onReply: (callId: string, to: string, body: string) => void;
   /** B2 (2026-06-12): LOCAL removal of this chip from calls[] — no frame is
    *  sent to the phone (a real call continues on the handset). UI dismiss,
    *  not a hang-up. Available on EVERY chip as the stale-chip escape hatch. */
   onDismiss: (callId: string) => void;
-  /** Tells the band a reply popover opened/closed so it can suspend
-   *  horizontal-scroll clipping while the popover is visible. */
-  onPanelOpenChange: (callId: string, open: boolean) => void;
-  /** True when 2+ calls are in flight — gates the foreground quick-reply off
-   *  (declineWithMessage can't target a specific leg then). */
-  hasOtherCalls: boolean;
 }
 
 function CallChip({
   call,
-  isForeground,
+  variant,
   sentNotice,
   onAnswer,
-  onHangUpForeground,
-  onQuickReply,
-  onSendSms,
+  onHangUp,
+  onReply,
   onDismiss,
-  onPanelOpenChange,
-  hasOtherCalls,
 }: CallChipProps) {
-  // Reply/SMS popover state, mirroring the GlobalDialer call surface:
+  // Reply popover state, mirroring the GlobalDialer call surface:
   //   'hidden' = no popover
   //   'chips'  = quick-reply chip list + Custom…
   //   'custom' = free-text composer
   type ReplyView = 'hidden' | 'chips' | 'custom';
-  const [replyView, setReplyViewRaw] = useState<ReplyView>('hidden');
+  const [replyView, setReplyView] = useState<ReplyView>('hidden');
   const [customText, setCustomText] = useState('');
-
-  const setReplyView = useCallback((view: ReplyView) => {
-    setReplyViewRaw(view);
-    onPanelOpenChange(call.callId, view !== 'hidden');
-  }, [call.callId, onPanelOpenChange]);
-
-  // Make sure the band's open-popover bookkeeping is cleared if this chip
-  // unmounts while its popover is open (e.g. the call ends mid-compose).
-  useEffect(() => {
-    return () => onPanelOpenChange(call.callId, false);
-  }, [call.callId, onPanelOpenChange]);
 
   // Reset the popover if the underlying call identity changes (defensive —
   // list keys mean this rarely remounts, but a callId reuse shouldn't strand
@@ -287,7 +293,7 @@ function CallChip({
   const [prevCallId, setPrevCallId] = useState(call.callId);
   if (prevCallId !== call.callId) {
     setPrevCallId(call.callId);
-    setReplyViewRaw('hidden');
+    setReplyView('hidden');
     setCustomText('');
   }
 
@@ -297,23 +303,18 @@ function CallChip({
       ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
       : DEFAULT_QUICK_REPLIES;
 
+  const isForeground = variant === 'foreground';
   const isRinging = call.state === 'ringing';
   const hasNumber = call.number.trim().length > 0;
   const dot = bandDot(call.state);
 
-  // Whether the message popover sends an atomic decline (foreground ringing
-  // sole-call) or a plain SMS (background). Foreground quick-reply is only
-  // safe when it is the sole ringing+incoming call; with other calls in flight
-  // declineWithMessage can't target this leg, so we fall back to plain SMS.
-  const quickReplyIsDecline =
-    isForeground && isRinging && call.isIncoming && !hasOtherCalls;
-
+  // Both variants reply via declineWithMessage, which resolves the right leg:
+  //   • foreground sole ringing call → atomic SMS-then-decline (END_CALL).
+  //   • waiting leg behind an active call → SMS-then-DECLINE_CALL (per-leg).
+  // The reply phrasing is "reply & decline" in both cases (the waiting chip's
+  // ONLY action; the foreground's reply also declines when it's ringing).
   const handlePanelSend = (body: string) => {
-    if (quickReplyIsDecline) {
-      onQuickReply(call.callId, call.number, body);
-    } else {
-      onSendSms(call.callId, call.number, body);
-    }
+    onReply(call.callId, call.number, body);
     setReplyView('hidden');
     setCustomText('');
   };
@@ -374,10 +375,9 @@ function CallChip({
           </span>
         ) : (
           <>
-            {/* Answer — shown for any ringing call (foreground OR background).
-                answerCall() answers the ringing call; this is the ONE action
-                that's safe on a background chip under Path A. */}
-            {isRinging && (
+            {/* Answer — FOREGROUND ringing only. The waiting chip has no Answer
+                in the single-slot model (its one action is reply-&-decline). */}
+            {isForeground && isRinging && onAnswer && (
               <button
                 type="button"
                 onClick={onAnswer}
@@ -389,22 +389,17 @@ function CallChip({
               </button>
             )}
 
-            {/* Message affordance:
-                • foreground ringing sole-call → quick-reply + decline.
-                • otherwise → plain Send SMS (non-destructive).
-                Always safe — never ends a call by itself. Disabled with no
-                number to text. */}
+            {/* Reply-with-message — on BOTH chips. Calls declineWithMessage,
+                which sends the SMS then declines the right leg (the foreground
+                ringing call, or this waiting leg). For the WAITING chip this is
+                the ONLY action. Disabled with no number to text. */}
             <button
               type="button"
               onClick={() => setReplyView(replyView === 'hidden' ? 'chips' : 'hidden')}
               disabled={!hasNumber}
-              aria-label={
-                quickReplyIsDecline
-                  ? `Reply with a message and decline call from ${call.name || call.number || 'this caller'}`
-                  : `Send a text to ${call.name || call.number || 'this caller'}`
-              }
+              aria-label={`Reply with a message and decline the call from ${call.name || call.number || 'this caller'}`}
               aria-expanded={replyView !== 'hidden'}
-              title={quickReplyIsDecline ? 'Reply with message & decline' : 'Send a text'}
+              title="Reply with message & decline"
               className={clsx(
                 'h-6 w-6 rounded-md inline-flex items-center justify-center transition-colors',
                 hasNumber
@@ -415,13 +410,13 @@ function CallChip({
               <MessageSquare className="w-3 h-3" aria-hidden="true" />
             </button>
 
-            {/* Hang up / Decline — FOREGROUND ONLY. Path A: endCall() targets
-                the foreground call, so a hang-up on a background chip would end
-                the WRONG call. Background chips deliberately omit this. */}
-            {isForeground && (
+            {/* Hang up / Decline — FOREGROUND ONLY. endCall() targets the
+                foreground call; the waiting chip deliberately omits it (its
+                only exit is reply-&-decline or the ✕ dismiss). */}
+            {isForeground && onHangUp && (
               <button
                 type="button"
-                onClick={onHangUpForeground}
+                onClick={onHangUp}
                 aria-label={isRinging ? 'Decline the current call' : 'Hang up the current call'}
                 title={isRinging ? 'Decline the current call' : 'Hang up the current call'}
                 className="h-6 w-6 rounded-md inline-flex items-center justify-center bg-rose-500 hover:bg-rose-600 active:scale-95 text-white transition-all"
@@ -446,12 +441,8 @@ function CallChip({
             onBackToChips={() => setReplyView('chips')}
             onCancel={() => { setReplyView('hidden'); setCustomText(''); }}
             onSendCustom={() => { if (customText.trim()) handlePanelSend(customText); }}
-            sendLabel={quickReplyIsDecline ? 'Send & decline' : 'Send'}
-            sendAriaLabel={
-              quickReplyIsDecline
-                ? 'Send message and decline call'
-                : `Send message to ${call.name || call.number || 'this caller'}`
-            }
+            sendLabel="Send & decline"
+            sendAriaLabel={`Send message and decline the call from ${call.name || call.number || 'this caller'}`}
           />
         </div>
       )}
