@@ -51,19 +51,23 @@ function onLobbyPhoneFrame(room, ws, msg, withFix) {
   if (ws === room.active.phone) { // normal active path
     send(room.active.browser, msg, room.delivered); return;
   }
-  if (withFix && room.resumable) {
+  if (withFix) {
+    // Hotfix 2026-06-16b: deliver to the active opposite peer whenever one is
+    // present. An armed resume claim is no longer required — a live active
+    // browser is sufficient (covers the duplicate-lobby-socket regression).
     const survivor = room.active.browser;
     if (survivor && survivor.open) {
-      if (tryAutoResume(room)) {
+      const claimArmed = !!room.resumable && Date.now() <= room.resumable.expiresAt;
+      if (claimArmed && tryAutoResume(room)) {
         if (ws === room.active.phone) send(room.active.browser, msg, room.delivered);
         else send(survivor, msg, room.delivered);
       } else {
-        send(survivor, msg, room.delivered); // armed-window passthrough
+        send(survivor, msg, room.delivered); // dup-socket / armed-window passthrough
       }
       return;
     }
   }
-  room.dropped.push(msg); // pre-fix behavior / no armed window
+  room.dropped.push(msg); // pre-fix behavior / no active opposite peer
 }
 
 // Scenario: browser survives a blip (droppedRole=phone). Phone re-joins lobby
@@ -100,6 +104,46 @@ test('Bug A AFTER: pair re-forms on first frame, 0 dropped, all delivered', () =
   assert.equal(room.dropped.length, 0, '0 frames dropped post-fix');
   assert.equal(room.delivered.length, 3, 'browser received all 3 frames post-fix');
   assert.ok(room.active.phone && room.active.phone.id === 'p2', 'phone re-formed into active');
+});
+
+test('LIVE REGRESSION: duplicate lobby-phone socket delivers to active browser with NO armed claim', () => {
+  // Reproduces the 2026-06-16 notification-fetch break. The pair is fully
+  // formed (active.phone = p-active, active.browser = b1) and the resume claim
+  // has already been consumed (resumable = null). The physical phone holds a
+  // SECOND socket in the lobby that streams live SMS / call frames.
+  const room = makeRoom();
+  const browser = { id: 'b1', role: 'browser', open: OPEN };
+  const activePhone = { id: 'p-active', role: 'phone', open: OPEN };
+  room.active.browser = browser;
+  room.active.phone = activePhone;
+  room.resumable = null; // claim already consumed — this is the regression case
+  const dupPhone = { id: 'p-dup', role: 'phone', open: OPEN };
+  room.lobby.add(dupPhone);
+
+  // BEFORE the hotfix these dropped (no armed claim). AFTER: delivered to the
+  // active browser because a live active opposite peer is present.
+  onLobbyPhoneFrame(room, dupPhone, 'SMS_RECEIVED:{"id":"21374"}', true);
+  onLobbyPhoneFrame(room, dupPhone, 'PHONE_NOTIFICATION:{"id":"n1"}', true);
+  onLobbyPhoneFrame(room, dupPhone, 'CALL_LOG_ENTRY:{"id":"16097"}', true);
+
+  assert.equal(room.dropped.length, 0, 'no live frame dropped from the dup lobby socket');
+  assert.equal(room.delivered.length, 3, 'all 3 reached the active browser');
+  // Active pair is untouched by the dup-socket delivery.
+  assert.equal(room.active.phone, activePhone, 'active phone unchanged');
+  assert.equal(room.active.browser, browser, 'active browser unchanged');
+});
+
+test('LIVE REGRESSION pre-fix: same dup-socket frames DROP without the hotfix', () => {
+  const room = makeRoom();
+  const browser = { id: 'b1', role: 'browser', open: OPEN };
+  room.active.browser = browser;
+  room.active.phone = { id: 'p-active', role: 'phone', open: OPEN };
+  room.resumable = null;
+  const dupPhone = { id: 'p-dup', role: 'phone', open: OPEN };
+  room.lobby.add(dupPhone);
+  onLobbyPhoneFrame(room, dupPhone, 'SMS_RECEIVED:{"id":"21374"}', false);
+  assert.equal(room.dropped.length, 1, 'pre-fix: dup-socket SMS dropped');
+  assert.equal(room.delivered.length, 0, 'pre-fix: browser got nothing');
 });
 
 test('Bug A AFTER (passthrough): frames reach a held survivor even if re-form is impossible', () => {

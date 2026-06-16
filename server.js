@@ -685,43 +685,58 @@ function startRelay(httpServer) {
   }
 
   /**
-   * Live-sync resume fix (2026-06-16) — Bug A backstop.
+   * Live-sync resume fix (2026-06-16) — Bug A backstop + duplicate-lobby-socket
+   * delivery (hotfix 2026-06-16b).
    *
    * Called for a data-plane frame that arrived from a socket still in the
    * LOBBY (i.e. NOT yet the active phone/browser). By the time a frame reaches
    * here every recognised control frame has already been handled and returned,
    * so `msg` is genuine data-plane traffic (a CALL_LOG_ENTRY, SMS_RECEIVED,
-   * CALL_*, etc.) that we would otherwise silently drop.
+   * PHONE_NOTIFICATION, CALL_*, etc.) that we would otherwise silently drop.
    *
-   * If the room has a live resume claim and the OPPOSITE role is held active as
-   * a soft-hold survivor, this means the pair simply hasn't re-formed yet (the
-   * two halves missed each other's lobby window — the root cause of Bug A). We:
-   *   1. Try to re-form the pair right now via tryAutoResume — this returning
-   *      socket is present in the lobby and the survivor is in active, so the
-   *      resume should now succeed and slot this socket into active. On success
-   *      we forward through the freshly-formed pair (normal data plane).
-   *   2. If the pair still can't form (e.g. survivor's socket is mid-close),
-   *      forward the frame DIRECTLY to the held survivor so the live SMS/call
-   *      frame is not lost during the gap.
+   * THE LIVE BUG THIS HOTFIX REPAIRS: the physical phone routinely holds MORE
+   * THAN ONE socket to a room (a fresh connect while the prior socket is still
+   * draining; soft-hold keeps the old one in `active` while new ones pile into
+   * the lobby). Exactly one socket is `room.active.phone`; the OTHERS sit in
+   * the lobby and ALSO stream live SMS / notification / call-log frames. Those
+   * lobby frames were dropped — so on the web client, incoming SMS and phone
+   * notifications stopped appearing even though an active browser was paired.
+   * Observed live: repeated `Dropping lobby-phone frame: SMS_RECEIVED:...` with
+   * a healthy `room.active.browser` present.
    *
-   * Returns true if the frame was handled (re-formed+forwarded, or passed
-   * through); false if there is no armed resume window to deliver into (caller
-   * falls through to its drop+log).
+   * Delivery rule (in priority order):
+   *   1. If a resume claim is armed and this returning socket lets the pair
+   *      re-form, do it via tryAutoResume and forward through the fresh pair.
+   *   2. Otherwise, if the OPPOSITE role is held active (a paired survivor — OR
+   *      simply the live active peer while this is a duplicate lobby socket of
+   *      the same physical device), forward the frame straight to it so the live
+   *      SMS / notification / call frame reaches the web client. This is the
+   *      case that fixes the notification-fetch regression: it no longer
+   *      requires an armed `resumable` claim — a live active opposite peer is
+   *      sufficient.
+   *
+   * Returns true if the frame was handled (re-formed+forwarded, or delivered to
+   * the active opposite peer); false only when there is NO active opposite peer
+   * to deliver to (caller falls through to its drop+log).
    *
    * NEVER called in the LEGACY_RESUME_TEARDOWN path — the caller gates on it —
    * because that path holds no survivor in active, so there is nothing to
    * deliver to and the historical drop behavior is preserved.
    */
   function deliverLobbyFrameDuringResume(room, fromWs, msg, role, token) {
-    const claim = room.resumable;
-    if (!claim || Date.now() > claim.expiresAt) return false;
-
-    // The survivor we'd deliver to is the OPPOSITE role, held in active.
+    // The peer we'd deliver to is the OPPOSITE role, held in active. A live
+    // active opposite peer is the ONLY precondition for delivery — an armed
+    // resume claim is no longer required (the duplicate-lobby-socket case has
+    // no claim once the pair has already re-formed).
     const survivor = role === 'phone' ? room.active.browser : room.active.phone;
     if (!survivor || survivor.readyState !== WebSocket.OPEN) return false;
 
-    // 1. Try to re-form the pair now that this returning socket is here.
-    if (tryAutoResume(room)) {
+    const claim = room.resumable;
+    const claimArmed = !!claim && Date.now() <= claim.expiresAt;
+
+    // 1. If a resume window is armed, try to re-form the pair now that this
+    //    returning socket is here.
+    if (claimArmed && tryAutoResume(room)) {
       // The pair re-formed; this socket is now the active phone/browser. Forward
       // the frame that triggered the re-form through the normal data plane so it
       // is not lost.
@@ -737,10 +752,15 @@ function startRelay(httpServer) {
       return true;
     }
 
-    // 2. Couldn't re-form — passthrough to the held survivor so the frame isn't
-    //    lost during the armed window.
+    // 2. No re-form (no armed claim, or the counterpart isn't back in the
+    //    lobby) — but a live active opposite peer IS present. Forward the frame
+    //    straight to it. This covers BOTH the armed-window passthrough (survivor
+    //    held during a blip) AND the duplicate-lobby-socket case (a second
+    //    socket of the same physical phone streaming live SMS / notification /
+    //    call frames while another socket is the active phone). Without this,
+    //    those frames drop and the web client stops receiving notifications.
     safeSend(survivor, msg);
-    rlog(`[Relay][${redactToken(token)}] armed-window passthrough: lobby-${role} frame → held survivor`);
+    rlog(`[Relay][${redactToken(token)}] lobby-${role} data frame → active ${role === 'phone' ? 'browser' : 'phone'} (dup-socket/passthrough)`);
     return true;
   }
 
