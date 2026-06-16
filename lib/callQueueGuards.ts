@@ -6,7 +6,7 @@
 // Pure functions only — unit-tested directly by tests/call-queue-guards.test.ts
 // (node --experimental-strip-types compatible: type-only imports erase cleanly).
 
-import type { CallInfo } from '@/hooks/phoneTypes';
+import type { CallInfo, CallState } from '@/hooks/phoneTypes';
 
 // B1 — staleness TTL for RINGING chips. Android's own ring timeout is ~30s;
 // 60s of total silence on a ringing row means the phone stopped telling us
@@ -93,4 +93,169 @@ export function findEmptyNumberActiveFold(
   return calls.find(
     c => c.callId !== incomingCallId && c.number === '' && c.state === 'active'
   );
+}
+
+// =========================================================================
+// SINGLE-SLOT ADMISSION (2026-06-16 — Dennis simplification).
+//
+// The queue now holds AT MOST one foreground call + AT MOST one waiting
+// (ringing) call → calls.length is hard-capped at 2. This collapses the
+// phantom "Number hidden" chip + the wrong count "04" BY CONSTRUCTION: a
+// spurious empty-number ringing frame that would be a 3rd row is simply
+// never inserted, and a spurious empty-number frame that races a real single
+// call folds into it. Every handler that CREATES a new calls[] row
+// (CALL_INCOMING / CALL_WAITING / CALL_ADD / makeCall's optimistic insert)
+// now consults admitCall() FIRST.
+//
+// Foreground = a call in state active | dialing | held.
+// Waiting    = a call in state ringing while a foreground call exists.
+// =========================================================================
+
+const FOREGROUND_STATES: ReadonlySet<CallState> = new Set<CallState>([
+  'active',
+  'dialing',
+  'held',
+]);
+
+export function isForegroundState(state: CallState): boolean {
+  return FOREGROUND_STATES.has(state);
+}
+
+/**
+ * Belt-and-braces single-slot cap. Returns at most [foreground, first waiting]
+ * — preserving insertion order otherwise. PURE. Used inside the reducer so
+ * calls.length is correct by construction even if some path bypasses admitCall.
+ *
+ * Foreground pick MUST match the hook's foregroundOf: first active, else first
+ * dialing, else first row. The single retained "waiting" is the first ringing
+ * row that is not the foreground (else the first non-foreground row).
+ */
+export function capCallList(calls: ReadonlyArray<CallInfo>): CallInfo[] {
+  if (calls.length <= 2) return calls.slice();
+  const foreground =
+    calls.find(c => c.state === 'active') ??
+    calls.find(c => c.state === 'dialing') ??
+    calls[0];
+  const waiting =
+    calls.find(c => c.callId !== foreground.callId && c.state === 'ringing') ??
+    calls.find(c => c.callId !== foreground.callId);
+  const kept: CallInfo[] = [];
+  // Preserve original order for the two survivors.
+  for (const c of calls) {
+    if (c.callId === foreground.callId || (waiting && c.callId === waiting.callId)) {
+      kept.push(c);
+    }
+  }
+  return kept;
+}
+
+export type Admission =
+  | { kind: 'insert' }
+  | { kind: 'fold'; into: string }
+  | { kind: 'reject'; reason: string };
+
+/**
+ * Single-slot admission decision. PURE — unit-tested directly.
+ *
+ * Given the current live list and an incoming new-call frame, decide whether
+ * to insert it as a new row, fold it into an existing row (returns the target
+ * callId so the caller can migrate/patch), or reject it (slots full / phantom).
+ *
+ * Rules, applied IN ORDER (first match wins):
+ *   1. Fold by callId   — the same callId already exists (idempotent re-emit /
+ *                         CALL_UPDATE-shaped CALL_ADD). Always fold.
+ *   2. Fold by number   — non-empty incoming number matches an existing live
+ *                         row's normalized number (the dual-emit same-call
+ *                         case; preserves 973536e / B3 semantics).
+ *   3. Empty-number fold — incoming '' folds into an existing '' row when that
+ *                         row is the only sensible target under the single
+ *                         slot (see below). With the cap we fold '' frames far
+ *                         more aggressively than B3 did, because there is only
+ *                         ever room for ONE waiting slot, so we never need to
+ *                         preserve N distinct hidden callers.
+ *   4. Capacity         — enforce ≤1 foreground + ≤1 waiting; otherwise reject.
+ *
+ * `normNum` is the bridge's digits-only last-8 matcher, injected so this file
+ * has no dependency on the hook.
+ */
+export function admitCall(
+  calls: ReadonlyArray<CallInfo>,
+  incomingCallId: string,
+  incomingNumber: string,
+  incomingState: CallState,
+  normNum: (s: string) => string,
+): Admission {
+  // 1. Fold by callId — idempotent re-emit of a row we already hold.
+  const byId = calls.find(c => c.callId === incomingCallId);
+  if (byId) return { kind: 'fold', into: byId.callId };
+
+  // 2. Fold by number — same physical call arriving on a second wire path
+  //    (legacy + registry dual-emit). Never match on '' here.
+  if (incomingNumber !== '') {
+    const byNum = calls.find(
+      c => c.callId !== incomingCallId && normNum(c.number) === normNum(incomingNumber),
+    );
+    if (byNum) return { kind: 'fold', into: byNum.callId };
+  }
+
+  const foreground = calls.find(c => isForegroundState(c.state));
+  const waiting = calls.find(c => c.state === 'ringing');
+  const incomingIsForeground = isForegroundState(incomingState);
+  const incomingIsRinging = incomingState === 'ringing';
+
+  // 3. Empty-number handling. An empty-number frame arriving WHILE a foreground
+  //    call exists is, on real devices, overwhelmingly the APK phantom: a
+  //    spurious RINGING-during-OFFHOOK transition minted for the SAME single
+  //    physical call (Samsung One UI / dual-SIM aggregate state / VoIP). The web
+  //    can't dedupe it by number (number is ''), so the OLD model rendered it as
+  //    a brand-new chip → the "Number hidden" phantom + the wrong "04" count.
+  //
+  //    Under the single-slot model we KILL it here:
+  //    - empty-number ACTIVE frame while an empty-number foreground exists →
+  //      fold (B3 active+active collapse, generalized).
+  //    - empty-number RINGING frame while a foreground call exists → REJECT it.
+  //      This is the load-bearing phantom fix and matches the acceptance repro
+  //      (CALL_INCOMING{num} → CALL_ANSWERED → CALL_WAITING{""} ⇒ length stays
+  //      1). Trade-off (accepted, Dennis simplification): a GENUINE hidden 2nd
+  //      caller arriving with a withheld number is not shown as a chip — it
+  //      rings out / hits voicemail. Hidden-number call-waiting is rare, and the
+  //      single-slot model already only offers "reply-to-decline" on a waiting
+  //      call, so the cost of dropping a phantom-indistinguishable frame is low
+  //      and the benefit (no phantom chip, correct count) is exactly what was
+  //      asked for. A real 2nd caller with a VISIBLE number still fills the
+  //      waiting slot normally (it's matched/inserted by number above / below).
+  if (incomingNumber === '') {
+    if (incomingIsForeground && foreground && foreground.number === '') {
+      return { kind: 'fold', into: foreground.callId };
+    }
+    if (incomingIsRinging && foreground) {
+      return { kind: 'reject', reason: 'empty-number-ringing-during-foreground (phantom)' };
+    }
+  }
+
+  // 4. Capacity — enforce the single-slot cap.
+  if (incomingIsForeground) {
+    // A new foreground-type frame while a DIFFERENT foreground call exists →
+    // reject (we never juggle two active/dialing calls under this model).
+    if (foreground && foreground.callId !== incomingCallId) {
+      return { kind: 'reject', reason: 'foreground-slot-taken' };
+    }
+    return { kind: 'insert' };
+  }
+
+  if (incomingIsRinging) {
+    // The single waiting slot is taken → reject (this is the phantom 3rd row,
+    // or a genuine 3rd caller we deliberately do not queue: it counts as
+    // missed). A ringing frame is only "waiting" when a foreground exists; with
+    // no foreground it is itself the lone incoming call (fills foreground).
+    if (foreground) {
+      if (waiting) return { kind: 'reject', reason: 'waiting-slot-taken' };
+      return { kind: 'insert' };
+    }
+    // No foreground → this lone ringing call IS the foreground.
+    return { kind: 'insert' };
+  }
+
+  // Any other state (e.g. 'idle'/'ended' should never reach here, but be safe).
+  return { kind: 'insert' };
 }

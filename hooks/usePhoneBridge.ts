@@ -23,7 +23,9 @@ import {
   RINGING_SWEEP_INTERVAL_MS,
   expiredRingingCallIds,
   expiredStaleCallIds,
-  findEmptyNumberActiveFold,
+  admitCall,
+  isForegroundState,
+  capCallList,
 } from '@/lib/callQueueGuards';
 
 const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
@@ -386,10 +388,23 @@ export function usePhoneBridge() {
     lastCallEventAtRef.current.set(call.callId, Date.now());
     setCalls(prev => {
       const idx = prev.findIndex(c => c.callId === call.callId);
-      const next =
+      const merged =
         idx !== -1
           ? prev.map((c, i) => (i === idx ? { ...c, ...call } : c))
           : [...prev, call];
+      // SINGLE-SLOT CAP (2026-06-16, belt-and-braces). admitCall already
+      // refuses any frame that would create a 3rd row, so this should never
+      // truncate once the handlers route through it — but enforcing the cap
+      // HERE makes calls.length (the count badge) correct BY CONSTRUCTION
+      // even if some future path inserts directly. Keep [foreground, first
+      // waiting] and drop the rest.
+      const next = capCallList(merged);
+      if (next.length !== merged.length) {
+        console.warn('[PhoneBridge] single-slot cap truncated calls[]', {
+          before: merged.length,
+          after: next.length,
+        });
+      }
       callsRef.current = next;
       return next;
     });
@@ -1438,18 +1453,42 @@ export function usePhoneBridge() {
           contactMatch?.name ?? (rawName && !looksLikeNumber ? rawName : undefined);
         console.log(`[PhoneBridge] ${type} from:`, incomingNumber, '| resolvedName:', resolvedName ?? null);
 
-        // DEDUPE-BY-NUMBER: legacy frames carry no callId, and the phone may
-        // re-emit INCOMING/WAITING for a still-ringing number (reconnect,
-        // duplicate broadcast). If a live call with the same number already
-        // exists, reuse its callId so we PATCH instead of creating a twin row.
-        const existing = callsRef.current.find(
-          c => normNum(c.number) === normNum(incomingNumber) && incomingNumber !== ''
+        // SINGLE-SLOT ADMISSION (2026-06-16, Dennis simplification). A legacy
+        // INCOMING/WAITING frame is always "a new ringing call". Route it
+        // through admitCall so the queue holds at most ONE foreground + ONE
+        // waiting row. This is the phantom-chip fix: a spurious empty-number
+        // RINGING frame for the SAME single physical call folds into it, and a
+        // genuine 3rd caller beyond the one waiting slot is rejected (counted
+        // as missed) instead of minting the phantom chip / wrong count.
+        // A synthetic callId is needed up front so admitCall's fold-by-callId
+        // (idempotent re-emit) and capacity rules can run.
+        const proposedCallId = `legacy:${normNum(incomingNumber) || 'unknown'}:${Date.now()}`;
+        const admission = admitCall(
+          callsRef.current,
+          proposedCallId,
+          incomingNumber,
+          'ringing',
+          normNum,
         );
-        // Synthesized callId: number + first-seen timestamp. Stable for the
-        // life of this ringing call (we reuse `existing.callId` on repeats).
-        // WIRE-CONTRACT NOTE: a future APK emitting CALL_ADD supplies its own
-        // real callId; this synthetic id is the legacy-path fallback only.
-        const callId = existing?.callId ?? `legacy:${normNum(incomingNumber) || 'unknown'}:${Date.now()}`;
+        if (admission.kind === 'reject') {
+          // Slots full — this is the phantom or a genuine 3rd caller. Do NOT
+          // insert. An unanswered incoming call that we refuse to queue is a
+          // miss; bump the badge (deferred, matching the existing pattern).
+          console.warn('[PhoneBridge] call rejected — slots full (single-slot model)', {
+            type,
+            number: incomingNumber || '(hidden)',
+            reason: admission.reason,
+          });
+          setTimeout(() => setMissedCallCount(c => c + 1), 0);
+          break;
+        }
+        // On fold, reuse the existing row's callId so we PATCH it in place
+        // (preserving its first-seen startTime). On insert, mint a fresh row.
+        const foldTarget =
+          admission.kind === 'fold'
+            ? callsRef.current.find(c => c.callId === admission.into)
+            : undefined;
+        const callId = foldTarget?.callId ?? proposedCallId;
 
         lastCallWasAnsweredRef.current = false;
         // Preserve the historical single-call side-effects so the foreground
@@ -1459,13 +1498,16 @@ export function usePhoneBridge() {
           callStartTimeRef.current = Date.now();
           stopCallTimer();
         }
+        // When folding an empty-number RINGING phantom into an ALREADY-ACTIVE
+        // foreground row, do NOT demote it back to 'ringing' — keep its state.
+        const foldedActive = foldTarget && isForegroundState(foldTarget.state);
         upsertCall({
           callId,
-          number: incomingNumber,
-          name: resolvedName,
-          isIncoming: true,
-          startTime: existing?.startTime ?? Date.now(),
-          state: 'ringing',
+          number: foldTarget?.number || incomingNumber,
+          name: resolvedName ?? foldTarget?.name,
+          isIncoming: foldTarget?.isIncoming ?? true,
+          startTime: foldTarget?.startTime ?? Date.now(),
+          state: foldedActive ? foldTarget!.state : 'ringing',
         });
         break;
       }
@@ -1597,13 +1639,26 @@ export function usePhoneBridge() {
         // impossible for SIM calls (aggregate OFFHOOK = one active leg), so
         // fold instead of inserting a twin. Two RINGING '' rows still coexist
         // (real SIM call-waiting — 973536e semantics preserved).
+        // SINGLE-SLOT ADMISSION (2026-06-16). Replace the ad-hoc dedupe +
+        // findEmptyNumberActiveFold block with the unified admitCall decision,
+        // so the registry path enforces the same ≤1 foreground + ≤1 waiting cap
+        // as the legacy path. fold→migrate the row to the registry callId;
+        // reject→drop (count incoming as missed); insert→new row.
+        const addAdmission = admitCall(callsRef.current, callId, number, state, normNum);
+        if (addAdmission.kind === 'reject') {
+          console.warn('[PhoneBridge] CALL_ADD rejected — slots full (single-slot model)', {
+            callId,
+            number: number || '(hidden)',
+            state,
+            reason: addAdmission.reason,
+          });
+          if (isIncoming) setTimeout(() => setMissedCallCount(c => c + 1), 0);
+          break;
+        }
         const existing =
-          (number !== ''
-            ? callsRef.current.find(
-                c => c.callId !== callId && normNum(c.number) === normNum(number)
-              )
-            : undefined) ??
-          findEmptyNumberActiveFold(callsRef.current, callId, number, state);
+          addAdmission.kind === 'fold'
+            ? callsRef.current.find(c => c.callId === addAdmission.into)
+            : undefined;
         // Stronger state wins: if the local row already went 'active' (legacy
         // CALL_ANSWERED landed first), a trailing ringing/dialing CALL_ADD for
         // the same call must not demote it.
@@ -2654,13 +2709,26 @@ export function usePhoneBridge() {
     // so the single-call dialing experience is unchanged. The synthesized
     // callId mirrors the legacy-incoming scheme so CALL_ANSWERED / CALL_ENDED
     // (which come back with this number, or bare) resolve it correctly.
+    // SINGLE-SLOT ADMISSION (2026-06-16). An outgoing dial is a foreground
+    // ('dialing') call. Under the single-slot model we never place a 2nd
+    // outbound under an existing foreground — the UI won't offer it, but guard
+    // defensively so a stray dial can't mint a 3rd row / break the cap.
+    const dialCallId = `legacy:${number.replace(/\D/g, '').slice(-8) || 'unknown'}:${Date.now()}`;
+    const dialAdmission = admitCall(callsRef.current, dialCallId, number, 'dialing', normNum);
+    if (dialAdmission.kind === 'reject') {
+      console.warn('[PhoneBridge] makeCall rejected — a foreground call already exists (single-slot model)', {
+        number,
+        reason: dialAdmission.reason,
+      });
+      return false;
+    }
     if (callsRef.current.length === 0) {
       callStartTimeRef.current = Date.now();
       stopCallTimer();
     }
     lastCallWasAnsweredRef.current = false;
     upsertCall({
-      callId: `legacy:${number.replace(/\D/g, '').slice(-8) || 'unknown'}:${Date.now()}`,
+      callId: dialCallId,
       number,
       name: undefined,
       isIncoming: false,
@@ -2838,14 +2906,53 @@ export function usePhoneBridge() {
   const declineWithMessage = useCallback((to: string, body: string): void => {
     // 1. Dispatch the SMS first. Reuses the existing sendSms code path which
     //    generates a clientMsgId, optimistically adds the message to local
-    //    state, and routes the SEND_SMS frame through the bridge.
+    //    state, and routes the SEND_SMS frame through the bridge. Order is
+    //    load-bearing: text before the hang-up so a failed/raced reject never
+    //    loses the message.
     sendSms(to, body);
-    // 2. Reject the call. `endCall()` sends END_CALL:{} which Android maps to
-    //    `telecomManager.endCall()`. When the device is in RINGING state, that
-    //    call rejects the ringing call. Confirmed on SM-S911B (Android docs +
-    //    code path PhoneService.kt:2699 -> CallHandler.kt:74 -> telecomManager.endCall()).
-    endCall();
-  }, [sendSms, endCall]);
+
+    // 2. Reject the RIGHT leg.
+    //
+    // FULL-VERSION per-leg decline (2026-06-16, Dennis opted IN). Resolve the
+    // target call by number, then branch:
+    //   - LONE ringing call (no foreground call exists, or the target IS the
+    //     foreground): END_CALL:{} — telecomManager.endCall() correctly rejects
+    //     the sole ringing call. UNCHANGED behavior.
+    //   - TRUE WAITING call (a ringing call while a DIFFERENT foreground call is
+    //     active): END_CALL would hang up the WRONG (active) call. Instead send
+    //     DECLINE_CALL:{callId} so the phone rejects THAT waiting leg only and
+    //     keeps the active call up.
+    //
+    // BACKWARD-COMPAT: against the current v36 APK (no DECLINE_CALL handler) the
+    // frame is an unknown command and is safely ignored — the SMS still sends,
+    // and the waiting call simply rings out / hits voicemail (no wrong-call
+    // hang-up). The per-leg hang-up requires a NEW APK with the DECLINE_CALL
+    // handler (Ken builds it). See résumé.
+    const list = callsRef.current;
+    const target = list.find(c => normNum(c.number) === normNum(to) && c.state === 'ringing');
+    const foreground = foregroundOf(list);
+    const isTrueWaiting =
+      !!target &&
+      !!foreground &&
+      foreground.callId !== target.callId &&
+      isForegroundState(foreground.state);
+
+    if (isTrueWaiting) {
+      // Per-leg decline of the waiting call — keep the active call connected.
+      // Do NOT call endCall() (it targets the foreground). Optimistically drop
+      // the waiting row locally for a snappy UI; the phone's CALL_REMOVE for
+      // this leg is then a harmless no-op.
+      sendCommand('DECLINE_CALL', { callId: target.callId });
+      removeCall(target.callId);
+      if (target.isIncoming) {
+        // A declined incoming waiting call is a miss (we never answered it).
+        setTimeout(() => setMissedCallCount(c => c + 1), 0);
+      }
+    } else {
+      // Lone ringing call (the common case) — END_CALL:{} rejects it correctly.
+      endCall();
+    }
+  }, [sendSms, endCall, sendCommand, removeCall]);
 
   const getContacts = useCallback(() => {
     // Silent incremental sync — no progress bar. Clears buffer for clean reassembly.

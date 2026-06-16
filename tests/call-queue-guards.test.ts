@@ -12,8 +12,14 @@ import {
   expiredRingingCallIds,
   expiredStaleCallIds,
   findEmptyNumberActiveFold,
+  admitCall,
+  capCallList,
+  isForegroundState,
 } from '../lib/callQueueGuards.ts';
 import type { CallInfo } from '../hooks/phoneTypes.ts';
+
+// Bridge's digits-only last-8 matcher, mirrored for the admitCall tests.
+const normNum = (s: string) => (s ?? '').replace(/\D/g, '').slice(-8);
 
 const NOW = 1_750_000_000_000;
 
@@ -158,6 +164,115 @@ test('mixed list: only pre-cutoff rows are returned', () => {
   ];
   const touched = new Map([['stale', NOW - 6_000], ['live', NOW + 2_000]]);
   assert.deepEqual(expiredStaleCallIds(calls, touched, NOW), ['stale']);
+});
+
+// ---- Single-slot admission: admitCall (2026-06-16) --------------------
+
+test('lone incoming ringing call (empty queue) → insert', () => {
+  const got = admitCall([], 'c1', '+4791308204', 'ringing', normNum);
+  assert.deepEqual(got, { kind: 'insert' });
+});
+
+test('2nd real caller while one active → insert (fills the waiting slot)', () => {
+  const calls = [call({ callId: 'a', number: '+4791308204', state: 'active' })];
+  const got = admitCall(calls, 'c2', '+4799999999', 'ringing', normNum);
+  assert.deepEqual(got, { kind: 'insert' });
+});
+
+test('3rd caller while active+waiting full → reject (missed)', () => {
+  const calls = [
+    call({ callId: 'a', number: '+4791308204', state: 'active' }),
+    call({ callId: 'b', number: '+4799999999', state: 'ringing' }),
+  ];
+  const got = admitCall(calls, 'c3', '+4788888888', 'ringing', normNum);
+  assert.equal(got.kind, 'reject');
+});
+
+test('PHANTOM: empty-number RINGING during an active hidden call → reject', () => {
+  // Active foreground is itself hidden-number; a spurious RINGING '' frame for
+  // the SAME physical call must NOT mint a phantom chip. Rejected as phantom.
+  const calls = [call({ callId: 'a', number: '', state: 'active' })];
+  const got = admitCall(calls, 'phantom', '', 'ringing', normNum);
+  assert.equal(got.kind, 'reject');
+});
+
+test('PHANTOM: empty-number RINGING while active call has a REAL number → reject', () => {
+  // The acceptance-repro case: CALL_INCOMING{num} → CALL_ANSWERED leaves a
+  // real-numbered ACTIVE foreground; the spurious CALL_WAITING{""} must be
+  // rejected so calls.length stays 1. (Accepted trade-off: a genuine hidden
+  // 2nd caller is not chipped — it rings out.)
+  const calls = [call({ callId: 'a', number: '+4791308204', state: 'active' })];
+  const got = admitCall(calls, 'x', '', 'ringing', normNum);
+  assert.equal(got.kind, 'reject');
+});
+
+test('PHANTOM with waiting slot full: empty-number ringing → reject', () => {
+  const calls = [
+    call({ callId: 'a', number: '+4791308204', state: 'active' }),
+    call({ callId: 'b', number: '+4799999999', state: 'ringing' }),
+  ];
+  const got = admitCall(calls, 'phantom', '', 'ringing', normNum);
+  assert.equal(got.kind, 'reject');
+});
+
+test('dual-emit same number → fold by number', () => {
+  const calls = [call({ callId: 'legacy:91308204:1', number: '+4791308204', state: 'ringing' })];
+  const got = admitCall(calls, 'c-registry-1', '+4791308204', 'ringing', normNum);
+  assert.deepEqual(got, { kind: 'fold', into: 'legacy:91308204:1' });
+});
+
+test('idempotent re-emit by callId → fold into self', () => {
+  const calls = [call({ callId: 'same', number: '+4791308204', state: 'ringing' })];
+  const got = admitCall(calls, 'same', '+4791308204', 'ringing', normNum);
+  assert.deepEqual(got, { kind: 'fold', into: 'same' });
+});
+
+test('2nd foreground (outgoing dial) while a foreground exists → reject', () => {
+  const calls = [call({ callId: 'a', number: '+4791308204', state: 'active' })];
+  const got = admitCall(calls, 'dial', '+4712341234', 'dialing', normNum);
+  assert.equal(got.kind, 'reject');
+});
+
+test('empty-number ACTIVE+ACTIVE collapse still folds (B3 superset)', () => {
+  const calls = [call({ callId: 'a', number: '', state: 'active' })];
+  const got = admitCall(calls, 'b', '', 'active', normNum);
+  assert.deepEqual(got, { kind: 'fold', into: 'a' });
+});
+
+test('isForegroundState classifies states correctly', () => {
+  assert.equal(isForegroundState('active'), true);
+  assert.equal(isForegroundState('dialing'), true);
+  assert.equal(isForegroundState('held'), true);
+  assert.equal(isForegroundState('ringing'), false);
+});
+
+// ---- Belt-and-braces cap: capCallList ---------------------------------
+
+test('capCallList leaves a 0/1/2-length list untouched', () => {
+  assert.equal(capCallList([]).length, 0);
+  const one = [call({ callId: 'a' })];
+  assert.deepEqual(capCallList(one).map(c => c.callId), ['a']);
+  const two = [call({ callId: 'a', state: 'active' }), call({ callId: 'b' })];
+  assert.deepEqual(capCallList(two).map(c => c.callId), ['a', 'b']);
+});
+
+test('capCallList truncates a 3-length list to [foreground, first waiting]', () => {
+  const three = [
+    call({ callId: 'fg', state: 'active' }),
+    call({ callId: 'w1', state: 'ringing' }),
+    call({ callId: 'w2', state: 'ringing' }),
+  ];
+  assert.deepEqual(capCallList(three).map(c => c.callId), ['fg', 'w1']);
+});
+
+test('capCallList preserves original order of survivors', () => {
+  // foreground is the 'active' one in the middle; first ringing is index 0.
+  const list = [
+    call({ callId: 'r0', state: 'ringing' }),
+    call({ callId: 'fg', state: 'active' }),
+    call({ callId: 'r2', state: 'ringing' }),
+  ];
+  assert.deepEqual(capCallList(list).map(c => c.callId), ['r0', 'fg']);
 });
 
 console.log(`\n${passed} tests passed`);

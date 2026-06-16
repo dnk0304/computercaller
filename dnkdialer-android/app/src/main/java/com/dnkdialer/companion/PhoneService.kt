@@ -2993,6 +2993,53 @@ class PhoneService : Service() {
                 "END_CALL" -> {
                     callHandler.endCall()
                 }
+                "DECLINE_CALL" -> {
+                    // PER-LEG DECLINE (2026-06-16, Dennis full-version). The web
+                    // sends DECLINE_CALL:{callId} to reject ONE specific waiting
+                    // (ringing) leg while KEEPING the active call connected —
+                    // the "reply with a message → decline the waiting call"
+                    // action. Distinct from END_CALL:{} (which hangs up the
+                    // foreground call via the aggregate telecomManager.endCall()).
+                    //
+                    // Resolve the registry entry for this callId so we target
+                    // the right leg by the id the web already tracks.
+                    val targetCallId = (payload?.get("callId") as? String)?.takeIf { it.isNotBlank() }
+                    if (targetCallId == null) {
+                        android.util.Log.w("PhoneService", "DECLINE_CALL missing callId — ignoring")
+                        return
+                    }
+                    val entry: CallEntry?
+                    val activeCount: Int
+                    synchronized(callRegistryLock) {
+                        entry = callRegistry[targetCallId]
+                        activeCount = callRegistry.values.count { it.state == "active" }
+                    }
+                    if (entry == null) {
+                        android.util.Log.w("PhoneService", "DECLINE_CALL no registry entry for callId=$targetCallId — ignoring")
+                        return
+                    }
+                    android.util.Log.d(
+                        "PhoneService",
+                        "DECLINE_CALL callId=$targetCallId state=${entry.state} number=[${redactNumber(entry.number)}] activeCount=$activeCount"
+                    )
+                    // Hand the per-leg reject to CallHandler. It targets the
+                    // SPECIFIC ringing leg (NOT the active call) via the
+                    // InCallService Call objects when this build owns the
+                    // default-dialer / InCallService role; otherwise it safely
+                    // refuses to touch the aggregate active call (so we never
+                    // hang up the wrong leg) and the waiting call simply rings
+                    // out. See CallHandler.declineRingingCall(...) +
+                    // CompanionInCallService for the on-device contract.
+                    val rejected = callHandler.declineRingingCall(entry.number)
+                    if (rejected) {
+                        // The leg is gone on the device — reflect it in the
+                        // registry + tell the web so its waiting chip clears.
+                        synchronized(callRegistryLock) {
+                            callRegistry.remove(targetCallId)?.also { it.state = "ended" }
+                        }
+                        emitCallRemove(targetCallId, "declined")
+                    }
+                }
                 "SET_SPEAKER" -> {
                     // Legacy alias retained for backward compat with older
                     // browser builds that haven't been redeployed to the
