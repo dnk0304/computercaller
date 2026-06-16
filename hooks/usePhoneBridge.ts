@@ -1307,6 +1307,21 @@ export function usePhoneBridge() {
         break;
       }
 
+      case 'PEER_RECONNECTING': {
+        // Connection-stability soft-hold (2026-06-16). The relay kept us in the
+        // active pair while our peer's socket briefly dropped on a transient
+        // blip; it will silently re-link the returning peer. We deliberately do
+        // NOT touch isConnected / lobbyState / data caches — flipping any of
+        // those is exactly the storm this fix removes. The only thing we do is
+        // log it (so support pings can see a blip happened) and leave the 30s
+        // APP_PING stale window to do its job: the Android side re-attaches in
+        // ~5s, well inside that window, so the green "Phone connected" pill
+        // stays accurate. If the peer never returns, the relay sends a real
+        // PAIRING_TERMINATED when the resume window expires.
+        console.log('[PhoneBridge] PEER_RECONNECTING — peer briefly away, holding active state', payload);
+        break;
+      }
+
       case 'STATUS':
         // Dispatch #32 (2026-05-25): the STATUS frame is no longer used by the
         // relay's lobby/active state machine — pair lifecycle is driven by

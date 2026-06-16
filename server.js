@@ -64,6 +64,24 @@ const dev = process.env.NODE_ENV !== 'production';
 // OFF — production should never need it after the deploy is verified.
 const LEGACY_RELAY_PORT = process.env.LEGACY_RELAY_PORT === '1';
 
+// LEGACY_RESUME_TEARDOWN=1 kill-switch (connection-stability fix, 2026-06-16).
+//
+// Default OFF → new "soft hold" behavior: when ONE side of an active pair drops
+// its socket (reason 'socket_closed' — a transient mobile blip, NAT rebind, CF
+// idle, single missed ping), the relay keeps the SURVIVING side in `active` and
+// sends it a non-destructive PEER_RECONNECTING frame instead of tearing it down.
+// tryAutoResume then re-slots the returning socket without the survivor ever
+// leaving active / wiping its data caches. This stops the "reconnect storm"
+// where every phone blip forced the browser back to the lobby + a full re-sync
+// (regression from 0250586, 2026-06-11; the silent-resume design tore the
+// survivor down a beat before re-linking, so resume could never be silent).
+//
+// Set to "1" to restore the pre-fix behavior: socket_closed fully tears the
+// pair down (PAIRING_TERMINATED to both, both back to lobby) and relies on
+// tryAutoResume re-forming from the lobby. A 5-second revert if the soft-hold
+// path misbehaves in prod.
+const LEGACY_RESUME_TEARDOWN = process.env.LEGACY_RESUME_TEARDOWN === '1';
+
 // One Prisma client for the whole relay process. server.js is a long-lived
 // custom server (not Next.js runtime), so it can't import the TS singleton from
 // lib/db.ts directly — instantiating here is fine because we never hot-reload
@@ -339,6 +357,40 @@ function startRelay(httpServer) {
   function terminateActivePair(room, reason) {
     const { browser, phone } = room.active;
     if (!browser && !phone) return;
+
+    // Connection-stability fix (2026-06-16). socket_closed = a transient blip,
+    // not a user leaving. By default we KEEP the surviving side in `active` and
+    // soft-hold it (PEER_RECONNECTING) so it never drops to the lobby / wipes
+    // its data while the dropped side reconnects. tryAutoResume re-slots the
+    // returning socket. This eliminates the reconnect storm where every mobile
+    // blip forced the browser back to lobby + a full re-sync. LEGACY_RESUME_
+    // TEARDOWN=1 restores the old full-teardown path.
+    if (reason === 'socket_closed' && !LEGACY_RESUME_TEARDOWN) {
+      const phoneOpen = !!phone && phone.readyState === WebSocket.OPEN;
+      const browserOpen = !!browser && browser.readyState === WebSocket.OPEN;
+      // Exactly one side closed (its close handler called us). The OTHER side
+      // is the survivor — keep it in active; drop only the closed slot.
+      const droppedRole = !phoneOpen ? 'phone' : 'browser';
+      room.active = { browser: browserOpen ? browser : null, phone: phoneOpen ? phone : null };
+      room.resumable = {
+        droppedRole,
+        droppedAt: Date.now(),
+        expiresAt: Date.now() + RESUME_WINDOW_MS,
+        identity: room.pairIdentity ?? null,
+      };
+      const survivor = phoneOpen ? phone : (browserOpen ? browser : null);
+      if (survivor) {
+        // Non-destructive hold. The web hook treats this as "phone briefly
+        // away" — it does NOT flip isConnected / wipe caches; its existing 30s
+        // APP_PING stale window (>> the 5s Android lobby reconnect) covers the
+        // gap. A client that doesn't know the frame simply ignores it. The
+        // survivor stays in `active`, so its data plane is untouched.
+        safeSend(survivor, `PEER_RECONNECTING:${JSON.stringify({ droppedRole, window: RESUME_WINDOW_MS })}`);
+      }
+      console.log(`[Relay][${redactToken(room.token)}] socket_closed: soft-hold survivor (droppedRole=${droppedRole}), resume window armed (${RESUME_WINDOW_MS}ms)`);
+      return;
+    }
+
     console.log(`[Relay][${redactToken(room.token)}] terminateActivePair: ${reason}`);
     room.active = { browser: null, phone: null };
 
@@ -430,8 +482,14 @@ function startRelay(httpServer) {
       room.resumable = null;
       return false;
     }
-    let phoneWs = null;
-    let browserWs = null;
+    // The survivor (soft-hold path, default) is already sitting in `active` —
+    // seed from there so we only need to find the RETURNING side in the lobby.
+    // In the legacy full-teardown path both slots are null and both are found
+    // in the lobby, exactly as before.
+    let phoneWs = room.active.phone && room.active.phone.readyState === WebSocket.OPEN ? room.active.phone : null;
+    let browserWs = room.active.browser && room.active.browser.readyState === WebSocket.OPEN ? room.active.browser : null;
+    const survivorPhone = phoneWs;       // non-null ⇒ phone survived, browser is returning
+    const survivorBrowser = browserWs;   // non-null ⇒ browser survived, phone is returning
     for (const s of room.lobby) {
       if (s.role === 'phone' && !phoneWs && s.readyState === WebSocket.OPEN) phoneWs = s;
       else if (s.role === 'browser' && !browserWs && s.readyState === WebSocket.OPEN) browserWs = s;
@@ -453,9 +511,13 @@ function startRelay(httpServer) {
     const deviceName = phoneWs.deviceName ?? id.deviceName ?? null;
     room.pairIdentity = { ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', deviceLabel: id.deviceLabel, deviceName };
     // IDENTICAL payload shapes to handleAcceptPairing's PAIRING_ACTIVE pair.
-    safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
-    safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown' })}`);
-    console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, droppedRole=${claim.droppedRole})`);
+    // A survivor (soft-hold path) never left active and already holds correct
+    // state — re-sending PAIRING_ACTIVE to it would needlessly re-trigger its
+    // quicksync, so we send only to the side that actually returned. In the
+    // legacy full-teardown path BOTH are freshly resumed ⇒ both get the frame.
+    if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
+    if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown' })}`);
+    console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, droppedRole=${claim.droppedRole}, survivorHeld=${!!(survivorPhone || survivorBrowser)})`);
     return true;
   }
 
@@ -1159,6 +1221,26 @@ function startRelay(httpServer) {
   // termination, instead of the previous one-tick guillotine.
   const MAX_MISSED_PONGS = 2;
   const keepaliveInterval = setInterval(() => {
+    // Connection-stability fix (2026-06-16): expire stale soft-holds. If a
+    // resume window lapsed while one side is still held in `active` (the
+    // dropped peer never came back), give the survivor a real teardown so it
+    // returns to the lobby instead of being held forever against a ghost.
+    rooms.forEach((room) => {
+      const claim = room.resumable;
+      if (!claim || Date.now() <= claim.expiresAt) return;
+      const onlyOneActive =
+        (!!room.active.browser) !== (!!room.active.phone); // exactly one side held
+      if (onlyOneActive) {
+        console.log(`[Relay][${redactToken(room.token)}] resume window expired with survivor held — releasing to lobby`);
+        room.resumable = null;
+        terminateActivePair(room, 'resume_expired');
+      } else {
+        // No survivor held (both-dropped case) — just let the claim lapse.
+        room.resumable = null;
+      }
+      maybeReapRoom(room);
+    });
+
     const allSockets = [];
     rooms.forEach((room) => {
       room.lobby.forEach((ws) => allSockets.push(ws));

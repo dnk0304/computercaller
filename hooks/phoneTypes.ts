@@ -105,6 +105,16 @@ export type PhoneEventType =
   | 'PAIRING_TIMEOUT'
   | 'PAIRING_REJECTED'
   | 'PAIRING_TERMINATED'
+  // Connection-stability soft-hold (2026-06-16). Relay emits this to the
+  // SURVIVING side of an active pair when the OTHER side's socket dropped on a
+  // transient blip (reason 'socket_closed'). The survivor stays in `active` and
+  // its data plane is untouched — this is a purely informational "your peer is
+  // briefly reconnecting" hint. The client MUST NOT flip isConnected or wipe
+  // caches on it; the relay re-links the returning peer via tryAutoResume
+  // (silently, no PAIRING_ACTIVE re-sent to the survivor). Ignoring the frame
+  // entirely is also correct — the existing 30s APP_PING stale window covers
+  // the gap. payload: { droppedRole: 'phone'|'browser', window: number }
+  | 'PEER_RECONNECTING'
   // Single-web-session kick (WIRE-CONTRACT §1, 2026-05-29). Server emits this
   // frame BEFORE closing with code 4001 when a new web login for the same user
   // bumps sessionVersion and supersedes this socket. Client sets
