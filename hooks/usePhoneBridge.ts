@@ -22,6 +22,7 @@ import {
   RINGING_TTL_MS,
   RINGING_SWEEP_INTERVAL_MS,
   expiredRingingCallIds,
+  expiredStaleCallIds,
   findEmptyNumberActiveFold,
 } from '@/lib/callQueueGuards';
 
@@ -823,6 +824,18 @@ export function usePhoneBridge() {
   // RINGING rows the phone has gone silent on — web-side safety net for
   // pre-v37 APKs that never emit CALL_REMOVE for an abandoned background leg.
   const lastCallEventAtRef = useRef<Map<string, number>>(new Map());
+  // Live-sync resume fix (2026-06-16). Wall-clock time of the most recent
+  // PEER_RECONNECTING (soft-hold blip start). Used on resume to (a) bound the
+  // backfill snapshot's `since` window and (b) expire call chips last touched
+  // before the blip (a call that ended during the gap whose CALL_ENDED frame
+  // was lost on the non-OPEN socket). null = no blip seen this session. Cleared
+  // after the resume snapshot fires so a later genuine PAIRING_ACTIVE / manual
+  // sync doesn't re-trigger off a stale stamp.
+  const peerReconnectingAtRef = useRef<number | null>(null);
+  // Debounced timer for the post-resume backfill snapshot + stale-chip sweep.
+  // Held in a ref so a second blip clears the pending run before scheduling a
+  // fresh one (a flapping link collapses to one snapshot).
+  const resumeSnapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // MMS_MEDIA_CHUNK reassembly. Android slices each `GET_MMS_FULL` response
   // into 64 KB base64 chunks; we collect them keyed by messageId, then resolve
@@ -1319,6 +1332,71 @@ export function usePhoneBridge() {
         // stays accurate. If the peer never returns, the relay sends a real
         // PAIRING_TERMINATED when the resume window expires.
         console.log('[PhoneBridge] PEER_RECONNECTING — peer briefly away, holding active state', payload);
+
+        // Live-sync resume fix (2026-06-16). The soft-hold KEEPS us in active,
+        // so unlike a full teardown we never receive a fresh PAIRING_ACTIVE to
+        // re-sync off when the peer returns. Two live-sync bugs follow from that
+        // and are fixed here, both idempotent (merge mode + existing dedupe):
+        //
+        //  Bug A backfill: any SMS / call-log frame the phone emitted during the
+        //  gap may have been dropped relay-side. Once the phone re-attaches we
+        //  pull a fresh merge snapshot (GET_MESSAGES + GET_CALL_LOGS) so anything
+        //  missed is backfilled. Server-side passthrough already saves most of
+        //  these; this is the belt-and-braces catch-up for the rest.
+        //
+        //  Bug B stale chip: a CALL_ENDED / CALL_REMOVE that coincided with the
+        //  blip was lost, leaving a stuck "in-call" chip. On resume we expire any
+        //  call row last touched BEFORE the blip began (a live call heartbeats
+        //  every ~5s, so a pre-blip-stamped row is one that ended in the gap).
+        //
+        // We stamp the blip start now and schedule the work ~3s out to let the
+        // Android side re-attach (~5s lobby reconnect, but the relay's armed-
+        // window passthrough means traffic flows again the instant it returns).
+        // A second PEER_RECONNECTING re-stamps and reschedules (clearTimeout via
+        // the ref) so a flapping link collapses to one snapshot.
+        {
+          const blipStart = Date.now();
+          peerReconnectingAtRef.current = blipStart;
+          if (resumeSnapshotTimerRef.current) {
+            clearTimeout(resumeSnapshotTimerRef.current);
+          }
+          resumeSnapshotTimerRef.current = setTimeout(() => {
+            resumeSnapshotTimerRef.current = null;
+            const cutoff = peerReconnectingAtRef.current;
+            peerReconnectingAtRef.current = null;
+            if (cutoff === null) return;
+            if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+
+            // Bug B: clear chips that went stale across the gap (ended during the
+            // blip, end-frame lost). Pure-fn decision; local removal only — no
+            // hang-up frame is sent. Idempotent: a row already gone is a no-op.
+            const stale = expiredStaleCallIds(
+              callsRef.current,
+              lastCallEventAtRef.current,
+              cutoff
+            );
+            for (const id of stale) {
+              console.warn('[PhoneBridge] resume: expiring stale call chip (end-frame lost in blip)', { callId: id });
+              removeCallLocally(id, false);
+            }
+
+            // Bug A: backfill the gap. A merge-mode catch-up window comfortably
+            // wider than any realistic blip (resume window is 120s); 10 min of
+            // overlap is cheap (mergeMessages / mergeCallLogs dedupe) and ensures
+            // nothing dropped during the gap is missed. Buffers reset so leftover
+            // chunks from a prior run can't accumulate.
+            const since = Date.now() - 10 * 60 * 1000;
+            messagesBufferRef.current = [];
+            callLogsBufferRef.current = [];
+            console.log('[PhoneBridge] resume snapshot — backfilling gap since', new Date(since).toISOString());
+            wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since })}`);
+            setTimeout(() => {
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since })}`);
+              }
+            }, 300);
+          }, 3000);
+        }
         break;
       }
 

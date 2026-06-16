@@ -10,6 +10,7 @@ import { strict as assert } from 'node:assert';
 import {
   RINGING_TTL_MS,
   expiredRingingCallIds,
+  expiredStaleCallIds,
   findEmptyNumberActiveFold,
 } from '../lib/callQueueGuards.ts';
 import type { CallInfo } from '../hooks/phoneTypes.ts';
@@ -121,6 +122,42 @@ test('non-empty incoming number never uses the empty fold', () => {
 test('same callId is not folded into itself (idempotent re-frame)', () => {
   const existing = call({ callId: 'same', number: '', state: 'active' });
   assert.equal(findEmptyNumberActiveFold([existing], 'same', '', 'active'), undefined);
+});
+
+// ---- Bug B (2026-06-16): expiredStaleCallIds (resume-time stale-chip sweep) --
+
+test('active chip last touched before the blip is expired on resume', () => {
+  const calls = [call({ callId: 'c1', state: 'active' })];
+  const touched = new Map([['c1', NOW - 5_000]]); // before cutoff
+  assert.deepEqual(expiredStaleCallIds(calls, touched, NOW), ['c1']);
+});
+
+test('ringing chip last touched before the blip is expired on resume', () => {
+  const calls = [call({ callId: 'r1', state: 'ringing' })];
+  const touched = new Map([['r1', NOW - 1]]);
+  assert.deepEqual(expiredStaleCallIds(calls, touched, NOW), ['r1']);
+});
+
+test('a call touched after the blip cutoff is KEPT (live, still heartbeating)', () => {
+  const calls = [call({ callId: 'c2', state: 'active' })];
+  const touched = new Map([['c2', NOW + 4_000]]);
+  assert.deepEqual(expiredStaleCallIds(calls, touched, NOW), []);
+});
+
+test('a call with no touch entry falls back to startTime for the cutoff test', () => {
+  const calls = [call({ callId: 'c3', state: 'active', startTime: NOW - 10_000 })];
+  assert.deepEqual(expiredStaleCallIds(calls, new Map(), NOW), ['c3']);
+  const fresh = [call({ callId: 'c4', state: 'active', startTime: NOW + 1_000 })];
+  assert.deepEqual(expiredStaleCallIds(fresh, new Map(), NOW), []);
+});
+
+test('mixed list: only pre-cutoff rows are returned', () => {
+  const calls = [
+    call({ callId: 'stale', state: 'active', startTime: NOW - 9_000 }),
+    call({ callId: 'live',  state: 'active', startTime: NOW - 9_000 }),
+  ];
+  const touched = new Map([['stale', NOW - 6_000], ['live', NOW + 2_000]]);
+  assert.deepEqual(expiredStaleCallIds(calls, touched, NOW), ['stale']);
 });
 
 console.log(`\n${passed} tests passed`);

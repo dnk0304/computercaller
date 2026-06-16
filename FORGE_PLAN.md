@@ -1,52 +1,43 @@
-# FORGE_PLAN.md — Issue 1: On-demand deeper message fetch (Path B)
+# FORGE_PLAN.md — Live-sync resume regression (post soft-hold)
 
-Branch: `feature/deeper-fetch-pathb` off `79374a6` (Issue 2 merge — current prod tip).
-Date: 2026-06-11 | Author: Forge | Ends in: signed v35 APK.
+Branch: `fix/live-sync-resume-snapshot` off `9f0b020` (PROD tip, soft-hold live).
+Date: 2026-06-16 | Author: Forge | Server/web only — NO APK.
 
 ## Goal
-Make the Dashboard thread-list "Load 500 more" button perform a REAL global backward
-fetch from the phone once the client-side slice is exhausted — pulling the next page of
-OLDER messages across ALL threads and merging them into the global store (Path B).
+After the soft-hold deploy (9f0b020) a transient blip recovers the WS connection but not the FLOW: (A) the pair fails to re-form active so live SMS/call frames from the lobby phone are dropped, and (B) a call-end that coincides with the blip leaves a stale "in-call" chip. Restore flow after a blip while preserving soft-hold stability (no reconnect storm, no browser wipe).
 
-## Architecture (verified, not assumed)
-- PhoneService `GET_MESSAGES` already parses since/limit/address/before and passes all
-  four to getMessagesWithMms. No change.
-- SmsHandler.getMessages honors `before` as exclusive `DATE < ?`. L97
-  `effectiveSince = if(addr) 0 else since` → global path (addr=null, since=0, before=X)
-  yields WHERE `DATE < X` only, DESC, capped. CORRECT as-is; no change.
-- getMessagesWithMms MMS branch passes `since` but NOT `before` → fix needed.
-- Web MESSAGES_CHUNK isComplete already has the merge branch (no scopedKey, merge mode)
-  → mergeMessages(prev, incoming). Global path reuses it.
+## Architecture Overview
+Relay (`server.js`) brokers a phone↔browser pair per room token. Soft-hold keeps a survivor in `room.active` and arms `room.resumable`; `tryAutoResume` re-slots the returning peer. Web hook (`hooks/usePhoneBridge.ts`) holds active state on `PEER_RECONNECTING`. Bug A is server-side (pair never re-forms / lobby-phone frames dropped at ~L1005). Bug B is web-side (no re-sync on resume; ACTIVE chip never expires).
 
-## Tech decisions
-- MMS: ADD `before` to MmsHandler.getMessages (complete, preferred over skip-MMS). Mirrors
-  the existing parameterized `since` clause; MMS dates are SECONDS so before/1000.
-- Sentinel: explicit hook state `hasMoreOlderOnPhone`, set in MESSAGES_CHUNK isComplete
-  via `globalOlderFetchInFlightRef` flag.
-- Loading: `isLoadingOlderThreads` state + 6s safety timeout.
+## Task Breakdown
 
-## Tasks
-- [x] TASK-001 Android MmsHandler `before` (MmsHandler.kt + getMessagesWithMms call). DONE.
-- [x] TASK-002 versionCode 34→35, versionName 1.0.12 (build.gradle.kts). DONE.
-- [x] TASK-003 Web loadOlderThreads + refs/state + chunk-handler wiring + export. DONE.
-- [x] TASK-004 Dashboard two-mode Load-500-more rewire + oldest-date memo. DONE.
-- [x] TASK-005 Gates + signed v35 APK. DONE.
+### TASK-001: Server — reliable pair re-form + armed-window lobby-frame passthrough
+- (1a) `tryAutoResume`: opportunistically re-form when invoked from the lobby-frame branch, not only at lobby-join — so phone+browser need not be in the lobby in the same instant.
+- (1b) Lobby-phone data branch (~L1005): while `room.resumable` live AND survivor browser held active, try `tryAutoResume`; if re-formed, forward; else forward the frame to the held survivor browser (armed-window passthrough) instead of silent-drop. Mirror lobby-browser → held survivor phone (~L1118).
+- Preserve `LEGACY_RESUME_TEARDOWN`: when teardown path is on, no passthrough (old behavior).
+- Output: server.js edits. Complexity High. SAFE (1 file, ~80 lines).
 
-## Outcome
-- tsc --noEmit: exit 0. next build: exit 0, 34 routes (incl /app, /app/settings).
-- eslint: NO new findings (usePhoneBridge 11 [1 err,10 warn], Dashboard 32 [5 err,27 warn]
-  — identical to 79374a6 baseline). Android assembleRelease: BUILD SUCCESSFUL.
-- APK: apk-releases/computercaller-v35.apk, 3,745,114 bytes,
-  sha256 68b196debcb1745114a77eb64e869ed962a79e6c25df5f3f6604ad6a9cb0e944,
-  versionCode 35 / 1.0.12 / targetSdk 35, signer cert SHA-256 3fc108197ec681... (matches
-  v34 / OAuth cert). SIGNED in-env (keystore reachable).
-- MMS decision: ADDED `before` to MmsHandler.getMessages (complete option).
-- L97: unchanged (confirmed correct for global address-less path).
+### TASK-002: Web — resume snapshot + stale chip expiry on PEER_RECONNECTING
+- `PEER_RECONNECTING`: stamp `peerReconnectingAtRef`; fire an idempotent merge snapshot (GET_MESSAGES + GET_CALL_LOGS since gap) so missed frames backfill — the soft-hold survivor never gets a fresh PAIRING_ACTIVE so it otherwise never re-syncs.
+- Stale chip expiry: add `expiredStaleCallIds` (ACTIVE+ringing rows whose last bridge event predates the blip start) to callQueueGuards.ts; call once on resume → clears stuck "in-call".
+- CallQueueBand layout LOCKED — call-STATE only.
+- Output: callQueueGuards.ts (+1 pure fn), usePhoneBridge.ts. Complexity Med-High. SAFE (2 files, ~120 lines).
 
-Order: 001→002 ; 003→004 ; 005 last.
+### TASK-003: Repro harness (before/after) + unit tests
+- tests/repro-resume-sync.mjs proving Bug A (dropped count before / 0 after), Bug B (chip persists before / cleared after), soft-hold regression-guard (still holds). Extend call-queue-guards.test.ts for the new pure fn.
 
-## Risk flags
-- L97 must NOT change (breaks per-thread). Confirmed unchanged.
-- Stay out of: quicksync (Issue 2), per-thread loadOlderMessages, mergeMessages,
-  conversationKey grouping, auto-sync-on-connect.
-- Keystore reachable in-env → CAN sign v35.
+## Execution Order
+TASK-001 ∥ TASK-002 → TASK-003 → gates (tsc, next build, eslint delta, node -c).
+
+## Risk Flags
+- No reconnect storm / no browser wipe (regression guard required).
+- Auth stays in WS query. No socket.destroy on non-/relay. CallQueueBand layout LOCKED. Waitlist branches untouched.
+
+## Open Decisions
+None blocking. Server revert = `LEGACY_RESUME_TEARDOWN`. Web change additive/idempotent (no new flag).
+
+## Progress
+- [x] TASK-001 server pair re-form + passthrough
+- [x] TASK-002 web snapshot + chip expiry
+- [x] TASK-003 repro + unit tests
+- [x] Gates

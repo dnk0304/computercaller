@@ -37,6 +37,36 @@ export function expiredRingingCallIds(
 }
 
 /**
+ * Live-sync resume fix (2026-06-16) — Bug B: stale "in-call" chip.
+ *
+ * When a call ends (CALL_ENDED + CALL_REMOVE, emitted correctly by v36+) at the
+ * exact moment of a connection blip, the frame hits a non-OPEN relay socket and
+ * is lost. After a soft-hold auto-resume the browser holds the now-stale call
+ * row forever — the existing B1 sweep only expires RINGING rows, never ACTIVE
+ * ones (long real calls intentionally get no updates).
+ *
+ * On resume we therefore expire ANY live call row (active OR ringing) whose last
+ * bridge event predates the blip — i.e. nothing has touched it since before the
+ * gap started. A genuinely-live call produces a CALL_STATUS heartbeat every ~5s,
+ * so a row last touched before the blip-start cutoff is, with high confidence,
+ * a call that ended during the gap and whose end frame was lost. Rows touched
+ * AFTER the cutoff (a real call still heartbeating, or a fresh call that arrived
+ * during/after the blip) are kept.
+ *
+ * `cutoff` is the wall-clock time the blip began (PEER_RECONNECTING receipt).
+ * Returns the callIds to remove. Pure — unit-tested directly.
+ */
+export function expiredStaleCallIds(
+  calls: ReadonlyArray<CallInfo>,
+  lastEventAt: ReadonlyMap<string, number>,
+  cutoff: number
+): string[] {
+  return calls
+    .filter(c => (lastEventAt.get(c.callId) ?? c.startTime) < cutoff)
+    .map(c => c.callId);
+}
+
+/**
  * B3 — empty-number active+active CALL_ADD collapse.
  *
  * A self-managed VoIP call (WhatsApp) reaches OFFHOOK with no number and the

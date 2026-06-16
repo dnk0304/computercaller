@@ -684,6 +684,66 @@ function startRelay(httpServer) {
     return false;
   }
 
+  /**
+   * Live-sync resume fix (2026-06-16) — Bug A backstop.
+   *
+   * Called for a data-plane frame that arrived from a socket still in the
+   * LOBBY (i.e. NOT yet the active phone/browser). By the time a frame reaches
+   * here every recognised control frame has already been handled and returned,
+   * so `msg` is genuine data-plane traffic (a CALL_LOG_ENTRY, SMS_RECEIVED,
+   * CALL_*, etc.) that we would otherwise silently drop.
+   *
+   * If the room has a live resume claim and the OPPOSITE role is held active as
+   * a soft-hold survivor, this means the pair simply hasn't re-formed yet (the
+   * two halves missed each other's lobby window — the root cause of Bug A). We:
+   *   1. Try to re-form the pair right now via tryAutoResume — this returning
+   *      socket is present in the lobby and the survivor is in active, so the
+   *      resume should now succeed and slot this socket into active. On success
+   *      we forward through the freshly-formed pair (normal data plane).
+   *   2. If the pair still can't form (e.g. survivor's socket is mid-close),
+   *      forward the frame DIRECTLY to the held survivor so the live SMS/call
+   *      frame is not lost during the gap.
+   *
+   * Returns true if the frame was handled (re-formed+forwarded, or passed
+   * through); false if there is no armed resume window to deliver into (caller
+   * falls through to its drop+log).
+   *
+   * NEVER called in the LEGACY_RESUME_TEARDOWN path — the caller gates on it —
+   * because that path holds no survivor in active, so there is nothing to
+   * deliver to and the historical drop behavior is preserved.
+   */
+  function deliverLobbyFrameDuringResume(room, fromWs, msg, role, token) {
+    const claim = room.resumable;
+    if (!claim || Date.now() > claim.expiresAt) return false;
+
+    // The survivor we'd deliver to is the OPPOSITE role, held in active.
+    const survivor = role === 'phone' ? room.active.browser : room.active.phone;
+    if (!survivor || survivor.readyState !== WebSocket.OPEN) return false;
+
+    // 1. Try to re-form the pair now that this returning socket is here.
+    if (tryAutoResume(room)) {
+      // The pair re-formed; this socket is now the active phone/browser. Forward
+      // the frame that triggered the re-form through the normal data plane so it
+      // is not lost.
+      const active = role === 'phone' ? room.active.phone : room.active.browser;
+      if (fromWs === active) {
+        forwardDataPlane(room, fromWs, msg);
+      } else {
+        // Defensive: a different socket won the resume (e.g. duplicate). Still
+        // deliver to the survivor so the frame survives.
+        safeSend(survivor, msg);
+      }
+      console.log(`[Relay][${redactToken(token)}] resume re-formed pair on inbound ${role} frame; forwarded`);
+      return true;
+    }
+
+    // 2. Couldn't re-form — passthrough to the held survivor so the frame isn't
+    //    lost during the armed window.
+    safeSend(survivor, msg);
+    rlog(`[Relay][${redactToken(token)}] armed-window passthrough: lobby-${role} frame → held survivor`);
+    return true;
+  }
+
   // ---------------------------------------------------------------------------
   // Connection-level helpers
   // ---------------------------------------------------------------------------
@@ -1000,8 +1060,27 @@ function startRelay(httpServer) {
           return;
         }
 
-        // Frame from a lobby phone that wasn't a recognised control frame.
-        // Drop + log so misbehaving APKs surface in the relay log.
+        // Live-sync resume fix (2026-06-16). A data frame arriving from a phone
+        // still in the LOBBY while a soft-held survivor browser is waiting means
+        // the pair hasn't re-formed yet — the phone re-attached but tryAutoResume
+        // didn't fire because the two roles missed each other's lobby window.
+        // Bug A: this branch used to silently DROP such frames (live SMS / call-
+        // log entries lost). Instead:
+        //   1. Try to re-form the pair NOW (this returning phone IS present, and
+        //      the survivor browser is held in active). On success the phone
+        //      becomes room.active.phone and we forward through the normal pair.
+        //   2. If still unpaired but a survivor browser is held under a live
+        //      resume claim, forward the frame to that survivor (armed-window
+        //      passthrough) so nothing is lost during the gap.
+        // Skipped entirely in the LEGACY_RESUME_TEARDOWN path (no soft-hold, so
+        // there is no held survivor to forward to — preserve old drop behavior).
+        if (!LEGACY_RESUME_TEARDOWN && deliverLobbyFrameDuringResume(room, ws, msg, 'phone', token)) {
+          return;
+        }
+
+        // Frame from a lobby phone that wasn't a recognised control frame and
+        // there is no armed resume window to deliver it into. Drop + log so
+        // misbehaving APKs surface in the relay log.
         console.log(`[Relay][${redactToken(token)}] Dropping lobby-phone frame: ${msg.substring(0, 60)}`);
       });
 
@@ -1113,8 +1192,16 @@ function startRelay(httpServer) {
         return;
       }
 
+      // Live-sync resume fix (2026-06-16) — symmetric to the phone branch.
+      // A frame from a lobby browser while a soft-held survivor phone is waiting
+      // means the pair hasn't re-formed yet. Re-form now, or passthrough to the
+      // held survivor phone, instead of dropping (Bug A, browser→phone half).
+      if (!LEGACY_RESUME_TEARDOWN && deliverLobbyFrameDuringResume(room, ws, msg, 'browser', token)) {
+        return;
+      }
+
       // Anything else from a lobby browser (e.g. legacy CONNECT_TO from a
-      // stale tab, stray data frames). Drop + log.
+      // stale tab, stray data frames) with no armed resume window. Drop + log.
       console.log(`[Relay][${redactToken(token)}] Dropping lobby-browser frame: ${msg.substring(0, 60)}`);
     });
 
