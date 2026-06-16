@@ -301,7 +301,7 @@ export default function IphonePage() {
             <div className="mt-10 mx-auto max-w-xl">
               <WaitlistCTA variant="inline" />
               <p className="mt-3 text-sm text-slate-500">
-                Get a bonus free trial when we launch.{' '}
+                Sign up on the waitlist — get a 30-day free trial when we launch.{' '}
                 <a
                   href="#setup"
                   className="text-blue-600 hover:text-blue-700 font-medium underline underline-offset-2"

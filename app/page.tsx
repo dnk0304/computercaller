@@ -208,7 +208,11 @@ const faqs = [
   },
   {
     q: 'Is it free?',
-    a: "ComputerCaller comes with a 14-day free trial — no credit card required. After the trial, it's €7.99 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
+    // Waitlist mode: no price (€7.99) reaches the visible FAQ OR the JSON-LD,
+    // which is built from this same array. Flag off → original answer restored.
+    a: WAITLIST_MODE
+      ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
+      : "ComputerCaller comes with a 14-day free trial — no credit card required. After the trial, it's €7.99 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -279,17 +283,23 @@ export default function LandingPage() {
         applicationCategory: 'CommunicationApplication',
         operatingSystem: 'Web, Android',
         url: 'https://computercaller.com',
-        offers: {
-          '@type': 'Offer',
-          price: '7.99',
-          priceCurrency: 'EUR',
-          priceSpecification: {
-            '@type': 'UnitPriceSpecification',
-            price: '7.99',
-            priceCurrency: 'EUR',
-            unitText: 'MONTH',
-          },
-        },
+        // In waitlist mode we omit the price `offers` entirely so no €7.99
+        // reaches crawlers / structured data. Flag off → original Offer restored.
+        ...(WAITLIST_MODE
+          ? {}
+          : {
+              offers: {
+                '@type': 'Offer',
+                price: '7.99',
+                priceCurrency: 'EUR',
+                priceSpecification: {
+                  '@type': 'UnitPriceSpecification',
+                  price: '7.99',
+                  priceCurrency: 'EUR',
+                  unitText: 'MONTH',
+                },
+              },
+            }),
         publisher: { '@id': 'https://computercaller.com/#organization' },
       },
       {
@@ -336,9 +346,11 @@ export default function LandingPage() {
             <a href="#how-it-works" className="hover:text-slate-900 transition-colors">
               How it works
             </a>
-            <a href="#pricing" className="hover:text-slate-900 transition-colors">
-              Pricing
-            </a>
+            {!WAITLIST_MODE && (
+              <a href="#pricing" className="hover:text-slate-900 transition-colors">
+                Pricing
+              </a>
+            )}
             <a href="#faqs" className="hover:text-slate-900 transition-colors">
               FAQ
             </a>
@@ -438,7 +450,7 @@ export default function LandingPage() {
             <div className="mt-10 mx-auto max-w-xl">
               <WaitlistCTA variant="inline" />
               <p className="mt-3 text-sm text-slate-500">
-                Get a bonus free trial when we launch.{' '}
+                Sign up on the waitlist — get a 30-day free trial when we launch.{' '}
                 <a
                   href="#how-it-works"
                   className="text-blue-600 hover:text-blue-700 font-medium underline underline-offset-2"
@@ -953,7 +965,10 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Pricing */}
+      {/* Pricing — hidden entirely in waitlist mode so NO €7.99 price renders
+          on the page (section, price block, feature list). Flag off → the
+          original paid pricing section returns unchanged. */}
+      {!WAITLIST_MODE && (
       <section id="pricing" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
         <div className="max-w-3xl mx-auto px-6 py-20 sm:py-24 text-center">
           <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
@@ -1001,7 +1016,7 @@ export default function LandingPage() {
               <div className="mt-8">
                 <WaitlistCTA variant="inline" />
                 <p className="mt-3 text-center text-slate-500 text-xs">
-                  Join the waitlist — get a bonus free trial when we launch.
+                  Sign up on the waitlist — get a 30-day free trial when we launch.
                 </p>
               </div>
             ) : (
@@ -1021,6 +1036,7 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
+      )}
 
       {/* FAQ — native <details>/<summary> for a11y + crawlability. Google
           reads inside <details> for FAQ rich snippets when paired with the
@@ -1103,7 +1119,7 @@ export default function LandingPage() {
           </h2>
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
             {WAITLIST_MODE
-              ? "We're opening the doors soon. Join the waitlist and get a bonus free trial when we launch."
+              ? "We're opening the doors soon. Sign up on the waitlist — get a 30-day free trial when we launch."
               : '14 days free. No credit card. Pair your phone and you’re calling from your browser in under two minutes.'}
           </p>
           {WAITLIST_MODE ? (

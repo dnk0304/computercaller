@@ -187,7 +187,7 @@ function WaitlistForm({
           disabled={submitting}
           className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-6 py-3 text-base font-medium text-white shadow-sm shadow-blue-600/20 transition-colors hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-70"
         >
-          {submitting ? 'Joining…' : 'Join waitlist'}
+          {submitting ? 'Signing up…' : 'Sign up on waitlist'}
           {!submitting && <ArrowRight className="h-4 w-4" aria-hidden="true" />}
         </button>
       </div>
@@ -216,7 +216,7 @@ function WaitlistForm({
 export default function WaitlistCTA({
   variant = 'inline',
   className = '',
-  buttonLabel = 'Join waitlist',
+  buttonLabel = 'Sign up on waitlist',
 }: {
   variant?: 'inline' | 'nav';
   className?: string;
@@ -286,7 +286,7 @@ function WaitlistNavButton({ className = '', label }: { className?: string; labe
               Join the waitlist
             </h2>
             <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
-              Be first in line when ComputerCaller opens. Get a bonus free trial when we launch.
+              Be first in line when ComputerCaller opens. Sign up on the waitlist — get a 30-day free trial when we launch.
             </p>
             <WaitlistForm autoFocus className="mt-5" />
           </div>
