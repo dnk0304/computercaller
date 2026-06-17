@@ -368,11 +368,24 @@ class MainActivity : AppCompatActivity() {
         // findViewById calls below never try to resolve ids that aren't
         // present yet. If any are missing, we render the blocking pane
         // and bail out of onCreate without touching the service.
+        // Round-? — block ONLY on a genuinely-missing RUNTIME permission.
+        // SPECIAL entries (notification_listener, battery_optimization,
+        // auto_revoke) are OEM-re-flagged after backgrounding even when
+        // every runtime grant is intact; gating onCreate on the raw
+        // isNotEmpty() therefore re-blocked the user on every reopen and
+        // trapped them in the pane (the same dead-end the Refresh button
+        // at permsRefreshButton already escapes via the kind==RUNTIME
+        // rule). Match the Refresh button: a SPECIAL-only audit passes
+        // straight through to the main pane.
         val missing = PermissionChecker.checkAll(this)
-        if (missing.isNotEmpty()) {
-            android.util.Log.d("MainActivity", "onCreate: ${missing.size} permissions missing — showing blocking pane")
+        val runtimeMissing = missing.any { it.kind == PermissionChecker.Kind.RUNTIME }
+        if (runtimeMissing) {
+            android.util.Log.d("MainActivity", "onCreate: runtime permissions missing (${missing.filter { it.kind == PermissionChecker.Kind.RUNTIME }.map { it.id }}) — showing blocking pane")
             renderPermissionsRequiredPane(missing)
             return
+        }
+        if (missing.isNotEmpty()) {
+            android.util.Log.d("MainActivity", "onCreate: only SPECIAL permissions missing (${missing.map { it.id }}) — proceeding to main pane")
         }
 
         initializeMainPane()
@@ -1194,13 +1207,24 @@ class MainActivity : AppCompatActivity() {
         // This is the load-bearing piece of the auto-revoke defense — it's
         // why the user gets caught immediately instead of silently failing
         // when they try to use the app days/weeks later.
+        // Round-? — block ONLY on a genuinely-missing RUNTIME permission,
+        // mirroring onCreate and the Refresh button. SPECIAL-only items
+        // (notification_listener / battery_optimization / auto_revoke) are
+        // re-flagged by aggressive OEMs after backgrounding even though the
+        // runtime grants are intact; gating onResume on the raw isNotEmpty()
+        // re-blocked the user on every reopen. A SPECIAL-only audit must
+        // fall through to the all-clear path below (which either resumes the
+        // main pane or — if we were stuck on the pane — plays the success
+        // animation, exactly like the Refresh button's !stillRuntimeMissing
+        // branch).
         val missing = PermissionChecker.checkAll(this)
-        if (missing.isNotEmpty()) {
-            android.util.Log.d("MainActivity", "onResume: ${missing.size} permissions missing")
+        val runtimeMissing = missing.any { it.kind == PermissionChecker.Kind.RUNTIME }
+        if (runtimeMissing) {
+            android.util.Log.d("MainActivity", "onResume: runtime permissions missing (${missing.filter { it.kind == PermissionChecker.Kind.RUNTIME }.map { it.id }})")
             if (!inPermissionsRequiredPane) {
-                // We were on the main pane — Android revoked something
-                // in the background. Tear down the service-bound state
-                // and switch to the blocking pane.
+                // We were on the main pane — Android revoked a RUNTIME
+                // permission in the background. Tear down the service-bound
+                // state and switch to the blocking pane.
                 handleRevocationMidSession()
             }
             renderPermissionsRequiredPane(missing)

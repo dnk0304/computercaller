@@ -320,6 +320,62 @@ function startRelay(httpServer) {
     return { phones, browsers };
   }
 
+  /**
+   * Count LIVE phones present in the room across BOTH the lobby and the
+   * active slot — liveness-gated so stale / dead duplicate sockets (a
+   * device that opened a second WS without the first's close firing yet)
+   * don't keep "a phone is here" true after the real device is gone.
+   *
+   * Fix (2026-06-17): the lobby/active phonePresent signal used to read
+   * `countLobby(room).phones > 0`, which (1) ignored an ACTIVE phone and
+   * (2) counted lobby phone sockets regardless of readyState. Both made
+   * the web Connect button stay blue after the last real phone departed.
+   * This helper is the single source of truth for "does a usable phone
+   * exist in this room right now" — only OPEN sockets count.
+   *
+   * A phone soft-held in `active` under a live resume claim IS counted as
+   * present: the soft-hold's brief "phone away" window must NOT trigger a
+   * false absence broadcast (confirmed 2026-06-16). Genuine absence is
+   * "no OPEN phone socket anywhere", which only happens once the survivor
+   * is truly gone or the resume window expires into a real teardown.
+   */
+  function countLivePhones(room) {
+    let n = 0;
+    for (const ws of room.lobby) {
+      if (ws.role === 'phone' && ws.readyState === WebSocket.OPEN) n++;
+    }
+    if (room.active.phone && room.active.phone.readyState === WebSocket.OPEN) n++;
+    return n;
+  }
+
+  /**
+   * Broadcast PHONE_ABSENT to lobby browsers IFF the last real (live)
+   * phone has actually departed — i.e. no OPEN phone socket remains in
+   * either the lobby or the active slot. Idempotent: calling it while a
+   * live phone still exists is a no-op, so every departure path can call
+   * it unconditionally without first reasoning about the others.
+   *
+   * `excludeWs` lets a close handler ask the question as-of "after this
+   * socket is gone" even if room.lobby.delete() / active clear hasn't been
+   * observed yet by countLivePhones (defensive — the close handlers below
+   * already delete/clear first, but excluding the departing socket makes
+   * the call order-independent).
+   */
+  function broadcastPhoneAbsentIfLastPhoneGone(room, excludeWs) {
+    let live = countLivePhones(room);
+    if (excludeWs && excludeWs.role === 'phone' &&
+        excludeWs.readyState === WebSocket.OPEN) {
+      // The excluded socket is still OPEN but is on its way out (close in
+      // progress / being torn down). Don't let it mask a genuine absence.
+      const stillCountedElsewhere =
+        room.active.phone === excludeWs || room.lobby.has(excludeWs);
+      if (stillCountedElsewhere) live -= 1;
+    }
+    if (live <= 0) {
+      broadcastToLobbyBrowsers(room, `PHONE_ABSENT:${JSON.stringify({})}`);
+    }
+  }
+
   /** Broadcast a message to every BROWSER currently sitting in the lobby. */
   function broadcastToLobbyBrowsers(room, msg) {
     for (const ws of room.lobby) {
@@ -442,6 +498,18 @@ function startRelay(httpServer) {
         safeSend(phone, `LOBBY_STATUS:${JSON.stringify({ browserCount: browsers })}`);
       }
     }
+
+    // Fix (2026-06-17): a full teardown (user_left / resume_expired /
+    // any non-soft-hold reason) means the pair is genuinely gone. If the
+    // departing phone's socket was already closed (resume_expired after a
+    // real disconnect, or user_left from the phone), it was NOT re-added
+    // to the lobby above, so no live phone remains — tell lobby browsers
+    // to drop the Connect affordance. countLivePhones gates this: if the
+    // phone returned to the lobby OPEN, or another device is present, the
+    // call is a no-op and the button stays blue. The soft-hold path above
+    // returned early before reaching here, so a transient blip never trips
+    // this (that's the point — absence only on genuine departure).
+    broadcastPhoneAbsentIfLastPhoneGone(room);
   }
 
   /**
@@ -1121,12 +1189,15 @@ function startRelay(httpServer) {
         if (wasActive) {
           terminateActivePair(room, 'socket_closed');
         } else {
-          // Lobby phone leaving — tell remaining lobby browsers to hide
-          // the Connect affordance if this was the last phone in the lobby.
-          const { phones } = countLobby(room);
-          if (phones === 0) {
-            broadcastToLobbyBrowsers(room, `PHONE_ABSENT:${JSON.stringify({})}`);
-          }
+          // Lobby phone leaving — tell remaining lobby browsers to hide the
+          // Connect affordance if this was the last LIVE phone anywhere in
+          // the room. Fix (2026-06-17): was `countLobby(room).phones === 0`,
+          // which counted stale/dead duplicate lobby sockets (a device that
+          // opened a 2nd WS before this close fired) and ignored any active
+          // phone — so the button stayed blue. countLivePhones / the helper
+          // is liveness-gated and spans lobby+active, and we exclude THIS
+          // closing socket so a not-yet-observed delete can't mask absence.
+          broadcastPhoneAbsentIfLastPhoneGone(room, ws);
         }
         console.log(`[Relay][${redactToken(token)}] Phone disconnected (was_active=${wasActive})`);
         maybeReapRoom(room);
