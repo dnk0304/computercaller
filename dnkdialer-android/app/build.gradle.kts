@@ -207,8 +207,13 @@ android {
         // ContentObserver races the messaging app's staged addr-table write;
         // the watermark is held below the unresolved row and a 3s retry
         // re-reads it once complete (60s grace, then give up + push as-is).
-        versionCode = 38
-        versionName = "1.0.15"
+        // v39 (1.0.16) — perm-gate fix on the v38 base: onCreate/onResume
+        // block ONLY on a genuinely-missing RUNTIME permission; SPECIAL-only
+        // audits (notification_listener / battery_optimization / auto_revoke)
+        // fall through to the lobby, mirroring the Refresh button. (39, not 37,
+        // because v37/v38 already shipped on disk.)
+        versionCode = 39
+        versionName = "1.0.16"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
