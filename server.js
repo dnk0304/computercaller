@@ -94,6 +94,32 @@ const db = new PrismaClient({ log: dev ? ['error'] : [] });
 const RELAY_VERBOSE = process.env.RELAY_VERBOSE === '1';
 const rlog = (...args) => { if (RELAY_VERBOSE) console.log(...args); };
 
+// Temporary duplicate-notification diagnostic (2026-06-18). When
+// DEBUG_NOTIF_RELAY=1 we log every PHONE_NOTIFICATION frame the relay
+// forwards, tagged with direction + a short payload hash, so a live session
+// reveals whether the relay receives/forwards ONE frame or TWO per logical
+// message (splits "Android double-emits" from "web double-renders"). Default
+// OFF — a no-op (single cheap prefix check) when the env flag is unset, so
+// zero overhead in prod. Removable in one commit; see fix/notification-dedup.
+const DEBUG_NOTIF_RELAY = process.env.DEBUG_NOTIF_RELAY === '1';
+function logNotifFrame(token, direction, msg) {
+  if (!DEBUG_NOTIF_RELAY) return;
+  // Only PHONE_NOTIFICATION frames — string prefix check is cheap and avoids
+  // parsing every data frame.
+  if (typeof msg !== 'string' || !msg.startsWith('PHONE_NOTIFICATION:')) return;
+  // Short FNV-1a hash of the JSON payload — enough to tell two frames apart
+  // (same hash = byte-identical frame; different hash = distinct sbn.key/text)
+  // without logging notification CONTENT (PII: 2FA codes, message bodies).
+  const payload = msg.slice('PHONE_NOTIFICATION:'.length);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < payload.length; i++) {
+    h ^= payload.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  const hash = (h >>> 0).toString(16).padStart(8, '0');
+  console.log(`[NotifDiag][${redactToken(token)}] ${direction} PHONE_NOTIFICATION hash=${hash} len=${payload.length}`);
+}
+
 // Pairing-request TTL. The browser sends BROWSER_REQUEST_PAIRING and the
 // phone has this many ms to ACCEPT or DECLINE before we auto-cancel.
 // 30 s mirrors the existing 35 s defensive timeout previously used in the
@@ -742,10 +768,12 @@ function startRelay(httpServer) {
    */
   function forwardDataPlane(room, fromWs, msg) {
     if (fromWs === room.active.browser && room.active.phone) {
+      logNotifFrame(room.token, 'browser→phone (active)', msg);
       safeSend(room.active.phone, msg);
       return true;
     }
     if (fromWs === room.active.phone && room.active.browser) {
+      logNotifFrame(room.token, 'phone→browser (active)', msg);
       safeSend(room.active.browser, msg);
       return true;
     }
@@ -827,6 +855,7 @@ function startRelay(httpServer) {
     //    socket of the same physical phone streaming live SMS / notification /
     //    call frames while another socket is the active phone). Without this,
     //    those frames drop and the web client stops receiving notifications.
+    logNotifFrame(token, `${role}→${role === 'phone' ? 'browser' : 'phone'} (dup-socket)`, msg);
     safeSend(survivor, msg);
     rlog(`[Relay][${redactToken(token)}] lobby-${role} data frame → active ${role === 'phone' ? 'browser' : 'phone'} (dup-socket/passthrough)`);
     return true;

@@ -143,6 +143,38 @@ export interface PhoneNotification {
   read: boolean;
 }
 
+/**
+ * Composite dedup window for mirrored phone notifications. Mirrors the SMS
+ * MESSAGE_COMPOSITE_WINDOW_MS (10s) tolerance. The same logical messaging-app
+ * notification that lands twice (group-summary + per-conversation child, or
+ * cancel+repost on rapid delivery) always arrives within seconds of itself;
+ * two genuinely-distinct messages with the same body in the same app are
+ * virtually never <10s apart.
+ */
+const NOTIFICATION_COMPOSITE_WINDOW_MS = 10000;
+
+/**
+ * Composite identity signature for a mirrored phone notification:
+ * packageName + normalized title + normalized body.
+ *
+ * Root-cause context (2026-06-18 duplicate-notification-card bug): WhatsApp
+ * and other MessagingStyle apps post a group-SUMMARY notification AND a
+ * per-conversation CHILD for the same logical message. Android forwards both
+ * (the listener filter excludes neither), and both surface the SAME last
+ * message via EXTRA_MESSAGES.last() → identical title+body but DIFFERENT
+ * sbn.key. The web's primary dedup is keyed only on notificationKey, so the
+ * two distinct keys produced TWO identical cards. This signature collapses
+ * them: same package + same title + same body within the window = one card.
+ *
+ * Title/body are trimmed + collapsed-whitespace to absorb OEM formatting
+ * noise. packageName is part of the key so two different apps that happen to
+ * post identical text never merge.
+ */
+function notificationCompositeSig(n: PhoneNotification): string {
+  const norm = (s: string) => (s || '').trim().replace(/\s+/g, ' ');
+  return `${n.packageName}|${norm(n.title)}|${norm(n.body)}`;
+}
+
 // Module-level icon cache — keyed by packageName, outside React state so
 // icon updates never trigger notification list re-renders.
 const _notifIconCache = new Map<string, string>();
@@ -3682,10 +3714,32 @@ export function usePhoneBridge() {
         let result = [...prev];
         for (const event of pending) {
           if (event.type === 'add') {
-            // Dedup by notificationKey (remove old, prepend new)
-            result = result.filter(n => n.notificationKey !== event.notif.notificationKey);
+            // Dedup on TWO axes (remove any matching prior card, prepend new):
+            //   1. PRIMARY — exact notificationKey match. Collapses a true
+            //      in-place MessagingStyle update (same sbn.key re-posted).
+            //   2. CONTENT-IDENTITY (2026-06-18 duplicate-card fix) — same
+            //      package + normalized title + body within the composite
+            //      window. Collapses the group-summary-vs-child / cancel-repost
+            //      dup, where one logical WhatsApp message is forwarded under
+            //      TWO different sbn.keys (so axis 1 alone can't catch it).
+            // Newest frame wins the rendered slot (prepended); a genuinely
+            // different body in the same thread keeps its own card (the body
+            // component of the signature prevents over-collapsing).
+            const incomingSig = notificationCompositeSig(event.notif);
+            const incomingTs = event.notif.timestamp;
+            result = result.filter(n =>
+              n.notificationKey !== event.notif.notificationKey
+              && !(
+                notificationCompositeSig(n) === incomingSig
+                && Math.abs((n.timestamp ?? 0) - incomingTs) <= NOTIFICATION_COMPOSITE_WINDOW_MS
+              )
+            );
             result = [event.notif, ...result];
           } else {
+            // Removal stays keyed on the EXACT dismissed notificationKey — a
+            // real NOTIFICATION_REMOVED carries the precise sbn.key. Do NOT
+            // widen removal to the content composite (would over-remove a
+            // sibling card on a single dismissal).
             result = result.filter(n => n.notificationKey !== event.key);
           }
         }
