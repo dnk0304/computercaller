@@ -2091,27 +2091,34 @@ export function usePhoneBridge() {
               // logical dups (same address+body, different _id per SIM row).
               if (syncModeRef.current === 'replace') return mergeMessages([], incoming);
               if (scopedKey) {
-                // Scoped replace for the just-opened thread: drop every
-                // existing row whose conversationKey equals this thread's
-                // key, then commit the freshly-fetched page as the
-                // authoritative slice for that conversation. Rows belonging
-                // to OTHER conversations are kept intact in the global
-                // store. This is what stops messages from a previously-open
-                // thread lingering in the rendered view (chat-mixing bug,
-                // 2026-06-03).
+                // Scoped MERGE for the just-opened thread (was scoped-REPLACE).
+                // Opening a conversation must ADD/refresh rows but NEVER delete
+                // a row that was already shown. The old scoped-replace evicted
+                // every existing row whose conversationKey === scopedKey and
+                // committed ONLY the phone's GET_MESSAGES page; if that page
+                // momentarily lacked a just-received inbound reply (Android SMS
+                // provider write race — the live SMS_RECEIVED frame reached the
+                // browser before the provider query indexed the row), the only
+                // copy the UI held was wiped (disappear-on-click bug, Dennis
+                // 2026-06-19; supersedes message-persist-lock decision D3).
                 //
-                // CRITICAL (message-DUPLICATES fix, 2026-06-03 follow-up):
-                // route `incoming` through mergeMessages([], incoming) to
-                // self-dedupe before append. The fetched page can contain
-                // the same logical message twice (Android SMS provider
-                // dual-SIM / OEM row-split / observer+receiver double-fire
-                // — same class as the Recent Calls dup fixed in c562d07).
-                // A raw append here let both copies persist; mergeMessages
-                // collapses them by composite (conv+type+body+10s window)
-                // OR by id. conversationKey grouping is unchanged.
-                const filteredPrev = prev.filter(m => conversationKey(m.address) !== scopedKey);
-                const dedupedIncoming = mergeMessages([], incoming);
-                return [...filteredPrev, ...dedupedIncoming].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+                // mergeMessages(prev, incoming) keeps prev rows, lets incoming
+                // win on id collision (so genuinely-updated rows still refresh),
+                // and self-dedupes by id AND composite (conv+type+body+10s) — so
+                // the fetched authoritative page refreshes the thread without
+                // dropping the live-received reply and without introducing dups
+                // (the SIM-split / OEM row-split / observer+receiver double-fire
+                // class the old `mergeMessages([], incoming)` guarded against is
+                // still collapsed, since merge dedupes incoming against prev AND
+                // against itself).
+                //
+                // SAFE w.r.t. the 2026-06-03 chat-mixing regression: the render
+                // path (Dashboard `threadMessages`) ALWAYS filters displayed rows
+                // by conversationKey(selectedThread), so keeping other-thread (or
+                // extra same-thread) rows in the GLOBAL store can never leak them
+                // into the open conversation. The store no longer needs to be
+                // scoped for rendering correctness.
+                return mergeMessages(prev, incoming);
               }
               // Merge: incoming wins on id conflict (newer data), keep
               // existing otherwise. Used by older-message paging and
