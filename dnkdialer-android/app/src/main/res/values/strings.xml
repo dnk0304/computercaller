@@ -324,4 +324,28 @@
     <string name="perm_status_missing_required">Required</string>
     <string name="perm_status_missing_soft">Optional</string>
     <string name="perm_continue_button">Continue</string>
+
+    <!-- ============ Synced data viewer (Play verifiability fix, v40) ============ -->
+    <!-- On-device view of the SMS + call log this app syncs. Lets a Play
+         reviewer SEE the restricted-permission feature on ONE phone, no
+         desktop pairing. -->
+    <string name="synced_title">Synced data</string>
+    <string name="synced_back">Back</string>
+    <string name="synced_tab_messages">Synced messages</string>
+    <string name="synced_tab_calls">Call history</string>
+    <string name="synced_entry_messages">Synced messages</string>
+    <string name="synced_entry_calls">Call history</string>
+    <string name="synced_perm_messages">Grant SMS permission to view the messages this app syncs to your computer.</string>
+    <string name="synced_perm_calls">Grant call-log permission to view the call history this app syncs to your computer.</string>
+    <string name="synced_grant">Grant permission</string>
+    <string name="synced_empty_messages">No messages found on this device yet.</string>
+    <string name="synced_empty_calls">No calls found on this device yet.</string>
+    <string name="synced_dir_received">Received</string>
+    <string name="synced_dir_sent">Sent</string>
+    <string name="synced_call_incoming">Incoming</string>
+    <string name="synced_call_outgoing">Outgoing</string>
+    <string name="synced_call_missed">Missed</string>
+    <string name="synced_call_duration">Duration %1$s</string>
+    <string name="synced_image_message">[Image message]</string>
+    <string name="synced_unknown">Unknown</string>
 </resources>

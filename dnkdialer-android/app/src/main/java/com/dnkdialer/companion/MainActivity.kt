@@ -535,6 +535,21 @@ class MainActivity : AppCompatActivity() {
             showHardResetConfirmation()
         }
 
+        // Play verifiability fix (v40, 2026-06-21) — open the on-device view
+        // of the synced SMS / call log. SyncedDataActivity reads the device's
+        // own providers (SmsHandler / CallLogsHandler) and renders them in-app
+        // with NO desktop pairing required, so the restricted-permission
+        // feature is demonstrable on one phone. Each button deep-links to its
+        // tab; the activity handles its own runtime-permission grant flow.
+        val viewMessagesButton: Button = findViewById(R.id.viewMessagesButton)
+        viewMessagesButton.setOnClickListener {
+            startActivity(Intent(this, SyncedDataActivity::class.java).putExtra("tab", "messages"))
+        }
+        val viewCallsButton: Button = findViewById(R.id.viewCallsButton)
+        viewCallsButton.setOnClickListener {
+            startActivity(Intent(this, SyncedDataActivity::class.java).putExtra("tab", "calls"))
+        }
+
         // Check and show notification status
         checkNotificationStatus()
 

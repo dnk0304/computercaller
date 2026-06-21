@@ -212,8 +212,14 @@ android {
         // audits (notification_listener / battery_optimization / auto_revoke)
         // fall through to the lobby, mirroring the Refresh button. (39, not 37,
         // because v37/v38 already shipped on disk.)
-        versionCode = 39
-        versionName = "1.0.16"
+        // v40 (1.0.17) — Google Play verifiability fix. Adds SyncedDataActivity:
+        // an on-device viewer of the synced SMS + call log (reads SmsHandler /
+        // CallLogsHandler device providers, no desktop pairing) so a Play
+        // reviewer can SEE the restricted-permission feature (READ_SMS /
+        // READ_CALL_LOG) on ONE phone. Read/display only — NOT default SMS
+        // handler; no perm/exemption change. Built on the v39 (1929e22) lineage.
+        versionCode = 40
+        versionName = "1.0.17"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
