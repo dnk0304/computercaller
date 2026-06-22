@@ -2267,8 +2267,47 @@ class PhoneService : Service() {
             // unified timeline (the SMS/MMS content provider never sees them
             // unless we're the default messaging app). User must enable
             // "Notification access" once.
-            DnkNotificationListenerService.onMessageNotification = { appName, pkg, title, body, hasReply, replyKey, notificationKey, timestamp, icon ->
+            DnkNotificationListenerService.onMessageNotification = notif@{ appName, pkg, title, body, hasReply, replyKey, notificationKey, timestamp, icon, senderPersonUri ->
                 val isViaClient = client?.isOpen == true
+
+                // RCS↔SMS merge: messages from Google/Samsung Messages arrive ONLY
+                // via the notification listener (the SMS/MMS content provider never
+                // sees RCS unless we're the default messaging app). If we can resolve
+                // the sender to a canonical phone number, route the message through
+                // the SMS pipeline (SMS_RECEIVED) so it merges into the same thread as
+                // that contact's regular SMS instead of landing as a separate
+                // notification card. If we can't resolve a number, fall through to the
+                // PHONE_NOTIFICATION card (old behavior) — we never inject an SMS row
+                // keyed on a display name (that was the prior bug: garbage thread key).
+                val isMessagingApp = pkg == "com.google.android.apps.messaging" ||
+                    pkg == "com.samsung.android.messaging"
+
+                if (isMessagingApp) {
+                    // "You: …" body means the thread updated after WE sent a message.
+                    val isSent = body.startsWith("You: ")
+                    val msgBody = if (isSent) body.removePrefix("You: ").trim() else body
+
+                    if (msgBody.isNotBlank()) {
+                        val resolvedNumber = resolveRcsNumber(senderPersonUri, title)
+                        if (resolvedNumber != null) {
+                            // (a/b/c) resolved → route as SMS so it threads by number.
+                            val smsData = mapOf(
+                                "id" to "rcs_${notificationKey}",
+                                "from" to resolvedNumber,
+                                "body" to msgBody,
+                                "time" to timestamp,
+                                "type" to if (isSent) "sent" else "inbox",
+                                "source" to "rcs"
+                            )
+                            sendResponse("SMS_RECEIVED", smsData, isViaClient)
+                            // Suppress the PHONE_NOTIFICATION card for a message we
+                            // successfully converted to an SMS row — no duplicate card.
+                            return@notif
+                        }
+                        // (d) unresolved → fall through to the notification card below.
+                    }
+                }
+
                 val data = mutableMapOf<String, Any>(
                     "id" to notificationKey,
                     "appName" to appName,
@@ -2282,24 +2321,6 @@ class PhoneService : Service() {
                 )
                 if (icon != null) data["icon"] = icon  // only include if available
                 sendResponse("PHONE_NOTIFICATION", data, isViaClient)
-
-                // RCS sent message detection: Google Messages sometimes shows "You: [text]"
-                // in notification body when a thread updates after we sent a message.
-                if (pkg == "com.google.android.apps.messaging" && body.startsWith("You: ")) {
-                    val sentText = body.removePrefix("You: ").trim()
-                    if (sentText.isNotBlank()) {
-                        // Extract recipient from title (conversation name)
-                        val sentData = mapOf(
-                            "id" to "rcs_sent_${timestamp}",
-                            "from" to title,  // conversation partner name/number
-                            "body" to sentText,
-                            "time" to timestamp,
-                            "type" to "sent",
-                            "source" to "rcs_notification"
-                        )
-                        sendResponse("SMS_RECEIVED", sentData, isViaClient)
-                    }
-                }
             }
 
             // Mirror notification dismissals to the web client. When the user
@@ -2345,6 +2366,43 @@ class PhoneService : Service() {
      * the contact lookup fails or is not granted — caller falls back to the
      * raw input.
      */
+    /**
+     * Resolves the canonical phone number of an RCS/SMS-app notification sender,
+     * for routing the message into the SMS thread for that number. Priority:
+     *   (a) MessagingStyle Person URI — "tel:+47…" surfaced by the notification
+     *       listener; the most reliable signal (the OS-supplied canonical number).
+     *   (b) title is itself a number — if the title's digit count is >= 7 we take
+     *       it as the number (covers conversations shown by raw number).
+     *   (c) Contacts reverse-lookup — title is a display name; look it up in the
+     *       contacts provider and use the first associated number.
+     *   (d) none of the above → return null; caller keeps the notification card
+     *       and does NOT inject an SMS row keyed on a display name (the old bug).
+     *
+     * Never logs the resolved number (release builds redact PII).
+     */
+    private fun resolveRcsNumber(senderPersonUri: String?, title: String): String? {
+        // (a) Person URI of the form "tel:+<number>".
+        if (senderPersonUri != null) {
+            val uri = senderPersonUri.trim()
+            if (uri.startsWith("tel:", ignoreCase = true)) {
+                val candidate = uri.substring(4).trim()
+                if (candidate.count { it.isDigit() } >= 7) return candidate
+            }
+        }
+
+        // (b) title is already a phone number (>= 7 digits after stripping
+        //     formatting). normalizeNumber-equivalent: digit count gate.
+        val titleDigits = title.count { it.isDigit() }
+        if (titleDigits >= 7) return title.trim()
+
+        // (c) reverse-lookup the display name in contacts.
+        val byName = resolveContactNumber(title)
+        if (byName != null && byName.count { it.isDigit() } >= 7) return byName
+
+        // (d) unresolved.
+        return null
+    }
+
     private fun resolveContactNumber(nameOrNumber: String): String? {
         // If already looks like a phone number, return as-is.
         if (nameOrNumber.replace(Regex("[^0-9+]"), "").length >= 4) return nameOrNumber

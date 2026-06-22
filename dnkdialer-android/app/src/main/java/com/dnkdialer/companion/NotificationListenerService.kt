@@ -71,7 +71,8 @@ class DnkNotificationListenerService : NotificationListenerService() {
                 replyKey: String,
                 notificationKey: String,
                 timestamp: Long,
-                icon: String?
+                icon: String?,
+                senderPersonUri: String?
             ) -> Unit
         )? = null
 
@@ -155,9 +156,47 @@ class DnkNotificationListenerService : NotificationListenerService() {
         // can render proper per-app branding instead of a generic placeholder.
         val icon = captureAppIcon(pkg)
 
+        // Surface the MessagingStyle sender's Person URI (e.g. "tel:+47…") when
+        // the posting app supplies one. Google/Samsung Messages attach a Person
+        // to each EXTRA_MESSAGES entry whose uri is the canonical phone number —
+        // PhoneService uses this as the primary key to merge RCS into the SMS
+        // thread (resolution priority (a)). Null for apps that don't set it.
+        val senderPersonUri = extractSenderPersonUri(extras)
+
         onMessageNotification?.invoke(
-            appName, pkg, title, body, hasReply, replyKey, notificationKey, sbn.postTime, icon
+            appName, pkg, title, body, hasReply, replyKey, notificationKey, sbn.postTime, icon,
+            senderPersonUri
         )
+    }
+
+    /**
+     * Extracts the canonical sender URI from a MessagingStyle notification's
+     * last message. On API 28+ each EXTRA_MESSAGES entry carries a Person under
+     * the "sender_person" key whose `uri` is typically "tel:+<number>" for
+     * SMS/RCS apps. Returns the raw uri (caller strips the scheme), or null when
+     * the notification is not MessagingStyle, carries no Person, or the Person
+     * has no uri. Never throws — a malformed extras Bundle yields null.
+     */
+    private fun extractSenderPersonUri(extras: Bundle): String? {
+        return try {
+            val messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
+            if (messages.isEmpty()) return null
+            val lastMsg = messages.last() as? Bundle ?: return null
+            // API 28+: MessagingStyle.Message stores the sender as a Person
+            // parcelable under "sender_person". Older builds only have the
+            // legacy "sender" CharSequence (a display name, never a number).
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                val person = lastMsg.getParcelable<android.app.Person>("sender_person")
+                val uri = person?.uri
+                if (!uri.isNullOrBlank()) return uri
+            }
+            null
+        } catch (t: Throwable) {
+            // Defensive: a vendor ROM with a non-standard extras layout must not
+            // crash the listener. Fall through to the title/contacts resolution.
+            android.util.Log.w("DnkNotificationListener", "extractSenderPersonUri failed: ${t.message}")
+            null
+        }
     }
 
     /**

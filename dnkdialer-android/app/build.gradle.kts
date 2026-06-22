@@ -218,8 +218,15 @@ android {
         // reviewer can SEE the restricted-permission feature (READ_SMS /
         // READ_CALL_LOG) on ONE phone. Read/display only — NOT default SMS
         // handler; no perm/exemption change. Built on the v39 (1929e22) lineage.
-        versionCode = 40
-        versionName = "1.0.17"
+        // v41 (1.0.18) — RCS↔SMS thread merge. Inbound/sent RCS from Google/
+        // Samsung Messages now resolves the sender to a canonical phone number
+        // (Person tel: URI → numeric title → contacts reverse-lookup) and routes
+        // through SMS_RECEIVED so it merges into the SAME thread as that contact's
+        // SMS, instead of landing as a separate notification card. SIDELOAD for
+        // Dennis to verify — NOT a Play upload. No new permissions. Built on the
+        // v40 (9ba9d12) lineage.
+        versionCode = 41
+        versionName = "1.0.18"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
