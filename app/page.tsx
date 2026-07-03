@@ -25,6 +25,11 @@ import {
   Lock,
   ShieldCheck,
   Apple,
+  UserPlus,
+  Download,
+  Link2,
+  CheckCircle2,
+  Copy,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import Reviews from '@/components/Reviews';
@@ -142,37 +147,54 @@ const howItWorks = [
   },
 ];
 
-// Four-step recap row that sits BELOW the three-card "How it works" cards.
-// Replaces the old AI-generated `recommended-usage.png` (deprecated 2026-06-03
-// — bad copy + broken step sequence). Copy authored with Gemini Pro live and
-// hand-tuned to match the voice of the three light cards above. Numbering is
-// guaranteed 1·2·3·4 by deriving `n` from the array index at render time
-// rather than a hand-typed label, so we can't repeat the prior "Step 1, 2, 4,
-// 4" bug if cards are reordered.
-const recapSteps = [
+// Getting-started quick-promise strip (rendered high on the page, right under
+// the hero). Deliberately the SHORT onboarding beat — Register · Download ·
+// Connect — distinct from the deeper conceptual "How it works" explainer lower
+// down. `n` is a hand-set 1·2·3 (only three items, no reorder risk).
+const gettingStarted = [
   {
     n: 1,
-    icon: Smartphone,
-    title: 'Install the companion app',
-    body: 'One-time install on your existing Android phone. No new SIM, no new number.',
+    icon: UserPlus,
+    title: 'Register',
+    body: 'Create your account in under a minute.',
   },
   {
     n: 2,
-    icon: Laptop,
-    title: 'Sign in on your computer',
-    body: 'Open computercaller.com in any browser and sign in to your account.',
+    icon: Download,
+    title: 'Download the app',
+    body: 'Install ComputerCaller on your phone.',
   },
   {
     n: 3,
-    icon: ShieldCheck,
-    title: 'Pair phone to computer',
-    body: 'Tap Accept on your phone. The call line is now securely bridged to your laptop.',
+    icon: Link2,
+    title: 'Connect PC to phone',
+    body: 'Link the two and you are ready to call.',
+  },
+] as const;
+
+// Work-efficiency outcomes (outcome-led, not feature-led). Rendered as
+// horizontal icon-left rows in a 2-col grid so the layout reads differently
+// from the icon-top Features cards and the image spotlights.
+const workFaster = [
+  {
+    icon: MessageSquare,
+    title: 'Create message templates',
+    body: 'Send your go-to replies in one click.',
   },
   {
-    n: 4,
-    icon: MessageSquare,
-    title: 'Call and text from your computer',
-    body: 'Dial, talk, and message from your desktop — your real carrier handles the call.',
+    icon: Copy,
+    title: 'Copy and paste numbers',
+    body: 'Dial straight from any list or document.',
+  },
+  {
+    icon: Phone,
+    title: 'Receive and make calls',
+    body: 'Full call control from your keyboard.',
+  },
+  {
+    icon: Zap,
+    title: 'All without lag',
+    body: 'A stable connection that keeps up with you.',
   },
 ] as const;
 
@@ -373,7 +395,7 @@ export default function LandingPage() {
                   href="/auth/register"
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                 >
-                  Start free trial
+                  Try for free
                   <ArrowRight className="w-3.5 h-3.5" />
                 </Link>
               </>
@@ -466,7 +488,7 @@ export default function LandingPage() {
                 href="/auth/register"
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
-                Start 7-day free trial
+                Try for free
                 <ArrowRight className="w-4 h-4" />
               </Link>
               <a
@@ -524,6 +546,110 @@ export default function LandingPage() {
               <Lock className="w-4 h-4 text-slate-500" aria-hidden="true" />
               We never store your calls, SMS, or contacts
             </li>
+          </ul>
+        </div>
+      </section>
+
+      {/* Getting started — quick-promise onboarding strip. Sits high on the
+          page, directly under the hero, so the "how hard is this?" objection is
+          answered before the reader hits features. Deliberately light: a 3-step
+          numbered band (semantic <ol>) capped by a blue "Done" outcome beat.
+          This is the QUICK promise; the deeper "How it works" section lower down
+          keeps the full mechanics. White surface continues the hero's white base
+          (the blessed gradient→white seam) before Work-faster (slate) restarts
+          the white↔slate alternation. */}
+      <section id="getting-started" className="border-t border-slate-200 bg-white scroll-mt-24">
+        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
+          <div className="max-w-2xl mb-12">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              Getting started
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              Up and running in three steps.
+            </h2>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-4 lg:items-stretch">
+            <ol className="grid gap-4 sm:grid-cols-3 lg:col-span-3">
+              {gettingStarted.map(({ n, icon: Icon, title, body }) => (
+                <li
+                  key={n}
+                  className="relative flex flex-col p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+                >
+                  <div className="flex items-center gap-3 mb-5">
+                    <span className="w-9 h-9 rounded-lg bg-blue-600 text-white text-sm font-semibold flex items-center justify-center tabular-nums">
+                      <span className="sr-only">Step </span>
+                      {n}
+                    </span>
+                    <span className="flex-1 h-px bg-slate-200" aria-hidden="true" />
+                    <span className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
+                      <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
+                    </span>
+                  </div>
+                  <h3 className="font-semibold text-slate-900 mb-1.5 text-lg">
+                    {title}
+                  </h3>
+                  <p className="text-slate-600 text-sm leading-relaxed">{body}</p>
+                </li>
+              ))}
+            </ol>
+
+            {/* "Done" cap — a blue outcome beat that closes the band. Not a
+                numbered step; the payoff. On desktop it sits as the 4th column;
+                on mobile it stacks under the three steps. */}
+            <div className="relative flex flex-col justify-center p-6 rounded-2xl bg-gradient-to-b from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-900/10">
+              <div className="flex items-center gap-2 mb-3">
+                <CheckCircle2 className="w-6 h-6 text-white" aria-hidden="true" />
+                <span className="font-semibold text-lg">Done</span>
+              </div>
+              <p className="text-sm leading-relaxed text-blue-50/90">
+                Dial, talk, and message straight from your computer.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Work faster — outcome-led efficiency showcase. Sits high (right after
+          the getting-started strip) to sell the payoff before the feature
+          inventory. Slate-50 surface restarts the white↔slate rhythm after the
+          white getting-started section. Layout is deliberately different from
+          the icon-top Features cards and the image spotlights: horizontal
+          icon-left rows in a 2-col grid. */}
+      <section id="work-faster" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
+        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
+          <div className="max-w-2xl mb-12">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              Work faster
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              Increase your work efficiency.
+            </h2>
+            <p className="mt-4 text-slate-600 text-lg leading-relaxed">
+              Handle more calls and messages in less time, without touching your
+              phone.
+            </p>
+          </div>
+
+          <ul className="grid gap-4 sm:grid-cols-2">
+            {workFaster.map(({ icon: Icon, title, body }) => (
+              <li
+                key={title}
+                className="flex items-start gap-4 p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+              >
+                <span className="flex-shrink-0 w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
+                  <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
+                </span>
+                <div>
+                  <h3 className="font-semibold text-slate-900 text-lg leading-snug">
+                    {title}
+                  </h3>
+                  <p className="mt-1.5 text-slate-600 text-sm leading-relaxed">
+                    {body}
+                  </p>
+                </div>
+              </li>
+            ))}
           </ul>
         </div>
       </section>
@@ -756,53 +882,7 @@ export default function LandingPage() {
             ))}
           </ol>
 
-          {/* Four-step dark-blue card row — REPLACES the prior AI-generated
-              `recommended-usage.png` infographic (2026-06-03). The old PNG had
-              garbled body copy and a broken step sequence (Step 1, 2, 4, 4 —
-              no Step 3). Re-implemented as coded JSX so:
-                · text is real, accessible, SEO-indexable, and translatable
-                · the step numbering is guaranteed 1 · 2 · 3 · 4 in source order
-                · brand colour (blue-600/700) is a single Tailwind token, not
-                  a flattened pixel bake
-                · the section is keyboard- and screen-reader-friendly via the
-                  semantic <ol>/<li> grouping and a single aria-label
-              Copy authored with Gemini Pro (live, 2026-06-03) refined to match
-              the voice of the three light cards above. Dark-blue surface
-              against the slate-50 section background gives the row the same
-              "visual punctuation" Dennis wanted from the original infographic
-              without trusting AI to render type. */}
-          <ol
-            aria-label="Four-step recap of how ComputerCaller works"
-            className="mt-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5"
-          >
-            {recapSteps.map(({ n, icon: Icon, title, body }) => (
-              <li
-                key={n}
-                className="relative flex flex-col p-6 sm:p-7 rounded-2xl bg-gradient-to-b from-blue-600 to-blue-700 text-white shadow-md shadow-blue-900/10 ring-1 ring-blue-500/30"
-              >
-                <div className="flex items-center justify-between mb-5">
-                  <span
-                    aria-hidden="true"
-                    className="text-3xl font-semibold tracking-tight text-white/85 tabular-nums"
-                  >
-                    {n}
-                  </span>
-                  <span className="w-11 h-11 rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur-sm flex items-center justify-center">
-                    <Icon className="w-5 h-5 text-white" aria-hidden="true" />
-                  </span>
-                </div>
-                <h3 className="font-semibold text-white text-base sm:text-lg leading-snug">
-                  <span className="sr-only">{`Step ${n}: `}</span>
-                  {title}
-                </h3>
-                <p className="mt-2 text-sm leading-relaxed text-blue-50/90">
-                  {body}
-                </p>
-              </li>
-            ))}
-          </ol>
-
-          <div className="mt-10 flex justify-center">
+          <div className="mt-12 flex justify-center">
             {WAITLIST_MODE ? (
               <div className="w-full max-w-xl">
                 <WaitlistCTA variant="inline" />
@@ -812,7 +892,7 @@ export default function LandingPage() {
                 href="/auth/register"
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
-                Try it free for 7 days
+                Try for free
                 <ArrowRight className="w-4 h-4" />
               </Link>
             )}
@@ -1053,7 +1133,7 @@ export default function LandingPage() {
 
                 <Link
                   href="/auth/register"
-                  aria-label={`Start your free trial — ${tier.a11yLabel}`}
+                  aria-label={`Try for free — ${tier.a11yLabel}`}
                   className={clsx(
                     'mt-6 flex items-center justify-center gap-1.5 w-full py-3 font-medium rounded-xl transition-colors text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
                     tier.featured
@@ -1061,7 +1141,7 @@ export default function LandingPage() {
                       : 'bg-white border border-slate-200 text-slate-900 hover:border-slate-300 hover:bg-slate-50',
                   )}
                 >
-                  Start 7-day free trial
+                  Try for free
                   <ArrowRight className="w-4 h-4" />
                 </Link>
               </div>
@@ -1173,6 +1253,29 @@ export default function LandingPage() {
           real ratings. Flip it on once Dennis approves. */}
       <Reviews />
 
+      {/* Why we built this — short about/story blurb. Calm, centered, single
+          column, copy-led (no image). Sits just before the final CTA: Reviews
+          (slate) → About (white) → CTA (gradient) keeps the alternation clean.
+          Ends on the positioning line so the last thing read before the CTA is
+          who this is for. */}
+      <section id="about" className="border-t border-slate-200 bg-white scroll-mt-24">
+        <div className="max-w-3xl mx-auto px-6 py-20 sm:py-24 text-center">
+          <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+            Why we built this
+          </p>
+          <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+            Built by people who needed it to just work.
+          </h2>
+          <p className="mt-6 text-lg text-slate-600 leading-relaxed">
+            We spent too long fighting phone-to-computer tools that kept dropping
+            the connection. So we decided to build our own — something that works
+            seamlessly and stays stable. ComputerCaller is the ultimate tool for
+            anyone who uses their phone to contact customers and wants to improve
+            their work efficiency.
+          </p>
+        </div>
+      </section>
+
       {/* Final CTA */}
       <section className="border-t border-slate-200 bg-gradient-to-b from-blue-50 to-white">
         <div className="max-w-3xl mx-auto px-6 py-20 sm:py-24 text-center">
@@ -1194,7 +1297,7 @@ export default function LandingPage() {
                 href="/auth/register"
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
-                Start free trial
+                Try for free
                 <ArrowRight className="w-4 h-4" />
               </Link>
               <Link
