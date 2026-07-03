@@ -179,7 +179,10 @@ interface CustomerTableProps {
 }
 
 export function CustomerTable({ data, now }: CustomerTableProps) {
-  const nowMs = now ?? Date.now();
+  // Capture "now" once at mount (lazy initializer) — avoids reading Date.now()
+  // during render (React 19 purity) and keeps relative labels stable. An admin
+  // table doesn't need per-second ticking; a fixed mount time is correct here.
+  const [nowMs] = useState(() => now ?? Date.now());
   const [search, setSearch] = useState('');
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>('flagged');
