@@ -9,6 +9,7 @@
 import { strict as assert } from 'node:assert';
 import {
   RINGING_TTL_MS,
+  ORPHANED_RINGING_TTL_MS,
   expiredRingingCallIds,
   expiredStaleCallIds,
   findEmptyNumberActiveFold,
@@ -97,6 +98,72 @@ test('mixed list: only the stale ringing rows expire', () => {
     ['stale2', NOW - RINGING_TTL_MS - 5_000],
   ]);
   assert.deepEqual(expiredRingingCallIds(calls, touched, NOW), ['stale1', 'stale2']);
+});
+
+// ---- Orphaned-waiting reconcile (2026-07-03): short TTL for stranded --
+// call-waiting secondary legs. See ORPHANED_RINGING_TTL_MS / flagOrphanedWaiting.
+
+test('orphaned ringing row expires on the SHORT TTL while a same-age non-orphaned ringing row survives', () => {
+  // The core discriminator: two ringing rows of IDENTICAL age; only the one
+  // flagged as a stranded call-waiting secondary (its foreground was removed)
+  // is swept. The other holds the full 60s window.
+  const calls = [
+    call({ callId: 'ghost' }),
+    call({ callId: 'live' }),
+  ];
+  const touched = new Map([
+    ['ghost', NOW - ORPHANED_RINGING_TTL_MS - 1],
+    ['live', NOW - ORPHANED_RINGING_TTL_MS - 1],
+  ]);
+  const orphaned = new Set(['ghost']);
+  assert.deepEqual(
+    expiredRingingCallIds(calls, touched, NOW, RINGING_TTL_MS, orphaned),
+    ['ghost']
+  );
+});
+
+test('a freshly re-clocked orphan is NOT expired until its own short TTL elapses (ring-through grace)', () => {
+  // flagOrphanedWaiting restarts the event clock, giving a legit call-waiting
+  // ring-through a grace window to re-assert before the short sweep fires.
+  const calls = [call({ callId: 'ghost' })];
+  const orphaned = new Set(['ghost']);
+  const withinGrace = new Map([['ghost', NOW - (ORPHANED_RINGING_TTL_MS - 1_000)]]);
+  assert.deepEqual(
+    expiredRingingCallIds(calls, withinGrace, NOW, RINGING_TTL_MS, orphaned),
+    []
+  );
+  const pastGrace = new Map([['ghost', NOW - (ORPHANED_RINGING_TTL_MS + 1)]]);
+  assert.deepEqual(
+    expiredRingingCallIds(calls, pastGrace, NOW, RINGING_TTL_MS, orphaned),
+    ['ghost']
+  );
+});
+
+test('REGRESSION GUARD: a genuine fresh incoming call is NEVER short-TTL — only orphaned rows are', () => {
+  // A real ~30s incoming call is a lone ringing row with NO foreground and gets
+  // no periodic refresh. It must NOT be swept at the short TTL — the short TTL
+  // is keyed strictly on "was a waiting sibling of a just-removed foreground"
+  // (the orphan set), never on "no foreground exists".
+  const calls = [call({ callId: 'incoming' })];
+  const orphaned = new Set<string>(); // NOT orphaned
+  const eightSecondsSilent = new Map([['incoming', NOW - 8_000]]); // past 4s, well under 60s
+  assert.deepEqual(
+    expiredRingingCallIds(calls, eightSecondsSilent, NOW, RINGING_TTL_MS, orphaned),
+    []
+  );
+  // It only finally expires at the full 60s (unchanged legacy behavior).
+  const ancient = new Map([['incoming', NOW - RINGING_TTL_MS - 1]]);
+  assert.deepEqual(
+    expiredRingingCallIds(calls, ancient, NOW, RINGING_TTL_MS, orphaned),
+    ['incoming']
+  );
+});
+
+test('omitting the orphan set is byte-identical to the legacy single-TTL behavior', () => {
+  const calls = [call({ callId: 'a' })];
+  const touched = new Map([['a', NOW - ORPHANED_RINGING_TTL_MS - 1]]); // past short, under 60s
+  // No 5th arg → no row is orphaned → survives to 60s exactly as before.
+  assert.deepEqual(expiredRingingCallIds(calls, touched, NOW), []);
 });
 
 // ---- B3: findEmptyNumberActiveFold ------------------------------------

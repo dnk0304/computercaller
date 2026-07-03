@@ -18,21 +18,53 @@ export const RINGING_TTL_MS = 60_000;
 // RINGING_TTL_MS + RINGING_SWEEP_INTERVAL_MS.
 export const RINGING_SWEEP_INTERVAL_MS = 5_000;
 
+// ORPHANED-WAITING TTL (2026-07-03) — call-waiting secondary-leg ghost.
+// On Path A (no InCallService) the phone cannot detect a WAITING leg ending
+// while the FOREGROUND call continues (telephony IDLE is aggregate and never
+// fires for the waiting leg alone), so no timely removal frame reaches the web
+// and the waiting chip lingers the full RINGING_TTL_MS (60s) — Dennis's "still
+// showing that call even after I finish the call I'm in".
+//
+// When the FOREGROUND call is removed and a ringing sibling remains, the hook
+// flags that sibling as "orphaned" (its reason to exist — waiting behind the
+// now-ended foreground — just went away) and restarts its event clock. Such a
+// row is swept on this SHORT TTL instead of the 60s one, so the ghost clears
+// within a few seconds of the real call ending. The flag is cleared the moment
+// any fresh per-call event touches the row (upsert/patch), so a legitimate
+// call-waiting "ring-through" (ending the active call lets the waiting call
+// ring you) that the phone re-asserts is protected and reverts to 60s.
+//
+// This is keyed strictly on "was a waiting sibling of a just-removed
+// foreground" — NOT on "no foreground exists" — so a genuine fresh incoming
+// call (also a lone ringing row with no foreground, and one that gets no
+// periodic refresh) is never flagged and keeps its full 60s window.
+export const ORPHANED_RINGING_TTL_MS = 4_000;
+
 /**
  * Returns the callIds of ringing rows whose last bridge event (upsert/patch)
- * is older than `ttlMs`. `lastEventAt` is the bridge's touch-map; rows the
- * map doesn't know fall back to their startTime so a row can never be
+ * is older than the applicable TTL. `lastEventAt` is the bridge's touch-map;
+ * rows the map doesn't know fall back to their startTime so a row can never be
  * un-expirable.
+ *
+ * Rows whose callId is in `orphanedCallIds` (secondary/waiting legs stranded by
+ * a foreground removal — see ORPHANED_RINGING_TTL_MS) are held to the short
+ * `orphanedTtlMs` instead of `ttlMs`. When `orphanedCallIds` is omitted the
+ * behavior is identical to the pre-2026-07-03 single-TTL version.
  */
 export function expiredRingingCallIds(
   calls: ReadonlyArray<CallInfo>,
   lastEventAt: ReadonlyMap<string, number>,
   now: number,
-  ttlMs: number = RINGING_TTL_MS
+  ttlMs: number = RINGING_TTL_MS,
+  orphanedCallIds?: ReadonlySet<string>,
+  orphanedTtlMs: number = ORPHANED_RINGING_TTL_MS
 ): string[] {
   return calls
     .filter(c => c.state === 'ringing')
-    .filter(c => now - (lastEventAt.get(c.callId) ?? c.startTime) > ttlMs)
+    .filter(c => {
+      const ttl = orphanedCallIds?.has(c.callId) ? orphanedTtlMs : ttlMs;
+      return now - (lastEventAt.get(c.callId) ?? c.startTime) > ttl;
+    })
     .map(c => c.callId);
 }
 

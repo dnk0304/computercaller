@@ -418,6 +418,9 @@ export function usePhoneBridge() {
   //  binding; the assignment runs at call time, long after declaration.)
   const upsertCall = useCallback((call: CallInfo) => {
     lastCallEventAtRef.current.set(call.callId, Date.now());
+    // A fresh per-call event means this row is live — clear any orphan flag so
+    // a re-asserted (ring-through) waiting call reverts to the normal TTL.
+    orphanedRingingRef.current.delete(call.callId);
     setCalls(prev => {
       const idx = prev.findIndex(c => c.callId === call.callId);
       const merged =
@@ -446,6 +449,8 @@ export function usePhoneBridge() {
   // CALL_ANSWERED that races a CALL_ENDED).
   const patchCall = useCallback((callId: string, patch: Partial<CallInfo>) => {
     lastCallEventAtRef.current.set(callId, Date.now());
+    // Fresh event → live row; clear any orphan flag (see upsertCall).
+    orphanedRingingRef.current.delete(callId);
     setCalls(prev => {
       const idx = prev.findIndex(c => c.callId === callId);
       if (idx === -1) return prev;
@@ -458,6 +463,7 @@ export function usePhoneBridge() {
   // Remove a call by callId.
   const removeCall = useCallback((callId: string) => {
     lastCallEventAtRef.current.delete(callId);
+    orphanedRingingRef.current.delete(callId);
     setCalls(prev => {
       const next = prev.filter(c => c.callId !== callId);
       callsRef.current = next;
@@ -468,6 +474,7 @@ export function usePhoneBridge() {
   // Clear ALL calls (disconnect / unload / leaveActive teardown).
   const clearAllCalls = useCallback(() => {
     lastCallEventAtRef.current.clear();
+    orphanedRingingRef.current.clear();
     callsRef.current = [];
     setCalls([]);
   }, []);
@@ -871,6 +878,16 @@ export function usePhoneBridge() {
   // RINGING rows the phone has gone silent on — web-side safety net for
   // pre-v37 APKs that never emit CALL_REMOVE for an abandoned background leg.
   const lastCallEventAtRef = useRef<Map<string, number>>(new Map());
+  // Orphaned-waiting reconcile (2026-07-03). callIds of ringing rows stranded
+  // by a FOREGROUND removal (a call-waiting secondary leg whose parent call
+  // ended). Path A can't tell the web this leg is gone, so we sweep these on
+  // the short ORPHANED_RINGING_TTL_MS instead of the 60s one. A row is removed
+  // from this set the moment any fresh per-call event touches it (upsert/patch)
+  // — that proves it's still live (a legit call-waiting ring-through), so it
+  // reverts to the normal TTL. Strictly "was a waiting sibling of a just-removed
+  // foreground", never "no foreground exists", so a fresh incoming call (also a
+  // lone ringing row) is never short-TTL'd.
+  const orphanedRingingRef = useRef<Set<string>>(new Set());
   // Live-sync resume fix (2026-06-16). Wall-clock time of the most recent
   // PEER_RECONNECTING (soft-hold blip start). Used on resume to (a) bound the
   // backfill snapshot's `since` window and (b) expire call chips last touched
@@ -936,6 +953,24 @@ export function usePhoneBridge() {
   const stopCallTimer  = useCallback(() => { /* no-op — local timers used */ }, []);
 
   // ---- Local-removal teardown (TTL expiry + manual ✕ dismiss) -----------
+  // Orphaned-waiting reconcile (2026-07-03). Call this AFTER removing a
+  // FOREGROUND call: every ringing row still present was a call waiting behind
+  // the call that just ended. On Path A the phone can't tell the web that such
+  // a waiting leg has itself ended, so flag these rows for the short
+  // ORPHANED_RINGING_TTL_MS sweep and restart their event clock (giving a real
+  // grace window for a legitimate ring-through to re-assert and clear the flag
+  // via upsert/patch). Reads callsRef, which the reducer keeps in lockstep, so
+  // it already reflects the just-completed removal.
+  const flagOrphanedWaiting = useCallback(() => {
+    const now = Date.now();
+    for (const c of callsRef.current) {
+      if (c.state === 'ringing') {
+        orphanedRingingRef.current.add(c.callId);
+        lastCallEventAtRef.current.set(c.callId, now);
+      }
+    }
+  }, []);
+
   // Shared removal path that mirrors the CALL_REMOVE handler's bookkeeping
   // (missed-call accounting + foreground timer-ref reset) WITHOUT sending any
   // frame to the phone — these are browser-local removals only.
@@ -953,8 +988,11 @@ export function usePhoneBridge() {
       stopCallTimer();
       lastCallWasAnsweredRef.current = false;
       callStartTimeRef.current = null;
+      // A ringing sibling that outlived this foreground is a stranded
+      // call-waiting ghost — flag it for the short orphan TTL.
+      flagOrphanedWaiting();
     }
-  }, [removeCall, stopCallTimer]);
+  }, [removeCall, stopCallTimer, flagOrphanedWaiting]);
 
   // B2 (2026-06-12): manual ✕ dismiss on a queue chip. LOCAL removal only —
   // NO frame is sent to the phone; if the call is real it continues on the
@@ -968,6 +1006,9 @@ export function usePhoneBridge() {
   // bridge event for RINGING_TTL_MS auto-expires as a missed call. ACTIVE
   // rows are never TTL'd (long real calls get no updates by design). The
   // interval only runs while a ringing row exists.
+  // Orphaned-waiting reconcile (2026-07-03): rows in orphanedRingingRef (a
+  // call-waiting secondary leg stranded by a foreground removal) are swept on
+  // the short ORPHANED_RINGING_TTL_MS instead — see flagOrphanedWaiting.
   useEffect(() => {
     if (!calls.some(c => c.state === 'ringing')) return;
     const sweep = () => {
@@ -975,7 +1016,8 @@ export function usePhoneBridge() {
         callsRef.current,
         lastCallEventAtRef.current,
         Date.now(),
-        RINGING_TTL_MS
+        RINGING_TTL_MS,
+        orphanedRingingRef.current
       );
       for (const id of expired) {
         console.warn('[PhoneBridge] ringing chip TTL-expired — removing as missed', { callId: id });
@@ -1624,6 +1666,10 @@ export function usePhoneBridge() {
           stopCallTimer();
           lastCallWasAnsweredRef.current = false;
           callStartTimeRef.current = null;
+          // A ringing sibling that outlived this foreground is a stranded
+          // call-waiting ghost (Path A never told us it ended) — flag it for
+          // the short orphan TTL so it clears within seconds, not 60s.
+          flagOrphanedWaiting();
         }
         break;
       }
@@ -1781,6 +1827,8 @@ export function usePhoneBridge() {
           stopCallTimer();
           lastCallWasAnsweredRef.current = false;
           callStartTimeRef.current = null;
+          // Stranded call-waiting sibling → short orphan TTL (see CALL_ENDED).
+          flagOrphanedWaiting();
         }
         break;
       }
