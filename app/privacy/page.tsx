@@ -88,6 +88,13 @@ export default function PrivacyPage() {
                 error logs for keeping the service running. No message bodies,
                 no contact details, no call recordings.
               </li>
+              <li>
+                <strong>IP addresses.</strong> We collect and store IP addresses
+                at sign-up and sign-in to detect and prevent fraud and abuse,
+                such as multiple accounts created to bypass free-trial limits.
+                This data is retained solely for security and fraud-prevention
+                and is not sold or shared with third parties.
+              </li>
             </ul>
           </section>
 
