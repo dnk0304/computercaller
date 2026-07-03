@@ -165,6 +165,25 @@ const AUTH_ALLOWLIST_FALLBACK = 'dennis.kotlenko@gmail.com,reviewer@computercall
 
 export function isEmailAllowed(email: string | null | undefined): boolean {
   if (!email) return false;
+
+  // Public-launch gate (2026-07-03, dispatch forge/reopen-public-signup).
+  // When the site is OUT of waitlist mode, signups + logins are OPEN to the
+  // public: any structurally-valid email is allowed. When waitlist mode is ON
+  // (the pre-launch default), the allowlist below still applies BYTE-IDENTICALLY
+  // to before — Dennis + reviewer only. This ties "open signups" to the SAME
+  // single switch (WAITLIST_MODE=off) that already grants the 14-day trial in
+  // the register/google-callback routes: one coherent, reversible switch, no new
+  // env var and no wildcard string to fat-finger. Fail-safe default is UNCHANGED
+  // — a missing/blank/typo'd WAITLIST_MODE keeps waitlist mode ON (see
+  // isWaitlistMode), so the allowlist lockdown remains the safe default.
+  if (!isWaitlistMode()) {
+    // Minimal structural validity only: non-empty local part, an '@', a domain
+    // with a dot, no internal whitespace. Deliberately permissive — real
+    // deliverability is enforced downstream by the email-verify step, not here.
+    // Guarantees we never return true for a null/blank/whitespace-only value.
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim().toLowerCase());
+  }
+
   const raw = process.env.AUTH_ALLOWLIST?.trim();
   const list = (raw && raw.length > 0 ? raw : AUTH_ALLOWLIST_FALLBACK)
     .split(',')
