@@ -52,6 +52,12 @@ export function PhoneModeHeader() {
         title="ComputerCaller"
       />
 
+      {/* Beta tag — Phone Mode is still in beta. flex-shrink-0 so it survives
+          at 320px; sits next to the brand dot to avoid crowding the pill. */}
+      <span className="flex-shrink-0 inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+        Beta
+      </span>
+
       {/* ConnectionStatus eats remaining width but truncates its own children.
           Wrapping in min-w-0 so flex can actually shrink the pill on 320px. */}
       <div className="min-w-0 flex-1">

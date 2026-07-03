@@ -469,11 +469,12 @@ function TextsView() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Sub-header: title + "+ New" button. Sticky so the list scrolls
-          beneath but the action stays reachable.
-          top-[84px] = PhoneModeHeader (40) + TabBar (44). Was top-24 (96)
-          before the dispatch-#34 15%-shrink pass. */}
-      <div className="sticky top-[84px] z-10 flex items-center justify-between gap-2 bg-white/95 px-2.5 py-1.5 backdrop-blur-sm">
+      {/* Sub-header: title + "+ New" button. A flex-shrink-0 normal-flow
+          block pinned at the top of the column (matches DialerView) — NOT
+          sticky. Sticky here resolved against the viewport (no scrolling
+          ancestor) and dropped the bar on top of the list; the flex-col +
+          flex-1 scroller below keeps it cleanly above the list instead. */}
+      <div className="flex-shrink-0 flex items-center justify-between gap-2 bg-white/95 px-2.5 py-1.5 backdrop-blur-sm">
         <h2 className="text-xs font-semibold text-slate-800">Messages</h2>
         <button
           type="button"
@@ -488,7 +489,7 @@ function TextsView() {
 
       {/* Search input. inputMode="search" + autocomplete=off so iOS doesn't
           suggest contacts above the keyboard at this width. */}
-      <div className="px-3 pb-2">
+      <div className="flex-shrink-0 px-3 pb-2">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" aria-hidden="true" />
           <input
@@ -831,7 +832,10 @@ function BellView() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="sticky top-24 z-10 flex items-center justify-between gap-2 bg-white/95 px-3 py-2 backdrop-blur-sm">
+      {/* Sub-header: flex-shrink-0 normal-flow block pinned at the top of the
+          column (matches DialerView) — NOT sticky. The prior sticky top-24
+          resolved against the viewport and rendered on top of the list. */}
+      <div className="flex-shrink-0 flex items-center justify-between gap-2 bg-white/95 px-3 py-2 backdrop-blur-sm">
         <h2 className="text-sm font-semibold text-slate-800">Notifications</h2>
         {items.length > 0 && (
           <button
