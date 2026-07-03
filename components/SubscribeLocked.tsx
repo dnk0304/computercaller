@@ -17,7 +17,7 @@
  * no scroll.
  *
  * Pricing/support are kept consistent with the rest of the app:
- *   - €7.99/month (same figure shown in ProfileMenu + /app/settings)
+ *   - $10/month (same figure shown in ProfileMenu + /app/settings)
  *   - support@computercaller.com (the app's real reply-to, see lib/email.ts)
  */
 
@@ -37,7 +37,7 @@ export interface SubscribeLockedProps {
    * headline specialises to "Your N-day free trial has ended"; omitted, it
    * reads "Your free trial has ended". Kept optional (and additive to the
    * frozen `{ state, whopCheckoutUrl }` contract) so it never goes stale —
-   * Forge can pass the true length (14 or 30 depending on WAITLIST_MODE)
+   * Forge can pass the true length (7 or 30 depending on WAITLIST_MODE)
    * without this component hard-coding a number that could be wrong.
    */
   trialDays?: number;
@@ -145,7 +145,7 @@ export function SubscribeLocked({
           <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </a>
         <p className="mt-2 text-xs text-slate-400">
-          €7.99/month · cancel anytime
+          $10/month · cancel anytime
         </p>
 
         {/* Already-subscribed escape hatch — the Whop webhook can lag a few

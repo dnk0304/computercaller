@@ -13,7 +13,7 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Create your account — ComputerCaller',
   description:
-    'Start your 14-day free trial of ComputerCaller. Make phone calls from your computer through your paired phone.',
+    'Start your 7-day free trial of ComputerCaller. Make phone calls from your computer through your paired phone.',
   alternates: {
     canonical: '/auth/register',
   },

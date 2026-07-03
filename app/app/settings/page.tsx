@@ -552,7 +552,7 @@ export default function SettingsPage() {
               rel="noopener noreferrer"
               className="flex items-center justify-center gap-2 w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
-              Subscribe €7.99/month{' '}
+              Subscribe $10/month{' '}
               <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
             </a>
           </div>
@@ -570,7 +570,7 @@ export default function SettingsPage() {
               rel="noopener noreferrer"
               className="flex items-center justify-center gap-2 w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
-              Subscribe €7.99/month{' '}
+              Subscribe $10/month{' '}
               <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
             </a>
           </div>

@@ -32,7 +32,7 @@ export const metadata: Metadata = {
     template: "%s · ComputerCaller",
   },
   description:
-    "Call any phone number from your computer or browser. ComputerCaller connects your phone to your computer — we never store your call logs, messages, or contacts. 14-day free trial.",
+    "Call any phone number from your computer or browser. ComputerCaller connects your phone to your computer — we never store your call logs, messages, or contacts. 7-day free trial.",
   keywords: [
     "call phone from computer",
     "call from computer",
@@ -59,7 +59,7 @@ export const metadata: Metadata = {
     siteName: "ComputerCaller",
     title: "ComputerCaller — Make phone calls from your computer",
     description:
-      "Call any phone number from your computer through your existing phone. We never store your calls, SMS, or contacts. 14-day free trial.",
+      "Call any phone number from your computer through your existing phone. We never store your calls, SMS, or contacts. 7-day free trial.",
     images: [
       {
         url: "/brand/computercaller-hero-banner-v2-cropped.png",

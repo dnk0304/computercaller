@@ -208,11 +208,11 @@ const faqs = [
   },
   {
     q: 'Is it free?',
-    // Waitlist mode: no price (€7.99) reaches the visible FAQ OR the JSON-LD,
+    // Waitlist mode: no price ($10) reaches the visible FAQ OR the JSON-LD,
     // which is built from this same array. Flag off → original answer restored.
     a: WAITLIST_MODE
       ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
-      : "ComputerCaller comes with a 14-day free trial — no credit card required. After the trial, it's €7.99 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
+      : "ComputerCaller comes with a 7-day free trial — no credit card required. After the trial, it's $10 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -283,19 +283,19 @@ export default function LandingPage() {
         applicationCategory: 'CommunicationApplication',
         operatingSystem: 'Web, Android',
         url: 'https://computercaller.com',
-        // In waitlist mode we omit the price `offers` entirely so no €7.99
+        // In waitlist mode we omit the price `offers` entirely so no $10
         // reaches crawlers / structured data. Flag off → original Offer restored.
         ...(WAITLIST_MODE
           ? {}
           : {
               offers: {
                 '@type': 'Offer',
-                price: '7.99',
-                priceCurrency: 'EUR',
+                price: '10',
+                priceCurrency: 'USD',
                 priceSpecification: {
                   '@type': 'UnitPriceSpecification',
-                  price: '7.99',
-                  priceCurrency: 'EUR',
+                  price: '10',
+                  priceCurrency: 'USD',
                   unitText: 'MONTH',
                 },
               },
@@ -430,7 +430,7 @@ export default function LandingPage() {
 
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            {WAITLIST_MODE ? 'Launching soon — join the waitlist' : '14-day free trial — no credit card required'}
+            {WAITLIST_MODE ? 'Launching soon — join the waitlist' : '7-day free trial — no credit card required'}
           </div>
 
           <h1 className="mt-8 text-4xl sm:text-5xl md:text-6xl font-semibold tracking-[-0.03em] leading-[1.05] text-slate-900 text-balance">
@@ -465,7 +465,7 @@ export default function LandingPage() {
                 href="/auth/register"
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
-                Start 14-day free trial
+                Start 7-day free trial
                 <ArrowRight className="w-4 h-4" />
               </Link>
               <a
@@ -811,7 +811,7 @@ export default function LandingPage() {
                 href="/auth/register"
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
-                Try it free for 14 days
+                Try it free for 7 days
                 <ArrowRight className="w-4 h-4" />
               </Link>
             )}
@@ -993,7 +993,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Pricing — hidden entirely in waitlist mode so NO €7.99 price renders
+      {/* Pricing — hidden entirely in waitlist mode so NO $10 price renders
           on the page (section, price block, feature list). Flag off → the
           original paid pricing section returns unchanged. */}
       {!WAITLIST_MODE && (
@@ -1012,7 +1012,7 @@ export default function LandingPage() {
           <div className="mt-12 max-w-md mx-auto p-8 bg-white border border-slate-200 rounded-2xl shadow-sm text-left">
             <div className="flex items-baseline gap-1.5">
               <span className="text-5xl font-semibold tracking-tight text-slate-900">
-                €7.99
+                $10
               </span>
               <span className="text-slate-500 text-base">/ month</span>
             </div>
@@ -1029,7 +1029,7 @@ export default function LandingPage() {
                 'Real-time notification mirror',
                 'Unlimited contacts & history',
                 'Works from any device, anywhere',
-                '14-day free trial',
+                '7-day free trial',
               ].map((f) => (
                 <li key={f} className="flex items-start gap-2.5">
                   <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
@@ -1053,7 +1053,7 @@ export default function LandingPage() {
                   href="/auth/register"
                   className="mt-8 flex items-center justify-center gap-1.5 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-center shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                 >
-                  Start 14-day free trial
+                  Start 7-day free trial
                   <ArrowRight className="w-4 h-4" />
                 </Link>
                 <p className="mt-3 text-center text-slate-500 text-xs">
@@ -1148,7 +1148,7 @@ export default function LandingPage() {
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
             {WAITLIST_MODE
               ? "We're opening the doors soon. Sign up on the waitlist — get a 30-day free trial when we launch."
-              : '14 days free. No credit card. Pair your phone and you’re calling from your browser in under two minutes.'}
+              : '7 days free. No credit card. Pair your phone and you’re calling from your browser in under two minutes.'}
           </p>
           {WAITLIST_MODE ? (
             <div className="mt-8 mx-auto max-w-xl">
