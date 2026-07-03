@@ -22,7 +22,7 @@ import { getClientIp } from '@/lib/ip';
  *   b) else findUnique by email → link Google identity (this closes the
  *      apk-login gap where existing email/password users couldn't sign into
  *      the APK with Google — see apk-login route lines 47-60).
- *   c) else create user with passwordHash=null, fresh phoneToken, 14-day trial.
+ *   c) else create user with passwordHash=null, fresh phoneToken, 7-day trial.
  *
  * Critical divergences from /api/auth/google/callback (intentional):
  *   • NO cookie set — the APK has no browser session model.
@@ -106,9 +106,9 @@ export async function POST(req: NextRequest) {
         });
       } else {
         // Branch c — brand-new user. Mirror /api/auth/google/callback exactly:
-        // passwordHash=null, fresh 32-byte base64url phoneToken, 14-day trial.
+        // passwordHash=null, fresh 32-byte base64url phoneToken, 7-day trial.
         // Dennis approved auto-create at dispatch time.
-        const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+        const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         const phoneToken = crypto.randomBytes(32).toString('base64url');
         // IP capture (2026-07-03) — signup IP for the same-IP abuse flag.
         const signupIp = getClientIp(req);
@@ -126,7 +126,7 @@ export async function POST(req: NextRequest) {
             googleId,
             authProvider: 'google',
             signupIp,
-            // Original behavior (restored by WAITLIST_MODE=off): 14-day trial.
+            // Original behavior (restored by WAITLIST_MODE=off): 7-day trial.
             ...(grantTrial
               ? { subscription: { create: { status: 'trial', trialEndsAt } } }
               : {}),

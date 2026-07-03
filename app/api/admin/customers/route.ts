@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { evaluateEntitlement } from '@/lib/entitlement';
+import { resolveCardStatuses } from '@/lib/whop';
 
 // Same-IP cluster flag threshold. Env override so Dennis can tune sensitivity
 // without a redeploy; default 3. A non-numeric/blank env falls back to 3.
@@ -87,6 +88,19 @@ export async function GET(req: NextRequest) {
     const threshold = sameIpThreshold();
     const now = new Date();
 
+    // LIVE card-on-file (dispatch forge/trial7-caps-whopcard, 2026-07-03). For
+    // every row that carries a whopMembershipId, ask the Whop admin API whether
+    // a card is on file — this also covers TRIAL-only users whose stored
+    // paymentMethodAttached is still false. Bounded concurrency + 3s per-call
+    // timeout + 60s cache all live in lib/whop.ts; the call NEVER throws and
+    // degrades to null (→ fall back to the stored boolean) on any failure. When
+    // WHOP_API_KEY is unset or the dev placeholder, this resolves every id to
+    // null with zero network calls, so the dashboard behaves exactly as before.
+    const membershipIds = users
+      .map((u) => u.subscription?.whopMembershipId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    const liveCard = await resolveCardStatuses(membershipIds);
+
     const customers = users.map((u) => {
       const ent = evaluateEntitlement(
         {
@@ -110,6 +124,15 @@ export async function GET(req: NextRequest) {
       const sameIpAccountCount = u.signupIp ? (ipCounts.get(u.signupIp) ?? 1) : 1;
       const flagged = u.signupIp != null && sameIpAccountCount >= threshold;
 
+      // Live card-on-file override: when Whop answered for this membership
+      // (non-null), trust the live value over the stored boolean; on any
+      // miss/timeout/no-key (null) keep the stored value. Rows with no
+      // membershipId never had a live call, so they keep stored as-is.
+      const membershipId = u.subscription?.whopMembershipId ?? null;
+      const live = membershipId ? liveCard.get(membershipId) : undefined;
+      const effectiveCardAttached =
+        typeof live === 'boolean' ? live : (u.subscription?.paymentMethodAttached ?? false);
+
       // subscription block is NEVER omitted — when the row has no subscription
       // we return an explicit null-filled object with the evaluated state (which
       // for a non-admin/non-allowlisted user is 'none'; for Dennis it's 'admin').
@@ -122,7 +145,7 @@ export async function GET(req: NextRequest) {
             currentPeriodEnd: u.subscription.currentPeriodEnd?.toISOString() ?? null,
             convertedAt: u.subscription.convertedAt?.toISOString() ?? null,
             canceledAt: u.subscription.canceledAt?.toISOString() ?? null,
-            paymentMethodAttached: u.subscription.paymentMethodAttached,
+            paymentMethodAttached: effectiveCardAttached,
             whopMembershipId: u.subscription.whopMembershipId ?? null,
           }
         : {

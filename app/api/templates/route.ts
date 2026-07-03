@@ -1,11 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionToken, requireSameOrigin } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { TEMPLATE_LIMIT, serializeTemplate } from '@/lib/templates';
+import { effectiveTemplateLimit, serializeTemplate } from '@/lib/templates';
+import { evaluateEntitlement } from '@/lib/entitlement';
 
 // Item C1 (2026-05-27) — per-user message templates, server-side persistence.
 // Auth pattern mirrors app/api/auth/me/route.ts: read auth_token cookie →
 // validateSessionToken (signature + sessionVersion) → 401 on null → db call.
+
+// Load the caller's effective template create-limit from entitlement (dispatch
+// forge/trial7-caps-whopcard, 2026-07-03). Non-paying (trialing/expired/none)
+// users are capped at TRIAL_TEMPLATE_LIMIT; paying/privileged keep the full
+// TEMPLATE_LIMIT. Reuses the shared evaluateEntitlement — never re-implements
+// the paying test. `select` mirrors app/subscribe/page.tsx.
+async function resolveTemplateLimit(userId: string): Promise<number> {
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      isAdmin: true,
+      email: true,
+      subscription: {
+        select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
+      },
+    },
+  });
+  // Row vanished mid-session — treat as non-paying (trial cap). Defensive; the
+  // downstream db call would 401/500 anyway.
+  if (!user) return effectiveTemplateLimit('none');
+  const ent = evaluateEntitlement({
+    isAdmin: user.isAdmin,
+    email: user.email,
+    subscription: user.subscription,
+  });
+  return effectiveTemplateLimit(ent.state);
+}
 
 // GET /api/templates → { templates: [...] } ordered sortOrder ASC, createdAt DESC.
 export async function GET(req: NextRequest) {
@@ -16,12 +44,17 @@ export async function GET(req: NextRequest) {
     const payload = await validateSessionToken(token);
     if (!payload) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const rows = await db.template.findMany({
-      where: { userId: payload.userId },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
-    });
+    const [rows, limit] = await Promise.all([
+      db.template.findMany({
+        where: { userId: payload.userId },
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
+      }),
+      resolveTemplateLimit(payload.userId),
+    ]);
 
-    return NextResponse.json({ templates: rows.map(serializeTemplate) });
+    // `limit` added for the UI (Pixel wave 3) so it can show the cap without a
+    // second call. Existing `templates` array key unchanged.
+    return NextResponse.json({ templates: rows.map(serializeTemplate), limit });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -29,7 +62,7 @@ export async function GET(req: NextRequest) {
 
 // POST /api/templates → create one. Body: { name, body }.
 //   400 if name/body empty after trim.
-//   409 { error, limit } if the user already has TEMPLATE_LIMIT templates.
+//   409 { error, limit } if the user is at their effective template limit.
 //   201 { template } on success. New row sortOrder = (max existing) + 1.
 export async function POST(req: NextRequest) {
   try {
@@ -61,15 +94,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // CAP: count current rows; reject the create if at/over the limit. The
-    // count + create are not in a transaction — a user racing two creates at
-    // exactly 14 could momentarily reach 16. Acceptable: single-user, single
-    // active session (sessionVersion), and the cap is a UX guardrail, not a
-    // security/billing boundary. The list/UI self-corrects on next load.
+    // CAP: count current rows; reject the create if at/over the EFFECTIVE limit
+    // for this user (trial tier = 3, paying/privileged = 15; dispatch
+    // forge/trial7-caps-whopcard). The count + create are not in a transaction
+    // — a user racing two creates could momentarily exceed by one. Acceptable:
+    // single active session (sessionVersion), and the cap is a UX/entitlement
+    // guardrail, not a security/billing boundary. The list/UI self-corrects on
+    // next load. Existing over-cap rows are grandfathered (create-only block).
+    const limit = await resolveTemplateLimit(payload.userId);
     const count = await db.template.count({ where: { userId: payload.userId } });
-    if (count >= TEMPLATE_LIMIT) {
+    if (count >= limit) {
       return NextResponse.json(
-        { error: 'Template limit reached', limit: TEMPLATE_LIMIT },
+        { error: 'Template limit reached', limit },
         { status: 409 },
       );
     }

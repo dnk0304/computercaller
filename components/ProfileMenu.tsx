@@ -302,14 +302,14 @@ export const ProfileMenu = () => {
                   informational line — no number to show. */}
               {sub?.status === 'trial' && daysLeft !== null ? (
                 (() => {
-                  // TRIAL_LENGTH_DAYS is hard-coded to 14 here to match the
+                  // TRIAL_LENGTH_DAYS is hard-coded to 7 here to match the
                   // single source of truth in app/api/auth/register/route.ts
-                  // (line 28 — 14 * 24 * 60 * 60 * 1000). Dispatch #9
+                  // (7 * 24 * 60 * 60 * 1000). Dispatch #9
                   // ("YAGNI — just the 5 find-replaces") explicitly rejected
                   // extracting this to a shared constant. If the trial length
                   // ever changes, update BOTH the register route AND this
                   // literal in lockstep.
-                  const TRIAL_LENGTH_DAYS = 14;
+                  const TRIAL_LENGTH_DAYS = 7;
                   // Days-left bucket → tier of complementary Tailwind colors.
                   // Visual ladder: emerald (safe) → amber (warning) → red
                   // (urgent). The cliff between bucket 2 and bucket 1 is

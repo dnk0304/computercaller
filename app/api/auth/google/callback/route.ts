@@ -128,7 +128,7 @@ export async function GET(req: NextRequest) {
         });
       } else {
         // Branch c: brand-new user. Create with trial subscription, no password.
-        const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
+        const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
         // WAITLIST_MODE gate (2026-06-15). When engaged (default, pre-Play-
         // Store) we suppress the trial grant — account mints, no trial/payment
         // entitlement. Flip WAITLIST_MODE=off in Coolify to restore. Original
@@ -150,7 +150,7 @@ export async function GET(req: NextRequest) {
             googleId,
             authProvider: 'google',
             signupIp,
-            // Original behavior (restored by WAITLIST_MODE=off): 14-day trial.
+            // Original behavior (restored by WAITLIST_MODE=off): 7-day trial.
             ...(grantTrial
               ? { subscription: { create: { status: 'trial', trialEndsAt } } }
               : {}),

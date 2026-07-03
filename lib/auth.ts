@@ -213,7 +213,7 @@ export function isEntitlementAllowed(email: string | null | undefined): boolean 
  * that). Both must be set in Coolify at deploy.
  *
  * When ON (the default while we are pre-Play-Store), the backend refuses to
- * PROVISION a new 14-day trial subscription on user-create. The original
+ * PROVISION a new 7-day trial subscription on user-create. The original
  * trial-grant logic is NOT deleted — it is wrapped in `if (!isWaitlistMode())`,
  * so re-activation after Play Store approval is a single env flip
  * (WAITLIST_MODE=off) with ZERO code redeploy.

@@ -1,7 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionToken, requireSameOrigin } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { QUICK_REPLY_LIMIT, serializeQuickReplyTemplate } from '@/lib/quickReplyTemplates';
+import { effectiveQuickReplyLimit, serializeQuickReplyTemplate } from '@/lib/quickReplyTemplates';
+import { evaluateEntitlement } from '@/lib/entitlement';
+
+// Load the caller's effective quick-reply create-limit from entitlement
+// (dispatch forge/trial7-caps-whopcard, 2026-07-03). Non-paying users are
+// capped at TRIAL_QUICK_REPLY_LIMIT (1); paying/privileged keep the full
+// QUICK_REPLY_LIMIT (5). Reuses the shared evaluateEntitlement. `select`
+// mirrors app/subscribe/page.tsx.
+async function resolveQuickReplyLimit(userId: string): Promise<number> {
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      isAdmin: true,
+      email: true,
+      subscription: {
+        select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
+      },
+    },
+  });
+  if (!user) return effectiveQuickReplyLimit('none');
+  const ent = evaluateEntitlement({
+    isAdmin: user.isAdmin,
+    email: user.email,
+    subscription: user.subscription,
+  });
+  return effectiveQuickReplyLimit(ent.state);
+}
 
 // Dispatch CC-quickreply-templates-v2 (2026-06-03) — per-user quick-reply
 // templates, server-side persistence. SEPARATE store from the normal SMS
@@ -19,12 +45,17 @@ export async function GET(req: NextRequest) {
     const payload = await validateSessionToken(token);
     if (!payload) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const rows = await db.quickReplyTemplate.findMany({
-      where: { userId: payload.userId },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
-    });
+    const [rows, limit] = await Promise.all([
+      db.quickReplyTemplate.findMany({
+        where: { userId: payload.userId },
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
+      }),
+      resolveQuickReplyLimit(payload.userId),
+    ]);
 
-    return NextResponse.json({ quickReplies: rows.map(serializeQuickReplyTemplate) });
+    // `limit` added for the UI (Pixel wave 3). Existing `quickReplies` key
+    // unchanged.
+    return NextResponse.json({ quickReplies: rows.map(serializeQuickReplyTemplate), limit });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -32,7 +63,7 @@ export async function GET(req: NextRequest) {
 
 // POST /api/quick-replies → create one. Body: { body, label? }.
 //   400 if body is empty after trim.
-//   409 { error, limit } if the user already has QUICK_REPLY_LIMIT (5) rows.
+//   409 { error, limit } if the user is at their effective quick-reply limit.
 //   201 { quickReply } on success. New row sortOrder = (max existing) + 1.
 // label is optional; trimmed; stored as null if absent or empty after trim.
 // 409 shape matches the /api/templates cap response exactly so the client
@@ -87,10 +118,11 @@ export async function POST(req: NextRequest) {
     // UX guardrail, not a security/billing boundary. Matches the Template-cap
     // pattern in /api/templates so the 409 shape is identical → Pixel reuses
     // the same handling.
+    const limit = await resolveQuickReplyLimit(payload.userId);
     const count = await db.quickReplyTemplate.count({ where: { userId: payload.userId } });
-    if (count >= QUICK_REPLY_LIMIT) {
+    if (count >= limit) {
       return NextResponse.json(
-        { error: 'Quick-reply limit reached', limit: QUICK_REPLY_LIMIT },
+        { error: 'Quick-reply limit reached', limit },
         { status: 409 },
       );
     }
