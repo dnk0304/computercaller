@@ -477,6 +477,34 @@ export default function LandingPage() {
             </div>
           )}
 
+          {/* Android availability — the app is already live on Google Play,
+              so we surface the official store badge as a secondary CTA directly
+              under the primary hero action. Rendered UNCONDITIONALLY (outside
+              the WAITLIST_MODE ternary above) so it appears in both waitlist and
+              normal modes, and keeps showing if waitlist mode later flips off.
+              The asset is Google's official, unmodified "Get it on Google Play"
+              artwork — brand-guideline compliant (no recolor/redraw/re-proportion;
+              the required clear-space is baked into the PNG itself). */}
+          <div className="mt-6 flex flex-col items-center gap-2">
+            <p className="text-sm font-medium text-slate-500">
+              Already live on Android
+            </p>
+            <a
+              href="https://play.google.com/store/apps/details?id=com.dnkdialer.companion&hl=en"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+            >
+              <Image
+                src="/badges/google-play-badge.png"
+                alt="Get it on Google Play"
+                width={646}
+                height={250}
+                className="h-12 w-auto sm:h-14"
+              />
+            </a>
+          </div>
+
           {/* Trust strip — three short factual claims. Bullets are visual,
               the items themselves are an unordered list semantically. The
               third chip swaps an emerald Check for a slate Lock icon because
@@ -1162,6 +1190,14 @@ export default function LandingPage() {
             </span>
           </div>
           <div className="flex items-center gap-5 text-sm text-slate-500">
+            <a
+              href="https://play.google.com/store/apps/details?id=com.dnkdialer.companion&hl=en"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-slate-900 transition-colors"
+            >
+              Get it on Google Play
+            </a>
             <Link href="/iphone" className="hover:text-slate-900 transition-colors">
               iPhone setup
             </Link>
