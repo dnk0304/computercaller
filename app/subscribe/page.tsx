@@ -27,6 +27,7 @@ import { redirect } from 'next/navigation';
 import { validateSessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { evaluateEntitlement, type EntitlementState } from '@/lib/entitlement';
+import { getPlanTiers } from '@/lib/pricing';
 import SubscribeLocked, { type SubscribeLockedState } from '@/components/SubscribeLocked';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -96,10 +97,13 @@ export default async function SubscribePage() {
   }
 
   const whopCheckoutUrl = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '#';
-  // Plan id for the in-page embedded checkout (Wave 3, 2026-07-03). When set,
-  // SubscribeLocked makes the embed the primary surface and keeps the external
-  // URL above as a fallback; when unset, it renders the external button only.
-  const whopPlanId = process.env.NEXT_PUBLIC_WHOP_PLAN_ID || undefined;
+  // Multi-tier plans for the in-page embedded checkout (Monthly / 3-Month /
+  // Annual, 2026-07-03). Resolved from NEXT_PUBLIC_WHOP_PLAN_ID_* env vars via
+  // the shared pricing config — only tiers with a configured plan id are
+  // returned. When ≥1 tier exists, SubscribeLocked renders the tier selector +
+  // embed as the primary surface and keeps the external URL as a fallback; when
+  // the list is empty (no env set), it renders the external button only.
+  const tiers = getPlanTiers();
 
   // True trial LENGTH in whole days (trialEndsAt - subscription.createdAt),
   // derived rather than hard-coded so the "Your N-day free trial has ended"
@@ -117,7 +121,7 @@ export default async function SubscribePage() {
       state={toLockedState(ent.state)}
       whopCheckoutUrl={whopCheckoutUrl}
       trialDays={trialDays}
-      planId={whopPlanId}
+      tiers={tiers}
     />
   );
 }

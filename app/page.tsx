@@ -26,9 +26,11 @@ import {
   ShieldCheck,
   Apple,
 } from 'lucide-react';
+import { clsx } from 'clsx';
 import Reviews from '@/components/Reviews';
 import WaitlistCTA from '@/components/WaitlistCTA';
 import { WAITLIST_MODE } from '@/lib/waitlistMode';
+import { PLAN_TIERS } from '@/lib/pricing';
 
 /**
  * Landing page — SEO + content rewrite (dispatch 2026-05-25, revised 2026-05-25
@@ -208,11 +210,11 @@ const faqs = [
   },
   {
     q: 'Is it free?',
-    // Waitlist mode: no price ($10) reaches the visible FAQ OR the JSON-LD,
-    // which is built from this same array. Flag off → original answer restored.
+    // Waitlist mode: no price reaches the visible FAQ OR the JSON-LD, which is
+    // built from this same array. Flag off → paid answer with the three plans.
     a: WAITLIST_MODE
       ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
-      : "ComputerCaller comes with a 7-day free trial — no credit card required. After the trial, it's $10 per month, billed monthly, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
+      : "ComputerCaller comes with a 7-day free trial — no credit card required. After the trial, choose the plan that suits you: $10/month, $25 for 3 months (about $8.33/month), or $90/year (about $7.50/month) — billed per the plan you pick, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -283,21 +285,20 @@ export default function LandingPage() {
         applicationCategory: 'CommunicationApplication',
         operatingSystem: 'Web, Android',
         url: 'https://computercaller.com',
-        // In waitlist mode we omit the price `offers` entirely so no $10
-        // reaches crawlers / structured data. Flag off → original Offer restored.
+        // In waitlist mode we omit the price `offers` entirely so no price
+        // reaches crawlers / structured data. Flag off → an AggregateOffer
+        // spanning the three plans ($10 monthly … $90 annual). AggregateOffer is
+        // the schema.org-correct shape for one product sold at several price
+        // points; lowPrice/highPrice bound the range, offerCount states how many.
         ...(WAITLIST_MODE
           ? {}
           : {
               offers: {
-                '@type': 'Offer',
-                price: '10',
+                '@type': 'AggregateOffer',
                 priceCurrency: 'USD',
-                priceSpecification: {
-                  '@type': 'UnitPriceSpecification',
-                  price: '10',
-                  priceCurrency: 'USD',
-                  unitText: 'MONTH',
-                },
+                lowPrice: '10',
+                highPrice: '90',
+                offerCount: 3,
               },
             }),
         publisher: { '@id': 'https://computercaller.com/#organization' },
@@ -993,43 +994,95 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Pricing — hidden entirely in waitlist mode so NO $10 price renders
-          on the page (section, price block, feature list). Flag off → the
-          original paid pricing section returns unchanged. */}
+      {/* Pricing — hidden entirely in waitlist mode so NO price renders on the
+          page (section, cards, feature list). Flag off → the three paid plans
+          (Monthly / 3-Month / Annual) render from the shared PLAN_TIERS config,
+          annual featured as "Best value". */}
       {!WAITLIST_MODE && (
       <section id="pricing" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
-        <div className="max-w-3xl mx-auto px-6 py-20 sm:py-24 text-center">
-          <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-            Pricing
-          </p>
-          <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
-            Simple pricing.
-          </h2>
-          <p className="mt-3 text-slate-600 text-lg">
-            One plan. Everything included.
-          </p>
-
-          <div className="mt-12 max-w-md mx-auto p-8 bg-white border border-slate-200 rounded-2xl shadow-sm text-left">
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-5xl font-semibold tracking-tight text-slate-900">
-                $10
-              </span>
-              <span className="text-slate-500 text-base">/ month</span>
-            </div>
-            <p className="mt-2 text-sm text-slate-500">
-              Billed monthly. Cancel anytime.
+        <div className="max-w-5xl mx-auto px-6 py-20 sm:py-24">
+          <div className="text-center">
+            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+              Pricing
             </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              Simple pricing.
+            </h2>
+            <p className="mt-3 text-slate-600 text-lg">
+              One product, every feature. Pick the billing that suits you — the longer the plan, the
+              less you pay per month. Every plan starts with a 7-day free trial.
+            </p>
+          </div>
 
-            <div className="my-6 h-px bg-slate-200" />
+          {/* Three plan cards. Annual is featured (blue border + "Best value").
+              All CTAs point at /auth/register (the page's primary pre-signup
+              target); the user chooses the actual plan on /subscribe after
+              signing up. */}
+          <div className="mt-12 grid gap-5 sm:grid-cols-3 items-stretch">
+            {PLAN_TIERS.map((tier) => (
+              <div
+                key={tier.id}
+                className={clsx(
+                  'relative flex flex-col rounded-2xl border bg-white p-6 text-left shadow-sm',
+                  tier.featured
+                    ? 'border-blue-600 ring-1 ring-blue-600/20 shadow-blue-600/10'
+                    : 'border-slate-200',
+                )}
+              >
+                {tier.badge && (
+                  <span className="absolute -top-3 left-6 rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white shadow-sm">
+                    {tier.badge}
+                  </span>
+                )}
 
-            <ul className="space-y-3 text-sm text-slate-700">
+                <p className="text-sm font-semibold text-slate-900">{tier.name}</p>
+
+                <div className="mt-3 flex items-baseline gap-1.5">
+                  <span className="text-4xl font-semibold tracking-tight text-slate-900">
+                    {tier.price}
+                  </span>
+                  <span className="text-slate-500 text-sm">{tier.period}</span>
+                </div>
+
+                <p className="mt-1.5 text-sm text-slate-500">
+                  {tier.perMonth}
+                  {tier.savings && (
+                    <span className="font-medium text-emerald-600"> · {tier.savings}</span>
+                  )}
+                </p>
+
+                <Link
+                  href="/auth/register"
+                  aria-label={`Start your free trial — ${tier.a11yLabel}`}
+                  className={clsx(
+                    'mt-6 flex items-center justify-center gap-1.5 w-full py-3 font-medium rounded-xl transition-colors text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                    tier.featured
+                      ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-600/20'
+                      : 'bg-white border border-slate-200 text-slate-900 hover:border-slate-300 hover:bg-slate-50',
+                  )}
+                >
+                  Start 7-day free trial
+                  <ArrowRight className="w-4 h-4" />
+                </Link>
+              </div>
+            ))}
+          </div>
+
+          {/* Shared feature list — one product, so the features are the same
+              across every plan; listing them once (not per-card) keeps the
+              comparison about price, not feature gating. */}
+          <div className="mt-10 max-w-md mx-auto">
+            <p className="text-center text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Every plan includes
+            </p>
+            <ul className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-2">
               {[
                 'Call any phone number from your computer',
                 'Full SMS and message dashboard',
                 'Real-time notification mirror',
                 'Unlimited contacts & history',
                 'Works from any device, anywhere',
-                '7-day free trial',
+                '7-day free trial, no card to start',
               ].map((f) => (
                 <li key={f} className="flex items-start gap-2.5">
                   <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
@@ -1039,28 +1092,9 @@ export default function LandingPage() {
                 </li>
               ))}
             </ul>
-
-            {WAITLIST_MODE ? (
-              <div className="mt-8">
-                <WaitlistCTA variant="inline" />
-                <p className="mt-3 text-center text-slate-500 text-xs">
-                  Sign up on the waitlist — get a 30-day free trial when we launch.
-                </p>
-              </div>
-            ) : (
-              <>
-                <Link
-                  href="/auth/register"
-                  className="mt-8 flex items-center justify-center gap-1.5 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-center shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-                >
-                  Start 7-day free trial
-                  <ArrowRight className="w-4 h-4" />
-                </Link>
-                <p className="mt-3 text-center text-slate-500 text-xs">
-                  No credit card required to start.
-                </p>
-              </>
-            )}
+            <p className="mt-6 text-center text-slate-500 text-xs">
+              No credit card required to start. Cancel anytime.
+            </p>
           </div>
         </div>
       </section>

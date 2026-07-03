@@ -32,7 +32,7 @@ import { usePhone, usePhoneMode } from '@/hooks';
  *   - Days-left INFO is preserved inside the dropdown — the header row's
  *     subtitle reads "Free trial · Nd left" / "Subscription expired" /
  *     "Active subscription" depending on state, AND the Subscription action
- *     row's label adapts ("Manage subscription" vs "Subscribe $10/month").
+ *     row's label adapts ("Manage subscription" vs "Subscribe").
  *     So one extra click (open dropdown) surfaces all the same context.
  *   - Inside the dropdown:
  *       1. Header — email + status subtitle (informational, NOT clickable).
@@ -383,7 +383,7 @@ export const ProfileMenu = () => {
           >
             <CreditCard className="w-4 h-4 text-slate-500" aria-hidden="true" />
             <span className="flex-1">
-              {sub?.status === 'active' ? 'Manage subscription' : 'Subscribe $10/month'}
+              {sub?.status === 'active' ? 'Manage subscription' : 'Subscribe'}
             </span>
             <ExternalLink className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
           </a>
