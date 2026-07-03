@@ -4,6 +4,7 @@ import { db } from '@/lib/db';
 import { verifyIdToken } from '@/lib/google';
 import { sendNewSignupAdminEmail } from '@/lib/email';
 import { isEmailAllowed, isWaitlistMode } from '@/lib/auth';
+import { getClientIp } from '@/lib/ip';
 
 /**
  * POST /api/auth/apk-google-login — APK Google sign-in endpoint.
@@ -109,6 +110,8 @@ export async function POST(req: NextRequest) {
         // Dennis approved auto-create at dispatch time.
         const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
         const phoneToken = crypto.randomBytes(32).toString('base64url');
+        // IP capture (2026-07-03) — signup IP for the same-IP abuse flag.
+        const signupIp = getClientIp(req);
         // WAITLIST_MODE gate (2026-06-15). When engaged (default, pre-Play-
         // Store) suppress the trial grant — account mints, no trial/payment
         // entitlement. Flip WAITLIST_MODE=off in Coolify to restore. Original
@@ -122,6 +125,7 @@ export async function POST(req: NextRequest) {
             emailVerified: true,
             googleId,
             authProvider: 'google',
+            signupIp,
             // Original behavior (restored by WAITLIST_MODE=off): 14-day trial.
             ...(grantTrial
               ? { subscription: { create: { status: 'trial', trialEndsAt } } }
@@ -160,6 +164,19 @@ export async function POST(req: NextRequest) {
 
     // NOTE: no sessionVersion bump, no cookie, no supersedeWebSessions call.
     // The phone is a separate principal — see file header.
+
+    // IP capture (2026-07-03) — interactive Google login on the APK. Update
+    // lastLoginIp + lastActiveAt on every branch (a returning/b linked/c new).
+    // For branch c the row was just created with signupIp; this additionally
+    // records it as the last-login IP too. Best-effort — never block sign-in.
+    try {
+      await db.user.update({
+        where: { id: user.id },
+        data: { lastLoginIp: getClientIp(req), lastActiveAt: new Date() },
+      });
+    } catch (e) {
+      console.error('[APKGoogleLogin] IP capture update failed (non-fatal):', e);
+    }
 
     return NextResponse.json({
       phoneToken: user.phoneToken,

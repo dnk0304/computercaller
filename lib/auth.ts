@@ -174,6 +174,36 @@ export function isEmailAllowed(email: string | null | undefined): boolean {
 }
 
 /**
+ * Entitlement allowlist (2026-07-03, dispatch forge/trial-lock-and-admin-
+ * dashboard). SEPARATE list from isEmailAllowed on purpose:
+ *   - AUTH_ALLOWLIST (isEmailAllowed) gates who may LOG IN AT ALL while signups
+ *     are closed (pre-Play-Store).
+ *   - ENTITLEMENT_ALLOWLIST (this) gates who bypasses the PAID/trial lock and
+ *     always gets full app access even with no/expired subscription.
+ * They are intentionally decoupled: after Play-Store reopen, signups (auth
+ * allowlist) will be dropped while a small entitlement allowlist (Dennis +
+ * reviewer) may still want free access. Same env+hardcoded-fallback shape as
+ * isEmailAllowed so the NO-LOCKOUT guarantee is identical — a missing or
+ * fat-fingered ENTITLEMENT_ALLOWLIST can never lock Dennis or the Play reviewer
+ * out (they are in the hardcoded fallback). Read at call time so a Coolify edit
+ * takes effect on the next request with no redeploy.
+ *
+ * NOTE: Dennis is ALSO covered by the isAdmin flag in evaluateEntitlement rule
+ * (1), which is checked before this — this is the belt to that braces.
+ */
+const ENTITLEMENT_ALLOWLIST_FALLBACK = 'dennis.kotlenko@gmail.com,reviewer@computercaller.com';
+
+export function isEntitlementAllowed(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const raw = process.env.ENTITLEMENT_ALLOWLIST?.trim();
+  const list = (raw && raw.length > 0 ? raw : ENTITLEMENT_ALLOWLIST_FALLBACK)
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return list.includes(email.toLowerCase());
+}
+
+/**
  * WAITLIST_MODE — payment/free-trial kill switch (2026-06-15).
  *
  * Dennis: "make sure people dont get sent to whop, we need to take away the

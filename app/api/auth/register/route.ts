@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { signEmailToken, requireSameOrigin, isEmailAllowed, isWaitlistMode } from '@/lib/auth';
+import { getClientIp } from '@/lib/ip';
 import { sendVerificationEmail, sendNewSignupAdminEmail } from '@/lib/email';
 
 export async function POST(req: NextRequest) {
@@ -61,12 +62,17 @@ export async function POST(req: NextRequest) {
     // create time to skip the gate cleanly.
     const skipEmailVerification = !process.env.RESEND_API_KEY;
 
+    // IP capture (2026-07-03) — record the signup IP for the same-IP abuse flag
+    // in the admin dashboard. Flag-only, never auto-ban. See lib/ip.ts.
+    const signupIp = getClientIp(req);
+
     const user = await db.user.create({
       data: {
         email: email.toLowerCase(),
         passwordHash,
         phoneToken,
         emailVerified: skipEmailVerification,
+        signupIp,
         // Original behavior (restored by WAITLIST_MODE=off): provision a
         // 14-day trial on signup. Flagged, not deleted.
         ...(grantTrial

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { signAccessToken, requireSameOrigin, isEmailAllowed } from '@/lib/auth';
+import { getClientIp } from '@/lib/ip';
 
 export async function POST(req: NextRequest) {
   try {
@@ -57,9 +58,15 @@ export async function POST(req: NextRequest) {
     // validateSessionToken will compare against this newly-incremented row
     // and reject the stale token. Use `update`'s atomic increment so concurrent
     // logins serialise correctly at the DB level (no read-modify-write race).
+    // Fold IP capture into the existing atomic bump — one write. lastLoginIp +
+    // lastActiveAt updated on every successful interactive login (2026-07-03).
     const bumped = await db.user.update({
       where: { id: user.id },
-      data: { sessionVersion: { increment: 1 } },
+      data: {
+        sessionVersion: { increment: 1 },
+        lastLoginIp: getClientIp(req),
+        lastActiveAt: new Date(),
+      },
       select: { sessionVersion: true },
     });
 

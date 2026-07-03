@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { isEmailAllowed } from '@/lib/auth';
+import { getClientIp } from '@/lib/ip';
 
 /**
  * Dispatch #28 (2026-05-24) — APK sign-in endpoint.
@@ -89,6 +90,18 @@ export async function POST(req: NextRequest) {
       // with an empty token (which the relay would then reject as 4401).
       console.error(`[APKLogin] User ${user.id} has no phoneToken`);
       return NextResponse.json({ error: 'Account misconfigured — contact support' }, { status: 500 });
+    }
+
+    // IP capture (2026-07-03) — interactive APK password login. Record last
+    // login IP + last-active timestamp. Best-effort: never block the sign-in on
+    // a tracking write failure.
+    try {
+      await db.user.update({
+        where: { id: user.id },
+        data: { lastLoginIp: getClientIp(req), lastActiveAt: new Date() },
+      });
+    } catch (e) {
+      console.error('[APKLogin] IP capture update failed (non-fatal):', e);
     }
 
     return NextResponse.json({

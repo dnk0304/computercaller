@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionToken } from '@/lib/auth';
+import { db } from '@/lib/db';
+import { evaluateEntitlement } from '@/lib/entitlement';
 
 const PROTECTED = ['/app'];
 const AUTH_PAGES = ['/auth/login', '/auth/register', '/auth/verify-email', '/auth/forgot-password', '/auth/reset-password'];
@@ -82,6 +84,55 @@ export async function proxy(req: NextRequest) {
   if (PROTECTED.some(p => pathname.startsWith(p))) {
     if (!payload) {
       return bounceToLogin(pathname);
+    }
+
+    // ── Trial / subscription entitlement gate (2026-07-03) ─────────────────
+    //
+    // The session is valid (authenticated). Now check the user is ENTITLED to
+    // the paid product. One extra indexed PK lookup for isAdmin + email +
+    // subscription, fed to the shared pure evaluateEntitlement. If not allowed,
+    // redirect to the /subscribe lock screen. We do NOT clear the cookie — the
+    // user stays logged in, they just can't reach /app until they pay (or their
+    // trial is still live). /subscribe is NOT in this proxy's matcher, so the
+    // redirect can't loop.
+    //
+    // NO-LOCKOUT: /app/admin and every Dennis request pass because
+    // evaluateEntitlement rule (1) isAdmin short-circuits to allowed=true, and
+    // rule (2) covers ENTITLEMENT_ALLOWLIST emails.
+    //
+    // FAIL-OPEN by design: this proxy redirect is the UX layer, not the money
+    // chokepoint. If the DB lookup throws (transient blip), we let the request
+    // through rather than risk bouncing a legitimate paying user — including
+    // Dennis, whose isAdmin flag we could not read during the outage. The HARD
+    // enforcement lives in /api/auth/relay-ticket (fail-CLOSED): an unentitled
+    // user who slips past this redirect during a blip still cannot mint a relay
+    // ticket, so they cannot actually drive the phone. See relay-ticket route.
+    try {
+      const user = await db.user.findUnique({
+        where: { id: payload.userId },
+        select: {
+          isAdmin: true,
+          email: true,
+          subscription: {
+            select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
+          },
+        },
+      });
+      if (user) {
+        const ent = evaluateEntitlement({
+          isAdmin: user.isAdmin,
+          email: user.email,
+          subscription: user.subscription,
+        });
+        if (!ent.allowed) {
+          return NextResponse.redirect(new URL('/subscribe', req.url));
+        }
+      }
+      // user === null shouldn't happen (validateSessionToken already confirmed
+      // the row exists) — fail OPEN and let the request through if it does.
+    } catch (err) {
+      console.error('[proxy] entitlement lookup failed — failing open:', err);
+      // Fall through to NextResponse.next() below. relay-ticket still gates.
     }
   }
 

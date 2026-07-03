@@ -68,6 +68,19 @@ model User {
   // `prisma db push` applies this column cleanly (adds a NOT NULL column with a
   // default, no data loss). Gate any admin-only feature/route on this flag.
   isAdmin           Boolean   @default(false)
+  // IP tracking + same-IP abuse flagging (2026-07-03, dispatch forge/trial-lock
+  // -and-admin-dashboard). ALL nullable/additive — Coolify's pre-deploy
+  // `prisma db push` adds them cleanly with zero data loss (no NOT NULL without
+  // default, no drop). Trust model for the captured IP: see lib/ip.ts.
+  //   signupIp     — client IP at account-create time. Basis of the same-IP
+  //                  cluster count in GET /api/admin/customers. Never used to
+  //                  auto-ban; flag-only for Dennis to review.
+  //   lastLoginIp  — client IP at the most recent interactive login.
+  //   lastActiveAt — timestamp of the most recent interactive login (proxy for
+  //                  "last seen"; NOT bumped on every request, only on login).
+  signupIp          String?
+  lastLoginIp       String?
+  lastActiveAt      DateTime?
   subscription      Subscription?
   // Message templates (Item C1, 2026-05-27). Per-user reusable SMS bodies that
   // previously lived ONLY in browser localStorage (key `dnkdialer_templates`) and
@@ -147,6 +160,22 @@ model Subscription {
   status            String    @default("trial")  // trial | active | expired | cancelled
   trialEndsAt       DateTime
   currentPeriodEnd  DateTime?
+  // Customer-tracking columns (2026-07-03, dispatch forge/trial-lock-and-admin
+  // -dashboard). ALL nullable/defaulted → `prisma db push` additive, zero data
+  // loss.
+  //   convertedAt          — the moment this sub FIRST transitioned to 'active'
+  //                          (= "paying since"). Set once by the Whop webhook
+  //                          when convertedAt is still null; never overwritten.
+  //                          Historical rows stay null (UI shows "—").
+  //   paymentMethodAttached— best-effort "card on file". v1: true once status
+  //                          is 'active'. See Whop webhook route + report note
+  //                          re: confirming card-on-file during trial via Whop
+  //                          API.
+  //   canceledAt           — set when the webhook moves the sub to expired/
+  //                          cancelled. null while active/trial.
+  convertedAt           DateTime?
+  paymentMethodAttached Boolean  @default(false)
+  canceledAt            DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 }

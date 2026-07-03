@@ -101,6 +101,22 @@ export async function POST(req: NextRequest) {
         ? new Date(data.expires_at * 1000)
         : new Date(Date.now() + 31 * 24 * 60 * 60 * 1000);
 
+      // Card-on-file (2026-07-03). Best-effort: if a future Whop payload carries
+      // an explicit boolean (has_payment_method / payment_method present), honor
+      // it; otherwise v1 fallback — a sub that reached 'active' has a card on
+      // file (Whop's paid membership requires payment). Trial-only users stay
+      // false. See report note: confirming card-on-file DURING a trial needs a
+      // Whop API follow-up (GET /memberships/{id}); not blocking the dashboard.
+      const explicitCard =
+        typeof data?.has_payment_method === 'boolean'
+          ? (data.has_payment_method as boolean)
+          : typeof data?.user?.has_payment_method === 'boolean'
+            ? (data.user.has_payment_method as boolean)
+            : null;
+      const paymentMethodAttached = explicitCard ?? true;
+
+      const now = new Date();
+
       await db.subscription.upsert({
         where: { userId: user.id },
         create: {
@@ -109,19 +125,36 @@ export async function POST(req: NextRequest) {
           status: 'active',
           trialEndsAt: new Date(),
           currentPeriodEnd: periodEnd,
+          // Brand-new row created directly at 'active' → this IS the conversion.
+          convertedAt: now,
+          paymentMethodAttached,
+          canceledAt: null,
         },
         update: {
           whopMembershipId: data?.id,
           status: 'active',
           currentPeriodEnd: periodEnd,
+          paymentMethodAttached,
+          // Re-activation clears any prior cancellation marker.
+          canceledAt: null,
         },
+      });
+
+      // Stamp convertedAt exactly ONCE — the first time this sub becomes active.
+      // updateMany with convertedAt:null guard is idempotent: re-fires of
+      // went_valid/payment.succeeded won't overwrite the original "paying since"
+      // timestamp. (The create branch above already set it, so this only fills
+      // rows that transitioned trial→active via the update branch.)
+      await db.subscription.updateMany({
+        where: { userId: user.id, convertedAt: null },
+        data: { convertedAt: now },
       });
     }
 
     if (action === 'membership.went_invalid' || action === 'membership.expired') {
       await db.subscription.updateMany({
         where: { userId: user.id },
-        data: { status: 'expired' },
+        data: { status: 'expired', canceledAt: new Date() },
       });
     }
 

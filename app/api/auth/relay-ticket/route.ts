@@ -39,6 +39,7 @@ import {
   requireSameOrigin,
   getJwtSecret,
 } from '@/lib/auth';
+import { evaluateEntitlement } from '@/lib/entitlement';
 
 export async function POST(req: NextRequest) {
   try {
@@ -67,9 +68,18 @@ export async function POST(req: NextRequest) {
     }
     let user;
     try {
+      // Entitlement gate (2026-07-03): load isAdmin + email + subscription in
+      // the SAME lookup that already fetched sessionVersion — no extra query.
       user = await db.user.findUnique({
         where: { id: payload.userId },
-        select: { sessionVersion: true },
+        select: {
+          sessionVersion: true,
+          isAdmin: true,
+          email: true,
+          subscription: {
+            select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
+          },
+        },
       });
     } catch (e) {
       console.error('[RelayTicket] DB lookup failed:', e);
@@ -88,6 +98,25 @@ export async function POST(req: NextRequest) {
         { error: 'session_superseded' },
         { status: 409 },
       );
+    }
+
+    // ── HARD entitlement chokepoint (2026-07-03) ───────────────────────────
+    //
+    // This is the PRIMARY v1 enforcement point. The relay ticket is what the
+    // browser trades to open the WS and actually DRIVE the phone (place calls,
+    // send SMS). Gate it on entitlement so an unentitled user gets ZERO product
+    // value even if they somehow reach /app (e.g. the proxy redirect failed
+    // open during a DB blip). Fail-CLOSED here is correct: no ticket for a
+    // trial_expired / expired / none user. Admin + ENTITLEMENT_ALLOWLIST bypass
+    // via evaluateEntitlement rules (1)/(2), so Dennis is never blocked.
+    const ent = evaluateEntitlement({
+      isAdmin: user.isAdmin,
+      email: user.email,
+      subscription: user.subscription,
+    });
+    if (!ent.allowed) {
+      console.warn(`[RelayTicket] entitlement denied (${ent.reason}) for user ${payload.userId}`);
+      return NextResponse.json({ error: 'subscription_required' }, { status: 403 });
     }
 
     // 30 s is short enough that a leaked URL with ?ticket= in a logs/refer-

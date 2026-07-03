@@ -27,6 +27,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db } from '@/lib/db';
 import { signAccessToken, isEmailAllowed, isWaitlistMode } from '@/lib/auth';
+import { getClientIp } from '@/lib/ip';
 import {
   exchangeCodeForTokens,
   verifyIdToken,
@@ -138,6 +139,8 @@ export async function GET(req: NextRequest) {
         // crypto-random 32-byte base64url value in app code. Same generation
         // used in /api/auth/register so the format is uniform.
         const phoneToken = crypto.randomBytes(32).toString('base64url');
+        // IP capture (2026-07-03) — signup IP for the same-IP abuse flag.
+        const signupIp = getClientIp(req);
         user = await db.user.create({
           data: {
             email,
@@ -146,6 +149,7 @@ export async function GET(req: NextRequest) {
             emailVerified: true,
             googleId,
             authProvider: 'google',
+            signupIp,
             // Original behavior (restored by WAITLIST_MODE=off): 14-day trial.
             ...(grantTrial
               ? { subscription: { create: { status: 'trial', trialEndsAt } } }
@@ -171,9 +175,16 @@ export async function GET(req: NextRequest) {
     // Dispatch #27 model — bump sessionVersion before signing so any prior
     // token for this user (e.g. an old tab) is invalidated. Symmetric with
     // /api/auth/login.
+    // Fold IP capture into the bump — one write. This is a returning/linking/
+    // new interactive login on every branch (a/b/c), so lastLoginIp +
+    // lastActiveAt update here regardless of branch (2026-07-03).
     const bumped = await db.user.update({
       where: { id: user.id },
-      data: { sessionVersion: { increment: 1 } },
+      data: {
+        sessionVersion: { increment: 1 },
+        lastLoginIp: getClientIp(req),
+        lastActiveAt: new Date(),
+      },
       select: { sessionVersion: true },
     });
 
