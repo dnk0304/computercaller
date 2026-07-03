@@ -58,7 +58,10 @@ import { usePhone, useDashboardTab, usePhoneMode, type DashboardTab } from '@/ho
 // renders prose-style sections that need to scroll inside the shell.
 function shouldWrapInScrollContainer(pathname: string | null): boolean {
   if (!pathname) return false;
-  return pathname.startsWith('/app/settings');
+  // Settings and Admin are prose/table routes that scroll inside the shell.
+  // The dashboard is deliberately excluded — it owns its own no-scroll,
+  // column-based layout.
+  return pathname.startsWith('/app/settings') || pathname.startsWith('/app/admin');
 }
 
 // Header title in the chrome is product branding, not page state. The page-
