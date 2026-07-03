@@ -16,6 +16,90 @@ import { db } from '@/lib/db';
 
 const WEBHOOK_SECRET = process.env.WHOP_WEBHOOK_SECRET ?? '';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Known plan terms for product prod_cyc65yqHR5ilm (verified live via Whop admin
+// API, 2026-07-03). Whop plan IDs are stable identifiers. This map is used ONLY
+// as a fallback to size the paid period when the event carries NO explicit
+// period-end field — so a 90-day or 365-day term can never be silently
+// under-set to a month and lock a paying customer out early (entitlement rule 4:
+// active && currentPeriodEnd > now).
+const PLAN_TERM_DAYS: Record<string, number> = {
+  plan_1nEzOOzXxPDJC: 30, // Monthly — $10
+  plan_ZaT3fHVgy7s3e: 90, // 3-Month — $25
+  plan_wC4X437WlTdy3: 365, // Annual — $90
+};
+
+// Truly unknown plan id: fall back to ~monthly. Deliberately conservative — a
+// short period just means the sub re-validates sooner on the next Whop event,
+// never a wrongful lockout of a known long term (those are in PLAN_TERM_DAYS).
+const DEFAULT_TERM_DAYS = 31;
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+}
+
+/**
+ * Extract the plan id from a Whop membership webhook payload. Whop's schema has
+ * drifted across API versions, so read all known shapes defensively:
+ *   - `plan_id` (string)         — v2-era
+ *   - `plan` (string)            — plan id inline
+ *   - `plan` ({ id: string })    — newer nested plan object
+ */
+function extractPlanId(data: unknown): string | null {
+  const d = asRecord(data);
+  if (!d) return null;
+  if (typeof d.plan_id === 'string' && d.plan_id) return d.plan_id;
+  if (typeof d.plan === 'string' && d.plan) return d.plan;
+  const plan = asRecord(d.plan);
+  if (plan && typeof plan.id === 'string' && plan.id) return plan.id;
+  return null;
+}
+
+/**
+ * Coerce a Whop period-end value to a Date. Whop expresses the term end as
+ * either `expires_at` (unix SECONDS, v2 era; null when non-recurring) or
+ * `renewal_period_end` (current schema — "end of the current billing period";
+ * unix seconds OR ISO datetime string). Returns null when unusable.
+ */
+function coercePeriodEnd(value: unknown): Date | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    // Whop uses unix seconds (~1.7e9). Guard against a millisecond value
+    // (>1e12) just in case a future payload changes units.
+    const ms = value > 1e12 ? value : value * 1000;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return coercePeriodEnd(n);
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+/**
+ * Determine currentPeriodEnd for a membership.went_valid / payment.succeeded
+ * event, correct for ANY term (30 / 90 / 365-day). Priority:
+ *   1) explicit period end carried by the event — expires_at OR
+ *      renewal_period_end — but only if it is in the FUTURE (a went_valid with a
+ *      past period-end is a bad value that would instantly lock the user out);
+ *   2) known plan-id → term-days map (this product's 3 plans);
+ *   3) DEFAULT_TERM_DAYS for a truly unknown plan.
+ * Never throws — a webhook must not 500 on a missing/odd field.
+ */
+function computePeriodEnd(data: unknown, now: Date = new Date()): Date {
+  const d = asRecord(data);
+  const explicit =
+    coercePeriodEnd(d?.expires_at) ?? coercePeriodEnd(d?.renewal_period_end);
+  if (explicit && explicit.getTime() > now.getTime()) return explicit;
+
+  const planId = extractPlanId(data);
+  const days = (planId && PLAN_TERM_DAYS[planId]) || DEFAULT_TERM_DAYS;
+  return new Date(now.getTime() + days * DAY_MS);
+}
+
 function extractSignatureHex(headerValue: string | null): string | null {
   if (!headerValue) return null;
   const trimmed = headerValue.trim();
@@ -97,9 +181,11 @@ export async function POST(req: NextRequest) {
     if (!user) return NextResponse.json({ ok: true }); // user not registered yet
 
     if (action === 'membership.went_valid' || action === 'payment.succeeded') {
-      const periodEnd = data?.expires_at
-        ? new Date(data.expires_at * 1000)
-        : new Date(Date.now() + 31 * 24 * 60 * 60 * 1000);
+      // Term-correct period end for ANY plan (30/90/365-day). Trusts the event's
+      // explicit period end (expires_at | renewal_period_end) when present and in
+      // the future; otherwise derives the term from the plan id so a long term is
+      // never under-set to a month. See computePeriodEnd above.
+      const periodEnd = computePeriodEnd(data);
 
       // Card-on-file (2026-07-03). Best-effort: if a future Whop payload carries
       // an explicit boolean (has_payment_method / payment_method present), honor
