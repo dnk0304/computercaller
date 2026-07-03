@@ -24,6 +24,7 @@
 import React from 'react';
 import { Lock, ArrowRight, ShieldCheck, RefreshCw, LifeBuoy, LogOut } from 'lucide-react';
 import { clsx } from 'clsx';
+import { WhopEmbedCheckout } from './WhopEmbedCheckout';
 
 export type SubscribeLockedState = 'trial_expired' | 'expired' | 'cancelled' | 'none';
 
@@ -43,6 +44,13 @@ export interface SubscribeLockedProps {
   trialDays?: number;
   /** Support email; defaults to the app's real reply-to address. */
   supportEmail?: string;
+  /**
+   * Whop plan id (from NEXT_PUBLIC_WHOP_PLAN_ID). When provided, the in-page
+   * embedded checkout becomes the PRIMARY conversion surface and the external
+   * `whopCheckoutUrl` link drops to a secondary fallback. When absent (env
+   * unset), we render only the external "Subscribe" button — no embed, no crash.
+   */
+  planId?: string;
 }
 
 interface Copy {
@@ -84,9 +92,16 @@ export function SubscribeLocked({
   whopCheckoutUrl,
   trialDays,
   supportEmail = 'support@computercaller.com',
+  planId,
 }: SubscribeLockedProps) {
   const { headline, subtext } = resolveCopy(state, trialDays);
   const ctaLabel = state === 'expired' || state === 'cancelled' ? 'Reactivate' : 'Subscribe now';
+
+  // Embed is primary when a plan id is configured. The external Whop URL is a
+  // real link only when set (page passes '#' as a sentinel when the env is
+  // missing) — we never render a dead fallback link.
+  const hasEmbed = Boolean(planId);
+  const hasExternalUrl = Boolean(whopCheckoutUrl) && whopCheckoutUrl !== '#';
 
   const handleLogout = () => {
     // Best-effort logout, then land on the marketing page (mirrors ProfileMenu).
@@ -98,7 +113,7 @@ export function SubscribeLocked({
   };
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-50 px-4 py-10 font-sans">
+    <main className="relative flex min-h-screen items-center justify-center overflow-x-hidden bg-slate-50 px-4 py-10 font-sans">
       {/* Subtle brand wash — same palette as the app content slot. */}
       <div
         className="pointer-events-none absolute inset-0 bg-gradient-to-tr from-blue-50/60 via-indigo-50/30 to-purple-50/50"
@@ -107,7 +122,9 @@ export function SubscribeLocked({
 
       <section
         className={clsx(
-          'relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-xl shadow-slate-900/5',
+          'relative w-full rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-xl shadow-slate-900/5',
+          // The embed needs more breathing room than the plain CTA card.
+          hasEmbed ? 'max-w-lg' : 'max-w-md',
           'motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-300'
         )}
         aria-labelledby="subscribe-locked-heading"
@@ -134,19 +151,44 @@ export function SubscribeLocked({
           </p>
         </div>
 
-        {/* Primary CTA → Whop checkout */}
-        <a
-          href={whopCheckoutUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-        >
-          {ctaLabel}
-          <ArrowRight className="h-4 w-4" aria-hidden="true" />
-        </a>
-        <p className="mt-2 text-xs text-slate-400">
-          $10/month · cancel anytime
-        </p>
+        {hasEmbed ? (
+          <>
+            {/* PRIMARY conversion surface — in-page Whop embedded checkout.
+                planId is guaranteed non-null here (hasEmbed === Boolean(planId)). */}
+            <div className="mt-6 text-left">
+              <WhopEmbedCheckout planId={planId as string} accentColor="#3358d4" />
+            </div>
+            <p className="mt-3 text-xs text-slate-400">$10/month · cancel anytime</p>
+
+            {/* SECONDARY fallback — external Whop checkout, for anyone who'd
+                rather complete payment on Whop's own page. */}
+            {hasExternalUrl && (
+              <a
+                href={whopCheckoutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mx-auto mt-3 inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-slate-500 transition-colors hover:text-slate-800 focus:outline-none focus-visible:underline"
+              >
+                Prefer to check out on Whop?
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </a>
+            )}
+          </>
+        ) : (
+          <>
+            {/* Primary CTA → external Whop checkout (embed not configured). */}
+            <a
+              href={whopCheckoutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            >
+              {ctaLabel}
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            </a>
+            <p className="mt-2 text-xs text-slate-400">$10/month · cancel anytime</p>
+          </>
+        )}
 
         {/* Already-subscribed escape hatch — the Whop webhook can lag a few
             seconds after payment, so give the user a manual re-check. */}

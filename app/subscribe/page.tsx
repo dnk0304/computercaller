@@ -96,6 +96,10 @@ export default async function SubscribePage() {
   }
 
   const whopCheckoutUrl = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '#';
+  // Plan id for the in-page embedded checkout (Wave 3, 2026-07-03). When set,
+  // SubscribeLocked makes the embed the primary surface and keeps the external
+  // URL above as a fallback; when unset, it renders the external button only.
+  const whopPlanId = process.env.NEXT_PUBLIC_WHOP_PLAN_ID || undefined;
 
   // True trial LENGTH in whole days (trialEndsAt - subscription.createdAt),
   // derived rather than hard-coded so the "Your N-day free trial has ended"
@@ -113,6 +117,7 @@ export default async function SubscribePage() {
       state={toLockedState(ent.state)}
       whopCheckoutUrl={whopCheckoutUrl}
       trialDays={trialDays}
+      planId={whopPlanId}
     />
   );
 }

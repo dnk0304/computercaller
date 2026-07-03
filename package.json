@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@whop/checkout": "^0.2.0",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "html5-qrcode": "^2.3.8",
