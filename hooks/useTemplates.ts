@@ -23,7 +23,9 @@ import { TEMPLATE_LIMIT, type TemplateDTO } from '@/lib/templates';
 // list as empty SILENTLY — these surfaces (carousel, phone-mode strip) can
 // mount pre-auth and must never crash or toast an error.
 //
-// The cap (TEMPLATE_LIMIT = 15) is imported, never hardcoded.
+// The cap is the caller's EFFECTIVE limit as returned by the GET (trial=3,
+// paying=15); TEMPLATE_LIMIT is imported only as the pre-fetch seed / fallback,
+// never hardcoded as the live cap. (Wave 3, 2026-07-03 — trial template caps.)
 // ---------------------------------------------------------------------------
 
 // Old localStorage shape — read ONLY by the one-time carry-over import below.
@@ -53,7 +55,8 @@ function broadcastChange() {
 // 401 sentinel so the fetch helper can distinguish "logged out" (preserve the
 // legacy key) from "empty list" (safe to import / retire the key).
 const UNAUTHORIZED = Symbol('unauthorized');
-type FetchResult = TemplateDTO[] | typeof UNAUTHORIZED;
+type FetchSuccess = { list: TemplateDTO[]; limit: number };
+type FetchResult = FetchSuccess | typeof UNAUTHORIZED;
 
 async function fetchTemplates(signal?: AbortSignal): Promise<FetchResult> {
   const res = await fetch('/api/templates', {
@@ -62,8 +65,16 @@ async function fetchTemplates(signal?: AbortSignal): Promise<FetchResult> {
   });
   if (res.status === 401) return UNAUTHORIZED;
   if (!res.ok) throw new Error(`GET /api/templates failed: ${res.status}`);
-  const data = (await res.json()) as { templates: TemplateDTO[] };
-  return Array.isArray(data.templates) ? data.templates : [];
+  const data = (await res.json()) as { templates?: TemplateDTO[]; limit?: number };
+  return {
+    list: Array.isArray(data.templates) ? data.templates : [],
+    // The server (Forge wave 2) returns the caller's EFFECTIVE limit — 3 for a
+    // non-paying/trial user, 15 (TEMPLATE_LIMIT) for paying/privileged. We read
+    // it rather than assume the full cap so the UI can honestly show "3 / 3" and
+    // nudge trial users to subscribe. Falls back to the full const if an older
+    // server ever omits the field.
+    limit: typeof data.limit === 'number' ? data.limit : TEMPLATE_LIMIT,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -164,9 +175,13 @@ export interface UseTemplatesResult {
   loading: boolean;
   /** Current count. */
   count: number;
-  /** True when count >= TEMPLATE_LIMIT — the manager disables "New" at this point. */
+  /** True when count >= the effective limit — the manager disables "New" at this point. */
   atCap: boolean;
-  /** The cap value, re-exported so consumers can render "X / 15" without importing the const. */
+  /**
+   * The caller's EFFECTIVE cap as reported by the server (3 for trial/non-paying,
+   * 15 for paying/privileged). Consumers render "count / limit" and decide
+   * whether to show the "subscribe for unlimited" nudge (only when limit <= 3).
+   */
   limit: number;
   /**
    * Create a template. Resolves the created DTO on 201, or 'limit' if the
@@ -191,6 +206,10 @@ export interface UseTemplatesResult {
 export function useTemplates(): UseTemplatesResult {
   const [templates, setTemplates] = useState<TemplateDTO[]>([]);
   const [loading, setLoading] = useState(true);
+  // Effective cap from the server. Seeded with the full const so the pre-fetch
+  // render never spuriously reports "at cap"; overwritten by the first GET with
+  // the caller's real limit (3 trial / 15 paying).
+  const [limit, setLimit] = useState<number>(TEMPLATE_LIMIT);
 
   // Guards the one-time carry-over import so it runs at most once per mount
   // lifecycle (the localStorage key removal guarantees once-per-browser; this
@@ -217,7 +236,8 @@ export function useTemplates(): UseTemplatesResult {
           return;
         }
 
-        let list = result;
+        let list = result.list;
+        let effectiveLimit = result.limit;
 
         // One-time carry-over import — only when we have a real (possibly empty)
         // authenticated list. runCarryOverImport itself enforces server-empty.
@@ -229,12 +249,18 @@ export function useTemplates(): UseTemplatesResult {
             // rather than our local POST order. Falls back to merge if the
             // refetch fails.
             const after = await fetchTemplates(controller.signal);
-            list = after === UNAUTHORIZED ? [...list, ...imported] : after;
+            if (after === UNAUTHORIZED) {
+              list = [...list, ...imported];
+            } else {
+              list = after.list;
+              effectiveLimit = after.limit;
+            }
           }
         }
 
         if (!cancelled) {
           setTemplates(list);
+          setLimit(effectiveLimit);
           setLoading(false);
         }
       } catch {
@@ -258,7 +284,10 @@ export function useTemplates(): UseTemplatesResult {
       try {
         const result = await fetchTemplates();
         if (result === UNAUTHORIZED) return; // keep current state; don't wipe on a transient 401
-        if (!cancelled) setTemplates(result);
+        if (!cancelled) {
+          setTemplates(result.list);
+          setLimit(result.limit);
+        }
       } catch {
         // Ignore transient refetch failures — keep last-good state.
       }
@@ -385,8 +414,8 @@ export function useTemplates(): UseTemplatesResult {
     templates,
     loading,
     count: templates.length,
-    atCap: templates.length >= TEMPLATE_LIMIT,
-    limit: TEMPLATE_LIMIT,
+    atCap: templates.length >= limit,
+    limit,
     create,
     update,
     remove,

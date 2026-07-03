@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Edit2, Copy, Trash2, X, Check, FileText } from 'lucide-react';
+import { Plus, Edit2, Copy, Trash2, X, Check, FileText, Sparkles, ArrowRight } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
@@ -42,6 +42,16 @@ export const Templates = () => {
   // OR a 409 from a two-tab race). Calm, slate-toned — no alarm chip.
   const capMessage = `You've reached the maximum of ${limit} templates. Delete one to add another.`;
   const [showCapNotice, setShowCapNotice] = useState(false);
+
+  // The cap surface splits two ways depending on WHY the user is capped:
+  //  - Trial/non-paying users hit a low cap (limit <= 3) that a subscription
+  //    lifts → show an honest "N/N used — subscribe for unlimited" nudge with a
+  //    CTA to /subscribe. This is the conversion moment, so it's the one place
+  //    the cap notice gets a blue (not slate) treatment.
+  //  - Paying users at the real 15 cap can't buy their way past it → keep the
+  //    calm slate "delete one to add another" message, NO subscribe CTA.
+  const capReached = atCap || showCapNotice;
+  const showUpgradeNudge = capReached && limit <= 3;
 
   // Inline delete confirmation: hold the id of the template currently in the "click to confirm" state.
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
@@ -182,16 +192,40 @@ export const Templates = () => {
         </div>
       </div>
 
-      {/* Cap notice — slate-toned, no alarm. Shown at the cap, or after a 409 race. */}
-      {(atCap || showCapNotice) && (
-        <div
-          id="template-cap-notice"
-          role="status"
-          className="mb-6 flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
-        >
-          <FileText className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400" aria-hidden="true" />
-          <span>{capMessage}</span>
-        </div>
+      {/* Cap notice. Shown at the cap, or after a 409 race. Two variants:
+          upgrade nudge (trial) vs calm "delete one" (paying). */}
+      {capReached && (
+        showUpgradeNudge ? (
+          <div
+            id="template-cap-notice"
+            role="status"
+            className="mb-6 flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex items-start gap-2.5">
+              <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" aria-hidden="true" />
+              <p className="text-sm text-blue-900">
+                <span className="font-semibold tabular-nums">{count}/{limit} templates used</span>
+                {' — subscribe for unlimited templates.'}
+              </p>
+            </div>
+            <a
+              href="/subscribe"
+              className="inline-flex flex-shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+            >
+              Subscribe
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            </a>
+          </div>
+        ) : (
+          <div
+            id="template-cap-notice"
+            role="status"
+            className="mb-6 flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
+          >
+            <FileText className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400" aria-hidden="true" />
+            <span>{capMessage}</span>
+          </div>
+        )
       )}
 
       {loading ? (

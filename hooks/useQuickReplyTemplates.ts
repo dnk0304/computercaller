@@ -12,7 +12,9 @@ import { QUICK_REPLY_LIMIT, type QuickReplyTemplateDTO } from '@/lib/quickReplyT
 //
 // Dispatch CC-quickreply-templates-mgmt-v2 (2026-06-03, Pixel). Built against
 // Forge's contract in lib/quickReplyTemplates.ts + app/api/quick-replies/**
-// (commit 7a1f6c5). Cap = QUICK_REPLY_LIMIT (5) — imported, NEVER hardcoded.
+// (commit 7a1f6c5). Cap = the caller's EFFECTIVE limit from the GET (trial=1,
+// paying=5); QUICK_REPLY_LIMIT is imported only as the pre-fetch seed/fallback,
+// NEVER hardcoded as the live cap. (Wave 3, 2026-07-03 — trial quick-reply cap.)
 //
 // API contract (verbatim):
 //   GET    /api/quick-replies                      → 200 { quickReplies: DTO[] }  (sortOrder ASC, createdAt DESC)
@@ -37,7 +39,8 @@ function broadcastChange() {
 // 401 sentinel so the fetch helper can distinguish "logged out" (silent) from
 // "empty list" (also silent, but a real authenticated empty).
 const UNAUTHORIZED = Symbol('unauthorized');
-type FetchResult = QuickReplyTemplateDTO[] | typeof UNAUTHORIZED;
+type FetchSuccess = { list: QuickReplyTemplateDTO[]; limit: number };
+type FetchResult = FetchSuccess | typeof UNAUTHORIZED;
 
 async function fetchQuickReplies(signal?: AbortSignal): Promise<FetchResult> {
   const res = await fetch('/api/quick-replies', {
@@ -46,8 +49,15 @@ async function fetchQuickReplies(signal?: AbortSignal): Promise<FetchResult> {
   });
   if (res.status === 401) return UNAUTHORIZED;
   if (!res.ok) throw new Error(`GET /api/quick-replies failed: ${res.status}`);
-  const data = (await res.json()) as { quickReplies: QuickReplyTemplateDTO[] };
-  return Array.isArray(data.quickReplies) ? data.quickReplies : [];
+  const data = (await res.json()) as { quickReplies?: QuickReplyTemplateDTO[]; limit?: number };
+  return {
+    list: Array.isArray(data.quickReplies) ? data.quickReplies : [],
+    // Effective cap from the server — 1 for a non-paying/trial user, 5
+    // (QUICK_REPLY_LIMIT) for paying/privileged. Read, not assumed, so the UI
+    // can show "1 / 1" and nudge trial users. Falls back to the full const if an
+    // older server omits the field.
+    limit: typeof data.limit === 'number' ? data.limit : QUICK_REPLY_LIMIT,
+  };
 }
 
 export interface UseQuickReplyTemplatesResult {
@@ -56,9 +66,13 @@ export interface UseQuickReplyTemplatesResult {
   loading: boolean;
   /** Current count. */
   count: number;
-  /** True when count >= QUICK_REPLY_LIMIT — the manager disables "New" at this point. */
+  /** True when count >= the effective limit — the manager disables "New" at this point. */
   atCap: boolean;
-  /** The cap value, re-exported so consumers can render "X / 5" without importing the const. */
+  /**
+   * The caller's EFFECTIVE cap as reported by the server (1 for trial/non-paying,
+   * 5 for paying/privileged). Consumers render "count / limit" and decide whether
+   * to show the "subscribe for unlimited" nudge (only when limit <= 3).
+   */
   limit: number;
   /**
    * Create a quick reply. Resolves the created DTO on 201, or 'limit' if the
@@ -81,6 +95,10 @@ export interface UseQuickReplyTemplatesResult {
 export function useQuickReplyTemplates(): UseQuickReplyTemplatesResult {
   const [quickReplies, setQuickReplies] = useState<QuickReplyTemplateDTO[]>([]);
   const [loading, setLoading] = useState(true);
+  // Effective cap from the server. Seeded with the full const so the pre-fetch
+  // render never spuriously reports "at cap"; overwritten by the first GET with
+  // the caller's real limit (1 trial / 5 paying).
+  const [limit, setLimit] = useState<number>(QUICK_REPLY_LIMIT);
 
   // Initial load. Runs once on mount.
   useEffect(() => {
@@ -98,7 +116,8 @@ export function useQuickReplyTemplates(): UseQuickReplyTemplatesResult {
           return;
         }
         if (!cancelled) {
-          setQuickReplies(result);
+          setQuickReplies(result.list);
+          setLimit(result.limit);
           setLoading(false);
         }
       } catch {
@@ -122,7 +141,10 @@ export function useQuickReplyTemplates(): UseQuickReplyTemplatesResult {
       try {
         const result = await fetchQuickReplies();
         if (result === UNAUTHORIZED) return; // keep current state; don't wipe on a transient 401
-        if (!cancelled) setQuickReplies(result);
+        if (!cancelled) {
+          setQuickReplies(result.list);
+          setLimit(result.limit);
+        }
       } catch {
         // Ignore transient refetch failures — keep last-good state.
       }
@@ -218,8 +240,8 @@ export function useQuickReplyTemplates(): UseQuickReplyTemplatesResult {
     quickReplies,
     loading,
     count: quickReplies.length,
-    atCap: quickReplies.length >= QUICK_REPLY_LIMIT,
-    limit: QUICK_REPLY_LIMIT,
+    atCap: quickReplies.length >= limit,
+    limit,
     create,
     update,
     remove,

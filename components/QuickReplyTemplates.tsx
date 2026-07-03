@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Edit2, Trash2, X, Check, MessageSquareReply } from 'lucide-react';
+import { Plus, Edit2, Trash2, X, Check, MessageSquareReply, Sparkles, ArrowRight } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
 import type { QuickReplyTemplateDTO } from '@/lib/quickReplyTemplates';
@@ -47,6 +47,13 @@ export function QuickReplyTemplates() {
 
   const capMessage = `You've reached the maximum of ${limit} quick replies. Delete one to add another.`;
   const [showCapNotice, setShowCapNotice] = useState(false);
+
+  // Same split as the SMS-templates manager: trial cap (limit <= 3, here 1) gets
+  // the blue "subscribe for unlimited" nudge; the paying 5-cap gets the calm
+  // slate "delete one" message with no CTA. See Templates.tsx for the rationale.
+  const capReached = atCap || showCapNotice;
+  const showUpgradeNudge = capReached && limit <= 3;
+  const nudgeNoun = count === 1 ? 'quick reply' : 'quick replies';
 
   // Inline delete confirmation: hold the id of the item in "click to confirm" state.
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
@@ -185,18 +192,43 @@ export function QuickReplyTemplates() {
         </div>
       </div>
 
-      {(atCap || showCapNotice) && (
-        <div
-          id="quick-reply-cap-notice"
-          role="status"
-          className="mb-6 flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
-        >
-          <MessageSquareReply
-            className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400"
-            aria-hidden="true"
-          />
-          <span>{capMessage}</span>
-        </div>
+      {capReached && (
+        showUpgradeNudge ? (
+          <div
+            id="quick-reply-cap-notice"
+            role="status"
+            className="mb-6 flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex items-start gap-2.5">
+              <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" aria-hidden="true" />
+              <p className="text-sm text-blue-900">
+                <span className="font-semibold tabular-nums">
+                  {count}/{limit} {nudgeNoun} used
+                </span>
+                {' — subscribe for unlimited.'}
+              </p>
+            </div>
+            <a
+              href="/subscribe"
+              className="inline-flex flex-shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+            >
+              Subscribe
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            </a>
+          </div>
+        ) : (
+          <div
+            id="quick-reply-cap-notice"
+            role="status"
+            className="mb-6 flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600"
+          >
+            <MessageSquareReply
+              className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400"
+              aria-hidden="true"
+            />
+            <span>{capMessage}</span>
+          </div>
+        )
       )}
 
       {loading ? (
