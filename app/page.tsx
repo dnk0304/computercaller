@@ -236,7 +236,7 @@ const faqs = [
     // built from this same array. Flag off → paid answer with the three plans.
     a: WAITLIST_MODE
       ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
-      : "ComputerCaller comes with a 7-day free trial — no credit card required. After the trial, choose the plan that suits you: $9/month, $25 for 3 months (about $8.33/month), or $90/year (about $7.50/month) — billed per the plan you pick, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
+      : "ComputerCaller comes with a 7-day free trial. After the trial, choose the plan that suits you: $9/month, $25 for 3 months (about $8.33/month), or $90/year (about $7.50/month) — billed per the plan you pick, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -1168,7 +1168,7 @@ export default function LandingPage() {
                 'Real-time notification mirror',
                 'Unlimited contacts & history',
                 'Works from any device, anywhere',
-                '7-day free trial, no card to start',
+                '7-day free trial',
               ].map((f) => (
                 <li key={f} className="flex items-start gap-2.5">
                   <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
@@ -1179,7 +1179,7 @@ export default function LandingPage() {
               ))}
             </ul>
             <p className="mt-6 text-center text-slate-500 text-xs">
-              No credit card required to start. Cancel anytime.
+              Cancel anytime.
             </p>
           </div>
         </div>
@@ -1291,7 +1291,7 @@ export default function LandingPage() {
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
             {WAITLIST_MODE
               ? "We're opening the doors soon. Sign up on the waitlist — get a 30-day free trial when we launch."
-              : '7 days free. No credit card. Pair your phone and you’re calling from your browser in under two minutes.'}
+              : '7 days free. Cancel anytime. Pair your phone and you’re calling from your browser in under two minutes.'}
           </p>
           {WAITLIST_MODE ? (
             <div className="mt-8 mx-auto max-w-xl">
