@@ -96,10 +96,12 @@ export const PLAN_TIERS: readonly PlanTierDisplay[] = [
     priceValue: 90,
     period: 'per year',
     perMonth: '~$7.50/mo',
-    savings: 'Save 17%',
+    // Dollar figure alongside the %: $9×12 = $108, less $90 = $18 saved a year
+    // (that $18 IS the 17%). Shown on both the landing cards and the lock screen.
+    savings: 'Save $18/yr (17%)',
     badge: 'Best value',
     featured: true,
-    a11yLabel: 'Annual plan, $90 per year, about $7.50 per month, best value, save 17 percent.',
+    a11yLabel: 'Annual plan, $90 per year, about $7.50 per month, best value, save 17 percent — 18 dollars a year.',
   },
 ];
 

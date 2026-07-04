@@ -25,11 +25,6 @@ import {
   Lock,
   ShieldCheck,
   Apple,
-  UserPlus,
-  Download,
-  Link2,
-  CheckCircle2,
-  Copy,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import Reviews from '@/components/Reviews';
@@ -51,39 +46,40 @@ import { PLAN_TIERS } from '@/lib/pricing';
  * - JSON-LD structured data (SoftwareApplication + Organization + FAQPage) is
  *   injected via next/script using strategy="afterInteractive" so it ships in
  *   the rendered HTML and Google can read it during the first crawl.
- * - Hero image removed per Dennis's explicit request; the hero is now copy-led,
- *   with the value prop carrying the visual weight via large tracking-tight
- *   type and a subtle blue→white gradient surface.
+ * - Hero leads with a real product showcase (2026-07-04 redesign): the H1 sits
+ *   centered, and directly below the CTAs + proof strip a full-width framed
+ *   product shot (the ComputerCaller dashboard on a laptop beside a paired
+ *   phone) grounds the promise in something you can SEE. Stripe/Linear pattern:
+ *   text hero → big product shot. Art-directed crop swaps at the sm breakpoint.
  * - FAQ uses native <details>/<summary> rather than a JS accordion library —
  *   keyboard-accessible by default, no dep cost, fully crawlable (Google reads
  *   inside <details> for rich snippets), and the open state animates with CSS
  *   only. We layer in arrow toggling via state to keep the icon swap snappy.
  *
- * Section order (top→bottom):
- *   1. Hero
+ * Section order (top→bottom) — 2026-07-04 consolidation, 15 → ~10 blocks. Setup
+ * is now told ONCE (Getting-started + the headset tip folded into How It Works;
+ * Work-faster folded into Features; the standalone magic-moment band dropped now
+ * that the hero carries a real product visual; Use Cases + Who It's For merged):
+ *   1. Hero + product showcase + proof strip
  *   2. Privacy by default        ← differentiator vs. WhatsApp/Zoom/Skype
- *   3. Features (KSP)            ← lifted from #5 so the "what's in the box"
- *                                  reveal lands inside the first scroll-and-a-half
- *   3b. Magic-moment band        ← single hero-grade product visual (2026-05-30)
- *   4. How It Works              ← three steps + 4-step recap row
- *   4b. A closer look            ← recommended-setup tip + 2 feature spotlights
- *                                  (Messages/templates + Phone Mode)
- *   5. Use Cases
- *   6. Who It's For
- *   7. Pricing
- *   8. FAQ                       ← includes new privacy Q&A; mirrored in JSON-LD
- *   9. Reviews (component)
+ *   3. Features (KSP)            ← absorbs "Work faster"; 2 product spotlights
+ *   4. How It Works              ← absorbs Getting started + headset tip
+ *   5. Use Cases + Who It's For  ← merged into one "who / when" block
+ *   6. Pricing                   ← $ savings anchor + risk-reversal band
+ *   7. FAQ                       ← mirrored in JSON-LD FAQPage
+ *   8. Reviews (component)
+ *   9. Why we built this
  *   10. Final CTA
  *   11. Footer
  *
- * Background alternation: hero(gradient) → privacy(white) → features(slate-50) →
- * magic-moment(white) → how-it-works(slate-50) → closer-look(white) →
- * use-cases(slate-50) → who-its-for(white) → pricing(slate-50) → faq(white) →
- * cta(gradient) → footer(slate-50). Every section seam is a real value seam,
- * never two white surfaces in a row.
+ * Background alternation (re-derived after the merges). The tail is fixed:
+ * <Reviews /> ships slate-50, so FAQ (before) and About (after) must be white.
+ * Working back from there forces the whole chain:
+ * hero(gradient) → privacy(slate-50) → features(white) → how-it-works(slate-50) →
+ * use-cases+who(white) → pricing(slate-50) → faq(white) → reviews(slate-50) →
+ * about(white) → cta(gradient) → footer(slate-50). No two identical surfaces
+ * ever sit adjacent — every seam is a real value seam.
  */
-
-const PRIMARY_KEYWORD = 'Make phone calls from your computer.';
 
 const useCases = [
   {
@@ -147,57 +143,6 @@ const howItWorks = [
       "Dial any phone number from your computer. Your phone places the call through your existing carrier. You hear and speak through your laptop's microphone and speakers.",
   },
 ];
-
-// Getting-started quick-promise strip (rendered high on the page, right under
-// the hero). Deliberately the SHORT onboarding beat — Register · Download ·
-// Connect — distinct from the deeper conceptual "How it works" explainer lower
-// down. `n` is a hand-set 1·2·3 (only three items, no reorder risk).
-const gettingStarted = [
-  {
-    n: 1,
-    icon: UserPlus,
-    title: 'Register',
-    body: 'Create your account in under a minute.',
-  },
-  {
-    n: 2,
-    icon: Download,
-    title: 'Download the app',
-    body: 'Install ComputerCaller on your phone.',
-  },
-  {
-    n: 3,
-    icon: Link2,
-    title: 'Connect PC to phone',
-    body: 'Link the two and you are ready to call.',
-  },
-] as const;
-
-// Work-efficiency outcomes (outcome-led, not feature-led). Rendered as
-// horizontal icon-left rows in a 2-col grid so the layout reads differently
-// from the icon-top Features cards and the image spotlights.
-const workFaster = [
-  {
-    icon: MessageSquare,
-    title: 'Create message templates',
-    body: 'Send your go-to replies in one click.',
-  },
-  {
-    icon: Copy,
-    title: 'Copy and paste numbers',
-    body: 'Dial straight from any list or document.',
-  },
-  {
-    icon: Phone,
-    title: 'Receive and make calls',
-    body: 'Full call control from your keyboard.',
-  },
-  {
-    icon: Zap,
-    title: 'All without lag',
-    body: 'A stable connection that keeps up with you.',
-  },
-] as const;
 
 const whoItsFor = [
   {
@@ -448,7 +393,7 @@ export default function LandingPage() {
             'linear-gradient(to bottom, #eef6fc 0%, #f6fafd 55%, #ffffff 100%)',
         }}
       >
-        <div className="max-w-5xl mx-auto px-6 pt-20 pb-24 sm:pt-28 sm:pb-32 text-center">
+        <div className="max-w-5xl mx-auto px-6 pt-16 pb-0 sm:pt-20 text-center">
           {/* iOS-detected soft callout. Renders only when navigator.userAgent
               matches iPhone/iPad/iPod (post-hydration — server skips it).
               Soft, discoverable, dismissible-by-just-not-clicking. The pill
@@ -496,16 +441,17 @@ export default function LandingPage() {
           )}
 
           <h1 className="mt-8 text-4xl sm:text-5xl md:text-6xl font-semibold tracking-[-0.03em] leading-[1.05] text-slate-900 text-balance">
-            Make phone calls from your phone{' '}
+            Make phone calls{' '}
             <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-              — from your computer.
+              from your computer.
             </span>
           </h1>
 
           <p className="mt-6 text-lg sm:text-xl text-slate-600 max-w-2xl mx-auto leading-relaxed">
-            ComputerCaller connects your phone to your computer so you can
-            dial, talk, and message from your browser — without picking up
-            your phone.
+            Pair your Android phone once — then make calls, send texts, and
+            clear notifications straight from your computer. The call still runs
+            through your own number and carrier; you just dial, talk, and type
+            from your browser.
           </p>
 
           {WAITLIST_MODE ? (
@@ -541,21 +487,19 @@ export default function LandingPage() {
           )}
 
           {/* Android availability — the app is already live on Google Play,
-              so we surface the official store badge as a secondary CTA directly
-              under the primary hero action. Rendered UNCONDITIONALLY (outside
-              the WAITLIST_MODE ternary above) so it appears in both waitlist and
-              normal modes, and keeps showing if waitlist mode later flips off.
+              so we surface the official store badge directly under the primary
+              hero action. Rendered UNCONDITIONALLY (outside the WAITLIST_MODE
+              ternary above) so it appears in both waitlist and normal modes.
               The asset is Google's official, unmodified "Get it on Google Play"
               artwork — brand-guideline compliant (no recolor/redraw/re-proportion;
-              the required clear-space is baked into the PNG itself). */}
-          <div className="mt-6 flex flex-col items-center gap-2">
-            <p className="text-sm font-medium text-slate-500">
-              Already live on Android
-            </p>
+              the required clear-space is baked into the PNG itself). It links to
+              the real, live listing (com.dnkdialer.companion). */}
+          <div className="mt-6 flex justify-center">
             <a
               href="https://play.google.com/store/apps/details?id=com.dnkdialer.companion&hl=en"
               target="_blank"
               rel="noopener noreferrer"
+              aria-label="Available on Google Play — ComputerCaller companion app"
               className="inline-block rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
             >
               <Image
@@ -568,141 +512,78 @@ export default function LandingPage() {
             </a>
           </div>
 
-          {/* Trust strip — three short factual claims. Bullets are visual,
-              the items themselves are an unordered list semantically. The
-              third chip swaps an emerald Check for a slate Lock icon because
-              the privacy claim is a different category from the first two
-              (negative claim — "we don't do X" — not a positive feature). */}
-          <ul className="mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-slate-500">
-            <li className="inline-flex items-center gap-2">
-              <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
-              No new phone number
-            </li>
-            <li className="inline-flex items-center gap-2">
-              <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
-              Works with any carrier
-            </li>
-            <li className="inline-flex items-center gap-2">
-              <Lock className="w-4 h-4 text-slate-500" aria-hidden="true" />
-              We never store your calls, SMS, or contacts
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      {/* Getting started — quick-promise onboarding strip. Sits high on the
-          page, directly under the hero, so the "how hard is this?" objection is
-          answered before the reader hits features. Deliberately light: a 3-step
-          numbered band (semantic <ol>) capped by a blue "Done" outcome beat.
-          This is the QUICK promise; the deeper "How it works" section lower down
-          keeps the full mechanics. White surface continues the hero's white base
-          (the blessed gradient→white seam) before Work-faster (slate) restarts
-          the white↔slate alternation. */}
-      <section id="getting-started" className="border-t border-slate-200 bg-white scroll-mt-24">
-        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
-          <div className="max-w-2xl mb-12">
-            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-              Getting started
-            </p>
-            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
-              Up and running in three steps.
-            </h2>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-4 lg:items-stretch">
-            <ol className="grid gap-4 sm:grid-cols-3 lg:col-span-3">
-              {gettingStarted.map(({ n, icon: Icon, title, body }) => (
-                <li
-                  key={n}
-                  className="relative flex flex-col p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
-                >
-                  <div className="flex items-center gap-3 mb-5">
-                    <span className="w-9 h-9 rounded-lg bg-blue-600 text-white text-sm font-semibold flex items-center justify-center tabular-nums">
-                      <span className="sr-only">Step </span>
-                      {n}
-                    </span>
-                    <span className="flex-1 h-px bg-slate-200" aria-hidden="true" />
-                    <span className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
-                      <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
-                    </span>
-                  </div>
-                  <h3 className="font-semibold text-slate-900 mb-1.5 text-lg">
-                    {title}
-                  </h3>
-                  <p className="text-slate-600 text-sm leading-relaxed">{body}</p>
-                </li>
-              ))}
-            </ol>
-
-            {/* "Done" cap — a blue outcome beat that closes the band. Not a
-                numbered step; the payoff. On desktop it sits as the 4th column;
-                on mobile it stacks under the three steps. */}
-            <div className="relative flex flex-col justify-center p-6 rounded-2xl bg-gradient-to-b from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-900/10">
-              <div className="flex items-center gap-2 mb-3">
-                <CheckCircle2 className="w-6 h-6 text-white" aria-hidden="true" />
-                <span className="font-semibold text-lg">Done</span>
-              </div>
-              <p className="text-sm leading-relaxed text-blue-50/90">
-                Dial, talk, and message straight from your computer.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Work faster — outcome-led efficiency showcase. Sits high (right after
-          the getting-started strip) to sell the payoff before the feature
-          inventory. Slate-50 surface restarts the white↔slate rhythm after the
-          white getting-started section. Layout is deliberately different from
-          the icon-top Features cards and the image spotlights: horizontal
-          icon-left rows in a 2-col grid. */}
-      <section id="work-faster" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
-        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
-          <div className="max-w-2xl mb-12">
-            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-              Work faster
-            </p>
-            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
-              Increase your work efficiency.
-            </h2>
-            <p className="mt-4 text-slate-600 text-lg leading-relaxed">
-              Handle more calls and messages in less time, without touching your
-              phone.
-            </p>
-          </div>
-
-          <ul className="grid gap-4 sm:grid-cols-2">
-            {workFaster.map(({ icon: Icon, title, body }) => (
-              <li
-                key={title}
-                className="flex items-start gap-4 p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
-              >
-                <span className="flex-shrink-0 w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
-                  <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
-                </span>
-                <div>
-                  <h3 className="font-semibold text-slate-900 text-lg leading-snug">
-                    {title}
-                  </h3>
-                  <p className="mt-1.5 text-slate-600 text-sm leading-relaxed">
-                    {body}
-                  </p>
-                </div>
+          {/* Proof strip — four TRUE, non-numeric claims (dot-separated). No
+              rating/install numbers: the Play listing is live but brand-new, so
+              there is nothing real to quote and we invent nothing. Semantically
+              an unordered list; the middots are decorative separators between
+              items (aria-hidden). Matches the marketing deck verbatim. */}
+          <ul className="mt-8 flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 text-sm text-slate-500">
+            {[
+              'Available on Google Play',
+              'Runs on Android 8.0+',
+              'Pair in under 2 minutes',
+              'Your data never leaves your devices',
+            ].map((item, i) => (
+              <li key={item} className="inline-flex items-center gap-2.5">
+                {i > 0 && (
+                  <span aria-hidden="true" className="text-slate-300">
+                    ·
+                  </span>
+                )}
+                {item}
               </li>
             ))}
           </ul>
+        </div>
+
+        {/* Product showcase — full-width framed shot of the real ComputerCaller
+            dashboard on a laptop beside a paired phone (Stripe/Linear pattern:
+            text hero → big product shot). Sits directly below the hero copy with
+            reduced hero padding so its top edge peeks above the fold. Vinci spec
+            2026-07-04: centered max-w-6xl, rounded card + soft shadow + hairline
+            ring — NO browser/device frame (the laptop already IS a frame). The
+            crop carries its own navy background, so no extra section bg.
+
+            Art-directed swap at the sm (640px) breakpoint: the wide 2.5:1 two-
+            device band would render the dashboard UI illegible at phone width, so
+            below 640px we serve a tighter laptop-focused crop. Both use next/image
+            with `priority` (near-LCP) and explicit width/height to reserve space
+            and kill CLS; Next serves optimised AVIF/WebP at the rendered size. */}
+        <div className="max-w-6xl mx-auto px-6 pb-16 sm:pb-20">
+          <div className="mt-14 sm:mt-16">
+            {/* < 640px — laptop-focused crop, slightly tighter radius/shadow. */}
+            <Image
+              src="/hero-mobile-connectB.png"
+              alt="The ComputerCaller dashboard on a laptop showing an active call, message threads and contacts, beside a paired phone on the dialer."
+              width={2120}
+              height={1500}
+              priority
+              sizes="92vw"
+              className="block sm:hidden w-full h-auto rounded-xl shadow-xl shadow-slate-900/10 ring-1 ring-slate-900/5"
+            />
+            {/* ≥ 640px — full two-device band. */}
+            <Image
+              src="/hero-desktop-connectB.png"
+              alt="The ComputerCaller dashboard on a laptop showing an active call, message threads and contacts, beside a paired phone on the dialer."
+              width={3840}
+              height={1520}
+              priority
+              sizes="(max-width: 1152px) 92vw, 1152px"
+              className="hidden sm:block w-full h-auto rounded-2xl shadow-2xl shadow-slate-900/10 ring-1 ring-slate-900/5"
+            />
+          </div>
         </div>
       </section>
 
       {/* Privacy by default — sits immediately after the hero so the
           differentiator vs. WhatsApp/Zoom/Skype (which all aggregate user
-          data) lands before any feature talk. White surface with a soft
-          slate-50 callout block inside, a Lock motif in the top-left, and
-          a three-claim row at the bottom. The page's first "moment of trust"
-          — calm, declarative, no hype words. */}
-      <section id="privacy" className="border-t border-slate-200 scroll-mt-24">
+          data) lands before any feature talk. Slate-50 surface (first stop of
+          the re-derived alternation) with a WHITE callout card inside that lifts
+          off it, a Lock motif in the top-left, and a three-claim row at the
+          bottom. The page's first "moment of trust" — calm, declarative. */}
+      <section id="privacy" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
         <div className="max-w-5xl mx-auto px-6 py-16 sm:py-20">
-          <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-slate-50/70 p-8 sm:p-12">
+          <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-8 sm:p-12 shadow-sm">
             {/* Decorative tint — subtle blue glow top-right so the card
                 doesn't feel flat. aria-hidden so SR users skip it. */}
             <div
@@ -711,7 +592,7 @@ export default function LandingPage() {
             />
 
             <div className="relative">
-              <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
+              <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
                 <Lock className="w-3.5 h-3.5 text-blue-600" aria-hidden="true" />
                 Privacy by default
               </div>
@@ -739,7 +620,7 @@ export default function LandingPage() {
                 ].map(({ icon: Icon, label }) => (
                   <li
                     key={label}
-                    className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl"
+                    className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl"
                   >
                     <span className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
                       <Icon className="w-4 h-4 text-blue-600" aria-hidden="true" />
@@ -755,11 +636,16 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Features (KSP) — moved up from section 5 to section 3 because this
-          IS the value reveal. After the hero promise and the privacy trust
-          moment, the reader is ready for "and here's everything it can do".
-          Slate-50 background so the white feature cards lift cleanly. */}
-      <section id="features" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
+      {/* Features (KSP) — the value reveal. After the hero promise and the
+          privacy trust moment, the reader is ready for "and here's everything
+          it can do". White surface (re-derived alternation); the feature cards
+          switch to slate-50 so they still lift off the white. This section now
+          ABSORBS the former "Work faster" block: its efficiency points (message
+          templates, copy-paste dialing, lag-free connection) live in the intro
+          prose instead of a separate section, and the two product spotlights
+          (Messages/templates + Phone Mode) — relocated from the old "A closer
+          look" — close the section. */}
+      <section id="features" className="border-t border-slate-200 bg-white scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-12">
             <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
@@ -771,8 +657,11 @@ export default function LandingPage() {
               on a bigger screen.
             </h2>
             <p className="mt-4 text-slate-600 text-lg leading-relaxed">
-              A single dashboard for the things you&apos;d otherwise pick up
-              your phone for — calls, messages, notifications, contacts.
+              One dashboard for everything you&apos;d otherwise pick up your
+              phone for — call any number from your computer, send SMS, mirror
+              your notifications, and manage contacts. Message templates,
+              copy-paste dialing, and a lag-free connection let you get through
+              more calls in less time.
             </p>
           </div>
 
@@ -811,7 +700,7 @@ export default function LandingPage() {
             ].map(({ icon: Icon, title, desc }) => (
               <div
                 key={title}
-                className="group p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+                className="group p-6 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
               >
                 <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-5">
                   <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
@@ -821,67 +710,70 @@ export default function LandingPage() {
               </div>
             ))}
           </div>
+
+          {/* Product spotlights — two real screenshots relocated from the former
+              standalone "A closer look" section. Messages/templates on the left,
+              Phone Mode on the right. Each is a self-contained card (border +
+              shadow) so it reads cleanly on the white section. Alt text carries
+              the meaning for SR users; the label blocks add taste, not
+              redundancy. Both PNGs are 4:3 (1152x896); lazy + AVIF/WebP via
+              next/image (mid-page, well below the hero LCP). */}
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+            <figure className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+              <Image
+                src="/marketing/message-templates.png"
+                alt="ComputerCaller messages interface showing an SMS thread with a row of saved templates underneath — one-click insert for common replies like greeting, follow-up, and meeting confirmation."
+                width={1152}
+                height={896}
+                sizes="(min-width: 1280px) 552px, (min-width: 768px) 46vw, 92vw"
+                className="w-full h-auto block"
+              />
+              <figcaption className="p-5 border-t border-slate-200 bg-white">
+                <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+                  Messages
+                </p>
+                <p className="mt-1.5 font-semibold text-slate-900">
+                  Templates for the replies you send every day.
+                </p>
+                <p className="mt-1.5 text-slate-600 text-sm leading-relaxed">
+                  Save up to 15 SMS templates. One click drops them into any
+                  thread — keyboard-first, no thumb gymnastics.
+                </p>
+              </figcaption>
+            </figure>
+
+            <figure className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+              <Image
+                src="/marketing/phone-mode.png"
+                alt="ComputerCaller Phone Mode running in a narrow window with a full dialer keypad, recent calls list, and active call controls — the entire phone experience reshaped to a vertical pane next to your other work."
+                width={1152}
+                height={896}
+                sizes="(min-width: 1280px) 552px, (min-width: 768px) 46vw, 92vw"
+                className="w-full h-auto block"
+              />
+              <figcaption className="p-5 border-t border-slate-200 bg-white">
+                <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
+                  Phone Mode
+                </p>
+                <p className="mt-1.5 font-semibold text-slate-900">
+                  A pocket-shaped window next to everything else.
+                </p>
+                <p className="mt-1.5 text-slate-600 text-sm leading-relaxed">
+                  Pop ComputerCaller into a narrow window. Dial, text, and
+                  pick up calls without leaving the app you&apos;re working in.
+                </p>
+              </figcaption>
+            </figure>
+          </div>
         </div>
       </section>
 
-      {/* Magic-moment visual band — full-width product visualisation that sits
-          between the Features grid (what you get) and the How It Works steps
-          (how it happens). Lets the reader exhale on a single emotional image
-          before the explainer takes over. Generated art (1344x768, ~16:9) of
-          a phone syncing data into a laptop dashboard — abstract enough to
-          age well, branded with the blue→indigo gradient that already runs
-          through the H1 and wordmark.
-
-          Layout: white surface continues from the previous section's natural
-          rhythm via the seam border, BUT the inner card is `max-w-6xl` with
-          generous py and a soft slate border + shadow so the image feels like
-          a "screenshot of the magic moment" rather than wallpaper. next/image
-          gets explicit width/height (1344/768) to lock the aspect ratio at
-          parse time → zero CLS. `priority` is intentionally OFF — this band
-          is mid-page, well below the fold, so eager loading would steal LCP
-          budget from the hero. Default lazy + AVIF/WebP via Next 16 image
-          optimisation pipeline. `sizes` reflects the actual rendered width:
-          full viewport on mobile, capped at ~1152px (max-w-6xl minus padding)
-          on desktop. */}
-      <section
-        aria-labelledby="magic-moment-heading"
-        className="border-t border-slate-200 bg-white"
-      >
-        <div className="max-w-6xl mx-auto px-6 py-16 sm:py-20">
-          <div className="max-w-2xl mb-8">
-            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-              The magic moment
-            </p>
-            <h2
-              id="magic-moment-heading"
-              className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900"
-            >
-              Your phone&apos;s world, on your laptop.
-            </h2>
-            <p className="mt-3 text-slate-600 text-lg leading-relaxed">
-              Calls, messages, contacts — everything that lived on a 6-inch
-              screen, mirrored to a real keyboard and a real display in
-              real time.
-            </p>
-          </div>
-
-          <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-slate-50 shadow-sm">
-            <Image
-              src="/marketing/magic-moment-sync.png"
-              alt="A phone on the left syncing live call, message, and contact data into a laptop dashboard on the right via a blue gradient data arc — illustrating ComputerCaller mirroring your phone to your computer."
-              width={1344}
-              height={768}
-              sizes="(min-width: 1280px) 1152px, (min-width: 640px) 92vw, 100vw"
-              className="w-full h-auto block"
-            />
-          </div>
-        </div>
-      </section>
-
-      {/* How it works — three-step explainer. The mental model the user needs
-          to understand BEFORE signing up: companion app on phone + browser
-          dashboard + real calls through real carrier. White surface, sandwiched
-          between features (slate) above and use-cases (slate) below. */}
+      {/* How it works — three-step explainer + the recommended headset tip
+          (folded in from the former "A closer look" section, so setup is told
+          ONCE). The mental model the user needs BEFORE signing up: companion app
+          on phone + browser dashboard + real calls through real carrier. Slate-50
+          surface, sandwiched between features (white) above and use-cases (white)
+          below. This section absorbs the old "Getting started" strip too. */}
       <section id="how-it-works" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-12">
@@ -892,10 +784,12 @@ export default function LandingPage() {
               Three steps to call from your computer.
             </h2>
             <p className="mt-4 text-slate-600 text-lg leading-relaxed">
-              No new number. No new carrier. No new app on the receiving end.
-              ComputerCaller connects your phone to your computer — the call
-              still goes through your real phone, you just hear and speak
-              through your laptop.
+              No new number, no new carrier, no app for the person you&apos;re
+              calling. Install the Android companion app, open ComputerCaller in
+              your browser, and pair the two — most people are set up and making
+              a phone call from their computer in under two minutes. Prefer
+              hands-free? Connect a Bluetooth headset to your phone and every
+              call runs through it.
             </p>
           </div>
 
@@ -941,120 +835,27 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* A closer look — combined section that absorbs the prior slim
-          Recommended-setup callout AND introduces the two feature spotlight
-          shots (Messages with templates + Phone Mode dialer). The Headphones
-          tip leads in as the copy column; the two product visuals sit in a
-          2-col grid beneath it. Same white surface as the prior callout, so
-          background alternation with the slate-50 How It Works above and the
-          slate-50 Use Cases below is preserved.
-
-          The two images are 4:3 (1152x896) — letting them sit side by side
-          at sm: keeps them readable without crushing the detail. On mobile
-          they stack and each gets a sensible figcaption-style label below
-          rather than overlay text (overlays are fragile against varying
-          aspect ratios). */}
-      <section
-        aria-labelledby="closer-look-heading"
-        className="border-t border-slate-200 bg-white"
-      >
-        <div className="max-w-6xl mx-auto px-6 py-16 sm:py-20">
-          <div className="flex items-start gap-4 sm:gap-5 max-w-3xl mb-12">
-            <div className="flex-shrink-0 w-12 h-12 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center">
-              <Headphones className="w-5 h-5 text-blue-600" aria-hidden="true" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-                Recommended setup
-              </p>
-              <h2
-                id="closer-look-heading"
-                className="mt-2 text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900"
-              >
-                Connect a headset to your phone.
-              </h2>
-              <p className="mt-3 text-slate-600 text-base sm:text-lg leading-relaxed">
-                Pair your favourite Bluetooth headset to your phone, then
-                manage everything through ComputerCaller — calls, SMS,
-                contacts, all hands-free from your computer.
-              </p>
-            </div>
-          </div>
-
-          {/* Two feature spotlights — Messages/templates on the left, Phone
-              Mode dialer on the right. Each is a figure with the image as the
-              visual lead and a small label block beneath. The whole grid is
-              decorative-but-informative; the alt text carries the meaning for
-              SR users, so the label blocks add taste, not redundancy.
-
-              Both PNGs are 4:3 (1152x896). The `sizes` calc reflects the
-              real rendered width: full viewport on mobile (single column),
-              ~half viewport on sm+ (two-column grid inside max-w-6xl). */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <figure className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition-shadow hover:shadow-md">
-              <Image
-                src="/marketing/message-templates.png"
-                alt="ComputerCaller messages interface showing an SMS thread with a row of saved templates underneath — one-click insert for common replies like greeting, follow-up, and meeting confirmation."
-                width={1152}
-                height={896}
-                sizes="(min-width: 1280px) 552px, (min-width: 768px) 46vw, 92vw"
-                className="w-full h-auto block"
-              />
-              <figcaption className="p-5 border-t border-slate-200 bg-white">
-                <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-                  Messages
-                </p>
-                <p className="mt-1.5 font-semibold text-slate-900">
-                  Templates for the replies you send every day.
-                </p>
-                <p className="mt-1.5 text-slate-600 text-sm leading-relaxed">
-                  Save up to 15 SMS templates. One click drops them into any
-                  thread — keyboard-first, no thumb gymnastics.
-                </p>
-              </figcaption>
-            </figure>
-
-            <figure className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition-shadow hover:shadow-md">
-              <Image
-                src="/marketing/phone-mode.png"
-                alt="ComputerCaller Phone Mode running in a narrow window with a full dialer keypad, recent calls list, and active call controls — the entire phone experience reshaped to a vertical pane next to your other work."
-                width={1152}
-                height={896}
-                sizes="(min-width: 1280px) 552px, (min-width: 768px) 46vw, 92vw"
-                className="w-full h-auto block"
-              />
-              <figcaption className="p-5 border-t border-slate-200 bg-white">
-                <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-                  Phone Mode
-                </p>
-                <p className="mt-1.5 font-semibold text-slate-900">
-                  A pocket-shaped window next to everything else.
-                </p>
-                <p className="mt-1.5 text-slate-600 text-sm leading-relaxed">
-                  Pop ComputerCaller into a narrow window. Dial, text, and
-                  pick up calls without leaving the app you&apos;re working in.
-                </p>
-              </figcaption>
-            </figure>
-          </div>
-        </div>
-      </section>
-
-      {/* Use cases — six cards. The primary commercial-intent keyword cluster
-          lives here, woven into reader-voice copy (no stuffing). */}
-      <section id="use-cases" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
+      {/* Use cases + Who it's for — MERGED into one "who / when" block
+          (2026-07-04). Marketing header + intro (carries the "call any phone
+          from your computer" keyword once, in reader voice). Six use-case cards
+          answer "when you'd use it"; a compact "who it's for" persona row below
+          answers "who reaches for it". White surface (re-derived alternation),
+          so the use-case cards switch to slate-50 to lift off it. Keeps the
+          #use-cases id so any deep-link still resolves. */}
+      <section id="use-cases" className="border-t border-slate-200 bg-white scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-12">
             <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-              Use cases
+              Who it&apos;s for
             </p>
             <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
-              Reasons people call from their computer.
+              Who it&apos;s for, and when you&apos;d use it.
             </h2>
             <p className="mt-4 text-slate-600 text-lg leading-relaxed">
-              Whatever your reason for wanting to make a call from your computer
-              — locked-down work laptops, hectic travel days, hours of outbound
-              dialing — ComputerCaller gets out of your way and lets you call.
+              People reach for ComputerCaller whenever picking up the phone gets
+              in the way — a locked-down work laptop, a travel day, hours of
+              outbound dialing. Whatever the reason, you can call any phone from
+              your computer through your own number and stay in your flow.
             </p>
           </div>
 
@@ -1062,7 +863,7 @@ export default function LandingPage() {
             {useCases.map(({ icon: Icon, title, body }) => (
               <article
                 key={title}
-                className="group p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+                className="group p-6 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
               >
                 <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-5">
                   <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
@@ -1072,45 +873,37 @@ export default function LandingPage() {
               </article>
             ))}
           </div>
-        </div>
-      </section>
 
-      {/* Who it's for — four segments. Chip-shaped cards (denser than use-cases
-          on purpose — these are personas, not use-cases). White surface so the
-          slate-50 use-cases section above pops; the personas read as "and these
-          are the kinds of people doing it". */}
-      <section id="who-its-for" className="border-t border-slate-200 scroll-mt-24">
-        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
-          <div className="max-w-2xl mb-12">
-            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-              Who it&apos;s for
-            </p>
-            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+          {/* Who it's for — persona row, merged into this block (2026-07-04).
+              Denser chip-cards than the use-cases above (these are people, not
+              scenarios). A quiet divider + sub-heading keeps the two halves
+              distinct within one section. */}
+          <div className="mt-16 pt-12 border-t border-slate-200">
+            <h3 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900 mb-8">
               Built for people who&apos;d rather not pick up their phone.
-            </h2>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {whoItsFor.map(({ label, body }, i) => {
-              const icons = [Users, Headphones, Plane, Accessibility];
-              const Icon = icons[i];
-              return (
-                <div
-                  key={label}
-                  className="p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
-                >
-                  <div className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center mb-4">
-                    <Icon className="w-4 h-4 text-blue-600" aria-hidden="true" />
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {whoItsFor.map(({ label, body }, i) => {
+                const icons = [Users, Headphones, Plane, Accessibility];
+                const Icon = icons[i];
+                return (
+                  <div
+                    key={label}
+                    className="p-6 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+                  >
+                    <div className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center mb-4">
+                      <Icon className="w-4 h-4 text-blue-600" aria-hidden="true" />
+                    </div>
+                    <h4 className="font-semibold text-slate-900 mb-1.5">
+                      {label}
+                    </h4>
+                    <p className="text-slate-600 text-sm leading-relaxed">
+                      {body}
+                    </p>
                   </div>
-                  <h3 className="font-semibold text-slate-900 mb-1.5">
-                    {label}
-                  </h3>
-                  <p className="text-slate-600 text-sm leading-relaxed">
-                    {body}
-                  </p>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </div>
       </section>
@@ -1136,9 +929,11 @@ export default function LandingPage() {
           </div>
 
           {/* Three plan cards. Annual is featured (blue border + "Best value").
-              All CTAs point at /auth/register (the page's primary pre-signup
-              target); the user chooses the actual plan on /subscribe after
-              signing up. */}
+              Each CTA carries the chosen tier as ?plan=<id> (monthly/quarterly/
+              annual) so a middle-click / no-JS navigation — and Forge's
+              server-side read on /auth/register — knows which plan was picked.
+              A plain left-click still opens the GENERIC signup modal (plan
+              pre-selection inside the modal is deferred, out of scope). */}
           <div className="mt-12 grid gap-5 sm:grid-cols-3 items-stretch">
             {PLAN_TIERS.map((tier) => (
               <div
@@ -1173,7 +968,7 @@ export default function LandingPage() {
                 </p>
 
                 <a
-                  href="/auth/register"
+                  href={`/auth/register?plan=${tier.id}`}
                   onClick={handleSignupCtaClick}
                   aria-label={`Try for free — ${tier.a11yLabel}`}
                   className={clsx(
@@ -1188,6 +983,20 @@ export default function LandingPage() {
                 </a>
               </div>
             ))}
+          </div>
+
+          {/* Risk-reversal band — sits directly under the cards so the "what if
+              I forget to cancel?" objection is answered at the moment of price
+              consideration. White pill lifts off the slate-50 section. */}
+          <div className="mt-8 flex justify-center">
+            <p className="inline-flex items-center gap-2.5 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 shadow-sm">
+              <ShieldCheck
+                className="w-4 h-4 text-emerald-500 flex-shrink-0"
+                aria-hidden="true"
+              />
+              Cancel anytime before day 7 and you won&apos;t be charged — one
+              click, no lock-in.
+            </p>
           </div>
 
           {/* Shared feature list — one product, so the features are the same
@@ -1214,9 +1023,6 @@ export default function LandingPage() {
                 </li>
               ))}
             </ul>
-            <p className="mt-6 text-center text-slate-500 text-xs">
-              Cancel anytime.
-            </p>
           </div>
         </div>
       </section>
@@ -1334,7 +1140,11 @@ export default function LandingPage() {
               <WaitlistCTA variant="inline" />
             </div>
           ) : (
-            <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
+            /* Single primary action — the secondary "Sign in" link was removed
+               (2026-07-04): it sent warm, conversion-ready visitors away from the
+               signup at the final ask. Header still carries "Sign in" for
+               returning users. */
+            <div className="mt-8 flex justify-center">
               <a
                 href="/auth/register"
                 onClick={handleSignupCtaClick}
@@ -1343,12 +1153,6 @@ export default function LandingPage() {
                 Try for free
                 <ArrowRight className="w-4 h-4" />
               </a>
-              <Link
-                href="/auth/login"
-                className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-              >
-                Sign in
-              </Link>
             </div>
           )}
         </div>
