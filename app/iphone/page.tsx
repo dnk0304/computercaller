@@ -235,9 +235,9 @@ export default function IphonePage() {
             <Link href="/#how-it-works" className="hover:text-slate-900 transition-colors">
               How it works
             </Link>
-            <Link href="/#pricing" className="hover:text-slate-900 transition-colors">
-              Pricing
-            </Link>
+            {/* Pricing is a header pop-up on the home page now (no #pricing
+                section) — a cross-page anchor would dangle, so the iPhone nav
+                omits it. Prices still live in the home FAQ + JSON-LD. */}
             <Link href="/#faqs" className="hover:text-slate-900 transition-colors">
               FAQ
             </Link>

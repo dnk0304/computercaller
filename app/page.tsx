@@ -9,7 +9,6 @@ import {
   Bell,
   Zap,
   Globe,
-  Check,
   ArrowRight,
   Phone,
   Laptop,
@@ -20,12 +19,11 @@ import {
   ShieldCheck,
   Apple,
 } from 'lucide-react';
-import { clsx } from 'clsx';
 import Reviews from '@/components/Reviews';
 import WaitlistCTA from '@/components/WaitlistCTA';
 import { SignupModal } from '@/components/SignupModal';
+import { PricingModal } from '@/components/PricingModal';
 import { WAITLIST_MODE } from '@/lib/waitlistMode';
-import { PLAN_TIERS } from '@/lib/pricing';
 
 /**
  * Landing page — SEO + content rewrite (dispatch 2026-05-25, revised 2026-05-25
@@ -51,21 +49,24 @@ import { PLAN_TIERS } from '@/lib/pricing';
  *   inside <details> for rich snippets), and the open state animates with CSS
  *   only. We layer in arrow toggling via state to keep the icon swap snappy.
  *
- * Section order (top→bottom) — 2026-07-04 TRIM to ~5 core sections. Privacy is
+ * Section order (top→bottom) — 2026-07-04 TRIM to ~4 body sections. Privacy is
  * folded (hero proof-strip line + a compact band in §2 + the "Private by
  * design" feature card); Use Cases / Who It's For and the About story are cut;
- * Features + How It Works are merged into one "What it does + set up" block:
+ * Features + How It Works are merged into one "What it does + set up" block.
+ * PRICING is no longer a body section — it moved into a header-triggered pop-up
+ * (<PricingModal>, Dennis 2026-07-04); the pricing JSON-LD stays in the head:
  *   1. Hero (image background + copy over it)
  *   2. What it does + how it works  ← Features (KSP) + 3-step setup + privacy band
- *   3. Pricing                      ← $ savings anchor + risk-reversal band
- *   4. Reviews (component)
- *   5. FAQ + Final CTA              ← FAQ mirrored in JSON-LD FAQPage
+ *   3. Reviews (component)
+ *   4. FAQ + Final CTA              ← FAQ mirrored in JSON-LD FAQPage
  *   + Footer
  *
- * Background alternation (re-derived for the ~5-section order). The tail is
- * fixed: <Reviews /> ships slate-50, so Pricing (before) and FAQ (after) must
- * be white. Working the chain: hero(dark image) → what+how(slate-50) →
- * pricing(white) → reviews(slate-50) → faq(white) → cta(gradient) →
+ * Background alternation (RE-DERIVED after the pricing section was removed).
+ * <Reviews /> ships slate-50 and is untouched, so the block BEFORE it (what+how)
+ * had to flip from slate-50 → WHITE — otherwise what+how(slate-50) sat directly
+ * against reviews(slate-50). Its inner cards flip white → slate-50 to keep
+ * lifting off the now-white surface. Resulting chain: hero(dark image) →
+ * what+how(white) → reviews(slate-50) → faq(white) → cta(gradient) →
  * footer(slate-50). No two identical surfaces ever sit adjacent.
  */
 
@@ -197,6 +198,40 @@ export default function LandingPage() {
     setSignupOpen(false);
   }
 
+  // Pricing modal (dispatch 2026-07-04, Dennis: clicking "Pricing" in the header
+  // opens a pop-up with the plans instead of scrolling to a section — the
+  // standalone pricing section was removed from the body). We stash the header
+  // "Pricing" trigger so focus returns to it when the modal closes.
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const pricingTriggerRef = useRef<HTMLElement | null>(null);
+
+  function openPricing(e: React.MouseEvent<HTMLButtonElement>) {
+    pricingTriggerRef.current = e.currentTarget;
+    setPricingOpen(true);
+  }
+
+  function closePricing() {
+    setPricingOpen(false);
+  }
+
+  // Hand-off: pricing modal → signup modal, in-page (LOCKED, dispatch
+  // 2026-07-04). A plain left-click on any tier CTA closes pricing and opens
+  // signup so the user never leaves the page. Focus-return for the signup modal
+  // is aimed at the HEADER "Pricing" trigger (not the tier CTA, which unmounts
+  // with the pricing modal) so focus never falls to <body> when signup closes.
+  //
+  // PLAN-CARRY — DEGRADED this pass (flagged to Ken): the chosen plan is NOT
+  // threaded into the signup POST. /api/auth/register reads only { email,
+  // password }; wiring a `plan` field through would require a Forge read-side
+  // extension, and the brief says not to block on it. The plan still survives
+  // for the fallback path via each tier CTA's real ?plan=<id> href
+  // (middle/cmd/no-JS), and is ultimately chosen/charged at /subscribe (Whop).
+  function handleTierSelect() {
+    setPricingOpen(false);
+    signupTriggerRef.current = pricingTriggerRef.current;
+    setSignupOpen(true);
+  }
+
   // JSON-LD payloads — three @types in one @graph so we send a single tag.
   // Validated mentally against schema.org; Niki will run Google's Rich Results
   // Test post-deploy.
@@ -284,9 +319,16 @@ export default function LandingPage() {
               How it works
             </a>
             {!WAITLIST_MODE && (
-              <a href="#pricing" className="hover:text-slate-900 transition-colors">
+              // Opens the pricing pop-up (the standalone section was removed).
+              // A <button> is the correct semantic — it triggers an in-page
+              // action, not navigation — so there is no dangling #pricing anchor.
+              <button
+                type="button"
+                onClick={openPricing}
+                className="hover:text-slate-900 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 rounded"
+              >
                 Pricing
-              </a>
+              </button>
             )}
             <a href="#faqs" className="hover:text-slate-900 transition-colors">
               FAQ
@@ -505,8 +547,10 @@ export default function LandingPage() {
           value — a compact privacy band folded in from the cut Privacy section,
           then the KSP feature grid. Bottom half (id="how-it-works"): the 3-step
           setup + CTA, so setup is told once. Slate-50 surface (first stop of the
-          re-derived alternation off the dark hero); cards go white to lift. */}
-      <section id="features" className="border-t border-slate-200 bg-slate-50/60 scroll-mt-24">
+          re-derived alternation off the dark hero — WHITE now that pricing was
+          removed, so this block no longer sits slate-50-on-slate-50 against
+          <Reviews />; cards go slate-50 to lift off the white surface). */}
+      <section id="features" className="border-t border-slate-200 bg-white scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-8">
             <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
@@ -530,7 +574,7 @@ export default function LandingPage() {
           {/* Privacy band — folded in from the cut standalone Privacy section so
               the differentiator vs. WhatsApp/Zoom/Skype survives as one compact
               line (the same promise also rides the hero proof strip). */}
-          <div className="mb-8 inline-flex items-start gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <div className="mb-8 inline-flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
             <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-blue-100 bg-blue-50">
               <Lock className="w-4 h-4 text-blue-600" aria-hidden="true" />
             </span>
@@ -576,7 +620,7 @@ export default function LandingPage() {
             ].map(({ icon: Icon, title, desc }) => (
               <div
                 key={title}
-                className="group p-6 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+                className="group p-6 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
               >
                 <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-5">
                   <Icon className="w-5 h-5 text-blue-600" aria-hidden="true" />
@@ -610,7 +654,7 @@ export default function LandingPage() {
               {howItWorks.map(({ n, icon: Icon, title, body }) => (
                 <li
                   key={n}
-                  className="relative p-6 bg-white border border-slate-200 rounded-2xl shadow-sm"
+                  className="relative p-6 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm"
                 >
                   <div className="flex items-center gap-3 mb-5">
                     <span className="text-xs font-mono font-medium text-slate-400 tracking-wider">
@@ -649,129 +693,14 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Pricing — hidden entirely in waitlist mode so NO price renders on the
-          page (section, cards, feature list). Flag off → the three paid plans
-          (Monthly / 3-Month / Annual) render from the shared PLAN_TIERS config,
-          annual featured as "Best value". */}
-      {!WAITLIST_MODE && (
-      <section id="pricing" className="border-t border-slate-200 bg-white scroll-mt-24">
-        <div className="max-w-5xl mx-auto px-6 py-20 sm:py-24">
-          <div className="text-center">
-            <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
-              Pricing
-            </p>
-            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
-              Simple pricing.
-            </h2>
-            <p className="mt-3 text-slate-600 text-lg">
-              One product, every feature. Pick the billing that suits you — the longer the plan, the
-              less you pay per month. Every plan starts with a 7-day free trial.
-            </p>
-          </div>
-
-          {/* Three plan cards. Annual is featured (blue border + "Best value").
-              Each CTA carries the chosen tier as ?plan=<id> (monthly/quarterly/
-              annual) so a middle-click / no-JS navigation — and Forge's
-              server-side read on /auth/register — knows which plan was picked.
-              A plain left-click still opens the GENERIC signup modal (plan
-              pre-selection inside the modal is deferred, out of scope). */}
-          <div className="mt-12 grid gap-5 sm:grid-cols-3 items-stretch">
-            {PLAN_TIERS.map((tier) => (
-              <div
-                key={tier.id}
-                className={clsx(
-                  'relative flex flex-col rounded-2xl border bg-white p-6 text-left shadow-sm',
-                  tier.featured
-                    ? 'border-blue-600 ring-1 ring-blue-600/20 shadow-blue-600/10'
-                    : 'border-slate-200',
-                )}
-              >
-                {tier.badge && (
-                  <span className="absolute -top-3 left-6 rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white shadow-sm">
-                    {tier.badge}
-                  </span>
-                )}
-
-                <p className="text-sm font-semibold text-slate-900">{tier.name}</p>
-
-                <div className="mt-3 flex items-baseline gap-1.5">
-                  <span className="text-4xl font-semibold tracking-tight text-slate-900">
-                    {tier.price}
-                  </span>
-                  <span className="text-slate-500 text-sm">{tier.period}</span>
-                </div>
-
-                <p className="mt-1.5 text-sm text-slate-500">
-                  {tier.perMonth}
-                  {tier.savings && (
-                    <span className="font-medium text-emerald-600"> · {tier.savings}</span>
-                  )}
-                </p>
-
-                <a
-                  href={`/auth/register?plan=${tier.id}`}
-                  onClick={handleSignupCtaClick}
-                  aria-label={`Try for free — ${tier.a11yLabel}`}
-                  className={clsx(
-                    'mt-6 flex items-center justify-center gap-1.5 w-full py-3 font-medium rounded-xl transition-colors text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
-                    tier.featured
-                      ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-600/20'
-                      : 'bg-white border border-slate-200 text-slate-900 hover:border-slate-300 hover:bg-slate-50',
-                  )}
-                >
-                  Try for free
-                  <ArrowRight className="w-4 h-4" />
-                </a>
-              </div>
-            ))}
-          </div>
-
-          {/* Risk-reversal band — sits directly under the cards so the "what if
-              I forget to cancel?" objection is answered at the moment of price
-              consideration. Slate-50 pill lifts off the white pricing section. */}
-          <div className="mt-8 flex justify-center">
-            <p className="inline-flex items-center gap-2.5 rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-600 shadow-sm">
-              <ShieldCheck
-                className="w-4 h-4 text-emerald-500 flex-shrink-0"
-                aria-hidden="true"
-              />
-              Cancel anytime before day 7 and you won&apos;t be charged — one
-              click, no lock-in.
-            </p>
-          </div>
-
-          {/* Shared feature list — one product, so the features are the same
-              across every plan; listing them once (not per-card) keeps the
-              comparison about price, not feature gating. */}
-          <div className="mt-10 max-w-md mx-auto">
-            <p className="text-center text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Every plan includes
-            </p>
-            <ul className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-2">
-              {[
-                'Call any phone number from your computer',
-                'Full SMS and message dashboard',
-                'Real-time notification mirror',
-                'Unlimited contacts & history',
-                'Works from any device, anywhere',
-                '7-day free trial',
-              ].map((f) => (
-                <li key={f} className="flex items-start gap-2.5">
-                  <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
-                    <Check className="w-2.5 h-2.5 text-blue-600" strokeWidth={3} />
-                  </span>
-                  <span>{f}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </section>
-      )}
+      {/* Pricing lives in a header-triggered pop-up now (<PricingModal>, Dennis
+          2026-07-04) — the standalone section was removed from the body. The
+          pricing JSON-LD (AggregateOffer) STAYS in the head Script above, so
+          prices are still declared for SEO. */}
 
       {/* Reviews / testimonials — moved ABOVE the FAQ (2026-07-04 trim) so the
-          order runs Pricing (white) → Reviews (slate-50) → FAQ (white): social
-          proof lands right after price, and the FAQ sits directly before the
+          order runs what+how (white) → Reviews (slate-50) → FAQ (white): social
+          proof lands after the value story, and the FAQ sits directly before the
           final CTA as the last objection-handler.
 
           IMPORTANT: the reviews currently shipping in <Reviews /> are
@@ -927,6 +856,16 @@ export default function LandingPage() {
         open={signupOpen}
         onClose={closeSignup}
         triggerRef={signupTriggerRef}
+      />
+
+      {/* Pricing pop-up — opened by the header "Pricing" nav link. A tier CTA
+          hands off to the signup modal in-page (handleTierSelect). Renders null
+          while closed, so it's inert in WAITLIST_MODE (no trigger opens it). */}
+      <PricingModal
+        open={pricingOpen}
+        onClose={closePricing}
+        triggerRef={pricingTriggerRef}
+        onSelectTier={handleTierSelect}
       />
     </div>
   );
