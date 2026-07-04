@@ -83,8 +83,9 @@ export default function TermsPage() {
             </h2>
             <ul className="list-disc list-inside space-y-2">
               <li>
-                The service offers a 7-day free trial. No credit card required to
-                start.
+                The service offers a 7-day free trial. A payment method is
+                required to start the trial; you can cancel anytime before it
+                renews.
               </li>
               <li>
                 After the trial, choose a plan — $9/month, $25 for 3 months, or
