@@ -40,13 +40,13 @@ export interface PlanTierDisplay {
   id: PlanTierId;
   /** Short name — "Monthly", "3-Month", "Annual". */
   name: string;
-  /** Headline price with currency symbol — "$10", "$25", "$90". */
+  /** Headline price with currency symbol — "$9", "$25", "$90". */
   price: string;
   /** Numeric price (USD) for JSON-LD offers / aggregate bounds. */
   priceValue: number;
   /** Billing cadence phrase — "per month", "every 3 months", "per year". */
   period: string;
-  /** Normalised per-month value — "$10.00/mo", "~$8.33/mo", "~$7.50/mo". */
+  /** Normalised per-month value — "$9.00/mo", "~$8.33/mo", "~$7.50/mo". */
   perMonth: string;
   /** Savings tag vs. paying monthly, e.g. "Save 17%". Omitted for the baseline. */
   savings?: string;
@@ -73,11 +73,11 @@ export const PLAN_TIERS: readonly PlanTierDisplay[] = [
   {
     id: 'monthly',
     name: 'Monthly',
-    price: '$10',
-    priceValue: 10,
+    price: '$9',
+    priceValue: 9,
     period: 'per month',
-    perMonth: '$10.00/mo',
-    a11yLabel: 'Monthly plan, $10 per month, billed monthly.',
+    perMonth: '$9.00/mo',
+    a11yLabel: 'Monthly plan, $9 per month, billed monthly.',
   },
   {
     id: 'quarterly',
@@ -86,8 +86,8 @@ export const PLAN_TIERS: readonly PlanTierDisplay[] = [
     priceValue: 25,
     period: 'every 3 months',
     perMonth: '~$8.33/mo',
-    savings: 'Save 17%',
-    a11yLabel: 'Three-month plan, $25 every three months, about $8.33 per month, save 17 percent.',
+    savings: 'Save 7%',
+    a11yLabel: 'Three-month plan, $25 every three months, about $8.33 per month, save 7 percent.',
   },
   {
     id: 'annual',
@@ -96,10 +96,10 @@ export const PLAN_TIERS: readonly PlanTierDisplay[] = [
     priceValue: 90,
     period: 'per year',
     perMonth: '~$7.50/mo',
-    savings: 'Save 25%',
+    savings: 'Save 17%',
     badge: 'Best value',
     featured: true,
-    a11yLabel: 'Annual plan, $90 per year, about $7.50 per month, best value, save 25 percent.',
+    a11yLabel: 'Annual plan, $90 per year, about $7.50 per month, best value, save 17 percent.',
   },
 ];
 

@@ -25,7 +25,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // under-set to a month and lock a paying customer out early (entitlement rule 4:
 // active && currentPeriodEnd > now).
 const PLAN_TERM_DAYS: Record<string, number> = {
-  plan_1nEzOOzXxPDJC: 30, // Monthly — $10
+  plan_1nEzOOzXxPDJC: 30, // Monthly — $9
   plan_ZaT3fHVgy7s3e: 90, // 3-Month — $25
   plan_wC4X437WlTdy3: 365, // Annual — $90
 };

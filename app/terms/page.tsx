@@ -87,7 +87,7 @@ export default function TermsPage() {
                 start.
               </li>
               <li>
-                After the trial, choose a plan — $10/month, $25 for 3 months, or
+                After the trial, choose a plan — $9/month, $25 for 3 months, or
                 $90/year — billed per the plan you select through Whop, cancel
                 anytime.
               </li>

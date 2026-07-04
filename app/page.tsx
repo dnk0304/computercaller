@@ -236,7 +236,7 @@ const faqs = [
     // built from this same array. Flag off → paid answer with the three plans.
     a: WAITLIST_MODE
       ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
-      : "ComputerCaller comes with a 7-day free trial — no credit card required. After the trial, choose the plan that suits you: $10/month, $25 for 3 months (about $8.33/month), or $90/year (about $7.50/month) — billed per the plan you pick, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
+      : "ComputerCaller comes with a 7-day free trial — no credit card required. After the trial, choose the plan that suits you: $9/month, $25 for 3 months (about $8.33/month), or $90/year (about $7.50/month) — billed per the plan you pick, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -309,7 +309,7 @@ export default function LandingPage() {
         url: 'https://computercaller.com',
         // In waitlist mode we omit the price `offers` entirely so no price
         // reaches crawlers / structured data. Flag off → an AggregateOffer
-        // spanning the three plans ($10 monthly … $90 annual). AggregateOffer is
+        // spanning the three plans ($9 monthly … $90 annual). AggregateOffer is
         // the schema.org-correct shape for one product sold at several price
         // points; lowPrice/highPrice bound the range, offerCount states how many.
         ...(WAITLIST_MODE
@@ -318,7 +318,7 @@ export default function LandingPage() {
               offers: {
                 '@type': 'AggregateOffer',
                 priceCurrency: 'USD',
-                lowPrice: '10',
+                lowPrice: '9',
                 highPrice: '90',
                 offerCount: 3,
               },
@@ -451,10 +451,16 @@ export default function LandingPage() {
             Connect. Call. SMS. Communicate. Seamlessly.
           </p>
 
-          <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            {WAITLIST_MODE ? 'Launching soon — join the waitlist' : '7-day free trial — no credit card required'}
-          </div>
+          {/* Trust pill — waitlist only. The live (paid) hero deliberately drops
+              it: the trial DOES require a card up front (Whop), so "no credit
+              card required" was false. The 7-day framing still lives in the CTA,
+              pricing cards, and FAQ, so nothing is lost by removing it here. */}
+          {WAITLIST_MODE && (
+            <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-slate-700 text-xs font-medium shadow-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              Launching soon — join the waitlist
+            </div>
+          )}
 
           <h1 className="mt-8 text-4xl sm:text-5xl md:text-6xl font-semibold tracking-[-0.03em] leading-[1.05] text-slate-900 text-balance">
             Make phone calls from your phone{' '}
