@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import Script from 'next/script';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   MessageSquare,
   Bell,
@@ -34,6 +34,7 @@ import {
 import { clsx } from 'clsx';
 import Reviews from '@/components/Reviews';
 import WaitlistCTA from '@/components/WaitlistCTA';
+import { SignupModal } from '@/components/SignupModal';
 import { WAITLIST_MODE } from '@/lib/waitlistMode';
 import { PLAN_TIERS } from '@/lib/pricing';
 
@@ -283,6 +284,37 @@ export default function LandingPage() {
     if (iosUa || isIpadOs) setIsIos(true);
   }, []);
 
+  // Sign-up modal (dispatch 2026-07-04). The "Try for free" CTAs stay real
+  // anchors to /auth/register (shareable, middle/cmd-click and no-JS still
+  // navigate); a plain left-click is intercepted to open this modal instead.
+  // We stash the triggering element so focus can be restored to it on close.
+  const [signupOpen, setSignupOpen] = useState(false);
+  const signupTriggerRef = useRef<HTMLElement | null>(null);
+
+  // Intercept a CTA click. Bail (let the browser navigate) on any modified
+  // click — new-tab/new-window intents (cmd/ctrl/shift/alt), or non-primary
+  // mouse buttons (middle-click) — so the anchor's href fallback is preserved.
+  function handleSignupCtaClick(
+    e: React.MouseEvent<HTMLAnchorElement>,
+  ) {
+    if (
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey ||
+      e.button !== 0
+    ) {
+      return;
+    }
+    e.preventDefault();
+    signupTriggerRef.current = e.currentTarget;
+    setSignupOpen(true);
+  }
+
+  function closeSignup() {
+    setSignupOpen(false);
+  }
+
   // JSON-LD payloads — three @types in one @graph so we send a single tag.
   // Validated mentally against schema.org; Niki will run Google's Rich Results
   // Test post-deploy.
@@ -391,13 +423,14 @@ export default function LandingPage() {
                 >
                   Sign in
                 </Link>
-                <Link
+                <a
                   href="/auth/register"
+                  onClick={handleSignupCtaClick}
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                 >
                   Try for free
                   <ArrowRight className="w-3.5 h-3.5" />
-                </Link>
+                </a>
               </>
             )}
           </div>
@@ -490,13 +523,14 @@ export default function LandingPage() {
             </div>
           ) : (
             <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">
-              <Link
+              <a
                 href="/auth/register"
+                onClick={handleSignupCtaClick}
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
                 Try for free
                 <ArrowRight className="w-4 h-4" />
-              </Link>
+              </a>
               <a
                 href="#how-it-works"
                 className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
@@ -894,13 +928,14 @@ export default function LandingPage() {
                 <WaitlistCTA variant="inline" />
               </div>
             ) : (
-              <Link
+              <a
                 href="/auth/register"
+                onClick={handleSignupCtaClick}
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
                 Try for free
                 <ArrowRight className="w-4 h-4" />
-              </Link>
+              </a>
             )}
           </div>
         </div>
@@ -1137,8 +1172,9 @@ export default function LandingPage() {
                   )}
                 </p>
 
-                <Link
+                <a
                   href="/auth/register"
+                  onClick={handleSignupCtaClick}
                   aria-label={`Try for free — ${tier.a11yLabel}`}
                   className={clsx(
                     'mt-6 flex items-center justify-center gap-1.5 w-full py-3 font-medium rounded-xl transition-colors text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
@@ -1149,7 +1185,7 @@ export default function LandingPage() {
                 >
                   Try for free
                   <ArrowRight className="w-4 h-4" />
-                </Link>
+                </a>
               </div>
             ))}
           </div>
@@ -1299,13 +1335,14 @@ export default function LandingPage() {
             </div>
           ) : (
             <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
-              <Link
+              <a
                 href="/auth/register"
+                onClick={handleSignupCtaClick}
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
                 Try for free
                 <ArrowRight className="w-4 h-4" />
-              </Link>
+              </a>
               <Link
                 href="/auth/login"
                 className="inline-flex items-center justify-center px-6 py-3 bg-white hover:bg-slate-50 text-slate-900 font-medium rounded-xl transition-colors text-base border border-slate-200 hover:border-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
@@ -1359,6 +1396,15 @@ export default function LandingPage() {
           </div>
         </div>
       </footer>
+
+      {/* On-page sign-up modal — opened by any "Try for free" CTA (left-click
+          only; modified/middle clicks fall through to /auth/register). Renders
+          null while closed, so it's inert in WAITLIST_MODE (no CTA opens it). */}
+      <SignupModal
+        open={signupOpen}
+        onClose={closeSignup}
+        triggerRef={signupTriggerRef}
+      />
     </div>
   );
 }
