@@ -88,9 +88,8 @@ export default function TermsPage() {
                 renews.
               </li>
               <li>
-                After the trial, choose a plan — $9/month, $25 for 3 months, or
-                $90/year — billed per the plan you select through Whop, cancel
-                anytime.
+                After the trial, the service costs $5/month, billed monthly
+                through Whop. You can cancel anytime.
               </li>
               <li>
                 You can cancel any time. Cancellation stops the next renewal —

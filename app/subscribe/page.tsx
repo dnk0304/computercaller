@@ -97,12 +97,12 @@ export default async function SubscribePage() {
   }
 
   const whopCheckoutUrl = process.env.NEXT_PUBLIC_WHOP_CHECKOUT_URL ?? '#';
-  // Multi-tier plans for the in-page embedded checkout (Monthly / 3-Month /
-  // Annual, 2026-07-03). Resolved from NEXT_PUBLIC_WHOP_PLAN_ID_* env vars via
-  // the shared pricing config — only tiers with a configured plan id are
-  // returned. When ≥1 tier exists, SubscribeLocked renders the tier selector +
-  // embed as the primary surface and keeps the external URL as a fallback; when
-  // the list is empty (no env set), it renders the external button only.
+  // The single $5/month plan for the in-page embedded checkout (Dennis,
+  // 2026-07-05). Resolved from NEXT_PUBLIC_WHOP_PLAN_ID via the shared pricing
+  // config — only a plan with a configured id is returned. When present,
+  // SubscribeLocked renders the embed as the primary surface and keeps the
+  // external URL as a fallback; when the list is empty (no env set), it
+  // renders the external button only.
   const tiers = getPlanTiers();
 
   // True trial LENGTH in whole days (trialEndsAt - subscription.createdAt),

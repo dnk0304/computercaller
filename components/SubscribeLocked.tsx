@@ -17,12 +17,15 @@
  * no scroll.
  *
  * Pricing/support are kept consistent with the rest of the app:
- *   - three plans (Monthly / 3-Month / Annual) surfaced as a selector that
- *     drives the embed; prices come from the shared `lib/pricing` config
+ *   - ONE plan ($5/month, 7-day trial — Dennis 2026-07-05) drives the embedded
+ *     checkout; the price comes from the shared `lib/pricing` config. The
+ *     multi-tier radio selector from the 2026-07-03 rollout was removed with
+ *     the extra tiers; `tiers` stays an array so a second plan can return
+ *     without a prop-contract change (the first entry drives the embed).
  *   - support@computercaller.com (the app's real reply-to, see lib/email.ts)
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { Lock, ArrowRight, ShieldCheck, RefreshCw, LifeBuoy, LogOut } from 'lucide-react';
 import { clsx } from 'clsx';
 import { WhopEmbedCheckout } from './WhopEmbedCheckout';
@@ -47,12 +50,12 @@ export interface SubscribeLockedProps {
   /** Support email; defaults to the app's real reply-to address. */
   supportEmail?: string;
   /**
-   * Available subscription tiers (Monthly / 3-Month / Annual), resolved from
-   * env by the server via `getPlanTiers()`. When ≥1 tier is present, the tier
-   * selector + in-page embedded checkout becomes the PRIMARY conversion surface
-   * and the external `whopCheckoutUrl` link drops to a secondary fallback. When
-   * the list is empty (env unset), we render only the external "Subscribe"
-   * button — no selector, no embed, no crash.
+   * Available subscription plans, resolved from env by the server via
+   * `getPlanTiers()`. When ≥1 plan is present, the in-page embedded checkout
+   * (driven by the first plan) becomes the PRIMARY conversion surface and the
+   * external `whopCheckoutUrl` link drops to a secondary fallback. When the
+   * list is empty (env unset), we render only the external "Subscribe"
+   * button — no embed, no crash.
    */
   tiers?: PlanTier[];
 }
@@ -107,10 +110,8 @@ export function SubscribeLocked({
   const hasEmbed = tiers.length > 0;
   const hasExternalUrl = Boolean(whopCheckoutUrl) && whopCheckoutUrl !== '#';
 
-  // Selected tier — defaults to the first available (Monthly when configured).
-  // Local UI state only; the embed re-mounts on change via `key` (see below).
-  const [selectedId, setSelectedId] = useState<string | undefined>(tiers[0]?.id);
-  const selectedTier = tiers.find((t) => t.id === selectedId) ?? tiers[0];
+  // One plan — the first (only) configured plan drives the embed.
+  const selectedTier = tiers[0];
 
   const handleLogout = () => {
     // Best-effort logout, then land on the marketing page (mirrors ProfileMenu).
@@ -162,80 +163,20 @@ export function SubscribeLocked({
 
         {hasEmbed && selectedTier ? (
           <>
-            {/* Plan selector — radiogroup of tiers driving the embed below.
-                Native <input type="radio"> gives arrow-key navigation + a single
-                tab stop for free; the visible card is styled from the checked
-                state. */}
-            <fieldset className="mt-6">
-              <legend className="sr-only">Choose a subscription plan</legend>
-              <div className="flex flex-col gap-2.5">
-                {tiers.map((tier) => {
-                  const isSelected = tier.id === selectedTier.id;
-                  return (
-                    <label
-                      key={tier.id}
-                      className={clsx(
-                        'relative flex cursor-pointer items-center gap-3 rounded-xl border p-4 text-left transition-colors',
-                        'focus-within:ring-2 focus-within:ring-blue-500/50 focus-within:ring-offset-1',
-                        isSelected
-                          ? 'border-blue-600 bg-blue-50/60 ring-1 ring-blue-600/20'
-                          : 'border-slate-200 bg-white hover:border-slate-300',
-                      )}
-                    >
-                      <input
-                        type="radio"
-                        name="subscription-plan"
-                        value={tier.id}
-                        checked={isSelected}
-                        onChange={() => setSelectedId(tier.id)}
-                        aria-label={tier.a11yLabel}
-                        className="peer sr-only"
-                      />
-                      {/* Radio indicator */}
-                      <span
-                        aria-hidden="true"
-                        className={clsx(
-                          'flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border-2 transition-colors',
-                          isSelected ? 'border-blue-600' : 'border-slate-300',
-                        )}
-                      >
-                        {isSelected && <span className="h-2.5 w-2.5 rounded-full bg-blue-600" />}
-                      </span>
-
-                      {/* Name + per-month/savings on the left, price on the right */}
-                      <span className="flex flex-1 items-center justify-between gap-2">
-                        <span className="flex flex-col">
-                          <span className="flex items-center gap-2">
-                            <span className="text-sm font-semibold text-slate-900">{tier.name}</span>
-                            {tier.badge && (
-                              <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
-                                {tier.badge}
-                              </span>
-                            )}
-                          </span>
-                          <span className="mt-0.5 text-xs text-slate-500">
-                            {tier.perMonth}
-                            {tier.savings && (
-                              <span className="font-medium text-emerald-600"> · {tier.savings}</span>
-                            )}
-                          </span>
-                        </span>
-                        <span className="flex flex-col items-end">
-                          <span className="text-base font-bold text-slate-900">{tier.price}</span>
-                          <span className="text-[11px] text-slate-400">{tier.period}</span>
-                        </span>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </fieldset>
+            {/* Plan summary — one plan, so a simple price row replaces the old
+                multi-tier radio selector. */}
+            <div className="mt-6 flex items-center justify-between rounded-xl border border-blue-600 bg-blue-50/60 p-4 ring-1 ring-blue-600/20">
+              <span className="text-sm font-semibold text-slate-900">
+                ComputerCaller
+              </span>
+              <span className="flex items-baseline gap-1">
+                <span className="text-base font-bold text-slate-900">{selectedTier.price}</span>
+                <span className="text-[11px] text-slate-500">{selectedTier.period}</span>
+              </span>
+            </div>
 
             {/* PRIMARY conversion surface — in-page Whop embedded checkout for
-                the selected tier. `key={planId}` forces a clean re-mount when
-                the selection changes so the iframe reloads with the new plan's
-                price rather than relying on the web component to react to a prop
-                change. selectedTier is guaranteed defined inside this branch. */}
+                the plan. selectedTier is guaranteed defined inside this branch. */}
             <div className="mt-4 text-left">
               <WhopEmbedCheckout
                 key={selectedTier.planId}
