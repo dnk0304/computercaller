@@ -6,9 +6,11 @@
  * in header it should just come a pop up with the price.").
  *
  * The standalone pricing SECTION was removed from the page body; its content —
- * the three tiers, the risk-reversal band, and the shared feature list — lives
- * here instead. The pricing JSON-LD (AggregateOffer) stays in the page head, so
- * prices are still declared for SEO even though they now render in a modal.
+ * the single $5/month plan, the risk-reversal band, and the feature list —
+ * lives here instead. The pricing JSON-LD (Offer, 5.00 USD) stays in the page
+ * head, so the price is still declared for SEO even though it renders in a
+ * modal. ONE PLAN as of 2026-07-05 (Dennis): $5/month, 7-day trial — we
+ * compete with free (Phone Link), so the pitch is "cheap enough for anyone".
  *
  * Hand-off (LOCKED): pricing modal → SIGNUP modal, in-page. Clicking a tier's
  * "Try for free" closes this modal and opens the existing SignupModal via the
@@ -33,15 +35,13 @@
 
 import React, { useEffect, useId, useRef } from 'react';
 import { X, Check, ArrowRight, ShieldCheck } from 'lucide-react';
-import { clsx } from 'clsx';
 import { PLAN_TIERS } from '@/lib/pricing';
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
-/** Features shared by every plan — one product, so listed once (not per-card)
- *  to keep the comparison about price, not feature gating. Lifted verbatim from
- *  the removed pricing section. */
+/** Everything the one plan includes — listed once under the price card.
+ *  Lifted verbatim from the removed pricing section. */
 const PLAN_FEATURES = [
   'Call any phone number from your computer',
   'Full SMS and message dashboard',
@@ -162,9 +162,9 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
         className={
           'relative flex w-full flex-col bg-white shadow-2xl shadow-slate-900/20 ' +
           'p-6 sm:p-8 ' +
-          // Mobile: full-height sheet. sm+: bounded, centered, rounded card wide
-          // enough for the three-across plan grid.
-          'min-h-full sm:min-h-0 sm:w-full sm:max-w-3xl sm:rounded-2xl sm:border sm:border-slate-200 ' +
+          // Mobile: full-height sheet. sm+: bounded, centered, rounded card —
+          // one plan now, so a narrow single-column dialog reads best.
+          'min-h-full sm:min-h-0 sm:w-full sm:max-w-lg sm:rounded-2xl sm:border sm:border-slate-200 ' +
           'animate-in fade-in slide-in-from-bottom-4 duration-200 sm:zoom-in-95 sm:slide-in-from-bottom-0'
         }
       >
@@ -190,61 +190,37 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
             Simple pricing.
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-slate-600">
-            One product, every feature. Pick the billing that suits you — the
-            longer the plan, the less you pay per month. Every plan starts with a
-            7-day free trial.
+            One plan, every feature. $5 a month after a 7-day free trial —
+            cancel anytime.
           </p>
         </div>
 
-        {/* Three plan cards. Annual is featured (blue border + "Best value").
-            Each CTA carries the chosen tier as ?plan=<id> so a middle-click /
+        {/* The single plan card. The CTA carries ?plan=<id> so a middle-click /
             no-JS navigation — and Forge's server-side read on /auth/register —
-            knows which plan was picked. A plain left-click hands off to the
-            signup modal (plan pre-selection inside signup is deferred; the plan
-            is ultimately chosen/charged at /subscribe). */}
-        <div className="mt-8 grid gap-5 sm:grid-cols-3 items-stretch">
+            still works. A plain left-click hands off to the signup modal (the
+            plan is ultimately charged at /subscribe). */}
+        <div className="mt-8">
           {PLAN_TIERS.map((tier) => (
             <div
               key={tier.id}
-              className={clsx(
-                'relative flex flex-col rounded-2xl border bg-white p-6 text-left shadow-sm',
-                tier.featured
-                  ? 'border-blue-600 ring-1 ring-blue-600/20 shadow-blue-600/10'
-                  : 'border-slate-200',
-              )}
+              className="relative flex flex-col rounded-2xl border border-blue-600 ring-1 ring-blue-600/20 bg-white p-6 text-center shadow-sm shadow-blue-600/10"
             >
-              {tier.badge && (
-                <span className="absolute -top-3 left-6 rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white shadow-sm">
-                  {tier.badge}
-                </span>
-              )}
-
-              <p className="text-sm font-semibold text-slate-900">{tier.name}</p>
-
-              <div className="mt-3 flex items-baseline gap-1.5">
-                <span className="text-4xl font-semibold tracking-tight text-slate-900">
+              <div className="flex items-baseline justify-center gap-1.5">
+                <span className="text-5xl font-semibold tracking-tight text-slate-900">
                   {tier.price}
                 </span>
                 <span className="text-slate-500 text-sm">{tier.period}</span>
               </div>
 
-              <p className="mt-1.5 text-sm text-slate-500">
-                {tier.perMonth}
-                {tier.savings && (
-                  <span className="font-medium text-emerald-600"> · {tier.savings}</span>
-                )}
+              <p className="mt-2 text-sm text-slate-500">
+                7-day free trial · cancel anytime
               </p>
 
               <a
                 href={`/auth/register?plan=${tier.id}`}
                 onClick={handleTierClick}
                 aria-label={`Try for free — ${tier.a11yLabel}`}
-                className={clsx(
-                  'mt-6 flex items-center justify-center gap-1.5 w-full py-3 font-medium rounded-xl transition-colors text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
-                  tier.featured
-                    ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-600/20'
-                    : 'bg-white border border-slate-200 text-slate-900 hover:border-slate-300 hover:bg-slate-50',
-                )}
+                className="mt-6 flex items-center justify-center gap-1.5 w-full py-3 font-medium rounded-xl transition-colors text-center bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
                 Try for free
                 <ArrowRight className="w-4 h-4" />
@@ -266,11 +242,10 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
           </p>
         </div>
 
-        {/* Shared feature list — one product, so the features are the same across
-            every plan; listing them once keeps the comparison about price. */}
+        {/* Feature list — everything the plan includes, listed once. */}
         <div className="mt-10 max-w-md mx-auto">
           <p className="text-center text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Every plan includes
+            Everything included
           </p>
           <ul className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-2">
             {PLAN_FEATURES.map((f) => (
