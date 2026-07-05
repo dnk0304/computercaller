@@ -19,8 +19,13 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-// SEO metadata — dispatch 2026-05-25. Primary Ahrefs keyword
-// "make phone calls from your computer" lives in title + description.
+// SEO metadata — reworked 2026-07-05 for the Ahrefs "call from computer"
+// cluster ("call phone from computer" 1.2K, "call from computer" 1.2K,
+// "make a phone call from computer" 700, …). Title leads with "Call & Text
+// From Your Computer" and the description carries the natural long-tail
+// phrasing ("make a phone call from your computer", "call any phone number")
+// plus the $5/month price — we compete with free (Phone Link), so the price
+// IS the hook in the SERP snippet.
 // metadataBase makes Next resolve relative OG image URLs against the prod
 // origin so the Twitter / Facebook scrapers fetch absolute URLs.
 // `title.template` lets nested routes (e.g. /privacy) extend the brand
@@ -28,11 +33,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://computercaller.com"),
   title: {
-    default: "ComputerCaller — Make phone calls from your computer",
+    default: "Call & Text From Your Computer — Using Your Own Number | ComputerCaller",
     template: "%s · ComputerCaller",
   },
   description:
-    "Call any phone number from your computer or browser. ComputerCaller connects your phone to your computer — we never store your call logs, messages, or contacts. 7-day free trial.",
+    "Make a phone call from your computer — call any phone number from your browser using your own number and carrier. Texts and notifications too. 7-day free trial, then $5/month.",
   keywords: [
     "call phone from computer",
     "call from computer",
@@ -43,7 +48,11 @@ export const metadata: Metadata = {
     "call someone from computer",
     "how to make a phone call from computer",
     "call my phone from computer",
+    "call a phone number from computer",
+    "can i make a phone call from my computer",
+    "how to call from computer",
     "call phone from computer free",
+    "call from computer free",
   ],
   applicationName: "ComputerCaller",
   authors: [{ name: "ComputerCaller" }],
@@ -57,9 +66,9 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://computercaller.com/",
     siteName: "ComputerCaller",
-    title: "ComputerCaller — Make phone calls from your computer",
+    title: "Call & Text From Your Computer — Using Your Own Number",
     description:
-      "Call any phone number from your computer through your existing phone. We never store your calls, SMS, or contacts. 7-day free trial.",
+      "Make phone calls from your computer — any number, your own caller ID, through your existing phone and carrier. 7-day free trial, then $5/month.",
     images: [
       {
         url: "/brand/computercaller-hero-banner-v2-cropped.png",
@@ -72,9 +81,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "ComputerCaller — Make phone calls from your computer",
+    title: "Call & Text From Your Computer — Using Your Own Number",
     description:
-      "Call any phone number from your computer through your existing phone. We never store your calls, SMS, or contacts.",
+      "Make phone calls from your computer — any number, your own caller ID, through your existing phone and carrier. 7-day free trial, then $5/month.",
     images: ["/brand/computercaller-hero-banner-v2-cropped.png"],
   },
   robots: {

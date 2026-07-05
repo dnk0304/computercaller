@@ -96,8 +96,12 @@ const howItWorks = [
 
 const faqs = [
   {
-    q: 'How does ComputerCaller let me make a phone call from my computer?',
-    a: "ComputerCaller connects your phone to your computer. You install a small companion app on your phone, sign in to ComputerCaller in your browser, and the two pair securely. When you dial a number on your computer, your phone places the real call through your carrier — you just hear and speak through your laptop.",
+    q: 'Can I make a phone call from my computer?',
+    a: "Yes. ComputerCaller connects your phone to your computer so you can make a phone call from your computer to any real phone number. You install a small companion app on your phone, sign in to ComputerCaller in your browser, and the two pair securely. When you dial a number on your computer, your phone places the real call through your carrier — you just hear and speak through your laptop.",
+  },
+  {
+    q: 'How do I call someone from my computer?',
+    a: "Three steps: install the Android companion app on your phone, open ComputerCaller in your browser and sign in, then pair the two with one tap. From then on, to call someone from your computer you just type or paste their number into the dialer and hit call — your phone dials it through your carrier while you talk through your computer.",
   },
   {
     q: 'Do I need a new phone number?',
@@ -108,12 +112,12 @@ const faqs = [
     a: "No. ComputerCaller simply connects your phone to your computer. Your messages, contacts, call logs, and call audio never get stored on our servers. Everything stays on your phone — we only carry the live connection while you're actively using it.",
   },
   {
-    q: 'Is it free?',
+    q: 'Can I call from my computer for free?',
     // Waitlist mode: no price reaches the visible FAQ OR the JSON-LD, which is
-    // built from this same array. Flag off → paid answer with the three plans.
+    // built from this same array. Flag off → the $5/month single-plan answer.
     a: WAITLIST_MODE
       ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
-      : "ComputerCaller comes with a 7-day free trial. After the trial, choose the plan that suits you: $9/month, $25 for 3 months (about $8.33/month), or $90/year (about $7.50/month) — billed per the plan you pick, cancel any time. There is no usage-based fee on top — your call minutes come from your existing carrier plan.",
+      : "Your first 7 days are free. After the trial it's $5/month — cancel anytime. There is no usage-based fee on top: your call minutes come from your existing carrier plan, so a call from your computer costs the same as a call from your phone.",
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -133,7 +137,7 @@ const faqs = [
   },
   {
     q: 'How is this different from WhatsApp, Zoom, or Skype?',
-    a: "Those apps need both parties to install the same app — they only call other users of that app. ComputerCaller lets you call any regular phone number from your computer, because the call actually goes through your real cell phone and your real carrier. The person you're calling doesn't need to install anything.",
+    a: "Those apps need both parties to install the same app — they only call other users of that app. ComputerCaller lets you call any regular phone number from your computer, because the call actually goes through your real cell phone and your real carrier. The person you're calling doesn't need to install anything. And unlike Microsoft Phone Link, it runs in any browser on any computer — Windows, Mac, Linux, or Chromebook.",
   },
 ];
 
@@ -257,19 +261,15 @@ export default function LandingPage() {
         operatingSystem: 'Web, Android',
         url: 'https://computercaller.com',
         // In waitlist mode we omit the price `offers` entirely so no price
-        // reaches crawlers / structured data. Flag off → an AggregateOffer
-        // spanning the three plans ($9 monthly … $90 annual). AggregateOffer is
-        // the schema.org-correct shape for one product sold at several price
-        // points; lowPrice/highPrice bound the range, offerCount states how many.
+        // reaches crawlers / structured data. Flag off → a single Offer for
+        // the one $5/month plan (2026-07-05).
         ...(WAITLIST_MODE
           ? {}
           : {
               offers: {
-                '@type': 'AggregateOffer',
+                '@type': 'Offer',
+                price: '5.00',
                 priceCurrency: 'USD',
-                lowPrice: '9',
-                highPrice: '90',
-                offerCount: 3,
               },
             }),
         publisher: { '@id': 'https://computercaller.com/#organization' },
@@ -453,10 +453,10 @@ export default function LandingPage() {
           </h1>
 
           <p className="mt-6 text-lg sm:text-xl text-slate-200 max-w-2xl mx-auto leading-relaxed">
-            Pair your Android phone once — then make calls, send texts, and
-            clear notifications straight from your computer. The call still runs
-            through your own number and carrier; you just dial, talk, and type
-            from your browser.
+            Pair your Android phone once — then call any phone number, send
+            texts, and clear notifications straight from your computer. The
+            call still runs through your own number and carrier; you just dial,
+            talk, and type from your browser.
           </p>
 
           {WAITLIST_MODE ? (
@@ -695,8 +695,8 @@ export default function LandingPage() {
 
       {/* Pricing lives in a header-triggered pop-up now (<PricingModal>, Dennis
           2026-07-04) — the standalone section was removed from the body. The
-          pricing JSON-LD (AggregateOffer) STAYS in the head Script above, so
-          prices are still declared for SEO. */}
+          pricing JSON-LD (single Offer, 5.00 USD) STAYS in the head Script
+          above, so the price is still declared for SEO. */}
 
       {/* Reviews / testimonials — moved ABOVE the FAQ (2026-07-04 trim) so the
           order runs what+how (white) → Reviews (slate-50) → FAQ (white): social
@@ -781,7 +781,7 @@ export default function LandingPage() {
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
             {WAITLIST_MODE
               ? "We're opening the doors soon. Sign up on the waitlist — get a 30-day free trial when we launch."
-              : '7 days free. Cancel anytime. Pair your phone and you’re calling from your browser in under two minutes.'}
+              : '7 days free, then $5/month — cancel anytime. Pair your phone and you’re calling from your browser in under two minutes.'}
           </p>
           {WAITLIST_MODE ? (
             <div className="mt-8 mx-auto max-w-xl">
