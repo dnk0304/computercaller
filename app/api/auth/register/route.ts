@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-import { signEmailToken, requireSameOrigin, isEmailAllowed, isWaitlistMode } from '@/lib/auth';
+import { signEmailToken, requireSameOrigin, isEmailAllowed } from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 import { sendVerificationEmail, sendNewSignupAdminEmail } from '@/lib/email';
 
@@ -36,14 +36,12 @@ export async function POST(req: NextRequest) {
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
-    // WAITLIST_MODE gate (2026-06-15). When engaged (default, pre-Play-Store)
-    // we do NOT provision a free trial. Account still mints (allowlist already
-    // gated who gets here), but no trial/payment entitlement is granted. Flip
-    // WAITLIST_MODE=off in Coolify to restore the original 7-day trial with
-    // zero code redeploy. See lib/auth.ts isWaitlistMode.
-    const grantTrial = !isWaitlistMode();
+    // Card-first paywall (2026-07-06): signup NO LONGER provisions a trial
+    // subscription row. Fresh users have subscription=null → evaluateEntitlement
+    // rule (3) denies → proxy.ts bounces them to /subscribe, where the Whop
+    // embed starts the card-attached 7-day trial. The Whop webhook writes the
+    // subscription row once the card is on file.
 
     // Bundle A (2026-05-28) Phase 4 fix (C2): generate phoneToken in
     // application code — schema no longer carries a SQL default (the prior
@@ -73,11 +71,6 @@ export async function POST(req: NextRequest) {
         phoneToken,
         emailVerified: skipEmailVerification,
         signupIp,
-        // Original behavior (restored by WAITLIST_MODE=off): provision a
-        // 7-day trial on signup. Flagged, not deleted.
-        ...(grantTrial
-          ? { subscription: { create: { status: 'trial', trialEndsAt } } }
-          : {}),
       },
     });
 

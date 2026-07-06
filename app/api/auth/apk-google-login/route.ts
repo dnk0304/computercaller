@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { db } from '@/lib/db';
 import { verifyIdToken } from '@/lib/google';
 import { sendNewSignupAdminEmail } from '@/lib/email';
-import { isEmailAllowed, isWaitlistMode } from '@/lib/auth';
+import { isEmailAllowed } from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 
 /**
@@ -106,17 +106,13 @@ export async function POST(req: NextRequest) {
         });
       } else {
         // Branch c — brand-new user. Mirror /api/auth/google/callback exactly:
-        // passwordHash=null, fresh 32-byte base64url phoneToken, 7-day trial.
-        // Dennis approved auto-create at dispatch time.
-        const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        // passwordHash=null, fresh 32-byte base64url phoneToken. Card-first
+        // paywall (2026-07-06): NO subscription row on create — the user must
+        // start the card-attached trial via the /subscribe Whop embed on the
+        // web; the Whop webhook writes the subscription row.
         const phoneToken = crypto.randomBytes(32).toString('base64url');
         // IP capture (2026-07-03) — signup IP for the same-IP abuse flag.
         const signupIp = getClientIp(req);
-        // WAITLIST_MODE gate (2026-06-15). When engaged (default, pre-Play-
-        // Store) suppress the trial grant — account mints, no trial/payment
-        // entitlement. Flip WAITLIST_MODE=off in Coolify to restore. Original
-        // trial logic flagged, not deleted. See lib/auth.ts isWaitlistMode.
-        const grantTrial = !isWaitlistMode();
         user = await db.user.create({
           data: {
             email,
@@ -126,10 +122,6 @@ export async function POST(req: NextRequest) {
             googleId,
             authProvider: 'google',
             signupIp,
-            // Original behavior (restored by WAITLIST_MODE=off): 7-day trial.
-            ...(grantTrial
-              ? { subscription: { create: { status: 'trial', trialEndsAt } } }
-              : {}),
           },
           include: { subscription: true },
         });
