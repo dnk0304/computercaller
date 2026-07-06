@@ -220,8 +220,31 @@ android {
         // MMS instead of re-returning the newest. SMS path + the address-filtered
         // per-thread path are unchanged (L97 short-circuit untouched). No protocol
         // shape change — `before` was already parsed by the v26 per-thread paging.
-        versionCode = 35
-        versionName = "1.0.12"
+        // Sign in with Google (2026-07-06): 35 -> 43 / 1.0.12 -> 1.0.20.
+        // NOTE: versionCode jumps 35 -> 43 ON PURPOSE — integers 36-42 were
+        // consumed by APKs/AABs shipped off divergent branches (apk-releases/
+        // holds up to computercaller-v42-1.0.19-prod.aab), so 43 is the next
+        // collision-free integer. Same precedent as the 32 -> 34 jump above.
+        // Feature: "Continue with Google" on SignInActivity via AndroidX
+        // Credential Manager + GetGoogleIdOption. The Google ID token is
+        // POSTed to /api/auth/apk-google-login which verifies it (audience =
+        // WEB client ID) and returns the same {phoneToken, deviceName} shape
+        // as /api/auth/apk-login — the existing TokenStore path is reused
+        // unchanged. Email/password login remains as fallback.
+        versionCode = 43
+        versionName = "1.0.20"
+
+        // Google OAuth WEB client ID (NOT the Android client). Credential
+        // Manager's GetGoogleIdOption.serverClientId must be the web client
+        // so the minted ID token's `aud` matches what the server verifies
+        // (lib/google.ts checks aud == process.env.GOOGLE_CLIENT_ID).
+        // Value sourced from the prod OAuth redirect capture (Niki artifacts,
+        // google-login-redirect-uri-mismatch-2026-05-30.md).
+        buildConfigField(
+            "String",
+            "GOOGLE_WEB_CLIENT_ID",
+            "\"69483293308-lg5cnvbq9134huu1ndo94btdmf2go8uh.apps.googleusercontent.com\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -311,6 +334,15 @@ dependencies {
     // EncryptedSharedPreferences (AES-256-GCM, keys held in the Android
     // Keystore / TEE). See TokenStore.kt for the wrapper.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Sign in with Google (2026-07-06, v43) — AndroidX Credential Manager
+    // plus the Play Services bridge that actually talks to the on-device
+    // Google account, and Google's googleid lib providing GetGoogleIdOption /
+    // GoogleIdTokenCredential. We use the callback-based getCredentialAsync
+    // API so no coroutines dependency is needed.
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

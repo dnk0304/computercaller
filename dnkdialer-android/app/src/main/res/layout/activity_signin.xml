@@ -62,6 +62,31 @@
             android:lineSpacingMultiplier="1.3"
             android:layout_marginBottom="32dp" />
 
+        <!-- Continue with Google (2026-07-06, v43). Primary path — one tap,
+             same Google account as the web. Email/password below remains as
+             the fallback. -->
+        <Button
+            android:id="@+id/googleSignInButton"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="@string/signin_google_action"
+            android:textSize="16sp"
+            android:textColor="@color/text_primary"
+            android:textAllCaps="false"
+            android:fontFamily="sans-serif-medium"
+            android:backgroundTint="@color/surface_inset"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Divider between Google and the email fallback -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/signin_divider_or"
+            android:textSize="12sp"
+            android:textColor="@color/text_tertiary"
+            android:gravity="center"
+            android:layout_marginBottom="20dp" />
+
         <!-- Email -->
         <EditText
             android:id="@+id/emailField"

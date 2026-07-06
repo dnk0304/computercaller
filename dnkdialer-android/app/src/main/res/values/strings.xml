@@ -221,6 +221,12 @@
     <string name="signin_error_invalid">Invalid email or password.</string>
     <string name="signin_error_unverified">Please verify your email on computercaller.com first, then come back.</string>
     <string name="signin_error_generic">Sign-in failed. Try again.</string>
+    <string name="signin_google_action">Continue with Google</string>
+    <string name="signin_google_loading">Waiting for Google…</string>
+    <string name="signin_divider_or">or sign in with email</string>
+    <string name="signin_error_google_unavailable">No Google account available on this device. Add one in Settings, or sign in with email below.</string>
+    <string name="signin_error_google_rejected">Google sign-in was not accepted. Try again, or sign in with email below.</string>
+    <string name="signin_error_google_blocked">This Google account isn\'t verified or allowed yet. Check computercaller.com.</string>
     <string name="signin_footer">Don\'t have an account? Sign up at computercaller.com first, then come back here.</string>
 
     <!-- Sign-out menu item replaces "Disconnect and refresh" once       -->
