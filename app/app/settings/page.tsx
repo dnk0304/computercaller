@@ -506,19 +506,18 @@ export default function SettingsPage() {
           browser.
         </p>
         <a
-          href="/api/download/apk"
+          href="https://play.google.com/store/apps/details?id=com.dnkdialer.companion&hl=en"
+          target="_blank"
+          rel="noopener noreferrer"
           className="inline-flex items-center justify-center gap-2 w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-xl transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
-          // No `download` attribute needed — the server route sets
-          // Content-Disposition: attachment, which forces the browser to save
-          // rather than navigate. Also avoids the empty href issue if JS is off.
         >
           <Download className="w-4 h-4" aria-hidden="true" />
-          Download APK
+          Get it on Google Play
         </a>
         <p className="mt-2 text-[11px] text-slate-400 leading-relaxed">
-          On desktop? Open this page on your Android phone to download the
-          APK directly. Android 8.0 or newer — you may need to allow installs
-          from your browser the first time.
+          On desktop? Open the Google Play link on your Android phone, or
+          search for &ldquo;ComputerCaller&rdquo; in the Play Store. Android
+          8.0 or newer.
         </p>
       </section>
 
