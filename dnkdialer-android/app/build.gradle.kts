@@ -258,8 +258,22 @@ android {
         // SMS, instead of landing as a separate notification card. SIDELOAD for
         // Dennis to verify — NOT a Play upload. No new permissions. Built on the
         // v40 (9ba9d12) lineage.
-        versionCode = 41
-        versionName = "1.0.18"
+        // v42 (1.0.19) — Play "Active-limbo" escape rebuild (2026-06-22). Bundle
+        // 40 (1.0.17) uploaded clean but Play flagged it "Active / 1 release",
+        // hiding it from the Production "Add from library" picker AND refusing to
+        // render it in a release slot, so v40 could not be attached to a
+        // Production release via console. Fix (Pilot): upload a FRESH,
+        // never-consumed AAB with a higher versionCode so a new library bundle
+        // appears cleanly and bypasses the lock. IDENTICAL code to v40 (this same
+        // demo-verifiable SyncedDataActivity lineage) — NO RCS changes (the
+        // untested v41 sideload on forge/rcs-sms-merge-on-v40 is deliberately
+        // excluded), NO manifest / permission changes (Play permissions
+        // declaration is for this exact set). 41 is skipped — reserved by the v41
+        // RCS sideload test build to avoid confusion; Play's highest is 40 so 42
+        // is a valid strictly-higher code. Signed with the SAME release
+        // keystore/cert as v40.
+        versionCode = 42
+        versionName = "1.0.19"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
