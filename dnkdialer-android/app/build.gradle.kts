@@ -272,8 +272,30 @@ android {
         // RCS sideload test build to avoid confusion; Play's highest is 40 so 42
         // is a valid strictly-higher code. Signed with the SAME release
         // keystore/cert as v40.
-        versionCode = 42
-        versionName = "1.0.19"
+        // Sign in with Google (2026-07-06): "Continue with Google" on
+        // SignInActivity via AndroidX Credential Manager + GetGoogleIdOption.
+        // The Google ID token is POSTed to /api/auth/apk-google-login which
+        // verifies it (audience = WEB client ID) and returns the same
+        // {phoneToken, deviceName} shape as /api/auth/apk-login - the existing
+        // TokenStore path is reused unchanged. Email/password login remains as
+        // fallback. (Was v43/1.0.20 on the worktree branch.)
+        // v44 (1.0.21) - RECONCILIATION release: the divergent shipped v36-v42
+        // Android line (forge/* branches) merged back into feature/saas-
+        // multiuser, PLUS Google sign-in (v43), PLUS Bundle-C security
+        // hardening that the side line had dropped (Bearer-capable TokenStore,
+        // network_security_config, data_extraction_rules, allowBackup=false).
+        versionCode = 44
+        versionName = "1.0.21"
+
+        // Google OAuth WEB client ID (NOT the Android client). Credential
+        // Manager's GetGoogleIdOption.serverClientId must be the web client
+        // so the minted ID token's `aud` matches what the server verifies
+        // (lib/google.ts checks aud == process.env.GOOGLE_CLIENT_ID).
+        buildConfigField(
+            "String",
+            "GOOGLE_WEB_CLIENT_ID",
+            "\"69483293308-lg5cnvbq9134huu1ndo94btdmf2go8uh.apps.googleusercontent.com\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -363,6 +385,15 @@ dependencies {
     // EncryptedSharedPreferences (AES-256-GCM, keys held in the Android
     // Keystore / TEE). See TokenStore.kt for the wrapper.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Sign in with Google (2026-07-06, v43) — AndroidX Credential Manager
+    // plus the Play Services bridge that actually talks to the on-device
+    // Google account, and Google's googleid lib providing GetGoogleIdOption /
+    // GoogleIdTokenCredential. We use the callback-based getCredentialAsync
+    // API so no coroutines dependency is needed.
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
