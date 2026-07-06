@@ -77,27 +77,6 @@ class PhoneService : Service() {
          * on a phone the user walked away from.
          */
         private const val PENDING_REQUEST_TIMEOUT_MS = 30_000L
-
-        /**
-         * Bundle C (2026-05-28) - Phase 4 audit fix M13. Phone numbers and
-         * MMS addresses are PII; release Log.d statements that previously
-         * included them in plaintext now use this helper.
-         *
-         *   - Debug build: returns the value unchanged so developers can
-         *     trace call routing in logcat.
-         *   - Release build: returns "***NNNN" (last 4 digits) so partial
-         *     correlation is still possible across log lines without leaking
-         *     the full number. Empty/null returns "<empty>".
-         *
-         * Use [redactNumber] for E.164 / national-format phone strings.
-         * Wrap broader PII-carrying log lines with `if (BuildConfig.DEBUG)`.
-         */
-        fun redactNumber(num: String?): String {
-            if (num.isNullOrEmpty()) return "<empty>"
-            if (BuildConfig.DEBUG) return num
-            val digits = num.filter { it.isDigit() }
-            return if (digits.length <= 4) "***" else "***${digits.takeLast(4)}"
-        }
     }
 
     /**
@@ -289,6 +268,9 @@ class PhoneService : Service() {
                     android.util.Log.d("PhoneService", "TelephonyCallback state: $state source=modern")
                     when (state) {
                         android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
+                            // v37 (A3): reconcile expired ringing entries on every
+                            // aggregate state callback.
+                            reconcileRingingExpiry("modern-RINGING")
                             // ITEM A (2026-06-03) — call-waiting branch. If a call
                             // is already active (callAnsweredSentRef==true) when
                             // RINGING fires, this is the call-waiting case (call #2
@@ -301,15 +283,14 @@ class PhoneService : Service() {
                             if (callAnsweredSentRef.get()) {
                                 android.util.Log.d("PhoneService", "TelephonyCallback RINGING during active call — call-waiting path (source=modern)")
                                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    // QUEUE (v34): the modern listener has NO
-                                    // number, so it can only be the last-resort
-                                    // registrar for a hidden/legacy-dead waiting
-                                    // call. Register a number="" waiting entry
-                                    // ONLY if nothing new was tracked in this
-                                    // window (legacy path almost always wins and
-                                    // already added the entry with the real
-                                    // number). We detect "legacy already handled"
-                                    // via the legacy callWaitingSentRef latch.
+                                    // QUEUE (v34): the modern listener has NO number,
+                                    // so it can only be the last-resort registrar for
+                                    // a hidden/legacy-dead waiting call. Register a
+                                    // number="" waiting entry ONLY if nothing new was
+                                    // tracked in this window (legacy path almost always
+                                    // wins and already added the entry with the real
+                                    // number). We detect "legacy already handled" via
+                                    // the legacy callWaitingSentRef latch.
                                     if (callWaitingSentRef.compareAndSet(false, true)) {
                                         registryOnRinging("", "incoming")
                                         val isViaClient = client?.isOpen == true
@@ -346,12 +327,12 @@ class PhoneService : Service() {
                                 // (Outgoing dialing transitions through RINGING on
                                 // some OEMs.) Safe to emit immediately.
                                 if (callIncomingSentRef.compareAndSet(false, true)) {
-                                    // QUEUE (v34): outgoing call with a known
-                                    // number (MAKE_CALL cached it) — register it.
+                                    // QUEUE (v34): outgoing call with a known number
+                                    // (MAKE_CALL cached it) — register it.
                                     registryOnRinging(cachedOutgoing, "outgoing")
                                     val isViaClient = client?.isOpen == true
                                     sendResponse("CALL_INCOMING", mapOf("number" to cachedOutgoing, "name" to ""), isViaClient)
-                                    android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[${redactNumber(cachedOutgoing)}] state=RINGING source=modern path=outgoing-cached")
+                                    android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[$cachedOutgoing] state=RINGING source=modern path=outgoing-cached")
                                 } else {
                                     android.util.Log.d("PhoneService", "TelephonyCallback RINGING — CALL_INCOMING already sent, skipping (source=modern)")
                                 }
@@ -365,15 +346,15 @@ class PhoneService : Service() {
                                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                                     if (callIncomingSentRef.compareAndSet(false, true)) {
                                         val fallbackNum = currentCallNumber ?: ""
-                                        // QUEUE (v34): last-resort registrar for
-                                        // the FIRST incoming call when the legacy
-                                        // listener never delivered (number likely
-                                        // hidden). Fires only if legacy hasn't —
-                                        // gated by the same callIncomingSentRef.
+                                        // QUEUE (v34): last-resort registrar for the
+                                        // FIRST incoming call when the legacy listener
+                                        // never delivered (number likely hidden). Fires
+                                        // only if legacy hasn't — gated by the same
+                                        // callIncomingSentRef.
                                         registryOnRinging(fallbackNum, "incoming")
                                         val isViaClient = client?.isOpen == true
                                         sendResponse("CALL_INCOMING", mapOf("number" to fallbackNum, "name" to ""), isViaClient)
-                                        android.util.Log.w("PhoneService", "CALL_INCOMING fired: number=[${redactNumber(fallbackNum)}] state=RINGING source=modern-fallback (legacy listener didn't deliver — number likely hidden)")
+                                        android.util.Log.w("PhoneService", "CALL_INCOMING fired: number=[$fallbackNum] state=RINGING source=modern-fallback (legacy listener didn't deliver — number likely hidden)")
                                     } else {
                                         android.util.Log.d("PhoneService", "TelephonyCallback modern-fallback skipped — legacy listener already delivered (source=modern-fallback)")
                                     }
@@ -382,16 +363,26 @@ class PhoneService : Service() {
                         }
                         android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
                             callEndedSentRef.set(false)
-                            if (callAnsweredSentRef.compareAndSet(false, true)) {
+                            // v37 (A3): reconcile expired ringing entries first.
+                            reconcileRingingExpiry("modern-OFFHOOK")
+                            val num = currentCallNumber ?: ""
+                            // QUEUE (v34→v37): the registry pass now runs on EVERY
+                            // modern OFFHOOK (not just the first CAS winner) —
+                            // mirroring the legacy listener — because v37/A1 makes
+                            // it idempotent: repeated empty-number OFFHOOKs while a
+                            // call is active are re-asserts (skipped), and
+                            // empty-number OFFHOOKs with no ringing entry are
+                            // self-managed VoIP calls (ignored, v37/A4). No more
+                            // mint-per-callback flood.
+                            val offhookOutcome = registryOnOffhook(num, if (num.isNotEmpty()) "outgoing" else "incoming")
+                            if (offhookOutcome == OffhookOutcome.VOIP_IGNORED && currentCallNumber == null) {
+                                // v37 (A4): mirror the legacy suppression — no
+                                // CALL_ANSWERED for an untracked VoIP call.
+                                android.util.Log.d("PhoneService", "TelephonyCallback OFFHOOK — self-managed VoIP call (no number, no tracked call) — suppressing CALL_ANSWERED (source=modern)")
+                            } else if (callAnsweredSentRef.compareAndSet(false, true)) {
                                 val isViaClient = client?.isOpen == true
-                                val num = currentCallNumber ?: ""
-                                // QUEUE (v34): promote to active. Modern path has
-                                // no incoming number, so num is "" for inbound;
-                                // registryOnOffhook then falls back to the most-
-                                // recently-ringing entry (best-effort).
-                                registryOnOffhook(num, if (num.isNotEmpty()) "outgoing" else "incoming")
                                 sendResponse("CALL_ANSWERED", mapOf("number" to num), isViaClient)
-                                android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[${redactNumber(num)}] state=OFFHOOK source=modern")
+                                android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[$num] state=OFFHOOK source=modern")
 
                                 // Apply speakerphone preference — mirrors the legacy
                                 // listener so OFFHOOK from either path honors it.
@@ -407,6 +398,9 @@ class PhoneService : Service() {
                             }
                         }
                         android.telephony.TelephonyManager.CALL_STATE_IDLE -> {
+                            // v37 (A3): expired ringing entries leave as "missed"
+                            // before the foreground-end + sweep runs.
+                            reconcileRingingExpiry("modern-IDLE")
                             if (callEndedSentRef.compareAndSet(false, true)) {
                                 val isViaClient = client?.isOpen == true
                                 val num = currentCallNumber ?: ""
@@ -416,12 +410,16 @@ class PhoneService : Service() {
                                 // and the browser falls back to clearing the active call.
                                 val endedPayload: Map<String, Any> = if (num.isNotEmpty()) mapOf("number" to num) else emptyMap()
                                 sendResponse("CALL_ENDED", endedPayload, isViaClient)
-                                // QUEUE (v34): aggregate IDLE -> remove all.
-                                registryOnIdle("idle")
+                                // QUEUE (v36 multicall-teardown fix): IDLE is the
+                                // AGGREGATE state but during a call-waiting hang-up it
+                                // is transient — end ONLY the foreground call and arm a
+                                // debounced sweep for genuine leftovers. Was
+                                // registryOnIdle("idle") which wiped ALL calls.
+                                registryOnIdleEndForeground("idle")
                                 currentCallNumber = null
                                 currentCallSpeaker = false
                                 clearSpeakerphoneOnEnd()
-                                android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[${redactNumber(num)}] state=IDLE source=modern")
+                                android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[$num] state=IDLE source=modern")
                             } else {
                                 android.util.Log.d("PhoneService", "TelephonyCallback IDLE — CALL_ENDED already sent, skipping")
                             }
@@ -1059,7 +1057,16 @@ class PhoneService : Service() {
         var name: String,
         val direction: String,
         var state: String,
-        val startTime: Long
+        val startTime: Long,
+        // v37 (A2): epoch-ms after which a STILL-RINGING entry is considered
+        // abandoned/missed/answered-elsewhere and is reconciled away (Path A
+        // has no per-leg end event, so without an expiry a background ringing
+        // leg that gives up mid-call would persist forever). 0 = no expiry
+        // (entries minted directly as "active"). Refreshed on every ringing
+        // re-confirmation; shortened to RINGING_AMBIGUOUS_EXPIRY_MS when the
+        // ambiguous RINGING→OFFHOOK-while-active transition fires (see
+        // registryOnOffhook). Only consulted while state == "ringing".
+        var ringingExpiresAt: Long = 0L
     )
 
     /** callId -> entry. Guarded by [callRegistryLock]; both the legacy and the
@@ -1081,18 +1088,25 @@ class PhoneService : Service() {
         callRegistry.values.firstOrNull { it.number == number && it.state != "ended" }
 
     /**
-     * Upsert a call on a RINGING transition. Returns the (new or existing)
-     * entry. Emits CALL_ADD for genuinely new calls only. Caller need NOT hold
-     * the lock — this method takes it.
+     * Upsert a call on a RINGING transition. Emits CALL_ADD for genuinely new
+     * calls only. Caller need NOT hold the lock — this method takes it.
      */
     private fun registryOnRinging(number: String, direction: String) {
+        // A fresh call is arriving — if a debounced idle-sweep is pending (we just
+        // ended the foreground of a multi-call set), cancel it: the survivors are
+        // real and the line is NOT idle.
+        cancelIdleSweep()
         val entry: CallEntry
         val isNew: Boolean
         synchronized(callRegistryLock) {
             val existing = findEntryByNumber(number)
             if (existing != null && existing.state == "ringing") {
                 // Same call still ringing (duplicate transition from the other
-                // observer) — no new entry, no duplicate CALL_ADD.
+                // observer) — no new entry, no duplicate CALL_ADD. v37 (A2):
+                // a ringing RE-CONFIRMATION refreshes the expiry clock, so a
+                // genuinely still-ringing call is never expired out from under
+                // the caller.
+                existing.ringingExpiresAt = System.currentTimeMillis() + RINGING_EXPIRY_MS
                 return
             }
             entry = CallEntry(
@@ -1101,57 +1115,321 @@ class PhoneService : Service() {
                 name = "",
                 direction = direction,
                 state = "ringing",
-                startTime = System.currentTimeMillis()
+                startTime = System.currentTimeMillis(),
+                // v37 (A2): every ringing entry is born with an expiry.
+                ringingExpiresAt = System.currentTimeMillis() + RINGING_EXPIRY_MS
             )
             callRegistry[entry.callId] = entry
             isNew = true
         }
         if (isNew) emitCallAdd(entry)
+        // v37 (A2): a ringing entry now exists — make sure the periodic
+        // reconcile tick is armed (belt-and-braces against missed callbacks).
+        rearmRingingReconcileTick()
+    }
+
+    /** Outcome of an OFFHOOK registry pass — drives legacy-frame suppression
+     *  at the call sites (A4: no CALL_ANSWERED for an untracked VoIP call). */
+    private enum class OffhookOutcome {
+        /** An entry was promoted/minted — normal path, emit CALL_UPDATE/ANSWERED. */
+        PROMOTED,
+        /** v37 (A1): empty-number OFFHOOK while an ACTIVE entry exists — the
+         *  aggregate state re-asserting. NOT promoted, NOT minted. */
+        REASSERT_SKIPPED,
+        /** v37 (A4): empty-number OFFHOOK with NO ringing and NO active entry —
+         *  self-managed VoIP call (WhatsApp/Telegram). Ignored entirely. */
+        VOIP_IGNORED
     }
 
     /**
      * Mark a call ACTIVE on an OFFHOOK transition. Because the platform does
      * not tell us WHICH call went off-hook, we pick the best candidate:
      *   1. the entry matching `number` (the legacy listener's number, if any),
-     *   2. else the most-recently-added ringing entry,
-     *   3. else (outgoing with no prior RINGING on some OEMs) create one.
+     *   2. else — ONLY when no entry is already active (v37/A1) — the
+     *      most-recently-added ringing entry,
+     *   3. else (outgoing with no prior RINGING on some OEMs) create one —
+     *      ONLY for a non-empty number (v37/A4: an empty-number OFFHOOK with
+     *      no ringing entry is a self-managed VoIP call — never minted).
      * Emits CALL_UPDATE for the chosen entry.
+     *
+     * v37 (A1) — the false-promotion fix: RINGING→OFFHOOK with an empty number
+     * while a call is already active is AMBIGUOUS under Path A — it can mean
+     * "the waiting caller gave up" OR "the user answered the waiting call on
+     * the handset". We cannot distinguish them, so we choose expiry over
+     * persistence: do NOT promote (a falsely-ACTIVE stale chip was Dennis's
+     * bug), and shorten every ringing entry's expiry to
+     * RINGING_AMBIGUOUS_EXPIRY_MS so a genuine handset swap-answer has a brief
+     * survival window (rescued by ringing re-confirmation) while abandoned
+     * ringers clear fast. Unambiguous answers still promote: web-ANSWER goes
+     * through registryPromoteOldestRingingOnWebAnswer(), and a number-carrying
+     * OFFHOOK matches byNumber above.
      */
-    private fun registryOnOffhook(number: String, direction: String) {
-        val entry: CallEntry
+    private fun registryOnOffhook(number: String, direction: String): OffhookOutcome {
+        // A leg stepped up to active — cancel any pending idle-sweep so the
+        // survivors of a transient IDLE are not torn down. This runs on EVERY
+        // outcome (including the skip/ignore branches): the aggregate line is
+        // demonstrably not idle.
+        cancelIdleSweep()
+        val entry: CallEntry?
+        val outcome: OffhookOutcome
         synchronized(callRegistryLock) {
             val byNumber = if (number.isNotEmpty()) findEntryByNumber(number) else null
-            val chosen = byNumber
-                ?: callRegistry.values.lastOrNull { it.state == "ringing" }
-                ?: CallEntry(
-                    callId = synthCallId(),
-                    number = number,
-                    name = "",
-                    direction = direction,
-                    state = "active",
-                    startTime = System.currentTimeMillis()
-                ).also { callRegistry[it.callId] = it; emitCallAddLocked(it); }
-            if (chosen.state != "active") {
-                chosen.state = "active"
-                if (chosen.number.isEmpty() && number.isNotEmpty()) chosen.number = number
+            val hasActive = callRegistry.values.any { it.state == "active" }
+            if (byNumber != null) {
+                // Number-carrying OFFHOOK is unambiguous — promote that entry.
+                if (byNumber.state != "active") byNumber.state = "active"
+                entry = byNumber
+                outcome = OffhookOutcome.PROMOTED
+            } else if (number.isEmpty() && hasActive) {
+                // v37 (A1): aggregate re-assert while a call is already active.
+                // Do NOT promote, do NOT mint. Shorten ringing expiries (A2) —
+                // this is the ambiguous "ringing stopped" transition.
+                val now = System.currentTimeMillis()
+                var shortened = 0
+                for (e in callRegistry.values) {
+                    if (e.state == "ringing") {
+                        val cap = now + RINGING_AMBIGUOUS_EXPIRY_MS
+                        if (e.ringingExpiresAt == 0L || e.ringingExpiresAt > cap) {
+                            e.ringingExpiresAt = cap
+                            shortened++
+                        }
+                    }
+                }
+                android.util.Log.d("PhoneService", "registryOnOffhook: empty-number OFFHOOK with an active entry — aggregate re-assert, skipping promotion (A1); shortened expiry of $shortened ringing entr(ies) to ${RINGING_AMBIGUOUS_EXPIRY_MS}ms")
+                entry = null
+                outcome = OffhookOutcome.REASSERT_SKIPPED
+            } else {
+                val ringing = callRegistry.values.lastOrNull { it.state == "ringing" }
+                if (ringing != null) {
+                    // No active entry exists — the classic hidden-number answer.
+                    ringing.state = "active"
+                    if (ringing.number.isEmpty() && number.isNotEmpty()) ringing.number = number
+                    entry = ringing
+                    outcome = OffhookOutcome.PROMOTED
+                } else if (number.isNotEmpty()) {
+                    // Outgoing with no prior RINGING on some OEMs — mint.
+                    entry = CallEntry(
+                        callId = synthCallId(),
+                        number = number,
+                        name = "",
+                        direction = direction,
+                        state = "active",
+                        startTime = System.currentTimeMillis()
+                    ).also { callRegistry[it.callId] = it; emitCallAdd(it) }
+                    outcome = OffhookOutcome.PROMOTED
+                } else {
+                    // v37 (A4): OFFHOOK with no number and no ringing entry —
+                    // a genuine hidden-number SIM call ALWAYS rings first, so
+                    // this is a self-managed VoIP call (WhatsApp/Telegram).
+                    // The app is a SIM mirror — it cannot answer/end/SMS-reply
+                    // a VoIP call, so it must not appear in the queue.
+                    android.util.Log.d("PhoneService", "OFFHOOK with no number and no ringing entry — assuming self-managed VoIP call, ignoring (registry)")
+                    entry = null
+                    outcome = OffhookOutcome.VOIP_IGNORED
+                }
             }
-            entry = chosen
         }
-        emitCallUpdate(entry.callId, entry.state)
+        if (entry != null) emitCallUpdate(entry.callId, entry.state)
+        return outcome
     }
 
     /**
-     * Tear down ALL tracked calls on an IDLE transition. IDLE is AGGREGATE —
-     * it means zero calls remain on the device, so every entry is removed.
-     * Emits one CALL_REMOVE per entry. Returns nothing.
+     * v37 (A1 exception): the web sent ANSWER_CALL. Unlike the aggregate
+     * OFFHOOK heuristics, a web-initiated answer is UNAMBIGUOUS — the user
+     * answered a ringing call. acceptRingingCall() targets the platform's
+     * current ringing call, which is the OLDEST one we registered, so promote
+     * the oldest ringing entry. (Plumbing a specific callId through the
+     * ANSWER_CALL command was considered and rejected: the web's answerCall()
+     * surface is call-agnostic under Path A anyway — documented tradeoff.)
+     * Optimistic: if the platform answer fails, the entry is rescued back by
+     * ringing re-confirmation or expired by A2 — never stuck.
      */
-    private fun registryOnIdle(reason: String) {
-        val toRemove: List<CallEntry>
+    private fun registryPromoteOldestRingingOnWebAnswer() {
+        val promoted: CallEntry?
         synchronized(callRegistryLock) {
-            toRemove = callRegistry.values.toList()
-            callRegistry.clear()
+            promoted = callRegistry.values.firstOrNull { it.state == "ringing" }
+            promoted?.state = "active"
         }
-        for (e in toRemove) emitCallRemove(e.callId, reason)
+        if (promoted != null) {
+            emitCallUpdate(promoted.callId, "active")
+            android.util.Log.d("PhoneService", "web-ANSWER: promoted oldest ringing entry callId=${promoted.callId} to active (unambiguous answer)")
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RINGING-ENTRY EXPIRY + RECONCILE (v37, A2/A3)
+    // -----------------------------------------------------------------------
+    // Path A has NO per-leg end event: a background ringing caller that hangs
+    // up mid-call produces only RINGING→OFFHOOK on the aggregate listener —
+    // IDLE never fires, so registryOnIdleEndForeground never runs and the
+    // entry would persist for the whole foreground call (Dennis's stale-chip
+    // bug). Expiry is the chosen tradeoff: a falsely-expired chip is
+    // recoverable and low-harm; a falsely-persisting chip is the bug.
+
+    /** Hard ceiling for a ringing entry that never transitions to active.
+     *  Android's unanswered-ring timeout is ~30s; 65s gives ample margin for
+     *  long custom ring durations before we declare the call missed. */
+    private val RINGING_EXPIRY_MS = 65_000L
+
+    /** Shortened expiry applied when the ambiguous RINGING→OFFHOOK-while-
+     *  active transition fires (waiting caller gave up OR handset swap-
+     *  answer — indistinguishable). Long enough for a genuine swap-answer to
+     *  be rescued by a ringing/OFFHOOK re-confirmation; short enough that an
+     *  abandoned ringer clears fast. */
+    private val RINGING_AMBIGUOUS_EXPIRY_MS = 10_000L
+
+    /** Periodic reconcile cadence while ringing entries exist — belt-and-
+     *  braces against missed/jittered telephony callbacks (Doze, handler
+     *  delays). Reconcile ALSO runs synchronously on every aggregate state
+     *  callback (A3). */
+    private val RINGING_RECONCILE_TICK_MS = 5_000L
+    private val ringingReconcileHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var ringingReconcileRunnable: Runnable? = null
+
+    /**
+     * Remove every ringing entry whose expiry has passed (A2), emitting
+     * CALL_REMOVE("missed") for each. Cheap: O(registry size), no allocation
+     * on the happy path. Re-arms (or disarms) the periodic tick afterwards.
+     */
+    private fun reconcileRingingExpiry(trigger: String) {
+        val now = System.currentTimeMillis()
+        val expired: List<CallEntry>
+        synchronized(callRegistryLock) {
+            expired = callRegistry.values.filter {
+                it.state == "ringing" && it.ringingExpiresAt in 1..now
+            }
+            for (e in expired) callRegistry.remove(e.callId)
+        }
+        for (e in expired) {
+            android.util.Log.d("PhoneService", "ringing expiry: callId=${e.callId} number=[${e.number}] exceeded its expiry — removing as missed (trigger=$trigger)")
+            emitCallRemove(e.callId, "missed")
+        }
+        rearmRingingReconcileTick()
+    }
+
+    /** Arm the periodic reconcile tick iff a ringing entry exists; disarm
+     *  otherwise. Idempotent — safe to call from any path. */
+    private fun rearmRingingReconcileTick() {
+        val anyRinging = synchronized(callRegistryLock) {
+            callRegistry.values.any { it.state == "ringing" }
+        }
+        if (!anyRinging) {
+            cancelRingingReconcileTick()
+            return
+        }
+        if (ringingReconcileRunnable != null) return // already armed
+        val r = Runnable {
+            ringingReconcileRunnable = null
+            reconcileRingingExpiry("tick")
+        }
+        ringingReconcileRunnable = r
+        ringingReconcileHandler.postDelayed(r, RINGING_RECONCILE_TICK_MS)
+    }
+
+    /** Cancel the periodic reconcile tick (no ringing entries / onDestroy). */
+    private fun cancelRingingReconcileTick() {
+        ringingReconcileRunnable?.let {
+            ringingReconcileHandler.removeCallbacks(it)
+            ringingReconcileRunnable = null
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PER-CALL DEBOUNCED TEARDOWN (2026-06-11, multicall-teardown fix)
+    // -----------------------------------------------------------------------
+    // THE BUG this replaces: the previous registryOnIdle() assumed "IDLE is
+    // AGGREGATE — zero calls remain", so it did callRegistry.clear() + a
+    // CALL_REMOVE for EVERY entry. That assumption is FALSE during a multi-call
+    // transition: when the user ends call #1 while call #2 is still waiting/held,
+    // the listener momentarily reports CALL_STATE_IDLE (the active leg dropped)
+    // BEFORE re-reporting OFFHOOK/RINGING for the call stepping up. The old code
+    // wiped call #2 on that transient IDLE — Dennis's reported bug.
+    //
+    // PATH A FIX (no InCallService / no default-dialer — Dennis-approved):
+    //   1. On IDLE, end ONLY the foreground entry (prefer state=="active", else
+    //      the most-recently-added non-ended entry). Emit CALL_REMOVE for that
+    //      ONE call. Survivors stay in the registry.
+    //   2. Arm a short debounced "sweep" (IDLE_SWEEP_MS). If a fresh
+    //      RINGING/OFFHOOK arrives within the window, the next call stepped up —
+    //      cancel the sweep, survivors are real. If the line is STILL idle when
+    //      the sweep fires, those leftovers are a genuine all-calls-ended case —
+    //      clear them (CALL_REMOVE each).
+    //
+    // LIMITATION (documented for Ken): this does NOT make the HANG-UP itself
+    // per-call targetable — telecomManager.endCall() is still phone-wide. But it
+    // fixes the reported bug: ending one call no longer wipes the others from the
+    // queue, because teardown is now per-call + debounced instead of a blanket
+    // registry clear. Robust per-call targeting requires InCallService (Path B,
+    // deferred — see FORGE résumé).
+    //
+    // 0-1 call case is byte-identical to the old clear(): the sole call is the
+    // foreground → removed in step 1 → sweep finds an empty registry → no-op.
+
+    /** Debounce window for the "all calls really ended" sweep. Long enough for
+     *  the next leg to re-report OFFHOOK/RINGING on Samsung One UI after a
+     *  call-waiting hang-up; short enough to feel instant if the line is dead. */
+    private val IDLE_SWEEP_MS = 1200L
+    private val idleSweepHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var idleSweepRunnable: Runnable? = null
+
+    /**
+     * IDLE teardown — PER-CALL. End ONLY the foreground call, then arm a debounced
+     * sweep for any genuine leftovers. Replaces the old blanket registryOnIdle().
+     */
+    private fun registryOnIdleEndForeground(reason: String) {
+        val ended: CallEntry?
+        synchronized(callRegistryLock) {
+            // Pick the call that just ended deterministically:
+            //   1. the active (foreground) entry — One UI hang-up ends the active leg,
+            //   2. else the most-recently-added non-ended entry (best-effort).
+            // Best-effort without InCallService — documented in the registry header.
+            ended = callRegistry.values.lastOrNull { it.state == "active" }
+                ?: callRegistry.values.lastOrNull { it.state != "ended" }
+            if (ended != null) callRegistry.remove(ended.callId)
+        }
+        if (ended != null) {
+            emitCallRemove(ended.callId, reason)
+            android.util.Log.d("PhoneService", "registryOnIdle: ended ONLY foreground callId=${ended.callId} state=${ended.state} reason=$reason — survivors kept, arming ${IDLE_SWEEP_MS}ms sweep")
+        } else {
+            android.util.Log.d("PhoneService", "registryOnIdle: registry already empty — no foreground to end (reason=$reason)")
+        }
+        scheduleIdleSweep(reason)
+    }
+
+    /**
+     * Arm (or re-arm) the debounced sweep. If, after IDLE_SWEEP_MS, the registry
+     * still holds entries AND no fresh RINGING/OFFHOOK cancelled us, the line is
+     * genuinely idle and those are stale leftovers — clear them per-call.
+     */
+    private fun scheduleIdleSweep(reason: String) {
+        idleSweepRunnable?.let { idleSweepHandler.removeCallbacks(it) }
+        val r = Runnable {
+            val leftovers: List<CallEntry>
+            synchronized(callRegistryLock) {
+                leftovers = callRegistry.values.toList()
+                callRegistry.clear()
+            }
+            if (leftovers.isNotEmpty()) {
+                android.util.Log.d("PhoneService", "idle-sweep fired: line still idle after ${IDLE_SWEEP_MS}ms — clearing ${leftovers.size} stale leftover(s)")
+                for (e in leftovers) emitCallRemove(e.callId, "$reason-sweep")
+            }
+            idleSweepRunnable = null
+        }
+        idleSweepRunnable = r
+        idleSweepHandler.postDelayed(r, IDLE_SWEEP_MS)
+    }
+
+    /**
+     * Cancel a pending idle-sweep. Called when a fresh RINGING/OFFHOOK arrives —
+     * the next call stepped up, so the survivors in the registry are REAL and must
+     * NOT be swept away.
+     */
+    private fun cancelIdleSweep() {
+        idleSweepRunnable?.let {
+            idleSweepHandler.removeCallbacks(it)
+            idleSweepRunnable = null
+            android.util.Log.d("PhoneService", "idle-sweep cancelled — fresh call stepped up, survivors are real")
+        }
     }
 
     /** Emit CALL_ADD for a new call. */
@@ -1165,12 +1443,8 @@ class PhoneService : Service() {
             "state" to e.state,
             "startTime" to e.startTime
         ), isViaClient)
-        android.util.Log.d("PhoneService", "CALL_ADD callId=${e.callId} number=[${redactNumber(e.number)}] dir=${e.direction} state=${e.state}")
+        android.util.Log.d("PhoneService", "CALL_ADD callId=${e.callId} number=[${e.number}] dir=${e.direction} state=${e.state}")
     }
-
-    /** emitCallAdd variant safe to call WHILE holding callRegistryLock (no
-     *  lock re-entry needed — sendResponse does not touch the registry). */
-    private fun emitCallAddLocked(e: CallEntry) = emitCallAdd(e)
 
     private fun emitCallUpdate(callId: String, state: String) {
         val isViaClient = client?.isOpen == true
@@ -1196,7 +1470,11 @@ class PhoneService : Service() {
             val number = phoneNumber?.takeIf { it.isNotEmpty() } ?: currentCallNumber ?: ""
             when (state) {
                 android.telephony.TelephonyManager.CALL_STATE_RINGING -> {
-                    android.util.Log.d("PhoneService", "PhoneStateListener state=RINGING phoneNumber=[${redactNumber(phoneNumber)}] resolvedNumber=[${redactNumber(number)}] source=legacy")
+                    android.util.Log.d("PhoneService", "PhoneStateListener state=RINGING phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
+                    // v37 (A3): reconcile expired ringing entries on every
+                    // aggregate state callback — belt-and-braces in case the
+                    // periodic tick was delayed (Doze/handler jitter).
+                    reconcileRingingExpiry("legacy-RINGING")
                     // ITEM A (2026-06-03) — call-waiting branch. If a call is
                     // already active when RINGING fires, this is the call-waiting
                     // case. Emit CALL_WAITING with the waiting number; do NOT
@@ -1206,19 +1484,19 @@ class PhoneService : Service() {
                     // waiting number on Samsung One UI / API 31+.
                     if (callAnsweredSentRef.get()) {
                         // QUEUE (v34): register every waiting call — no 2-call
-                        // ceiling. The legacy listener carries the number, so
-                        // it is authoritative for the per-call CALL_ADD.
-                        // direction=incoming: a RINGING-during-active call is
-                        // always an inbound call-waiting arrival.
+                        // ceiling. The legacy listener carries the number, so it
+                        // is authoritative for the per-call CALL_ADD. A RINGING-
+                        // during-active call is always an inbound call-waiting
+                        // arrival, so direction=incoming.
                         registryOnRinging(number, "incoming")
                         // DUAL-EMIT: keep the legacy CALL_WAITING frame too. The
                         // legacy guard still caps this at one (by design) — old
-                        // web builds only understood a single waiting call —
-                        // but the registry above already reported the 2nd, 3rd…
+                        // web builds only understood a single waiting call — but
+                        // the registry above already reported the 2nd, 3rd…
                         if (callWaitingSentRef.compareAndSet(false, true)) {
                             val isViaClient = client?.isOpen == true
                             sendResponse("CALL_WAITING", mapOf("number" to number, "name" to ""), isViaClient)
-                            android.util.Log.d("PhoneService", "CALL_WAITING fired: number=[${redactNumber(number)}] state=RINGING source=legacy")
+                            android.util.Log.d("PhoneService", "CALL_WAITING fired: number=[$number] state=RINGING source=legacy")
                         } else {
                             android.util.Log.d("PhoneService", "PhoneStateListener RINGING — legacy CALL_WAITING already sent (registry still tracked the call), skipping legacy frame (source=legacy)")
                         }
@@ -1238,31 +1516,43 @@ class PhoneService : Service() {
                     // listener gets first dibs.
                     callEndedSentRef.set(false)
                     callAnsweredSentRef.set(false)
-                    // QUEUE (v34): register the first call. direction is
-                    // outgoing only if MAKE_CALL pre-seeded currentCallNumber
-                    // and it matches; otherwise treat as incoming.
+                    // QUEUE (v34): register the first call. direction is outgoing
+                    // only if MAKE_CALL pre-seeded currentCallNumber and it
+                    // matches; otherwise treat as incoming.
                     val ringDirection = if (!currentCallNumber.isNullOrEmpty() && currentCallNumber == number) "outgoing" else "incoming"
                     registryOnRinging(number, ringDirection)
                     if (callIncomingSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
                         sendResponse("CALL_INCOMING", mapOf("number" to number, "name" to ""), isViaClient)
-                        android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[${redactNumber(number)}] state=RINGING source=legacy")
+                        android.util.Log.d("PhoneService", "CALL_INCOMING fired: number=[$number] state=RINGING source=legacy")
                     } else {
                         android.util.Log.d("PhoneService", "PhoneStateListener RINGING — CALL_INCOMING already sent, skipping (source=legacy)")
                     }
                 }
                 android.telephony.TelephonyManager.CALL_STATE_OFFHOOK -> {
-                    android.util.Log.d("PhoneService", "PhoneStateListener state=OFFHOOK phoneNumber=[${redactNumber(phoneNumber)}] resolvedNumber=[${redactNumber(number)}] source=legacy")
+                    android.util.Log.d("PhoneService", "PhoneStateListener state=OFFHOOK phoneNumber=[$phoneNumber] resolvedNumber=[$number] source=legacy")
                     callEndedSentRef.set(false)
-                    // QUEUE (v34): promote the matching (or most-recent ringing)
-                    // call to active. Best-effort — see registry header for the
-                    // "which call went off-hook?" ambiguity.
+                    // v37 (A3): reconcile expired ringing entries first.
+                    reconcileRingingExpiry("legacy-OFFHOOK")
+                    // QUEUE (v34→v37): promote the matching (or, when no entry
+                    // is active yet, the most-recent ringing) call to active.
+                    // v37/A1 kills the false promotion (empty-number OFFHOOK
+                    // while active = re-assert, skipped); v37/A4 ignores
+                    // self-managed VoIP calls (empty number, no ringing entry).
                     val offhookDir = if (!currentCallNumber.isNullOrEmpty() && currentCallNumber == number) "outgoing" else "incoming"
-                    registryOnOffhook(number, offhookDir)
-                    if (callAnsweredSentRef.compareAndSet(false, true)) {
+                    val offhookOutcome = registryOnOffhook(number, offhookDir)
+                    if (offhookOutcome == OffhookOutcome.VOIP_IGNORED && currentCallNumber == null) {
+                        // v37 (A4): suppress the legacy CALL_ANSWERED too — the
+                        // web must not light up the single-call UI for a
+                        // WhatsApp call. callAnsweredSentRef stays false so a
+                        // real SIM call afterwards still fires normally; the
+                        // eventual IDLE emits CALL_ENDED:{} which the web
+                        // treats as an idempotent no-op with no live calls.
+                        android.util.Log.d("PhoneService", "PhoneStateListener OFFHOOK — self-managed VoIP call (no number, no tracked call) — suppressing CALL_ANSWERED (source=legacy)")
+                    } else if (callAnsweredSentRef.compareAndSet(false, true)) {
                         val isViaClient = client?.isOpen == true
                         sendResponse("CALL_ANSWERED", mapOf("number" to number), isViaClient)
-                        android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[${redactNumber(number)}] state=OFFHOOK source=legacy")
+                        android.util.Log.d("PhoneService", "CALL_ANSWERED fired: number=[$number] state=OFFHOOK source=legacy")
                     } else {
                         android.util.Log.d("PhoneService", "PhoneStateListener OFFHOOK — CALL_ANSWERED already sent, skipping (source=legacy)")
                     }
@@ -1277,6 +1567,10 @@ class PhoneService : Service() {
                 }
                 android.telephony.TelephonyManager.CALL_STATE_IDLE -> {
                     android.util.Log.d("PhoneService", "PhoneStateListener state=IDLE source=legacy")
+                    // v37 (A3): reconcile expired ringing entries on IDLE too —
+                    // expired ones leave as "missed" rather than being swept as
+                    // generic leftovers below.
+                    reconcileRingingExpiry("legacy-IDLE")
                     // Single guard — TelephonyCallback (12+) may also observe this
                     // transition. First-writer wins.
                     if (callEndedSentRef.compareAndSet(false, true)) {
@@ -1288,11 +1582,14 @@ class PhoneService : Service() {
                         val endedNum = currentCallNumber ?: number
                         val endedPayload: Map<String, Any> = if (endedNum.isNotEmpty()) mapOf("number" to endedNum) else emptyMap()
                         sendResponse("CALL_ENDED", endedPayload, isViaClient)
-                        android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[${redactNumber(endedNum)}] state=IDLE source=legacy")
-                        // QUEUE (v34): IDLE is aggregate -> tear down EVERY
-                        // tracked call (we cannot end one call at a time at this
-                        // layer; see registry header). Emits CALL_REMOVE each.
-                        registryOnIdle("idle")
+                        android.util.Log.d("PhoneService", "CALL_ENDED fired: number=[$endedNum] state=IDLE source=legacy")
+                        // QUEUE (v36 multicall-teardown fix): IDLE can be TRANSIENT
+                        // during a call-waiting hang-up (active leg drops to IDLE
+                        // before the next leg re-reports OFFHOOK/RINGING). End ONLY
+                        // the foreground call + arm a debounced sweep, so a waiting
+                        // call survives the transient IDLE. Was registryOnIdle("idle")
+                        // which cleared EVERY tracked call — Dennis's reported bug.
+                        registryOnIdleEndForeground("idle")
                         currentCallNumber = null
                         currentCallSpeaker = false
                         clearSpeakerphoneOnEnd()
@@ -1474,12 +1771,10 @@ class PhoneService : Service() {
                 // up the side-effects that used to live inside startServer
                 // (telephony callback, SMS receiver, content observers,
                 // notification listener bridge) and then auto-dial the
-                // SaaS relay.
-                //
-                // Bundle C (2026-05-28) — phoneToken moved from
-                // `?token=` URL query to `Authorization: Bearer` header
-                // (audit M3, APK side). Server.js accepts both for
-                // back-compat; v30 only uses the header.
+                // SaaS relay. The user signed in via SignInActivity, the
+                // phoneToken is in TokenStore, we connect outbound to
+                // wss://computercaller.com/relay/phone?token=… so the
+                // webapp's room sees the phone immediately.
                 installSideEffects()
 
                 // Disconnect-from-lobby gate (v25, 2026-05-26). The user
@@ -1499,9 +1794,9 @@ class PhoneService : Service() {
                         android.util.Log.d("PhoneService", "User chose to stay disconnected from lobby — skipping auto-dial")
                     }
                     else -> {
-                        val relayUrl = "wss://computercaller.com/relay/phone"
+                        val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
                         android.util.Log.d("PhoneService", "Auto-dialing relay (token=${phoneToken.take(8)}…)")
-                        connectToRelay(relayUrl, mapOf("Authorization" to "Bearer $phoneToken"))
+                        connectToRelay(relayUrl)
                     }
                 }
 
@@ -1570,14 +1865,7 @@ class PhoneService : Service() {
                 enableVibration(true)
                 enableLights(true)
                 setShowBadge(true)
-                // Bundle C (2026-05-28) - audit fix L12. Channel default
-                // lockscreen visibility flipped from PUBLIC -> PRIVATE so the
-                // incoming-connection prompt body ("X wants to connect...")
-                // is hidden on the lockscreen. The per-notification builder
-                // sets setPublicVersion(...) with a redacted "Incoming
-                // connection" copy so the user still sees that something is
-                // happening - they just unlock to see the detail.
-                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
@@ -1664,25 +1952,6 @@ class PhoneService : Service() {
         // dialog copy from R.string.pair_request_body_template: "X wants to
         // connect" — concise + same string in both surfaces so users
         // recognise the same wording in the shade and the dialog.
-        //
-        // Bundle C (2026-05-28) — audit fix L12. Lockscreen no longer shows
-        // the browser identity. We build a small "public" version that says
-        // only "Incoming connection" + the app brand; the real notification
-        // is set to VISIBILITY_PRIVATE so the system substitutes the public
-        // version on the lockscreen. Action buttons still fire correctly
-        // (the platform invokes the actions from the underlying private
-        // notification once the user unlocks).
-        val publicNotif = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
-            .setContentTitle("ComputerCaller")
-            .setContentText("Incoming connection")
-            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setAutoCancel(false)
-            .setOngoing(false)
-            .build()
-
         val notification = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
             .setContentTitle("Connection request")
             .setContentText("$address wants to connect")
@@ -1693,8 +1962,7 @@ class PhoneService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(publicNotif)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(false)  // don't dismiss on tap — user must Accept or Decline
             .setOngoing(false)
             .setContentIntent(tapPending)
@@ -1999,8 +2267,47 @@ class PhoneService : Service() {
             // unified timeline (the SMS/MMS content provider never sees them
             // unless we're the default messaging app). User must enable
             // "Notification access" once.
-            DnkNotificationListenerService.onMessageNotification = { appName, pkg, title, body, hasReply, replyKey, notificationKey, timestamp, icon ->
+            DnkNotificationListenerService.onMessageNotification = notif@{ appName, pkg, title, body, hasReply, replyKey, notificationKey, timestamp, icon, senderPersonUri ->
                 val isViaClient = client?.isOpen == true
+
+                // RCS↔SMS merge: messages from Google/Samsung Messages arrive ONLY
+                // via the notification listener (the SMS/MMS content provider never
+                // sees RCS unless we're the default messaging app). If we can resolve
+                // the sender to a canonical phone number, route the message through
+                // the SMS pipeline (SMS_RECEIVED) so it merges into the same thread as
+                // that contact's regular SMS instead of landing as a separate
+                // notification card. If we can't resolve a number, fall through to the
+                // PHONE_NOTIFICATION card (old behavior) — we never inject an SMS row
+                // keyed on a display name (that was the prior bug: garbage thread key).
+                val isMessagingApp = pkg == "com.google.android.apps.messaging" ||
+                    pkg == "com.samsung.android.messaging"
+
+                if (isMessagingApp) {
+                    // "You: …" body means the thread updated after WE sent a message.
+                    val isSent = body.startsWith("You: ")
+                    val msgBody = if (isSent) body.removePrefix("You: ").trim() else body
+
+                    if (msgBody.isNotBlank()) {
+                        val resolvedNumber = resolveRcsNumber(senderPersonUri, title)
+                        if (resolvedNumber != null) {
+                            // (a/b/c) resolved → route as SMS so it threads by number.
+                            val smsData = mapOf(
+                                "id" to "rcs_${notificationKey}",
+                                "from" to resolvedNumber,
+                                "body" to msgBody,
+                                "time" to timestamp,
+                                "type" to if (isSent) "sent" else "inbox",
+                                "source" to "rcs"
+                            )
+                            sendResponse("SMS_RECEIVED", smsData, isViaClient)
+                            // Suppress the PHONE_NOTIFICATION card for a message we
+                            // successfully converted to an SMS row — no duplicate card.
+                            return@notif
+                        }
+                        // (d) unresolved → fall through to the notification card below.
+                    }
+                }
+
                 val data = mutableMapOf<String, Any>(
                     "id" to notificationKey,
                     "appName" to appName,
@@ -2014,24 +2321,6 @@ class PhoneService : Service() {
                 )
                 if (icon != null) data["icon"] = icon  // only include if available
                 sendResponse("PHONE_NOTIFICATION", data, isViaClient)
-
-                // RCS sent message detection: Google Messages sometimes shows "You: [text]"
-                // in notification body when a thread updates after we sent a message.
-                if (pkg == "com.google.android.apps.messaging" && body.startsWith("You: ")) {
-                    val sentText = body.removePrefix("You: ").trim()
-                    if (sentText.isNotBlank()) {
-                        // Extract recipient from title (conversation name)
-                        val sentData = mapOf(
-                            "id" to "rcs_sent_${timestamp}",
-                            "from" to title,  // conversation partner name/number
-                            "body" to sentText,
-                            "time" to timestamp,
-                            "type" to "sent",
-                            "source" to "rcs_notification"
-                        )
-                        sendResponse("SMS_RECEIVED", sentData, isViaClient)
-                    }
-                }
             }
 
             // Mirror notification dismissals to the web client. When the user
@@ -2077,6 +2366,43 @@ class PhoneService : Service() {
      * the contact lookup fails or is not granted — caller falls back to the
      * raw input.
      */
+    /**
+     * Resolves the canonical phone number of an RCS/SMS-app notification sender,
+     * for routing the message into the SMS thread for that number. Priority:
+     *   (a) MessagingStyle Person URI — "tel:+47…" surfaced by the notification
+     *       listener; the most reliable signal (the OS-supplied canonical number).
+     *   (b) title is itself a number — if the title's digit count is >= 7 we take
+     *       it as the number (covers conversations shown by raw number).
+     *   (c) Contacts reverse-lookup — title is a display name; look it up in the
+     *       contacts provider and use the first associated number.
+     *   (d) none of the above → return null; caller keeps the notification card
+     *       and does NOT inject an SMS row keyed on a display name (the old bug).
+     *
+     * Never logs the resolved number (release builds redact PII).
+     */
+    private fun resolveRcsNumber(senderPersonUri: String?, title: String): String? {
+        // (a) Person URI of the form "tel:+<number>".
+        if (senderPersonUri != null) {
+            val uri = senderPersonUri.trim()
+            if (uri.startsWith("tel:", ignoreCase = true)) {
+                val candidate = uri.substring(4).trim()
+                if (candidate.count { it.isDigit() } >= 7) return candidate
+            }
+        }
+
+        // (b) title is already a phone number (>= 7 digits after stripping
+        //     formatting). normalizeNumber-equivalent: digit count gate.
+        val titleDigits = title.count { it.isDigit() }
+        if (titleDigits >= 7) return title.trim()
+
+        // (c) reverse-lookup the display name in contacts.
+        val byName = resolveContactNumber(title)
+        if (byName != null && byName.count { it.isDigit() } >= 7) return byName
+
+        // (d) unresolved.
+        return null
+    }
+
     private fun resolveContactNumber(nameOrNumber: String): String? {
         // If already looks like a phone number, return as-is.
         if (nameOrNumber.replace(Regex("[^0-9+]"), "").length >= 4) return nameOrNumber
@@ -2318,7 +2644,26 @@ class PhoneService : Service() {
      * resolves address + parts), pushes each as an SMS_RECEIVED frame so the web
      * client doesn't need a separate code path, then advances the watermark.
      * MmsHandler internally handles the seconds-vs-ms unit conversion.
+     *
+     * v38 "Unknown thread" fix (2026-06-12): the MMS ContentObserver fires the
+     * moment the messaging app inserts the pdu row — BEFORE its staged write of
+     * the `addr` table lands — so getMmsAddress() resolved null and the frame
+     * shipped the literal "Unknown" sender; the watermark then advanced past
+     * the row and the completed row was never re-pushed. The web rendered a
+     * permanent "Unknown" thread until a manual Resync re-read the (by then
+     * complete) provider row. Fix: iterate ASCENDING and STOP at the first
+     * young inbox row whose address is still unresolved, WITHOUT advancing the
+     * watermark past it; schedule a 3s retry so the row is re-read once the
+     * addr write lands (the addr insert also re-fires the observer — the timer
+     * is a belt-and-braces fallback). Rows older than 60s are pushed as-is so
+     * a genuinely addressless MMS can never wedge the watermark.
      */
+    private val mmsRetryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var mmsRetryPending = false
+
+    /** Max age for holding back an address-unresolved inbox MMS before giving up. */
+    private val MMS_ADDR_RESOLVE_GRACE_MS = 60_000L
+
     private fun pushNewMmsEntries() {
         if (checkSelfPermission(Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
             android.util.Log.w("PhoneService", "pushNewMmsEntries skipped — READ_SMS denied")
@@ -2328,7 +2673,24 @@ class PhoneService : Service() {
         try {
             val mmsHandler = MmsHandler(this)
             val newMms = mmsHandler.getMessages(limit = 50, since = lastMmsTimestamp)
-            for (mms in newMms) {
+            // Ascending so the watermark only ever advances past rows we have
+            // actually pushed — a held-back row keeps the watermark below it.
+            for (mms in newMms.sortedBy { it.date }) {
+                val unresolved = mms.address.isBlank() || mms.address == "Unknown"
+                val young = System.currentTimeMillis() - mms.date < MMS_ADDR_RESOLVE_GRACE_MS
+                if (unresolved && mms.type == "inbox" && young) {
+                    android.util.Log.w(
+                        "PhoneService",
+                        "MMS ${mms.id} addr not yet resolved (staged provider write) — holding watermark, retrying"
+                    )
+                    // Roll the watermark below this row (second granularity on
+                    // MMS dates) so the retry query definitely re-reads it even
+                    // if a same-second sibling was already pushed. Re-pushed
+                    // siblings dedupe web-side by id.
+                    if (lastMmsTimestamp > mms.date - 1001) lastMmsTimestamp = mms.date - 1001
+                    scheduleMmsRetry()
+                    break
+                }
                 val data = mapOf(
                     "id" to mms.id,
                     "from" to mms.address,
@@ -2344,11 +2706,16 @@ class PhoneService : Service() {
         }
     }
 
-    fun connectToRelay(relayUrl: String, httpHeaders: Map<String, String> = emptyMap()) {
-        // Bundle C (2026-05-28) - the relayUrl is now logged without query
-        // parameters (the phoneToken used to live in `?token=`; closed by
-        // moving it to Authorization: Bearer). httpHeaders carries the
-        // bearer; do NOT log it.
+    private fun scheduleMmsRetry() {
+        if (mmsRetryPending) return
+        mmsRetryPending = true
+        mmsRetryHandler.postDelayed({
+            mmsRetryPending = false
+            pushNewMmsEntries()
+        }, 3_000L)
+    }
+
+    fun connectToRelay(relayUrl: String) {
         android.util.Log.d("PhoneService", "Connecting to relay: $relayUrl")
         clientRelayUrl = relayUrl
         lastRelayUrlAttempt = relayUrl
@@ -2433,8 +2800,7 @@ class PhoneService : Service() {
                 if (clientRelayUrl != null) {
                     scheduleLobbyReconnect("relay error code=$code")
                 }
-            },
-            httpHeaders = httpHeaders
+            }
         )
         client?.connectionLostTimeout = 15  // ping every 15 seconds
         client?.connect()
@@ -2543,16 +2909,7 @@ class PhoneService : Service() {
                 return@Runnable
             }
             android.util.Log.d("PhoneService", "Lobby reconnect firing")
-            // Bundle C — re-fetch the bearer from TokenStore on every reconnect.
-            // The token is long-lived but the v30 wire format keeps it in the
-            // Authorization header, not the URL — so the saved url has no auth
-            // in it and the headers must be reattached here.
-            val phoneToken = TokenStore.getPhoneToken(this@PhoneService)
-            if (phoneToken.isNullOrBlank()) {
-                android.util.Log.w("PhoneService", "Lobby reconnect: no phoneToken in TokenStore — bailing")
-                return@Runnable
-            }
-            connectToRelay(url, mapOf("Authorization" to "Bearer $phoneToken"))
+            connectToRelay(url)
         }
         reconnectRunnable = task
         reconnectHandler.postDelayed(task, lobbyReconnectDelayMs)
@@ -2641,18 +2998,10 @@ class PhoneService : Service() {
         android.util.Log.d("PhoneService", "Manual reconnect requested")
         val savedUrl = clientRelayUrl
         if (savedUrl != null) {
-            // Bundle C — Authorization Bearer header must be reattached on
-            // every dial. Token is fetched fresh from TokenStore in case it
-            // changed since the last connect (Sign Out + sign-in cycle).
-            val phoneToken = TokenStore.getPhoneToken(this)
-            if (phoneToken.isNullOrBlank()) {
-                android.util.Log.w("PhoneService", "Manual reconnect: no phoneToken in TokenStore — bailing")
-                return
-            }
             android.util.Log.d("PhoneService", "Reconnecting to: $savedUrl")
             client?.close()
             client = null
-            connectToRelay(savedUrl, mapOf("Authorization" to "Bearer $phoneToken"))
+            connectToRelay(savedUrl)
         } else {
             android.util.Log.w("PhoneService", "No saved relay URL to reconnect to")
         }
@@ -2750,9 +3099,8 @@ class PhoneService : Service() {
             android.util.Log.w("PhoneService", "Rejoin requested but no phoneToken — cannot dial")
             return
         }
-        // Bundle C — phoneToken moved to Authorization: Bearer header (M3).
-        val relayUrl = "wss://computercaller.com/relay/phone"
-        connectToRelay(relayUrl, mapOf("Authorization" to "Bearer $phoneToken"))
+        val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
+        connectToRelay(relayUrl)
     }
 
     fun leaveActivePair() {
@@ -2962,7 +3310,7 @@ class PhoneService : Service() {
                     // it before narrowing to Int. Null when the web didn't pick a SIM
                     // (single-SIM phones, or "default" selection).
                     val simId = (payload?.get("simId") as? Double)?.toInt()
-                    android.util.Log.d("PhoneService", "MAKE_CALL for: ${redactNumber(number)} (speaker=$speaker, simId=$simId)")
+                    android.util.Log.d("PhoneService", "MAKE_CALL for: $number (speaker=$speaker, simId=$simId)")
                     // Cache the requested number — PhoneStateListener uses this when the
                     // platform omits the number from state callbacks.
                     currentCallNumber = number
@@ -2989,56 +3337,15 @@ class PhoneService : Service() {
                 }
                 "ANSWER_CALL" -> {
                     callHandler.answerCall()
+                    // v37 (A1 exception): a web-initiated answer is UNAMBIGUOUS —
+                    // promote the oldest ringing registry entry to active so its
+                    // chip flips to ACTIVE even though the subsequent aggregate
+                    // OFFHOOK (empty number, active already present) is skipped
+                    // by the A1 re-assert rule.
+                    registryPromoteOldestRingingOnWebAnswer()
                 }
                 "END_CALL" -> {
                     callHandler.endCall()
-                }
-                "DECLINE_CALL" -> {
-                    // PER-LEG DECLINE (2026-06-16, Dennis full-version). The web
-                    // sends DECLINE_CALL:{callId} to reject ONE specific waiting
-                    // (ringing) leg while KEEPING the active call connected —
-                    // the "reply with a message → decline the waiting call"
-                    // action. Distinct from END_CALL:{} (which hangs up the
-                    // foreground call via the aggregate telecomManager.endCall()).
-                    //
-                    // Resolve the registry entry for this callId so we target
-                    // the right leg by the id the web already tracks.
-                    val targetCallId = (payload?.get("callId") as? String)?.takeIf { it.isNotBlank() }
-                    if (targetCallId == null) {
-                        android.util.Log.w("PhoneService", "DECLINE_CALL missing callId — ignoring")
-                        return
-                    }
-                    val entry: CallEntry?
-                    val activeCount: Int
-                    synchronized(callRegistryLock) {
-                        entry = callRegistry[targetCallId]
-                        activeCount = callRegistry.values.count { it.state == "active" }
-                    }
-                    if (entry == null) {
-                        android.util.Log.w("PhoneService", "DECLINE_CALL no registry entry for callId=$targetCallId — ignoring")
-                        return
-                    }
-                    android.util.Log.d(
-                        "PhoneService",
-                        "DECLINE_CALL callId=$targetCallId state=${entry.state} number=[${redactNumber(entry.number)}] activeCount=$activeCount"
-                    )
-                    // Hand the per-leg reject to CallHandler. It targets the
-                    // SPECIFIC ringing leg (NOT the active call) via the
-                    // InCallService Call objects when this build owns the
-                    // default-dialer / InCallService role; otherwise it safely
-                    // refuses to touch the aggregate active call (so we never
-                    // hang up the wrong leg) and the waiting call simply rings
-                    // out. See CallHandler.declineRingingCall(...) +
-                    // CompanionInCallService for the on-device contract.
-                    val rejected = callHandler.declineRingingCall(entry.number)
-                    if (rejected) {
-                        // The leg is gone on the device — reflect it in the
-                        // registry + tell the web so its waiting chip clears.
-                        synchronized(callRegistryLock) {
-                            callRegistry.remove(targetCallId)?.also { it.state = "ended" }
-                        }
-                        emitCallRemove(targetCallId, "declined")
-                    }
                 }
                 "SET_SPEAKER" -> {
                     // Legacy alias retained for backward compat with older
@@ -3615,6 +3922,13 @@ class PhoneService : Service() {
         // Tear down ContentObservers FIRST so they can't fire mid-shutdown and try
         // to send through a server/client that's already being closed below.
         stopContentObservers()
+
+        // Cancel any pending multicall idle-sweep so its Handler runnable doesn't
+        // wake up post-onDestroy holding a reference back into this dead Service.
+        cancelIdleSweep()
+
+        // v37 (A2): same for the ringing-expiry reconcile tick.
+        cancelRingingReconcileTick()
 
         // Unregister telephony state listener — must mirror the registration in onCreate
         // or we leak a reference to this Service.

@@ -220,8 +220,46 @@ android {
         // MMS instead of re-returning the newest. SMS path + the address-filtered
         // per-thread path are unchanged (L97 short-circuit untouched). No protocol
         // shape change — `before` was already parsed by the v26 per-thread paging.
-        versionCode = 35
-        versionName = "1.0.12"
+        // Multicall-teardown fix (2026-06-11): 35 → 36. registryOnIdle() blanket
+        // callRegistry.clear() on aggregate IDLE wiped EVERY tracked call, so
+        // hanging up an active call also killed the waiting call(s). Replaced
+        // with per-call teardown (end only the foreground) + a 1200ms debounced
+        // sweep that survives the transient IDLE of a call-waiting hang-up.
+        // PATH A (no InCallService / no default-dialer — Dennis-approved).
+        // isMinifyEnabled stays false (6.0MB un-minified v34/v35 lineage).
+        //
+        // Stale-queue + VoIP-filter consolidated fix (2026-06-12): 36 → 37.
+        // A1 false-ACTIVE promotion killed (empty-number OFFHOOK while active
+        // = re-assert, skipped); A2 ringing-entry expiry (65s, 10s after the
+        // ambiguous RINGING→OFFHOOK-while-active transition); A3 reconcile on
+        // every aggregate callback + 5s tick; A4 self-managed VoIP calls
+        // (WhatsApp/Telegram: OFFHOOK, no number, no prior RINGING) ignored —
+        // no registry mint, no CALL_ANSWERED.
+        // v38 (1.0.15) — "Unknown thread" fix: pushNewMmsEntries no longer
+        // ships a live MMS frame with the literal "Unknown" sender when the
+        // ContentObserver races the messaging app's staged addr-table write;
+        // the watermark is held below the unresolved row and a 3s retry
+        // re-reads it once complete (60s grace, then give up + push as-is).
+        // v39 (1.0.16) — perm-gate fix on the v38 base: onCreate/onResume
+        // block ONLY on a genuinely-missing RUNTIME permission; SPECIAL-only
+        // audits (notification_listener / battery_optimization / auto_revoke)
+        // fall through to the lobby, mirroring the Refresh button. (39, not 37,
+        // because v37/v38 already shipped on disk.)
+        // v40 (1.0.17) — Google Play verifiability fix. Adds SyncedDataActivity:
+        // an on-device viewer of the synced SMS + call log (reads SmsHandler /
+        // CallLogsHandler device providers, no desktop pairing) so a Play
+        // reviewer can SEE the restricted-permission feature (READ_SMS /
+        // READ_CALL_LOG) on ONE phone. Read/display only — NOT default SMS
+        // handler; no perm/exemption change. Built on the v39 (1929e22) lineage.
+        // v41 (1.0.18) — RCS↔SMS thread merge. Inbound/sent RCS from Google/
+        // Samsung Messages now resolves the sender to a canonical phone number
+        // (Person tel: URI → numeric title → contacts reverse-lookup) and routes
+        // through SMS_RECEIVED so it merges into the SAME thread as that contact's
+        // SMS, instead of landing as a separate notification card. SIDELOAD for
+        // Dennis to verify — NOT a Play upload. No new permissions. Built on the
+        // v40 (9ba9d12) lineage.
+        versionCode = 41
+        versionName = "1.0.18"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
