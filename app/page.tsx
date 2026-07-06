@@ -333,6 +333,9 @@ export default function LandingPage() {
             <a href="#faqs" className="hover:text-slate-900 transition-colors">
               FAQ
             </a>
+            <Link href="/guides" className="hover:text-slate-900 transition-colors">
+              Guides
+            </Link>
           </nav>
           <div className="flex items-center gap-2">
             {WAITLIST_MODE ? (
@@ -832,6 +835,9 @@ export default function LandingPage() {
             </a>
             <Link href="/iphone" className="hover:text-slate-900 transition-colors">
               iPhone setup
+            </Link>
+            <Link href="/guides" className="hover:text-slate-900 transition-colors">
+              Guides
             </Link>
             <Link href="/privacy" className="hover:text-slate-900 transition-colors">
               Privacy

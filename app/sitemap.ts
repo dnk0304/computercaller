@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next';
+import { getAllGuides } from '@/lib/guides';
 
 /**
  * Sitemap — generated at /sitemap.xml by Next's app-router metadata file
@@ -65,5 +66,21 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'yearly',
       priority: 0.3,
     },
+    // Guides — the SEO article section. The index is always listed (it renders
+    // an empty state even with no content); each article URL is derived from
+    // content/guides/*.md at build time, so the sitemap and the statically
+    // generated /guides/[slug] pages can never drift apart.
+    {
+      url: `${BASE_URL}/guides`,
+      lastModified: now,
+      changeFrequency: 'weekly',
+      priority: 0.7,
+    },
+    ...getAllGuides().map((guide) => ({
+      url: `${BASE_URL}/guides/${guide.slug}`,
+      lastModified: guide.date ? new Date(guide.date) : now,
+      changeFrequency: 'monthly' as const,
+      priority: 0.6,
+    })),
   ];
 }
