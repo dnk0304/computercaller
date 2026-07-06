@@ -1,9 +1,23 @@
 'use client';
 
-import { useState } from 'react';
+/**
+ * /auth/register — Google-only sign-up (2026-07-06).
+ *
+ * Email/password registration was retired (/api/auth/register returns 410).
+ * This page stays mounted because the landing CTAs, the pricing modal, the
+ * guides chrome, and the sitemap all anchor here (and it is the no-JS
+ * fallback target for the SignupModal). It now offers a single action:
+ * "Continue with Google" → /api/auth/google/start.
+ *
+ * Google accounts arrive pre-verified. Card-first paywall: no subscription
+ * row is created at signup, so proxy.ts routes the fresh user from /app to
+ * /subscribe (Whop embedded checkout) to start the card-attached trial.
+ *
+ * Email/password LOGIN is untouched — existing users sign in at /auth/login.
+ */
+
 import Link from 'next/link';
 import Image from 'next/image';
-import { Check } from 'lucide-react';
 import { AuthBackdrop } from '@/components/AuthBackdrop';
 
 // Inline Google "G" logo SVG — mirrors the one in /auth/login. Kept inline
@@ -33,79 +47,6 @@ function GoogleGlyph({ className = 'w-5 h-5' }: { className?: string }) {
 }
 
 export default function RegisterPage() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || 'Registration failed');
-        return;
-      }
-      setDone(true);
-    } catch {
-      setError('Network error. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (done) {
-    return (
-      <div className="relative min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
-        <AuthBackdrop />
-        <div className="w-full max-w-md">
-          <Link
-            href="/"
-            className="flex items-center justify-center mb-10"
-            aria-label="ComputerCaller — home"
-          >
-            <Image
-              src="/brand/computercaller-icon-transparent.png"
-              alt="ComputerCaller"
-              width={396}
-              height={317}
-              priority
-              className="h-14 w-auto"
-            />
-          </Link>
-
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8 text-center">
-            <div className="mx-auto w-14 h-14 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center">
-              <Check className="w-7 h-7 text-emerald-600" strokeWidth={3} />
-            </div>
-            <h2 className="mt-5 text-2xl font-semibold text-slate-900 tracking-tight">
-              Check your email
-            </h2>
-            <p className="mt-2 text-slate-600 text-sm leading-relaxed">
-              We sent a verification link to{' '}
-              <strong className="text-slate-900 font-medium">{email}</strong>.
-              Click it to activate your account.
-            </p>
-            <Link
-              href="/auth/login"
-              className="mt-6 inline-block text-sm font-medium text-blue-600 hover:text-blue-700 transition-colors"
-            >
-              Back to sign in
-            </Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="relative min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
       <AuthBackdrop />
@@ -133,82 +74,16 @@ export default function RegisterPage() {
             7-day free trial. Cancel anytime.
           </p>
 
-          {/* Google sign-up — primary affordance. Anchored as a real <a> so
-              the request goes server-side without JS. Google users skip
-              email verification (Google verified their email already). */}
+          {/* Google sign-up — the only registration path. Anchored as a real
+              <a> so the request goes server-side without JS. Google users are
+              pre-verified (Google verified their email already). */}
           <a
             href="/api/auth/google/start"
-            className="mt-6 w-full inline-flex items-center justify-center gap-2.5 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium rounded-lg transition-colors text-sm shadow-sm"
+            className="mt-6 w-full inline-flex items-center justify-center gap-2.5 py-3 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium rounded-lg transition-colors text-sm shadow-sm"
           >
             <GoogleGlyph />
-            Sign up with Google
+            Continue with Google
           </a>
-
-          <div className="mt-6 flex items-center gap-3 text-xs text-slate-400">
-            <span className="h-px bg-slate-200 flex-1" />
-            <span className="uppercase tracking-wider">or</span>
-            <span className="h-px bg-slate-200 flex-1" />
-          </div>
-
-          <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
-            <div>
-              <label
-                htmlFor="register-email"
-                className="block text-sm font-medium text-slate-700 mb-1.5"
-              >
-                Email
-              </label>
-              <input
-                id="register-email"
-                type="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 placeholder:text-slate-400 transition-colors"
-                placeholder="you@example.com"
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="register-password"
-                className="block text-sm font-medium text-slate-700 mb-1.5"
-              >
-                Password
-                <span className="ml-1.5 font-normal text-slate-400">
-                  (min 8 characters)
-                </span>
-              </label>
-              <input
-                id="register-password"
-                type="password"
-                autoComplete="new-password"
-                required
-                minLength={8}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 placeholder:text-slate-400 transition-colors"
-                placeholder="••••••••"
-              />
-            </div>
-
-            {error && (
-              <div
-                role="alert"
-                className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm"
-              >
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors text-sm shadow-sm shadow-blue-600/20"
-            >
-              {loading ? 'Creating account…' : 'Start free trial'}
-            </button>
-          </form>
 
           <p className="mt-6 text-center text-xs text-slate-500 leading-relaxed">
             By creating an account you agree to our terms of service.
