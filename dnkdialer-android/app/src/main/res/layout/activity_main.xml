@@ -174,6 +174,65 @@
             android:lineSpacingMultiplier="1.35"
             android:layout_marginTop="@dimen/space_16" />
 
+        <!-- ColorOS/OxygenOS background hint (v45, 2026-07-07). Oppo /
+             OnePlus / Realme have their own app-killer + auto-launch gate
+             that the standard battery exemption does NOT cover, so the
+             bridge dies in the background even with the exemption granted.
+             Shown only on those manufacturers, dismissible (flag persisted
+             in SharedPreferences). GONE by default; MainActivity flips it. -->
+        <LinearLayout
+            android:id="@+id/colorOsHintContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:layout_marginTop="@dimen/space_16">
+
+            <TextView
+                android:id="@+id/colorOsHintText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/coloros_hint_text"
+                android:textSize="@dimen/text_body"
+                android:textColor="@color/text_secondary"
+                android:lineSpacingMultiplier="1.35" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="@dimen/space_12">
+
+                <Button
+                    android:id="@+id/colorOsHintSettingsButton"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="@dimen/button_height"
+                    android:text="@string/coloros_hint_open_settings"
+                    android:textSize="@dimen/text_body"
+                    android:textAllCaps="false"
+                    android:textColor="@color/text_primary"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.02"
+                    android:background="@drawable/bg_button_primary"
+                    android:stateListAnimator="@null" />
+
+                <Button
+                    android:id="@+id/colorOsHintDismissButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="@dimen/button_height"
+                    android:text="@string/coloros_hint_dismiss"
+                    android:textSize="@dimen/text_body"
+                    android:textAllCaps="false"
+                    android:textColor="@color/text_secondary"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.02"
+                    android:background="@android:color/transparent"
+                    android:stateListAnimator="@null"
+                    android:layout_marginStart="@dimen/space_12" />
+            </LinearLayout>
+        </LinearLayout>
+
         <!-- ============ 3b. On-device synced-data viewers ============ -->
         <!-- Play verifiability fix (v40, 2026-06-21). These two buttons open
              SyncedDataActivity, the in-app view of the SMS + call log this
