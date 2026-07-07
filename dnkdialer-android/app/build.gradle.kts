@@ -284,8 +284,17 @@ android {
         // multiuser, PLUS Google sign-in (v43), PLUS Bundle-C security
         // hardening that the side line had dropped (Bearer-capable TokenStore,
         // network_security_config, data_extraction_rules, allowBackup=false).
-        versionCode = 44
-        versionName = "1.0.21"
+        // v45 (1.0.22) - Oppo/ColorOS sticky-restart fix: PhoneService
+        // onStartCommand now treats the START_STICKY null-intent restart
+        // (and unknown actions) as an ACTION_START-equivalent resume via the
+        // shared startBridge() path — startForeground() first, then side-
+        // effect wiring (now idempotent: content-observer re-registration
+        // guarded), then the relay auto-dial gate. Adds a dismissible
+        // ColorOS/OxygenOS hint on MainActivity (oppo/oneplus/realme) that
+        // deep-links to app details settings for "Allow background
+        // activity" + Auto-launch. No manifest/permission changes.
+        versionCode = 45
+        versionName = "1.0.22"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
