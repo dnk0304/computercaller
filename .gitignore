@@ -82,6 +82,7 @@ dnkdialer-android/dnkdialer-v*.apk
 # route picks the newer one. No downtime.
 apk-releases/*
 !apk-releases/computercaller-v40-1.0.17.apk
+!apk-releases/computercaller-v47-1.0.24.apk
 
 # Android signing — keystores + keystore.properties NEVER committed.
 # Live at C:\Users\D\Keystores\ on the build box; passwords in
