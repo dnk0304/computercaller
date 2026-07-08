@@ -12,6 +12,7 @@
 -->
 <ScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -61,6 +62,43 @@
             android:textColor="@color/text_secondary"
             android:lineSpacingMultiplier="1.3"
             android:layout_marginBottom="32dp" />
+
+        <!-- Sign in with Google (v46, Dennis 2026-07-08): official Google
+             branding per the Sign-In branding guidelines — light button,
+             white fill, #747775 outline, untinted four-color "G" mark,
+             Roboto Medium #1F1F1F label. Primary path; email/password
+             below remains as the fallback. -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/googleSignInButton"
+            style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="@string/signin_google_action"
+            android:textSize="14sp"
+            android:textColor="#1F1F1F"
+            android:textAllCaps="false"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0"
+            app:backgroundTint="#FFFFFF"
+            app:strokeColor="#747775"
+            app:strokeWidth="1dp"
+            app:cornerRadius="24dp"
+            app:icon="@drawable/ic_google_g"
+            app:iconSize="20dp"
+            app:iconPadding="12dp"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Divider between Google and the email fallback -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/signin_divider_or"
+            android:textSize="12sp"
+            android:textColor="@color/text_tertiary"
+            android:gravity="center"
+            android:layout_marginBottom="20dp" />
 
         <!-- Email -->
         <EditText
