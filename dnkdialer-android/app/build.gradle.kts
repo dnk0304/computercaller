@@ -220,6 +220,25 @@ android {
         // handler; no perm/exemption change. Built on the v39 (1929e22) lineage.
         versionCode = 40
         versionName = "1.0.17"
+        // Sign in with Google (2026-07-08, cherry-picked from b138eca onto the
+        // published v40 lineage): "Continue with Google" on SignInActivity via
+        // AndroidX Credential Manager + GetGoogleIdOption. The Google ID token
+        // is POSTed to /api/auth/apk-google-login which verifies it (audience =
+        // WEB client ID) and returns the same {phoneToken, deviceName} shape
+        // as /api/auth/apk-login — the existing TokenStore path is reused
+        // unchanged. Email/password login remains as fallback.
+
+        // Google OAuth WEB client ID (NOT the Android client). Credential
+        // Manager's GetGoogleIdOption.serverClientId must be the web client
+        // so the minted ID token's `aud` matches what the server verifies
+        // (lib/google.ts checks aud == process.env.GOOGLE_CLIENT_ID).
+        // Value sourced from the prod OAuth redirect capture (Niki artifacts,
+        // google-login-redirect-uri-mismatch-2026-05-30.md).
+        buildConfigField(
+            "String",
+            "GOOGLE_WEB_CLIENT_ID",
+            "\"69483293308-lg5cnvbq9134huu1ndo94btdmf2go8uh.apps.googleusercontent.com\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -237,7 +256,10 @@ android {
 
     buildTypes {
         release {
+            // HARD REQUIREMENT (Dennis, 2026-07-08): NO code compression on
+            // the shipping line — unminified APK (~6MB) matching published v40.
             isMinifyEnabled = false
+            isShrinkResources = false
             // Wire the release signing config so `assembleRelease` produces
             // a signed APK ready for Play Console + sideload.
             if (keystorePropertiesFile.exists()) {
@@ -248,6 +270,12 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+    // AGP 8 no longer generates the BuildConfig class unless opted in.
+    // Needed for the GOOGLE_WEB_CLIENT_ID buildConfigField above (and
+    // BuildConfig.DEBUG gating in SignInActivity's Google sign-in path).
+    buildFeatures {
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
@@ -292,6 +320,15 @@ dependencies {
     // EncryptedSharedPreferences (AES-256-GCM, keys held in the Android
     // Keystore / TEE). See TokenStore.kt for the wrapper.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Sign in with Google (2026-07-06, v43) — AndroidX Credential Manager
+    // plus the Play Services bridge that actually talks to the on-device
+    // Google account, and Google's googleid lib providing GetGoogleIdOption /
+    // GoogleIdTokenCredential. We use the callback-based getCredentialAsync
+    // API so no coroutines dependency is needed.
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
