@@ -218,8 +218,16 @@ android {
         // reviewer can SEE the restricted-permission feature (READ_SMS /
         // READ_CALL_LOG) on ONE phone. Read/display only — NOT default SMS
         // handler; no perm/exemption change. Built on the v39 (1929e22) lineage.
-        versionCode = 40
-        versionName = "1.0.17"
+        // v48 (1.0.25) — official v40 + Google sign-in ONLY. Fresh branch off
+        // the pinned v40 base (9ba9d12); v46/v47 lineages are dead. Exactly
+        // two deltas vs published v40: (1) the proven Google OAuth sign-in
+        // (cherry-pick 1f81b6f, itself from b138eca); (2) permission-request
+        // reorder — notifications requested FIRST, battery-optimization
+        // exemption LAST, everything between keeps v40's order. No label
+        // change, no hardening XML, no ColorOS/sticky-restart code, no
+        // minify. Same release cert as v40 — installs as an update.
+        versionCode = 48
+        versionName = "1.0.25"
         // Sign in with Google (2026-07-08, cherry-picked from b138eca onto the
         // published v40 lineage): "Continue with Google" on SignInActivity via
         // AndroidX Credential Manager + GetGoogleIdOption. The Google ID token
