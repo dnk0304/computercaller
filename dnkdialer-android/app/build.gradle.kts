@@ -227,6 +227,16 @@ android {
         // WEB client ID) and returns the same {phoneToken, deviceName} shape
         // as /api/auth/apk-login — the existing TokenStore path is reused
         // unchanged. Email/password login remains as fallback.
+        // Oppo/ColorOS sticky-restart fix (2026-07-08, cherry-picked from
+        // 1d667d2 / the v45 line onto this v40 lineage): PhoneService
+        // onStartCommand now treats the START_STICKY null-intent restart
+        // (and unknown actions) as an ACTION_START-equivalent resume via the
+        // shared startBridge() path — startForeground() first, then side-
+        // effect wiring (now idempotent: content-observer re-registration
+        // guarded), then the relay auto-dial gate. Adds a dismissible
+        // ColorOS/OxygenOS hint on MainActivity (oppo/oneplus/realme) that
+        // deep-links to app details settings for "Allow background
+        // activity" + Auto-launch. No manifest/permission changes.
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client

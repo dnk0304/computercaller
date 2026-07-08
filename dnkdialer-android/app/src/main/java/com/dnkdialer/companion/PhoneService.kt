@@ -1765,68 +1765,105 @@ class PhoneService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 android.util.Log.d("PhoneService", "Starting bridge...")
-
-                // Dispatch #29 — Phase 4 finish. startServer() (the LAN
-                // PhoneServer on port 8765) is gone. We now ONLY wire
-                // up the side-effects that used to live inside startServer
-                // (telephony callback, SMS receiver, content observers,
-                // notification listener bridge) and then auto-dial the
-                // SaaS relay. The user signed in via SignInActivity, the
-                // phoneToken is in TokenStore, we connect outbound to
-                // wss://computercaller.com/relay/phone?token=… so the
-                // webapp's room sees the phone immediately.
-                installSideEffects()
-
-                // Disconnect-from-lobby gate (v25, 2026-05-26). The user
-                // chose to stay disconnected last time they were on this
-                // screen; honor that across cold launches, OS restarts
-                // (START_STICKY), and any startService(...ACTION_START)
-                // call site. Token in TokenStore is left intact — the
-                // user stays signed in, just doesn't auto-dial. Cleared
-                // by tapping Rejoin Lobby (userRejoinLobby) or Sign Out
-                // (TokenStore.clear wipes everything for free).
-                val phoneToken = TokenStore.getPhoneToken(this)
-                when {
-                    phoneToken.isNullOrBlank() -> {
-                        android.util.Log.w("PhoneService", "No phoneToken in TokenStore — skipping relay auto-dial")
-                    }
-                    TokenStore.isUserStayedDisconnected(this) -> {
-                        android.util.Log.d("PhoneService", "User chose to stay disconnected from lobby — skipping auto-dial")
-                    }
-                    else -> {
-                        val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
-                        android.util.Log.d("PhoneService", "Auto-dialing relay (token=${phoneToken.take(8)}…)")
-                        connectToRelay(relayUrl)
-                    }
-                }
-
-                // Single source of truth for the foreground notification —
-                // see buildForegroundNotification(). It attaches the
-                // state-aware Disconnect/Reconnect action and the brand color
-                // so this initial build and every updateNotification() rebuild
-                // stay identical apart from the body text.
-                startForeground(
-                    NOTIFICATION_ID,
-                    buildForegroundNotification("Phone bridge is active")
-                )
-
-                // Disconnect-from-lobby (v25, 2026-05-26): keep the
-                // foreground notification copy honest when the user is in
-                // the stay-disconnected state. The default copy "Phone
-                // bridge is active" is misleading in that case — we ARE
-                // running, but on purpose NOT connected to anything.
-                if (TokenStore.isUserStayedDisconnected(this)) {
-                    updateNotification(getString(R.string.status_user_disconnected))
-                }
+                startBridge()
             }
             ACTION_STOP -> {
                 android.util.Log.d("PhoneService", "Stopping service...")
                 stopSelf()
             }
+            else -> {
+                // Oppo/ColorOS sticky-restart fix (v45, 2026-07-07). When
+                // the OS kills our process (ColorOS app-killer does this
+                // aggressively even with the Doze battery exemption) and
+                // restarts the service via START_STICKY, the redelivered
+                // intent is NULL — it matched neither branch above, so the
+                // service came back as an empty shell: no startForeground()
+                // (ForegroundServiceDidNotStartInTime crash risk on API
+                // 26+), no side-effect wiring, no relay auto-dial. The
+                // bridge stayed dead until the user manually reopened the
+                // app. Treat null (and any unknown action) as an
+                // ACTION_START-equivalent resume through the exact same
+                // code path — startBridge() is idempotent and honors the
+                // stay-disconnected / missing-token gates.
+                android.util.Log.d("PhoneService", "Sticky restart (null/unknown intent) — resuming bridge...")
+                startBridge()
+            }
         }
-        
+
         // If the service is killed, restart it
         return START_STICKY
+    }
+
+    /**
+     * Single bridge-start path shared by ACTION_START and the START_STICKY
+     * null-intent restart (v45). Idempotent — safe to run again on a
+     * process that is already wired up:
+     *  - startForeground() with the same NOTIFICATION_ID just rebuilds the
+     *    existing notification,
+     *  - installSideEffects() guards its registrations (telephony callback
+     *    via telCallbackRef, content observers via startContentObservers'
+     *    already-registered guard; the listener-callback assignments are
+     *    plain idempotent writes),
+     *  - connectToRelay() closes any previous client before dialing and is
+     *    gated below by the missing-token / stay-disconnected checks.
+     *
+     * startForeground() is called FIRST — on API 26+ a service started via
+     * startForegroundService()/sticky restart must enter the foreground
+     * within a short window, so it must not wait behind the relay dial.
+     */
+    private fun startBridge() {
+        // Single source of truth for the foreground notification —
+        // see buildForegroundNotification(). It attaches the
+        // state-aware Disconnect/Reconnect action and the brand color
+        // so this initial build and every updateNotification() rebuild
+        // stay identical apart from the body text.
+        startForeground(
+            NOTIFICATION_ID,
+            buildForegroundNotification("Phone bridge is active")
+        )
+
+        // Dispatch #29 — Phase 4 finish. startServer() (the LAN
+        // PhoneServer on port 8765) is gone. We now ONLY wire
+        // up the side-effects that used to live inside startServer
+        // (telephony callback, SMS receiver, content observers,
+        // notification listener bridge) and then auto-dial the
+        // SaaS relay. The user signed in via SignInActivity, the
+        // phoneToken is in TokenStore, we connect outbound to
+        // wss://computercaller.com/relay/phone?token=… so the
+        // webapp's room sees the phone immediately.
+        installSideEffects()
+
+        // Disconnect-from-lobby gate (v25, 2026-05-26). The user
+        // chose to stay disconnected last time they were on this
+        // screen; honor that across cold launches, OS restarts
+        // (START_STICKY), and any startService(...ACTION_START)
+        // call site. Token in TokenStore is left intact — the
+        // user stays signed in, just doesn't auto-dial. Cleared
+        // by tapping Rejoin Lobby (userRejoinLobby) or Sign Out
+        // (TokenStore.clear wipes everything for free).
+        val phoneToken = TokenStore.getPhoneToken(this)
+        when {
+            phoneToken.isNullOrBlank() -> {
+                android.util.Log.w("PhoneService", "No phoneToken in TokenStore — skipping relay auto-dial")
+            }
+            TokenStore.isUserStayedDisconnected(this) -> {
+                android.util.Log.d("PhoneService", "User chose to stay disconnected from lobby — skipping auto-dial")
+            }
+            else -> {
+                val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
+                android.util.Log.d("PhoneService", "Auto-dialing relay (token=${phoneToken.take(8)}…)")
+                connectToRelay(relayUrl)
+            }
+        }
+
+        // Disconnect-from-lobby (v25, 2026-05-26): keep the
+        // foreground notification copy honest when the user is in
+        // the stay-disconnected state. The default copy "Phone
+        // bridge is active" is misleading in that case — we ARE
+        // running, but on purpose NOT connected to anything.
+        if (TokenStore.isUserStayedDisconnected(this)) {
+            updateNotification(getString(R.string.status_user_disconnected))
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -2369,6 +2406,17 @@ class PhoneService : Service() {
     }
 
     private fun startContentObservers() {
+        // Idempotency guard (v45) — startBridge() may run more than once
+        // (ACTION_START after a sticky null-intent restart, or vice versa).
+        // Re-registering would leak the previous observers: the fields are
+        // overwritten but the old instances stay registered with the
+        // resolver forever, doubling every push. If we're already wired,
+        // this is a no-op.
+        if (smsObserver != null || callLogObserver != null || mmsObserver != null) {
+            android.util.Log.d("PhoneService", "Content observers already registered — skipping")
+            return
+        }
+
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
         // SMS observer — fires when any SMS row is added/modified.

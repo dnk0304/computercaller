@@ -276,6 +276,11 @@
          Phone now stays in the relay lobby until the user actively
          accepts a pairing request from a browser. Help text directs them
          to start the flow on the web side. -->
+    <!-- ColorOS/OxygenOS background hint (v45) — Oppo/OnePlus/Realme kill
+         background apps even with the battery exemption granted. -->
+    <string name="coloros_hint_text">Your phone may stop this app in the background. In Settings, open Battery and choose Allow background activity, and turn on Auto-launch.</string>
+    <string name="coloros_hint_open_settings">Open battery settings</string>
+    <string name="coloros_hint_dismiss">Got it</string>
     <string name="relay_help_text">Sign in on computercaller.com, then tap Connect. You\'ll get a prompt here to accept.</string>
 
     <!-- Dispatch #29 — Sign Out confirmation. Wipes the stored phoneToken

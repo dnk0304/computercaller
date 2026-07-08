@@ -553,6 +553,13 @@ class MainActivity : AppCompatActivity() {
         // Check and show notification status
         checkNotificationStatus()
 
+        // ColorOS/OxygenOS background hint (v45, 2026-07-07). Oppo/OnePlus/
+        // Realme run their own app-killer + auto-launch gate that the
+        // standard Doze battery exemption does NOT cover — the service gets
+        // killed in the background anyway. Surface a one-line dismissible
+        // hint pointing the user at the vendor Battery/Auto-launch toggles.
+        setupColorOsHint()
+
         // Auto-start flow: request battery exemption then start the
         // service. Permissions were already audited via the
         // permissions-required pane gate in onCreate, so we don't need
@@ -632,6 +639,77 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    /**
+     * ColorOS/OxygenOS background hint (v45). Shown only when:
+     *  - Build.MANUFACTURER is oppo / oneplus / realme (ColorOS/OxygenOS
+     *    family — all share the aggressive app-killer + auto-launch gate),
+     *  - the standard battery exemption is ALREADY granted (so the user
+     *    thinks they're done, but the vendor killer still applies),
+     *  - the user hasn't dismissed it before (persisted flag).
+     * "Open app settings" deep-links to the app-details page — the vendor
+     * Battery ("Allow background activity") and Auto-launch toggles live
+     * under it. "Got it" hides the hint permanently.
+     */
+    private fun setupColorOsHint() {
+        val container = findViewById<android.view.View>(R.id.colorOsHintContainer) ?: return
+        val prefs = getSharedPreferences("coloros_hint", Context.MODE_PRIVATE)
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val isColorOsFamily = manufacturer.contains("oppo") ||
+            manufacturer.contains("oneplus") ||
+            manufacturer.contains("realme")
+        if (!isColorOsFamily ||
+            prefs.getBoolean("dismissed", false) ||
+            !isBatteryOptimizationDisabled()
+        ) {
+            container.visibility = android.view.View.GONE
+            return
+        }
+        container.visibility = android.view.View.VISIBLE
+        findViewById<Button>(R.id.colorOsHintSettingsButton).setOnClickListener {
+            openBackgroundActivitySettings()
+        }
+        findViewById<Button>(R.id.colorOsHintDismissButton).setOnClickListener {
+            prefs.edit().putBoolean("dismissed", true).apply()
+            container.visibility = android.view.View.GONE
+        }
+    }
+
+    /**
+     * v46 (Dennis 2026-07-08): the hint tap must land the user DIRECTLY on
+     * the screen with the "Allow background activity" toggle, not just the
+     * app-details root. Tiered:
+     *  1. android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL — the per-app
+     *     "App battery usage" page (the toggle lives here on ColorOS 12+/
+     *     OxygenOS 12+ and near-AOSP builds). Not a public constant but a
+     *     real Settings action; resolveActivity-gated so unsupported ROMs
+     *     fall through instead of crashing.
+     *  2. ACTION_APPLICATION_DETAILS_SETTINGS — app details root, one tap
+     *     from Battery → Allow background activity. Reliable everywhere.
+     */
+    private fun openBackgroundActivitySettings() {
+        val pkgUri = android.net.Uri.parse("package:$packageName")
+        val batteryDetail = Intent("android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL").apply {
+            data = pkgUri
+        }
+        try {
+            if (batteryDetail.resolveActivity(packageManager) != null) {
+                startActivity(batteryDetail)
+                return
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Battery-usage detail intent failed, falling back", e)
+        }
+        try {
+            startActivity(
+                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = pkgUri
+                }
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to open app details settings", e)
+        }
+    }
+
     private fun isBatteryOptimizationDisabled(): Boolean {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         val isIgnoring = powerManager.isIgnoringBatteryOptimizations(packageName)
