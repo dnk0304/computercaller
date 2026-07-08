@@ -232,8 +232,17 @@ android {
         // sideload, v42 Play limbo-escape AAB, v43 Google-sign-in worktree
         // APK, v44/v45 saas-line releases). Launcher label set to
         // "DNK Dialer Companion".
-        versionCode = 46
-        versionName = "1.0.23"
+        // v47 (1.0.24) — REMOVE the Oppo sticky-restart fix (2026-07-08,
+        // Dennis field verdict on the Oppo: v46 auto sync/ping regressed vs
+        // v40 — manual resync required). PhoneService.kt restored EXACTLY to
+        // the v40+OAuth state (no startBridge(), no observer idempotency
+        // guard; v40's original onStartCommand branch logic back). The
+        // dismissible ColorOS battery-settings hint on MainActivity is
+        // passive UI and is KEPT. Root-cause analysis of the v46 regression
+        // deferred — do not reintroduce the sticky-restart refactor without
+        // on-device Oppo testing first.
+        versionCode = 47
+        versionName = "1.0.24"
         // Sign in with Google (2026-07-08, cherry-picked from b138eca onto the
         // published v40 lineage): "Continue with Google" on SignInActivity via
         // AndroidX Credential Manager + GetGoogleIdOption. The Google ID token
@@ -241,16 +250,11 @@ android {
         // WEB client ID) and returns the same {phoneToken, deviceName} shape
         // as /api/auth/apk-login — the existing TokenStore path is reused
         // unchanged. Email/password login remains as fallback.
-        // Oppo/ColorOS sticky-restart fix (2026-07-08, cherry-picked from
-        // 1d667d2 / the v45 line onto this v40 lineage): PhoneService
-        // onStartCommand now treats the START_STICKY null-intent restart
-        // (and unknown actions) as an ACTION_START-equivalent resume via the
-        // shared startBridge() path — startForeground() first, then side-
-        // effect wiring (now idempotent: content-observer re-registration
-        // guarded), then the relay auto-dial gate. Adds a dismissible
-        // ColorOS/OxygenOS hint on MainActivity (oppo/oneplus/realme) that
-        // deep-links to app details settings for "Allow background
-        // activity" + Auto-launch. No manifest/permission changes.
+        // ColorOS/OxygenOS hint (kept from the v46 line): dismissible hint
+        // on MainActivity (oppo/oneplus/realme) deep-linking to the per-app
+        // battery-usage page ("Allow background activity"). Pure UI — no
+        // service/sync code. The v46 PhoneService sticky-restart change was
+        // REMOVED in v47 (see version block above).
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
