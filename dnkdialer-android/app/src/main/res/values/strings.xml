@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">ComputerCaller</string>
+    <!-- v46 (Dennis 2026-07-08): launcher label set to exactly
+         "DNK Dialer Companion" (was "ComputerCaller" on published v40,
+         "DNK Dialer" pre-rebrand). Manifest references @string/app_name;
+         do not hardcode a label elsewhere. -->
+    <string name="app_name">DNK Dialer Companion</string>
     <string name="wordmark_dnk">Computer</string>
     <string name="wordmark_dialer">Caller</string>
     <string name="tagline">A companion for the web app — your phone, on your screen.</string>

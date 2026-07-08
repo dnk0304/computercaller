@@ -218,8 +218,22 @@ android {
         // reviewer can SEE the restricted-permission feature (READ_SMS /
         // READ_CALL_LOG) on ONE phone. Read/display only — NOT default SMS
         // handler; no perm/exemption change. Built on the v39 (1929e22) lineage.
-        versionCode = 40
-        versionName = "1.0.17"
+        // v46 (1.0.23) — clean rebase on the PUBLISHED v40 (1.0.17) base
+        // (2026-07-08, Dennis directive). The v44/v45 line was built on
+        // feature/saas-multiuser with R8 minify ON (2.3MB) and Dennis's
+        // v45 field test showed the compressed build does NOT sync (same
+        // failure mode as pre-v36 — minify strips something the WS/JSON
+        // sync path needs). v46 = v40 code + exactly three deltas cherry-
+        // picked on top: Google sign-in (b138eca), Oppo/ColorOS sticky-
+        // restart fix (1d667d2), Bundle-C backup/network-security XML.
+        // NO code compression: isMinifyEnabled=false + isShrinkResources=
+        // false (hard requirement). versionCode jumps 40 -> 46 because
+        // 41-45 were consumed by shipped/side-line builds (v41 RCS
+        // sideload, v42 Play limbo-escape AAB, v43 Google-sign-in worktree
+        // APK, v44/v45 saas-line releases). Launcher label set to
+        // "DNK Dialer Companion".
+        versionCode = 46
+        versionName = "1.0.23"
         // Sign in with Google (2026-07-08, cherry-picked from b138eca onto the
         // published v40 lineage): "Continue with Google" on SignInActivity via
         // AndroidX Credential Manager + GetGoogleIdOption. The Google ID token
