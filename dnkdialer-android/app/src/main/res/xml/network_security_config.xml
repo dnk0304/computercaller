@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Bundle C (2026-05-28) - Phase 4 audit fix H12.
+
+  Replaces the manifest's android:usesCleartextTraffic="true" blanket allow
+  with a tightly-scoped policy:
+    - default: HTTPS only, system trust-anchors
+    - cleartext (HTTP) ONLY to RFC1918 / link-local / loopback so the LAN
+      QR-pair fallback discovery path (if used) still works
+    - computercaller.com pinned to HTTPS (no SPKI leaf pin in v1 - the cert
+      is Let's Encrypt managed by Coolify-Traefik with 90-day auto-renewal;
+      pinning a leaf SPKI risks bricking the app on every renewal until we
+      ship backup-pin discipline)
+
+  Order matters: domain-config entries take precedence over base-config in
+  the order declared. computercaller.com is forced to HTTPS by the last
+  block; the RFC1918 block authorises cleartext for the LAN ranges only.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- LAN-only cleartext: RFC1918 + link-local + loopback. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.0.0</domain>
+        <domain includeSubdomains="true">172.16.0.0</domain>
+        <domain includeSubdomains="true">192.168.0.0</domain>
+        <domain includeSubdomains="true">169.254.0.0</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+
+    <!-- Production host: HTTPS only, system trust-anchors. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">computercaller.com</domain>
+    </domain-config>
+</network-security-config>
