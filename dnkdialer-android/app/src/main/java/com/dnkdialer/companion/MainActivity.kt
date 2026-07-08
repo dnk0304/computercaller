@@ -597,8 +597,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissions() {
         android.util.Log.d("MainActivity", "Requesting permissions...")
-        // Request all permissions together (required + optional)
-        val allPermissions = requiredPermissions + optionalPermissions
+        // Request all permissions together. v48 (Dennis, 2026-07-08):
+        // notifications must be the FIRST popup the user sees, so the
+        // optional array (POST_NOTIFICATIONS) is prepended — Android
+        // presents the batched dialogs in array order.
+        val allPermissions = optionalPermissions + requiredPermissions
         ActivityCompat.requestPermissions(this, allPermissions, REQ_INITIAL_PERMISSIONS)
     }
     

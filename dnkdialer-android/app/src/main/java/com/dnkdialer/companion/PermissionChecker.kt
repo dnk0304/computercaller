@@ -502,19 +502,7 @@ object PermissionChecker {
             )
         }
 
-        // 10. Battery optimization ignore — SPECIAL. Samsung-specific framing.
-        if (!isBatteryOptimizationIgnored(context)) {
-            missing += MissingPermission(
-                id = "battery_optimization",
-                kind = Kind.SPECIAL,
-                manifestPermission = null,
-                displayName = context.getString(R.string.perm_name_battery),
-                why = context.getString(R.string.perm_why_battery),
-                intent = batteryOptimizationIntent(context),
-            )
-        }
-
-        // 11. Auto-revoke whitelist — SPECIAL. API 30+ (Android 11) added
+        // 10. Auto-revoke whitelist — SPECIAL. API 30+ (Android 11) added
         //     a background "hibernation" pass that revokes runtime permissions
         //     for apps the user hasn't foregrounded "recently". For a phone-
         //     bridge background service that's a silent killer: user grants
@@ -546,6 +534,23 @@ object PermissionChecker {
                 displayName = context.getString(R.string.perm_name_auto_revoke),
                 why = context.getString(R.string.perm_why_auto_revoke),
                 intent = autoRevokeIntent(context),
+            )
+        }
+
+        // 11. Battery optimization ignore — SPECIAL. Samsung-specific framing.
+        //     v48 (Dennis, 2026-07-08): moved to the END of the audit so the
+        //     sequential special-access walk in MainActivity (which launches
+        //     remainingSpecial.first()) asks for the battery exemption LAST,
+        //     after every other permission / special access. List order IS
+        //     request order — do not reorder without a dispatch.
+        if (!isBatteryOptimizationIgnored(context)) {
+            missing += MissingPermission(
+                id = "battery_optimization",
+                kind = Kind.SPECIAL,
+                manifestPermission = null,
+                displayName = context.getString(R.string.perm_name_battery),
+                why = context.getString(R.string.perm_why_battery),
+                intent = batteryOptimizationIntent(context),
             )
         }
 
