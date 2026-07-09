@@ -474,17 +474,15 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* Android companion app — direct APK download for sideloading.
-          Auth-gated server route; not a public link. Show only the latest
-          version. Listed BEFORE Subscription because a user who can't install
-          the app can't subscribe meaningfully. Copy is intentionally short
-          and outcome-led ("bridge calls + SMS") — the longer setup explanation
-          lives on the dashboard's Connect flow, not here. Includes a desktop
-          tip pointing users to open this page on their phone, since the APK
-          has to land ON the Android device to install.
-          Future: when we're live on Google Play, replace the direct-APK CTA
-          with a "Get on Google Play" badge while keeping the auth-gated APK
-          as the secondary path for power users. */}
+      {/* Android companion app — Google Play only. Policy (Dennis,
+          2026-07-09): NO APK is ever served from the web; the official
+          Play Store listing is the single install path. Listed BEFORE
+          Subscription because a user who can't install the app can't
+          subscribe meaningfully. Copy is intentionally short and
+          outcome-led ("bridge calls + SMS") — the longer setup explanation
+          lives on the dashboard's Connect flow, not here. Includes a
+          desktop tip since the app has to be installed ON the Android
+          device. */}
       <section
         className="bg-white rounded-2xl border border-slate-200 p-5"
         aria-labelledby="android-app-heading"
