@@ -66,24 +66,12 @@ dk-partner-work/
 *.aab
 dnkdialer-android/dnkdialer-v*.apk
 
-# apk-releases/ — release artifact directory. We ignore everything in it
-# by default and explicitly un-ignore ONLY the current signed release APK
-# below. This ships exactly one binary with the repo (Coolify rsyncs the
-# whole tree → container) so /api/download/apk can find it on disk, while
-# keeping `.aab` Play Store bundles, bisect builds (`v14a-bisect-*.apk`),
-# and historical versions OUT of git.
-#
-# Workflow on a new release: drop the new signed APK into apk-releases/,
-# bump the version number in the negation line below, delete the previous
-# tracked APK from the index (`git rm --cached apk-releases/<old>.apk`),
-# `git add` the new one, commit, push, deploy. The route uses a regex to
-# pick the highest version on disk — so during the brief window between
-# `git add new` and `git rm --cached old`, both files coexist and the
-# route picks the newer one. No downtime.
-apk-releases/*
-!apk-releases/computercaller-v38.apk
-!apk-releases/computercaller-v40-1.0.17.apk
-!apk-releases/computercaller-v44-1.0.21.apk
+# apk-releases/ — local-only build artifacts. Policy (Dennis, 2026-07-09):
+# NO APK is ever served from the web and NO APK is ever tracked on the
+# deploy branch. Distribution is the official Google Play listing only.
+# Release APK sources live on tagged branches (cc-apk-good-*); local
+# binaries may stay on disk but never re-enter git — no negation rules.
+apk-releases/
 
 # Android signing — keystores + keystore.properties NEVER committed.
 # Live at C:\Users\D\Keystores\ on the build box; passwords in
