@@ -10,6 +10,7 @@ import { Dialpad } from '@/components/Dialpad';
 import { SMSInterface } from '@/components/SMSInterface';
 import { Templates } from '@/components/Templates';
 import { Dashboard } from '@/components/Dashboard';
+import { PermissionHint } from '@/components/PermissionHint';
 import { usePhone, useDashboardTab } from '@/hooks';
 import { User, Bell, LogOut, Phone, MessageSquare, Search, Volume2, Smartphone, Monitor, Info, RefreshCw, ArrowDownLeft, ArrowUpRight, PhoneMissed, PhoneOff, PhoneIncoming, Clock, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -124,6 +125,9 @@ export default function Home() {
   const [callSpeaker, setCallSpeaker] = useState<boolean>(false);
   const phone = usePhone();
   const { isConnected, contacts, callLogs, messages, makeCall, disconnect, getContacts, getCallLogs } = phone;
+  // Permission-ping (2026-07-09): per-permission grant map (null = unknown on
+  // APKs ≤ v48) + "Fix on phone" command sender + status re-poll.
+  const { permissionsStatus, requestPermissionScreen, refreshPermissionsStatus } = phone;
   // quickSync + openSyncPanel may not be on the published hook type yet —
   // loose cast so this compiles cleanly while the bridge surface stabilises.
   // Header button + inline Settings buttons only render if the function exists.
@@ -385,6 +389,15 @@ export default function Home() {
                         {callsSyncing ? 'Syncing...' : 'Re-sync call logs'}
                       </button>
                     )}
+                    {/* Permission-ping: empty section + permission false/unknown */}
+                    {isConnected && (
+                      <PermissionHint
+                        permission="callLog"
+                        granted={permissionsStatus.callLog}
+                        onFix={requestPermissionScreen}
+                        onRefresh={refreshPermissionsStatus}
+                      />
+                    )}
                   </div>
                 )}
               </div>
@@ -488,6 +501,15 @@ export default function Home() {
                         <RefreshCw className={clsx('w-4 h-4', contactsSyncing && 'animate-spin')} />
                         {contactsSyncing ? 'Syncing...' : 'Re-sync contacts'}
                       </button>
+                    )}
+                    {/* Permission-ping: only in the true-empty (not searching) state */}
+                    {!q && isConnected && (
+                      <PermissionHint
+                        permission="contacts"
+                        granted={permissionsStatus.contacts}
+                        onFix={requestPermissionScreen}
+                        onRefresh={refreshPermissionsStatus}
+                      />
                     )}
                   </div>
                 );

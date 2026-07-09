@@ -68,6 +68,7 @@ import {
 import { clsx } from 'clsx';
 import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { PermissionHint } from '@/components/PermissionHint';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
 import { resolveAudioMime, base64ToBytes, audioFileExtension } from '@/lib/audioMime';
@@ -441,6 +442,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     answerCall,
     endCall,
     sendSms,
+    // Permission-ping (2026-07-09): per-permission grant map (null = unknown
+    // on APKs ≤ v48) + "Fix on phone" command sender + status re-poll.
+    permissionsStatus,
+    requestPermissionScreen,
+    refreshPermissionsStatus,
   } = phone;
 
   // 2-mode BT audio routing (2026-05-25). Destructured separately because the
@@ -1656,11 +1662,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               })}
             </ul>
           ) : (
-            <EmptyState
-              icon={<Clock className="w-8 h-8" />}
-              title="No recent calls"
-              hint={isConnected ? 'Calls will appear here as they come in.' : 'Connect your phone to sync call history.'}
-            />
+            <>
+              <EmptyState
+                icon={<Clock className="w-8 h-8" />}
+                title="No recent calls"
+                hint={isConnected ? 'Calls will appear here as they come in.' : 'Connect your phone to sync call history.'}
+              />
+              {/* Permission-ping: empty section + permission false/unknown →
+                  hint + "Fix on phone". Only when a phone is connected. */}
+              {isConnected && (
+                <PermissionHint
+                  permission="callLog"
+                  granted={permissionsStatus.callLog}
+                  onFix={requestPermissionScreen}
+                  onRefresh={refreshPermissionsStatus}
+                />
+              )}
+            </>
           )}
           {/* Load more — only renders 25 more items, no full re-render */}
           {hasMoreCalls && (
@@ -1826,15 +1844,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               hint={`No conversations match "${threadSearch}".`}
             />
           ) : (
-            <EmptyState
-              icon={<MessageSquare className="w-8 h-8" />}
-              title="No messages"
-              hint={
-                isConnected
-                  ? 'No messages synced yet. Use the Sync button in the header to load your message history.'
-                  : 'Connect your phone and sync to see conversations.'
-              }
-            />
+            <>
+              <EmptyState
+                icon={<MessageSquare className="w-8 h-8" />}
+                title="No messages"
+                hint={
+                  isConnected
+                    ? 'No messages synced yet. Use the Sync button in the header to load your message history.'
+                    : 'Connect your phone and sync to see conversations.'
+                }
+              />
+              {isConnected && (
+                <PermissionHint
+                  permission="sms"
+                  granted={permissionsStatus.sms}
+                  onFix={requestPermissionScreen}
+                  onRefresh={refreshPermissionsStatus}
+                />
+              )}
+            </>
           )}
           {/* Load more — two-stage (Issue 1 / Path B, 2026-06-11).
               Stage 1 (reveal): while there are still already-synced threads
@@ -1955,6 +1983,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
           onClear={clearNotification}
           onMarkAllRead={markAllNotificationsRead}
           onClearAll={clearAllNotifications}
+          permissionHint={
+            isConnected ? (
+              <PermissionHint
+                permission="notifications"
+                granted={permissionsStatus.notifications}
+                onFix={requestPermissionScreen}
+                onRefresh={refreshPermissionsStatus}
+              />
+            ) : undefined
+          }
         />,
         document.body
       )}
@@ -4200,6 +4238,9 @@ interface NotificationOverlayProps {
   onClear?: (id: string) => void;
   onMarkAllRead?: () => void;
   onClearAll?: () => void;
+  /** Permission-ping hint rendered inside the empty state (owned by Dashboard,
+   *  which holds the usePhone() surface — this overlay stays presentational). */
+  permissionHint?: React.ReactNode;
 }
 
 /**
@@ -4218,6 +4259,7 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
   onClear,
   onMarkAllRead,
   onClearAll,
+  permissionHint,
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [replyTexts, setReplyTexts] = useState<Record<string, string>>({});
@@ -4294,6 +4336,7 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <Bell className="w-10 h-10 text-slate-200 mb-3" aria-hidden="true" />
               <p className="text-sm text-slate-400">No notifications from your phone</p>
+              {permissionHint}
             </div>
           ) : (
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
