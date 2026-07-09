@@ -70,6 +70,7 @@ import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
+import { resolveAudioMime, base64ToBytes, audioFileExtension } from '@/lib/audioMime';
 import {
   conversationKey,
   sameConversation,
@@ -2733,6 +2734,23 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
   const [fullMediaSrc, setFullMediaSrc] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showLightbox, setShowLightbox] = useState(false);
+  // Audio-only failure states. `loadError` = the fetch itself failed (retryable);
+  // `audioUnplayable` = we have the bytes but no browser can decode them
+  // (raw AMR fallback, or <audio> fired onError) — offer a download instead.
+  const [loadError, setLoadError] = useState(false);
+  const [audioUnplayable, setAudioUnplayable] = useState(false);
+  // Resolved MIME of the fetched audio — drives the download filename
+  // extension (.m4a / .amr / …). Null until the audio bytes have arrived.
+  const [audioMimeType, setAudioMimeType] = useState<string | null>(null);
+  // Blob object URLs must be revoked or they leak the whole payload for the
+  // lifetime of the page. Track the current one and revoke on replacement +
+  // unmount.
+  const blobUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    return () => {
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    };
+  }, []);
 
   const isImage = message.body.startsWith('📷');
   const isAudio = message.body.startsWith('🎵');
@@ -2754,20 +2772,42 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
   const handleLoadFull = useCallback(async () => {
     if (!getMmsMedia || isLoading || fullMediaSrc) return;
     setIsLoading(true);
+    setLoadError(false);
     try {
       const { data, mimeType } = await getMmsMedia(message.id);
-      setFullMediaSrc(`data:${mimeType};base64,${data}`);
+      if (isAudio) {
+        // The phone bridge transcodes AMR→AAC into an MP4 container but labels
+        // it "audio/aac"; browsers silently refuse that data: URL. Sniff the
+        // container and correct the MIME. Raw AMR/3GPP (transcode-failure
+        // fallback) is flagged unplayable so we render a download instead of
+        // a dead player. See lib/audioMime.ts.
+        const resolved = resolveAudioMime(mimeType, data);
+        // Blob object URL instead of a data: URL — dodges Chrome's data:-URI
+        // anchor/download restrictions and per-URL size limits, and works for
+        // both the <audio src> and the download anchor.
+        const bytes = base64ToBytes(data);
+        if (bytes.length === 0) throw new Error('empty or malformed audio payload');
+        const blobUrl = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: resolved.mime }));
+        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = blobUrl;
+        if (!resolved.playable) setAudioUnplayable(true);
+        setAudioMimeType(resolved.mime);
+        setFullMediaSrc(blobUrl);
+      } else {
+        setFullMediaSrc(`data:${mimeType};base64,${data}`);
+      }
       // Auto-open the lightbox for images that didn't have a thumbnail —
       // the user's click was an explicit "I want to see this" intent.
       if (isImage) setShowLightbox(true);
     } catch {
-      // Silently fail — surfacing a network error inside a chat bubble would
-      // be visually noisy and there's nothing actionable for the user. The
-      // affordance just stays in its idle state and the user can retry.
+      // Image path stays silent (the affordance resets and can be retried);
+      // for audio we flag the failure so the button says so — otherwise a
+      // failed fetch is indistinguishable from a dead player.
+      if (isAudio) setLoadError(true);
     } finally {
       setIsLoading(false);
     }
-  }, [getMmsMedia, isLoading, fullMediaSrc, isImage, message.id]);
+  }, [getMmsMedia, isLoading, fullMediaSrc, isImage, isAudio, message.id]);
 
   const thumbnailSrc = message.thumbnail
     ? `data:image/jpeg;base64,${message.thumbnail}`
@@ -2883,15 +2923,61 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
 
   // ---------- Audio MMS ---------------------------------------------------
   if (isAudio) {
+    // Download is always offered once the bytes are here — not only on the
+    // unplayable path. Blob URL href (data: hrefs are blocked/limited for
+    // anchor downloads in Chrome). Extension matches the resolved container
+    // so the OS opens the file with the right player.
+    const downloadName = `voice-message.${audioFileExtension(audioMimeType || '')}`;
+    const downloadLink = fullMediaSrc ? (
+      <a
+        href={fullMediaSrc}
+        download={downloadName}
+        className={clsx(
+          'text-xs font-medium underline underline-offset-2 shrink-0',
+          isSent ? 'text-white' : 'text-blue-600'
+        )}
+        aria-label="Download voice message"
+      >
+        Download
+      </a>
+    ) : null;
+
     return (
       <div className="flex items-center gap-2 min-w-[180px]">
-        {fullMediaSrc ? (
-          <audio
-            controls
-            src={fullMediaSrc}
-            className="h-8 w-full"
-            style={{ maxWidth: 200 }}
-          />
+        {fullMediaSrc && audioUnplayable ? (
+          // The bytes arrived but no browser codec can decode them (raw AMR
+          // fallback, or the <audio> element reported a decode error). Offer
+          // a calm inline state + download so the user can still play it
+          // locally instead of staring at a dead player.
+          <div
+            className={clsx(
+              'flex flex-col gap-1 px-3 py-2 rounded-xl text-xs',
+              isSent ? 'bg-blue-500/30 text-white' : 'bg-slate-100 text-slate-600'
+            )}
+          >
+            <span>Can&apos;t play this voice message format</span>
+            <a
+              href={fullMediaSrc}
+              download={downloadName}
+              className={clsx(
+                'font-medium underline underline-offset-2',
+                isSent ? 'text-white' : 'text-blue-600'
+              )}
+            >
+              Download
+            </a>
+          </div>
+        ) : fullMediaSrc ? (
+          <>
+            <audio
+              controls
+              src={fullMediaSrc}
+              className="h-8 w-full"
+              style={{ maxWidth: 200 }}
+              onError={() => setAudioUnplayable(true)}
+            />
+            {downloadLink}
+          </>
         ) : (
           <button
             type="button"
@@ -2905,7 +2991,13 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200',
               (isLoading || !getMmsMedia) && 'opacity-70 cursor-not-allowed'
             )}
-            aria-label={isLoading ? 'Loading voice message' : 'Play voice message'}
+            aria-label={
+              isLoading
+                ? 'Loading voice message'
+                : loadError
+                  ? "Couldn't load voice message — tap to retry"
+                  : 'Play voice message'
+            }
           >
             {isLoading ? (
               <div
@@ -2915,7 +3007,13 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
             ) : (
               <span className="text-lg" aria-hidden="true">🎵</span>
             )}
-            <span>{isLoading ? 'Loading…' : 'Play voice message'}</span>
+            <span>
+              {isLoading
+                ? 'Loading…'
+                : loadError
+                  ? "Couldn't load — tap to retry"
+                  : 'Play voice message'}
+            </span>
           </button>
         )}
         {caption && <span className="text-xs text-slate-500">{caption}</span>}
