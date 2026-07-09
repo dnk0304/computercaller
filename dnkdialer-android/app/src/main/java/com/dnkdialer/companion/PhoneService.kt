@@ -3550,6 +3550,16 @@ class PhoneService : Service() {
                         mapOf("granted" to granted),
                         viaClient
                     )
+                    // v49: full four-way permission snapshot (sms / callLog /
+                    // contacts / notifications). Sent IN ADDITION to the
+                    // legacy NOTIFICATION_PERMISSION frame above — web builds
+                    // ≤ current still consume the legacy frame, newer builds
+                    // prefer this one. Same shape as GET_PERMISSIONS_STATUS.
+                    sendResponse(
+                        "PERMISSIONS_STATUS",
+                        PermissionChecker.webPermissionsStatus(this@PhoneService),
+                        viaClient
+                    )
                     // Push the active-SIM list so the web client can render a
                     // SIM picker for dual-SIM users. Empty list on single-SIM /
                     // permission denied — the UI handles both cases.
@@ -3566,6 +3576,57 @@ class PhoneService : Service() {
                         startActivity(intent)
                     } catch (e: Exception) {
                         android.util.Log.e("PhoneService", "Failed to open notification settings: ${e.message}", e)
+                    }
+                }
+                "GET_PERMISSIONS_STATUS" -> {
+                    // v49: on-demand version of the PERMISSIONS_STATUS frame
+                    // pushed in HELLO — lets the web client re-poll after it
+                    // sent the user to a settings screen. Cheap (four local
+                    // checks, no provider queries), safe on the WS read thread.
+                    android.util.Log.d("PhoneService", "GET_PERMISSIONS_STATUS")
+                    sendResponse(
+                        "PERMISSIONS_STATUS",
+                        PermissionChecker.webPermissionsStatus(this@PhoneService),
+                        viaClient
+                    )
+                }
+                "REQUEST_PERMISSION" -> {
+                    // v49: web asks the phone to surface the grant UI for one
+                    // permission. A Service cannot show the runtime-permission
+                    // dialog (no Activity), so:
+                    //   notifications        -> notification-listener settings
+                    //                           (same intent as the existing
+                    //                           REQUEST_NOTIFICATION_ACCESS)
+                    //   sms/callLog/contacts -> our App-Info screen, where the
+                    //                           Permissions page lives.
+                    // Unknown values are logged and ignored (protocol-skew
+                    // safety, same posture as the else branch below).
+                    val permission = payload?.get("permission") as? String
+                    android.util.Log.d("PhoneService", "REQUEST_PERMISSION: $permission")
+                    val intent = when (permission) {
+                        "notifications" -> android.content.Intent(
+                            android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS
+                        ).apply { flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK }
+                        "sms", "callLog", "contacts" ->
+                            PermissionChecker.appDetailsSettingsIntent(this@PhoneService)
+                        else -> {
+                            android.util.Log.w(
+                                "PhoneService",
+                                "REQUEST_PERMISSION: unknown permission '$permission'"
+                            )
+                            null
+                        }
+                    }
+                    if (intent != null) {
+                        try {
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e(
+                                "PhoneService",
+                                "REQUEST_PERMISSION: failed to open settings: ${e.message}",
+                                e
+                            )
+                        }
                     }
                 }
                 "NOTIFICATION_REPLY" -> {

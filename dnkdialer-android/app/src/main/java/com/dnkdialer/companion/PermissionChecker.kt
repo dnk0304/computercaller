@@ -557,6 +557,28 @@ object PermissionChecker {
         return missing
     }
 
+    /**
+     * Snapshot of the four grant states the paired web client cares about
+     * (v49 PERMISSIONS_STATUS frame). Lives here so PhoneService reuses the
+     * exact same grant checks as the in-app permission gate rather than
+     * growing a second permission-check code path. Key names are protocol
+     * constants shared with the web client — do not rename.
+     */
+    fun webPermissionsStatus(context: Context): Map<String, Boolean> = mapOf(
+        "sms" to isGranted(context, Manifest.permission.READ_SMS),
+        "callLog" to isGranted(context, Manifest.permission.READ_CALL_LOG),
+        "contacts" to isGranted(context, Manifest.permission.READ_CONTACTS),
+        "notifications" to isNotificationListenerEnabled(context)
+    )
+
+    /**
+     * Public wrapper over [appDetailsIntent] for the v49 REQUEST_PERMISSION
+     * command: a Service cannot show the runtime-permission dialog, so the
+     * best it can do for sms/callLog/contacts is deep-link the user to our
+     * App-Info screen (same intent the in-app SPECIAL rows already use).
+     */
+    fun appDetailsSettingsIntent(context: Context): Intent = appDetailsIntent(context)
+
     // ---------- internals ----------
 
     private fun isGranted(context: Context, permission: String): Boolean {

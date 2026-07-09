@@ -226,8 +226,8 @@ android {
         // exemption LAST, everything between keeps v40's order. No label
         // change, no hardening XML, no ColorOS/sticky-restart code, no
         // minify. Same release cert as v40 — installs as an update.
-        versionCode = 48
-        versionName = "1.0.25"
+        versionCode = 49
+        versionName = "1.0.26"
         // Sign in with Google (2026-07-08, cherry-picked from b138eca onto the
         // published v40 lineage): "Continue with Google" on SignInActivity via
         // AndroidX Credential Manager + GetGoogleIdOption. The Google ID token
