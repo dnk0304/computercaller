@@ -27,6 +27,14 @@ import {
   isForegroundState,
   capCallList,
 } from '@/lib/callQueueGuards';
+import {
+  UNKNOWN_PERMISSIONS_STATUS,
+  mergePermissionsStatus,
+  fixPermissionFrame,
+  GET_PERMISSIONS_STATUS_FRAME,
+  type PermissionKey,
+  type PermissionsStatus,
+} from '@/lib/permissionsStatus';
 
 const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
 // Defensive client-side TTL for a pending pair request. The relay enforces a
@@ -621,6 +629,16 @@ export function usePhoneBridge() {
   // true  = NotificationListenerService is enabled — RCS / Google Messages sync available
   // false = not enabled — UI surfaces a prompt with a deep-link to Android Settings
   const [notificationPermissionGranted, setNotificationPermissionGranted] = useState<boolean | null>(null);
+
+  // Permission-ping (2026-07-09): per-permission status reported by v49+
+  // phones via PERMISSIONS_STATUS:{sms?,callLog?,contacts?,notifications?}.
+  // Every key is nullable — null = unknown (APKs ≤ v48 never send this frame),
+  // so consumers must degrade to a softer "may be missing" hint on null.
+  // The legacy NOTIFICATION_PERMISSION frame is mirrored into `.notifications`
+  // so that key is live even on v40-lineage phones.
+  const [permissionsStatus, setPermissionsStatus] = useState<PermissionsStatus>(
+    UNKNOWN_PERMISSIONS_STATUS
+  );
 
   // Active SIM list reported by the phone after HELLO. Empty array on single-SIM
   // phones / permission denied — UI hides the picker in that case.
@@ -1384,6 +1402,19 @@ export function usePhoneBridge() {
         // Phone reports whether NotificationListenerService is enabled. Drives
         // the RCS / notification-sync banner in ConnectionStatus.
         setNotificationPermissionGranted(payload.granted === true);
+        // Mirror into the per-permission map so the notifications key is live
+        // even on pre-v49 APKs that only speak NOTIFICATION_PERMISSION.
+        setPermissionsStatus(prev =>
+          mergePermissionsStatus(prev, { notifications: payload.granted === true })
+        );
+        break;
+      }
+
+      case 'PERMISSIONS_STATUS': {
+        // v49+ phones report per-permission grant state (on HELLO and in
+        // reply to GET_PERMISSIONS_STATUS). Partial payloads merge — a frame
+        // omitting a key never resets that key back to unknown.
+        setPermissionsStatus(prev => mergePermissionsStatus(prev, payload));
         break;
       }
 
@@ -3431,6 +3462,29 @@ export function usePhoneBridge() {
     }
   }, []);
 
+  /**
+   * Permission-ping (2026-07-09): ask the phone to open the settings screen
+   * for a specific permission. For 'notifications' this sends the EXISTING
+   * REQUEST_NOTIFICATION_ACCESS command (works on v40–v48 today); for the
+   * rest it sends the v49 REQUEST_PERMISSION:{permission} command, which
+   * older APKs safely ignore (their command dispatch has a log-only else).
+   */
+  const requestPermissionScreen = useCallback((permission: PermissionKey) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(fixPermissionFrame(permission));
+    }
+  }, []);
+
+  /**
+   * Ask a v49+ phone to re-broadcast PERMISSIONS_STATUS. Older APKs ignore
+   * the unknown command — callers must tolerate never getting a reply.
+   */
+  const refreshPermissionsStatus = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(GET_PERMISSIONS_STATUS_FRAME);
+    }
+  }, []);
+
   // Send an inline reply to a phone notification. Marks the notification read
   // locally on optimistic-success — Android either delivers the reply (no-op
   // on the UI side) or the next PHONE_NOTIFICATION refresh corrects state.
@@ -3924,6 +3978,12 @@ export function usePhoneBridge() {
     // Notification-listener permission (RCS / Google Messages sync gate)
     notificationPermissionGranted,
     requestNotificationAccess,
+
+    // Permission-ping (2026-07-09). Per-permission grant map (null = unknown,
+    // e.g. APK ≤ v48), "Fix on phone" command sender, and status re-poll.
+    permissionsStatus,
+    requestPermissionScreen,
+    refreshPermissionsStatus,
 
     // Mirrored phone notifications + inline reply / clear / mark-read actions
     phoneNotifications,

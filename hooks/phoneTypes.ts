@@ -49,6 +49,8 @@ export type PhoneEventType =
   | 'STATUS'
   | 'DEVICE_INFO'
   | 'NOTIFICATION_PERMISSION'
+  // Permission-ping (2026-07-09): per-permission grant map from v49+ phones
+  | 'PERMISSIONS_STATUS'
   // Active SIM list pushed by the phone after HELLO — drives the dual-SIM
   // picker UI. Empty array on single-SIM phones / permission denied.
   | 'SIM_LIST'
