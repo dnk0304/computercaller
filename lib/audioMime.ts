@@ -93,3 +93,55 @@ export function resolveAudioMime(reportedMime: string, base64Data: string): Reso
   }
   return { mime: reported || 'application/octet-stream', playable: true };
 }
+
+/**
+ * Decode a full base64 payload to bytes. Browser (atob) and Node (Buffer)
+ * compatible so it stays unit-testable server-side. Returns an empty array on
+ * malformed input rather than throwing — callers treat that as a load error.
+ */
+export function base64ToBytes(base64: string): Uint8Array {
+  try {
+    if (typeof atob === 'function') {
+      const bin = atob(base64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+    return new Uint8Array(Buffer.from(base64, 'base64'));
+  } catch {
+    return new Uint8Array(0);
+  }
+}
+
+/** File extension (without dot) for a resolved audio MIME — used to name the
+ *  download so the OS opens it with the right player. */
+export function audioFileExtension(mime: string): string {
+  const m = (mime || '').split(';')[0].trim().toLowerCase();
+  switch (m) {
+    case 'audio/mp4':
+    case 'audio/x-m4a':
+    case 'audio/aac':
+    case 'audio/aacp':
+      return 'm4a';
+    case 'audio/amr':
+    case 'audio/amr-wb':
+      return 'amr';
+    case 'audio/3gpp':
+    case 'audio/3gpp2':
+      return '3gp';
+    case 'audio/mpeg':
+    case 'audio/mp3':
+      return 'mp3';
+    case 'audio/ogg':
+      return 'ogg';
+    case 'audio/wav':
+    case 'audio/x-wav':
+      return 'wav';
+    case 'audio/webm':
+      return 'webm';
+    case 'audio/flac':
+      return 'flac';
+    default:
+      return 'bin';
+  }
+}

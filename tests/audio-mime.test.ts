@@ -7,7 +7,7 @@
 // Exits non-zero on the first failing assertion.
 
 import { strict as assert } from 'node:assert';
-import { hasFtypBox, resolveAudioMime } from '../lib/audioMime.ts';
+import { hasFtypBox, resolveAudioMime, base64ToBytes, audioFileExtension } from '../lib/audioMime.ts';
 
 // ---- fixtures ---------------------------------------------------------------
 
@@ -98,6 +98,50 @@ ok('unknown type passes through optimistically playable', () => {
 
 ok('empty reported MIME with inconclusive sniff falls back to octet-stream', () => {
   assert.deepEqual(resolveAudioMime('', ''), { mime: 'application/octet-stream', playable: true });
+});
+
+// ---- base64ToBytes ------------------------------------------------------------
+
+ok('base64ToBytes: round-trips exact bytes', () => {
+  const bytes = base64ToBytes(MP4_HEADER);
+  assert.equal(bytes.length, 16);
+  assert.deepEqual(Array.from(bytes.subarray(4, 8)), [0x66, 0x74, 0x79, 0x70]);
+});
+
+ok('base64ToBytes: empty array on empty/malformed input', () => {
+  assert.equal(base64ToBytes('').length, 0);
+  assert.equal(base64ToBytes('!!!not-base64!!!').length, 0);
+});
+
+ok('base64ToBytes: backing buffer is exact (safe for new Blob([bytes.buffer]))', () => {
+  const bytes = base64ToBytes(MP3_HEADER);
+  assert.equal(bytes.byteOffset, 0);
+  assert.equal(bytes.buffer.byteLength, bytes.length);
+});
+
+// ---- audioFileExtension ---------------------------------------------------------
+
+ok('audioFileExtension: m4a for mp4-family MIMEs (incl. mislabeled aac)', () => {
+  assert.equal(audioFileExtension('audio/mp4'), 'm4a');
+  assert.equal(audioFileExtension('audio/x-m4a'), 'm4a');
+  assert.equal(audioFileExtension('audio/aac'), 'm4a');
+});
+
+ok('audioFileExtension: amr / 3gp for the raw-fallback formats', () => {
+  assert.equal(audioFileExtension('audio/amr'), 'amr');
+  assert.equal(audioFileExtension('audio/amr-wb'), 'amr');
+  assert.equal(audioFileExtension('audio/3gpp'), '3gp');
+});
+
+ok('audioFileExtension: common playable types + params normalization', () => {
+  assert.equal(audioFileExtension('audio/mpeg'), 'mp3');
+  assert.equal(audioFileExtension('audio/ogg; codecs=opus'), 'ogg');
+  assert.equal(audioFileExtension('AUDIO/WAV'), 'wav');
+});
+
+ok('audioFileExtension: bin fallback for unknown/empty', () => {
+  assert.equal(audioFileExtension('audio/weird'), 'bin');
+  assert.equal(audioFileExtension(''), 'bin');
 });
 
 console.log(`\naudio-mime: ${passed} assertions groups passed`);

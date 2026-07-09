@@ -35,6 +35,7 @@ const SECURITY_HEADERS = [
       "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https:",
+      "media-src 'self' data: blob:",
       "font-src 'self' data:",
       "connect-src 'self' wss://computercaller.com https://api.cloudflare.com",
       "frame-src 'self' https://whop.com",

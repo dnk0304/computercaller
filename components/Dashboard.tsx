@@ -70,7 +70,7 @@ import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
-import { resolveAudioMime } from '@/lib/audioMime';
+import { resolveAudioMime, base64ToBytes, audioFileExtension } from '@/lib/audioMime';
 import {
   conversationKey,
   sameConversation,
@@ -2739,6 +2739,18 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
   // (raw AMR fallback, or <audio> fired onError) — offer a download instead.
   const [loadError, setLoadError] = useState(false);
   const [audioUnplayable, setAudioUnplayable] = useState(false);
+  // Resolved MIME of the fetched audio — drives the download filename
+  // extension (.m4a / .amr / …). Null until the audio bytes have arrived.
+  const [audioMimeType, setAudioMimeType] = useState<string | null>(null);
+  // Blob object URLs must be revoked or they leak the whole payload for the
+  // lifetime of the page. Track the current one and revoke on replacement +
+  // unmount.
+  const blobUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    return () => {
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    };
+  }, []);
 
   const isImage = message.body.startsWith('📷');
   const isAudio = message.body.startsWith('🎵');
@@ -2770,8 +2782,17 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
         // fallback) is flagged unplayable so we render a download instead of
         // a dead player. See lib/audioMime.ts.
         const resolved = resolveAudioMime(mimeType, data);
+        // Blob object URL instead of a data: URL — dodges Chrome's data:-URI
+        // anchor/download restrictions and per-URL size limits, and works for
+        // both the <audio src> and the download anchor.
+        const bytes = base64ToBytes(data);
+        if (bytes.length === 0) throw new Error('empty or malformed audio payload');
+        const blobUrl = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: resolved.mime }));
+        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = blobUrl;
         if (!resolved.playable) setAudioUnplayable(true);
-        setFullMediaSrc(`data:${resolved.mime};base64,${data}`);
+        setAudioMimeType(resolved.mime);
+        setFullMediaSrc(blobUrl);
       } else {
         setFullMediaSrc(`data:${mimeType};base64,${data}`);
       }
@@ -2902,6 +2923,25 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
 
   // ---------- Audio MMS ---------------------------------------------------
   if (isAudio) {
+    // Download is always offered once the bytes are here — not only on the
+    // unplayable path. Blob URL href (data: hrefs are blocked/limited for
+    // anchor downloads in Chrome). Extension matches the resolved container
+    // so the OS opens the file with the right player.
+    const downloadName = `voice-message.${audioFileExtension(audioMimeType || '')}`;
+    const downloadLink = fullMediaSrc ? (
+      <a
+        href={fullMediaSrc}
+        download={downloadName}
+        className={clsx(
+          'text-xs font-medium underline underline-offset-2 shrink-0',
+          isSent ? 'text-white' : 'text-blue-600'
+        )}
+        aria-label="Download voice message"
+      >
+        Download
+      </a>
+    ) : null;
+
     return (
       <div className="flex items-center gap-2 min-w-[180px]">
         {fullMediaSrc && audioUnplayable ? (
@@ -2918,7 +2958,7 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
             <span>Can&apos;t play this voice message format</span>
             <a
               href={fullMediaSrc}
-              download="voice-message"
+              download={downloadName}
               className={clsx(
                 'font-medium underline underline-offset-2',
                 isSent ? 'text-white' : 'text-blue-600'
@@ -2928,13 +2968,16 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
             </a>
           </div>
         ) : fullMediaSrc ? (
-          <audio
-            controls
-            src={fullMediaSrc}
-            className="h-8 w-full"
-            style={{ maxWidth: 200 }}
-            onError={() => setAudioUnplayable(true)}
-          />
+          <>
+            <audio
+              controls
+              src={fullMediaSrc}
+              className="h-8 w-full"
+              style={{ maxWidth: 200 }}
+              onError={() => setAudioUnplayable(true)}
+            />
+            {downloadLink}
+          </>
         ) : (
           <button
             type="button"
