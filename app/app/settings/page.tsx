@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ExternalLink, ChevronDown, ChevronUp, RefreshCw, Zap, Smartphone, Download, Apple, X } from 'lucide-react';
+import { ExternalLink, ChevronDown, ChevronUp, RefreshCw, Zap, Smartphone, Download } from 'lucide-react';
 import { usePhone } from '@/hooks';
 import {
   getDeviceLabel,
@@ -37,12 +37,6 @@ const LAST_QUICK_SYNC_KEY = 'dnkdialer_last_quick_sync_at';
 // repo for 'dnkdialer_phone_url' to find both call sites. Used by the
 // "Forget saved phone" affordance below.
 const PHONE_URL_KEY = 'dnkdialer_phone_url';
-
-// localStorage key for the iOS-tip dismissal (dispatch 2026-05-25). Once
-// dismissed, the tip never reappears for this browser profile. Cleared by
-// the user only via DevTools / clearing site data — we don't want to nag
-// iPhone users who've already seen the tip.
-const IOS_TIP_DISMISSED_KEY = 'computercaller_ios_tip_dismissed';
 
 // Format a unix-ms timestamp as a relative "Just now / 5m ago / 2h ago / 3d ago"
 // string. Returns "Never" when the timestamp is null/0/NaN. Granularity is the
@@ -142,41 +136,6 @@ export default function SettingsPage() {
     setLabelEditing(false);
     setLabelSavedAt(Date.now());
     window.setTimeout(() => setLabelSavedAt(null), 3000);
-  };
-
-  // iOS tip visibility (dispatch 2026-05-25). Authenticated users coming in
-  // from iPhone get a one-time pointer to the /iphone setup guide. We detect
-  // navigator.userAgent post-hydration (SSR skips), then check localStorage
-  // for a prior dismissal. Hidden by default — only shown when BOTH the UA
-  // matches AND the user hasn't dismissed before. Dismissal persists across
-  // sessions; we trade discoverability after first dismissal for not nagging.
-  const [showIosTip, setShowIosTip] = useState(false);
-  useEffect(() => {
-    if (typeof navigator === 'undefined') return;
-    try {
-      const dismissed = window.localStorage.getItem(IOS_TIP_DISMISSED_KEY);
-      if (dismissed) return;
-    } catch {
-      // localStorage may throw in private mode — fall through and show the tip
-      // anyway. Dismissal won't persist, but that's a degraded mode the user
-      // opted into by going private.
-    }
-    const ua = navigator.userAgent || '';
-    const iosUa = /iPhone|iPad|iPod/i.test(ua);
-    const isIpadOs =
-      ua.includes('Mac') &&
-      typeof navigator.maxTouchPoints === 'number' &&
-      navigator.maxTouchPoints > 1;
-    if (iosUa || isIpadOs) setShowIosTip(true);
-  }, []);
-
-  const dismissIosTip = () => {
-    setShowIosTip(false);
-    try {
-      window.localStorage.setItem(IOS_TIP_DISMISSED_KEY, String(Date.now()));
-    } catch {
-      /* private mode — fail silently */
-    }
   };
 
   useEffect(() => {

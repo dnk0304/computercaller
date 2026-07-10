@@ -31,7 +31,7 @@ We build ComputerCaller, so obviously we have a horse in this race. This compari
 | **Setup** | Install the Android app, scan a QR code, done | Pair over Bluetooth; multiple permission prompts on phone and PC |
 | **Call audio path** | Routed by the companion app; your headset stays connected to your phone | Routed over Bluetooth to the PC — a common source of choppy audio |
 | **Phone requirement** | Android phone with you (in your pocket is fine) | Android phone near the PC, Bluetooth on |
-| **iPhone support** | No | Limited (no full call/SMS parity) |
+| **iPhone support** | No — Android only | Limited (no full call/SMS parity) |
 | **Notification mirroring** | WhatsApp, Telegram, Discord and more | Standard Android notifications |
 
 One thing to be clear about, because some tools in this space get misrepresented: with both products, **your phone needs to be with you**. ComputerCaller doesn't teleport your number — the companion app runs on your Android phone, which stays in your pocket while you work from the browser. The difference is *how* the two connect, not *whether* you need your phone.

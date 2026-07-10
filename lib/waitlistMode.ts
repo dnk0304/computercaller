@@ -3,7 +3,7 @@
  *
  * When ON (env `NEXT_PUBLIC_WAITLIST_MODE` set truthy):
  *   • Every public "Start free trial" / "Sign in" / "Register" CTA on the
- *     marketing pages (/, /iphone) is replaced with a "Join waitlist" email
+ *     marketing pages (/) is replaced with a "Join waitlist" email
  *     capture, OR hidden. NO path to /auth/* or Whop checkout exists publicly.
  *
  * When OFF (env unset or falsy):
