@@ -141,6 +141,18 @@ const PAIRING_TTL_MS = 30_000;
 // beyond what a normal Connect+Accept inside the same room already grants.
 const RESUME_WINDOW_MS = 120_000;
 
+// Known-device auto-relink (2026-07-10). How long after a pair ends the relay
+// will still silently re-form it when the SAME authed user's phone + browser
+// are both back in the lobby. Deliberately much longer than RESUME_WINDOW_MS:
+// the 120s window only covers socket blips, while this covers OEM app kills
+// (ColorOS killing the APK with no auto-redial on the v40 base) and user
+// walk-aways — the phone can be gone for minutes before it reconnects.
+// Security: the room token remains the outer shared secret; this adds no
+// surface beyond what Accept already trusts (both sockets authed into the
+// same room), and NARROWS it further by requiring the authed userId on both
+// sockets and the phone's deviceName to match the recorded consented pair.
+const KNOWN_PAIR_RELINK_WINDOW_MS = 10 * 60 * 1000;
+
 /**
  * Relay state machine — Connect+Accept lobby model (dispatch #32, 2026-05-25).
  *
@@ -161,6 +173,11 @@ const RESUME_WINDOW_MS = 120_000;
  *   room.pendingPairing       — { id, browserWs, ua, ip, expiresAt, timer } | null
  *                               A pairing request in flight. Browser asked,
  *                               phone has not yet answered. 30 s TTL.
+ *   room.lastPair             — { userId, phoneDeviceName, browserUa,
+ *                               pairedAt, endedAt } | null. Identity of the
+ *                               last CONSENTED pair, memory-only. Fuels
+ *                               known-device auto-relink (2026-07-10); see
+ *                               tryKnownDeviceRelink for guards/invalidation.
  *
  * Wire protocol — control plane:
  *
@@ -316,6 +333,12 @@ function startRelay(httpServer) {
     // both-sides-dropped case can still auto-resume when they return.
     // Worst case the room lingers RESUME_WINDOW_MS past empty.
     if (room.resumable && Date.now() <= room.resumable.expiresAt) return;
+    // Known-device auto-relink: keep the room (and its lastPair record) alive
+    // while a relink is still possible, so a both-sides-gone gap (OEM kill +
+    // browser reload) can still relink when both return. Bounded: worst case
+    // the empty room lingers KNOWN_PAIR_RELINK_WINDOW_MS past endedAt.
+    if (room.lastPair && room.lastPair.endedAt != null
+        && Date.now() - room.lastPair.endedAt <= KNOWN_PAIR_RELINK_WINDOW_MS) return;
     rooms.delete(room.token);
     console.log(`[Relay] Reaped empty room ${redactToken(room.token)}`);
   }
@@ -436,9 +459,27 @@ function startRelay(httpServer) {
    * PAIRING_TERMINATED:{reason} so their UI can reset cleanly. Safe to
    * call when no pair is active.
    */
-  function terminateActivePair(room, reason) {
+  function terminateActivePair(room, reason, opts = {}) {
     const { browser, phone } = room.active;
     if (!browser && !phone) return;
+
+    // Known-device auto-relink (2026-07-10): stamp when the consented pair
+    // ended so tryKnownDeviceRelink can gate on recency. Invalidation
+    // asymmetry (deliberate): a `user_left` where the LEAVER is the PHONE
+    // means the phone's owner explicitly said stop — the consent that
+    // auto-relink rides on is revoked, so the record is destroyed and we
+    // never auto-relink over it. A BROWSER-side `user_left` (stray
+    // Disconnect/Cancel click, sign-out race) does NOT invalidate: the
+    // phone's Accept still stands, and the browser re-opting-in is implicit
+    // in it sitting back in the same authed room.
+    if (room.lastPair) {
+      if (reason === 'user_left' && opts.leaverRole === 'phone') {
+        room.lastPair = null;
+        console.log(`[Relay][${redactToken(room.token)}] phone user_left — lastPair invalidated (no auto-relink)`);
+      } else if (room.lastPair.endedAt == null) {
+        room.lastPair.endedAt = Date.now();
+      }
+    }
 
     // Connection-stability fix (2026-06-16). socket_closed = a transient blip,
     // not a user leaving. By default we KEEP the surviving side in `active` and
@@ -612,6 +653,115 @@ function startRelay(httpServer) {
     if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
     if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown' })}`);
     console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, droppedRole=${claim.droppedRole}, survivorHeld=${!!(survivorPhone || survivorBrowser)})`);
+    stampLastPair(room, phoneWs, browserWs);
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Known-device auto-relink (2026-07-10)
+  //
+  // Extends Issue-3 auto-resume. Issue-3 covers a SOCKET blip (<=120s, armed
+  // only by socket_closed). Two prod failure modes escape it:
+  //   (A) the resume claim gets wiped by a browser-side `user_left` fired
+  //       during the soft-hold (stray Disconnect click while the phone is
+  //       briefly away) — the phone returns 60s later to a dead claim;
+  //   (B) the phone is away LONGER than 120s (ColorOS killing the APK with no
+  //       auto-redial on the v40 base) — the claim expires before it returns.
+  // In both cases every frame the returning phone sends is dropped from the
+  // lobby until the user manually re-runs Connect+Accept — for a pairing they
+  // consented to minutes earlier.
+  //
+  // Fix: remember the IDENTITY of the last consented pair (room.lastPair) and,
+  // when a phone + browser that BOTH carry that identity are back in the lobby
+  // within KNOWN_PAIR_RELINK_WINDOW_MS of teardown, re-form the pair silently.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Record the identity of the pair that just went ACTIVE. Called from every
+   * pair-forming path (handleAcceptPairing, tryAutoResume, relink itself).
+   * Memory-only, per-room, no persistence.
+   *
+   * userId is stamped only when BOTH sockets authed as the same user (they
+   * always should — the room token maps to one account); a mismatch stamps
+   * null, which disables relink for this pair (the userId guard can never
+   * pass), failing closed.
+   */
+  function stampLastPair(room, phoneWs, browserWs) {
+    const userId = (phoneWs.userId && phoneWs.userId === browserWs.userId) ? phoneWs.userId : null;
+    room.lastPair = {
+      userId,
+      phoneDeviceName: phoneWs.deviceName ?? room.lastPair?.phoneDeviceName ?? null,
+      browserUa: room.pairIdentity?.ua ?? null,
+      pairedAt: Date.now(),
+      endedAt: null,
+    };
+  }
+
+  /**
+   * Attempt a known-device auto-relink. Called at lobby-join time (phone and
+   * browser paths, strictly AFTER tryAutoResume — Issue-3 resume keeps
+   * priority) and from the phone's DEVICE_INFO handler (a rejoining phone's
+   * deviceName only becomes known when that frame lands, which is after the
+   * join-time attempt already ran).
+   *
+   * Hijack guards — ALL required before a relink fires:
+   *   1. both candidate sockets' authed userId === lastPair.userId;
+   *   2. the phone's deviceName === lastPair.phoneDeviceName;
+   *   3. no pendingPairing — an in-flight explicit handshake always wins;
+   *   4. lastPair survives teardown only if the phone did NOT leave via
+   *      user_left (see terminateActivePair — phone-side Disconnect destroys
+   *      the record permanently).
+   * Plus state guards: the record must exist, have ended (endedAt != null)
+   * within KNOWN_PAIR_RELINK_WINDOW_MS, and no active slot may be occupied
+   * (an occupied slot means a live pair or an Issue-3 soft-hold — both owned
+   * by existing mechanisms).
+   *
+   * Returns true if the pair was re-formed (caller should skip its normal
+   * lobby-join messaging for the joiner, mirroring tryAutoResume).
+   */
+  function tryKnownDeviceRelink(room) {
+    const lp = room.lastPair;
+    if (!lp || lp.endedAt == null || !lp.userId) return false;
+    const gap = Date.now() - lp.endedAt;
+    if (gap > KNOWN_PAIR_RELINK_WINDOW_MS) {
+      room.lastPair = null; // lazily expire
+      return false;
+    }
+    if (room.pendingPairing) return false;           // explicit handshake wins
+    if (room.active.browser || room.active.phone) return false; // live pair / soft-hold owns this
+
+    let phoneWs = null;
+    let browserWs = null;
+    for (const s of room.lobby) {
+      if (s.readyState !== WebSocket.OPEN) continue;
+      if (s.role === 'phone' && !phoneWs
+          && s.userId === lp.userId
+          && (s.deviceName ?? null) === (lp.phoneDeviceName ?? null)) {
+        phoneWs = s;
+      } else if (s.role === 'browser' && !browserWs && s.userId === lp.userId) {
+        browserWs = s;
+      }
+    }
+    if (!phoneWs || !browserWs) return false;
+
+    room.lobby.delete(phoneWs);
+    room.lobby.delete(browserWs);
+    room.active.browser = browserWs;
+    room.active.phone = phoneWs;
+    room.resumable = null;
+
+    const prevId = room.pairIdentity ?? {};
+    const deviceName = phoneWs.deviceName ?? lp.phoneDeviceName ?? null;
+    room.pairIdentity = { ua: prevId.ua ?? 'unknown', ip: prevId.ip ?? 'unknown', deviceLabel: prevId.deviceLabel, deviceName };
+    // IDENTICAL payload shapes to handleAcceptPairing's PAIRING_ACTIVE pair —
+    // both clients' existing handlers accept this without a Connect click or
+    // an Accept tap, and the web side fires its quick-sync backfill on it.
+    safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
+    safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: prevId.ua ?? 'unknown', ip: prevId.ip ?? 'unknown' })}`);
+    lp.phoneDeviceName = deviceName;
+    lp.pairedAt = Date.now();
+    lp.endedAt = null;
+    console.log(`[Relay][${redactToken(room.token)}] known-device auto-relink (gap=${gap}ms, device=${deviceName ?? '-'})`);
     return true;
   }
 
@@ -740,6 +890,8 @@ function startRelay(httpServer) {
     // completed normal handshake also supersedes any stale resume claim.
     room.pairIdentity = { ua: pending.ua, ip: pending.ip, deviceLabel: pending.deviceLabel, deviceName };
     room.resumable = null;
+    // Known-device auto-relink: record the consented pair's identity.
+    stampLastPair(room, phoneWs, browserWs);
     safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
     safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: pending.ua, ip: pending.ip })}`);
     console.log(`[Relay][${redactToken(room.token)}] Pairing ${pending.id} ACTIVE — browser ↔ phone`);
@@ -1070,7 +1222,12 @@ function startRelay(httpServer) {
       // silently. Attempted BEFORE any lobby messaging — on resume the
       // PAIRING_ACTIVE frame REPLACES LOBBY_STATUS for this socket, so the
       // client never sees a lobby frame that could race its active state.
-      const phoneResumed = tryAutoResume(room);
+      // Known-device auto-relink: attempted only when Issue-3 resume did not
+      // fire (resume keeps priority — it handles the armed-claim blip cases
+      // exactly as before). Usually a no-op at phone-join time because the
+      // fresh socket has no deviceName yet (guard 2 fails until DEVICE_INFO
+      // lands, where we retry) — it fires here when lastPair recorded no name.
+      const phoneResumed = tryAutoResume(room) || tryKnownDeviceRelink(room);
 
       if (!phoneResumed) {
         // 1. Tell the phone how many browsers are already waiting in this
@@ -1119,6 +1276,18 @@ function startRelay(httpServer) {
               if (payload?.deviceName) ws.deviceName = String(payload.deviceName).slice(0, 128);
               console.log(`[Relay][${redactToken(token)}] Phone device name: ${ws.deviceName}`);
             } catch (e) { /* ignore malformed payload */ }
+            // Known-device auto-relink: a REJOINING phone's deviceName only
+            // becomes known here (the join-time relink attempt ran before
+            // DEVICE_INFO arrived, so its deviceName guard failed). Retry now
+            // that identity is complete. On success ws becomes
+            // room.active.phone and the frame forwards through the pair below.
+            if (ws !== room.active.phone) {
+              tryKnownDeviceRelink(room);
+            } else if (room.lastPair && room.lastPair.endedAt == null && ws.deviceName) {
+              // Live pair learning its name post-Accept — keep the record
+              // current so a later relink matches the real deviceName.
+              room.lastPair.phoneDeviceName = ws.deviceName;
+            }
             if (ws === room.active.phone) {
               forwardDataPlane(room, ws, msg);
             }
@@ -1155,7 +1324,9 @@ function startRelay(httpServer) {
         if (msg.startsWith('LEAVE_ACTIVE:')) {
           try {
             if (ws === room.active.phone) {
-              terminateActivePair(room, 'user_left');
+              // leaverRole: phone-side Disconnect permanently invalidates the
+              // known-device relink record (see terminateActivePair).
+              terminateActivePair(room, 'user_left', { leaverRole: 'phone' });
             } else {
               console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active phone — ignored`);
             }
@@ -1198,6 +1369,14 @@ function startRelay(httpServer) {
         // Frame from a lobby phone that wasn't a recognised control frame and
         // there is no armed resume window to deliver it into. Drop + log so
         // misbehaving APKs surface in the relay log.
+        //
+        // Deliberately NO queue/replay of these frames (decision locked,
+        // 2026-07-10): known-device auto-relink makes the lobby gap seconds
+        // long, and PAIRING_ACTIVE already triggers the web quick-sync (6h
+        // merge backfill) which recovers anything sent during the gap.
+        // Replaying stale frames after relink risks duplicates the client
+        // dedup layers were never designed for. Resume-then-resync is the
+        // contract.
         console.log(`[Relay][${redactToken(token)}] Dropping lobby-phone frame: ${msg.substring(0, 60)}`);
       });
 
@@ -1258,7 +1437,10 @@ function startRelay(httpServer) {
     // auto-reconnects) re-links silently. Attempted BEFORE LOBBY_STATUS —
     // on resume PAIRING_ACTIVE REPLACES LOBBY_STATUS for this socket so the
     // web hook never processes a 'lobby' frame after going active.
-    if (!tryAutoResume(room)) {
+    // Known-device auto-relink: same ordering contract as the phone path —
+    // Issue-3 resume first, relink second, and on either success the
+    // PAIRING_ACTIVE frame REPLACES LOBBY_STATUS for this socket.
+    if (!tryAutoResume(room) && !tryKnownDeviceRelink(room)) {
       // Tell the browser whether it can act on the Connect button right away
       // and whether an active pair already exists in this room (browser will
       // render distinct copy in that case).
@@ -1290,7 +1472,9 @@ function startRelay(httpServer) {
       if (msg.startsWith('LEAVE_ACTIVE:')) {
         try {
           if (ws === room.active.browser) {
-            terminateActivePair(room, 'user_left');
+            // leaverRole: a browser-side leave does NOT invalidate the
+            // known-device relink record (see terminateActivePair asymmetry).
+            terminateActivePair(room, 'user_left', { leaverRole: 'browser' });
           } else {
             console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active browser — ignored`);
           }
