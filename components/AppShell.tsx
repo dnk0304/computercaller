@@ -9,6 +9,7 @@ import { ProfileMenu } from '@/components/ProfileMenu';
 import { PhoneModeShell } from '@/components/PhoneModeShell';
 import { SyncMenuButton } from '@/components/SyncMenuButton';
 import { ReconnectionPill } from '@/components/ReconnectionPill';
+import { SyncProgressBar } from '@/components/SyncProgressBar';
 import { CallQueueBand } from '@/components/CallQueueBand';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { usePhone, useDashboardTab, usePhoneMode, type DashboardTab } from '@/hooks';
@@ -163,8 +164,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (phoneMode) {
     return (
       <div className="flex h-screen overflow-hidden bg-slate-50 font-sans">
-        <main className="flex-1 min-w-0 overflow-hidden">
-          <PhoneModeShell />
+        <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          {/* In-flow sync bar (2026-07-10) — also present in Phone Mode so an
+              in-flight sync stays visible; pushes the compact shell down
+              instead of overlaying it. */}
+          <SyncProgressBar />
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <PhoneModeShell />
+          </div>
         </main>
       </div>
     );
@@ -175,6 +182,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
 
       <main className="flex-1 flex flex-col min-w-0">
+        {/* Sync lifecycle bar (Pixel, 2026-07-10) — sits ABOVE the header in
+            normal document flow. When a sync (or its timeout/completion
+            state) is active the bar expands and pushes the header + content
+            down; the app underneath stays fully interactive. Replaces the
+            old full-screen blocking sync modal. See SyncProgressBar.tsx. */}
+        <SyncProgressBar />
         {/* Header — sticky, frosted. Same composition as before; lifted out
             of /app/page.tsx so /app/settings inherits it. */}
         <header className="h-20 px-8 flex items-center justify-between bg-white/50 backdrop-blur-sm border-b border-slate-200/50 z-10 sticky top-0">

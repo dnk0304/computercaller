@@ -6,7 +6,10 @@ import { PhoneProvider, DialerOpenProvider } from '@/hooks';
 // only from inside `/app/settings` on demand — the auto-open on first connect
 // was disorienting because it covered the dashboard the moment the phone paired.
 // See `app/app/settings/page.tsx` for the on-demand mount.
-import { SyncProgressBar } from '@/components/SyncProgressBar';
+// SyncProgressBar moved out of the root layout (2026-07-10): it is now an
+// IN-FLOW bar mounted by AppShell directly above the /app header, so it
+// pushes the chrome down instead of overlaying the page. Marketing pages
+// never had sync state to show, so nothing is lost outside /app/*.
 import { GlobalDialer } from '@/components/GlobalDialer';
 
 const geistSans = Geist({
@@ -125,7 +128,6 @@ export default function RootLayout({
         <PhoneProvider>
           <DialerOpenProvider>
             {children}
-            <SyncProgressBar />
             <GlobalDialer />
           </DialerOpenProvider>
         </PhoneProvider>
