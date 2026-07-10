@@ -12,7 +12,7 @@ import type { Metadata } from 'next';
  *
  * SEO intent: pin the canonical to /auth/login so Google stops mapping this
  * URL onto the homepage canonical (GSC: "Alternative page with proper
- * canonical tag"). Same pattern as `app/iphone/layout.tsx`.
+ * canonical tag"). Thin metadata-only layout.
  */
 export const metadata: Metadata = {
   title: 'Sign in — ComputerCaller',

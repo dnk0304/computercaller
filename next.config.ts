@@ -62,6 +62,19 @@ const nextConfig: NextConfig = {
   // Refs: https://www.prisma.io/docs/orm/more/help-and-troubleshooting/nextjs-help
   serverExternalPackages: ['@prisma/client', '.prisma/client'],
 
+  // Android-only repositioning (2026-07-10): the iPhone setup page was
+  // removed. Its URL is in the previously-submitted sitemap and may be
+  // indexed, so permanent-redirect it home instead of 404ing.
+  async redirects() {
+    return [
+      {
+        source: '/iphone',
+        destination: '/',
+        permanent: true,
+      },
+    ];
+  },
+
   async headers() {
     return [
       {

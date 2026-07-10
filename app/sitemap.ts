@@ -6,8 +6,7 @@ import { getAllGuides } from '@/lib/guides';
  * convention. Re-generated at build time.
  *
  * Includes only routes that actually exist and resolve 200: the homepage,
- * the iPhone setup guide, the two auth landing pages (Google sometimes ranks
- * `/auth/login` as a branded-search landing), and the two legal pages.
+ * the two auth landing pages, the two legal pages, and the guides section.
  *
  * Auth pages are included because Google sometimes ranks `/auth/login` as a
  * branded-search landing; listing them ensures it picks the correct canonical
@@ -31,16 +30,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       lastModified: now,
       changeFrequency: 'weekly',
       priority: 1.0,
-    },
-    {
-      // iPhone setup guide — iOS-leaning keyword cluster ("call from computer
-      // iphone", "iphone bluetooth computer calls"). Priority 0.8 because it's
-      // a real content page with HowTo + FAQPage rich-snippet eligibility, but
-      // a notch below the homepage (Android remains the lead).
-      url: `${BASE_URL}/iphone`,
-      lastModified: now,
-      changeFrequency: 'monthly',
-      priority: 0.8,
     },
     {
       url: `${BASE_URL}/auth/register`,

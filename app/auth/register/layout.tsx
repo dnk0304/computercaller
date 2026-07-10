@@ -5,7 +5,7 @@ import type { Metadata } from 'next';
  *
  * Lives in a server layout (not the page) because `app/auth/register/page.tsx`
  * is a client component (`'use client'` — interactive form, useState). Same
- * thin-layout pattern as `app/iphone/layout.tsx` and `app/auth/login/layout.tsx`.
+ * thin-layout pattern as `app/auth/login/layout.tsx`.
  *
  * SEO intent: pin the canonical to /auth/register so this URL doesn't inherit
  * the root layout's `canonical: "/"` and get folded onto the homepage in GSC.

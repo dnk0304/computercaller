@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import Script from 'next/script';
-import { useRef, useState, useSyncExternalStore } from 'react';
+import { useRef, useState } from 'react';
 import {
   MessageSquare,
   Bell,
@@ -17,7 +17,6 @@ import {
   Minus,
   Lock,
   ShieldCheck,
-  Apple,
 } from 'lucide-react';
 import Reviews from '@/components/Reviews';
 import WaitlistCTA from '@/components/WaitlistCTA';
@@ -133,7 +132,7 @@ const faqs = [
   },
   {
     q: 'Does it work on iPhone?',
-    a: "Yes, in beta. iPhone users pair their phone to their laptop via Bluetooth and dial through the iPhone's Phone app — full setup takes 2 minutes. Android remains our primary platform with full feature parity (SMS sync, call log sync, one-click dial). See the iPhone setup guide at /iphone for details.",
+    a: "No — ComputerCaller is built for Android. The Android companion app is what gives you full calls, SMS sync, and call-log sync. Your computer side works in any browser on any OS — Windows, Mac, Linux, or Chromebook.",
   },
   {
     q: 'How is this different from WhatsApp, Zoom, or Skype?',
@@ -141,35 +140,11 @@ const faqs = [
   },
 ];
 
-// iOS/iPadOS detection (dispatch 2026-05-25). Read via useSyncExternalStore so
-// the SERVER snapshot is always false (identical SSR HTML for everyone → no
-// hydration mismatch) while the CLIENT snapshot reflects the real user agent —
-// no setState-in-effect cascade. We deliberately detect iPad too: iPadOS 13+
-// reports as MacIntel in Safari, so "Mac + touch points" is the modern iPad
-// heuristic.
-function detectIos(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  const iosUa = /iPhone|iPad|iPod/i.test(ua);
-  const isIpadOs =
-    ua.includes('Mac') &&
-    typeof navigator.maxTouchPoints === 'number' &&
-    navigator.maxTouchPoints > 1;
-  return iosUa || isIpadOs;
-}
-
-// UA never changes for the life of the page, so we never emit an update.
-const noopSubscribe = () => () => {};
-
 export default function LandingPage() {
   // Track which FAQ items are open purely to swap the +/- icon. <details>
   // owns its own open state too, but reading it back in React would require a
   // ref per item — a small parallel Map is simpler and runs only on click.
   const [openFaqs, setOpenFaqs] = useState<Record<number, boolean>>({});
-
-  // Soft callout that nudges iOS visitors toward /iphone (no modal). Server
-  // renders false; the client resolves the real value on mount. See detectIos.
-  const isIos = useSyncExternalStore(noopSubscribe, detectIos, () => false);
 
   // Sign-up modal (dispatch 2026-07-04). The "Try for free" CTAs stay real
   // anchors to /auth/register (shareable, middle/cmd-click and no-JS still
@@ -402,23 +377,6 @@ export default function LandingPage() {
         </div>
 
         <div className="max-w-5xl mx-auto px-6 pt-16 pb-20 sm:pt-24 sm:pb-28 text-center">
-          {/* iOS-detected soft callout. Renders only when navigator.userAgent
-              matches iPhone/iPad/iPod (post-hydration — server skips it).
-              Soft, discoverable, dismissible-by-just-not-clicking. The pill
-              sits above the standard trust pill so iOS users see it within
-              the first eye-line without it dominating the hero. */}
-          {isIos && (
-            <Link
-              href="/iphone"
-              className="inline-flex items-center gap-2 px-3 py-1 mb-3 bg-blue-50 border border-blue-200 rounded-full text-blue-800 text-xs font-medium shadow-sm hover:bg-blue-100 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              <Apple className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>
-                On iPhone? Read our setup guide — works via Bluetooth
-              </span>
-              <ArrowRight className="w-3 h-3" aria-hidden="true" />
-            </Link>
-          )}
           {/* Brand wordmark — sits as a "stamp" above the tagline. Two-tone
               rhymes with the H1's second-clause gradient so the page reads as
               one designed system, not two unrelated treatments. Heavier than
@@ -434,7 +392,7 @@ export default function LandingPage() {
             </span>
           </p>
           <p className="text-sm sm:text-base font-medium text-slate-300 tracking-wide mb-3">
-            Connect. Call. SMS. Communicate. Seamlessly.
+            Use your phone from your computer — any internet browser.
           </p>
 
           {/* Trust pill — waitlist only. The live (paid) hero deliberately drops
@@ -833,9 +791,6 @@ export default function LandingPage() {
             >
               Get it on Google Play
             </a>
-            <Link href="/iphone" className="hover:text-slate-900 transition-colors">
-              iPhone setup
-            </Link>
             <Link href="/guides" className="hover:text-slate-900 transition-colors">
               Guides
             </Link>
