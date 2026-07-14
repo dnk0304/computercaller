@@ -151,7 +151,22 @@ const RESUME_WINDOW_MS = 120_000;
 // surface beyond what Accept already trusts (both sockets authed into the
 // same room), and NARROWS it further by requiring the authed userId on both
 // sockets and the phone's deviceName to match the recorded consented pair.
-const KNOWN_PAIR_RELINK_WINDOW_MS = 10 * 60 * 1000;
+// 2026-07-14 (Dennis down 95 min > old 10 min): the 10-minute clock destroyed
+// the pairing record while BOTH known devices sat idle-but-connected in the
+// lobby, dropping a real incoming call for 95 minutes. The clock was only
+// defense-in-depth; the real security barrier is the 4 hijack guards (userId
+// match on both sockets, phone deviceName match, no pendingPairing, and
+// phone-side user_left permanently killing the record). Two changes make
+// relink effectively PERMANENT while both known devices remain reachable:
+//   1. When BOTH known devices are present in the lobby, tryKnownDeviceRelink
+//      relinks regardless of elapsed time — the window no longer gates that
+//      path at all (see tryKnownDeviceRelink).
+//   2. This window now only bounds how long the record lingers while the
+//      devices are NOT both present (memory hygiene for a genuinely-gone
+//      peer), and is re-armed whenever a matching known socket reappears. A
+//      generous 24h ceiling covers any realistic OEM-kill / walk-away gap
+//      while still letting a truly-abandoned record expire.
+const KNOWN_PAIR_RELINK_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Relay state machine — Connect+Accept lobby model (dispatch #32, 2026-05-25).
@@ -722,11 +737,6 @@ function startRelay(httpServer) {
   function tryKnownDeviceRelink(room) {
     const lp = room.lastPair;
     if (!lp || lp.endedAt == null || !lp.userId) return false;
-    const gap = Date.now() - lp.endedAt;
-    if (gap > KNOWN_PAIR_RELINK_WINDOW_MS) {
-      room.lastPair = null; // lazily expire
-      return false;
-    }
     if (room.pendingPairing) return false;           // explicit handshake wins
     if (room.active.browser || room.active.phone) return false; // live pair / soft-hold owns this
 
@@ -742,7 +752,28 @@ function startRelay(httpServer) {
         browserWs = s;
       }
     }
-    if (!phoneWs || !browserWs) return false;
+
+    // PERMANENT-WHILE-BOTH-IDLE (2026-07-14). When BOTH known devices are
+    // present in the lobby we relink no matter how long ago the pair ended —
+    // this is exactly the state that stranded Dennis for 95 min. The elapsed-
+    // time window is NOT consulted on this path; the 4 hijack guards
+    // (userId ×2, deviceName, no-pendingPairing, phone-user_left-kills-record)
+    // remain the security barrier and are all still enforced above/below.
+    if (!phoneWs || !browserWs) {
+      // Only ONE (or neither) known device is here. The record must not live
+      // forever in this state, so the window bounds it — but re-arm endedAt
+      // whenever a matching known device is present so the clock never expires
+      // out from under a device that stays connected (Dennis's browser sat
+      // connected the whole time). Once BOTH devices are truly gone nothing
+      // re-arms and the record lapses after the (now 24h) ceiling.
+      const gap = Date.now() - lp.endedAt;
+      if (gap > KNOWN_PAIR_RELINK_WINDOW_MS) {
+        room.lastPair = null; // lazily expire only when we couldn't relink anyway
+      } else if (phoneWs || browserWs) {
+        lp.endedAt = Date.now(); // one known device holds the room — slide the clock
+      }
+      return false;
+    }
 
     room.lobby.delete(phoneWs);
     room.lobby.delete(browserWs);

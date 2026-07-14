@@ -415,6 +415,39 @@ export function usePhoneBridge() {
     );
   };
 
+  // TELECOM foreground — the call the PHONE's telecomManager.endCall() will act
+  // on, which is NOT the same as the web-derived `foregroundOf` above.
+  //
+  // WHY THIS EXISTS (Dennis data-loss bug, 2026-07-14): the Android side owns
+  // no per-call handle without InCallService/default-dialer. END_CALL maps to
+  // telecomManager.endCall(), whose documented behavior is: **if a call is
+  // RINGING, reject that ringing call; otherwise disconnect the active/foreground
+  // call.** So when an OUTGOING `dialing` leg and an INCOMING `ringing` leg
+  // coexist, the phone will hang up the RINGING (incoming) one — while
+  // `foregroundOf` picks the `dialing` (outgoing) one. Sending a bare END_CALL
+  // "to hang up the outgoing" therefore silently dropped Dennis's real incoming
+  // call.
+  //
+  // telecomForegroundOf mirrors telecomManager.endCall() EXACTLY: ringing first,
+  // then active, then dialing, then first. It is the single source of truth for
+  // which call an END_CALL will actually terminate. The UI must only offer a
+  // live hang-up on THIS call and must never fire a blind END_CALL at any other
+  // leg. (A phone-authoritative `isForeground` flag would be marginally more
+  // robust than deriving from state, but state is delivered per-call via
+  // CALL_ADD/CALL_UPDATE and this predicate is deterministic — no APK protocol
+  // field is required for the data-loss fix. See résumé for the optional
+  // hardening + Tier B.)
+  const telecomForegroundOf = (list: CallInfo[]): CallInfo | undefined => {
+    if (list.length === 0) return undefined;
+    if (list.length === 1) return list[0];
+    return (
+      list.find(c => c.state === 'ringing') ??
+      list.find(c => c.state === 'active') ??
+      list.find(c => c.state === 'dialing') ??
+      list[0]
+    );
+  };
+
   // Upsert by callId: patch in place if present (preserving fields the new
   // frame doesn't override), else append (oldest-first — the queue renders
   // top-to-bottom by arrival). 'idle'/'ended' are never stored as live rows.
@@ -512,6 +545,17 @@ export function usePhoneBridge() {
     if (others.length === 0) return null;
     return others.find(c => c.state === 'ringing') ?? others[0];
   }, [calls, currentCall]);
+
+  // telecomForegroundCall = the call the PHONE's END_CALL will actually
+  // terminate (ringing-first; see telecomForegroundOf). The UI keys the LIVE
+  // hang-up control off this: only the row whose callId === this may fire
+  // END_CALL; every other row's hang-up is disabled ("end it on your phone").
+  // Distinct from currentCall (web foreground, active/dialing-first) precisely
+  // so the two never diverge into a silent wrong-call hang-up.
+  const telecomForegroundCall = useMemo<CallInfo | null>(
+    () => telecomForegroundOf(calls) ?? null,
+    [calls]
+  );
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [isRelayConnection, setIsRelayConnection] = useState<boolean>(true);
@@ -2950,26 +2994,66 @@ export function usePhoneBridge() {
     sendCommand('ANSWER_CALL', {});
   }, [sendCommand]);
 
-  // Multi-call QUEUE (2026-06-09). Hang up the FOREGROUND call. END_CALL:{}
-  // maps on the phone to telecomManager.endCall(), which ends the active (or
-  // ringing) call — it CANNOT target a specific background call (that needs
-  // default-dialer / InCallService, out of Phase-1 scope). So this always acts
-  // on the derived foreground call: we optimistically remove that row locally
-  // (snappy UI; matches the old setCurrentCall(null)), and the phone's
-  // CALL_ENDED frame is then a harmless no-op (row already gone). As the
-  // foreground row clears, the derived currentCall promotes the next call —
-  // Dennis's "hang up one at a time, the next steps up" model.
+  // Hang up the call the PHONE will actually end. END_CALL:{} maps to
+  // telecomManager.endCall(), which CANNOT target a specific background leg
+  // (that needs default-dialer / InCallService — Tier B, deferred). So the ONLY
+  // honest thing endCall can remove locally is the TELECOM foreground
+  // (telecomForegroundOf: ringing-first), i.e. exactly the call the phone will
+  // terminate. Previously this removed the WEB foreground (foregroundOf:
+  // active/dialing-first); when an outgoing `dialing` leg and an incoming
+  // `ringing` leg coexisted the two diverged, so the web claimed it ended the
+  // outgoing while the phone rejected the incoming — Dennis's silent
+  // wrong-call drop (2026-07-14). Removing the telecom foreground keeps the web
+  // and the phone in agreement about which call ended.
   const endCall = useCallback(() => {
     stopCallTimer();
     sendCommand('END_CALL', {});
-    const fg = foregroundOf(callsRef.current);
-    if (fg) {
-      removeCall(fg.callId);
+    const tfg = telecomForegroundOf(callsRef.current);
+    if (tfg) {
+      removeCall(tfg.callId);
     } else {
       clearAllCalls();
     }
     lastCallWasAnsweredRef.current = false;
     callStartTimeRef.current = null;
+  }, [sendCommand, stopCallTimer, removeCall, clearAllCalls]);
+
+  // Per-call hang-up (Tier A, 2026-07-14). The UI renders one hang-up control
+  // per call row; this resolves whether firing END_CALL for `callId` is SAFE.
+  //
+  // END_CALL always hits the telecom foreground (ringing-first). So we only
+  // send it when `callId` IS that telecom foreground — then the phone ends
+  // exactly the call the user targeted. If the user targets any OTHER leg (a
+  // background `dialing`/`active`/`held` call the phone cannot reach without
+  // InCallService), we send NOTHING and return a blocked result so the UI can
+  // disable that control with a "end this one on your phone" note. This is the
+  // core guarantee: NEVER a blind END_CALL hoping it lands on the intended leg.
+  //
+  // Returns { ended: true } when the frame was sent + the row optimistically
+  // removed, or { ended: false, reason } when blocked (the targeted call is not
+  // the phone's telecom foreground).
+  const endCallById = useCallback((callId: string): { ended: boolean; reason?: 'not_foreground' } => {
+    const list = callsRef.current;
+    const tfg = telecomForegroundOf(list);
+    // No calls tracked, or the target IS the telecom foreground → safe to end.
+    if (!tfg || tfg.callId === callId) {
+      stopCallTimer();
+      sendCommand('END_CALL', {});
+      if (tfg) removeCall(tfg.callId);
+      else clearAllCalls();
+      lastCallWasAnsweredRef.current = false;
+      callStartTimeRef.current = null;
+      return { ended: true };
+    }
+    // Target is a background leg the phone can't hang up in Tier A. Do NOT fire
+    // a bare END_CALL — that is exactly the bug (it would hit the telecom
+    // foreground, not this call). Surface the reason instead.
+    console.warn('[PhoneBridge] endCallById blocked — target is not the phone telecom-foreground', {
+      target: callId,
+      telecomForeground: tfg.callId,
+      telecomForegroundState: tfg.state,
+    });
+    return { ended: false, reason: 'not_foreground' };
   }, [sendCommand, stopCallTimer, removeCall, clearAllCalls]);
 
   const sendSms = useCallback((to: string, body: string) => {
@@ -3873,6 +3957,10 @@ export function usePhoneBridge() {
     // usePhone() context. null when no second call exists. Now derived from
     // calls[] — the most relevant background call.
     waitingCall,
+    // Tier A call-separation (2026-07-14). The call the phone's END_CALL will
+    // actually terminate (ringing-first). The UI gates the live per-call
+    // hang-up on this so it can never fire a blind END_CALL at the wrong leg.
+    telecomForegroundCall,
     contacts,
     messages,
     callLogs,
@@ -3942,6 +4030,11 @@ export function usePhoneBridge() {
     sendDtmf,
     answerCall,
     endCall,
+    // Tier A per-call hang-up (2026-07-14). Fires END_CALL only when `callId`
+    // IS the phone's telecom foreground; otherwise returns { ended:false,
+    // reason:'not_foreground' } and sends NOTHING. UI disables the control +
+    // shows "end it on your phone" for non-foreground legs.
+    endCallById,
     // B2 (2026-06-12): local-only chip dismiss for the call-queue band. Never
     // sends a frame to the phone — UI removal, not a hang-up.
     dismissCall,
