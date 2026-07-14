@@ -117,8 +117,13 @@ export function CallQueueBand() {
     isConnected,
     calls,
     currentCall,
+    // Tier A (2026-07-14): the call the phone's END_CALL will actually end
+    // (ringing-first). Only THIS chip gets a live hang-up; every other chip's
+    // hang-up is disabled with an "end it on your phone" note so we never fire
+    // a blind END_CALL at the wrong leg (Dennis's dropped-incoming bug).
+    telecomForegroundCall,
     answerCall,
-    endCall,
+    endCallById,
     declineWithMessage,
     dismissCall,
   } = usePhone();
@@ -182,6 +187,14 @@ export function CallQueueBand() {
   // first call as the foreground so it still gets full controls.
   const primaryCall = foregroundCall ?? calls[0] ?? null;
 
+  // The call the PHONE will actually hang up (ringing-first). Every chip is
+  // labeled by direction; only the chip matching this id fires a live END_CALL.
+  const telecomForegroundId = telecomForegroundCall?.callId ?? null;
+  // Human phrase for the disabled-hangup tooltip on non-foreground chips.
+  const telecomFgLabel =
+    telecomForegroundCall?.state === 'ringing' ? 'ringing' :
+    telecomForegroundCall?.state === 'active' ? 'active' : 'current';
+
   return (
     <section
       aria-label="Active calls"
@@ -211,29 +224,39 @@ export function CallQueueBand() {
           aria-label={waitingCall ? '2 active calls' : '1 active call'}
           className="flex items-stretch gap-1.5"
         >
-          {/* Foreground chip — the active / sole-ringing call. FULL controls. */}
+          {/* Foreground chip — the web-derived primary call. */}
           {primaryCall && (
             <li key={primaryCall.callId} className="flex-shrink-0">
               <CallChip
                 call={primaryCall}
                 variant="foreground"
+                isTelecomForeground={primaryCall.callId === telecomForegroundId}
+                telecomFgLabel={telecomFgLabel}
                 sentNotice={sentByCall[primaryCall.callId] ?? null}
                 onAnswer={answerCall}
-                onHangUp={endCall}
+                onHangUpById={endCallById}
                 onReply={fireReply}
                 onDismiss={dismissCall}
               />
             </li>
           )}
 
-          {/* Waiting chip — the lone ringing leg behind the active call. Its
-              ONLY action is reply-&-decline (no Answer, no Hang-up). */}
+          {/* Second chip — the other coexisting leg. It now carries its OWN
+              direction-labeled controls: Answer if it's ringing incoming, and a
+              hang-up that is LIVE only when it is the phone's telecom foreground
+              (else disabled with an "end it on your phone" note). This is what
+              stops the wrong-call drop when an outgoing dial and an incoming
+              ring coexist. */}
           {waitingCall && (
             <li key={waitingCall.callId} className="flex-shrink-0">
               <CallChip
                 call={waitingCall}
                 variant="waiting"
+                isTelecomForeground={waitingCall.callId === telecomForegroundId}
+                telecomFgLabel={telecomFgLabel}
                 sentNotice={sentByCall[waitingCall.callId] ?? null}
+                onAnswer={answerCall}
+                onHangUpById={endCallById}
                 onReply={fireReply}
                 onDismiss={dismissCall}
               />
@@ -252,15 +275,24 @@ type ChipVariant = 'foreground' | 'waiting';
 
 interface CallChipProps {
   call: CallInfo;
-  /** 'foreground' = the active / sole-ringing call (full controls).
-   *  'waiting'    = the lone ringing leg behind the active call (reply only). */
+  /** 'foreground' = the web-derived primary call, 'waiting' = the other leg.
+   *  Kept for styling only; controls no longer depend on it (both chips carry
+   *  direction-labeled controls now). */
   variant: ChipVariant;
+  /** True when THIS call is the phone's telecom foreground (the one END_CALL
+   *  will actually terminate). Only then is the hang-up live; otherwise it is
+   *  disabled with an "end it on your phone" note. */
+  isTelecomForeground: boolean;
+  /** Word describing the phone's telecom foreground ('ringing'/'active'/
+   *  'current') for the disabled-hangup tooltip on non-foreground chips. */
+  telecomFgLabel: string;
   /** Non-null while showing the in-chip "Sent" confirmation. */
   sentNotice: string | null;
-  /** Answer the ringing call. Foreground-only (waiting chip has no Answer). */
+  /** Answer the ringing call. Shown on any RINGING incoming chip. */
   onAnswer?: () => void;
-  /** Ends the FOREGROUND call. Foreground-only (waiting chip has no Hang-up). */
-  onHangUp?: () => void;
+  /** Per-call hang-up. Fires END_CALL only when this call is the telecom
+   *  foreground; returns { ended:false } (no frame) otherwise. */
+  onHangUpById?: (callId: string) => { ended: boolean; reason?: 'not_foreground' };
   /** Reply-with-message → declineWithMessage. Resolves the right leg
    *  internally (END_CALL for lone ringing, DECLINE_CALL for a waiting leg). */
   onReply: (callId: string, to: string, body: string) => void;
@@ -272,10 +304,11 @@ interface CallChipProps {
 
 function CallChip({
   call,
-  variant,
+  isTelecomForeground,
+  telecomFgLabel,
   sentNotice,
   onAnswer,
-  onHangUp,
+  onHangUpById,
   onReply,
   onDismiss,
 }: CallChipProps) {
@@ -303,10 +336,12 @@ function CallChip({
       ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
       : DEFAULT_QUICK_REPLIES;
 
-  const isForeground = variant === 'foreground';
   const isRinging = call.state === 'ringing';
   const hasNumber = call.number.trim().length > 0;
   const dot = bandDot(call.state);
+  // Explicit, unmissable direction label — the crux of the separation fix so
+  // the user can tell the outgoing dial from the incoming ring at a glance.
+  const directionLabel = call.isIncoming ? 'Incoming' : 'Outgoing';
 
   // Both variants reply via declineWithMessage, which resolves the right leg:
   //   • foreground sole ringing call → atomic SMS-then-decline (END_CALL).
@@ -330,9 +365,9 @@ function CallChip({
     <div
       className={clsx(
         'relative rounded-md border px-1.5 w-max transition-colors',
-        isForeground
+        call.isIncoming
           ? 'border-emerald-200 bg-emerald-50/60'
-          : 'border-slate-200 bg-white',
+          : 'border-blue-200 bg-blue-50/60',
       )}
       title={`${call.name ? `${call.name} · ${call.number}` : displayName} · ${dot.label}`}
     >
@@ -345,6 +380,17 @@ function CallChip({
           <span className={clsx('absolute inset-0 rounded-full', dot.dotCls)} />
         </span>
         <span className="sr-only">{dot.label}.</span>
+
+        <span
+          className={clsx(
+            'text-[9px] font-bold uppercase tracking-wide leading-none px-1 py-0.5 rounded flex-shrink-0',
+            call.isIncoming
+              ? 'bg-emerald-100 text-emerald-700'
+              : 'bg-blue-100 text-blue-700',
+          )}
+        >
+          {directionLabel}
+        </span>
 
         <p className="text-xs font-semibold text-slate-900 whitespace-nowrap leading-none">
           {displayName}
@@ -375,9 +421,10 @@ function CallChip({
           </span>
         ) : (
           <>
-            {/* Answer — FOREGROUND ringing only. The waiting chip has no Answer
-                in the single-slot model (its one action is reply-&-decline). */}
-            {isForeground && isRinging && onAnswer && (
+            {/* Answer — any RINGING INCOMING chip. The phone's acceptRingingCall
+                answers the ringing leg, so this is safe on whichever chip is the
+                incoming ring (foreground or the second leg). */}
+            {isRinging && call.isIncoming && onAnswer && (
               <button
                 type="button"
                 onClick={onAnswer}
@@ -410,19 +457,34 @@ function CallChip({
               <MessageSquare className="w-3 h-3" aria-hidden="true" />
             </button>
 
-            {/* Hang up / Decline — FOREGROUND ONLY. endCall() targets the
-                foreground call; the waiting chip deliberately omits it (its
-                only exit is reply-&-decline or the ✕ dismiss). */}
-            {isForeground && onHangUp && (
-              <button
-                type="button"
-                onClick={onHangUp}
-                aria-label={isRinging ? 'Decline the current call' : 'Hang up the current call'}
-                title={isRinging ? 'Decline the current call' : 'Hang up the current call'}
-                className="h-6 w-6 rounded-md inline-flex items-center justify-center bg-rose-500 hover:bg-rose-600 active:scale-95 text-white transition-all"
-              >
-                <PhoneOff className="w-3 h-3" aria-hidden="true" />
-              </button>
+            {/* Hang up / Decline — PER-CALL, gated on the telecom foreground.
+                LIVE only when THIS call is the one the phone's END_CALL will
+                terminate; otherwise DISABLED with a clear note, because Tier A
+                cannot target a background leg without InCallService. This is the
+                fix: the hang-up on a non-foreground leg no longer fires a blind
+                END_CALL that would drop the wrong (foreground) call. */}
+            {onHangUpById && (
+              isTelecomForeground ? (
+                <button
+                  type="button"
+                  onClick={() => onHangUpById(call.callId)}
+                  aria-label={isRinging ? `Decline the ${directionLabel.toLowerCase()} call` : `Hang up the ${directionLabel.toLowerCase()} call`}
+                  title={isRinging ? 'Decline this call' : 'Hang up this call'}
+                  className="h-6 w-6 rounded-md inline-flex items-center justify-center bg-rose-500 hover:bg-rose-600 active:scale-95 text-white transition-all"
+                >
+                  <PhoneOff className="w-3 h-3" aria-hidden="true" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  aria-label={`Your phone can only hang up the ${telecomFgLabel} call — end this ${directionLabel.toLowerCase()} call on your phone`}
+                  title={`Your phone can only hang up the ${telecomFgLabel} call right now. End this ${directionLabel.toLowerCase()} call on your phone.`}
+                  className="h-6 w-6 rounded-md inline-flex items-center justify-center bg-slate-100 text-slate-300 cursor-not-allowed"
+                >
+                  <PhoneOff className="w-3 h-3" aria-hidden="true" />
+                </button>
+              )
             )}
           </>
         )}

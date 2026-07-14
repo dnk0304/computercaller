@@ -10,7 +10,10 @@
 
 const OPEN = 1;
 const RESUME_WINDOW_MS = 120_000;
-const KNOWN_PAIR_RELINK_WINDOW_MS = 10 * 60 * 1000;
+// 2026-07-14: extended from 10 min → 24h ceiling (bounds only the not-both-
+// present case). When BOTH known devices are in the lobby, relink fires
+// regardless of elapsed time (permanent-while-both-idle). Mirrors server.js.
+const KNOWN_PAIR_RELINK_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 let NOW = 1_000_000; // fake clock
 const now = () => NOW;
@@ -112,8 +115,6 @@ function tryAutoResume(room) {
 function tryKnownDeviceRelink(room) {
   const lp = room.lastPair;
   if (!lp || lp.endedAt == null || !lp.userId) return false;
-  const gap = now() - lp.endedAt;
-  if (gap > KNOWN_PAIR_RELINK_WINDOW_MS) { room.lastPair = null; return false; }
   if (room.pendingPairing) return false;
   if (room.active.browser || room.active.phone) return false;
   let phoneWs = null, browserWs = null;
@@ -124,7 +125,15 @@ function tryKnownDeviceRelink(room) {
         && (s.deviceName ?? null) === (lp.phoneDeviceName ?? null)) phoneWs = s;
     else if (s.role === 'browser' && !browserWs && s.userId === lp.userId) browserWs = s;
   }
-  if (!phoneWs || !browserWs) return false;
+  // Permanent-while-both-idle: both present → relink regardless of elapsed
+  // time. Otherwise the window bounds the record, re-armed while one known
+  // device is present. Mirrors server.js tryKnownDeviceRelink.
+  if (!phoneWs || !browserWs) {
+    const gap = now() - lp.endedAt;
+    if (gap > KNOWN_PAIR_RELINK_WINDOW_MS) { room.lastPair = null; }
+    else if (phoneWs || browserWs) { lp.endedAt = now(); }
+    return false;
+  }
   room.lobby.delete(phoneWs); room.lobby.delete(browserWs);
   room.active.browser = browserWs; room.active.phone = phoneWs;
   room.resumable = null;
@@ -231,20 +240,56 @@ const gotActive = (ws) => ws.sent.some((m) => m.startsWith('PAIRING_ACTIVE:'));
   check('b4: Issue-3 claim not involved', room.resumable === null);
 }
 
-// (c) t+11min → NOT relinked, normal lobby.
+// (c) THE DENNIS FIX (2026-07-14): phone away past the OLD 10-min window, but
+//     both known devices are present → relink STILL fires. Previously this
+//     asserted NO relink (the bug that dropped his call for 95 min).
+{
+  NOW = 1_000_000;
+  const { room, phone, browser } = pairedRoom();
+  phoneSocketClosed(room, phone);
+  NOW += RESUME_WINDOW_MS + 15_000;
+  keepaliveSweep(room);                                 // survivor browser in lobby
+  NOW = 1_000_000 + 95 * 60 * 1000;                     // t+95min (Dennis's real gap)
+  const phone2 = makeWs('phone', 'U1');
+  phoneJoin(room, phone2);
+  deviceInfo(room, phone2, 'OPPO CPH2791');
+  check('c1: relinked at t+95min (permanent-while-both-idle)', isActive(room, phone2, browser));
+  check('c2: both sides got PAIRING_ACTIVE', gotActive(phone2) && gotActive(browser));
+}
+
+// (c2) EXACTLY Dennis's topology: BOTH devices already sitting idle in the
+//      lobby (browser never left, phone rejoined) for well over the old window,
+//      relink fires on the join event that completes the pair.
+{
+  NOW = 1_000_000;
+  const { room, phone, browser } = pairedRoom();
+  terminateActivePair(room, 'user_left', { leaverRole: 'browser' }); // stray click → both in lobby
+  check('c2a: browser user_left kept lastPair', !!room.lastPair && room.lastPair.endedAt != null);
+  // phone drops + returns much later; browser sits in lobby the whole time.
+  phoneSocketClosed(room, phone);
+  NOW += 3 * 60 * 60 * 1000;                             // 3 HOURS later
+  const phone2 = makeWs('phone', 'U1');
+  phoneJoin(room, phone2);
+  deviceInfo(room, phone2, 'OPPO CPH2791');
+  check('c2b: relinked after 3h with both known devices reachable', isActive(room, phone2, browser));
+}
+
+// (c3) genuinely-gone: record still lapses past the 24h ceiling when the
+//      devices are NOT both present (memory hygiene preserved).
 {
   NOW = 1_000_000;
   const { room, phone } = pairedRoom();
   phoneSocketClosed(room, phone);
   NOW += RESUME_WINDOW_MS + 15_000;
-  keepaliveSweep(room);
-  NOW = 1_000_000 + 11 * 60 * 1000;                     // t+11min > window
+  keepaliveSweep(room);                                 // browser released to lobby
+  // browser then also leaves — nobody left to re-arm the clock.
+  room.lobby.clear();
+  NOW += 25 * 60 * 60 * 1000;                            // 25h with nobody present
   const phone2 = makeWs('phone', 'U1');
-  phoneJoin(room, phone2);
+  phoneJoin(room, phone2);                               // lone phone, browser gone
   deviceInfo(room, phone2, 'OPPO CPH2791');
-  check('c1: NOT relinked past window', !room.active.phone && !room.active.browser);
-  check('c2: expired lastPair cleared', room.lastPair === null);
-  check('c3: phone sits in normal lobby', room.lobby.has(phone2));
+  check('c3a: NOT relinked (browser absent)', !room.active.phone && !room.active.browser);
+  check('c3b: stale record lapsed past 24h ceiling', room.lastPair === null);
 }
 
 // (d) phone-side user_left → NEVER relinked, even seconds later.
@@ -314,6 +359,49 @@ const gotActive = (ws) => ws.sent.some((m) => m.startsWith('PAIRING_ACTIVE:'));
   const joined = phoneJoin(room, phone2);               // tryAutoResume must catch it
   check('h1: Issue-3 resume fires first (no deviceName needed)', joined === true && isActive(room, phone2, browser));
   check('h2: lastPair refreshed by resume', !!room.lastPair && room.lastPair.endedAt === null);
+}
+
+// (i) STORM SAFETY — the relay's resume/relink path has a documented
+//     reconnect-storm history. Prove that (1) a relink emits EXACTLY ONE
+//     PAIRING_ACTIVE per socket, and (2) repeated relink attempts while the
+//     pair is live send NOTHING further (the active-slot guard short-circuits),
+//     so there is no unsolicited-PAIRING_ACTIVE loop.
+{
+  NOW = 1_000_000;
+  const { room, phone, browser } = pairedRoom();
+  phoneSocketClosed(room, phone);
+  NOW += RESUME_WINDOW_MS + 15_000;
+  keepaliveSweep(room);                                 // release soft-held browser to lobby
+  NOW = 1_000_000 + 20 * 60 * 1000;                     // past old window
+  const phone2 = makeWs('phone', 'U1');
+  phoneJoin(room, phone2);
+  deviceInfo(room, phone2, 'OPPO CPH2791');              // relink #1
+  const browserActiveCount = () => browser.sent.filter((m) => m.startsWith('PAIRING_ACTIVE:')).length;
+  const phoneActiveCount = () => phone2.sent.filter((m) => m.startsWith('PAIRING_ACTIVE:')).length;
+  check('i1: relinked once', isActive(room, phone2, browser));
+  check('i2: exactly one PAIRING_ACTIVE to browser', browserActiveCount() === 1);
+  check('i3: exactly one PAIRING_ACTIVE to phone', phoneActiveCount() === 1);
+  // Hammer the relink entrypoint 50× (simulating a churn/reconnect storm).
+  for (let k = 0; k < 50; k++) tryKnownDeviceRelink(room);
+  check('i4: no extra PAIRING_ACTIVE to browser under storm', browserActiveCount() === 1);
+  check('i5: no extra PAIRING_ACTIVE to phone under storm', phoneActiveCount() === 1);
+  check('i6: pair still intact after storm', isActive(room, phone2, browser));
+}
+
+// (j) RE-ARM is silent — repeated lone-device joins (only browser present)
+//     must never emit a frame; they only slide the recency clock.
+{
+  NOW = 1_000_000;
+  const { room, phone, browser } = pairedRoom();
+  phoneSocketClosed(room, phone);
+  NOW += RESUME_WINDOW_MS + 15_000;
+  keepaliveSweep(room);                                 // browser alone in lobby
+  browser.sent.length = 0;                              // reset counter
+  const firstEnded = room.lastPair.endedAt;
+  for (let k = 0; k < 20; k++) { NOW += 60_000; tryKnownDeviceRelink(room); }
+  check('j1: lone-browser relink attempts send nothing', browser.sent.length === 0);
+  check('j2: record survived (never lapsed while browser present)', !!room.lastPair);
+  check('j3: endedAt re-armed forward (permanence)', room.lastPair.endedAt > firstEnded);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

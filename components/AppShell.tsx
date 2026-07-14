@@ -11,6 +11,7 @@ import { SyncMenuButton } from '@/components/SyncMenuButton';
 import { ReconnectionPill } from '@/components/ReconnectionPill';
 import { SyncProgressBar } from '@/components/SyncProgressBar';
 import { CallQueueBand } from '@/components/CallQueueBand';
+import { NotConnectedBanner } from '@/components/NotConnectedBanner';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { usePhone, useDashboardTab, usePhoneMode, type DashboardTab } from '@/hooks';
 
@@ -165,6 +166,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex h-screen overflow-hidden bg-slate-50 font-sans">
         <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          {/* Loud unpaired-state banner (Part 2b, 2026-07-14) — above everything
+              so a missed-call risk is unmissable. */}
+          <NotConnectedBanner />
           {/* In-flow sync bar (2026-07-10) — also present in Phone Mode so an
               in-flight sync stays visible; pushes the compact shell down
               instead of overlaying it. */}
@@ -182,6 +186,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
 
       <main className="flex-1 flex flex-col min-w-0">
+        {/* Loud unpaired-state banner (Part 2b, 2026-07-14) — sits ABOVE the
+            header/sync bar so an unpaired "you'll miss calls" state is
+            impossible to miss. Renders null while paired (lobbyState==='active'). */}
+        <NotConnectedBanner />
         {/* Sync lifecycle bar (Pixel, 2026-07-10) — sits ABOVE the header in
             normal document flow. When a sync (or its timeout/completion
             state) is active the bar expands and pushes the header + content
