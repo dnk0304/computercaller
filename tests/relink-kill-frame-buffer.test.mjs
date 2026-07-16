@@ -14,7 +14,7 @@
 // Run: node tests/relink-kill-frame-buffer.test.mjs
 
 const OPEN = 1;
-const RESUME_WINDOW_MS = 120_000;
+const RESUME_WINDOW_MS = 30_000;
 const FRAME_BUFFER_MAX = 200;
 
 let NOW = 1_000_000; // fake clock
@@ -228,12 +228,12 @@ const isActive = (room, phone, browser) =>
   check('c5: lapsed-claim resume clears buffer', room2.frameBuffer.length === 0);
 }
 
-// (d) Soft-hold (Issue-3) resume still works for a genuine <120s blip.
+// (d) Soft-hold (Issue-3) resume still works for a genuine <30s blip.
 {
   NOW = 1_000_000;
   const { room, phone, browser } = pairedRoom();
   phoneSocketClosed(room, phone);                  // soft-hold, claim armed
-  NOW += 30_000;
+  NOW += 10_000;
   const phone2 = makeWs('phone', 'U1');
   const joined = phoneJoin(room, phone2);          // tryAutoResume must catch it
   check('d1: soft-hold resume fires within window', joined === true && isActive(room, phone2, browser));
