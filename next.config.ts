@@ -72,6 +72,19 @@ const nextConfig: NextConfig = {
         destination: '/',
         permanent: true,
       },
+      // Fix 3 (2026-07-16): canonicalise www → apex. A mutating POST whose
+      // Origin is https://www.computercaller.com used to 403 in requireSameOrigin
+      // (expected apex only). Redirecting at the edge means browsers land on the
+      // apex before any mutating POST, so the origin mismatch never arises (and
+      // it's better for cookies/SEO). Host-scoped: only fires for www requests,
+      // so apex traffic — including the WSS relay upgrade and /api/webhooks/whop,
+      // which already run on the apex — is untouched.
+      {
+        source: '/:path*',
+        has: [{ type: 'host', value: 'www.computercaller.com' }],
+        destination: 'https://computercaller.com/:path*',
+        permanent: true,
+      },
     ];
   },
 

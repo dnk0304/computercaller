@@ -303,19 +303,29 @@ export function requireSameOrigin(
   const origin = req.headers.get('origin');
   const referer = req.headers.get('referer');
   const host = req.headers.get('host');
-  const expected =
+  const canonical =
     process.env.NODE_ENV === 'production'
       ? (process.env.NEXT_PUBLIC_APP_URL ?? 'https://computercaller.com')
       : `http://${host}`;
-  if (origin && origin === expected) return { ok: true };
+  // Fix 3 (2026-07-16): www.computercaller.com is 301'd to the apex in
+  // next.config, but an in-flight POST fired from a www page just before the
+  // redirect lands would still carry the www Origin. Accept both the apex and
+  // the www host in production as valid same-origin (belt-and-suspenders to
+  // the canonical redirect). The discriminated-union return + server-only
+  // reason logging are preserved.
+  const expected =
+    process.env.NODE_ENV === 'production'
+      ? [canonical, canonical.replace('https://', 'https://www.')]
+      : [canonical];
+  if (origin && expected.includes(origin)) return { ok: true };
   // Same-origin fetches from some user agents omit Origin but always set
   // Referer. Accept Referer as a fallback when (and only when) Origin is
   // absent — never accept Referer alone if Origin is present-and-wrong.
-  if (!origin && referer && referer.startsWith(expected + '/')) {
+  if (!origin && referer && expected.some((e) => referer.startsWith(e + '/'))) {
     return { ok: true };
   }
   return {
     ok: false,
-    reason: `bad-origin (origin=${origin ?? 'null'}, referer=${referer ?? 'null'}, expected=${expected})`,
+    reason: `bad-origin (origin=${origin ?? 'null'}, referer=${referer ?? 'null'}, expected=${expected.join('|')})`,
   };
 }
