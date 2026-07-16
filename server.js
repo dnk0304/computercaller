@@ -132,17 +132,18 @@ const PAIRING_TTL_MS = 30_000;
 // clicking Disconnect), the relay remembers the broken pair for this long.
 // If the dropped side reconnects within the window while its counterpart is
 // still around, the relay silently re-links them — no browser Connect click,
-// no phone Accept tap. 120 s covers the observed prod gaps (42 s phone-side,
-// 6 s browser-side, 2026-06-11 logs) with headroom for a slow cellular
-// re-attach, while staying short enough that a genuinely-gone peer doesn't
-// hold a phantom resume claim. Security: resume is scoped to the same room
-// token (the shared secret both sides already authenticated with), is only
-// armed by a non-user-initiated close, and expires — no new attack surface
-// beyond what a normal Connect+Accept inside the same room already grants.
-const RESUME_WINDOW_MS = 120_000;
+// no phone Accept tap. 30 s covers the common blip (keepalive terminate +
+// ~5 s reconnect, and the observed 6 s browser-side gap) while dropping a
+// genuinely-gone peer to the lobby fast rather than holding the browser for
+// two minutes (tightened from 120 s → 30 s, 2026-07-16, Dennis-approved).
+// Security: resume is scoped to the same room token (the shared secret both
+// sides already authenticated with), is only armed by a non-user-initiated
+// close, and expires — no new attack surface beyond what a normal
+// Connect+Accept inside the same room already grants.
+const RESUME_WINDOW_MS = 30_000;
 
 // Fix 2 (2026-07-16): hard cap on the per-room replay buffer. While a resume
-// claim is armed (a <=120s socket blip), phone data-plane frames that would
+// claim is armed (a <=30s socket blip), phone data-plane frames that would
 // otherwise drop from the lobby are buffered and replayed on soft-hold resume.
 // Bounded to protect memory — drop-oldest on overflow.
 const FRAME_BUFFER_MAX = 200;
@@ -169,7 +170,7 @@ const FRAME_BUFFER_MAX = 200;
  *                               phone has not yet answered. 30 s TTL.
  *   room.frameBuffer          — [{ msg, at }] bounded replay buffer. Phone
  *                               data-plane frames captured while a resume
- *                               claim is armed (a <=120s blip), replayed to
+ *                               claim is armed (a <=30s blip), replayed to
  *                               the browser on soft-hold resume (Fix 2). A new
  *                               pair forms ONLY via explicit Connect + Accept.
  *
@@ -1103,7 +1104,7 @@ function startRelay(httpServer) {
       // PAIRING_ACTIVE frame REPLACES LOBBY_STATUS for this socket, so the
       // client never sees a lobby frame that could race its active state.
       // NOTE: this is the ONLY silent re-form path — armed by socket_closed
-      // only (a <=120s blip). A genuinely torn-down pair re-forms ONLY via an
+      // only (a <=30s blip). A genuinely torn-down pair re-forms ONLY via an
       // explicit Connect + Accept handshake (known-device relink removed
       // 2026-07-16, Fix 1).
       const phoneResumed = tryAutoResume(room);
@@ -1236,7 +1237,7 @@ function startRelay(httpServer) {
 
         // Frame from a lobby phone with no active opposite peer.
         //
-        // Fix 2 (2026-07-16): if a resume claim is armed (a <=120s socket blip,
+        // Fix 2 (2026-07-16): if a resume claim is armed (a <=30s socket blip,
         // the soft-hold window), BUFFER the frame instead of dropping it — it
         // will be replayed in order to the browser when tryAutoResume re-forms
         // the pair. Bounded hard at FRAME_BUFFER_MAX (drop-oldest on overflow)
