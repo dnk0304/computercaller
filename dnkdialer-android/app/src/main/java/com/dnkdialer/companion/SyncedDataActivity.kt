@@ -13,6 +13,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 
 /**
  * On-device viewer for the SMS messages + call log this app syncs.
@@ -69,6 +70,18 @@ class SyncedDataActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_synced_data)
+
+        // API 36 (Android 16) edge-to-edge is ENFORCED with no opt-out
+        // (windowOptOutEdgeToEdgeEnforcement is ignored at targetSdk 36).
+        // Without this the header wordmark clips under the status bar and the
+        // bottom-most list row / empty-state clips under the gesture nav bar.
+        // Mirror MainActivity / SignInActivity (v29 work): let the opaque
+        // surface_base windowBackground fill behind the bars and pad the root
+        // vertical stack by systemBars()+displayCutout(). syncedRoot is the
+        // full-bleed container holding header, tabs, scroll list and empty
+        // state, so padding it insets every child correctly.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        InsetsUtils.applySystemBarInsets(findViewById(R.id.syncedRoot))
 
         tabMessages = findViewById(R.id.tabMessages)
         tabCalls = findViewById(R.id.tabCalls)

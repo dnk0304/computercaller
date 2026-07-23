@@ -17,7 +17,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.dnkdialer.companion"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         // NOTE: applicationId is the Play Store package name and is
@@ -26,7 +26,7 @@ android {
         // alignment. (Ken dispatch #14, 2026-05-24.)
         applicationId = "com.dnkdialer.companion"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         // versionCode: monotonically increasing integer — bump every new APK
         // shipped (debug or release). Play Store requires strictly higher
         // than the highest one already on the track.
@@ -293,8 +293,24 @@ android {
         // ColorOS/OxygenOS hint on MainActivity (oppo/oneplus/realme) that
         // deep-links to app details settings for "Allow background
         // activity" + Auto-launch. No manifest/permission changes.
-        versionCode = 45
-        versionName = "1.0.22"
+        // v50 (1.0.27) — API 35→36 target bump (Android 16) for Play Store
+        // policy (Aug-31 deadline). compileSdk+targetSdk 35→36. Added
+        // InsetsUtils to SyncedDataActivity (API 36 edge-to-edge is
+        // non-opt-out-able — windowOptOutEdgeToEdgeEnforcement is ignored at
+        // targetSdk 36, and SyncedDataActivity (added v40) was the one surface
+        // still lacking insets handling). FGS type stays specialUse (not
+        // dataSync → no 6h daily cap; the always-on relay is safe). No
+        // AGP/Gradle/Kotlin bump (AGP 8.13.2 already supports compileSdk 36).
+        // versionCode jumps 45→50 (NOT 46): Play's highest CONSUMED code on
+        // com.dnkdialer.companion is 49 (versionName 1.0.26, Production 100%
+        // 2026-07-13 — Pilot-confirmed). 46–49 were burned by the divergent
+        // shipped line and can never be reused; 50 is the next free integer.
+        // versionName follows the live 1.0.26 → 1.0.27 (1.0.23 would be a
+        // cosmetic downgrade below what's live). applicationId stays
+        // com.dnkdialer.companion — the July-3 com.computercaller.app rename
+        // never shipped; this AAB must match the live package to update it.
+        versionCode = 50
+        versionName = "1.0.27"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
