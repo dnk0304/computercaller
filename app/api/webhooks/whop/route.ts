@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db } from '@/lib/db';
+import { resolveWhopCardState } from '@/lib/entitlement-core';
 
 // Whop sends membership / payment webhooks signed with HMAC-SHA256 over the
 // raw request body using WHOP_WEBHOOK_SECRET. Header: "x-whop-signature".
@@ -190,19 +191,19 @@ export async function POST(req: NextRequest) {
       // never under-set to a month. See computePeriodEnd above.
       const periodEnd = computePeriodEnd(data);
 
-      // Card-on-file (2026-07-03). Best-effort: if a future Whop payload carries
-      // an explicit boolean (has_payment_method / payment_method present), honor
-      // it; otherwise v1 fallback — a sub that reached 'active' has a card on
-      // file (Whop's paid membership requires payment). Trial-only users stay
-      // false. See report note: confirming card-on-file DURING a trial needs a
-      // Whop API follow-up (GET /memberships/{id}); not blocking the dashboard.
-      const explicitCard =
-        typeof data?.has_payment_method === 'boolean'
-          ? (data.has_payment_method as boolean)
-          : typeof data?.user?.has_payment_method === 'boolean'
-            ? (data.user.has_payment_method as boolean)
-            : null;
-      const paymentMethodAttached = explicitCard ?? true;
+      // Card-on-file (2026-07-27 fix). resolveWhopCardState returns:
+      //   true  — positively confirmed (explicit flag true, OR payment.succeeded
+      //           = a real charge cleared, so a card is on file).
+      //   false — positively no card (explicit flag false).
+      //   null  — UNKNOWN (e.g. membership.went_valid with no flag — a NO-CARD
+      //           Whop trial). Previously this defaulted to `true`, recording
+      //           every no-card trial as a card-attached paying conversion and
+      //           making the admin dashboard lie about who actually has a card.
+      // On `null` we DO NOT assert a card: the create branch defaults false, and
+      // the update branch omits the column entirely so a prior confirmed `true`
+      // (e.g. from an earlier payment.succeeded) is never downgraded by a later
+      // ambiguous went_valid.
+      const cardState = resolveWhopCardState(action, data);
 
       const now = new Date();
 
@@ -216,16 +217,19 @@ export async function POST(req: NextRequest) {
           currentPeriodEnd: periodEnd,
           // Brand-new row created directly at 'active' → this IS the conversion.
           convertedAt: now,
-          paymentMethodAttached,
+          // Only assert a card when positively confirmed; unknown (null) → false.
+          paymentMethodAttached: cardState === true,
           canceledAt: null,
         },
         update: {
           whopMembershipId: data?.id,
           status: 'active',
           currentPeriodEnd: periodEnd,
-          paymentMethodAttached,
           // Re-activation clears any prior cancellation marker.
           canceledAt: null,
+          // Only overwrite the card flag on a definite signal (true/false); on
+          // unknown (null) omit it so a prior confirmed value is preserved.
+          ...(cardState !== null ? { paymentMethodAttached: cardState } : {}),
         },
       });
 

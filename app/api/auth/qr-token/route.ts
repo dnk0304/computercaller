@@ -37,6 +37,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { validateSessionToken } from '@/lib/auth';
+import { evaluateEntitlement } from '@/lib/entitlement';
 
 export async function GET(req: NextRequest) {
   try {
@@ -51,10 +52,41 @@ export async function GET(req: NextRequest) {
 
     const user = await db.user.findUnique({
       where: { id: payload.userId },
-      select: { phoneToken: true },
+      // Entitlement gate (2026-07-27): load isAdmin + email + subscription in the
+      // SAME lookup that fetches phoneToken — no extra query.
+      select: {
+        phoneToken: true,
+        isAdmin: true,
+        email: true,
+        subscription: {
+          select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
+        },
+      },
     });
     if (!user) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    }
+
+    // ── Entitlement chokepoint (2026-07-27) ────────────────────────────────
+    //
+    // Do NOT disclose the phoneToken to an unentitled session. The phoneToken is
+    // the raw bearer the relay accepts on the `?token=` / `Authorization: Bearer`
+    // doors; handing it to a trial_expired / expired / none user let them open
+    // the relay WS and drive the phone for free indefinitely (the leak). This is
+    // defense-in-depth with the relay-side gate in server.js — it stops the token
+    // leaving the building at all. Fail-CLOSED: no entitlement ⇒ 403. Admin +
+    // ENTITLEMENT_ALLOWLIST bypass via evaluateEntitlement rules (1)/(2), so
+    // Dennis / the reviewer are never blocked.
+    const ent = evaluateEntitlement({
+      isAdmin: user.isAdmin,
+      email: user.email,
+      subscription: user.subscription,
+    });
+    if (!ent.allowed) {
+      console.warn(
+        `[QrToken] entitlement denied (${ent.reason}) for user ${payload.userId}`,
+      );
+      return NextResponse.json({ error: 'subscription_required' }, { status: 403 });
     }
 
     return NextResponse.json({ phoneToken: user.phoneToken });

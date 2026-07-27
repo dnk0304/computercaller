@@ -24,6 +24,12 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 
+// Shared entitlement core (2026-07-27). The SAME runtime module the TS layer
+// re-exports (lib/entitlement.ts → lib/entitlement-core.js), so the relay's
+// money gate and the browser gate can never drift. Closes the broken-access-
+// control leak where the raw-phoneToken relay doors admitted unentitled users.
+const { evaluateUserEntitlement } = require('./lib/entitlement-core.js');
+
 // Bundle A (2026-05-28) — Phase 4 security review fix (H7).
 // Every server.js log site that previously included the raw phoneToken (and
 // every site that includes any user-supplied token, including the new
@@ -1059,6 +1065,32 @@ function startRelay(httpServer) {
     } else {
       console.log('[Relay] Rejecting connection — no auth in query/header');
       try { ws.close(4401, 'invalid_token'); } catch (e) {}
+      return;
+    }
+
+    // ── Relay entitlement chokepoint (2026-07-27) — THE MONEY GATE ────────────
+    //
+    // Every admission path above (?token= legacy phoneToken, Authorization:
+    // Bearer phoneToken, and ?ticket= JWT — browser AND phone/APK) funnels
+    // through this single check, so the relay can NEVER admit an unentitled peer.
+    // This closes the broken-access-control leak: a logged-in-but-unpaid user who
+    // grabbed their phoneToken could open this WS and drive the phone for free
+    // indefinitely because server.js had no entitlement check at all.
+    //
+    // Uses the EXACT decision logic the browser gate uses (lib/entitlement-core.js,
+    // required by both this plain-Node server and the TS layer) — no drift.
+    //
+    // Fail-SAFE for admin + allowlist: evaluateUserEntitlement → evaluateEntitlement
+    // rules (1)/(2) short-circuit to allowed for Dennis (isAdmin) and the
+    // ENTITLEMENT_ALLOWLIST emails regardless of subscription state, so a paying
+    // user's phone bridge and Dennis/reviewer access are never blocked.
+    // Fail-CLOSED on the money path: a missing user row OR a DB throw returns
+    // allowed:false ⇒ the upgrade is REJECTED (this IS the paywall, unlike the
+    // UX-only proxy which may fail open).
+    const ent = await evaluateUserEntitlement(db, userId);
+    if (!ent.allowed) {
+      console.log(`[Relay] Rejecting connection — not entitled (user=${userId} via ${authVia} reason=${ent.reason})`);
+      try { ws.close(4403, 'subscription_required'); } catch (e) {}
       return;
     }
 
