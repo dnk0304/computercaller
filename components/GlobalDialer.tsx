@@ -17,6 +17,7 @@ import {
   Hash,
   ArrowDownLeft,
   ArrowUpRight,
+  Copy,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
@@ -43,12 +44,12 @@ const SENT_NOTICE_MS = 1400;
 // Default quick-reply chips shown ONLY when the user has zero saved entries
 // in the QuickReplyTemplate store. Once they have ≥1 their list takes over
 // entirely — no mixing.
-interface CallSurfaceQuickReply { name: string; body: string }
+interface CallSurfaceQuickReply { id: string; name: string; body: string }
 const DEFAULT_QUICK_REPLIES: ReadonlyArray<CallSurfaceQuickReply> = [
-  { name: "Can't talk right now", body: "Can't talk right now" },
-  { name: "I'll call you back",   body: "I'll call you back" },
-  { name: 'On my way',            body: 'On my way' },
-  { name: 'Call you later',       body: 'Call you later' },
+  { id: 'default-0', name: "Can't talk right now", body: "Can't talk right now" },
+  { id: 'default-1', name: "I'll call you back",   body: "I'll call you back" },
+  { id: 'default-2', name: 'On my way',            body: 'On my way' },
+  { id: 'default-3', name: 'Call you later',       body: 'Call you later' },
 ];
 
 type Tab = 'calls' | 'texts';
@@ -573,7 +574,7 @@ function CallSessionView({
   const { quickReplies } = useQuickReplyTemplates();
   const resolvedChips: ReadonlyArray<CallSurfaceQuickReply> =
     quickReplies.length > 0
-      ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
+      ? quickReplies.map((qr) => ({ id: qr.id, name: qr.label ?? qr.body, body: qr.body }))
       : DEFAULT_QUICK_REPLIES;
 
   // Reply affordance gating — per Forge's v1 contract. Only the simple
@@ -846,7 +847,7 @@ function QueueCard({ call, onSendSms, onHangUpForeground }: QueueCardProps) {
   const { quickReplies } = useQuickReplyTemplates();
   const chips: ReadonlyArray<CallSurfaceQuickReply> =
     quickReplies.length > 0
-      ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
+      ? quickReplies.map((qr) => ({ id: qr.id, name: qr.label ?? qr.body, body: qr.body }))
       : DEFAULT_QUICK_REPLIES;
 
   const fireSms = (body: string) => {
@@ -1045,7 +1046,7 @@ function CallReplyPanel({
       </div>
       <ul className="space-y-1" aria-label="Quick reply messages">
         {chips.map((reply) => (
-          <li key={reply.name}>
+          <li key={reply.id}>
             <button
               type="button"
               onClick={() => onPickChip(reply.body)}
@@ -1142,6 +1143,28 @@ interface CallsViewProps {
 }
 
 function CallsView({ entries, onSelect, onMessage }: CallsViewProps) {
+  // Per-row copied state with a transient Copy→Check swap (~1.8s). Mirrors
+  // Templates.tsx: clipboard.writeText can throw in insecure contexts, so we
+  // swallow and no-op on failure.
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+  }, []);
+  const copyNumber = async (id: string, number: string) => {
+    try {
+      await navigator.clipboard.writeText(number);
+      setCopiedId(id);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopiedId(null);
+        copyTimerRef.current = null;
+      }, 1800);
+    } catch {
+      // Clipboard unavailable (insecure context) — silent no-op.
+    }
+  };
+
   if (entries.length === 0) {
     return (
       <div className="px-2.5 py-6 text-center text-[10px] text-slate-400">
@@ -1177,6 +1200,21 @@ function CallsView({ entries, onSelect, onMessage }: CallsViewProps) {
               aria-label={`Message ${log.name || log.number}`}
             >
               <MessageSquare className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => copyNumber(log.id, log.number)}
+              disabled={!log.number}
+              className={clsx(
+                'p-1 rounded-md transition-colors flex-shrink-0 disabled:opacity-30 disabled:cursor-not-allowed',
+                copiedId === log.id
+                  ? 'text-emerald-600 bg-emerald-50'
+                  : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+              )}
+              title={copiedId === log.id ? 'Copied!' : `Copy number ${log.number}`}
+              aria-label={copiedId === log.id ? 'Number copied' : `Copy number ${log.number}`}
+            >
+              {copiedId === log.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
             </button>
           </div>
         </li>

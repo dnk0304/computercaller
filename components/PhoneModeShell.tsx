@@ -47,6 +47,8 @@ import {
   RotateCw,
   Delete,
   FileText,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
@@ -280,6 +282,28 @@ function DialerView() {
     return () => window.clearInterval(id);
   }, []);
 
+  // Copy a recent number to the clipboard — transient Copy→Check swap (~1.8s),
+  // keyed per row id. Mirrors Templates.tsx: swallow clipboard errors (insecure
+  // context) and no-op.
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+  }, []);
+  const copyNumber = async (id: string, number: string) => {
+    try {
+      await navigator.clipboard.writeText(number);
+      setCopiedId(id);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopiedId(null);
+        copyTimerRef.current = null;
+      }, 1800);
+    } catch {
+      // Clipboard unavailable (insecure context) — silent no-op.
+    }
+  };
+
   const dialKey = (d: string) => setDigits(prev => (prev.length < 15 ? prev + d : prev));
   const backspace = () => setDigits(prev => prev.slice(0, -1));
   const call = () => digits && makeCall(digits);
@@ -379,11 +403,11 @@ function DialerView() {
           </p>
           <ul className="flex-1 divide-y divide-slate-100 overflow-y-auto pb-2">
             {recent.map((r) => (
-              <li key={r.id}>
+              <li key={r.id} className="flex items-center pr-1.5 transition-colors hover:bg-slate-50">
                 <button
                   type="button"
                   onClick={() => makeCall(r.number)}
-                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50"
+                  className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left focus:outline-none focus-visible:bg-slate-50"
                   aria-label={`Call ${r.name || r.number}`}
                 >
                   <div className={clsx('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold', avatarColor(r.name || r.number))}>
@@ -394,6 +418,20 @@ function DialerView() {
                     <p className="truncate text-[11px] text-slate-500">{formatRelative(r.date, now)}</p>
                   </div>
                   <RotateCw className="h-3.5 w-3.5 flex-shrink-0 text-slate-300" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copyNumber(r.id, r.number)}
+                  className={clsx(
+                    'flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                    copiedId === r.id
+                      ? 'text-emerald-600 bg-emerald-50'
+                      : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+                  )}
+                  title={copiedId === r.id ? 'Copied!' : `Copy number ${r.number}`}
+                  aria-label={copiedId === r.id ? 'Number copied' : `Copy number ${r.number}`}
+                >
+                  {copiedId === r.id ? <Check className="h-4 w-4" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}
                 </button>
               </li>
             ))}

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Edit2, Copy, Trash2, X, Check, FileText, Sparkles, ArrowRight } from 'lucide-react';
+import { Plus, Edit2, Copy, Trash2, X, Check, FileText, Sparkles, ArrowRight, ChevronUp, ChevronDown } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTemplates } from '@/hooks/useTemplates';
 import type { TemplateDTO } from '@/lib/templates';
@@ -28,7 +28,7 @@ const PLACEHOLDER_BODY = `Hi [name],\n\nThanks for reaching out. I'll get back t
 export const Templates = () => {
   // Server-backed source of truth (shared hook). Render in the order the API
   // returns (sortOrder ASC, createdAt DESC) — do NOT re-sort client-side.
-  const { templates, loading, count, atCap, limit, create, update, remove } = useTemplates();
+  const { templates, loading, count, atCap, limit, create, update, remove, reorder } = useTemplates();
 
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -151,6 +151,18 @@ export const Templates = () => {
     }, 3000);
   };
 
+  // ----- Reorder via up/down arrows -----
+  // Swap a template with its neighbour and persist the full ordered id list.
+  // The hook (useTemplates.reorder) updates local order optimistically and
+  // resyncs from the server on failure — the list must NOT be re-sorted here.
+  const moveTemplate = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= templates.length) return;
+    const ordered = templates.map((t) => t.id);
+    [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
+    void reorder(ordered);
+  };
+
   // ----- Copy with toast -----
   const handleCopy = async (t: Template) => {
     try {
@@ -257,14 +269,40 @@ export const Templates = () => {
         </div>
       ) : (
         <ul className="space-y-2">
-          {templates.map(template => {
+          {templates.map((template, index) => {
             const isPendingDelete = pendingDeleteId === template.id;
             const justCopied = copiedId === template.id;
+            const isFirst = index === 0;
+            const isLast = index === templates.length - 1;
             return (
               <li
                 key={template.id}
                 className="group bg-white rounded-2xl border border-slate-200 hover:border-slate-300 hover:shadow-sm transition-all p-4 flex items-center gap-4"
               >
+                {/* Reorder controls — up/down arrows persist via the hook's
+                    reorder(). Keyboard-accessible, no DnD dependency. Ends are
+                    disabled (can't move the first up or the last down). */}
+                <div className="flex flex-col flex-shrink-0 -my-1">
+                  <button
+                    onClick={() => moveTemplate(index, -1)}
+                    disabled={isFirst}
+                    className="p-0.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                    title={`Move ${template.name} up`}
+                    aria-label={`Move ${template.name} up`}
+                  >
+                    <ChevronUp className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    onClick={() => moveTemplate(index, 1)}
+                    disabled={isLast}
+                    className="p-0.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                    title={`Move ${template.name} down`}
+                    aria-label={`Move ${template.name} down`}
+                  >
+                    <ChevronDown className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                </div>
+
                 <div className="flex-1 min-w-0">
                   <h3 className="font-semibold text-slate-800 text-sm truncate">{template.name}</h3>
                   <p className="text-xs text-slate-500 truncate mt-0.5">{previewBody(template.body)}</p>

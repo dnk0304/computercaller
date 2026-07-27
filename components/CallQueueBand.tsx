@@ -86,12 +86,12 @@ const SENT_NOTICE_MS = 1400;
 // Default quick-reply chips shown ONLY when the user has zero saved entries.
 // Same set + same "user list takes over entirely once they have ≥1" rule as
 // the GlobalDialer call surface — no mixing.
-interface BandQuickReply { name: string; body: string }
+interface BandQuickReply { id: string; name: string; body: string }
 const DEFAULT_QUICK_REPLIES: ReadonlyArray<BandQuickReply> = [
-  { name: "Can't talk right now", body: "Can't talk right now" },
-  { name: "I'll call you back",   body: "I'll call you back" },
-  { name: 'On my way',            body: 'On my way' },
-  { name: 'Call you later',       body: 'Call you later' },
+  { id: 'default-0', name: "Can't talk right now", body: "Can't talk right now" },
+  { id: 'default-1', name: "I'll call you back",   body: "I'll call you back" },
+  { id: 'default-2', name: 'On my way',            body: 'On my way' },
+  { id: 'default-3', name: 'Call you later',       body: 'Call you later' },
 ];
 
 // Status-dot color + label for a call state. Replaces the old text badge —
@@ -333,7 +333,7 @@ function CallChip({
   const { quickReplies } = useQuickReplyTemplates();
   const chips: ReadonlyArray<BandQuickReply> =
     quickReplies.length > 0
-      ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
+      ? quickReplies.map((qr) => ({ id: qr.id, name: qr.label ?? qr.body, body: qr.body }))
       : DEFAULT_QUICK_REPLIES;
 
   const isRinging = call.state === 'ringing';
@@ -611,9 +611,9 @@ function ChipReplyPanel({
           <X className="w-3 h-3" />
         </button>
       </div>
-      <ul className="space-y-1" aria-label="Quick reply messages">
+      <ul className="space-y-1 max-h-52 overflow-y-auto" aria-label="Quick reply messages">
         {chips.map((reply) => (
-          <li key={reply.name}>
+          <li key={reply.id}>
             <button
               type="button"
               onClick={() => onPickChip(reply.body)}

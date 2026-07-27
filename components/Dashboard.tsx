@@ -64,6 +64,8 @@ import {
   Delete,
   Bell,
   Hash,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
@@ -1102,6 +1104,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     setComposingNew(false);
   }, []);
 
+  // Copy a recent-call number to the clipboard, keyed per log.id with a
+  // transient Copy→Check swap. Mirrors Templates.tsx handleCopy: clipboard
+  // can throw in insecure contexts, so we swallow and no-op on failure.
+  const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
+  const copyLogTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copyLogTimerRef.current !== null) window.clearTimeout(copyLogTimerRef.current);
+  }, []);
+  const handleCopyLogNumber = useCallback(async (id: string, number: string) => {
+    try {
+      await navigator.clipboard.writeText(number);
+      setCopiedLogId(id);
+      if (copyLogTimerRef.current !== null) window.clearTimeout(copyLogTimerRef.current);
+      copyLogTimerRef.current = window.setTimeout(() => {
+        setCopiedLogId(null);
+        copyLogTimerRef.current = null;
+      }, 1800);
+    } catch {
+      // Clipboard API unavailable (insecure context) — silent no-op.
+    }
+  }, []);
+
   // handleSmsFromQuickDial removed 2026-05-22 — the Quick Dial header SMS
   // button was deleted and ActiveCallCard's onSendSms now inlines the same
   // composing-state mutations directly (see the JSX at the ActiveCallCard
@@ -1607,6 +1631,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                         aria-label={`Message ${displayName}`}
                       >
                         <MessageSquare className="w-4 h-4" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCopyLogNumber(log.id, log.number);
+                        }}
+                        className={clsx(
+                          'p-2 rounded-lg transition-colors',
+                          copiedLogId === log.id
+                            ? 'text-emerald-600 bg-emerald-50'
+                            : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+                        )}
+                        title={copiedLogId === log.id ? 'Copied!' : `Copy number ${log.number}`}
+                        aria-label={copiedLogId === log.id ? 'Number copied' : `Copy number ${log.number}`}
+                      >
+                        {copiedLogId === log.id
+                          ? <Check className="w-4 h-4" aria-hidden="true" />
+                          : <Copy className="w-4 h-4" aria-hidden="true" />}
                       </button>
                     </div>
                   </li>

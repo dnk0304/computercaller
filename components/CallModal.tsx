@@ -39,6 +39,9 @@ import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
 const SENT_NOTICE_MS = 1400;
 
 interface QuickReply {
+  /** Stable key. User rows carry the QuickReplyTemplate id; defaults use a
+   *  synthetic `default-N` so every chip keys by a stable, unique id. */
+  id: string;
   /** Short label shown on the chip. */
   name: string;
   /** SMS body sent when tapped. For hardcoded defaults, label === body. */
@@ -46,10 +49,10 @@ interface QuickReply {
 }
 
 const DEFAULT_QUICK_REPLIES: ReadonlyArray<QuickReply> = [
-  { name: "Can't talk right now", body: "Can't talk right now" },
-  { name: "I'll call you back",   body: "I'll call you back" },
-  { name: 'On my way',            body: 'On my way' },
-  { name: 'Call you later',       body: 'Call you later' },
+  { id: 'default-0', name: "Can't talk right now", body: "Can't talk right now" },
+  { id: 'default-1', name: "I'll call you back",   body: "I'll call you back" },
+  { id: 'default-2', name: 'On my way',            body: 'On my way' },
+  { id: 'default-3', name: 'Call you later',       body: 'Call you later' },
 ];
 
 export const CallModal = () => {
@@ -170,7 +173,7 @@ export const CallModal = () => {
   // body when label is null — same behavior as the management sub-section.
   const resolvedChips: ReadonlyArray<QuickReply> =
     quickReplies.length > 0
-      ? quickReplies.map((qr) => ({ name: qr.label ?? qr.body, body: qr.body }))
+      ? quickReplies.map((qr) => ({ id: qr.id, name: qr.label ?? qr.body, body: qr.body }))
       : DEFAULT_QUICK_REPLIES;
 
   // ---- Reusable: the quick-reply panel (chips + Custom entry). ----
@@ -249,7 +252,7 @@ export const CallModal = () => {
           aria-label="Quick reply messages"
         >
           {resolvedChips.map((reply) => (
-            <li key={reply.name}>
+            <li key={reply.id}>
               <button
                 type="button"
                 onClick={() => handleSend(reply.body)}
