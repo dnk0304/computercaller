@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { Plus, Edit2, Copy, Trash2, X, Check, FileText, Sparkles, ArrowRight } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTemplates } from '@/hooks/useTemplates';
+import { useUpgrade } from '@/hooks/upgradeModalContext';
 import type { TemplateDTO } from '@/lib/templates';
 import { QuickReplyTemplates } from './QuickReplyTemplates';
 import { SortableList, SortableRow } from './SortableList';
@@ -31,6 +32,11 @@ export const Templates = () => {
   // returns (sortOrder ASC, createdAt DESC) — do NOT re-sort client-side.
   const { templates, loading, count, atCap, limit, create, update, remove, reorder } = useTemplates();
 
+  // Upgrade affordance (tier-gating, 2026-07-27). The template cap is now
+  // tier-aware server-side (Solo 3 / Plus 10 / Pro 30), so a capped user below
+  // Pro can lift it by upgrading — the nudge opens the 3-tier modal.
+  const { openUpgrade } = useUpgrade();
+
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -45,14 +51,15 @@ export const Templates = () => {
   const [showCapNotice, setShowCapNotice] = useState(false);
 
   // The cap surface splits two ways depending on WHY the user is capped:
-  //  - Trial/non-paying users hit a low cap (limit <= 3) that a subscription
-  //    lifts → show an honest "N/N used — subscribe for unlimited" nudge with a
-  //    CTA to /subscribe. This is the conversion moment, so it's the one place
-  //    the cap notice gets a blue (not slate) treatment.
-  //  - Paying users at the real 15 cap can't buy their way past it → keep the
-  //    calm slate "delete one to add another" message, NO subscribe CTA.
+  //  - A user below the top tier (limit < 30 → Solo 3 or Plus 10) can lift the
+  //    cap by upgrading → show a blue "N/N used — upgrade for more" nudge whose
+  //    CTA opens the 3-tier modal. This is the conversion moment.
+  //  - A Pro user at the real 30 cap can't buy their way past it → keep the
+  //    calm slate "delete one to add another" message, NO upgrade CTA.
+  // The effective `limit` from the server already encodes the tier (3/10/30),
+  // so no extra entitlement read is needed for this decision.
   const capReached = atCap || showCapNotice;
-  const showUpgradeNudge = capReached && limit <= 3;
+  const showUpgradeNudge = capReached && limit < 30;
 
   // Inline delete confirmation: hold the id of the template currently in the "click to confirm" state.
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
@@ -206,16 +213,17 @@ export const Templates = () => {
               <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" aria-hidden="true" />
               <p className="text-sm text-blue-900">
                 <span className="font-semibold tabular-nums">{count}/{limit} templates used</span>
-                {' — subscribe for unlimited templates.'}
+                {' — upgrade your plan for more templates.'}
               </p>
             </div>
-            <a
-              href="/subscribe"
+            <button
+              type="button"
+              onClick={() => openUpgrade('templates')}
               className="inline-flex flex-shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
             >
-              Subscribe
+              See plans
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            </a>
+            </button>
           </div>
         ) : (
           <div

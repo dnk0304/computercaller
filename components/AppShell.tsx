@@ -6,6 +6,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
+import { TierBadge } from '@/components/TierBadge';
 import { PhoneModeShell } from '@/components/PhoneModeShell';
 import { SyncMenuButton } from '@/components/SyncMenuButton';
 import { ReconnectionPill } from '@/components/ReconnectionPill';
@@ -225,6 +226,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Phone Mode in a popup window; the separate "Open in popup
                 window" sub-action was removed. See components/ProfileMenu.tsx. */}
             <ConnectionStatus />
+            {/* TierBadge (Pixel, 2026-07-27, tier-gating) — the caller's current
+                plan (Solo / Plus / Pro), read from the shared entitlement.
+                Clicking opens the pricing/upgrade modal. Renders null until the
+                tier resolves, so the header never flashes a placeholder. */}
+            <TierBadge />
             {/* ProfileMenu — days-left urgency chip beside the avatar, plus a
                 dropdown for Manage subscription / Sign out. Sign Out tears
                 down the phone bridge WS BEFORE the SPA route change so the

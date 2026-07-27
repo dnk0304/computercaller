@@ -2,10 +2,12 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Smartphone, Users, MessageSquare, PhoneCall, X, Loader2 } from 'lucide-react';
+import { Smartphone, Users, MessageSquare, PhoneCall, X, Loader2, Lock, ArrowRight } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
 import { capForRange, type RangeKey } from '@/lib/syncCaps';
+import { SYNC_RANGE_WINDOW_DAYS } from '@/lib/tiers';
+import { useUpgrade } from '@/hooks/upgradeModalContext';
 
 // Time-range sync selection. The user picks how far back in time to pull
 // data. Sending a `since` timestamp lets Android use an indexed WHERE clause
@@ -54,6 +56,16 @@ interface SyncRowProps {
    * exceeds it). Calm and neutral — this is expected behaviour, not a warning.
    */
   countLine?: React.ReactNode;
+  /**
+   * Tier-lock (UX only — the relay enforces the real gate server-side). When
+   * true the row reads as unavailable on the current plan: the checkbox is
+   * disabled and unchecked, a "Plan" pill replaces the control, and `lockNote`
+   * (an upgrade nudge) renders beneath the description. Locking here only sets
+   * expectations — a locked feature is never toggleable regardless.
+   */
+  locked?: boolean;
+  /** Upgrade nudge shown beneath the description when `locked`. */
+  lockNote?: React.ReactNode;
 }
 
 function SyncRow({
@@ -66,36 +78,45 @@ function SyncRow({
   rangeControl,
   fullSyncNote,
   countLine,
+  locked,
+  lockNote,
 }: SyncRowProps) {
   return (
     <label
       htmlFor={id}
       className={clsx(
-        'group flex items-start gap-3 p-3 rounded-xl border transition-colors cursor-pointer select-none',
-        checked
-          ? 'border-blue-200 bg-blue-50/50'
-          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+        'group flex items-start gap-3 p-3 rounded-xl border transition-colors select-none',
+        locked
+          ? 'border-slate-200 bg-slate-50/60 cursor-default'
+          : checked
+          ? 'border-blue-200 bg-blue-50/50 cursor-pointer'
+          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50 cursor-pointer'
       )}
     >
-      {/* Checkbox */}
+      {/* Checkbox (or lock glyph when the feature is tier-locked) */}
       <span className="flex-shrink-0 pt-0.5">
         <input
           id={id}
           type="checkbox"
-          checked={checked}
+          checked={locked ? false : checked}
           onChange={onToggle}
+          disabled={locked}
           className="sr-only peer"
         />
         <span
           aria-hidden="true"
           className={clsx(
             'w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all',
-            checked
+            locked
+              ? 'bg-slate-100 border-slate-200 text-slate-400'
+              : checked
               ? 'bg-blue-600 border-blue-600'
               : 'bg-white border-slate-300 group-hover:border-slate-400'
           )}
         >
-          {checked && (
+          {locked ? (
+            <Lock className="w-3 h-3" />
+          ) : checked ? (
             <svg
               className="w-3 h-3 text-white"
               fill="none"
@@ -105,7 +126,7 @@ function SyncRow({
             >
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
-          )}
+          ) : null}
         </span>
       </span>
 
@@ -114,7 +135,7 @@ function SyncRow({
         aria-hidden="true"
         className={clsx(
           'flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center transition-colors',
-          checked ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
+          locked ? 'bg-slate-100 text-slate-400' : checked ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
         )}
       >
         {icon}
@@ -123,8 +144,15 @@ function SyncRow({
       {/* Label + control */}
       <span className="flex-1 min-w-0">
         <span className="flex items-center justify-between gap-3 flex-wrap">
-          <span className="font-semibold text-sm text-slate-800">{label}</span>
-          {rangeControl ? (
+          <span className={clsx('font-semibold text-sm', locked ? 'text-slate-500' : 'text-slate-800')}>
+            {label}
+          </span>
+          {locked ? (
+            <span className="inline-flex flex-shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+              <Lock className="h-2.5 w-2.5" aria-hidden="true" />
+              Plus
+            </span>
+          ) : rangeControl ? (
             <span
               // Stop the label's click from toggling the checkbox when the user clicks the dropdown
               onClick={(e) => e.preventDefault()}
@@ -137,7 +165,9 @@ function SyncRow({
           ) : null}
         </span>
         <span className="block text-xs text-slate-500 mt-0.5">{description}</span>
-        {countLine ? (
+        {locked && lockNote ? (
+          <span className="mt-1.5 block">{lockNote}</span>
+        ) : countLine ? (
           <span className="block text-xs text-slate-500 mt-1" aria-live="polite">
             {countLine}
           </span>
@@ -178,6 +208,29 @@ export const SyncSetupPanel = () => {
   // 1 year) is one click away if the user wants more history.
   const [messageRange, setMessageRange] = useState<RangeKey>('30d');
   const [callLogRange, setCallLogRange] = useState<RangeKey>('30d');
+
+  // ── Tier gating (UX LAYER ONLY) ──────────────────────────────────────────
+  // The relay (server.js) is the REAL, authoritative gate: it drops
+  // GET_CONTACTS for tiers without contactSync and clamps the GET_MESSAGES /
+  // GET_CALL_LOGS `since` to the tier's window. Everything below only REFLECTS
+  // that server-side truth so a locked feature reads as locked with an upgrade
+  // nudge — it never grants access and never substitutes for the real gate.
+  const { entitlement, openUpgrade } = useUpgrade();
+  // Permissive while entitlement is loading so the panel never flashes a lock
+  // and then unlocks. The server stays authoritative regardless of this default.
+  const contactSyncAllowed = entitlement ? entitlement.limits.contactSync : true;
+  const maxRangeKey: RangeKey = entitlement?.limits.syncRangeMax ?? '1yr';
+  const maxRangeDays = SYNC_RANGE_WINDOW_DAYS[maxRangeKey] ?? Infinity;
+  const rangeAllowed = (r: RangeKey): boolean =>
+    (SYNC_RANGE_WINDOW_DAYS[r] ?? Infinity) <= maxRangeDays;
+
+  // Effective selections — DERIVED, never stored, so there is no
+  // set-state-in-effect. Clamp a stored range the tier no longer allows (e.g.
+  // entitlement resolved to Solo after the user picked "1 year" while it was
+  // still loading) and force contacts off when the tier can't sync them.
+  const effMessageRange: RangeKey = rangeAllowed(messageRange) ? messageRange : '30d';
+  const effCallLogRange: RangeKey = rangeAllowed(callLogRange) ? callLogRange : '30d';
+  const effContacts = contacts && contactSyncAllowed;
 
   // Per-row preview counts. We keep these LOCAL to each row rather than reading
   // the shared `syncEstimate` live, because the phone's SYNC_ESTIMATE response
@@ -240,13 +293,13 @@ export const SyncSetupPanel = () => {
       setMessageCounting(true);
       pendingPreviewRef.current = 'messages';
       requestSyncPreview({
-        since: rangeToSince(messageRange),
+        since: rangeToSince(effMessageRange),
         until: Date.now(),
         types: ['messages'],
       });
     }, 400);
     return () => clearTimeout(t);
-  }, [showSyncPanel, messages, messageRange, requestSyncPreview]);
+  }, [showSyncPanel, messages, effMessageRange, requestSyncPreview]);
 
   // Debounced count preview — Call Logs row. Mirror of the Messages effect.
   useEffect(() => {
@@ -255,13 +308,13 @@ export const SyncSetupPanel = () => {
       setCallLogCounting(true);
       pendingPreviewRef.current = 'callLogs';
       requestSyncPreview({
-        since: rangeToSince(callLogRange),
+        since: rangeToSince(effCallLogRange),
         until: Date.now(),
         types: ['callLogs'],
       });
     }, 400);
     return () => clearTimeout(t);
-  }, [showSyncPanel, callLogs, callLogRange, requestSyncPreview]);
+  }, [showSyncPanel, callLogs, effCallLogRange, requestSyncPreview]);
 
   // Route a SYNC_ESTIMATE response to the row that asked for it. The shared
   // estimate zero-fills categories we didn't request, so we only trust the
@@ -345,12 +398,66 @@ export const SyncSetupPanel = () => {
     );
   };
 
-  const messageCountLine = messages
-    ? renderCountLine(messageCounting, messageCount, messageRange, 'messages')
-    : null;
-  const callLogCountLine = callLogs
-    ? renderCountLine(callLogCounting, callLogCount, callLogRange, 'calls')
-    : null;
+  // Short human labels for the tier's max window, used in the range-lock hint.
+  const RANGE_SHORT_LABEL: Record<RangeKey, string> = {
+    '30d': '30 days',
+    '3mo': '3 months',
+    '6mo': '6 months',
+    '1yr': '1 year',
+  };
+
+  // When the tier can't reach the widest window, show a calm upgrade hint under
+  // the message/call-log rows. Rendered as a button that preventDefaults so a
+  // click inside the <label> row opens the modal instead of toggling the row.
+  const someRangeLocked = maxRangeDays < (SYNC_RANGE_WINDOW_DAYS['1yr'] ?? 365);
+  const rangeLockHint = someRangeLocked ? (
+    <span className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500">
+      <Lock className="h-3 w-3 flex-shrink-0 text-slate-400" aria-hidden="true" />
+      Up to {RANGE_SHORT_LABEL[maxRangeKey]} on your plan.
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          openUpgrade('syncRange');
+        }}
+        className="inline-flex items-center gap-0.5 font-semibold text-blue-600 transition-colors hover:text-blue-700 focus:outline-none focus-visible:underline"
+      >
+        Upgrade
+        <ArrowRight className="h-3 w-3" aria-hidden="true" />
+      </button>
+    </span>
+  ) : null;
+
+  const messageCountLine = messages ? (
+    <>
+      {renderCountLine(messageCounting, messageCount, effMessageRange, 'messages')}
+      {rangeLockHint}
+    </>
+  ) : null;
+  const callLogCountLine = callLogs ? (
+    <>
+      {renderCountLine(callLogCounting, callLogCount, effCallLogRange, 'calls')}
+      {rangeLockHint}
+    </>
+  ) : null;
+
+  // Upgrade nudge shown inside the locked Contacts row.
+  const contactsLockNote = (
+    <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500">
+      Contact sync is on Plus and Pro.
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          openUpgrade('contactSync');
+        }}
+        className="inline-flex items-center gap-0.5 font-semibold text-blue-600 transition-colors hover:text-blue-700 focus:outline-none focus-visible:underline"
+      >
+        See plans
+        <ArrowRight className="h-3 w-3" aria-hidden="true" />
+      </button>
+    </span>
+  );
 
   const handleStartSync = () => {
     if (!syncData) {
@@ -359,20 +466,24 @@ export const SyncSetupPanel = () => {
       return;
     }
     syncData({
-      contacts,
+      // Use the EFFECTIVE selections so the request already respects the tier
+      // (contacts off when locked, ranges clamped to the tier window). The relay
+      // enforces the same limits server-side — this just keeps the client from
+      // asking for something it will be denied.
+      contacts: effContacts,
       messages,
-      messageSince: messages ? rangeToSince(messageRange) : undefined,
+      messageSince: messages ? rangeToSince(effMessageRange) : undefined,
       // Per-category newest-N cap. Bounds what actually transfers so a large
       // sync can't crash the device; the preview count stays truthful.
-      messageLimit: messages ? capForRange(messageRange) : undefined,
+      messageLimit: messages ? capForRange(effMessageRange) : undefined,
       callLogs,
-      callLogSince: callLogs ? rangeToSince(callLogRange) : undefined,
-      callLogLimit: callLogs ? capForRange(callLogRange) : undefined,
+      callLogSince: callLogs ? rangeToSince(effCallLogRange) : undefined,
+      callLogLimit: callLogs ? capForRange(effCallLogRange) : undefined,
     });
     dismiss();
   };
 
-  const nothingSelected = !contacts && !messages && !callLogs;
+  const nothingSelected = !effContacts && !messages && !callLogs;
 
   const node = (
     <div
@@ -441,6 +552,8 @@ export const SyncSetupPanel = () => {
                 checked={contacts}
                 onToggle={() => setContacts((v) => !v)}
                 fullSyncNote={contactsNote}
+                locked={!contactSyncAllowed}
+                lockNote={contactsLockNote}
               />
 
               <SyncRow
@@ -452,9 +565,10 @@ export const SyncSetupPanel = () => {
                 onToggle={() => setMessages((v) => !v)}
                 rangeControl={
                   <RangeSelect
-                    value={messageRange}
+                    value={effMessageRange}
                     onChange={setMessageRange}
                     disabled={!messages}
+                    isAllowed={rangeAllowed}
                     ariaLabel="Message time range"
                   />
                 }
@@ -470,9 +584,10 @@ export const SyncSetupPanel = () => {
                 onToggle={() => setCallLogs((v) => !v)}
                 rangeControl={
                   <RangeSelect
-                    value={callLogRange}
+                    value={effCallLogRange}
                     onChange={setCallLogRange}
                     disabled={!callLogs}
+                    isAllowed={rangeAllowed}
                     ariaLabel="Call log time range"
                   />
                 }
@@ -516,10 +631,16 @@ interface RangeSelectProps {
   value: RangeKey;
   onChange: (v: RangeKey) => void;
   disabled?: boolean;
+  /**
+   * Tier gate (UX only). Ranges wider than the tier's window render as disabled
+   * <option>s so they can't be picked; the real clamp is server-side in the
+   * relay. Omitted → every range is selectable.
+   */
+  isAllowed?: (r: RangeKey) => boolean;
   ariaLabel: string;
 }
 
-function RangeSelect({ value, onChange, disabled, ariaLabel }: RangeSelectProps) {
+function RangeSelect({ value, onChange, disabled, isAllowed, ariaLabel }: RangeSelectProps) {
   return (
     <select
       value={value}
@@ -536,11 +657,15 @@ function RangeSelect({ value, onChange, disabled, ariaLabel }: RangeSelectProps)
           : 'border-slate-300 text-slate-700 hover:border-slate-400'
       )}
     >
-      {RANGE_OPTIONS.map((opt) => (
-        <option key={opt.value} value={opt.value}>
-          {opt.label}
-        </option>
-      ))}
+      {RANGE_OPTIONS.map((opt) => {
+        const locked = isAllowed ? !isAllowed(opt.value) : false;
+        return (
+          <option key={opt.value} value={opt.value} disabled={locked}>
+            {opt.label}
+            {locked ? ' (upgrade)' : ''}
+          </option>
+        );
+      })}
     </select>
   );
 }

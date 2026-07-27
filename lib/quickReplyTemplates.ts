@@ -21,6 +21,13 @@ export const TRIAL_QUICK_REPLY_LIMIT = 1;
 
 // Effective quick-reply create-limit for a given entitlement state. Full cap
 // applies ONLY to paying/privileged states; everyone else is on the trial cap.
+//
+// D5 (Ken/Dennis, 2026-07-27, dispatch feature/tier-gating): quick-replies are
+// deliberately NOT a tier differentiator — this stays STATE-based (paying=5 /
+// trial=1), exactly as before the 3-tier rollout. The tier map's
+// TIER_LIMITS[*].quickReplies=5 is only a contract placeholder surfaced by
+// /api/entitlement; the real enforced quick-reply cap is this state value. If
+// Dennis later scales quick-replies per tier, migrate this to the tier map then.
 export function effectiveQuickReplyLimit(state: EntitlementState): number {
   const paying = state === 'admin' || state === 'allowlisted' || state === 'active';
   return paying ? QUICK_REPLY_LIMIT : TRIAL_QUICK_REPLY_LIMIT;

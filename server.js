@@ -30,6 +30,13 @@ const { PrismaClient } = require('@prisma/client');
 // control leak where the raw-phoneToken relay doors admitted unentitled users.
 const { evaluateUserEntitlement } = require('./lib/entitlement-core.js');
 
+// Shared tier map (2026-07-27, dispatch feature/tier-gating). SAME CJS module
+// the TS routes re-export (lib/tiers.ts → lib/tiers-core.js), so the tier used to
+// gate relay frames is identical to the tier the browser/entitlement endpoint
+// sees. syncSinceFloorMs derives the oldest `since` a tier may pull.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
+const { syncSinceFloorMs } = require('./lib/tiers-core.js');
+
 // Bundle A (2026-05-28) — Phase 4 security review fix (H7).
 // Every server.js log site that previously included the raw phoneToken (and
 // every site that includes any user-supplied token, including the new
@@ -820,6 +827,67 @@ function startRelay(httpServer) {
   }
 
   /**
+   * Tier-gate a BROWSER→phone frame (2026-07-27, dispatch feature/tier-gating).
+   * The relay is the ONLY server chokepoint for contact-sync + sync-range: the
+   * browser talks to the phone directly over this WS (no REST), so a client-side
+   * cap can be bypassed and MUST be enforced here, server-authoritative.
+   *
+   * Only the three sync frames are touched; every other frame (pairing, call
+   * control, SMS send, notifications, DEVICE_INFO, …) passes through
+   * BYTE-FOR-BYTE — this must not perturb any other relay routing.
+   *
+   *   GET_CONTACTS            → dropped unless the tier has contactSync.
+   *   GET_MESSAGES / GET_CALL_LOGS
+   *                           → `since` clamped UP to the tier's syncRangeMax
+   *                             floor (now − window), so a Solo user cannot pull
+   *                             history older than 30 days. Frames without an
+   *                             absolute `since` (address / `before` cursor
+   *                             pagination within an already-synced thread) are
+   *                             left untouched — they do not widen the window.
+   *
+   * Fail-CLOSED on the feature flag (unknown/Solo tier → contactSync false →
+   * drop). Fail-OPEN on a JSON parse error (forward unchanged): the tier is
+   * already resolved to a concrete cap at admission (Solo default), so a
+   * malformed payload — which the phone would ignore anyway — is not a bypass.
+   *
+   * @returns {{action:'pass'|'clamp'|'drop', msg?:string, reason?:string, floor?:number}}
+   */
+  function gateBrowserSyncFrame(ws, msg) {
+    const limits = ws.tierLimits || {};
+    const tier = ws.tier || 'solo';
+
+    // Contact book pull (Plus/Pro only). Frame is `GET_CONTACTS:{}` or
+    // `GET_CONTACTS` — match the prefix without the colon to cover both.
+    if (msg.startsWith('GET_CONTACTS')) {
+      if (!limits.contactSync) return { action: 'drop', reason: 'contact_sync_not_in_tier' };
+      return { action: 'pass', msg };
+    }
+
+    // Sync-range window clamp for bulk history pulls.
+    if (msg.startsWith('GET_MESSAGES:') || msg.startsWith('GET_CALL_LOGS:')) {
+      const colon = msg.indexOf(':');
+      const prefix = msg.substring(0, colon);
+      let payload;
+      try {
+        payload = JSON.parse(msg.substring(colon + 1));
+      } catch {
+        return { action: 'pass', msg }; // fail-open on parse error
+      }
+      if (!payload || typeof payload !== 'object') return { action: 'pass', msg };
+      if (typeof payload.since === 'number' && Number.isFinite(payload.since)) {
+        const floor = syncSinceFloorMs(tier);
+        if (payload.since < floor) {
+          const clamped = Object.assign({}, payload, { since: floor });
+          return { action: 'clamp', msg: `${prefix}:${JSON.stringify(clamped)}`, floor };
+        }
+      }
+      return { action: 'pass', msg };
+    }
+
+    return { action: 'pass', msg };
+  }
+
+  /**
    * Live-sync resume fix (2026-06-16) — Bug A backstop + duplicate-lobby-socket
    * delivery (hotfix 2026-06-16b).
    *
@@ -1098,6 +1166,16 @@ function startRelay(httpServer) {
     ws.userId = userId;
     ws.phoneToken = token;
     ws.authVia = authVia;
+    // Cache the tier + limits from the SAME admission entitlement result
+    // (2026-07-27, dispatch feature/tier-gating) so the browser→phone frame gate
+    // reads them WITHOUT a second DB lookup. evaluateUserEntitlement decorated
+    // `ent` with tier/limits (fail-closed → Solo on any error). Defensive
+    // fallbacks keep the relay working even if a future core change omits them.
+    ws.tier = ent.tier || 'solo';
+    ws.tierLimits =
+      ent.limits && typeof ent.limits === 'object'
+        ? ent.limits
+        : { templates: 3, quickReplies: 5, syncRangeMax: '30d', contactSync: false, mirroring: false };
     // F-A: only browser sessions (relay-ticket) are subject to the
     // single-active-session kick. Phone sockets (legacy-token /
     // legacy-token-bearer) are NEVER indexed and NEVER kicked.
@@ -1391,10 +1469,30 @@ function startRelay(httpServer) {
         return;
       }
 
+      // Tier gate (2026-07-27) — enforce contact-sync + sync-range on the
+      // browser→phone sync frames BEFORE they are forwarded to the phone. This
+      // is the ONLY server chokepoint for these (sync is WS, not REST), so it
+      // must be server-authoritative. Non-sync frames pass through unchanged;
+      // see gateBrowserSyncFrame. Applied to BOTH the active-pair forward and
+      // the resume passthrough below so a clamped/dropped frame can't sneak
+      // through either path.
+      let forwardMsg = msg;
+      {
+        const gate = gateBrowserSyncFrame(ws, msg);
+        if (gate.action === 'drop') {
+          rlog(`[Relay][${redactToken(token)}] Tier-gated frame DROPPED (tier=${ws.tier} reason=${gate.reason}): ${msg.substring(0, 40)}`);
+          return;
+        }
+        if (gate.action === 'clamp') {
+          rlog(`[Relay][${redactToken(token)}] Tier-clamped since (tier=${ws.tier} floor=${gate.floor}): ${msg.substring(0, 40)}`);
+          forwardMsg = gate.msg;
+        }
+      }
+
       // Data plane — only allowed when this socket is the active browser.
       if (ws === room.active.browser) {
         try {
-          if (!forwardDataPlane(room, ws, msg)) {
+          if (!forwardDataPlane(room, ws, forwardMsg)) {
             rlog(`[Relay][${redactToken(token)}] Browser data frame dropped — no active phone`);
           }
         } catch (e) {
@@ -1407,7 +1505,7 @@ function startRelay(httpServer) {
       // A frame from a lobby browser while a soft-held survivor phone is waiting
       // means the pair hasn't re-formed yet. Re-form now, or passthrough to the
       // held survivor phone, instead of dropping (Bug A, browser→phone half).
-      if (!LEGACY_RESUME_TEARDOWN && deliverLobbyFrameDuringResume(room, ws, msg, 'browser', token)) {
+      if (!LEGACY_RESUME_TEARDOWN && deliverLobbyFrameDuringResume(room, ws, forwardMsg, 'browser', token)) {
         return;
       }
 

@@ -20,19 +20,24 @@ async function resolveTemplateLimit(userId: string): Promise<number> {
       isAdmin: true,
       email: true,
       subscription: {
-        select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
+        // planId added 2026-07-27 so the tier (Solo 3 / Plus 10 / Pro 30)
+        // resolves correctly — WITHOUT it every active sub would fall to the
+        // Solo default. This is a tier-enforcing path, so it MUST select planId.
+        select: { status: true, trialEndsAt: true, currentPeriodEnd: true, planId: true },
       },
     },
   });
-  // Row vanished mid-session — treat as non-paying (trial cap). Defensive; the
+  // Row vanished mid-session — treat as Solo (least privilege). Defensive; the
   // downstream db call would 401/500 anyway.
-  if (!user) return effectiveTemplateLimit('none');
+  if (!user) {
+    return effectiveTemplateLimit(evaluateEntitlement({ isAdmin: false, email: '', subscription: null }));
+  }
   const ent = evaluateEntitlement({
     isAdmin: user.isAdmin,
     email: user.email,
     subscription: user.subscription,
   });
-  return effectiveTemplateLimit(ent.state);
+  return effectiveTemplateLimit(ent);
 }
 
 // GET /api/templates → { templates: [...] } ordered sortOrder ASC, createdAt DESC.

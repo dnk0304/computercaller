@@ -95,3 +95,94 @@ export function getPlanTiers(): PlanTier[] {
     .filter((x): x is { tier: PlanTierDisplay; planId: string } => Boolean(x.planId))
     .map(({ tier, planId }) => ({ ...tier, planId }));
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// 3-TIER DISPLAY MAP (2026-07-27, dispatch feature/tier-gating)
+//
+// FORGE owns this data map; Pixel's landing/pricing modal + upgrade modal
+// consume `getTierPlans()` READ-ONLY. This is DISPLAY + checkout plan-id ONLY —
+// runtime entitlement/limits come from /api/entitlement (the canonical source),
+// never from here. The plan ids are imported from lib/tiers so the display and
+// the tier-resolution map can never drift; the feature copy mirrors the locked
+// TIER_LIMITS but is intentionally human marketing text (numbers restated here
+// are for the card, not enforcement).
+//
+// Whop visibility (Ken/Dennis): Plus & Pro are `visibility:hidden` in Whop
+// until gating deploys — a checkout CTA for them will 404/hide until the
+// go-live flip. Pixel should render them but expect the hidden state pre-flip.
+import { PLAN_IDS, type Tier } from './tiers';
+
+export interface TierPlanDisplay {
+  /** Tier key — also the entitlement `tier`. */
+  tier: Tier;
+  /** Short name — "Solo" | "Plus" | "Pro". */
+  name: string;
+  /** Headline price with currency symbol — "$5". */
+  price: string;
+  /** Numeric price (USD) for JSON-LD offers. */
+  priceValue: number;
+  /** Billing cadence phrase — "per month". */
+  period: string;
+  /** Whop plan id (locked constant from lib/tiers-core PLAN_IDS). */
+  planId: string;
+  /** Marketing highlight flag — Plus is the recommended tier. */
+  highlight: boolean;
+  /** Feature bullets for the comparison card (marketing copy). */
+  features: readonly string[];
+  /** Full spoken label for screen readers on the plan CTA. */
+  a11yLabel: string;
+}
+
+export const TIER_PLANS: readonly TierPlanDisplay[] = [
+  {
+    tier: 'solo',
+    name: 'Solo',
+    price: '$5',
+    priceValue: 5,
+    period: 'per month',
+    planId: PLAN_IDS.solo,
+    highlight: false,
+    features: [
+      '3 message templates',
+      '30-day sync history',
+      'Reply & hang up quick replies',
+    ],
+    a11yLabel: 'Solo plan, 5 dollars per month: 3 templates, 30-day sync history. 7-day free trial, cancel anytime.',
+  },
+  {
+    tier: 'plus',
+    name: 'Plus',
+    price: '$7',
+    priceValue: 7,
+    period: 'per month',
+    planId: PLAN_IDS.plus,
+    highlight: true,
+    features: [
+      '10 message templates',
+      '6-month sync history',
+      'Contact sync',
+    ],
+    a11yLabel: 'Plus plan, 7 dollars per month: 10 templates, 6-month sync history, contact sync. 7-day free trial, cancel anytime.',
+  },
+  {
+    tier: 'pro',
+    name: 'Pro',
+    price: '$10',
+    priceValue: 10,
+    period: 'per month',
+    planId: PLAN_IDS.pro,
+    highlight: false,
+    features: [
+      '30 message templates',
+      '1-year sync history',
+      'Contact sync',
+      'Screen mirroring',
+    ],
+    a11yLabel: 'Pro plan, 10 dollars per month: 30 templates, 1-year sync history, contact sync, screen mirroring. 7-day free trial, cancel anytime.',
+  },
+];
+
+/** The 3-tier display + checkout plan ids (read-only). Pixel's modal consumes this. */
+export function getTierPlans(): readonly TierPlanDisplay[] {
+  return TIER_PLANS;
+}

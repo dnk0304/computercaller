@@ -26,7 +26,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // under-set to a month and lock a paying customer out early (entitlement rule 4:
 // active && currentPeriodEnd > now).
 const PLAN_TERM_DAYS: Record<string, number> = {
-  plan_CGlYdJJr3Btlu: 30, // Monthly — $5 (the single live plan, 2026-07-05)
+  plan_CGlYdJJr3Btlu: 30, // Solo — $5/mo
+  // 3-tier plans (2026-07-27, dispatch feature/tier-gating). Both monthly.
+  // Added so period-end sizing is correct for a Plus/Pro purchase — without
+  // these, an unknown plan id falls back to DEFAULT_TERM_DAYS (31) which is
+  // fine but these are exact.
+  plan_Ogrl3wQ8GM8zr: 30, // Plus — $7/mo
+  plan_lOhMcnZspvgnm: 30, // Pro — $10/mo
   // Legacy plans (retired from sale 2026-07-05, kept so existing subscribers'
   // periods are never under-set):
   plan_1nEzOOzXxPDJC: 30, // Monthly — $9
@@ -205,6 +211,16 @@ export async function POST(req: NextRequest) {
       // ambiguous went_valid.
       const cardState = resolveWhopCardState(action, data);
 
+      // Persist the plan id → billing tier (2026-07-27, dispatch
+      // feature/tier-gating). extractPlanId already reads it (it was previously
+      // used ONLY to size currentPeriodEnd and then discarded). We now store it
+      // so lib/tiers-core.planIdToTier can resolve the tier on every entitlement
+      // check. On both branches we only WRITE planId when the event carries one
+      // (non-null) so an ambiguous event without a plan id never nulls out a
+      // previously-stored plan. A stored null (or never-set) → Solo via the
+      // planIdToTier safe default (the backfill rule).
+      const eventPlanId = extractPlanId(data);
+
       const now = new Date();
 
       await db.subscription.upsert({
@@ -220,6 +236,8 @@ export async function POST(req: NextRequest) {
           // Only assert a card when positively confirmed; unknown (null) → false.
           paymentMethodAttached: cardState === true,
           canceledAt: null,
+          // Store the tier's plan id when present; null → Solo default.
+          planId: eventPlanId,
         },
         update: {
           whopMembershipId: data?.id,
@@ -230,6 +248,9 @@ export async function POST(req: NextRequest) {
           // Only overwrite the card flag on a definite signal (true/false); on
           // unknown (null) omit it so a prior confirmed value is preserved.
           ...(cardState !== null ? { paymentMethodAttached: cardState } : {}),
+          // Only overwrite planId when the event carries one — never null out a
+          // previously-stored plan on an event that omitted it.
+          ...(eventPlanId ? { planId: eventPlanId } : {}),
         },
       });
 
