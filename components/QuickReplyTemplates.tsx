@@ -6,6 +6,7 @@ import { Plus, Edit2, Trash2, X, Check, MessageSquareReply, Sparkles, ArrowRight
 import { clsx } from 'clsx';
 import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
 import type { QuickReplyTemplateDTO } from '@/lib/quickReplyTemplates';
+import { SortableList, SortableRow } from './SortableList';
 
 // Dispatch CC-quickreply-templates-mgmt-v2 (2026-06-03, Pixel) — management
 // sub-section for the SEPARATE quick-reply store. Rendered inside
@@ -35,7 +36,7 @@ function previewBody(body: string): string {
 const PLACEHOLDER_BODY = "Can't talk right now — I'll call you back.";
 
 export function QuickReplyTemplates() {
-  const { quickReplies, loading, count, atCap, limit, create, update, remove } =
+  const { quickReplies, loading, count, atCap, limit, create, update, remove, reorder } =
     useQuickReplyTemplates();
 
   const [editingItem, setEditingItem] = useState<QuickReplyTemplateDTO | null>(null);
@@ -263,15 +264,21 @@ export function QuickReplyTemplates() {
           </button>
         </div>
       ) : (
-        <ul className="space-y-2">
+        <SortableList
+          className="space-y-2"
+          listLabel="Quick replies — drag to reorder"
+          ids={quickReplies.map((q) => q.id)}
+          getItemLabel={(id) => {
+            const q = quickReplies.find((x) => x.id === id);
+            return q ? (q.label ?? previewBody(q.body)) : 'quick reply';
+          }}
+          onReorder={(ordered) => void reorder(ordered)}
+        >
           {quickReplies.map((qr) => {
             const isPendingDelete = pendingDeleteId === qr.id;
             const labelText = qr.label ?? previewBody(qr.body);
             return (
-              <li
-                key={qr.id}
-                className="group bg-white rounded-2xl border border-slate-200 hover:border-slate-300 hover:shadow-sm transition-all p-4 flex items-center gap-4"
-              >
+              <SortableRow key={qr.id} id={qr.id} label={labelText}>
                 <div className="flex-1 min-w-0">
                   <h3 className="font-semibold text-slate-800 text-sm truncate">
                     {labelText}
@@ -318,10 +325,10 @@ export function QuickReplyTemplates() {
                     )}
                   </button>
                 </div>
-              </li>
+              </SortableRow>
             );
           })}
-        </ul>
+        </SortableList>
       )}
 
       {showForm && (
