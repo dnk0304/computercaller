@@ -1,5 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { db } from '@/lib/db';
+import { isIdleTokenValid } from '@/lib/idleSession';
+import { IDLE_COOKIE_NAME, IDLE_COOKIE_MAX_AGE_S } from '@/lib/idleTimeout';
 
 // Bundle B (2026-05-28) — H6 fix. Previously this fell back to a hardcoded
 // 'dev-secret-change-in-production' if JWT_SECRET was unset, which meant a
@@ -138,6 +140,102 @@ export async function validateSessionToken(token: string): Promise<JwtPayload | 
   } catch {
     return null;
   }
+}
+
+/**
+ * ── Web idle/inactivity logout (2026-07-27, dispatch forge/web-idle-timeout) ──
+ *
+ * Server-authoritative idle enforcement layered ON TOP of validateSessionToken
+ * (which stays byte-untouched — it is called by non-request contexts like
+ * purpose-verify). The idle clock is a SECOND signed sliding cookie
+ * (`idle_token`, see lib/idleSession.ts), NOT a per-request DB write:
+ *   - stateless  → enforcement adds ZERO DB round-trips (the existing
+ *     sessionVersion PK lookup is untouched),
+ *   - server-signed → the client cannot forge a later deadline,
+ *   - slid forward → POST /api/auth/heartbeat re-mints it on genuine activity.
+ *
+ * `validateSessionWithIdle` is the wrapper the REQUEST-scoped enforcement
+ * points use (proxy /app gate, /api/auth/me). relay-ticket keeps its own
+ * verifyAccessToken + manual sessionVersion path (it needs the 401-vs-409
+ * split) and calls `isIdleTokenValid` directly. The idle check is deliberately
+ * OUTSIDE bare validateSessionToken so non-request callers are unaffected.
+ *
+ * Re-exported from lib/idleSession so consumers have one import surface.
+ */
+export { signIdleToken, verifyIdleToken, isIdleTokenValid } from '@/lib/idleSession';
+export { IDLE_COOKIE_NAME } from '@/lib/idleTimeout';
+
+/**
+ * Cookie attributes for the idle_token cookie. MUST match exactly between the
+ * set path (login / callback / heartbeat) and the clear path (logout / proxy
+ * bounce) or the delete silently no-ops. Mirrors the auth_token cookie shape
+ * (httpOnly, sameSite:lax, secure in prod, path:/) so the two travel together.
+ */
+export function idleCookieSetOptions(): {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: 'lax';
+  maxAge: number;
+  path: '/';
+} {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: IDLE_COOKIE_MAX_AGE_S,
+    path: '/',
+  };
+}
+
+/** Same attributes with maxAge:0 to actively delete the idle cookie. */
+export function idleCookieClearOptions(): {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: 'lax';
+  maxAge: 0;
+  path: '/';
+} {
+  return { ...idleCookieSetOptions(), maxAge: 0 };
+}
+
+/** Minimal structural shape shared by NextRequest / NextResponse cookie stores. */
+interface CookieReader {
+  get(name: string): { value: string } | undefined;
+}
+
+export type ValidateWithIdleResult =
+  | { ok: true; reason: null; payload: JwtPayload }
+  | { ok: false; reason: 'no-session'; payload: null }
+  | { ok: false; reason: 'idle-expired'; payload: JwtPayload };
+
+/**
+ * Request-scoped session validation that ALSO enforces the idle window.
+ *
+ *   - `no-session`  → auth_token missing / bad signature / stale sessionVersion.
+ *                     Behaves exactly like the pre-existing validateSessionToken
+ *                     null path (callers bounce as before).
+ *   - `idle-expired`→ auth_token is fully valid, but the idle_token is absent or
+ *                     expired. The session is treated as logged-out; callers
+ *                     clear BOTH cookies and surface `?reason=idle`. `payload`
+ *                     is returned so the caller knows a session DID exist (so it
+ *                     clears cookies rather than showing a clean guest state).
+ *   - `ok`          → both valid; proceed.
+ *
+ * Note the order: sessionVersion first (a superseded session should read as a
+ * plain logout, not "idle"), idle second.
+ */
+export async function validateSessionWithIdle(
+  req: { cookies: CookieReader },
+): Promise<ValidateWithIdleResult> {
+  const token = req.cookies.get('auth_token')?.value;
+  const payload = token ? await validateSessionToken(token) : null;
+  if (!payload) return { ok: false, reason: 'no-session', payload: null };
+
+  const idle = req.cookies.get(IDLE_COOKIE_NAME)?.value;
+  if (!isIdleTokenValid(idle, getJwtSecret())) {
+    return { ok: false, reason: 'idle-expired', payload };
+  }
+  return { ok: true, reason: null, payload };
 }
 
 /**

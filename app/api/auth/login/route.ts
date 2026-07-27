@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
-import { signAccessToken, requireSameOrigin, isEmailAllowed } from '@/lib/auth';
+import {
+  signAccessToken,
+  requireSameOrigin,
+  isEmailAllowed,
+  signIdleToken,
+  idleCookieSetOptions,
+  IDLE_COOKIE_NAME,
+  getJwtSecret,
+} from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 
 export async function POST(req: NextRequest) {
@@ -116,6 +124,16 @@ export async function POST(req: NextRequest) {
       maxAge: 2592000, // 30 days — LOCKSTEP with signAccessToken expiresIn '30d' (2026-06-09)
       path: '/',
     });
+
+    // Idle-timeout cookie (2026-07-27, forge/web-idle-timeout). The sliding 4h
+    // window starts now; POST /api/auth/heartbeat re-mints it on activity. This
+    // is the WEB session's idle clock only — the APK/phoneToken bearer flow
+    // (apk-login) deliberately never sets it and is unaffected.
+    response.cookies.set(
+      IDLE_COOKIE_NAME,
+      signIdleToken(user.id, getJwtSecret()),
+      idleCookieSetOptions(),
+    );
 
     return response;
   } catch (e) {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateSessionToken } from '@/lib/auth';
+import { validateSessionWithIdle } from '@/lib/auth';
 import { db } from '@/lib/db';
 
 export async function GET(req: NextRequest) {
@@ -11,8 +11,16 @@ export async function GET(req: NextRequest) {
     // sessionVersion check. A kicked session (another browser logged in for
     // this user) lands here as null, the frontend already routes 401 to the
     // login page so the bounce is automatic.
-    const payload = await validateSessionToken(token);
-    if (!payload) return NextResponse.json({ user: null }, { status: 401 });
+    //
+    // Idle gate (2026-07-27, forge/web-idle-timeout): validateSessionWithIdle
+    // ALSO rejects when auth_token is valid but the sliding idle_token has
+    // lapsed. An idle-expired open tab's next /me poll returns 401 → the client
+    // routes it to login exactly like a kicked session. This is the
+    // belt-and-braces to the client timer: even an OS-throttled tab bounces on
+    // its next poll regardless of whether its local timer fired.
+    const result = await validateSessionWithIdle(req);
+    if (!result.ok) return NextResponse.json({ user: null }, { status: 401 });
+    const payload = result.payload;
 
     // Bundle A (2026-05-28) Phase 4 fix (L9, C1): phoneToken removed from the
     // select — over-disclosure on every browser /me poll exposed the relay

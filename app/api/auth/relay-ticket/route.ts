@@ -38,6 +38,8 @@ import {
   verifyAccessToken,
   requireSameOrigin,
   getJwtSecret,
+  isIdleTokenValid,
+  IDLE_COOKIE_NAME,
 } from '@/lib/auth';
 import { evaluateEntitlement } from '@/lib/entitlement';
 
@@ -98,6 +100,19 @@ export async function POST(req: NextRequest) {
         { error: 'session_superseded' },
         { status: 409 },
       );
+    }
+
+    // ── Idle-timeout chokepoint (2026-07-27, forge/web-idle-timeout) ───────
+    //
+    // A replayed stale session (valid auth_token + correct sessionVersion) that
+    // slips past the proxy must STILL be unable to mint a relay ticket once its
+    // idle window has lapsed — otherwise it could drive the phone after the 4h
+    // cutoff. Fail-CLOSED here, mirroring the entitlement posture below: a
+    // missing/expired/forged idle_token ⇒ 401, no ticket. Checked AFTER the
+    // superseded split so a kicked session keeps reading as 409, not idle.
+    const idleCookie = req.cookies.get(IDLE_COOKIE_NAME)?.value;
+    if (!isIdleTokenValid(idleCookie, getJwtSecret())) {
+      return NextResponse.json({ error: 'idle_timeout' }, { status: 401 });
     }
 
     // ── HARD entitlement chokepoint (2026-07-03) ───────────────────────────

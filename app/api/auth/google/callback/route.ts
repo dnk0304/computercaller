@@ -26,7 +26,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db } from '@/lib/db';
-import { signAccessToken, isEmailAllowed } from '@/lib/auth';
+import {
+  signAccessToken,
+  isEmailAllowed,
+  signIdleToken,
+  idleCookieSetOptions,
+  IDLE_COOKIE_NAME,
+  getJwtSecret,
+} from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 import {
   exchangeCodeForTokens,
@@ -210,6 +217,15 @@ export async function GET(req: NextRequest) {
       maxAge: 2592000, // 30 days — LOCKSTEP with signAccessToken '30d' + /api/auth/login (2026-06-09)
       path: '/',
     });
+
+    // Idle-timeout cookie (2026-07-27, forge/web-idle-timeout) — mint alongside
+    // auth_token exactly as /api/auth/login does, so the Google web path starts
+    // the same sliding 4h idle window. See lib/idleSession.ts.
+    response.cookies.set(
+      IDLE_COOKIE_NAME,
+      signIdleToken(user.id, getJwtSecret()),
+      idleCookieSetOptions(),
+    );
 
     // Burn the state cookie — it's single-use.
     response.cookies.set(STATE_COOKIE, '', { maxAge: 0, path: '/api/auth/google' });
