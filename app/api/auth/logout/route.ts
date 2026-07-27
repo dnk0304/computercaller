@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSameOrigin } from '@/lib/auth';
+import { requireSameOrigin, IDLE_COOKIE_NAME } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   // Bundle B M1 — CSRF: a forged cross-origin POST to /api/auth/logout is
@@ -11,5 +11,8 @@ export async function POST(req: NextRequest) {
 
   const response = NextResponse.json({ message: 'Logged out' });
   response.cookies.set('auth_token', '', { maxAge: 0, path: '/' });
+  // Clear the idle cookie too (2026-07-27) so an explicit logout leaves no
+  // stale idle token behind. Harmless if it was never set (e.g. legacy session).
+  response.cookies.set(IDLE_COOKIE_NAME, '', { maxAge: 0, path: '/' });
   return response;
 }

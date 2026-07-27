@@ -52,6 +52,10 @@ function LoginForm() {
   const verified = params.get('verified') === '1';
   const next = sanitiseNext(params.get('next'));
   const oauthError = params.get('error');
+  // Idle-timeout bounce (2026-07-27, forge/web-idle-timeout). proxy / the
+  // client timer append ?reason=idle after a 4h-inactivity logout — surface a
+  // quiet, non-alarming line so the user understands why they were signed out.
+  const idleLogout = params.get('reason') === 'idle';
 
   // Map Google callback error codes to friendly copy. Anything we don't
   // recognise falls through to the generic message.
@@ -162,6 +166,15 @@ function LoginForm() {
             className="mt-6 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm"
           >
             {oauthErrorMessage}
+          </div>
+        )}
+
+        {idleLogout && (
+          <div
+            role="status"
+            className="mt-6 p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm"
+          >
+            You were signed out after 4 hours of inactivity. Please sign in again.
           </div>
         )}
 

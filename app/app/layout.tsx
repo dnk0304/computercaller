@@ -25,6 +25,7 @@ import { AppShell } from '@/components/AppShell';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { KickedSessionGate } from '@/components/KickedSessionGate';
+import { IdleTimeoutGuard } from '@/components/IdleTimeoutGuard';
 
 // PhoneModeProvider wraps DashboardTabProvider so the Phone Mode shell can
 // read dashboard tab selection if it ever needs to (currently it doesn't —
@@ -54,6 +55,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <KickedSessionGate>
             <AppShell>{children}</AppShell>
             <SyncSetupPanel />
+            {/* Web idle/inactivity logout (2026-07-27, forge/web-idle-timeout).
+                Mounted here (inside PhoneProvider, covering BOTH the normal and
+                Phone-Mode AppShell branches) so it can read live-call state and
+                its 4h timer + warn modal apply across every /app/* route. */}
+            <IdleTimeoutGuard />
           </KickedSessionGate>
         </ErrorBoundary>
       </DashboardTabProvider>
