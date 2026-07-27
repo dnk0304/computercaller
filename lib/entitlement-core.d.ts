@@ -5,6 +5,8 @@
  * .d.ts gives the TS callers full types with zero drift.
  */
 
+import type { Tier, TierLimits } from './tiers-core';
+
 export type EntitlementState =
   | 'admin'
   | 'allowlisted'
@@ -22,12 +24,24 @@ export interface EntitlementResult {
   trialDaysLeft: number | null;
   /** Machine-readable reason for the decision — logged, never shown to the user. */
   reason: string;
+  /**
+   * Billing tier (2026-07-27, additive). Derived from state + subscription.planId:
+   * admin/allowlisted → 'pro'; else planIdToTier(planId) (unknown/null → 'solo').
+   */
+  tier: Tier;
+  /** The limit set for `tier` (TIER_LIMITS[tier]). Additive. */
+  limits: TierLimits;
 }
 
 export interface EntitlementSubscriptionInput {
   status: string;
   trialEndsAt: Date;
   currentPeriodEnd: Date | null;
+  /**
+   * Whop plan id → tier (2026-07-27). Optional: callers that don't select it
+   * resolve to the 'solo' default. Any path that ENFORCES a tier must select it.
+   */
+  planId?: string | null;
 }
 
 export interface EntitlementInput {

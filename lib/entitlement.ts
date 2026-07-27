@@ -22,6 +22,10 @@ export type {
   EntitlementInput,
 } from './entitlement-core';
 
+// Tier types are re-exported here too so existing `@/lib/entitlement` import
+// sites can pull the tier shape without a second import path.
+export type { Tier, TierLimits } from './tiers-core';
+
 export {
   evaluateEntitlement,
   evaluateUserEntitlement,

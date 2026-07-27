@@ -176,6 +176,15 @@ model Subscription {
   convertedAt           DateTime?
   paymentMethodAttached Boolean  @default(false)
   canceledAt            DateTime?
+  // Whop plan id → billing tier (2026-07-27, dispatch feature/tier-gating).
+  // Nullable & un-defaulted → `prisma db push` additive, zero data loss. The
+  // Whop webhook persists extractPlanId(data) on every upsert going forward.
+  //   BACKFILL RULE: planId == null → Solo tier. Correct and safe — every
+  //   paying customer to date bought the single $5 plan (plan_CGlYdJJr3Btlu),
+  //   so null maps to Solo with zero risk of over-granting. Tier resolution
+  //   lives in lib/tiers-core.js (planIdToTier: null/unknown → 'solo'); this
+  //   column is the raw input, never the resolved tier.
+  planId                String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 }
