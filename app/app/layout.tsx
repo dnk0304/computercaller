@@ -21,6 +21,7 @@
 //      (removed from usePhoneBridge's STATUS handler), so re-mounting
 //      globally is safe: the modal only appears on explicit user action.
 import { DashboardTabProvider, PhoneModeProvider } from '@/hooks';
+import { UpgradeModalProvider } from '@/hooks/upgradeModalContext';
 import { AppShell } from '@/components/AppShell';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
@@ -53,8 +54,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <DashboardTabProvider>
         <ErrorBoundary scope="app-shell">
           <KickedSessionGate>
-            <AppShell>{children}</AppShell>
-            <SyncSetupPanel />
+            {/* UpgradeModalProvider wraps BOTH the shell (header tier badge)
+                and the SyncSetupPanel (tier-gated sync controls) so they share
+                ONE /api/entitlement read and ONE upgrade-modal instance. The
+                modal itself is rendered inside the provider. */}
+            <UpgradeModalProvider>
+              <AppShell>{children}</AppShell>
+              <SyncSetupPanel />
+            </UpgradeModalProvider>
             {/* Web idle/inactivity logout (2026-07-27, forge/web-idle-timeout).
                 Mounted here (inside PhoneProvider, covering BOTH the normal and
                 Phone-Mode AppShell branches) so it can read live-call state and
