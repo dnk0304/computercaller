@@ -18,7 +18,6 @@ import {
   Lock,
   ShieldCheck,
 } from 'lucide-react';
-import Reviews from '@/components/Reviews';
 import WaitlistCTA from '@/components/WaitlistCTA';
 import { SignupModal } from '@/components/SignupModal';
 import { PricingModal } from '@/components/PricingModal';
@@ -56,17 +55,16 @@ import { WAITLIST_MODE } from '@/lib/waitlistMode';
  * (<PricingModal>, Dennis 2026-07-04); the pricing JSON-LD stays in the head:
  *   1. Hero (image background + copy over it)
  *   2. What it does + how it works  ← Features (KSP) + 3-step setup + privacy band
- *   3. Reviews (component)
- *   4. FAQ + Final CTA              ← FAQ mirrored in JSON-LD FAQPage
+ *   3. FAQ + Final CTA              ← FAQ mirrored in JSON-LD FAQPage
  *   + Footer
  *
- * Background alternation (RE-DERIVED after the pricing section was removed).
- * <Reviews /> ships slate-50 and is untouched, so the block BEFORE it (what+how)
- * had to flip from slate-50 → WHITE — otherwise what+how(slate-50) sat directly
- * against reviews(slate-50). Its inner cards flip white → slate-50 to keep
- * lifting off the now-white surface. Resulting chain: hero(dark image) →
- * what+how(white) → reviews(slate-50) → faq(white) → cta(gradient) →
- * footer(slate-50). No two identical surfaces ever sit adjacent.
+ * Background alternation (RE-DERIVED 2026-07-27 after the Reviews section was
+ * removed). Reviews previously held the slate-50 slot between what+how(white)
+ * and faq; with it gone, the FAQ inherits slate-50 so what+how(white) never
+ * sits white-on-white against it. Its inner cards stay white to lift off the
+ * slate surface. Resulting chain: hero(dark image) → what+how(white) →
+ * faq(slate-50) → cta(gradient) → footer(slate-50). No two identical surfaces
+ * ever sit adjacent.
  */
 
 const howItWorks = [
@@ -507,10 +505,10 @@ export default function LandingPage() {
           sections merged into ONE lean block (2026-07-04 trim). Top half: the
           value — a compact privacy band folded in from the cut Privacy section,
           then the KSP feature grid. Bottom half (id="how-it-works"): the 3-step
-          setup + CTA, so setup is told once. Slate-50 surface (first stop of the
-          re-derived alternation off the dark hero — WHITE now that pricing was
-          removed, so this block no longer sits slate-50-on-slate-50 against
-          <Reviews />; cards go slate-50 to lift off the white surface). */}
+          setup + CTA, so setup is told once. WHITE surface (first stop of the
+          alternation off the dark hero); the FAQ below now carries slate-50, so
+          this block never sits on a matching surface. Cards go slate-50 to lift
+          off this white surface. */}
       <section id="features" className="border-t border-slate-200 bg-white scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-8">
@@ -659,27 +657,20 @@ export default function LandingPage() {
           pricing JSON-LD (single Offer, 5.00 USD) STAYS in the head Script
           above, so the price is still declared for SEO. */}
 
-      {/* Reviews / testimonials — moved ABOVE the FAQ (2026-07-04 trim) so the
-          order runs what+how (white) → Reviews (slate-50) → FAQ (white): social
-          proof lands after the value story, and the FAQ sits directly before the
-          final CTA as the last objection-handler.
-
-          IMPORTANT: the reviews currently shipping in <Reviews /> are
-          ILLUSTRATIVE placeholder copy authored by marketing — not real
-          customer quotes. See the HONESTY NOTICE at the top of
-          components/Reviews.tsx before publishing publicly.
-
-          `showAggregate` is intentionally OFF (default false) — the
-          "4.8/5 from early users" line must NOT render until backed by
-          real ratings. Flip it on once Dennis approves. */}
-      <Reviews />
+      {/* Reviews / testimonials section REMOVED (2026-07-27, Dennis): the copy
+          shipping in it was ILLUSTRATIVE placeholder, not real customer quotes
+          — a false-advertising risk — and nothing linked to it (no #reviews nav
+          anchor). The component file was deleted. Surface rhythm was re-derived
+          below: with Reviews gone, the FAQ takes the slate-50 slot so the page
+          never sits white-on-white where Reviews used to break the two. */}
 
       {/* FAQ — native <details>/<summary> for a11y + crawlability. Google
           reads inside <details> for FAQ rich snippets when paired with the
           FAQPage JSON-LD above. Each item is keyed by index so we can swap
-          the +/- icon based on its open state. White surface, sitting between
-          Reviews (slate-50) above and the final CTA (gradient) below. */}
-      <section id="faqs" className="border-t border-slate-200 bg-white scroll-mt-24">
+          the +/- icon based on its open state. SLATE-50 surface (took over the
+          alternation slot Reviews vacated) — cards stay white to lift off it —
+          sitting between what+how (white) above and the final CTA (gradient). */}
+      <section id="faqs" className="border-t border-slate-200 bg-slate-50 scroll-mt-24">
         <div className="max-w-3xl mx-auto px-6 py-20 sm:py-24">
           <div className="text-center mb-12">
             <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
@@ -782,7 +773,7 @@ export default function LandingPage() {
               © {new Date().getFullYear()} ComputerCaller
             </span>
           </div>
-          <div className="flex items-center gap-5 text-sm text-slate-500">
+          <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 sm:gap-5 text-sm text-slate-500">
             <a
               href="https://play.google.com/store/apps/details?id=com.dnkdialer.companion&hl=en"
               target="_blank"
