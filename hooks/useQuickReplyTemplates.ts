@@ -88,6 +88,13 @@ export interface UseQuickReplyTemplatesResult {
   ) => Promise<QuickReplyTemplateDTO | null>;
   /** Delete a quick reply. Resolves true on success (incl. 404 — already gone). */
   remove: (id: string) => Promise<boolean>;
+  /**
+   * Persist a new order for the whole list. Optimistic (reorder is low-stakes,
+   * no data loss) then PUT /api/quick-replies/reorder; resyncs from the server
+   * on failure. `broadcastChange()` fires so open call-screen chip rows refetch
+   * into the new order. Mirrors useTemplates.reorder exactly.
+   */
+  reorder: (orderedIds: string[]) => Promise<void>;
   /** Force a refetch (e.g. after focus regain). */
   refetch: () => void;
 }
@@ -236,6 +243,40 @@ export function useQuickReplyTemplates(): UseQuickReplyTemplatesResult {
     }
   }, []);
 
+  const reorder = useCallback(
+    async (orderedIds: string[]): Promise<void> => {
+      // Optimistic: reflect the new order immediately so the drag feels instant.
+      // Reorder is low-stakes (no data loss) so optimism is safe here even
+      // though create/update/delete are awaited.
+      setQuickReplies((prev) => {
+        const byId = new Map(prev.map((q) => [q.id, q]));
+        const next = orderedIds
+          .map((id) => byId.get(id))
+          .filter((q): q is QuickReplyTemplateDTO => q !== undefined);
+        // Keep any ids not in orderedIds (shouldn't happen — defensive) at the end.
+        for (const q of prev) if (!orderedIds.includes(q.id)) next.push(q);
+        return next;
+      });
+      try {
+        const res = await fetch('/api/quick-replies/reorder', {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderedIds }),
+        });
+        if (!res.ok) {
+          // Persist failed — resync from server so we don't show a phantom order.
+          refetch();
+          return;
+        }
+        broadcastChange();
+      } catch {
+        refetch();
+      }
+    },
+    [refetch],
+  );
+
   return {
     quickReplies,
     loading,
@@ -245,6 +286,7 @@ export function useQuickReplyTemplates(): UseQuickReplyTemplatesResult {
     create,
     update,
     remove,
+    reorder,
     refetch,
   };
 }
