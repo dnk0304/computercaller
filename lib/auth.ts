@@ -209,18 +209,13 @@ export function isEmailAllowed(email: string | null | undefined): boolean {
  *
  * NOTE: Dennis is ALSO covered by the isAdmin flag in evaluateEntitlement rule
  * (1), which is checked before this — this is the belt to that braces.
+ *
+ * The implementation moved to the shared runtime core (lib/entitlement-core.js)
+ * on 2026-07-27 so the relay server (plain-Node server.js) and the TS layer use
+ * ONE allowlist and can never drift. Re-exported here to preserve the existing
+ * `@/lib/auth` import path.
  */
-const ENTITLEMENT_ALLOWLIST_FALLBACK = 'dennis.kotlenko@gmail.com,reviewer@computercaller.com';
-
-export function isEntitlementAllowed(email: string | null | undefined): boolean {
-  if (!email) return false;
-  const raw = process.env.ENTITLEMENT_ALLOWLIST?.trim();
-  const list = (raw && raw.length > 0 ? raw : ENTITLEMENT_ALLOWLIST_FALLBACK)
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  return list.includes(email.toLowerCase());
-}
+export { isEntitlementAllowed } from './entitlement-core';
 
 /**
  * WAITLIST_MODE — payment/free-trial kill switch (2026-06-15).
