@@ -17,7 +17,6 @@ import {
   Hash,
   ArrowDownLeft,
   ArrowUpRight,
-  Copy,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
@@ -1143,28 +1142,6 @@ interface CallsViewProps {
 }
 
 function CallsView({ entries, onSelect, onMessage }: CallsViewProps) {
-  // Per-row copied state with a transient Copy→Check swap (~1.8s). Mirrors
-  // Templates.tsx: clipboard.writeText can throw in insecure contexts, so we
-  // swallow and no-op on failure.
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const copyTimerRef = useRef<number | null>(null);
-  useEffect(() => () => {
-    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
-  }, []);
-  const copyNumber = async (id: string, number: string) => {
-    try {
-      await navigator.clipboard.writeText(number);
-      setCopiedId(id);
-      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = window.setTimeout(() => {
-        setCopiedId(null);
-        copyTimerRef.current = null;
-      }, 1800);
-    } catch {
-      // Clipboard unavailable (insecure context) — silent no-op.
-    }
-  };
-
   if (entries.length === 0) {
     return (
       <div className="px-2.5 py-6 text-center text-[10px] text-slate-400">
@@ -1180,7 +1157,7 @@ function CallsView({ entries, onSelect, onMessage }: CallsViewProps) {
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-slate-50 transition-colors">
             <CallTypeIcon type={log.type} />
             <div className="flex-1 min-w-0">
-              <p className="text-[10px] font-medium text-slate-800 truncate">
+              <p className="text-[10px] font-medium text-slate-800 truncate select-text cursor-text">
                 {log.name || log.number || 'Unknown'}
               </p>
               <p className="text-[9px] text-slate-500">{relativeTime(log.date)}</p>
@@ -1200,21 +1177,6 @@ function CallsView({ entries, onSelect, onMessage }: CallsViewProps) {
               aria-label={`Message ${log.name || log.number}`}
             >
               <MessageSquare className="w-3 h-3" />
-            </button>
-            <button
-              type="button"
-              onClick={() => copyNumber(log.id, log.number)}
-              disabled={!log.number}
-              className={clsx(
-                'p-1 rounded-md transition-colors flex-shrink-0 disabled:opacity-30 disabled:cursor-not-allowed',
-                copiedId === log.id
-                  ? 'text-emerald-600 bg-emerald-50'
-                  : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
-              )}
-              title={copiedId === log.id ? 'Copied!' : `Copy number ${log.number}`}
-              aria-label={copiedId === log.id ? 'Number copied' : `Copy number ${log.number}`}
-            >
-              {copiedId === log.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
             </button>
           </div>
         </li>

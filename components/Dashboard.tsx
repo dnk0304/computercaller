@@ -64,8 +64,6 @@ import {
   Delete,
   Bell,
   Hash,
-  Copy,
-  Check,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
@@ -1104,28 +1102,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     setComposingNew(false);
   }, []);
 
-  // Copy a recent-call number to the clipboard, keyed per log.id with a
-  // transient Copy→Check swap. Mirrors Templates.tsx handleCopy: clipboard
-  // can throw in insecure contexts, so we swallow and no-op on failure.
-  const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
-  const copyLogTimerRef = useRef<number | null>(null);
-  useEffect(() => () => {
-    if (copyLogTimerRef.current !== null) window.clearTimeout(copyLogTimerRef.current);
-  }, []);
-  const handleCopyLogNumber = useCallback(async (id: string, number: string) => {
-    try {
-      await navigator.clipboard.writeText(number);
-      setCopiedLogId(id);
-      if (copyLogTimerRef.current !== null) window.clearTimeout(copyLogTimerRef.current);
-      copyLogTimerRef.current = window.setTimeout(() => {
-        setCopiedLogId(null);
-        copyLogTimerRef.current = null;
-      }, 1800);
-    } catch {
-      // Clipboard API unavailable (insecure context) — silent no-op.
-    }
-  }, []);
-
   // handleSmsFromQuickDial removed 2026-05-22 — the Quick Dial header SMS
   // button was deleted and ActiveCallCard's onSendSms now inlines the same
   // composing-state mutations directly (see the JSX at the ActiveCallCard
@@ -1548,14 +1524,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                     className="group flex items-stretch gap-1 hover:bg-slate-50 rounded-xl transition-colors"
                   >
                     {/* Row body — clicking opens the per-number history view.
-                        The action buttons live as siblings (not nested) so a
-                        click on Call/Message doesn't bubble through this
-                        button and fire the history view as well. */}
-                    <button
-                      type="button"
-                      onClick={() => handleOpenCallHistory(log.id, log.number)}
+                        Rendered as a role=button div (not a <button>) so the
+                        identity/number text inside stays selectable: text can't
+                        be highlighted inside a native <button>. A click that
+                        leaves an active text selection is treated as a select,
+                        not a tap, so click-drag-to-copy the number works. */}
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        if (window.getSelection()?.toString()) return;
+                        handleOpenCallHistory(log.id, log.number);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleOpenCallHistory(log.id, log.number);
+                        }
+                      }}
                       className={clsx(
-                        'flex-1 min-w-0 flex items-center gap-3 px-3 py-2.5 text-left rounded-xl',
+                        'flex-1 min-w-0 flex items-center gap-3 px-3 py-2.5 text-left rounded-xl cursor-pointer',
                         'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
                         'transition-colors'
                       )}
@@ -1575,9 +1563,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                       <div className="flex-1 min-w-0">
                         <p
                           className={clsx(
-                            'font-semibold text-sm truncate',
+                            'font-semibold text-sm truncate select-text cursor-text',
                             isMissed ? 'text-rose-700' : 'text-slate-800'
                           )}
+                          // Let a drag start a text selection here rather than
+                          // bubbling to the row (which would clear it).
+                          onMouseDown={(e) => e.stopPropagation()}
                         >
                           {displayName}
                         </p>
@@ -1601,7 +1592,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                           )}
                         </p>
                       </div>
-                    </button>
+                    </div>
                     {/* Action buttons — always visible (2026-05-22). Previously
                         opacity-0 + group-hover, which hid the affordance. Dennis
                         wants one-tap Call / SMS directly from any Recent Calls
@@ -1631,25 +1622,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                         aria-label={`Message ${displayName}`}
                       >
                         <MessageSquare className="w-4 h-4" aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleCopyLogNumber(log.id, log.number);
-                        }}
-                        className={clsx(
-                          'p-2 rounded-lg transition-colors',
-                          copiedLogId === log.id
-                            ? 'text-emerald-600 bg-emerald-50'
-                            : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
-                        )}
-                        title={copiedLogId === log.id ? 'Copied!' : `Copy number ${log.number}`}
-                        aria-label={copiedLogId === log.id ? 'Number copied' : `Copy number ${log.number}`}
-                      >
-                        {copiedLogId === log.id
-                          ? <Check className="w-4 h-4" aria-hidden="true" />
-                          : <Copy className="w-4 h-4" aria-hidden="true" />}
                       </button>
                     </div>
                   </li>
