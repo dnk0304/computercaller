@@ -45,7 +45,7 @@ const FOCUSABLE =
 const PLAN_FEATURES = [
   'Call any phone number from your computer',
   'Full SMS and message dashboard',
-  'Real-time notification mirror',
+  "See your phone's notifications on your computer",
   'Unlimited contacts & history',
   'Works from any device, anywhere',
   '7-day free trial',
