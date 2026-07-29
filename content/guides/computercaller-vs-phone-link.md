@@ -28,7 +28,7 @@ We build ComputerCaller, so obviously we have a horse in this race. This compari
 | **Connection** | Internet, via an Android companion app | Bluetooth pairing between phone and PC |
 | **Calls with your real number** | Yes | Yes |
 | **SMS from your real number** | Yes, with reusable templates | Yes |
-| **Setup** | Install the Android app, scan a QR code, done | Pair over Bluetooth; multiple permission prompts on phone and PC |
+| **Setup** | Install the Android app, sign in with your email, tap Connect | Pair over Bluetooth; multiple permission prompts on phone and PC |
 | **Call audio path** | Routed by the companion app; your headset stays connected to your phone | Routed over Bluetooth to the PC — a common source of choppy audio |
 | **Phone requirement** | Android phone with you (in your pocket is fine) | Android phone near the PC, Bluetooth on |
 | **iPhone support** | No — Android only | Limited (no full call/SMS parity) |
@@ -68,7 +68,7 @@ Unlinking and re-pairing, resetting Bluetooth, re-granting permissions — the s
 ComputerCaller was built around one workflow: **you're at your computer, your phone stays in your pocket, and you handle every call and text from a browser tab.**
 
 - **Any browser, any OS.** It's a web app. Mac, Linux, Chromebook, Windows — if it runs a modern browser, it runs ComputerCaller.
-- **No Bluetooth pairing.** The Android companion app connects over the internet. Setup is a QR-code scan, and it reconnects on its own instead of asking you to re-pair.
+- **No Bluetooth pairing.** The Android companion app connects over the internet. Setup is just signing in with your email and tapping Connect, and it reconnects on its own instead of asking you to re-pair.
 - **Your real number.** Calls and texts go through your own SIM and number — not a VoIP number your contacts won't recognize.
 - **Built for volume.** SMS templates, click-to-dial, and notification mirroring for WhatsApp, Telegram, and Discord, so your phone can stay in your pocket all day.
 - **Privacy.** We never store your calls, SMS, or contacts.

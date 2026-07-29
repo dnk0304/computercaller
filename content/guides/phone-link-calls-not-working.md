@@ -88,7 +88,7 @@ A fair question at this point: how many times have you run this list?
 
 Phone Link is free, and when it works it's good — but its calling feature is structurally tied to Bluetooth pairing, which is why the same failures keep coming back. If your calls matter enough that "re-pair everything again" is costing you real time, there's a different architecture worth knowing about.
 
-**ComputerCaller** (our product) does the same job — calls and SMS from your computer, on your own number — without Bluetooth anywhere in the chain. A small companion app on your Android phone connects to your browser over the internet: setup is one QR scan, it reconnects itself, and it works on any OS, including the Macs, Linux machines, and Chromebooks Phone Link doesn't support. Your phone stays in your pocket; you handle everything from a browser tab. It's $5/month with a [7-day free trial](/) — enough time to find out whether a week without pairing loops is worth it to you.
+**ComputerCaller** (our product) does the same job — calls and SMS from your computer, on your own number — without Bluetooth anywhere in the chain. A small companion app on your Android phone connects to your browser over the internet: setup is just signing in with your email and tapping Connect, it reconnects itself, and it works on any OS, including the Macs, Linux machines, and Chromebooks Phone Link doesn't support. Your phone stays in your pocket; you handle everything from a browser tab. It's $5/month with a [7-day free trial](/) — enough time to find out whether a week without pairing loops is worth it to you.
 
 And if fix #4 got Phone Link working again — genuinely, great. Bookmark this page for next time.
 

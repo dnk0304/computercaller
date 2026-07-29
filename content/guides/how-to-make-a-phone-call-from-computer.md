@@ -32,7 +32,7 @@ ComputerCaller connects a small Android companion app to a web dashboard. Your p
 
 1. **Create an account** at [computercaller.com](/) and start the free trial.
 2. **Install the companion app** on your Android phone (link shown after signup).
-3. **Scan the QR code** displayed in your browser with the app. That's the whole pairing process — no Bluetooth, no cables.
+3. **Sign in with the same email** in your browser and in the app, then hit **Connect** and tap **Accept** on your phone. That's the whole pairing process — no Bluetooth, no cables.
 4. **Grant call and SMS permissions** on the phone when the app asks. These are required so the app can place and relay calls for you.
 
 ### Making a call
@@ -110,7 +110,7 @@ A note on expectations: with both ComputerCaller and Phone Link, your Android ph
 
 ## Ready to try the two-minute setup?
 
-If calling from your computer is something you'll do more than a few times a month, [start a free 7-day trial of ComputerCaller](/) — scan one QR code and your browser becomes your phone's keyboard-and-screen.
+If calling from your computer is something you'll do more than a few times a month, [start a free 7-day trial of ComputerCaller](/) — sign in with your email, tap Connect, and your browser becomes your phone's keyboard-and-screen.
 
 **Related guides:**
 - [6 best ways to call from your computer, compared](/guides/best-ways-to-call-from-computer)

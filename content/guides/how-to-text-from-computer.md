@@ -48,8 +48,8 @@ ComputerCaller (our product — $5/mo, 7-day free trial) pairs an Android compan
 
 **Setup:**
 
-1. Sign up at [computercaller.com](/), install the Android companion app.
-2. Scan the QR code in your browser. Done — no Bluetooth, no cables.
+1. Sign up at [computercaller.com](/) and install the Android companion app.
+2. Sign in with the same email on your computer and in the app, then hit Connect and tap Accept on your phone. Done — no Bluetooth, no cables.
 
 **What you get beyond a basic mirror:**
 

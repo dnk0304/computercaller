@@ -110,6 +110,14 @@ export function getPlanTiers(): PlanTier[] {
 // Whop visibility (Ken/Dennis): Plus & Pro are `visibility:hidden` in Whop
 // until gating deploys — a checkout CTA for them will 404/hide until the
 // go-live flip. Pixel should render them but expect the hidden state pre-flip.
+//
+// VALUE LADDER (2026-07-29, Dennis): the three tiers read cumulatively. `features`
+// holds only what each tier ADDS over the one below (Solo = base essentials);
+// `inheritsFrom` drives the "Everything in <lower>, plus" lead line. The former
+// "Screen mirroring" Pro bullet was REMOVED — phone/screen mirroring was never
+// built (the entitlement `limits.mirroring` flag stays as a dormant backend
+// no-op; we simply no longer advertise it). Pro's honest differentiators are
+// 30 templates and 1-year history; contact sync is included via Plus.
 import { PLAN_IDS, type Tier } from './tiers';
 
 export interface TierPlanDisplay {
@@ -127,7 +135,17 @@ export interface TierPlanDisplay {
   planId: string;
   /** Marketing highlight flag — Plus is the recommended tier. */
   highlight: boolean;
-  /** Feature bullets for the comparison card (marketing copy). */
+  /**
+   * The tier whose benefits carry up into this one, rendered as an
+   * "Everything in <X>, plus" lead line so the three cards read as a
+   * cumulative value ladder. undefined on the base tier (Solo).
+   */
+  inheritsFrom?: string;
+  /**
+   * Benefits this tier ADDS over the tier below it (for Solo, the base
+   * essentials). Marketing copy — the numbers restate the locked TIER_LIMITS
+   * but are NOT the enforcement source. Presented cumulatively via inheritsFrom.
+   */
   features: readonly string[];
   /** Full spoken label for screen readers on the plan CTA. */
   a11yLabel: string;
@@ -143,11 +161,13 @@ export const TIER_PLANS: readonly TierPlanDisplay[] = [
     planId: PLAN_IDS.solo,
     highlight: false,
     features: [
+      'Call & text from your computer',
       '3 message templates',
       '30-day sync history',
       'Reply & hang up quick replies',
     ],
-    a11yLabel: 'Solo plan, 5 dollars per month: 3 templates, 30-day sync history. 7-day free trial, cancel anytime.',
+    a11yLabel:
+      'Solo plan, 5 dollars per month. Includes calling and texting from your computer, 3 message templates, 30-day sync history, and quick replies. Cancel anytime.',
   },
   {
     tier: 'plus',
@@ -157,12 +177,14 @@ export const TIER_PLANS: readonly TierPlanDisplay[] = [
     period: 'per month',
     planId: PLAN_IDS.plus,
     highlight: true,
+    inheritsFrom: 'Solo',
     features: [
       '10 message templates',
       '6-month sync history',
       'Contact sync',
     ],
-    a11yLabel: 'Plus plan, 7 dollars per month: 10 templates, 6-month sync history, contact sync. 7-day free trial, cancel anytime.',
+    a11yLabel:
+      'Plus plan, 7 dollars per month. Everything in Solo, plus 10 message templates, 6-month sync history, and contact sync. Cancel anytime.',
   },
   {
     tier: 'pro',
@@ -172,13 +194,13 @@ export const TIER_PLANS: readonly TierPlanDisplay[] = [
     period: 'per month',
     planId: PLAN_IDS.pro,
     highlight: false,
+    inheritsFrom: 'Plus',
     features: [
       '30 message templates',
       '1-year sync history',
-      'Contact sync',
-      'Screen mirroring',
     ],
-    a11yLabel: 'Pro plan, 10 dollars per month: 30 templates, 1-year sync history, contact sync, screen mirroring. 7-day free trial, cancel anytime.',
+    a11yLabel:
+      'Pro plan, 10 dollars per month. Everything in Plus, plus 30 message templates and 1-year sync history. Cancel anytime.',
   },
 ];
 

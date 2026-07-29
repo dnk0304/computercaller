@@ -5,11 +5,13 @@
  * feature/tier-gating, 2026-07-27).
  *
  * Two phases in one dialog:
- *   1. COMPARE  — Solo $5 / Plus $7 (recommended) / Pro $10 side by side, each
- *                 showing that tier's REAL limits (3 / 10 / 30 templates,
- *                 30-day / 6-month / 1-year history, contact sync, screen
- *                 mirroring). The caller's current tier is marked and its CTA
- *                 disabled; higher tiers offer an "Upgrade" CTA.
+ *   1. COMPARE  — Solo $5 / Plus $7 (recommended) / Pro $10 side by side as a
+ *                 cumulative VALUE LADDER: each higher card leads with
+ *                 "Everything in <lower>, plus" and then its added benefits
+ *                 (3 / 10 / 30 templates, 30-day / 6-month / 1-year history,
+ *                 contact sync from Plus up). The caller's current tier is
+ *                 marked and its CTA disabled; higher tiers offer an "Upgrade"
+ *                 CTA. (No mirroring — that feature was never built.)
  *   2. CHECKOUT — the chosen tier's in-page Whop embedded checkout (same
  *                 <WhopEmbedCheckout> the lock screen uses). A Back control
  *                 returns to COMPARE.
@@ -270,7 +272,18 @@ export function UpgradeModal({ open, onClose, currentTier, reason }: UpgradeModa
                       <span className="text-sm text-slate-500">{plan.period}</span>
                     </div>
 
-                    <ul className="mt-4 flex-1 space-y-2.5" role="list">
+                    <div className="mt-4 flex-1">
+                      <p
+                        className={clsx(
+                          'text-xs font-semibold uppercase tracking-wide',
+                          plan.highlight ? 'text-blue-600' : 'text-slate-500',
+                        )}
+                      >
+                        {plan.inheritsFrom
+                          ? `Everything in ${plan.inheritsFrom}, plus`
+                          : 'Core essentials'}
+                      </p>
+                      <ul className="mt-2.5 space-y-2.5" role="list">
                       {plan.features.map((f) => (
                         <li key={f} className="flex items-start gap-2 text-sm text-slate-700">
                           <span
@@ -290,7 +303,8 @@ export function UpgradeModal({ open, onClose, currentTier, reason }: UpgradeModa
                           <span>{f}</span>
                         </li>
                       ))}
-                    </ul>
+                      </ul>
+                    </div>
 
                     <div className="mt-5">
                       {isCurrent ? (
