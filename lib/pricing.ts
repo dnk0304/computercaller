@@ -118,6 +118,16 @@ export function getPlanTiers(): PlanTier[] {
 // built (the entitlement `limits.mirroring` flag stays as a dormant backend
 // no-op; we simply no longer advertise it). Pro's honest differentiators are
 // 30 templates and 1-year history; contact sync is included via Plus.
+//
+// NOTIFICATION MIRRORING = ALL PLANS (2026-07-29, Dennis: "keep notifications
+// for all 3 plans"). This is the REAL, shipped feature — your phone's app
+// notifications (WhatsApp/Telegram/Discord, etc.) shown on your computer,
+// served by NotificationProvider — NOT the never-built "screen mirroring"
+// above. It is NOT a tier lever: TIER_LIMITS gates only templates, sync-range
+// and contactSync, so notification mirroring is ungated for every tier. It
+// lives in Solo's base `features` so it renders on the Solo card and inherits
+// up to Plus/Pro via the "Everything in <lower>, plus" ladder — all 3 cards
+// convey that everyone gets it.
 import { PLAN_IDS, type Tier } from './tiers';
 
 export interface TierPlanDisplay {
@@ -162,12 +172,13 @@ export const TIER_PLANS: readonly TierPlanDisplay[] = [
     highlight: false,
     features: [
       'Call & text from your computer',
+      "See your phone's notifications on your computer",
       '3 message templates',
       '30-day sync history',
       'Reply & hang up quick replies',
     ],
     a11yLabel:
-      'Solo plan, 5 dollars per month. Includes calling and texting from your computer, 3 message templates, 30-day sync history, and quick replies. Cancel anytime.',
+      'Solo plan, 5 dollars per month. Includes calling and texting from your computer, seeing your phone notifications on your computer, 3 message templates, 30-day sync history, and quick replies. Cancel anytime.',
   },
   {
     tier: 'plus',
