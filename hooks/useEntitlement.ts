@@ -17,7 +17,7 @@ import type { Tier, TierLimits } from '@/lib/tiers';
 // Contract (verbatim, FROZEN by Forge):
 //   200 {
 //     tier: 'solo' | 'plus' | 'pro',
-//     state: 'active'|'trialing'|'trial_expired'|'expired'|'none'|'admin'|'allowlisted',
+//     state: 'active'|'trialing'|'trial_expired'|'expired'|'none'|'admin'|'allowlisted'|'free_access',
 //     allowed: boolean,
 //     trialDaysLeft: number | null,
 //     limits: { templates, quickReplies, syncRangeMax, contactSync, mirroring },
@@ -41,7 +41,10 @@ export type EntitlementLifecycle =
   | 'expired'
   | 'none'
   | 'admin'
-  | 'allowlisted';
+  | 'allowlisted'
+  // 'free_access' (2026-07-30): comped via the DB-backed allowlist → Pro tier.
+  // Billing/upgrade prompts are suppressed for this state (they're not paying).
+  | 'free_access';
 
 /** The full entitlement payload the UI consumes. */
 export interface Entitlement {

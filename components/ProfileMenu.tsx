@@ -2,9 +2,10 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { LogOut, CreditCard, ExternalLink, Loader2, Smartphone, ChevronDown } from 'lucide-react';
+import { LogOut, CreditCard, ExternalLink, Loader2, Smartphone, ChevronDown, Gift } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, usePhoneMode } from '@/hooks';
+import { useUpgrade } from '@/hooks/upgradeModalContext';
 
 /**
  * ProfileMenu — avatar (account link) + caret (dropdown trigger).
@@ -114,6 +115,12 @@ export const ProfileMenu = () => {
   // the browser's popup blocker rejects it; enterManually() is the in-window
   // fallback used only when the popup is blocked.
   const { enterManually, openInPopup } = usePhoneMode();
+
+  // Shared entitlement (P5). Free-access users are comped, so we suppress the
+  // billing/upgrade affordances in this menu and show a complimentary note
+  // instead of the trial/subscribe surface.
+  const { entitlement } = useUpgrade();
+  const isFreeAccess = entitlement?.state === 'free_access';
 
   // Hydrate from /api/auth/me on mount. Silently swallow errors — the
   // unauthenticated chrome surface never reaches here (AppShell only mounts
@@ -300,7 +307,12 @@ export const ProfileMenu = () => {
                   0–1 day) so the urgency reads at a glance without the user
                   having to parse text. Non-trial states keep a single
                   informational line — no number to show. */}
-              {sub?.status === 'trial' && daysLeft !== null ? (
+              {isFreeAccess ? (
+                <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] font-semibold text-violet-700">
+                  <Gift className="h-3 w-3" aria-hidden="true" />
+                  Complimentary access
+                </p>
+              ) : sub?.status === 'trial' && daysLeft !== null ? (
                 (() => {
                   // TRIAL_LENGTH_DAYS is hard-coded to 7 here to match the
                   // single source of truth in app/api/auth/register/route.ts
@@ -368,29 +380,35 @@ export const ProfileMenu = () => {
             </div>
           </div>
 
-          {/* Subscription row — opens Whop checkout / billing in a new tab. */}
-          <a
-            href={whopUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            role="menuitem"
-            onClick={() => setOpen(false)}
-            className={clsx(
-              'flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700',
-              'hover:bg-slate-50 transition-colors',
-              'focus:outline-none focus:bg-slate-50'
-            )}
-          >
-            <CreditCard className="w-4 h-4 text-slate-500" aria-hidden="true" />
-            <span className="flex-1">
-              {sub?.status === 'active' ? 'Manage subscription' : 'Subscribe'}
-            </span>
-            <ExternalLink className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-          </a>
+          {/* Subscription row — opens Whop checkout / billing in a new tab.
+              Suppressed for free-access (comped) users: they're not billed, so
+              a "Subscribe / Manage subscription" prompt would be noise (P5). */}
+          {!isFreeAccess && (
+            <>
+              <a
+                href={whopUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                role="menuitem"
+                onClick={() => setOpen(false)}
+                className={clsx(
+                  'flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700',
+                  'hover:bg-slate-50 transition-colors',
+                  'focus:outline-none focus:bg-slate-50'
+                )}
+              >
+                <CreditCard className="w-4 h-4 text-slate-500" aria-hidden="true" />
+                <span className="flex-1">
+                  {sub?.status === 'active' ? 'Manage subscription' : 'Subscribe'}
+                </span>
+                <ExternalLink className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+              </a>
 
-          {/* Soft divider — separates the subscription surface from the
-              device/mode surface. */}
-          <div className="border-t border-slate-100" aria-hidden="true" />
+              {/* Soft divider — separates the subscription surface from the
+                  device/mode surface. */}
+              <div className="border-t border-slate-100" aria-hidden="true" />
+            </>
+          )}
 
           {/* Phone Mode — dispatch #34 task 3 (2026-06-08): entering Phone
               Mode now AUTO-opens it in the dedicated ~380x760 popup window.

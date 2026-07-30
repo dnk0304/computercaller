@@ -9,10 +9,11 @@
  *   - A flagged same-IP cluster of 4 accounts sharing 203.0.113.9
  *   - A Google (OAuth) user
  *   - A trialing user with ≤3 days left (amber)
- *   - An active-paying user with a convertedAt date
+ *   - An active-paying user with a convertedAt date (Plus + Pro tiers)
  *   - A trial_expired (lapsed, never converted) user
  *   - A user with null card status and null lastActiveAt
  *   - A `subscription: null` user (the "never started" shape)
+ *   - A FREE-ACCESS (comped) user — freeAccess:true, state 'free_access', Pro
  *
  * Timestamps are anchored to a fixed NOW so relative labels are deterministic
  * in review. Forge's live data uses real ISO strings — nothing here is
@@ -35,8 +36,10 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       emailVerified: true,
       authProvider: 'email',
       registeredAt: iso(9),
+      freeAccess: false,
       subscription: {
-        status: 'trial', state: 'trialing', trialEndsAt: iso(-5), trialDaysLeft: 5,
+        status: 'trial', state: 'trialing', tier: 'solo', planLabel: 'Solo',
+        trialEndsAt: iso(-5), trialDaysLeft: 5,
         currentPeriodEnd: null, convertedAt: null, canceledAt: null,
         paymentMethodAttached: false, whopMembershipId: null,
       },
@@ -49,8 +52,10 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       emailVerified: false,
       authProvider: 'email',
       registeredAt: iso(9),
+      freeAccess: false,
       subscription: {
-        status: 'trial', state: 'trialing', trialEndsAt: iso(-5), trialDaysLeft: 5,
+        status: 'trial', state: 'trialing', tier: 'solo', planLabel: 'Solo',
+        trialEndsAt: iso(-5), trialDaysLeft: 5,
         currentPeriodEnd: null, convertedAt: null, canceledAt: null,
         paymentMethodAttached: false, whopMembershipId: null,
       },
@@ -63,6 +68,7 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       emailVerified: false,
       authProvider: 'email',
       registeredAt: iso(8),
+      freeAccess: false,
       subscription: null, // "never started" null shape
       lastActiveAt: iso(3),
       signupIp: '203.0.113.9', lastLoginIp: '203.0.113.9', sameIpAccountCount: 4, flagged: true,
@@ -73,8 +79,10 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       emailVerified: false,
       authProvider: 'email',
       registeredAt: iso(8),
+      freeAccess: false,
       subscription: {
-        status: 'trial', state: 'trial_expired', trialEndsAt: iso(1), trialDaysLeft: 0,
+        status: 'trial', state: 'trial_expired', tier: 'solo', planLabel: 'Solo',
+        trialEndsAt: iso(1), trialDaysLeft: 0,
         currentPeriodEnd: null, convertedAt: null, canceledAt: null,
         paymentMethodAttached: false, whopMembershipId: null,
       },
@@ -82,15 +90,17 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       signupIp: '203.0.113.9', lastLoginIp: '203.0.113.9', sameIpAccountCount: 4, flagged: true,
     },
 
-    // --- Google (OAuth) user, active paying, converted ----------------------
+    // --- Google (OAuth) user, active paying, converted — Plus ---------------
     {
       id: 'cus_google_active',
       email: 'grace.hopper@gmail.com',
       emailVerified: true,
       authProvider: 'google',
       registeredAt: iso(40),
+      freeAccess: false,
       subscription: {
-        status: 'active', state: 'active', trialEndsAt: iso(26), trialDaysLeft: null,
+        status: 'active', state: 'active', tier: 'plus', planLabel: 'Plus',
+        trialEndsAt: iso(26), trialDaysLeft: null,
         currentPeriodEnd: iso(-4), convertedAt: iso(24), canceledAt: null,
         paymentMethodAttached: true, whopMembershipId: 'mem_8fJ2kd0',
       },
@@ -105,8 +115,10 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       emailVerified: true,
       authProvider: 'both',
       registeredAt: iso(12),
+      freeAccess: false,
       subscription: {
-        status: 'trial', state: 'trialing', trialEndsAt: iso(-2), trialDaysLeft: 2,
+        status: 'trial', state: 'trialing', tier: 'solo', planLabel: 'Solo',
+        trialEndsAt: iso(-2), trialDaysLeft: 2,
         currentPeriodEnd: null, convertedAt: null, canceledAt: null,
         paymentMethodAttached: true, whopMembershipId: null,
       },
@@ -114,20 +126,40 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       signupIp: '198.51.100.42', lastLoginIp: '198.51.100.42', sameIpAccountCount: 1, flagged: false,
     },
 
-    // --- Active paying (email), converted, card on file ---------------------
+    // --- Active paying (email), converted, card on file — Pro ---------------
     {
       id: 'cus_paying_email',
       email: 'linus@torvalds.org',
       emailVerified: true,
       authProvider: 'email',
       registeredAt: iso(65),
+      freeAccess: false,
       subscription: {
-        status: 'active', state: 'active', trialEndsAt: iso(51), trialDaysLeft: null,
+        status: 'active', state: 'active', tier: 'pro', planLabel: 'Pro',
+        trialEndsAt: iso(51), trialDaysLeft: null,
         currentPeriodEnd: iso(-16), convertedAt: iso(49), canceledAt: null,
         paymentMethodAttached: true, whopMembershipId: 'mem_1aZ9qQ',
       },
       lastActiveAt: iso(1),
       signupIp: '192.0.2.55', lastLoginIp: '192.0.2.55', sameIpAccountCount: 1, flagged: false,
+    },
+
+    // --- Free-access (comped) user — freeAccess true, Pro tier --------------
+    {
+      id: 'cus_free_access',
+      email: 'beta.tester@example.com',
+      emailVerified: true,
+      authProvider: 'google',
+      registeredAt: iso(20),
+      freeAccess: true,
+      subscription: {
+        status: 'trial', state: 'free_access', tier: 'pro', planLabel: 'Pro',
+        trialEndsAt: iso(6), trialDaysLeft: null,
+        currentPeriodEnd: null, convertedAt: null, canceledAt: null,
+        paymentMethodAttached: false, whopMembershipId: null,
+      },
+      lastActiveAt: iso(0),
+      signupIp: '198.51.100.99', lastLoginIp: '198.51.100.99', sameIpAccountCount: 1, flagged: false,
     },
 
     // --- Trial expired, never converted -------------------------------------
@@ -137,8 +169,10 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       emailVerified: true,
       authProvider: 'email',
       registeredAt: iso(30),
+      freeAccess: false,
       subscription: {
-        status: 'trial', state: 'trial_expired', trialEndsAt: iso(16), trialDaysLeft: 0,
+        status: 'trial', state: 'trial_expired', tier: 'solo', planLabel: 'Solo',
+        trialEndsAt: iso(16), trialDaysLeft: 0,
         currentPeriodEnd: null, convertedAt: null, canceledAt: null,
         paymentMethodAttached: false, whopMembershipId: null,
       },
@@ -153,8 +187,10 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       emailVerified: true,
       authProvider: 'google',
       registeredAt: iso(120),
+      freeAccess: false,
       subscription: {
-        status: 'cancelled', state: 'cancelled', trialEndsAt: iso(106), trialDaysLeft: null,
+        status: 'cancelled', state: 'cancelled', tier: 'solo', planLabel: 'Solo',
+        trialEndsAt: iso(106), trialDaysLeft: null,
         currentPeriodEnd: iso(3), convertedAt: iso(104), canceledAt: iso(10),
         paymentMethodAttached: true, whopMembershipId: 'mem_cancel7',
       },
@@ -169,8 +205,10 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       emailVerified: false,
       authProvider: 'email',
       registeredAt: iso(3),
+      freeAccess: false,
       subscription: {
-        status: 'trial', state: 'trialing', trialEndsAt: iso(-11), trialDaysLeft: 11,
+        status: 'trial', state: 'trialing', tier: 'solo', planLabel: 'Solo',
+        trialEndsAt: iso(-11), trialDaysLeft: 11,
         currentPeriodEnd: null, convertedAt: null, canceledAt: null,
         paymentMethodAttached: null, whopMembershipId: null, // unknown card
       },
@@ -179,7 +217,7 @@ export const mockCustomersResponse: AdminCustomersResponse = {
     },
   ],
   meta: {
-    total: 10,
+    total: 11,
     sameIpThreshold: 3,
     generatedAt: new Date(NOW).toISOString(),
   },

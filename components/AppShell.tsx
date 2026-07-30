@@ -13,7 +13,7 @@ import { ReconnectionPill } from '@/components/ReconnectionPill';
 import { SyncProgressBar } from '@/components/SyncProgressBar';
 import { CallQueueBand } from '@/components/CallQueueBand';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { usePhone, useDashboardTab, usePhoneMode, type DashboardTab } from '@/hooks';
+import { usePhone, useDashboardTab, usePhoneMode, useIsAdmin, type DashboardTab } from '@/hooks';
 
 /**
  * AppShell — the persistent chrome around every /app/* route.
@@ -86,6 +86,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // here only as part of the phoneMode read; the trigger lives in
   // components/ProfileMenu.tsx now.
   const { phoneMode } = usePhoneMode();
+
+  // Admin UX signal (P4) — reveals the Admin nav link only for admins. The
+  // admin routes re-check server-side, so this is presentation, not security.
+  const isAdmin = useIsAdmin();
 
   // Phone bridge — header surfaces a single "Sync" affordance when a phone
   // is connected, consolidated dispatch #34 (2026-05-26). The previous two
@@ -180,7 +184,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden font-sans">
-      <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
+      <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} isAdmin={isAdmin} />
 
       <main className="flex-1 flex flex-col min-w-0">
         {/* Sync lifecycle bar (Pixel, 2026-07-10) — sits ABOVE the header in

@@ -21,6 +21,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ShieldAlert, AlertCircle, Users, RefreshCw } from 'lucide-react';
 import { CustomerTable } from '@/components/admin/CustomerTable';
+import { FreeAccessManager } from '@/components/admin/FreeAccessManager';
 import type { AdminCustomersResponse } from '@/components/admin/adminTypes';
 import { mockCustomersResponse } from '@/components/admin/mockCustomers';
 
@@ -117,12 +118,25 @@ export default function AdminPage() {
       {state.kind === 'loading' && <TableSkeleton />}
       {state.kind === 'forbidden' && <ForbiddenCard />}
       {state.kind === 'error' && <ErrorCard message={state.message} onRetry={() => void load()} />}
-      {state.kind === 'ready' &&
-        (state.data.customers.length === 0 ? (
-          <EmptyCard />
-        ) : (
-          <CustomerTable data={state.data} now={mockPreview ? Date.parse(state.data.meta.generatedAt) : undefined} />
-        ))}
+      {state.kind === 'ready' && (
+        <div className="space-y-6">
+          {/* Free-access allowlist manager — a live-only tool (it reads/writes
+              /api/admin/free-access), so it's hidden in the ?mock=1 preview
+              where those endpoints aren't being hit. A grant/revoke here
+              refetches the customers feed so the table's rows reconcile. */}
+          {!mockPreview && <FreeAccessManager onChanged={() => void load()} />}
+
+          {state.data.customers.length === 0 ? (
+            <EmptyCard />
+          ) : (
+            <CustomerTable
+              data={state.data}
+              now={mockPreview ? Date.parse(state.data.meta.generatedAt) : undefined}
+              onMutated={mockPreview ? undefined : () => void load()}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

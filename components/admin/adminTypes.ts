@@ -23,6 +23,11 @@ export type SubscriptionStatus = 'trial' | 'active' | 'expired' | 'cancelled' | 
  * trial-status pill and the "paying customer" column. Kept as a string union
  * with an explicit `'none'` sentinel so a `null` subscription still resolves
  * to a concrete, styleable value.
+ *
+ * `'free_access'` (2026-07-30, ADDITIVE): the user is comped through the
+ * DB-backed free-access allowlist. The shared entitlement core admits them at
+ * Pro tier (state `free_access`, `allowed:true`) ranked with admin/allowlist —
+ * so the feed reports `state:'free_access'` and `tier:'pro'` for these rows.
  */
 export type SubscriptionState =
   | 'trialing'
@@ -30,7 +35,14 @@ export type SubscriptionState =
   | 'trial_expired'
   | 'expired'
   | 'cancelled'
+  | 'free_access'
   | 'none';
+
+/** Resolved billing tier (mirrors the shared entitlement core). */
+export type Tier = 'solo' | 'plus' | 'pro';
+
+/** Human-readable plan label per tier, as sent by the feed. */
+export type PlanLabel = 'Solo' | 'Plus' | 'Pro';
 
 /** How the account authenticates. Drives the Auth-method badge. */
 export type AuthProvider = 'email' | 'google' | 'both';
@@ -38,6 +50,13 @@ export type AuthProvider = 'email' | 'google' | 'both';
 export interface AdminSubscription {
   status: SubscriptionStatus;
   state: SubscriptionState;
+  /**
+   * Resolved billing tier (2026-07-30, ADDITIVE). Comes straight off the shared
+   * entitlement core — for a `free_access` user this is `'pro'`.
+   */
+  tier: Tier;
+  /** Human plan label for the tier above (Solo/Plus/Pro). Display sugar. */
+  planLabel: PlanLabel;
   trialEndsAt: string | null;
   /** Whole days remaining in the trial; only meaningful while `state === 'trialing'`. */
   trialDaysLeft: number | null;
@@ -56,6 +75,13 @@ export interface AdminCustomer {
   emailVerified: boolean;
   authProvider: AuthProvider;
   registeredAt: string;
+  /**
+   * Top-level free-access flag (2026-07-30, ADDITIVE): is this user's email in
+   * the `FreeAccessEmail` allowlist. Drives the "Free access" plan badge and the
+   * grant/revoke control state on the row. When `true`, `subscription.state` is
+   * `'free_access'` and `subscription.tier` is `'pro'`.
+   */
+  freeAccess: boolean;
   /** May be `null` entirely — see file header. */
   subscription: AdminSubscription | null;
   lastActiveAt: string | null;
@@ -77,4 +103,43 @@ export interface AdminCustomersMeta {
 export interface AdminCustomersResponse {
   customers: AdminCustomer[];
   meta: AdminCustomersMeta;
+}
+
+// ---------------------------------------------------------------------------
+// Free-access allowlist manager (2026-07-30) — the contract for
+// `GET/POST/DELETE /api/admin/free-access`. This is the "comp any email" panel:
+// an email can be granted free access whether or not an account exists yet.
+// ---------------------------------------------------------------------------
+
+/** One row of the free-access allowlist. */
+export interface FreeAccessEntry {
+  id: string;
+  /** Stored lowercased. */
+  email: string;
+  /** Optional reason captured at grant time ("beta tester", "friend"). */
+  note: string | null;
+  /** Admin email that granted it — the audit trail. */
+  grantedBy: string;
+  /** ISO timestamp the grant was created. */
+  grantedAt: string;
+  /** Whether this email currently maps to a registered account. */
+  registered: boolean;
+}
+
+/** `GET /api/admin/free-access` response. */
+export interface FreeAccessListResponse {
+  entries: FreeAccessEntry[];
+  meta: { total: number };
+}
+
+/** `POST /api/admin/free-access` response — the upserted grant. */
+export interface FreeAccessGrantResponse {
+  entry: Omit<FreeAccessEntry, 'registered'>;
+}
+
+/** `DELETE /api/admin/free-access` response. */
+export interface FreeAccessRevokeResponse {
+  revoked: boolean;
+  email: string;
+  removed: boolean;
 }

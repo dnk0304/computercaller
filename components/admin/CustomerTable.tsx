@@ -19,7 +19,7 @@
  *     (WCAG 1.4.1 Use of Color).
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Check,
@@ -32,11 +32,15 @@ import {
   Clock,
   CreditCard,
   XCircle,
+  Gift,
+  Ban,
+  Loader2,
 } from 'lucide-react';
-import type { AdminCustomersResponse } from './adminTypes';
+import type { AdminCustomer, AdminCustomersResponse } from './adminTypes';
 import {
   resolveState,
   trialStatusPill,
+  planPill,
   authBadge,
   formatDate,
   formatAbsolute,
@@ -46,6 +50,8 @@ import {
   type SortKey,
   type SortDir,
 } from './customerRows';
+import { ConfirmDialog } from './ConfirmDialog';
+import { grantFreeAccess, revokeFreeAccess } from './freeAccessClient';
 
 // ---------- Google brand glyph ---------------------------------------------
 // lucide-react has no brand icons; this is the standard 4-colour "G" mark,
@@ -60,6 +66,14 @@ function GoogleGlyph({ className }: { className?: string }) {
       <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.44-3.44C17.95 1.19 15.23 0 12 0A12 12 0 0 0 1.29 6.61l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75z" />
     </svg>
   );
+}
+
+// Remove a key from a record immutably (used to clear per-row transient state).
+function omitKey<T>(obj: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in obj)) return obj;
+  const next = { ...obj };
+  delete next[key];
+  return next;
 }
 
 // ---------- Small presentational atoms --------------------------------------
@@ -146,7 +160,7 @@ interface SummaryCardProps {
   label: string;
   value: number;
   icon: React.ReactNode;
-  tone: 'slate' | 'blue' | 'emerald' | 'amber' | 'red';
+  tone: 'slate' | 'blue' | 'emerald' | 'amber' | 'violet' | 'red';
 }
 
 function SummaryCard({ label, value, icon, tone }: SummaryCardProps) {
@@ -155,6 +169,7 @@ function SummaryCard({ label, value, icon, tone }: SummaryCardProps) {
     blue: 'text-blue-600 bg-blue-50',
     emerald: 'text-emerald-600 bg-emerald-50',
     amber: 'text-amber-600 bg-amber-50',
+    violet: 'text-violet-600 bg-violet-50',
     red: 'text-red-600 bg-red-50',
   };
   return (
@@ -176,9 +191,16 @@ interface CustomerTableProps {
   data: AdminCustomersResponse;
   /** Fixed "now" for deterministic relative timestamps (tests/preview). */
   now?: number;
+  /**
+   * Called after a successful per-row grant/revoke so the parent can refetch
+   * and reconcile the authoritative state. When omitted (e.g. the `?mock=1`
+   * preview) the per-row grant/revoke control renders as a static badge instead
+   * of a live button — no failing calls during screenshot review.
+   */
+  onMutated?: () => void;
 }
 
-export function CustomerTable({ data, now }: CustomerTableProps) {
+export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
   // Capture "now" once at mount (lazy initializer) — avoids reading Date.now()
   // during render (React 19 purity) and keeps relative labels stable. An admin
   // table doesn't need per-second ticking; a fixed mount time is correct here.
@@ -187,6 +209,85 @@ export function CustomerTable({ data, now }: CustomerTableProps) {
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>('flagged');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  // Whether the per-row grant/revoke control is live. False in preview (no
+  // parent refetch handler) so the control degrades to a read-only badge.
+  const mutable = typeof onMutated === 'function';
+
+  // --- Per-row free-access mutation state (P3) ------------------------------
+  // `override` holds the OPTIMISTIC freeAccess value per customer id, applied on
+  // top of the server data until a refetch reconciles it. `pending` blocks a
+  // row's control while its request is in flight. `rowError` surfaces a failure
+  // inline (and the override is rolled back). `confirm` drives the modal — free
+  // access is a billing bypass, so every grant AND revoke is confirmed first.
+  const [override, setOverride] = useState<Record<string, boolean>>({});
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [rowError, setRowError] = useState<Record<string, string>>({});
+  const [confirm, setConfirm] = useState<
+    { customer: AdminCustomer; action: 'grant' | 'revoke' } | null
+  >(null);
+
+  // Self-heal: once fresh server data agrees with an optimistic override, drop
+  // that override so the row reads straight from props again (no stale mask).
+  useEffect(() => {
+    setOverride((prev) => {
+      if (Object.keys(prev).length === 0) return prev;
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const c of data.customers) {
+        if (c.id in prev && prev[c.id] !== c.freeAccess) {
+          next[c.id] = prev[c.id];
+        } else if (c.id in prev) {
+          changed = true; // matched → prune
+        }
+      }
+      // Preserve overrides for ids not present in the incoming set (defensive).
+      for (const id of Object.keys(prev)) {
+        if (!data.customers.some((c) => c.id === id)) next[id] = prev[id];
+      }
+      return changed || Object.keys(next).length !== Object.keys(prev).length ? next : prev;
+    });
+  }, [data.customers]);
+
+  const effectiveFreeAccess = useCallback(
+    (c: AdminCustomer): boolean => (c.id in override ? override[c.id] : c.freeAccess),
+    [override],
+  );
+
+  const runMutation = useCallback(
+    async (customer: AdminCustomer, action: 'grant' | 'revoke') => {
+      const id = customer.id;
+      const nextValue = action === 'grant';
+      // Optimistic flip + clear any prior error for the row.
+      setOverride((p) => ({ ...p, [id]: nextValue }));
+      setPending((p) => ({ ...p, [id]: true }));
+      setRowError((p) => omitKey(p, id));
+      try {
+        if (action === 'grant') await grantFreeAccess(customer.email);
+        else await revokeFreeAccess(customer.email);
+        // Reconcile against the server — the refetch lands the authoritative
+        // state (plan tier, entitlement state) and prunes the override.
+        onMutated?.();
+      } catch (err) {
+        // Roll back the optimistic flip and surface the reason inline.
+        setOverride((p) => omitKey(p, id));
+        setRowError((p) => ({
+          ...p,
+          [id]: err instanceof Error ? err.message : 'Something went wrong. Please try again.',
+        }));
+      } finally {
+        setPending((p) => omitKey(p, id));
+      }
+    },
+    [onMutated],
+  );
+
+  const handleConfirm = useCallback(() => {
+    if (!confirm) return;
+    const { customer, action } = confirm;
+    setConfirm(null);
+    void runMutation(customer, action);
+  }, [confirm, runMutation]);
 
   const handleSort = (key: SortKey) => {
     if (key === sortKey) {
@@ -215,11 +316,12 @@ export function CustomerTable({ data, now }: CustomerTableProps) {
   return (
     <div className="space-y-4">
       {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <SummaryCard label="Total users" value={summary.total} tone="slate" icon={<Users className="h-4 w-4" />} />
         <SummaryCard label="On trial" value={summary.onTrial} tone="blue" icon={<Clock className="h-4 w-4" />} />
         <SummaryCard label="Paying" value={summary.paying} tone="emerald" icon={<CreditCard className="h-4 w-4" />} />
         <SummaryCard label="Trial expired" value={summary.trialExpired} tone="amber" icon={<XCircle className="h-4 w-4" />} />
+        <SummaryCard label="Free access" value={summary.freeAccess} tone="violet" icon={<Gift className="h-4 w-4" />} />
         <SummaryCard label="Flagged" value={summary.flagged} tone="red" icon={<AlertTriangle className="h-4 w-4" />} />
       </div>
 
@@ -286,6 +388,7 @@ export function CustomerTable({ data, now }: CustomerTableProps) {
                 <PlainTh label="Verified" align="center" srHint="email verified" />
                 <PlainTh label="Auth" />
                 <PlainTh label="Trial status" />
+                <PlainTh label="Plan" srHint="billing tier or free access" />
                 <SortableTh label="Days left" sortKey="trialDaysLeft" activeKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
                 <PlainTh label="Paying" align="center" />
                 <SortableTh label="Paying since" sortKey="convertedAt" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
@@ -293,12 +396,13 @@ export function CustomerTable({ data, now }: CustomerTableProps) {
                 <SortableTh label="Registered" sortKey="registeredAt" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortableTh label="Last active" sortKey="lastActiveAt" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortableTh label="Flag" sortKey="flagged" activeKey={sortKey} dir={sortDir} onSort={handleSort} align="center" />
+                <PlainTh label="Free access" align="right" srHint="grant or revoke complimentary access" />
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-16 text-center">
+                  <td colSpan={13} className="px-4 py-16 text-center">
                     <p className="text-sm font-medium text-slate-500">No customers match your filters</p>
                     <p className="mt-1 text-xs text-slate-400">Try clearing the search or the flagged-only filter.</p>
                   </td>
@@ -312,11 +416,20 @@ export function CustomerTable({ data, now }: CustomerTableProps) {
                   const daysLeft = c.subscription?.trialDaysLeft ?? null;
                   const daysUrgent = isTrialing && daysLeft !== null && daysLeft <= 3;
                   const isPaying = state === 'active';
+                  // Plan badge reflects the OPTIMISTIC free-access value so a grant
+                  // flips the tier to "Free access" instantly; otherwise it shows
+                  // the server-resolved tier / lifecycle plan.
+                  const isFree = effectiveFreeAccess(c);
+                  const planState = isFree ? 'free_access' : state;
+                  const plan = planPill(planState, c.subscription?.planLabel ?? 'Solo');
+                  const isPending = !!pending[c.id];
+                  const err = rowError[c.id];
                   return (
                     <tr
                       key={c.id}
                       className={clsx(
                         'border-b border-slate-100 last:border-0 transition-colors hover:bg-slate-50/70',
+                        isFree && 'bg-violet-50/40',
                         c.flagged && 'bg-red-50/40'
                       )}
                     >
@@ -352,6 +465,14 @@ export function CustomerTable({ data, now }: CustomerTableProps) {
                       <td className="px-3 py-2.5">
                         <span className={clsx('inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium', pill.className)}>
                           {pill.label}
+                        </span>
+                      </td>
+
+                      {/* Plan (tier / free access) */}
+                      <td className="px-3 py-2.5">
+                        <span className={clsx('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium', plan.className)}>
+                          {isFree && <Gift className="h-3 w-3" aria-hidden="true" />}
+                          {plan.label}
                         </span>
                       </td>
 
@@ -418,6 +539,57 @@ export function CustomerTable({ data, now }: CustomerTableProps) {
                           <span className="text-slate-300" aria-label="Not flagged">—</span>
                         )}
                       </td>
+
+                      {/* Free access — grant / revoke (privileged, confirmed) */}
+                      <td className="px-3 py-2.5 text-right align-middle">
+                        {mutable ? (
+                          <div className="flex flex-col items-end gap-1">
+                            {isFree ? (
+                              <button
+                                type="button"
+                                onClick={() => setConfirm({ customer: c, action: 'revoke' })}
+                                disabled={isPending}
+                                aria-label={`Revoke free access for ${c.email}`}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isPending ? (
+                                  <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden="true" />
+                                ) : (
+                                  <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+                                )}
+                                Revoke
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirm({ customer: c, action: 'grant' })}
+                                disabled={isPending}
+                                aria-label={`Grant free access to ${c.email}`}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 transition-colors hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isPending ? (
+                                  <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden="true" />
+                                ) : (
+                                  <Gift className="h-3.5 w-3.5" aria-hidden="true" />
+                                )}
+                                Grant
+                              </button>
+                            )}
+                            {err && (
+                              <span className="max-w-[180px] text-right text-[10px] font-medium text-red-600" role="alert">
+                                {err}
+                              </span>
+                            )}
+                          </div>
+                        ) : isFree ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 ring-1 ring-inset ring-violet-200">
+                            <Gift className="h-3 w-3" aria-hidden="true" />
+                            Granted
+                          </span>
+                        ) : (
+                          <span className="text-slate-300" aria-label="No free access">—</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })
@@ -426,6 +598,31 @@ export function CustomerTable({ data, now }: CustomerTableProps) {
           </table>
         </div>
       </div>
+
+      {/* Confirm dialog for the privileged grant/revoke (billing bypass). */}
+      <ConfirmDialog
+        open={confirm !== null}
+        title={confirm?.action === 'revoke' ? 'Revoke free access?' : 'Grant free access?'}
+        tone={confirm?.action === 'revoke' ? 'danger' : 'primary'}
+        confirmLabel={confirm?.action === 'revoke' ? 'Revoke access' : 'Grant access'}
+        onCancel={() => setConfirm(null)}
+        onConfirm={handleConfirm}
+        description={
+          confirm?.action === 'revoke' ? (
+            <>
+              <span className="font-medium text-slate-800">{confirm.customer.email}</span> will lose
+              complimentary access and return to their normal billing state (trial, expired, or
+              paid). You can grant it again at any time.
+            </>
+          ) : confirm ? (
+            <>
+              <span className="font-medium text-slate-800">{confirm.customer.email}</span> will get
+              full complimentary access at the Pro tier — bypassing billing entirely — until you
+              revoke it.
+            </>
+          ) : null
+        }
+      />
     </div>
   );
 }

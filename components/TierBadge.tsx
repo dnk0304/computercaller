@@ -16,7 +16,7 @@
 
 import React from 'react';
 import { clsx } from 'clsx';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, Gift } from 'lucide-react';
 import { useUpgrade } from '@/hooks/upgradeModalContext';
 import type { Tier } from '@/lib/tiers';
 
@@ -35,6 +35,22 @@ export function TierBadge() {
 
   // Nothing to show until the tier resolves (or when unauthenticated).
   if (loading || !entitlement) return null;
+
+  // Free-access (comped) users aren't paying and shouldn't be nudged to
+  // upgrade. Show a calm, non-interactive "Free access" badge instead of the
+  // tier button that opens the pricing modal (P5 — suppress billing prompts).
+  if (entitlement.state === 'free_access') {
+    return (
+      <span
+        aria-label="Complimentary access"
+        title="You have complimentary access"
+        className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700"
+      >
+        <Gift className="h-3 w-3" aria-hidden="true" />
+        Free access
+      </span>
+    );
+  }
 
   const tier = entitlement.tier;
   const label = TIER_LABEL[tier];

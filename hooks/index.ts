@@ -7,6 +7,7 @@ export type { DashboardTab } from './dashboardTabContext';
 export { PhoneModeProvider, usePhoneMode } from './usePhoneMode';
 export type { PhoneModeView } from './usePhoneMode';
 export { useDebouncedValue } from './useDebouncedValue';
+export { useIsAdmin } from './useIsAdmin';
 export type {
   Contact,
   CallInfo,

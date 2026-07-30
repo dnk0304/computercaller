@@ -9,6 +9,7 @@
 import type {
   AdminCustomer,
   AdminSubscription,
+  PlanLabel,
   SubscriptionState,
 } from './adminTypes';
 
@@ -51,6 +52,49 @@ export function trialStatusPill(state: SubscriptionState): PillMeta {
       return { label: 'Trial expired', className: 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200' };
     case 'expired':
       return { label: 'Expired', className: 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200' };
+    case 'cancelled':
+      return { label: 'Cancelled', className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200' };
+    case 'none':
+    default:
+      return { label: 'None', className: 'bg-slate-50 text-slate-400 ring-1 ring-inset ring-slate-200' };
+  }
+}
+
+// ---------- Plan badge -------------------------------------------------------
+
+/**
+ * Map lifecycle state (+ the paid plan label) → the Plan-column badge. This is
+ * complementary to the trial-status pill: the status pill says WHERE in the
+ * lifecycle the user is; the Plan badge says WHICH tier / comp they hold.
+ *
+ *   free_access                 → "Free access"  (privileged comp — violet)
+ *   active                      → Solo/Plus/Pro   (the paid tier — tier-toned)
+ *   trialing                    → "Trial"         (no tier purchased yet)
+ *   trial_expired | expired     → "Expired"       (muted)
+ *   cancelled                   → "Cancelled"     (amber)
+ *   none                        → "None"          (muted)
+ *
+ * Colour is never the sole signal — every branch spells out a distinct label.
+ */
+export function planPill(state: SubscriptionState, planLabel: PlanLabel): PillMeta {
+  switch (state) {
+    case 'free_access':
+      return { label: 'Free access', className: 'bg-violet-100 text-violet-700 ring-1 ring-inset ring-violet-200' };
+    case 'active':
+      switch (planLabel) {
+        case 'Pro':
+          return { label: 'Pro', className: 'bg-indigo-100 text-indigo-700 ring-1 ring-inset ring-indigo-200' };
+        case 'Plus':
+          return { label: 'Plus', className: 'bg-blue-100 text-blue-700 ring-1 ring-inset ring-blue-200' };
+        case 'Solo':
+        default:
+          return { label: 'Solo', className: 'bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-200' };
+      }
+    case 'trialing':
+      return { label: 'Trial', className: 'bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200' };
+    case 'trial_expired':
+    case 'expired':
+      return { label: 'Expired', className: 'bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-200' };
     case 'cancelled':
       return { label: 'Cancelled', className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200' };
     case 'none':
@@ -202,6 +246,8 @@ export interface SummaryCounts {
   paying: number;
   /** Trial ended without converting (state trial_expired). */
   trialExpired: number;
+  /** Users comped via the free-access allowlist. */
+  freeAccess: number;
   flagged: number;
 }
 
@@ -209,13 +255,15 @@ export function summarise(rows: AdminCustomer[]): SummaryCounts {
   let onTrial = 0;
   let paying = 0;
   let trialExpired = 0;
+  let freeAccess = 0;
   let flagged = 0;
   for (const c of rows) {
     const state = resolveState(c.subscription);
     if (state === 'trialing') onTrial += 1;
     if (state === 'active') paying += 1;
     if (state === 'trial_expired') trialExpired += 1;
+    if (c.freeAccess) freeAccess += 1;
     if (c.flagged) flagged += 1;
   }
-  return { total: rows.length, onTrial, paying, trialExpired, flagged };
+  return { total: rows.length, onTrial, paying, trialExpired, freeAccess, flagged };
 }

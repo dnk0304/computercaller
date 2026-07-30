@@ -2,7 +2,9 @@
 
 import React, { useState, useEffect } from 'react';
 import Image from 'next/image';
-import { Phone, MessageSquare, LayoutTemplate, Settings, User, FileText, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { Phone, MessageSquare, LayoutTemplate, Settings, User, FileText, Clock, ChevronLeft, ChevronRight, ShieldCheck } from 'lucide-react';
 import { clsx } from 'clsx';
 
 const SIDEBAR_KEY = 'dnkdialer_sidebar_collapsed';
@@ -10,10 +12,18 @@ const SIDEBAR_KEY = 'dnkdialer_sidebar_collapsed';
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  /**
+   * When true, an "Admin" link to /app/admin is shown at the foot of the nav.
+   * UX-only gate (from GET /api/auth/me) — the admin routes re-check server-side
+   * and 403 regardless, so a hidden link is never the security boundary.
+   */
+  isAdmin?: boolean;
 }
 
-export const Sidebar = ({ activeTab, setActiveTab }: SidebarProps) => {
+export const Sidebar = ({ activeTab, setActiveTab, isAdmin = false }: SidebarProps) => {
   const [collapsed, setCollapsed] = useState(false);
+  const pathname = usePathname();
+  const onAdmin = pathname?.startsWith('/app/admin') ?? false;
 
   useEffect(() => {
     const stored = localStorage.getItem(SIDEBAR_KEY) === 'true';
@@ -105,6 +115,34 @@ export const Sidebar = ({ activeTab, setActiveTab }: SidebarProps) => {
             </button>
           );
         })}
+
+        {/* Admin — route link (not a dashboard tab), shown only to admins.
+            Active state keys off the pathname since it's a real route. */}
+        {isAdmin && (
+          <div className="pt-2 mt-2 border-t border-slate-200/70">
+            <Link
+              href="/app/admin"
+              title={collapsed ? 'Admin' : undefined}
+              aria-current={onAdmin ? 'page' : undefined}
+              className={clsx(
+                'w-full flex items-center rounded-xl transition-all duration-200 group relative overflow-hidden',
+                collapsed ? 'justify-center px-2 py-3' : 'gap-4 px-3 py-3',
+                onAdmin
+                  ? 'bg-violet-50 text-violet-700 shadow-sm'
+                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+              )}
+            >
+              {!collapsed && (
+                <div className={clsx(
+                  'absolute left-0 w-1 h-8 rounded-r-full bg-violet-600 transition-all duration-200',
+                  onAdmin ? 'opacity-100' : 'opacity-0 -translate-x-full'
+                )} />
+              )}
+              <ShieldCheck className="w-5 h-5 flex-shrink-0" />
+              {!collapsed && <span className="font-medium truncate">Admin</span>}
+            </Link>
+          </div>
+        )}
       </nav>
 
       {/* Expand button (collapsed state) */}
