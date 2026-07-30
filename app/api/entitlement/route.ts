@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { evaluateEntitlement } from '@/lib/entitlement';
+import { evaluateEntitlement, isFreeAccessEmail } from '@/lib/entitlement';
 
 // GET /api/entitlement — the canonical tier + limits + usage contract the web
 // app consumes (dispatch feature/tier-gating, 2026-07-27). Auth mirrors
@@ -51,9 +51,15 @@ export async function GET(req: NextRequest) {
     });
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+    // Free-access resolution — same DB-backed helper the relay + admin feed use
+    // (one source, no drift). Fails closed to false, so a lookup error can never
+    // unlock the app for a non-granted user.
+    const freeAccess = await isFreeAccessEmail(db, user.email);
+
     const ent = evaluateEntitlement({
       isAdmin: user.isAdmin,
       email: user.email,
+      freeAccess,
       subscription: user.subscription,
     });
 

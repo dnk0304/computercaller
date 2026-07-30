@@ -152,6 +152,51 @@ model Waitlist {
   createdAt DateTime @default(now())
 }
 
+// FreeAccessEmail (2026-07-30, dispatch forge/admin-panel-free-access). The
+// email-keyed allowlist that backs Dennis's "grant free access" admin control.
+// EMAIL-KEYED (not a User boolean) on purpose: an admin can pre-grant an email
+// that has NO account row yet — checked at entitlement-eval time by email. A
+// row here → the entitlement gate resolves that email to state 'free_access' →
+// Pro tier (see lib/entitlement-core.js). Fully additive & isolated (no FK), so
+// Coolify's pre-deploy `prisma db push` applies it cleanly (new table only,
+// zero data loss) — same house pattern as Waitlist.
+//   email     — @unique, stored LOWERCASED by the API. Both "grant a user free
+//               access" and "add an email to the free list" are the SAME upsert
+//               keyed here, so a duplicate grant is idempotent at the DB level.
+//   note      — optional human reason ("beta tester", "friend").
+//   grantedBy — the admin email that created the grant (always Dennis today) —
+//               the standing audit field for an active grant.
+//   createdAt — when the grant was made ("granted at"). Exposed as `grantedAt`
+//               in the admin API.
+model FreeAccessEmail {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  note      String?
+  grantedBy String
+  createdAt DateTime @default(now())
+}
+
+// FreeAccessAudit (2026-07-30). Append-only audit trail for the free-access
+// billing bypass. Because a REVOKE deletes the FreeAccessEmail row, the row
+// itself cannot be the audit record for revokes — this table captures every
+// grant AND revoke (who/when/what) durably. Never updated, never deleted by app
+// code. Additive/isolated → `prisma db push` clean.
+//   action — 'grant' | 'revoke'.
+//   email  — the target email (lowercased).
+//   actor  — admin email that performed the action.
+//   note   — optional note supplied on grant (null on revoke).
+model FreeAccessAudit {
+  id        String   @id @default(cuid())
+  action    String
+  email     String
+  actor     String
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([createdAt])
+}
+
 model Subscription {
   id                String    @id @default(cuid())
   userId            String    @unique

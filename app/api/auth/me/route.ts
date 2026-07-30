@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionWithIdle } from '@/lib/auth';
 import { db } from '@/lib/db';
+import { isAdminUser } from '@/lib/entitlement';
 
 export async function GET(req: NextRequest) {
   try {
@@ -29,11 +30,19 @@ export async function GET(req: NextRequest) {
     // uses /api/auth/qr-token; APK reads phoneToken via /api/auth/apk-login.
     const user = await db.user.findUnique({
       where: { id: payload.userId },
-      select: { id: true, email: true, emailVerified: true, subscription: true },
+      // isAdmin selected (2026-07-30) to derive the client admin signal below.
+      select: { id: true, email: true, emailVerified: true, isAdmin: true, subscription: true },
     });
 
     if (!user) return NextResponse.json({ user: null }, { status: 401 });
-    return NextResponse.json({ user });
+
+    // Client admin signal (F6): the EFFECTIVE admin authority (isAdminUser),
+    // not the raw DB flag — so Pixel can show/hide the Admin nav link. This is
+    // UX only; every /api/admin/* route re-checks server-side, so exposing the
+    // boolean leaks no admin data. Overwrite the raw isAdmin with the computed
+    // effective value on the returned object.
+    const isAdmin = isAdminUser({ isAdmin: user.isAdmin, email: user.email });
+    return NextResponse.json({ user: { ...user, isAdmin } });
   } catch {
     // Database not available (no DATABASE_URL in dev) — return null gracefully
     return NextResponse.json({ user: null }, { status: 401 });

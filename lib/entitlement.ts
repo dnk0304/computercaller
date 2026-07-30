@@ -30,4 +30,6 @@ export {
   evaluateEntitlement,
   evaluateUserEntitlement,
   isEntitlementAllowed,
+  isAdminUser,
+  isFreeAccessEmail,
 } from './entitlement-core';

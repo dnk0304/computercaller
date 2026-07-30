@@ -14,8 +14,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { evaluateEntitlement } from '@/lib/entitlement';
+import { evaluateEntitlement, isAdminUser } from '@/lib/entitlement';
 import { resolveCardStatuses } from '@/lib/whop';
+
+// Human-readable plan label per resolved tier. Kept local to the admin feed —
+// the enforced tier values ('solo'|'plus'|'pro') come straight off the shared
+// entitlement core; this is display sugar for the dashboard's Plan column.
+const TIER_LABEL: Record<string, string> = {
+  solo: 'Solo',
+  plus: 'Plus',
+  pro: 'Pro',
+};
 
 // Same-IP cluster flag threshold. Env override so Dennis can tune sensitivity
 // without a redeploy; default 3. A non-numeric/blank env falls back to 3.
@@ -37,12 +46,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    // AUTHZ gate — must be the admin. isAdmin is TRUE for exactly one account.
+    // AUTHZ gate — the SINGLE admin authority (isAdminUser). Admits isAdmin===true
+    // OR the hardcoded admin email, so a lost DB flag can't lock Dennis out;
+    // fail-closed for everyone else. Select email alongside isAdmin for it.
     const requester = await db.user.findUnique({
       where: { id: payload.userId },
-      select: { isAdmin: true },
+      select: { isAdmin: true, email: true },
     });
-    if (!requester?.isAdmin) {
+    if (!isAdminUser({ isAdmin: requester?.isAdmin, email: requester?.email })) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -80,10 +91,27 @@ export async function GET(req: NextRequest) {
             canceledAt: true,
             paymentMethodAttached: true,
             whopMembershipId: true,
+            // planId (2026-07-30) — REQUIRED to surface the tier (Solo/Plus/Pro)
+            // in the feed. Was previously dropped, so the dashboard showed only
+            // coarse state, never the plan. Feeds evaluateEntitlement below.
+            planId: true,
           },
         },
       },
     });
+
+    // Free-access allowlist, batch-loaded ONCE (one query, not per-user) and
+    // folded into each row's entitlement via the same free_access short-circuit
+    // the relay + browser gates use — one source, no drift. Fail-open to an
+    // empty set on error: a free-access lookup failure must not break the whole
+    // admin feed, and it can only UNDER-report free access (never grant it).
+    let freeAccessSet = new Set<string>();
+    try {
+      const rows = await db.freeAccessEmail.findMany({ select: { email: true } });
+      freeAccessSet = new Set(rows.map((r) => r.email.toLowerCase()));
+    } catch (e) {
+      console.error('[AdminCustomers] free-access load failed:', e);
+    }
 
     const threshold = sameIpThreshold();
     const now = new Date();
@@ -102,15 +130,19 @@ export async function GET(req: NextRequest) {
     const liveCard = await resolveCardStatuses(membershipIds);
 
     const customers = users.map((u) => {
+      const freeAccess = freeAccessSet.has(u.email.toLowerCase());
       const ent = evaluateEntitlement(
         {
           isAdmin: u.isAdmin,
           email: u.email,
+          freeAccess,
           subscription: u.subscription
             ? {
                 status: u.subscription.status,
                 trialEndsAt: u.subscription.trialEndsAt,
                 currentPeriodEnd: u.subscription.currentPeriodEnd,
+                // planId passed through so ent.tier reflects the paid plan.
+                planId: u.subscription.planId,
               }
             : null,
         },
@@ -136,10 +168,17 @@ export async function GET(req: NextRequest) {
       // subscription block is NEVER omitted — when the row has no subscription
       // we return an explicit null-filled object with the evaluated state (which
       // for a non-admin/non-allowlisted user is 'none'; for Dennis it's 'admin').
+      // tier/planLabel (2026-07-30, ADDITIVE): the resolved billing tier and its
+      // human label. For a free_access user ent.tier === 'pro' → "Pro".
+      const tier = ent.tier;
+      const planLabel = TIER_LABEL[tier] ?? 'Solo';
+
       const subscription = u.subscription
         ? {
             status: u.subscription.status,
             state: ent.state,
+            tier,
+            planLabel,
             trialEndsAt: u.subscription.trialEndsAt?.toISOString() ?? null,
             trialDaysLeft: ent.trialDaysLeft,
             currentPeriodEnd: u.subscription.currentPeriodEnd?.toISOString() ?? null,
@@ -151,6 +190,8 @@ export async function GET(req: NextRequest) {
         : {
             status: null,
             state: ent.state,
+            tier,
+            planLabel,
             trialEndsAt: null,
             trialDaysLeft: ent.trialDaysLeft,
             currentPeriodEnd: null,
@@ -166,6 +207,10 @@ export async function GET(req: NextRequest) {
         emailVerified: u.emailVerified,
         authProvider: u.authProvider,
         registeredAt: u.createdAt.toISOString(),
+        // freeAccess (2026-07-30, ADDITIVE, top-level): is this user's email in
+        // the FreeAccessEmail allowlist. Drives the "Free access" badge + the
+        // grant/revoke control state in the UI.
+        freeAccess,
         subscription,
         lastActiveAt: u.lastActiveAt?.toISOString() ?? null,
         signupIp: u.signupIp ?? null,

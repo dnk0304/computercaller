@@ -10,6 +10,7 @@ import type { Tier, TierLimits } from './tiers-core';
 export type EntitlementState =
   | 'admin'
   | 'allowlisted'
+  | 'free_access'
   | 'trialing'
   | 'active'
   | 'trial_expired'
@@ -47,10 +48,45 @@ export interface EntitlementSubscriptionInput {
 export interface EntitlementInput {
   isAdmin: boolean;
   email: string;
+  /**
+   * DB-backed free-access grant, resolved by the caller (relay/browser/admin
+   * feed) via isFreeAccessEmail. Optional & defaults to false — a true value is
+   * a privileged admit → 'free_access' state → Pro tier, ranked with
+   * admin/allowlist. Omitting it preserves the exact prior decision.
+   */
+  freeAccess?: boolean;
   subscription: EntitlementSubscriptionInput | null;
 }
 
 export function isEntitlementAllowed(email: string | null | undefined): boolean;
+
+/**
+ * The single admin authority: isAdmin===true OR email === the hardcoded admin
+ * email (case-insensitive, trimmed). Fail-safe for Dennis, fail-closed (→false
+ * on any error/malformed input) for everyone else. Gates every /api/admin/*
+ * route + the admin page.
+ */
+export function isAdminUser(account: {
+  isAdmin?: unknown;
+  email?: unknown;
+}): boolean;
+
+/**
+ * Is this email in the DB-backed FreeAccessEmail allowlist? The ONE query all
+ * gates share. Fail-closed (→false) on null/blank email, a client missing the
+ * model, or any DB error.
+ */
+export function isFreeAccessEmail(
+  // Loosely typed so the real PrismaClient (whose findUnique arg type is far
+  // stricter than `unknown`) is assignable — function-arg contravariance means
+  // an `unknown`-arg slot would reject the Prisma method. Only server.js and a
+  // couple of TS routes call this; the runtime guards a missing model itself.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbClient: { freeAccessEmail?: { findUnique: (args: any) => Promise<unknown> } },
+  email: string | null | undefined,
+): Promise<boolean>;
+
+export const ADMIN_EMAIL_FALLBACK: string;
 
 export function evaluateEntitlement(
   input: EntitlementInput,

@@ -19,6 +19,7 @@ const {
   evaluateEntitlement,
   evaluateUserEntitlement,
   resolveWhopCardState,
+  isAdminUser,
 } = require('../lib/entitlement-core.js');
 
 const NOW = new Date('2026-07-27T12:00:00Z');
@@ -47,13 +48,33 @@ const USERS = {
   },
   u_admin: { isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null },
   u_reviewer: { isAdmin: false, email: 'reviewer@computercaller.com', subscription: null },
+  // Free-access user: NO subscription, email is in the FreeAccessEmail table.
+  // Must resolve to state 'free_access' / Pro / allowed — proving a granted
+  // email is admitted through the SAME gate without any paywall change.
+  u_free: { isAdmin: false, email: 'freebie@example.com', subscription: null },
+  // Free-access user whose sub is EXPIRED — proves the free_access short-circuit
+  // ranks before the deny branches (grant overrides a dead sub).
+  u_free_expired: {
+    isAdmin: false, email: 'friend@example.com',
+    subscription: { status: 'active', trialEndsAt: past(60), currentPeriodEnd: past(1) },
+  },
 };
+
+// DB-backed free-access allowlist (lowercased), what FreeAccessEmail holds.
+const FREE_ACCESS = new Set(['freebie@example.com', 'friend@example.com']);
 
 const mockDb = {
   user: {
     findUnique: async ({ where }) => {
       if (where.id === 'u_dbdown') throw new Error('simulated DB outage');
       return USERS[where.id] || null;
+    },
+  },
+  // Mirrors prisma db.freeAccessEmail.findUnique used by isFreeAccessEmail.
+  freeAccessEmail: {
+    findUnique: async ({ where }) => {
+      const email = where && typeof where.email === 'string' ? where.email.toLowerCase() : '';
+      return FREE_ACCESS.has(email) ? { email } : null;
     },
   },
 };
@@ -65,6 +86,23 @@ const mockDb = {
 async function relayAdmits(userId) {
   const ent = await evaluateUserEntitlement(mockDb, userId, NOW);
   return { admitted: ent.allowed, reason: ent.reason };
+}
+
+// Full relay result incl. state + tier — used to prove free-access → Pro and to
+// prove a paying user's tier is unchanged.
+async function relayFull(userId) {
+  const ent = await evaluateUserEntitlement(mockDb, userId, NOW);
+  return { allowed: ent.allowed, state: ent.state, reason: ent.reason, tier: ent.tier };
+}
+
+// The admin-panel gate every /api/admin/* route applies: load {isAdmin,email},
+// admit iff isAdminUser(...). Proves a non-admin is blocked, Dennis is not.
+function adminGate(userId) {
+  const u = USERS[userId];
+  if (!u) return { status: 401 };
+  return isAdminUser({ isAdmin: u.isAdmin, email: u.email })
+    ? { status: 200 }
+    : { status: 403 };
 }
 
 // /api/auth/qr-token GET: 403 subscription_required unless entitled, else 200 + token
@@ -124,6 +162,32 @@ function check(label, actual, expected) {
     { cardState: false, createStores: false, updateWritesColumn: true });
   check('5d explicit user.has_payment_method:true → stored true', persist('membership.went_valid', { user: { has_payment_method: true } }),
     { cardState: true, createStores: true, updateWritesColumn: true });
+
+  console.log('=== TEST 6 — FREE ACCESS: granted email → allowed, Pro tier, one gate ===');
+  check('6a relay(free, no sub) → ADMIT free_access/pro', await relayFull('u_free'),
+    { allowed: true, state: 'free_access', reason: 'free_access', tier: 'pro' });
+  check('6b relay(free w/ EXPIRED sub) → grant overrides deny', await relayFull('u_free_expired'),
+    { allowed: true, state: 'free_access', reason: 'free_access', tier: 'pro' });
+  // Paywall UNWEAKENED: a non-free, non-admin user NOT in the allowlist stays
+  // exactly as before (state/tier byte-stable).
+  check('6c relay(none, NOT free) → still DENIED none/solo', await relayFull('u_none'),
+    { allowed: false, state: 'none', reason: 'no_subscription', tier: 'solo' });
+  check('6d relay(expired, NOT free) → still DENIED', await relayFull('u_expired'),
+    { allowed: false, state: 'expired', reason: 'not_entitled_status_active', tier: 'solo' });
+  // A normal paying user is UNCHANGED — allowed, active, Solo (planId null).
+  check('6e relay(active payer) UNCHANGED active/solo', await relayFull('u_active'),
+    { allowed: true, state: 'active', reason: 'active_subscription', tier: 'solo' });
+
+  console.log('=== TEST 7 — ADMIN AUTHORITY: isAdminUser + admin-route gate ===');
+  check('7a isAdminUser(Dennis email, no flag) → true',
+    isAdminUser({ isAdmin: false, email: 'Dennis.Kotlenko@Gmail.com ' }), true);
+  check('7b isAdminUser(flag true) → true', isAdminUser({ isAdmin: true, email: 'someone@x.com' }), true);
+  check('7c isAdminUser(random) → false', isAdminUser({ isAdmin: false, email: 'rando@x.com' }), false);
+  check('7d isAdminUser(empty) → false', isAdminUser({}), false);
+  check('7e isAdminUser(null) → false (fail-closed)', isAdminUser(null), false);
+  check('7f admin-route gate(admin) → 200', adminGate('u_admin'), { status: 200 });
+  check('7g admin-route gate(non-admin payer) → 403 BLOCKED', adminGate('u_active'), { status: 403 });
+  check('7h admin-route gate(free-access user) → 403 (free ≠ admin)', adminGate('u_free'), { status: 403 });
 
   // Render results table
   const w = (s, n) => String(s).padEnd(n);
