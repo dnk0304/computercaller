@@ -60,6 +60,7 @@ import jwt from 'jsonwebtoken';
 import { db } from '@/lib/db';
 import { getJwtSecret } from '@/lib/auth';
 import { evaluateUserEntitlement } from '@/lib/entitlement';
+import { m2mSourceIp, m2mRateLimited, auditM2MMint } from '@/lib/m2mMintAudit';
 
 // jsonwebtoken + node:crypto require the Node.js runtime (not Edge).
 export const runtime = 'nodejs';
@@ -88,7 +89,20 @@ function extractBearer(req: NextRequest): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  // Trusted-hop client IP (CF → Traefik chain via lib/ip). Resolved once and
+  // threaded into every audit entry. 'unknown' if no proxy header is present.
+  const sourceIp = m2mSourceIp(req);
   try {
+    // ── Per-IP rate limit (M2M-3) — BEFORE any key/DB work ─────────────────
+    // Hygiene + a DoS/enumeration backstop. Mirrors the app's in-memory token
+    // bucket (app/api/waitlist). Evaluated first so a flood — even of bad-key
+    // attempts — is throttled before it can touch the key compare or the DB.
+    // Brute-force is already infeasible (>=32-byte key); this caps volume.
+    if (m2mRateLimited(sourceIp)) {
+      auditM2MMint(sourceIp, null, 'rate_limited');
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
     // ── Server-to-server auth (NOT a user session) ─────────────────────────
     // The configured key is the gate. If it is unset, the M2M path is disabled
     // and fails CLOSED: every caller gets 401, and we do NOT reveal that the
@@ -99,6 +113,7 @@ export async function POST(req: NextRequest) {
       console.warn(
         '[RelayTicketM2M] CC_M2M_MINT_KEY is unset or <32 chars — M2M mint disabled (failing closed).',
       );
+      auditM2MMint(sourceIp, null, 'unauthorized');
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -106,6 +121,7 @@ export async function POST(req: NextRequest) {
     if (!constantTimeKeyEqual(providedKey, expectedKey)) {
       // No detail on WHY (missing vs wrong) — a single opaque 401.
       console.warn('[RelayTicketM2M] auth reject: missing or invalid M2M key');
+      auditM2MMint(sourceIp, null, 'unauthorized');
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -115,9 +131,11 @@ export async function POST(req: NextRequest) {
       const body = await req.json();
       ccUserId = body?.ccUserId;
     } catch {
+      auditM2MMint(sourceIp, null, 'bad_request');
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
     if (typeof ccUserId !== 'string' || ccUserId.trim().length === 0) {
+      auditM2MMint(sourceIp, null, 'bad_request');
       return NextResponse.json({ error: 'ccUserId (string) is required' }, { status: 400 });
     }
     const userId = ccUserId.trim();
@@ -142,6 +160,7 @@ export async function POST(req: NextRequest) {
     );
     if (!ent.allowed) {
       console.warn(`[RelayTicketM2M] entitlement denied (${ent.reason}) for user ${userId}`);
+      auditM2MMint(sourceIp, userId, 'denied_entitlement');
       return NextResponse.json({ error: 'subscription_required' }, { status: 403 });
     }
 
@@ -152,6 +171,9 @@ export async function POST(req: NextRequest) {
       { algorithm: 'HS256', expiresIn: '30s' },
     );
 
+    // Audit the successful mint (this also evaluates the anomaly trip-wire).
+    // Only ccUserId + outcome + IP are recorded — never the minted `ticket`.
+    auditM2MMint(sourceIp, userId, 'minted');
     return NextResponse.json({ ticket });
   } catch (e) {
     // getJwtSecret throws if JWT_SECRET is missing in prod → server-config, 500.
