@@ -75,6 +75,11 @@ export type PhoneEventType =
   // source app's RemoteInput PendingIntent. Carries the notificationKey so
   // the webapp can mark the corresponding row as read.
   | 'NOTIFICATION_REPLY_SENT'
+  // Reply did NOT reach the messaging app. `reason` is machine-readable:
+  // handle_lost | no_actions | reply_key_not_found | pending_intent_dead |
+  // exception. Added 2026-08-10 — every one of these paths used to return
+  // silently, so a dead reply looked identical to a delivered one.
+  | 'NOTIFICATION_REPLY_FAILED'
   // App-level pong from the phone in response to an APP_PING. Carries the
   // ping's `ts` so the web side can compute round-trip latency, and acts as
   // a liveness signal — if pongs stop arriving for 30s the web flips the

@@ -3741,10 +3741,15 @@ class PhoneService : Service() {
 
             if (activeNotif == null) {
                 android.util.Log.w("PhoneService", "Notification not found for key: $notificationKey")
+                replyFailed(notificationKey, "handle_lost", viaClient)
                 return
             }
 
-            val actions = activeNotif.notification.actions ?: return
+            val actions = activeNotif.notification.actions
+            if (actions == null) {
+                replyFailed(notificationKey, "no_actions", viaClient)
+                return
+            }
             for (action in actions) {
                 val remoteInputs = action.remoteInputs ?: continue
                 if (remoteInputs.isEmpty()) continue
@@ -3765,9 +3770,38 @@ class PhoneService : Service() {
                 return
             }
             android.util.Log.w("PhoneService", "No matching RemoteInput found for replyKey: $replyKey")
+            replyFailed(notificationKey, "reply_key_not_found", viaClient)
         } catch (e: Exception) {
-            android.util.Log.e("PhoneService", "Error sending notification reply: ${e.message}")
+            // PendingIntent.CanceledException lands here — the posting app tore
+            // the reply action down after we captured it. That is the single
+            // most likely cause of a visible-but-unanswerable notification.
+            val reason = if (e is android.app.PendingIntent.CanceledException) "pending_intent_dead" else "exception"
+            android.util.Log.e("PhoneService", "Error sending notification reply ($reason): ${e.message}")
+            replyFailed(notificationKey, reason, viaClient)
         }
+    }
+
+    /**
+     * Tell the web client a reply did NOT reach the messaging app, and why.
+     *
+     * Every failure path above previously returned SILENTLY, so a dead reply was
+     * indistinguishable — in the logs and in the UI — from a delivered one. The
+     * web marks replies "Sent ✓" optimistically, so failures looked like
+     * successes. That is the mechanism behind "some I could answer, others not".
+     *
+     * Reasons are the diagnosis: `handle_lost` = gone from BOTH
+     * activeNotifications and the 50-entry in-memory replyCache (dismissed,
+     * evicted, or the listener process restarted — the background-kill case);
+     * `pending_intent_dead` = the app cancelled the action under us.
+     */
+    private fun replyFailed(notificationKey: String, reason: String, viaClient: Boolean) {
+        try {
+            sendResponse(
+                "NOTIFICATION_REPLY_FAILED",
+                mapOf("notificationKey" to notificationKey, "reason" to reason),
+                viaClient,
+            )
+        } catch (_: Exception) { /* never let reporting a failure throw */ }
     }
 
     /**

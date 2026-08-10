@@ -51,6 +51,40 @@ const { syncSinceFloorMs } = require('./lib/tiers-core.js');
 // while being totally non-reversible (the hash is the truncated digest of
 // the full 32-byte token, not a prefix lookup). Matches the standard
 // convention used by other audited log redactions (Stripe, GitHub APIs).
+/**
+ * WS close reason as a short, PII-safe string.
+ *
+ * `reason` is a Buffer that is EMPTY for most real-world closes — notably 1006
+ * (abnormal closure), where no close frame was ever received. That absence is
+ * itself diagnostic, so it renders as '(none)' rather than as a blank field
+ * that reads like a logging bug.
+ */
+function decodeCloseReason(reason) {
+  try {
+    const txt = reason ? reason.toString('utf8').trim() : '';
+    return txt ? txt.substring(0, 80) : '(none)';
+  } catch { return '(undecodable)'; }
+}
+
+/**
+ * Dropped lobby frames, counted by frame TYPE per room.
+ *
+ * Ken's note is right: a rate is a signal, a line is an anecdote. Printing one
+ * line per dropped frame told us frames were being dropped but never how many,
+ * of what, or whether it was one burst or a steady leak — and with only 79 log
+ * lines in 24h the individual lines were sparse enough to look incidental.
+ */
+const droppedLobbyFrameCounts = new Map(); // token -> Map(type -> count)
+
+function countDroppedLobbyFrame(token, msg) {
+  const type = String(msg).split(':', 1)[0] || 'UNKNOWN';
+  let perRoom = droppedLobbyFrameCounts.get(token);
+  if (!perRoom) { perRoom = new Map(); droppedLobbyFrameCounts.set(token, perRoom); }
+  const n = (perRoom.get(type) ?? 0) + 1;
+  perRoom.set(type, n);
+  return { type, n, summary: [...perRoom].map(([t, c]) => `${t}=${c}`).join(' ') };
+}
+
 function redactToken(t) {
   if (!t || typeof t !== 'string') return '<no-token>';
   const prefix = t.slice(0, 8);
@@ -131,6 +165,58 @@ function logNotifFrame(token, direction, msg) {
   }
   const hash = (h >>> 0).toString(16).padStart(8, '0');
   console.log(`[NotifDiag][${redactToken(token)}] ${direction} PHONE_NOTIFICATION hash=${hash} len=${payload.length}`);
+}
+
+/**
+ * ALWAYS-ON, PII-safe notification + reply-path logging (2026-08-10).
+ *
+ * The duplicate diagnostic above is gated behind DEBUG_NOTIF_RELAY and records
+ * only a hash and a length — which cannot answer the question Dennis's report
+ * actually raised ("some notifications I could answer, others not"), because it
+ * never records whether the notification carried a reply action, and it is off
+ * in prod anyway.
+ *
+ * ⭐ `hasReply` is the discriminating field. A notification is replyable in the
+ * web UI iff its PHONE_NOTIFICATION frame carried hasReply=true; the reply box
+ * is gated on exactly that. Logging it per frame turns "some worked, some
+ * didn't" from an anecdote into a table.
+ *
+ * PII line, held: package name and booleans only. NEVER title, body, or sender —
+ * these frames carry 2FA codes and message text. The notification key is hashed,
+ * not printed, since it can embed a phone number for some apps.
+ */
+function logNotifLifecycle(token, direction, msg) {
+  if (typeof msg !== 'string') return;
+  try {
+    if (msg.startsWith('PHONE_NOTIFICATION:')) {
+      const p = JSON.parse(msg.slice('PHONE_NOTIFICATION:'.length));
+      console.log(
+        `[Notif][${redactToken(token)}] ${direction} pkg=${p.packageName || '?'} ` +
+        `hasReply=${p.hasReply === true} replyKeySet=${!!p.replyKey} key=${shortHash(p.notificationKey || '')}`,
+      );
+    } else if (msg.startsWith('NOTIFICATION_REPLY:')) {
+      const p = JSON.parse(msg.slice('NOTIFICATION_REPLY:'.length));
+      // Length only — never the text.
+      console.log(
+        `[Notif][${redactToken(token)}] REPLY_ATTEMPT key=${shortHash(p.notificationKey || '')} ` +
+        `replyKeySet=${!!p.replyKey} textLen=${(p.text || '').length}`,
+      );
+    } else if (msg.startsWith('NOTIFICATION_REPLY_SENT:')) {
+      const p = JSON.parse(msg.slice('NOTIFICATION_REPLY_SENT:'.length));
+      console.log(`[Notif][${redactToken(token)}] REPLY_CONFIRMED key=${shortHash(p.notificationKey || '')}`);
+    } else if (msg.startsWith('NOTIFICATION_REPLY_FAILED:')) {
+      const p = JSON.parse(msg.slice('NOTIFICATION_REPLY_FAILED:'.length));
+      console.log(
+        `[Notif][${redactToken(token)}] REPLY_FAILED key=${shortHash(p.notificationKey || '')} reason=${p.reason || 'unknown'}`,
+      );
+    }
+  } catch { /* malformed frame — never let logging break the data plane */ }
+}
+
+function shortHash(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16).padStart(8, '0').slice(0, 6);
 }
 
 // Pairing-request TTL. The browser sends BROWSER_REQUEST_PAIRING and the
@@ -495,7 +581,12 @@ function startRelay(httpServer) {
         // survivor stays in `active`, so its data plane is untouched.
         safeSend(survivor, `PEER_RECONNECTING:${JSON.stringify({ droppedRole, window: RESUME_WINDOW_MS })}`);
       }
-      console.log(`[Relay][${redactToken(room.token)}] socket_closed: soft-hold survivor (droppedRole=${droppedRole}), resume window armed (${RESUME_WINDOW_MS}ms)`);
+      // The dropped socket is the one that is no longer OPEN; report ITS close
+      // code, because that is what says whether this was a background-kill
+      // (1006, no close frame) or a deliberate leave (1000/1001).
+      const droppedWs = droppedRole === 'phone' ? phone : browser;
+      const dc = droppedWs ? `code=${droppedWs.closeCode ?? '?'} reason="${droppedWs.closeReason ?? '?'}"` : 'code=? reason=?';
+      console.log(`[Relay][${redactToken(room.token)}] socket_closed: soft-hold survivor (droppedRole=${droppedRole}, ${dc}), resume window armed (${RESUME_WINDOW_MS}ms)`);
       return;
     }
 
@@ -815,11 +906,13 @@ function startRelay(httpServer) {
   function forwardDataPlane(room, fromWs, msg) {
     if (fromWs === room.active.browser && room.active.phone) {
       logNotifFrame(room.token, 'browser→phone (active)', msg);
+      logNotifLifecycle(room.token, 'browser→phone', msg);
       safeSend(room.active.phone, msg);
       return true;
     }
     if (fromWs === room.active.phone && room.active.browser) {
       logNotifFrame(room.token, 'phone→browser (active)', msg);
+      logNotifLifecycle(room.token, 'phone→browser', msg);
       safeSend(room.active.browser, msg);
       return true;
     }
@@ -1365,10 +1458,32 @@ function startRelay(httpServer) {
           rlog(`[Relay][${redactToken(token)}] Buffered lobby-phone frame during resume window (buffer=${room.frameBuffer.length}): ${msg.substring(0, 60)}`);
           return;
         }
-        console.log(`[Relay][${redactToken(token)}] Dropping lobby-phone frame: ${msg.substring(0, 60)}`);
+        // Counted by type, not just printed — see countDroppedLobbyFrame.
+        // NOTE for anyone reading a log full of these: NOTIFICATION_PERMISSION
+        // and PERMISSIONS_STATUS are PERMISSION-STATE frames, not notifications.
+        // Dropping them does NOT drop a user's notification, and it cannot make
+        // a delivered notification un-replyable — `hasReply`/`replyKey` travel
+        // inside the PHONE_NOTIFICATION frame itself, and there is no backfill
+        // path that re-materialises a notification without them.
+        const dropStat = countDroppedLobbyFrame(token, msg);
+        console.log(
+          `[Relay][${redactToken(token)}] Dropping lobby-phone frame: ${msg.substring(0, 60)} ` +
+          `(type=${dropStat.type} count=${dropStat.n}; room totals: ${dropStat.summary})`,
+        );
       });
 
-      ws.on('close', () => {
+      ws.on('close', (closeCode, closeReason) => {
+        // OBSERVABILITY (2026-08-10): capture the WS close code + reason.
+        //
+        // This is the single field that would have discriminated a
+        // client-initiated close (1000/1001 — app backgrounded, user left) from
+        // a keepalive timeout (1006 — no close frame ever arrived, the classic
+        // background-kill signature) from a server/proxy close (1012/1013).
+        // Every prior `socket_closed` line recorded NEITHER, so a device being
+        // killed by the OS and a user tapping Disconnect looked identical.
+        // Stashed on the socket so terminateActivePair can report it too.
+        ws.closeCode = closeCode;
+        ws.closeReason = decodeCloseReason(closeReason);
         // F-A: defensive — phone branch will not have indexed itself, but
         // unindex is a no-op when absent.
         if (ws.authVia === 'relay-ticket') unindexWebSocket(ws.userId, ws);
@@ -1395,7 +1510,7 @@ function startRelay(httpServer) {
           // closing socket so a not-yet-observed delete can't mask absence.
           broadcastPhoneAbsentIfLastPhoneGone(room, ws);
         }
-        console.log(`[Relay][${redactToken(token)}] Phone disconnected (was_active=${wasActive})`);
+        console.log(`[Relay][${redactToken(token)}] Phone disconnected (was_active=${wasActive}, code=${ws.closeCode ?? '?'}, reason="${ws.closeReason ?? '?'}")`);
         maybeReapRoom(room);
       });
 
@@ -1514,7 +1629,13 @@ function startRelay(httpServer) {
       console.log(`[Relay][${redactToken(token)}] Dropping lobby-browser frame: ${msg.substring(0, 60)}`);
     });
 
-    ws.on('close', () => {
+    ws.on('close', (closeCode, closeReason) => {
+      // Same capture as the phone branch — a browser close code distinguishes a
+      // tab being closed (1001) from a network drop (1006), which matters when
+      // deciding whether a viewport-driven remount could be tearing the socket
+      // down. See the phone handler for the full rationale.
+      ws.closeCode = closeCode;
+      ws.closeReason = decodeCloseReason(closeReason);
       // F-A: scrub the userId → ws index so the next supersede call doesn't
       // try to re-kick a half-closed socket.
       if (ws.authVia === 'relay-ticket') unindexWebSocket(ws.userId, ws);
@@ -1535,7 +1656,7 @@ function startRelay(httpServer) {
       if (wasActive) {
         terminateActivePair(room, 'socket_closed');
       }
-      console.log(`[Relay][${redactToken(token)}] Browser disconnected (was_active=${wasActive})`);
+      console.log(`[Relay][${redactToken(token)}] Browser disconnected (was_active=${wasActive}, code=${ws.closeCode ?? '?'}, reason="${ws.closeReason ?? '?'}")`);
       maybeReapRoom(room);
     });
 
