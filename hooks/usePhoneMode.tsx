@@ -39,12 +39,37 @@ import React, {
 } from 'react';
 
 // Viewport thresholds. AUTO_COLLAPSE is the "should we be in Phone Mode?"
-// boundary — 600px matches Dennis's hysteresis ceiling. We DON'T auto-flip at
-// every tiny intermediate viewport; once the user expanded manually below
-// 600px, the suppression flag holds them expanded until the window crosses
-// the clear-ceiling.
-export const AUTO_COLLAPSE_BELOW_PX = 600;
-export const SUPPRESS_CLEAR_ABOVE_PX = 600;
+// boundary. We DON'T auto-flip at every tiny intermediate viewport; once the
+// user expanded manually below the threshold, the suppression flag holds them
+// expanded until the window crosses the clear-ceiling.
+//
+// 2026-08-10 — raised 600 → 1000, from measurement rather than taste.
+// The old 600 was an arbitrary ceiling and it left a dead zone: Phone Mode
+// stopped at 600 but the full dashboard does not FIT until far above it.
+// Measured on the live dashboard (empty/disconnected state, sidebar expanded):
+//
+//   main 3-pane grid intrinsic minimum ......  826px  (Dashboard.tsx grid-cols)
+//   + content-slot padding (p-6) ............   48px
+//   + notification rail + gap ...............  ~64px
+//   + Sidebar expanded (w-64) ...............  256px
+//   = full dashboard floor ..................  ~1194px
+//
+// So every viewport from 600px to ~1194px rendered the desktop layout clipped.
+// Two changes close that band together:
+//   1. this threshold, so 600–1000 gets the phone shell instead of a clipped
+//      desktop layout, and
+//   2. SIDEBAR_AUTO_COLLAPSE_BELOW_PX below, which reclaims the sidebar's
+//      256→64px and drops the dashboard floor to ~1002px.
+// 1000 is chosen to sit just under that reclaimed floor while staying below
+// 1024 so no laptop or landscape tablet is ever pushed into Phone Mode.
+export const AUTO_COLLAPSE_BELOW_PX = 1000;
+export const SUPPRESS_CLEAR_ABOVE_PX = 1000;
+
+// Below this width the Sidebar renders in its icon-only w-16 form regardless of
+// the user's stored preference. This is what makes the 1000–1200 band fit; the
+// user's own expanded/collapsed choice is untouched and reasserts itself above
+// the threshold. 1200 (not 1194) leaves a small margin over the measured floor.
+export const SIDEBAR_AUTO_COLLAPSE_BELOW_PX = 1200;
 
 export type PhoneModeView =
   | { kind: 'dialer' }
@@ -56,6 +81,14 @@ export type PhoneModeView =
 interface PhoneModeContextValue {
   /** Whether Phone Mode is currently rendered. */
   phoneMode: boolean;
+  /**
+   * Whether the viewport is narrow enough that the Sidebar must render in its
+   * icon-only form for the dashboard to fit. Derived from the same width this
+   * provider already tracks, so the app keeps exactly one resize listener.
+   * Consumers should OR this with the user's own collapse preference rather
+   * than writing to it — the stored preference must survive a resize.
+   */
+  forceSidebarCollapsed: boolean;
   /** Underlying view stack — last entry is the visible view. */
   stack: PhoneModeView[];
   /** Top of stack — convenience alias. */
@@ -287,9 +320,17 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
     [stack],
   );
 
+  // Narrow-but-not-phone band: the dashboard renders, but only if the Sidebar
+  // gives back its 256px. Pure derivation of the width we already track.
+  const forceSidebarCollapsed = useMemo<boolean>(
+    () => width < SIDEBAR_AUTO_COLLAPSE_BELOW_PX,
+    [width],
+  );
+
   const value = useMemo<PhoneModeContextValue>(
     () => ({
       phoneMode,
+      forceSidebarCollapsed,
       stack,
       current,
       push,
@@ -299,7 +340,7 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
       enterManually,
       openInPopup,
     }),
-    [phoneMode, stack, current, push, pop, setTab, expandManually, enterManually, openInPopup],
+    [phoneMode, forceSidebarCollapsed, stack, current, push, pop, setTab, expandManually, enterManually, openInPopup],
   );
 
   return <PhoneModeContext.Provider value={value}>{children}</PhoneModeContext.Provider>;
@@ -315,6 +356,7 @@ export function usePhoneMode(): PhoneModeContextValue {
   if (!ctx) {
     return {
       phoneMode: false,
+      forceSidebarCollapsed: false,
       stack: [{ kind: 'dialer' }],
       current: { kind: 'dialer' },
       push: () => {},

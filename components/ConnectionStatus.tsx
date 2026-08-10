@@ -164,8 +164,12 @@ function PillShell({
     red: 'bg-red-50/70 border-red-200/70',
   };
   return (
+    // min-w-0 + max-w-full let the pill actually shrink inside the
+    // `min-w-0 flex-1` slot Phone Mode's header gives it. Without them the pill
+    // kept its intrinsic width and rode out over the tab bar at 390px
+    // (2026-08-10). Padding/gap step up at sm: so desktop is byte-identical.
     <div
-      className={`flex items-center gap-3 px-5 py-2 backdrop-blur-md rounded-2xl shadow-sm border ${toneClasses[tone]}`}
+      className={`flex min-w-0 max-w-full items-center gap-2 px-3 sm:gap-3 sm:px-5 py-2 backdrop-blur-md rounded-2xl shadow-sm border ${toneClasses[tone]}`}
       role="status"
       aria-live="polite"
     >
@@ -187,20 +191,25 @@ function LobbyPill({
 }) {
   return (
     <PillShell tone="slate">
-      <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center border border-slate-300">
+      <div className="w-8 h-8 flex-shrink-0 rounded-full bg-slate-200 flex items-center justify-center border border-slate-300">
         <Smartphone className="w-4 h-4 text-slate-600" aria-hidden="true" />
       </div>
-      <div className="flex flex-col leading-tight">
-        <span className="text-sm font-semibold text-slate-800">
+      {/* min-w-0 is what permits the truncate below to engage — a flex child
+          defaults to min-width:auto and refuses to shrink past its text. */}
+      <div className="flex min-w-0 flex-col leading-tight">
+        <span className="truncate text-sm font-semibold text-slate-800">
           {phonePresent ? 'Phone in lobby — ready to pair' : 'Waiting for phone…'}
         </span>
+        {/* The instruction line is the first thing to go on a phone: the pill
+            sits in a ~200px slot there and the Connect button carries the
+            action. Restored at sm: so the desktop header is unchanged. */}
         {!phonePresent && (
-          <span className="text-[11px] text-slate-500">
+          <span className="hidden truncate text-[11px] text-slate-500 sm:block">
             Open ComputerCaller on your phone and sign in.
           </span>
         )}
       </div>
-      <div className="ml-2 h-6 w-px bg-slate-200" aria-hidden="true" />
+      <div className="ml-2 hidden h-6 w-px flex-shrink-0 bg-slate-200 sm:block" aria-hidden="true" />
       <button
         type="button"
         onClick={phonePresent ? onConnect : undefined}
@@ -213,8 +222,8 @@ function LobbyPill({
         }
         className={
           phonePresent
-            ? 'flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-1'
-            : 'flex items-center gap-1.5 px-3 py-1.5 bg-slate-200 text-slate-400 text-xs font-semibold rounded-lg cursor-not-allowed'
+            ? 'flex flex-shrink-0 items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-1'
+            : 'flex flex-shrink-0 items-center gap-1.5 px-3 py-1.5 bg-slate-200 text-slate-400 text-xs font-semibold rounded-lg cursor-not-allowed'
         }
       >
         <Plug className="w-3.5 h-3.5" aria-hidden="true" />

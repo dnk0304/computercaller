@@ -266,7 +266,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             For /app/settings, the page content is prose-style sections —
             wrap it in an overflow-y-auto pane so it scrolls inside the
             shell without breaking the dashboard's no-scroll semantics. */}
-        <div className="flex-1 p-6 overflow-x-auto overflow-y-hidden relative min-w-[640px]">
+        {/* min-w-[640px] removed 2026-08-10: it forced a 640px floor on the
+            content pane itself, so at any viewport narrower than
+            640 + sidebar the pane pushed past the window instead of letting
+            its own overflow-x-auto do the scrolling. Padding steps down below
+            lg so the narrow band spends its pixels on content, not gutters. */}
+        <div className="flex-1 p-3 lg:p-6 overflow-x-auto overflow-y-hidden relative">
           <div className="absolute inset-0 bg-gradient-to-tr from-blue-50/50 via-indigo-50/30 to-purple-50/50 pointer-events-none" />
           <div className="relative h-full z-0">
             {/* Per-route children boundary (P-A, 2026-05-29). The Sidebar

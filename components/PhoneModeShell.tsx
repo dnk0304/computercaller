@@ -520,7 +520,7 @@ function TextsView() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search"
             aria-label="Search messages"
-            className="w-full rounded-lg border border-transparent bg-slate-100 py-2 pl-8 pr-2 text-sm text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            className="w-full rounded-lg border border-transparent bg-slate-100 py-2 pl-8 pr-2 text-base text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
           />
         </div>
       </div>
@@ -722,7 +722,7 @@ function ThreadCompose({ onSend }: ThreadComposeProps) {
           rows={1}
           aria-label="Message body"
           style={{ resize: 'none', overflow: 'hidden', minHeight: '36px', maxHeight: '120px' }}
-          className="flex-1 bg-transparent px-2 py-1.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none"
+          className="flex-1 bg-transparent px-2 py-1.5 text-base text-slate-800 placeholder-slate-400 focus:outline-none"
         />
         <button
           type="button"
@@ -797,7 +797,7 @@ function ComposeView() {
           onChange={(e) => setRecipient(e.target.value.replace(/[^0-9+]/g, ''))}
           placeholder="+47…"
           aria-label="Recipient phone number"
-          className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-base text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
         />
       </div>
 
@@ -809,7 +809,7 @@ function ComposeView() {
           onChange={(e) => setText(e.target.value)}
           placeholder="Type a message…"
           aria-label="Message body"
-          className="h-full w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          className="h-full w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-base text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
         />
       </div>
 

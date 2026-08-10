@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Phone, MessageSquare, LayoutTemplate, Settings, User, FileText, Clock, ChevronLeft, ChevronRight, ShieldCheck } from 'lucide-react';
 import { clsx } from 'clsx';
+import { usePhoneMode } from '@/hooks';
 
 const SIDEBAR_KEY = 'dnkdialer_sidebar_collapsed';
 
@@ -21,18 +22,25 @@ interface SidebarProps {
 }
 
 export const Sidebar = ({ activeTab, setActiveTab, isAdmin = false }: SidebarProps) => {
-  const [collapsed, setCollapsed] = useState(false);
+  // The user's own preference, persisted. Kept separate from what actually
+  // renders so a narrow window can force the icon-only form WITHOUT
+  // overwriting the choice the user made on their laptop (2026-08-10).
+  const [userCollapsed, setUserCollapsed] = useState(false);
+  const { forceSidebarCollapsed } = usePhoneMode();
+  // Below ~1200px the expanded sidebar's 256px is the difference between the
+  // dashboard fitting and being clipped, so width wins over preference.
+  const collapsed = userCollapsed || forceSidebarCollapsed;
   const pathname = usePathname();
   const onAdmin = pathname?.startsWith('/app/admin') ?? false;
 
   useEffect(() => {
     const stored = localStorage.getItem(SIDEBAR_KEY) === 'true';
-    setCollapsed(stored);
+    setUserCollapsed(stored);
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(SIDEBAR_KEY, String(collapsed));
-  }, [collapsed]);
+    localStorage.setItem(SIDEBAR_KEY, String(userCollapsed));
+  }, [userCollapsed]);
 
   const menuItems = [
     { id: 'dashboard', icon: LayoutTemplate, label: 'Dashboard' },
@@ -76,7 +84,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isAdmin = false }: SidebarPro
         </div>
         {!collapsed && (
           <button
-            onClick={() => setCollapsed(true)}
+            onClick={() => setUserCollapsed(true)}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors flex-shrink-0"
             title="Collapse sidebar"
             aria-label="Collapse sidebar"
@@ -145,10 +153,11 @@ export const Sidebar = ({ activeTab, setActiveTab, isAdmin = false }: SidebarPro
         )}
       </nav>
 
-      {/* Expand button (collapsed state) */}
-      {collapsed && (
+      {/* Expand button (collapsed state). Hidden when the collapse is forced by
+          viewport width — expanding there would just clip the dashboard. */}
+      {collapsed && !forceSidebarCollapsed && (
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={() => setUserCollapsed(false)}
           className="mt-4 p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
           title="Expand sidebar"
           aria-label="Expand sidebar"
