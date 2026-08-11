@@ -25,11 +25,11 @@
  *   - support@computercaller.com (the app's real reply-to, see lib/email.ts)
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Lock, ArrowRight, ShieldCheck, RefreshCw, LifeBuoy, LogOut } from 'lucide-react';
 import { clsx } from 'clsx';
 import { WhopEmbedCheckout } from './WhopEmbedCheckout';
-import type { PlanTier } from '@/lib/pricing';
+import { FEATURE_MATRIX, INCLUDED_ON_EVERY_PLAN, type PlanTier, type PlanTierId } from '@/lib/pricing';
 
 export type SubscribeLockedState = 'trial_expired' | 'expired' | 'cancelled' | 'none';
 
@@ -110,8 +110,18 @@ export function SubscribeLocked({
   const hasEmbed = tiers.length > 0;
   const hasExternalUrl = Boolean(whopCheckoutUrl) && whopCheckoutUrl !== '#';
 
-  // One plan — the first (only) configured plan drives the embed.
-  const selectedTier = tiers[0];
+  /**
+   * THREE plans now. The selected one drives the embed.
+   *
+   * Defaults to the recommended tier (Pro, $7) rather than the first or the
+   * cheapest — Dennis's instruction is to steer people there, and the honest way
+   * to steer is a sensible default plus visible reasoning, not hiding the
+   * alternatives. Solo and Pro+ are one click away and identically easy to pick.
+   */
+  const [selectedId, setSelectedId] = useState<PlanTierId>(
+    tiers.find((t) => t.recommended)?.id ?? tiers[0]?.id ?? 'plus'
+  );
+  const selectedTier = tiers.find((t) => t.id === selectedId) ?? tiers[0];
 
   const handleLogout = () => {
     // Best-effort logout, then land on the marketing page (mirrors ProfileMenu).
@@ -133,8 +143,14 @@ export function SubscribeLocked({
       <section
         className={clsx(
           'relative w-full rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-xl shadow-slate-900/5',
-          // The embed needs more breathing room than the plain CTA card.
-          hasEmbed ? 'max-w-lg' : 'max-w-md',
+          // Widths, in order of how much the card has to hold:
+          //   plain CTA        — a headline and a button
+          //   embed only       — plus Whop's iframe
+          //   embed + 3 plans  — plus a selector and a comparison table
+          // Three plans at max-w-lg wrapped each card's tagline to four lines and
+          // squeezed the table's numeric columns; the plans are the decision the
+          // page exists to support, so they get the room.
+          hasEmbed ? (tiers.length > 1 ? 'max-w-2xl' : 'max-w-lg') : 'max-w-md',
           'motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-300'
         )}
         aria-labelledby="subscribe-locked-heading"
@@ -163,17 +179,113 @@ export function SubscribeLocked({
 
         {hasEmbed && selectedTier ? (
           <>
-            {/* Plan summary — one plan, so a simple price row replaces the old
-                multi-tier radio selector. */}
-            <div className="mt-6 flex items-center justify-between rounded-xl border border-blue-600 bg-blue-50/60 p-4 ring-1 ring-blue-600/20">
-              <span className="text-sm font-semibold text-slate-900">
-                ComputerCaller
-              </span>
-              <span className="flex items-baseline gap-1">
-                <span className="text-base font-bold text-slate-900">{selectedTier.price}</span>
-                <span className="text-[11px] text-slate-500">{selectedTier.period}</span>
-              </span>
+            {/* Plan selector — a real radiogroup, so arrow keys move between
+                plans and the choice is announced. Three cards, not a dropdown:
+                a plan you cannot see is a plan you will not buy. */}
+            <div
+              role="radiogroup"
+              aria-label="Choose a plan"
+              className="mt-6 grid grid-cols-1 gap-2 sm:grid-cols-3"
+            >
+              {tiers.map((tier) => {
+                const active = tier.id === selectedId;
+                return (
+                  <button
+                    key={tier.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    aria-label={tier.a11yLabel}
+                    onClick={() => setSelectedId(tier.id)}
+                    className={clsx(
+                      'relative flex flex-col items-start rounded-xl border p-3 text-left transition-colors',
+                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                      active
+                        ? 'border-blue-600 bg-blue-50/70 ring-1 ring-blue-600/20'
+                        : 'border-slate-200 bg-white hover:border-slate-300'
+                    )}
+                  >
+                    {tier.recommended && (
+                      <span className="mb-1 inline-flex rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                        Most popular
+                      </span>
+                    )}
+                    <span className="text-sm font-semibold text-slate-900">{tier.name}</span>
+                    <span className="mt-0.5 flex items-baseline gap-1">
+                      <span className="text-lg font-bold text-slate-900">{tier.price}</span>
+                      <span className="text-[11px] text-slate-500">/mo</span>
+                    </span>
+                    <span className="mt-1 text-[11px] leading-snug text-slate-500">{tier.tagline}</span>
+                  </button>
+                );
+              })}
             </div>
+
+            {/* What actually differs. Every number here is reconciled against
+                TIER_LIMITS by reconcileMatrixWithLimits() — this table is a
+                promise, so it is checked against what the app enforces. */}
+            <table className="mt-4 w-full border-collapse text-left text-xs">
+              <caption className="sr-only">Plan comparison</caption>
+              <thead>
+                <tr className="border-b border-slate-200">
+                  <th scope="col" className="py-2 pr-2 font-medium text-slate-500">Included</th>
+                  {tiers.map((t) => (
+                    <th
+                      key={t.id}
+                      scope="col"
+                      className={clsx(
+                        'px-1 py-2 text-center font-semibold',
+                        t.id === selectedId ? 'text-blue-700' : 'text-slate-600'
+                      )}
+                    >
+                      {t.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {FEATURE_MATRIX.map((row) => (
+                  <tr key={row.label} className="border-b border-slate-100 last:border-0">
+                    <th scope="row" className="py-2 pr-2 font-normal text-slate-600">
+                      {row.label}
+                      {row.note && (
+                        <span className="block text-[10px] leading-snug text-slate-400">{row.note}</span>
+                      )}
+                    </th>
+                    {tiers.map((t) => {
+                      const v = row.values[t.id];
+                      return (
+                        <td
+                          key={t.id}
+                          className={clsx(
+                            'px-1 py-2 text-center tabular-nums',
+                            t.id === selectedId ? 'font-semibold text-slate-900' : 'text-slate-600'
+                          )}
+                        >
+                          {typeof v === 'boolean' ? (
+                            <>
+                              <span aria-hidden="true">{v ? '✓' : '—'}</span>
+                              <span className="sr-only">{v ? 'included' : 'not included'}</span>
+                            </>
+                          ) : (
+                            v
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <ul className="mt-3 space-y-1 text-left text-[11px] text-slate-500">
+              {INCLUDED_ON_EVERY_PLAN.map((line) => (
+                <li key={line} className="flex items-start gap-1.5">
+                  <span aria-hidden="true" className="mt-0.5 text-emerald-600">✓</span>
+                  <span>{line}<span className="sr-only"> — included on every plan</span></span>
+                </li>
+              ))}
+            </ul>
 
             {/* PRIMARY conversion surface — in-page Whop embedded checkout for
                 the plan. selectedTier is guaranteed defined inside this branch. */}

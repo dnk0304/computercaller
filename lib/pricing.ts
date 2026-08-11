@@ -1,221 +1,380 @@
 /**
  * pricing.ts — the single source of truth for ComputerCaller's subscription
- * plan (display + Whop plan-id resolution).
+ * plans (display + Whop plan-id resolution).
  *
- * ONE PLAN (Dennis, 2026-07-05): $5/month, 7-day free trial, cancel anytime.
- * The 3-Month ($25) and Annual ($90) tiers from the 2026-07-03 rollout were
- * retired — we compete with Microsoft Phone Link (free), so the pitch is
- * "cheap enough for anyone", not a billing-period comparison. Both the lock
- * screen (<SubscribeLocked>) and the landing pricing modal consume this so the
- * number, framing, and plan id never drift between surfaces.
+ * THREE PLANS (Dennis, 2026-08-11): Solo $6 · Pro $7 · Pro+ $9, all monthly,
+ * 7-day free trial, cancel anytime.
  *
- * DATA-DRIVEN plan id: the Whop `planId` is read from NEXT_PUBLIC_WHOP_PLAN_ID
- * — never hard-coded here — so Ken can rotate the plan in Coolify without a
- * code change. The *display* (price/period) is intentionally hard-coded in
- * PLAN_TIERS: it's marketing copy, it belongs in the repo, and keeping it here
- * means one edit updates every surface.
+ * ## The defect this file used to be
  *
- * The env reference is a STATIC `process.env.NEXT_PUBLIC_…` read so Next
- * inlines it at build time in both the server (subscribe page) and client
- * (landing page) bundles. A dynamic `process.env[key]` would NOT inline — do
- * not refactor to that.
+ * Three tiers existed in the backend — gated, tested, enforced — and the
+ * storefront could render exactly ONE. `PlanTierId` was the literal `'monthly'`,
+ * `PLAN_TIERS` held a single entry, and `resolvePlanId()` returned one static
+ * `process.env.NEXT_PUBLIC_WHOP_PLAN_ID`. The subscribe page had one thing it
+ * *could* show, so it showed one thing. **Reaching the endpoint and reaching the
+ * eye are different facts**, and this is the version of that on the page that
+ * takes customers' money.
  *
- * Two consumers, two accessors (shape kept plural/array so the consuming
- * components didn't need a rewrite — and so a second plan can return later
- * without an API change):
- *   - PLAN_TIERS         → display only. The landing pricing modal uses this:
- *                          its card is marketing + a register CTA, it never
- *                          embeds a checkout, so it must NOT be gated on the
- *                          env plan id.
- *   - getPlanTiers()     → display + resolved Whop planId, filtered to plans
- *                          whose env var is set. The lock screen uses this to
- *                          drive the embedded checkout; with no plan id set it
- *                          returns [] so we never embed a blank planId.
+ * ## Why one env var could not become three by indexing
+ *
+ * `NEXT_PUBLIC_*` reads are **inlined at build time by literal match**. Next
+ * replaces the exact text `process.env.NEXT_PUBLIC_FOO`; it cannot resolve
+ * `process.env[key]`, which compiles to a runtime lookup against an object that
+ * does not exist in the browser. That is the real reason the old file could only
+ * serve one plan, and it is why `resolvePlanId` below is a `switch` of three
+ * **literal** reads rather than anything clever. Do not "simplify" it into a
+ * lookup — it will silently resolve to `undefined` in the client bundle and every
+ * checkout will render blank.
+ *
+ * ## Internal keys are NOT the display names (deliberate)
+ *
+ *   internal `solo` → **Solo**  $6
+ *   internal `plus` → **Pro**   $7   ← the one we steer people to
+ *   internal `pro`  → **Pro+**  $9
+ *
+ * The internal keys are load-bearing: they are the entitlement `tier`, the keys
+ * of `TIER_LIMITS`, and the fail-closed default (`unknown plan → solo`). Renaming
+ * them to match the new marketing names would put the *display* layer in charge
+ * of *entitlement*, and a typo would silently downgrade a paying customer. So the
+ * rename lives here, at the presentation boundary, and nowhere else.
+ *
+ * ## Every feature row traces to TIER_LIMITS
+ *
+ * The matrix below mirrors `lib/tiers-core.js` (FORGE's file — read, never
+ * written, from here). Two consequences worth stating because they were both
+ * live defects:
+ *   - **Screen mirroring is gone.** It was advertised while `mirroring` was a
+ *     documented FORWARD NO-OP — a promise with no implementation behind it.
+ *   - **"Message sync" is a RENAMED ROW, not a new capability.** Every tier syncs
+ *     messages; the tiers differ in how far back. Solo is not "no sync", it is
+ *     30 days.
  */
 
-export type PlanTierId = 'monthly';
+import { PLAN_IDS, TIER_LIMITS, planIdToTier, type Tier } from './tiers';
+
+/**
+ * The confirmed Whop plan ids (Dennis 2026-08-11, corroborated against Whop's
+ * own product page).
+ *
+ * These are the shipped defaults, not a fallback: a tier whose env var is unset
+ * uses the id confirmed here, and `planIdSource` records which one was used so
+ * "where did this id come from" is an observable fact rather than an assumption.
+ *
+ * The env names carry the PRICE on purpose. `_PRO` alone is ambiguous — display
+ * "Pro" is internal `plus`, and internal `pro` is display "Pro+" — so an operator
+ * setting these in Coolify from the pricing table could pair a $9 id with the $7
+ * tier and neither the name nor the code would object. `_PRO_7` cannot be
+ * misread.
+ */
+export const CONFIRMED_PLAN_IDS: Readonly<Record<Tier, string>> = {
+  solo: 'plan_6DJ4H4iPEQo5X', // Solo  $6
+  plus: 'plan_IvKRyvHtl4Q8w', // Pro   $7
+  pro: 'plan_h587GLZLlOXP4', // Pro+  $9
+};
+
+/** Where a resolved plan id came from. Exposed so a wrong id is diagnosable. */
+export type PlanIdSource = 'env' | 'confirmed-default';
+
+/** Stable plan key, carried on the register CTA as `?plan=<id>`. Internal keys. */
+export type PlanTierId = Tier;
 
 /** Display-only plan shape (no Whop plan id). */
 export interface PlanTierDisplay {
-  /** Stable plan key — also carried on the register CTA as ?plan=<id>. */
+  /** Internal tier key — also the entitlement `tier`. NOT the display name. */
   id: PlanTierId;
-  /** Short name — "Monthly". */
+  /** Marketing name — "Solo" | "Pro" | "Pro+". */
   name: string;
-  /** Headline price with currency symbol — "$5". */
+  /** Headline price with currency symbol — "$7". */
   price: string;
   /** Numeric price (USD) for JSON-LD offers. */
   priceValue: number;
   /** Billing cadence phrase — "per month". */
   period: string;
+  /** True for the tier we steer people to (Dennis: "push people towards Pro"). */
+  recommended: boolean;
+  /** One line under the name, explaining who the tier is for. */
+  tagline: string;
   /** Full spoken label for screen readers on plan CTAs. */
   a11yLabel: string;
 }
 
-/** Display plan + the Whop plan id resolved from env (checkout-ready). */
+/** Display plan + the Whop plan id (checkout-ready). */
 export interface PlanTier extends PlanTierDisplay {
-  /** Whop plan id, resolved from env. Guaranteed non-empty (unset plans are dropped). */
+  /** Whop plan id. Guaranteed non-empty. */
   planId: string;
+  /** Whether `planId` came from env or the confirmed default. */
+  planIdSource: PlanIdSource;
 }
 
 /**
- * The hard-coded plan display. This is the marketing source of truth; edit the
- * price/framing here and every surface updates.
+ * A row in the comparison table. `values` is indexed by tier key.
+ *
+ * Every row here restates a field of `TIER_LIMITS`. `limitKey` names which one,
+ * so the claim and its enforcement can be reconciled mechanically instead of by
+ * a reviewer remembering — see `assertMatrixMatchesLimits()`.
  */
+export interface FeatureRow {
+  readonly label: string;
+  /** The `TIER_LIMITS` field this row restates. */
+  readonly limitKey: 'templates' | 'quickReplies' | 'syncRangeMax' | 'contactSync';
+  /** Rendered cell per tier. `true`/`false` render as a tick/cross. */
+  readonly values: Readonly<Record<Tier, string | boolean>>;
+  /** Shown under the label when the row needs a sentence to stay honest. */
+  readonly note?: string;
+}
+
 export const PLAN_TIERS: readonly PlanTierDisplay[] = [
   {
-    id: 'monthly',
-    name: 'Monthly',
-    price: '$5',
-    priceValue: 5,
+    id: 'solo',
+    name: 'Solo',
+    price: '$6',
+    priceValue: 6,
     period: 'per month',
-    a11yLabel: 'ComputerCaller plan, 5 dollars per month, 7-day free trial, cancel anytime.',
+    recommended: false,
+    tagline: 'The essentials, for one phone.',
+    a11yLabel:
+      'Solo plan, 6 dollars per month. 3 message templates, 1 quick reply, 30 days of message sync. 7-day free trial, cancel anytime.',
+  },
+  {
+    id: 'plus',
+    name: 'Pro',
+    price: '$7',
+    priceValue: 7,
+    period: 'per month',
+    recommended: true,
+    tagline: 'Everything most people need. One dollar more than Solo.',
+    a11yLabel:
+      'Pro plan, 7 dollars per month. Recommended. 10 message templates, 3 quick replies, 6 months of message sync, and phone contacts. 7-day free trial, cancel anytime.',
+  },
+  {
+    id: 'pro',
+    name: 'Pro+',
+    price: '$9',
+    priceValue: 9,
+    period: 'per month',
+    recommended: false,
+    tagline: 'For heavy senders who want a full year of history.',
+    a11yLabel:
+      'Pro plus plan, 9 dollars per month. 30 message templates, 5 quick replies, 1 year of message sync, and phone contacts. 7-day free trial, cancel anytime.',
+  },
+];
+
+/** The tier the page defaults to and marks recommended. */
+export const RECOMMENDED_TIER: Tier = 'plus';
+
+/**
+ * The comparison matrix.
+ *
+ * Ordered by how much the difference is worth to someone choosing: templates and
+ * sync window are the real levers. **Quick replies sit below them deliberately** —
+ * 1 / 3 / 5 is a thin spread and leading with it would oversell a small
+ * difference, which on a page that takes money is just a quieter kind of lie.
+ */
+export const FEATURE_MATRIX: readonly FeatureRow[] = [
+  {
+    label: 'Message templates',
+    limitKey: 'templates',
+    values: { solo: '3', plus: '10', pro: '30' },
+  },
+  {
+    label: 'Message sync',
+    limitKey: 'syncRangeMax',
+    // Renamed row, NOT a new capability: every tier syncs messages, the tiers
+    // differ in how far back you can look. Saying "30 days" rather than a cross
+    // is the whole point — a cross here would claim Solo cannot sync at all.
+    values: { solo: '30 days', plus: '6 months', pro: '1 year' },
+    note: 'How far back your messages and call history are available.',
+  },
+  {
+    label: 'Phone contacts',
+    limitKey: 'contactSync',
+    values: { solo: false, plus: true, pro: true },
+    note: 'Pull your phone’s contact book so names show instead of numbers.',
+  },
+  {
+    label: 'Quick replies',
+    limitKey: 'quickReplies',
+    values: { solo: '1', plus: '3', pro: '5' },
   },
 ];
 
 /**
- * Resolve the Whop plan id from env. STATIC read only (see header) so Next
- * inlines the value at build time.
+ * Included on every plan. Kept as its own list rather than repeated per column,
+ * because repeating it three times makes a shared feature look like a
+ * differentiator.
  */
-function resolvePlanId(id: PlanTierId): string | undefined {
+export const INCLUDED_ON_EVERY_PLAN: readonly string[] = [
+  'Call and text from your computer',
+  'Your phone’s notifications on your computer',
+  '7-day free trial, cancel anytime',
+];
+
+/**
+ * Resolve the Whop plan id. STATIC literal reads only — see the header for why a
+ * dynamic lookup silently breaks the client bundle.
+ */
+function resolvePlanId(id: PlanTierId): { planId: string; planIdSource: PlanIdSource } {
   switch (id) {
-    case 'monthly':
-      return process.env.NEXT_PUBLIC_WHOP_PLAN_ID || undefined;
+    case 'solo': {
+      const fromEnv = process.env.NEXT_PUBLIC_WHOP_PLAN_ID_SOLO_6;
+      return fromEnv
+        ? { planId: fromEnv, planIdSource: 'env' }
+        : { planId: CONFIRMED_PLAN_IDS.solo, planIdSource: 'confirmed-default' };
+    }
+    case 'plus': {
+      const fromEnv = process.env.NEXT_PUBLIC_WHOP_PLAN_ID_PRO_7;
+      return fromEnv
+        ? { planId: fromEnv, planIdSource: 'env' }
+        : { planId: CONFIRMED_PLAN_IDS.plus, planIdSource: 'confirmed-default' };
+    }
+    case 'pro': {
+      const fromEnv = process.env.NEXT_PUBLIC_WHOP_PLAN_ID_PROPLUS_9;
+      return fromEnv
+        ? { planId: fromEnv, planIdSource: 'env' }
+        : { planId: CONFIRMED_PLAN_IDS.pro, planIdSource: 'confirmed-default' };
+    }
     default:
-      return undefined;
+      return { planId: CONFIRMED_PLAN_IDS.solo, planIdSource: 'confirmed-default' };
   }
 }
 
 /**
- * Checkout-ready plans — the display in PLAN_TIERS with the Whop plan id
- * attached, filtered to those whose env var is set. Safe on server or client
- * (env reads are inlined at build). Never returns a plan with a blank planId.
+ * Checkout-ready plans — display plus a resolved Whop plan id, in display order.
+ *
+ * Unlike the previous version this never returns an empty list: a missing env var
+ * is not a reason to show a customer nothing, it is a reason to use the confirmed
+ * id and record that we did.
  */
 export function getPlanTiers(): PlanTier[] {
-  return PLAN_TIERS.map((tier) => ({ tier, planId: resolvePlanId(tier.id) }))
-    .filter((x): x is { tier: PlanTierDisplay; planId: string } => Boolean(x.planId))
-    .map(({ tier, planId }) => ({ ...tier, planId }));
+  return PLAN_TIERS.map((tier) => ({ ...tier, ...resolvePlanId(tier.id) }));
+}
+
+/** The recommended plan, for default selection. Never undefined. */
+export function getRecommendedTier(): PlanTier {
+  const tiers = getPlanTiers();
+  return tiers.find((t) => t.id === RECOMMENDED_TIER) ?? tiers[0]!;
+}
+
+/** Display name for an internal tier key. The ONLY place the rename happens. */
+export function displayNameFor(tier: Tier): string {
+  return PLAN_TIERS.find((t) => t.id === tier)?.name ?? 'Solo';
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// 3-TIER DISPLAY MAP (2026-07-27, dispatch feature/tier-gating)
-//
-// FORGE owns this data map; Pixel's landing/pricing modal + upgrade modal
-// consume `getTierPlans()` READ-ONLY. This is DISPLAY + checkout plan-id ONLY —
-// runtime entitlement/limits come from /api/entitlement (the canonical source),
-// never from here. The plan ids are imported from lib/tiers so the display and
-// the tier-resolution map can never drift; the feature copy mirrors the locked
-// TIER_LIMITS but is intentionally human marketing text (numbers restated here
-// are for the card, not enforcement).
-//
-// Whop visibility (Ken/Dennis): Plus & Pro are `visibility:hidden` in Whop
-// until gating deploys — a checkout CTA for them will 404/hide until the
-// go-live flip. Pixel should render them but expect the hidden state pre-flip.
-//
-// VALUE LADDER (2026-07-29, Dennis): the three tiers read cumulatively. `features`
-// holds only what each tier ADDS over the one below (Solo = base essentials);
-// `inheritsFrom` drives the "Everything in <lower>, plus" lead line. The former
-// "Screen mirroring" Pro bullet was REMOVED — phone/screen mirroring was never
-// built (the entitlement `limits.mirroring` flag stays as a dormant backend
-// no-op; we simply no longer advertise it). Pro's honest differentiators are
-// 30 templates and 1-year history; contact sync is included via Plus.
-//
-// NOTIFICATION MIRRORING = ALL PLANS (2026-07-29, Dennis: "keep notifications
-// for all 3 plans"). This is the REAL, shipped feature — your phone's app
-// notifications (WhatsApp/Telegram/Discord, etc.) shown on your computer,
-// served by NotificationProvider — NOT the never-built "screen mirroring"
-// above. It is NOT a tier lever: TIER_LIMITS gates only templates, sync-range
-// and contactSync, so notification mirroring is ungated for every tier. It
-// lives in Solo's base `features` so it renders on the Solo card and inherits
-// up to Plus/Pro via the "Everything in <lower>, plus" ladder — all 3 cards
-// convey that everyone gets it.
-import { PLAN_IDS, type Tier } from './tiers';
+// Reconciliation with the enforcement source.
+
+export interface MatrixMismatch {
+  readonly row: string;
+  readonly tier: Tier;
+  readonly advertised: string | boolean;
+  readonly enforced: string | number | boolean;
+}
+
+/**
+ * Every advertised number must equal what `TIER_LIMITS` actually enforces.
+ *
+ * This page is a promise. The failure mode it guards is not a crash — it is a
+ * customer paying $9 for "30 templates" against a table that enforces 10, which
+ * looks perfect in every screenshot and is discovered by the customer. Returns
+ * the mismatches rather than throwing, so a caller can report all of them.
+ */
+export function reconcileMatrixWithLimits(): MatrixMismatch[] {
+  const out: MatrixMismatch[] = [];
+  const tiers: Tier[] = ['solo', 'plus', 'pro'];
+  const syncWords: Record<string, string> = {
+    '30d': '30 days',
+    '3mo': '3 months',
+    '6mo': '6 months',
+    '1yr': '1 year',
+  };
+
+  for (const row of FEATURE_MATRIX) {
+    for (const tier of tiers) {
+      const advertised = row.values[tier];
+      const enforcedRaw = (TIER_LIMITS[tier] as unknown as Record<string, unknown>)[row.limitKey];
+      const enforced = enforcedRaw as string | number | boolean;
+      const expected =
+        row.limitKey === 'syncRangeMax'
+          ? (syncWords[String(enforced)] ?? String(enforced))
+          : typeof enforced === 'boolean'
+            ? enforced
+            : String(enforced);
+      if (advertised !== expected) out.push({ row: row.label, tier, advertised, enforced });
+    }
+  }
+  return out;
+}
+
+/**
+ * Every plan id we would send a customer to checkout on must resolve, through
+ * the BACKEND's own map, to the tier we advertised it as.
+ *
+ * This crosses the fence into FORGE's file on purpose, read-only. It is the one
+ * check that catches the genuinely expensive failure: a customer pays for Pro+
+ * and `planIdToTier` — which fails closed to `solo` for ids it does not know —
+ * grants them Solo. Both halves of this change must land together, and this is
+ * what proves they did.
+ */
+export function reconcilePlanIdsWithBackend(): { tier: Tier; planId: string; resolvesTo: Tier }[] {
+  return getPlanTiers()
+    .map((t) => ({ tier: t.id, planId: t.planId, resolvesTo: planIdToTier(t.planId) as Tier }))
+    .filter((r) => r.resolvesTo !== r.tier);
+}
+
+/** Legacy ids kept mapped for grandfathered subscribers. Display only. */
+export const LEGACY_PLAN_IDS: Readonly<Record<string, Tier>> = {
+  [PLAN_IDS.solo]: 'solo',
+  [PLAN_IDS.plus]: 'plus',
+  [PLAN_IDS.pro]: 'pro',
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+// Back-compat for the upgrade modal (unchanged shape, corrected data).
 
 export interface TierPlanDisplay {
-  /** Tier key — also the entitlement `tier`. */
   tier: Tier;
-  /** Short name — "Solo" | "Plus" | "Pro". */
   name: string;
-  /** Headline price with currency symbol — "$5". */
   price: string;
-  /** Numeric price (USD) for JSON-LD offers. */
   priceValue: number;
-  /** Billing cadence phrase — "per month". */
   period: string;
-  /** Whop plan id (locked constant from lib/tiers-core PLAN_IDS). */
   planId: string;
-  /** Marketing highlight flag — Plus is the recommended tier. */
   highlight: boolean;
-  /**
-   * The tier whose benefits carry up into this one, rendered as an
-   * "Everything in <X>, plus" lead line so the three cards read as a
-   * cumulative value ladder. undefined on the base tier (Solo).
-   */
   inheritsFrom?: string;
-  /**
-   * Benefits this tier ADDS over the tier below it (for Solo, the base
-   * essentials). Marketing copy — the numbers restate the locked TIER_LIMITS
-   * but are NOT the enforcement source. Presented cumulatively via inheritsFrom.
-   */
   features: readonly string[];
-  /** Full spoken label for screen readers on the plan CTA. */
   a11yLabel: string;
 }
 
-export const TIER_PLANS: readonly TierPlanDisplay[] = [
-  {
-    tier: 'solo',
-    name: 'Solo',
-    price: '$5',
-    priceValue: 5,
-    period: 'per month',
-    planId: PLAN_IDS.solo,
-    highlight: false,
-    features: [
-      'Call & text from your computer',
-      "See your phone's notifications on your computer",
-      '3 message templates',
-      '30-day sync history',
-      'Reply & hang up quick replies',
-    ],
-    a11yLabel:
-      'Solo plan, 5 dollars per month. Includes calling and texting from your computer, seeing your phone notifications on your computer, 3 message templates, 30-day sync history, and quick replies. Cancel anytime.',
-  },
-  {
-    tier: 'plus',
-    name: 'Plus',
-    price: '$7',
-    priceValue: 7,
-    period: 'per month',
-    planId: PLAN_IDS.plus,
-    highlight: true,
-    inheritsFrom: 'Solo',
-    features: [
-      '10 message templates',
-      '6-month sync history',
-      'Contact sync',
-    ],
-    a11yLabel:
-      'Plus plan, 7 dollars per month. Everything in Solo, plus 10 message templates, 6-month sync history, and contact sync. Cancel anytime.',
-  },
-  {
-    tier: 'pro',
-    name: 'Pro',
-    price: '$10',
-    priceValue: 10,
-    period: 'per month',
-    planId: PLAN_IDS.pro,
-    highlight: false,
-    inheritsFrom: 'Plus',
-    features: [
-      '30 message templates',
-      '1-year sync history',
-    ],
-    a11yLabel:
-      'Pro plan, 10 dollars per month. Everything in Plus, plus 30 message templates and 1-year sync history. Cancel anytime.',
-  },
-];
+/**
+ * The cumulative value ladder used by the in-app upgrade modal. Derived from the
+ * same matrix as the storefront so the two surfaces cannot drift — the previous
+ * version maintained a second hand-written feature list, which is how a page ends
+ * up advertising a capability the app never had.
+ */
+export const TIER_PLANS: readonly TierPlanDisplay[] = getPlanTiers().map((t, i, all) => ({
+  tier: t.id,
+  name: t.name,
+  price: t.price,
+  priceValue: t.priceValue,
+  period: t.period,
+  planId: t.planId,
+  highlight: t.recommended,
+  inheritsFrom: i === 0 ? undefined : all[i - 1]!.name,
+  features:
+    i === 0
+      ? [...INCLUDED_ON_EVERY_PLAN, ...rowSummaries('solo')]
+      : rowSummaries(t.id).filter((line, idx) => line !== rowSummaries(all[i - 1]!.id)[idx]),
+  a11yLabel: t.a11yLabel,
+}));
 
-/** The 3-tier display + checkout plan ids (read-only). Pixel's modal consumes this. */
+/** "10 message templates" style lines for one tier, straight off the matrix. */
+function rowSummaries(tier: Tier): string[] {
+  return FEATURE_MATRIX.map((row) => {
+    const v = row.values[tier];
+    if (typeof v === 'boolean') return v ? row.label : `No ${row.label.toLowerCase()}`;
+    return `${v} ${row.label.toLowerCase()}`;
+  });
+}
+
 export function getTierPlans(): readonly TierPlanDisplay[] {
   return TIER_PLANS;
 }
