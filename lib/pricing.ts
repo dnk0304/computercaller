@@ -190,27 +190,33 @@ export const FEATURE_MATRIX: readonly FeatureRow[] = [
     values: { solo: '3', plus: '10', pro: '30' },
   },
   {
-    label: 'Messages & call history',
+    label: 'Message sync',
     limitKey: 'syncRangeMax',
     // Renamed row, NOT a new capability: every tier syncs messages, the tiers
     // differ in how far back you can look. Saying "30 days" rather than a cross
     // is the whole point — a cross here would claim Solo cannot sync at all.
     //
-    // ⭐ ONE COMBINED ROW, not two (Ken's option (b), 2026-08-11). The claim is
-    // verifiable in our own code: lib/tiers-core.js clamps GET_MESSAGES and
-    // GET_CALL_LOGS by the SAME `syncRangeMax`, so call history genuinely is
-    // 30d/6mo/1yr — it is real enforcement, not padding.
+    // ⭐ TWO SEPARATE ROWS, not one combined (Dennis, 2026-08-11 — overriding a
+    // combined row I had argued for). Both are clamped by the SAME `syncRangeMax`
+    // in lib/tiers-core.js, so the identical values are real enforcement.
     //
-    // Two rows with identical values would read as padding and inflate the table
-    // without adding information; splitting one enforcement rule into two lines
-    // is a presentation choice that makes the product look bigger than it is.
-    // But call history buried in a note is the opposite failure — the previous
-    // label said only "Message sync", so a reader scanning labels never learned
-    // call history was included at all. Naming both in the label is the honest
-    // middle: one row because there is one rule, both nouns because there are
-    // two capabilities.
+    // I argued that two rows with identical values read as padding. On a
+    // MARKETING surface that reasoning is wrong, and his is better: a reader
+    // scanning a feature table reads ROWS AS BENEFITS. "Messages & call history"
+    // reads as ONE thing you get; two rows read as TWO. The values matching is a
+    // fact about our IMPLEMENTATION, not about what the customer receives — and
+    // they do receive two genuinely distinct capabilities. The claim is true
+    // either way, which is what actually mattered.
     values: { solo: '30 days', plus: '6 months', pro: '1 year' },
-    note: 'How far back your messages and call history are available.',
+    note: 'How far back your text messages are available.',
+  },
+  {
+    label: 'Call history',
+    limitKey: 'syncRangeMax',
+    // Same clamp, same window — GET_CALL_LOGS is bounded by the identical
+    // `syncRangeMax` as GET_MESSAGES. Traced to TIER_LIMITS, not asserted.
+    values: { solo: '30 days', plus: '6 months', pro: '1 year' },
+    note: 'How far back your incoming and outgoing calls are available.',
   },
   {
     label: 'Phone contacts',
