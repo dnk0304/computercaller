@@ -15,7 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { evaluateEntitlement, isAdminUser } from '@/lib/entitlement';
-import { resolveCardStatuses } from '@/lib/whop';
+import { resolveMembershipStates } from '@/lib/whop';
 
 // Human-readable plan label per resolved tier. Kept local to the admin feed —
 // the enforced tier values ('solo'|'plus'|'pro') come straight off the shared
@@ -91,6 +91,11 @@ export async function GET(req: NextRequest) {
             canceledAt: true,
             paymentMethodAttached: true,
             whopMembershipId: true,
+            // cancelAtPeriodEnd (2026-08-11) — the customer cancelled but is
+            // still inside the period they paid for. Whop keeps such a
+            // membership VALID, so without this the row reads as a happy
+            // "Paying" customer right up until they silently vanish.
+            cancelAtPeriodEnd: true,
             // planId (2026-07-30) — REQUIRED to surface the tier (Solo/Plus/Pro)
             // in the feed. Was previously dropped, so the dashboard showed only
             // coarse state, never the plan. Feeds evaluateEntitlement below.
@@ -116,7 +121,9 @@ export async function GET(req: NextRequest) {
     const threshold = sameIpThreshold();
     const now = new Date();
 
-    // LIVE card-on-file (dispatch forge/trial7-caps-whopcard, 2026-07-03). For
+    // LIVE membership state (dispatch forge/trial7-caps-whopcard, 2026-07-03;
+    // widened 2026-08-11 to also read cancel_at_period_end + current_period_end
+    // off the SAME response — zero extra network calls). For
     // every row that carries a whopMembershipId, ask the Whop admin API whether
     // a card is on file — this also covers TRIAL-only users whose stored
     // paymentMethodAttached is still false. Bounded concurrency + 3s per-call
@@ -127,7 +134,7 @@ export async function GET(req: NextRequest) {
     const membershipIds = users
       .map((u) => u.subscription?.whopMembershipId)
       .filter((id): id is string => typeof id === 'string' && id.length > 0);
-    const liveCard = await resolveCardStatuses(membershipIds);
+    const liveState = await resolveMembershipStates(membershipIds);
 
     const customers = users.map((u) => {
       const freeAccess = freeAccessSet.has(u.email.toLowerCase());
@@ -161,9 +168,26 @@ export async function GET(req: NextRequest) {
       // miss/timeout/no-key (null) keep the stored value. Rows with no
       // membershipId never had a live call, so they keep stored as-is.
       const membershipId = u.subscription?.whopMembershipId ?? null;
-      const live = membershipId ? liveCard.get(membershipId) : undefined;
+      const live = membershipId ? liveState.get(membershipId) : undefined;
       const effectiveCardAttached =
-        typeof live === 'boolean' ? live : (u.subscription?.paymentMethodAttached ?? false);
+        typeof live?.cardOnFile === 'boolean'
+          ? live.cardOnFile
+          : (u.subscription?.paymentMethodAttached ?? false);
+
+      // Same live-over-stored precedence for the cancellation signal. The stored
+      // column is the durable record (written by the webhook); the live read
+      // reconciles it — and backfills customers who cancelled BEFORE the webhook
+      // learned to capture cancel_at_period_end at all.
+      const effectiveCancelAtPeriodEnd =
+        typeof live?.cancelAtPeriodEnd === 'boolean'
+          ? live.cancelAtPeriodEnd
+          : (u.subscription?.cancelAtPeriodEnd ?? false);
+
+      // Next payment / access-until. Prefer the live period end when Whop
+      // answered — a renewal that hasn't reached our webhook yet shows the real
+      // next-bill date rather than a stale stored one.
+      const effectivePeriodEnd =
+        live?.currentPeriodEnd ?? u.subscription?.currentPeriodEnd?.toISOString() ?? null;
 
       // subscription block is NEVER omitted — when the row has no subscription
       // we return an explicit null-filled object with the evaluated state (which
@@ -181,11 +205,12 @@ export async function GET(req: NextRequest) {
             planLabel,
             trialEndsAt: u.subscription.trialEndsAt?.toISOString() ?? null,
             trialDaysLeft: ent.trialDaysLeft,
-            currentPeriodEnd: u.subscription.currentPeriodEnd?.toISOString() ?? null,
+            currentPeriodEnd: effectivePeriodEnd,
             convertedAt: u.subscription.convertedAt?.toISOString() ?? null,
             canceledAt: u.subscription.canceledAt?.toISOString() ?? null,
             paymentMethodAttached: effectiveCardAttached,
             whopMembershipId: u.subscription.whopMembershipId ?? null,
+            cancelAtPeriodEnd: effectiveCancelAtPeriodEnd,
           }
         : {
             status: null,
@@ -199,6 +224,7 @@ export async function GET(req: NextRequest) {
             canceledAt: null,
             paymentMethodAttached: false,
             whopMembershipId: null,
+            cancelAtPeriodEnd: false,
           };
 
       return {

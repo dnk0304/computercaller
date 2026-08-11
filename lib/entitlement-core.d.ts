@@ -103,4 +103,13 @@ export function evaluateUserEntitlement(
 
 export function resolveWhopCardState(action: string, data: unknown): boolean | null;
 
+/**
+ * Whether a Whop membership payload says the customer has cancelled while still
+ * inside the period they paid for. `true` = churn scheduled, `false` = positively
+ * not cancelled (uncancel), `null` = unknown — the caller MUST preserve the
+ * stored value rather than clearing it. Reporting signal only; entitlement
+ * ignores it (access runs to currentPeriodEnd either way).
+ */
+export function resolveWhopCancellation(data: unknown): boolean | null;
+
 export const ENTITLEMENT_ALLOWLIST_FALLBACK: string;

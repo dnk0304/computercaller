@@ -202,7 +202,17 @@ model Subscription {
   userId            String    @unique
   user              User      @relation(fields: [userId], references: [id])
   whopMembershipId  String?
-  status            String    @default("trial")  // trial | active | expired | cancelled
+  // trial | active | expired | cancelled
+  //   'cancelled' — the sub ended AFTER the customer cancelled (we saw
+  //                 cancelAtPeriodEnd, or a cancellation event, first).
+  //   'expired'   — the sub ended with no recorded cancellation (involuntary
+  //                 churn: failed payment, chargeback, admin revoke).
+  // Both are non-entitled and take the SAME deny branch in
+  // lib/entitlement-core.js rule (7) — the distinction is commercial reporting
+  // (voluntary vs involuntary churn), never access. Until 2026-08-11 the
+  // webhook wrote 'expired' for BOTH and 'cancelled' was never written despite
+  // being documented here.
+  status            String    @default("trial")
   trialEndsAt       DateTime
   currentPeriodEnd  DateTime?
   // Customer-tracking columns (2026-07-03, dispatch forge/trial-lock-and-admin
@@ -216,11 +226,29 @@ model Subscription {
   //                          is 'active'. See Whop webhook route + report note
   //                          re: confirming card-on-file during trial via Whop
   //                          API.
-  //   canceledAt           — set when the webhook moves the sub to expired/
-  //                          cancelled. null while active/trial.
+  //   canceledAt           — the moment we FIRST learned this sub was
+  //                          cancelled. Stamped ONCE (only written while still
+  //                          null) so a mid-period cancellation records the
+  //                          REQUEST time and the later went_invalid does not
+  //                          overwrite it with the lapse time. null while
+  //                          active/trial.
   convertedAt           DateTime?
   paymentMethodAttached Boolean  @default(false)
   canceledAt            DateTime?
+  // cancelAtPeriodEnd (2026-08-11, dispatch forge/whop-payment-tracking-admin).
+  // Boolean @default(false) → `prisma db push` additive, zero data loss.
+  //
+  // WHY: when a customer cancels mid-period Whop keeps the membership VALID and
+  // only flips `cancel_at_period_end` on the membership object — no
+  // membership.went_invalid fires until the paid period actually lapses.
+  // Without this column such a customer reads as a happy "Paying" row right up
+  // until they silently vanish. true = "cancelled, but still entitled until
+  // currentPeriodEnd" — a churn signal, NOT a lockout.
+  //
+  // ENTITLEMENT DELIBERATELY IGNORES IT: lib/entitlement-core.js never reads
+  // this column. A cancelled-but-paid-through customer keeps full access until
+  // currentPeriodEnd, which is exactly what they bought. Reporting only.
+  cancelAtPeriodEnd     Boolean  @default(false)
   // Whop plan id → billing tier (2026-07-27, dispatch feature/tier-gating).
   // Nullable & un-defaulted → `prisma db push` additive, zero data loss. The
   // Whop webhook persists extractPlanId(data) on every upsert going forward.

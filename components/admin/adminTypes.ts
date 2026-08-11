@@ -63,10 +63,29 @@ export interface AdminSubscription {
   currentPeriodEnd: string | null;
   /** ISO timestamp the user first converted to paying, else `null`. */
   convertedAt: string | null;
+  /**
+   * When we FIRST learned this subscription was cancelled — the moment the
+   * customer decided to leave, not the moment access lapsed. Stamped once.
+   */
   canceledAt: string | null;
   /** `true`/`false` known, `null` = unknown (render as "—"). */
   paymentMethodAttached: boolean | null;
   whopMembershipId: string | null;
+  /**
+   * The customer has CANCELLED but is still inside the period they paid for
+   * (2026-08-11, ADDITIVE, optional — an omitted field means "not cancelled").
+   *
+   * Whop keeps a mid-period cancellation VALID and only flips
+   * `cancel_at_period_end`; no `membership.went_invalid` fires until the period
+   * actually lapses. So `state` is still `'active'` and `paymentMethodAttached`
+   * is still true for these rows — this flag is the ONLY churn signal, and
+   * `currentPeriodEnd` is the date access ends.
+   *
+   * Commercially distinct from `state === 'expired' | 'cancelled'`: those
+   * customers are already gone. These are still paying customers today, leaving
+   * on a known date. The table must not render them the same.
+   */
+  cancelAtPeriodEnd?: boolean;
 }
 
 export interface AdminCustomer {

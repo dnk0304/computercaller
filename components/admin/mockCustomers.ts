@@ -198,6 +198,31 @@ export const mockCustomersResponse: AdminCustomersResponse = {
       signupIp: '203.0.113.200', lastLoginIp: '203.0.113.200', sameIpAccountCount: 1, flagged: false,
     },
 
+    // --- MID-PERIOD cancellation (2026-08-11) -------------------------------
+    // The row this whole dispatch exists for: the customer has cancelled, but
+    // Whop keeps the membership VALID until the period they paid for ends. So
+    // state is still 'active', Paying still reads "Yes", the card is still on
+    // file — and ONLY `cancelAtPeriodEnd` reveals that they are leaving on
+    // currentPeriodEnd. Must render as "Cancelling · until <date>", visibly
+    // different from the already-gone `cus_cancelled` row above.
+    {
+      id: 'cus_cancelling',
+      email: 'leaving.soon@acme.co',
+      emailVerified: true,
+      authProvider: 'email',
+      registeredAt: iso(200),
+      freeAccess: false,
+      subscription: {
+        status: 'active', state: 'active', tier: 'plus', planLabel: 'Plus',
+        trialEndsAt: iso(186), trialDaysLeft: null,
+        currentPeriodEnd: iso(-18), convertedAt: iso(184), canceledAt: iso(2),
+        paymentMethodAttached: true, whopMembershipId: 'mem_cancelling1',
+        cancelAtPeriodEnd: true,
+      },
+      lastActiveAt: iso(0.5),
+      signupIp: '198.51.100.44', lastLoginIp: '198.51.100.44', sameIpAccountCount: 1, flagged: false,
+    },
+
     // --- Unknown card + never active (null lastActiveAt) --------------------
     {
       id: 'cus_unknown_card',

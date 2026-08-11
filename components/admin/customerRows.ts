@@ -103,6 +103,61 @@ export function planPill(state: SubscriptionState, planLabel: PlanLabel): PillMe
   }
 }
 
+// ---------- Cancellation pill ------------------------------------------------
+
+export interface CancellationMeta extends PillMeta {
+  /**
+   * True when the customer has cancelled but is STILL a paying customer today
+   * (inside the period they bought). Drives the "cancels <date>" tooltip.
+   */
+  pendingChurn: boolean;
+}
+
+/**
+ * Resolve the Cancelled column (2026-08-11).
+ *
+ * Three commercially distinct outcomes that previously all looked the same:
+ *
+ *   1. "Cancelling"  — `cancelAtPeriodEnd` is true while the sub is still
+ *                      active/trialing. The customer HAS cancelled but is paid
+ *                      through `currentPeriodEnd`. Whop keeps the membership
+ *                      valid, so nothing else on the row says this — the status
+ *                      pill still reads "Active" and Paying still reads "Yes",
+ *                      which is CORRECT (they are still entitled) but hides the
+ *                      churn. Amber, and the only urgent one: still winnable.
+ *   2. "Cancelled"   — they cancelled AND the period has since lapsed
+ *                      (voluntary churn, already gone). Slate.
+ *   3. "—"           — never cancelled. Note that an `expired` row with no
+ *                      `canceledAt` is INVOLUNTARY churn (failed payment), a
+ *                      different problem with a different fix, so it must not
+ *                      be labelled cancelled.
+ */
+export function cancellationMeta(
+  sub: AdminSubscription | null,
+  state: SubscriptionState,
+): CancellationMeta | null {
+  if (!sub) return null;
+  const stillLive = state === 'active' || state === 'trialing';
+
+  if (sub.cancelAtPeriodEnd && stillLive) {
+    return {
+      label: 'Cancelling',
+      className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200',
+      pendingChurn: true,
+    };
+  }
+  // Already gone, and we know it was their choice — either the webhook wrote
+  // status 'cancelled' or it stamped canceledAt on the way out.
+  if (sub.status === 'cancelled' || state === 'cancelled' || (sub.canceledAt && !stillLive)) {
+    return {
+      label: 'Cancelled',
+      className: 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200',
+      pendingChurn: false,
+    };
+  }
+  return null;
+}
+
 // ---------- Auth-method badge -----------------------------------------------
 
 export interface AuthBadgeMeta {
@@ -178,7 +233,11 @@ export type SortKey =
   | 'trialDaysLeft'
   | 'convertedAt'
   | 'lastActiveAt'
-  | 'flagged';
+  | 'flagged'
+  // 2026-08-11: "Next payment" (who bills next) and "Cancelled" (who is
+  // leaving, most recent decision first).
+  | 'currentPeriodEnd'
+  | 'canceledAt';
 
 export type SortDir = 'asc' | 'desc';
 
@@ -201,6 +260,12 @@ function sortValue(c: AdminCustomer, key: SortKey): number | string {
     }
     case 'convertedAt':
       return c.subscription?.convertedAt ? new Date(c.subscription.convertedAt).getTime() : 0;
+    case 'currentPeriodEnd':
+      return c.subscription?.currentPeriodEnd
+        ? new Date(c.subscription.currentPeriodEnd).getTime()
+        : 0;
+    case 'canceledAt':
+      return c.subscription?.canceledAt ? new Date(c.subscription.canceledAt).getTime() : 0;
     case 'lastActiveAt':
       return c.lastActiveAt ? new Date(c.lastActiveAt).getTime() : 0;
     case 'flagged':

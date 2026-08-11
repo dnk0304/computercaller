@@ -41,6 +41,7 @@ import {
   resolveState,
   trialStatusPill,
   planPill,
+  cancellationMeta,
   authBadge,
   formatDate,
   formatAbsolute,
@@ -380,7 +381,7 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-sm">
             <caption className="sr-only">
-              Customer accounts with subscription, trial, billing, and same-IP flag details. Sortable columns are buttons in the header row.
+              Customer accounts with subscription, trial, billing, cancellation, and same-IP flag details. Sortable columns are buttons in the header row.
             </caption>
             <thead>
               <tr>
@@ -392,6 +393,8 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
                 <SortableTh label="Days left" sortKey="trialDaysLeft" activeKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
                 <PlainTh label="Paying" align="center" />
                 <SortableTh label="Paying since" sortKey="convertedAt" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortableTh label="Next payment" sortKey="currentPeriodEnd" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortableTh label="Cancelled" sortKey="canceledAt" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <PlainTh label="Card on Whop" align="center" />
                 <SortableTh label="Registered" sortKey="registeredAt" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortableTh label="Last active" sortKey="lastActiveAt" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
@@ -402,7 +405,9 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="px-4 py-16 text-center">
+                  {/* colSpan MUST equal the header count — 15 since "Next
+                      payment" + "Cancelled" landed (2026-08-11). */}
+                  <td colSpan={15} className="px-4 py-16 text-center">
                     <p className="text-sm font-medium text-slate-500">No customers match your filters</p>
                     <p className="mt-1 text-xs text-slate-400">Try clearing the search or the flagged-only filter.</p>
                   </td>
@@ -422,6 +427,11 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
                   const isFree = effectiveFreeAccess(c);
                   const planState = isFree ? 'free_access' : state;
                   const plan = planPill(planState, c.subscription?.planLabel ?? 'Solo');
+                  // Cancellation signal. Independent of the status pill on
+                  // purpose: a mid-period cancellation is still "Active" and
+                  // still "Paying" — correct, and exactly why it needs its own
+                  // column to be visible at all.
+                  const cancel = cancellationMeta(c.subscription, state);
                   const isPending = !!pending[c.id];
                   const err = rowError[c.id];
                   return (
@@ -503,6 +513,53 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
                       {/* Paying since */}
                       <td className="px-3 py-2.5 whitespace-nowrap text-[13px] text-slate-600">
                         {formatDate(c.subscription?.convertedAt)}
+                      </td>
+
+                      {/* Next payment — the date the current paid period ends,
+                          i.e. when Whop next bills them. For a CANCELLING row
+                          this same date is when access stops, so it is called
+                          out in the tooltip rather than shown as a renewal. */}
+                      <td className="px-3 py-2.5 whitespace-nowrap text-[13px] text-slate-600">
+                        {c.subscription?.currentPeriodEnd ? (
+                          <span
+                            className={clsx(cancel?.pendingChurn && 'text-amber-700')}
+                            title={
+                              cancel?.pendingChurn
+                                ? `Cancelled — access ends ${formatAbsolute(c.subscription.currentPeriodEnd)}. No further payment.`
+                                : `Next payment ${formatAbsolute(c.subscription.currentPeriodEnd)}`
+                            }
+                          >
+                            {formatDate(c.subscription.currentPeriodEnd)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
+
+                      {/* Cancelled — "Cancelling" (still paid through
+                          currentPeriodEnd) vs "Cancelled" (already gone). */}
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        {cancel ? (
+                          <span className="inline-flex flex-col items-start gap-0.5">
+                            <span className={clsx('inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium', cancel.className)}>
+                              {cancel.label}
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              {cancel.pendingChurn ? (
+                                <>
+                                  until {formatDate(c.subscription?.currentPeriodEnd)}
+                                  <span className="sr-only">
+                                    {' '}— still an active paying customer until this date
+                                  </span>
+                                </>
+                              ) : (
+                                formatDate(c.subscription?.canceledAt)
+                              )}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-300" aria-label="Not cancelled">—</span>
+                        )}
                       </td>
 
                       {/* Card on Whop */}
