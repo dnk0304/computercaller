@@ -19,6 +19,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import WaitlistCTA from '@/components/WaitlistCTA';
+import { PLAN_PRICE_RANGE, PLAN_TIERS, RECOMMENDED_TIER, type PlanTierId } from '@/lib/pricing';
 import { SignupModal } from '@/components/SignupModal';
 import { PricingModal } from '@/components/PricingModal';
 import { WAITLIST_MODE } from '@/lib/waitlistMode';
@@ -111,10 +112,12 @@ const faqs = [
   {
     q: 'Can I call from my computer for free?',
     // Waitlist mode: no price reaches the visible FAQ OR the JSON-LD, which is
-    // built from this same array. Flag off → the $5/month single-plan answer.
+    // built from this same array. Flag off → the three-tier answer below, whose
+    // prices are INTERPOLATED from PLAN_TIERS so this answer cannot drift from
+    // the pricing modal the way the old hardcoded "$5/month" did.
     a: WAITLIST_MODE
       ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
-      : "Your first 7 days are free. After the trial it's $5/month — cancel anytime. There is no usage-based fee on top: your call minutes come from your existing carrier plan, so a call from your computer costs the same as a call from your phone.",
+      : `Your first 7 days are free. After the trial there are three plans — ${PLAN_TIERS.map((t) => `${t.name} ${t.price}`).join(', ')} per month — and you can cancel anytime. There is no usage-based fee on top: your call minutes come from your existing carrier plan, so a call from your computer costs the same as a call from your phone.`,
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -149,6 +152,14 @@ export default function LandingPage() {
   // navigate); a plain left-click is intercepted to open this modal instead.
   // We stash the triggering element so focus can be restored to it on close.
   const [signupOpen, setSignupOpen] = useState(false);
+  /**
+   * Which plan the visitor picked in the pricing modal. Defaults to the
+   * recommended tier so a signup opened from a generic CTA (hero, header) still
+   * carries a sensible plan rather than none — the alternative is a `next` with
+   * no plan, which silently reverts to /subscribe's own default and re-opens the
+   * hole this fix closes.
+   */
+  const [selectedPlanTier, setSelectedPlanTier] = useState<PlanTierId>(RECOMMENDED_TIER);
   const signupTriggerRef = useRef<HTMLElement | null>(null);
 
   // Intercept a CTA click. Bail (let the browser navigate) on any modified
@@ -203,7 +214,23 @@ export default function LandingPage() {
   // extension, and the brief says not to block on it. The plan still survives
   // for the fallback path via each tier CTA's real ?plan=<id> href
   // (middle/cmd/no-JS), and is ultimately chosen/charged at /subscribe (Whop).
-  function handleTierSelect() {
+  /**
+   * ⭐ THE USER'S PLAN CHOICE MUST SURVIVE THIS HAND-OFF.
+   *
+   * Until 2026-08-11 this took no argument: all three tier CTAs invoked the same
+   * zero-arg callback, so the modal rendered three plans correctly and then threw
+   * away which one was clicked. The anchor's `?plan=` href did preserve it — but
+   * only on middle/cmd-click, the path almost nobody takes. The primary
+   * left-click lost it silently, which is why three correct plans still produced
+   * one undifferentiated hand-off.
+   *
+   * The tier now rides through signup as a `next` target, so it survives the
+   * Google OAuth round trip (carried in the signed state JWT) and lands on
+   * /subscribe with that plan preselected — and it is the preselected plan that
+   * drives the Whop embed, i.e. what the customer is actually charged.
+   */
+  function handleTierSelect(tierId: PlanTierId) {
+    setSelectedPlanTier(tierId);
     setPricingOpen(false);
     signupTriggerRef.current = pricingTriggerRef.current;
     setSignupOpen(true);
@@ -234,15 +261,26 @@ export default function LandingPage() {
         operatingSystem: 'Web, Android',
         url: 'https://computercaller.com',
         // In waitlist mode we omit the price `offers` entirely so no price
-        // reaches crawlers / structured data. Flag off → a single Offer for
-        // the one $5/month plan (2026-07-05).
+        // reaches crawlers / structured data. That suppression is deliberate and
+        // is tested in BOTH flag states.
+        //
+        // ⭐ AggregateOffer, DERIVED — not a hardcoded number (2026-08-11).
+        // This previously shipped `price: '5.00'` as a literal and kept telling
+        // Google $5 long after Solo became $6: a structured-data price that
+        // contradicts checkout is what generates "price mismatch" penalties and
+        // erodes listing trust. Replacing one stale literal with three would
+        // just move the staleness, so the range is COMPUTED from PLAN_TIERS —
+        // the same array the pricing modal renders. Change a price in one place
+        // and the JSON-LD follows; it cannot silently disagree with the product.
         ...(WAITLIST_MODE
           ? {}
           : {
               offers: {
-                '@type': 'Offer',
-                price: '5.00',
+                '@type': 'AggregateOffer',
                 priceCurrency: 'USD',
+                lowPrice: PLAN_PRICE_RANGE.low,
+                highPrice: PLAN_PRICE_RANGE.high,
+                offerCount: PLAN_TIERS.length,
               },
             }),
         publisher: { '@id': 'https://computercaller.com/#organization' },
@@ -654,7 +692,7 @@ export default function LandingPage() {
 
       {/* Pricing lives in a header-triggered pop-up now (<PricingModal>, Dennis
           2026-07-04) — the standalone section was removed from the body. The
-          pricing JSON-LD (single Offer, 5.00 USD) STAYS in the head Script
+          pricing JSON-LD (AggregateOffer, $6-$9 USD, derived from PLAN_TIERS) STAYS in the head Script
           above, so the price is still declared for SEO. */}
 
       {/* Reviews / testimonials section REMOVED (2026-07-27, Dennis): the copy
@@ -733,7 +771,7 @@ export default function LandingPage() {
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
             {WAITLIST_MODE
               ? "We're opening the doors soon. Sign up on the waitlist — get a 30-day free trial when we launch."
-              : '7 days free, then $5/month — cancel anytime. Pair your phone and you’re calling from your browser in under two minutes.'}
+              : `7 days free, then from $${PLAN_PRICE_RANGE.low.replace(/\.00$/, '')}/month — cancel anytime. Pair your phone and you’re calling from your browser in under two minutes.`}
           </p>
           {WAITLIST_MODE ? (
             <div className="mt-8 mx-auto max-w-xl">
@@ -808,6 +846,7 @@ export default function LandingPage() {
         open={signupOpen}
         onClose={closeSignup}
         triggerRef={signupTriggerRef}
+        planTier={selectedPlanTier}
       />
 
       {/* Pricing pop-up — opened by the header "Pricing" nav link. A tier CTA

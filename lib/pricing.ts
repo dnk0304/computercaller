@@ -160,6 +160,19 @@ export const PLAN_TIERS: readonly PlanTierDisplay[] = [
 ];
 
 /** The tier the page defaults to and marks recommended. */
+/**
+ * The advertised price RANGE, derived from PLAN_TIERS rather than written down.
+ *
+ * The landing page's JSON-LD used to hardcode `price: '5.00'` and went on telling Google $5 long
+ * after Solo became $6. Replacing one stale literal with three would only move the staleness, so
+ * the range is computed from the same array the pricing UI renders — change a price once and the
+ * structured data follows. Strings because schema.org expects string-typed prices.
+ */
+export const PLAN_PRICE_RANGE: Readonly<{ low: string; high: string }> = {
+  low: Math.min(...PLAN_TIERS.map((t) => t.priceValue)).toFixed(2),
+  high: Math.max(...PLAN_TIERS.map((t) => t.priceValue)).toFixed(2),
+};
+
 export const RECOMMENDED_TIER: Tier = 'plus';
 
 /**
@@ -177,11 +190,25 @@ export const FEATURE_MATRIX: readonly FeatureRow[] = [
     values: { solo: '3', plus: '10', pro: '30' },
   },
   {
-    label: 'Message sync',
+    label: 'Messages & call history',
     limitKey: 'syncRangeMax',
     // Renamed row, NOT a new capability: every tier syncs messages, the tiers
     // differ in how far back you can look. Saying "30 days" rather than a cross
     // is the whole point — a cross here would claim Solo cannot sync at all.
+    //
+    // ⭐ ONE COMBINED ROW, not two (Ken's option (b), 2026-08-11). The claim is
+    // verifiable in our own code: lib/tiers-core.js clamps GET_MESSAGES and
+    // GET_CALL_LOGS by the SAME `syncRangeMax`, so call history genuinely is
+    // 30d/6mo/1yr — it is real enforcement, not padding.
+    //
+    // Two rows with identical values would read as padding and inflate the table
+    // without adding information; splitting one enforcement rule into two lines
+    // is a presentation choice that makes the product look bigger than it is.
+    // But call history buried in a note is the opposite failure — the previous
+    // label said only "Message sync", so a reader scanning labels never learned
+    // call history was included at all. Naming both in the label is the honest
+    // middle: one row because there is one rule, both nouns because there are
+    // two capabilities.
     values: { solo: '30 days', plus: '6 months', pro: '1 year' },
     note: 'How far back your messages and call history are available.',
   },

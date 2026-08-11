@@ -35,7 +35,7 @@
 
 import React, { useEffect, useId, useRef } from 'react';
 import { X, Check, ArrowRight, ShieldCheck } from 'lucide-react';
-import { PLAN_TIERS } from '@/lib/pricing';
+import { PLAN_TIERS, type PlanTierId } from '@/lib/pricing';
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -65,7 +65,7 @@ export interface PricingModalProps {
    * the parent closes this modal and opens SignupModal. Modified/middle clicks
    * are NOT intercepted — they follow the anchor's real ?plan= href instead.
    */
-  onSelectTier: () => void;
+  onSelectTier: (tierId: PlanTierId) => void;
 }
 
 export function PricingModal({ open, onClose, triggerRef, onSelectTier }: PricingModalProps) {
@@ -136,10 +136,10 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
   // (cmd/ctrl/shift/alt) or non-primary mouse buttons (middle-click) — so the
   // anchor's ?plan= href fallback is preserved. A plain left-click hands off to
   // the signup modal.
-  function handleTierClick(e: React.MouseEvent<HTMLAnchorElement>) {
+  function handleTierClick(e: React.MouseEvent<HTMLAnchorElement>, tierId: PlanTierId) {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
     e.preventDefault();
-    onSelectTier();
+    onSelectTier(tierId);
   }
 
   if (!open) return null;
@@ -218,7 +218,7 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
 
               <a
                 href={`/auth/register?plan=${tier.id}`}
-                onClick={handleTierClick}
+                onClick={(e) => handleTierClick(e, tier.id)}
                 aria-label={`Try for free — ${tier.a11yLabel}`}
                 className="mt-6 flex items-center justify-center gap-1.5 w-full py-3 font-medium rounded-xl transition-colors text-center bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >

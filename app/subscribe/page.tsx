@@ -22,6 +22,7 @@
  * next request passes. SubscribeLocked surfaces a "Refresh" affordance for this.
  */
 
+import type { PlanTierId } from '@/lib/pricing';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { validateSessionToken } from '@/lib/auth';
@@ -49,7 +50,19 @@ function toLockedState(state: EntitlementState): SubscribeLockedState {
   }
 }
 
-export default async function SubscribePage() {
+/**
+ * `?plan=<tier>` is the last leg of the plan choice made on the landing page. It
+ * survives Google OAuth inside the signed state JWT (`next`), and is validated
+ * here against the real tier list rather than trusted — an unknown or absent
+ * value simply falls through to SubscribeLocked's own recommended default.
+ */
+export default async function SubscribePage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const sp = searchParams ? await searchParams : undefined;
+  const rawPlan = typeof sp?.plan === 'string' ? sp.plan : undefined;
   const token = (await cookies()).get('auth_token')?.value;
   const payload = token ? await validateSessionToken(token) : null;
 
@@ -122,6 +135,7 @@ export default async function SubscribePage() {
       whopCheckoutUrl={whopCheckoutUrl}
       trialDays={trialDays}
       tiers={tiers}
+      initialTierId={tiers.some((t) => t.id === rawPlan) ? (rawPlan as PlanTierId) : undefined}
     />
   );
 }

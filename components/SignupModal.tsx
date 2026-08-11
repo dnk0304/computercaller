@@ -30,6 +30,7 @@
  * instance at its root.
  */
 
+import type { PlanTierId } from '@/lib/pricing';
 import React, { useEffect, useId, useRef } from 'react';
 import Link from 'next/link';
 import { X } from 'lucide-react';
@@ -71,9 +72,33 @@ export interface SignupModalProps {
    * programmatically) — focus return is then skipped.
    */
   triggerRef: React.MutableRefObject<HTMLElement | null>;
+  /**
+   * The plan the visitor chose in the pricing modal.
+   *
+   * ⭐ This is the only thing carrying their choice across the Google OAuth
+   * round trip. It is encoded into the `next` target, which the start route
+   * signs into the state JWT — so it survives the bounce to Google and back and
+   * lands on /subscribe with that plan preselected. The preselected plan is what
+   * drives the Whop embed, i.e. what the customer is actually charged.
+   *
+   * Optional so a generic CTA (hero/header) can open the modal without one; the
+   * parent supplies the recommended tier as its default rather than passing
+   * nothing, because "no plan" silently falls back to /subscribe's own default.
+   */
+  planTier?: PlanTierId;
 }
 
-export function SignupModal({ open, onClose, triggerRef }: SignupModalProps) {
+export function SignupModal({ open, onClose, triggerRef, planTier }: SignupModalProps) {
+  /**
+   * `/subscribe?plan=<tier>` as an encoded `next`. sanitiseNext() on the start
+   * route accepts a leading-slash path WITH a query string, and signOAuthState
+   * carries it through the Google bounce, so the choice cannot be lost in the
+   * redirect the way it was lost in the click handler.
+   */
+  const googleStartHref = planTier
+    ? `/api/auth/google/start?next=${encodeURIComponent(`/subscribe?plan=${planTier}`)}`
+    : '/api/auth/google/start';
+
   const cardRef = useRef<HTMLDivElement>(null);
   const googleCtaRef = useRef<HTMLAnchorElement>(null);
 
@@ -185,7 +210,7 @@ export function SignupModal({ open, onClose, triggerRef }: SignupModalProps) {
             out to Google and returns). */}
         <a
           ref={googleCtaRef}
-          href="/api/auth/google/start"
+          href={googleStartHref}
           className="mt-6 inline-flex w-full items-center justify-center gap-2.5 rounded-lg border border-slate-300 bg-white py-3 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
         >
           <GoogleGlyph />

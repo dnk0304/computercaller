@@ -47,6 +47,13 @@ export interface SubscribeLockedProps {
    * without this component hard-coding a number that could be wrong.
    */
   trialDays?: number;
+  /**
+   * Pre-selected tier, carried from the landing-page pricing modal through
+   * signup and the OAuth round trip via `?plan=`. Undefined (or unrecognised —
+   * the page validates before passing) falls back to the recommended tier, so a
+   * missing value degrades to the sensible default rather than to the cheapest.
+   */
+  initialTierId?: PlanTierId;
   /** Support email; defaults to the app's real reply-to address. */
   supportEmail?: string;
   /**
@@ -100,6 +107,7 @@ export function SubscribeLocked({
   trialDays,
   supportEmail = 'support@computercaller.com',
   tiers = [],
+  initialTierId,
 }: SubscribeLockedProps) {
   const { headline, subtext } = resolveCopy(state, trialDays);
   const ctaLabel = state === 'expired' || state === 'cancelled' ? 'Reactivate' : 'Subscribe now';
@@ -118,8 +126,12 @@ export function SubscribeLocked({
    * to steer is a sensible default plus visible reasoning, not hiding the
    * alternatives. Solo and Pro+ are one click away and identically easy to pick.
    */
+  // ⭐ `initialTierId` is the plan the visitor picked on the landing page, carried
+  // through signup and the OAuth round trip. It wins over the recommended default
+  // — otherwise the choice is collected, transported intact, and then discarded at
+  // the last step, which is the same defect one layer down.
   const [selectedId, setSelectedId] = useState<PlanTierId>(
-    tiers.find((t) => t.recommended)?.id ?? tiers[0]?.id ?? 'plus'
+    initialTierId ?? tiers.find((t) => t.recommended)?.id ?? tiers[0]?.id ?? 'plus'
   );
   const selectedTier = tiers.find((t) => t.id === selectedId) ?? tiers[0];
 
