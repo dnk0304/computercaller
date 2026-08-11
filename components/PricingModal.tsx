@@ -6,11 +6,17 @@
  * in header it should just come a pop up with the price.").
  *
  * The standalone pricing SECTION was removed from the page body; its content —
- * the single $5/month plan, the risk-reversal band, and the feature list —
- * lives here instead. The pricing JSON-LD (Offer, 5.00 USD) stays in the page
- * head, so the price is still declared for SEO even though it renders in a
- * modal. ONE PLAN as of 2026-07-05 (Dennis): $5/month, 7-day trial — we
- * compete with free (Phone Link), so the pitch is "cheap enough for anyone".
+ * the plans, the risk-reversal band, and the feature list — lives here instead.
+ * The pricing JSON-LD (AggregateOffer) stays in the page head, so the prices are
+ * still declared for SEO even though they render in a modal.
+ *
+ * THREE TIERS as of 2026-08-11 (Dennis): Solo / Pro / Pro+, rendered as ONE
+ * compact horizontal row of small cards, each listing its OWN benefits under its
+ * own price, with Pro visibly marked as the recommended default. Every price,
+ * name, tagline and limit on this surface is READ FROM `lib/pricing.ts` at
+ * runtime — nothing about a plan is typed into this file. That is deliberate:
+ * the previous version hardcoded "$5 a month" and kept saying it for a month
+ * after the price changed.
  *
  * Hand-off (LOCKED): pricing modal → SIGNUP modal, in-page. Clicking a tier's
  * "Try for free" closes this modal and opens the existing SignupModal via the
@@ -34,22 +40,28 @@
  */
 
 import React, { useEffect, useId, useRef } from 'react';
-import { X, Check, ArrowRight, ShieldCheck } from 'lucide-react';
-import { PLAN_TIERS, type PlanTierId } from '@/lib/pricing';
+import { X, Check, Minus, ArrowRight, ShieldCheck } from 'lucide-react';
+import {
+  PLAN_TIERS,
+  PLAN_PRICE_RANGE,
+  FEATURE_MATRIX,
+  INCLUDED_ON_EVERY_PLAN,
+  RECOMMENDED_TIER,
+  type PlanTierId,
+} from '@/lib/pricing';
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
-/** Everything the one plan includes — listed once under the price card.
- *  Lifted verbatim from the removed pricing section. */
-const PLAN_FEATURES = [
-  'Call any phone number from your computer',
-  'Full SMS and message dashboard',
-  "See your phone's notifications on your computer",
-  'Unlimited contacts & history',
-  'Works from any device, anywhere',
-  '7-day free trial',
-] as const;
+/**
+ * "6.00" → "$6". PLAN_PRICE_RANGE is schema.org-shaped (2dp strings) because
+ * JSON-LD needs it that way; marketing copy wants the short form. Derived, never
+ * typed — a literal price string in this file is exactly what shipped "$5 a
+ * month" above three cards that cost $6/$7/$9.
+ */
+function shortPrice(value: string): string {
+  return `$${value.replace(/\.00$/, '')}`;
+}
 
 export interface PricingModalProps {
   open: boolean;
@@ -162,9 +174,10 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
         className={
           'relative flex w-full flex-col bg-white shadow-2xl shadow-slate-900/20 ' +
           'p-6 sm:p-8 ' +
-          // Mobile: full-height sheet. sm+: bounded, centered, rounded card —
-          // one plan now, so a narrow single-column dialog reads best.
-          'min-h-full sm:min-h-0 sm:w-full sm:max-w-lg sm:rounded-2xl sm:border sm:border-slate-200 ' +
+  // Mobile: full-height sheet. sm+: bounded, centered, rounded card —
+          // wide enough that three compact plan cards sit in ONE row without the
+          // dialog overflowing the viewport.
+          'min-h-full sm:min-h-0 sm:w-full sm:max-w-3xl sm:rounded-2xl sm:border sm:border-slate-200 ' +
           'animate-in fade-in slide-in-from-bottom-4 duration-200 sm:zoom-in-95 sm:slide-in-from-bottom-0'
         }
       >
@@ -190,43 +203,122 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
             Simple pricing.
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-slate-600">
-            One plan, every feature. $5 a month after a 7-day free trial —
+            {PLAN_TIERS.length} plans from {shortPrice(PLAN_PRICE_RANGE.low)} to{' '}
+            {shortPrice(PLAN_PRICE_RANGE.high)} a month. 7-day free trial —
             cancel anytime.
           </p>
         </div>
 
-        {/* The single plan card. The CTA carries ?plan=<id> so a middle-click /
-            no-JS navigation — and Forge's server-side read on /auth/register —
-            still works. A plain left-click hands off to the signup modal (the
-            plan is ultimately charged at /subscribe). */}
-        <div className="mt-8">
-          {PLAN_TIERS.map((tier) => (
-            <div
-              key={tier.id}
-              className="relative flex flex-col rounded-2xl border border-blue-600 ring-1 ring-blue-600/20 bg-white p-6 text-center shadow-sm shadow-blue-600/10"
-            >
-              <div className="flex items-baseline justify-center gap-1.5">
-                <span className="text-5xl font-semibold tracking-tight text-slate-900">
-                  {tier.price}
-                </span>
-                <span className="text-slate-500 text-sm">{tier.period}</span>
-              </div>
+        {/* THREE compact plan cards in ONE horizontal row from sm+ (stacked only
+            on narrow mobile, which is a known-accepted surface here).
 
-              <p className="mt-2 text-sm text-slate-500">
-                7-day free trial · cancel anytime
-              </p>
+            Each card lists its OWN differentiating benefits, read out of
+            FEATURE_MATRIX by tier key — so what the card promises and what the
+            server enforces (TIER_LIMITS, reconciled by reconcileMatrixWithLimits)
+            can never drift apart.
 
-              <a
-                href={`/auth/register?plan=${tier.id}`}
-                onClick={(e) => handleTierClick(e, tier.id)}
-                aria-label={`Try for free — ${tier.a11yLabel}`}
-                className="mt-6 flex items-center justify-center gap-1.5 w-full py-3 font-medium rounded-xl transition-colors text-center bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            Emphasis: ONLY the recommended tier gets the blue border/ring, the
+            badge, the lift and the filled CTA. The other two are quiet — that is
+            the whole mechanism; when all three shouted, none of them did.
+
+            The CTA carries ?plan=<id> so a middle-click / no-JS navigation — and
+            Forge's server-side read on /auth/register — still works. A plain
+            left-click hands off to the signup modal. */}
+        <div className="mt-8 grid gap-3 sm:grid-cols-3 sm:items-start">
+          {PLAN_TIERS.map((tier) => {
+            const isRecommended = tier.id === RECOMMENDED_TIER;
+            return (
+              <div
+                key={tier.id}
+                className={
+                  'relative flex flex-col rounded-2xl bg-white p-4 text-center transition-shadow ' +
+                  (isRecommended
+                    ? 'border-2 border-blue-600 ring-2 ring-blue-600/15 shadow-md shadow-blue-600/15 sm:-mt-2 sm:pt-6 sm:pb-5'
+                    : 'border border-slate-200 shadow-sm')
+                }
               >
-                Try for free
-                <ArrowRight className="w-4 h-4" />
-              </a>
-            </div>
-          ))}
+                {isRecommended && (
+                  <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-blue-600 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white shadow-sm">
+                    Recommended
+                  </span>
+                )}
+
+                <h3
+                  className={
+                    'text-sm font-semibold ' +
+                    (isRecommended ? 'text-blue-700' : 'text-slate-900')
+                  }
+                >
+                  {tier.name}
+                </h3>
+
+                <div className="mt-1 flex items-baseline justify-center gap-1">
+                  <span className="text-3xl font-semibold tracking-tight text-slate-900">
+                    {tier.price}
+                  </span>
+                  <span className="text-xs text-slate-500">{tier.period}</span>
+                </div>
+
+                <p className="mt-1.5 min-h-[2.5rem] text-xs leading-snug text-slate-500">
+                  {tier.tagline}
+                </p>
+
+                <a
+                  href={`/auth/register?plan=${tier.id}`}
+                  onClick={(e) => handleTierClick(e, tier.id)}
+                  aria-label={`Try for free — ${tier.a11yLabel}`}
+                  className={
+                    'mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ' +
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ' +
+                    (isRecommended
+                      ? 'bg-blue-600 text-white shadow-sm shadow-blue-600/20 hover:bg-blue-700'
+                      : 'border border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50')
+                  }
+                >
+                  Try for free
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </a>
+
+                {/* What THIS price buys. Values come from FEATURE_MATRIX at
+                    runtime — never typed here. A `false` renders as a visible,
+                    muted "not included" row rather than vanishing: a missing row
+                    reads as an oversight, a struck one reads as a reason to
+                    upgrade. */}
+                <ul className="mt-4 space-y-1.5 border-t border-slate-100 pt-3 text-left text-xs">
+                  {FEATURE_MATRIX.map((row) => {
+                    const value = row.values[tier.id];
+                    const included = value !== false;
+                    return (
+                      <li key={row.label} className="flex items-start gap-1.5">
+                        {included ? (
+                          <Check
+                            className="mt-0.5 h-3 w-3 flex-shrink-0 text-blue-600"
+                            strokeWidth={3}
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <Minus
+                            className="mt-0.5 h-3 w-3 flex-shrink-0 text-slate-300"
+                            strokeWidth={3}
+                            aria-hidden="true"
+                          />
+                        )}
+                        <span className={included ? 'text-slate-700' : 'text-slate-400'}>
+                          {typeof value === 'string' && (
+                            <span className="font-semibold text-slate-900">{value} </span>
+                          )}
+                          {row.label}
+                          {!included && (
+                            <span className="ml-1 text-slate-400">— not included</span>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })}
         </div>
 
         {/* Risk-reversal band — answers the "what if I forget to cancel?"
@@ -242,13 +334,15 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
           </p>
         </div>
 
-        {/* Feature list — everything the plan includes, listed once. */}
-        <div className="mt-10 max-w-md mx-auto">
+        {/* Genuinely shared across all three plans — kept as ONE strip below the
+            cards rather than repeated in each column, because repeating a shared
+            feature three times makes it look like a differentiator. */}
+        <div className="mx-auto mt-8 max-w-2xl">
           <p className="text-center text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Everything included
+            Included on every plan
           </p>
-          <ul className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-2">
-            {PLAN_FEATURES.map((f) => (
+          <ul className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-3">
+            {INCLUDED_ON_EVERY_PLAN.map((f) => (
               <li key={f} className="flex items-start gap-2.5">
                 <span className="mt-0.5 w-4 h-4 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
                   <Check className="w-2.5 h-2.5 text-blue-600" strokeWidth={3} />
