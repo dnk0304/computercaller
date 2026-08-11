@@ -63,6 +63,27 @@ function shortPrice(value: string): string {
   return `$${value.replace(/\.00$/, '')}`;
 }
 
+/**
+ * FEATURE_MATRIX labels are written for the comparison table, where they are
+ * column headers and plural is correct ("Quick replies"). On a card the label
+ * follows a count, so a value of exactly 1 needs the singular ("1 Quick reply").
+ *
+ * Applied only when the value is the bare number 1 — "1 year" or "30 days"
+ * already carry their own noun and are left alone. General rule on the last
+ * word, not a per-label special case, so new matrix rows get it for free.
+ */
+function labelForCount(label: string, value: string): string {
+  if (value.trim() !== '1') return label;
+  const words = label.split(' ');
+  const last = words[words.length - 1];
+  let singular = last;
+  if (/ies$/.test(last)) singular = `${last.slice(0, -3)}y`;
+  else if (/[^s]s$/.test(last)) singular = last.slice(0, -1);
+  if (singular === last) return label;
+  words[words.length - 1] = singular;
+  return words.join(' ');
+}
+
 export interface PricingModalProps {
   open: boolean;
   onClose: () => void;
@@ -307,7 +328,9 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
                           {typeof value === 'string' && (
                             <span className="font-semibold text-slate-900">{value} </span>
                           )}
-                          {row.label}
+                          {typeof value === 'string'
+                            ? labelForCount(row.label, value)
+                            : row.label}
                           {!included && (
                             <span className="ml-1 text-slate-400">— not included</span>
                           )}
