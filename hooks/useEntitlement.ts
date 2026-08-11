@@ -20,7 +20,7 @@ import type { Tier, TierLimits } from '@/lib/tiers';
 //     state: 'active'|'trialing'|'trial_expired'|'expired'|'none'|'admin'|'allowlisted'|'free_access',
 //     allowed: boolean,
 //     trialDaysLeft: number | null,
-//     limits: { templates, quickReplies, syncRangeMax, contactSync, mirroring },
+//     limits: { templates, quickReplies, syncRangeMax, contactSync },
 //     usage:  { templates, quickReplies }
 //   }
 //   401 { error } when unauthenticated.

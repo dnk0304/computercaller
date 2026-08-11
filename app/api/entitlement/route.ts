@@ -15,7 +15,7 @@ import { evaluateEntitlement, isFreeAccessEmail } from '@/lib/entitlement';
 //   state: 'active' | 'trialing' | 'trial_expired' | 'expired' | 'none' | 'admin' | 'allowlisted',
 //   allowed: boolean,
 //   trialDaysLeft: number | null,
-//   limits: { templates, quickReplies, syncRangeMax, contactSync, mirroring },
+//   limits: { templates, quickReplies, syncRangeMax, contactSync },
 //   usage:  { templates, quickReplies }
 // }
 //
@@ -79,7 +79,6 @@ export async function GET(req: NextRequest) {
         quickReplies: ent.limits.quickReplies,
         syncRangeMax: ent.limits.syncRangeMax,
         contactSync: ent.limits.contactSync,
-        mirroring: ent.limits.mirroring,
       },
       usage: {
         templates: templatesUsed,

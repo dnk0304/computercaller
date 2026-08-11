@@ -12,20 +12,25 @@ export type Tier = 'solo' | 'plus' | 'pro';
 export interface TierLimits {
   /** Server-enforced template create cap. 3 | 10 | 30. */
   templates: number;
-  /** Quick-reply create cap. 5 for every paid tier (D5 placeholder). */
+  /** Quick-reply create cap. 1 | 3 | 5 — a real tier differentiator since 2026-08-11. */
   quickReplies: number;
   /** Widest sync-history window this tier may pick (a syncCaps RangeKey). */
   syncRangeMax: RangeKey;
   /** May pull the phone's contact book (GET_CONTACTS). */
   contactSync: boolean;
-  /** Screen-mirroring (Pro). Forward no-op — feature not built yet. */
-  mirroring: boolean;
+  // `mirroring` REMOVED 2026-08-11 — it advertised a feature that was never built.
 }
 
-/** The 3 locked Whop plan ids. */
+/**
+ * Current Whop plan ids, one per tier.
+ * ⚠️ Internal key != display name: solo→"Solo" $6, plus→"Pro" $7, pro→"Pro+" $9.
+ */
 export const PLAN_IDS: { solo: string; plus: string; pro: string };
 
-/** Per-tier limit set. Locked by Dennis 2026-07-27. */
+/** Superseded plan ids that still resolve, so existing subscribers keep their tier. */
+export const LEGACY_PLAN_IDS: Record<string, Tier>;
+
+/** Per-tier limit set. Locked by Dennis 2026-08-11. */
 export const TIER_LIMITS: Record<Tier, TierLimits>;
 
 /** syncRangeMax RangeKey → window length in days (relay since-clamp only). */

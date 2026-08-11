@@ -26,13 +26,18 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // under-set to a month and lock a paying customer out early (entitlement rule 4:
 // active && currentPeriodEnd > now).
 const PLAN_TERM_DAYS: Record<string, number> = {
-  plan_CGlYdJJr3Btlu: 30, // Solo — $5/mo
-  // 3-tier plans (2026-07-27, dispatch feature/tier-gating). Both monthly.
-  // Added so period-end sizing is correct for a Plus/Pro purchase — without
-  // these, an unknown plan id falls back to DEFAULT_TERM_DAYS (31) which is
-  // fine but these are exact.
-  plan_Ogrl3wQ8GM8zr: 30, // Plus — $7/mo
-  plan_lOhMcnZspvgnm: 30, // Pro — $10/mo
+  // ⚠️ Internal key vs display name: `plus` displays as "Pro", `pro` as "Pro+".
+  // See lib/tiers-core.js — the tier mapping itself lives there and this map is
+  // ONLY about how long a period lasts, never about entitlement.
+  //
+  // Current 3-tier plans (Dennis, 2026-08-11). All monthly.
+  plan_6DJ4H4iPEQo5X: 30, // solo → "Solo"  — $6/mo
+  plan_IvKRyvHtl4Q8w: 30, // plus → "Pro"   — $7/mo
+  plan_h587GLZLlOXP4: 30, // pro  → "Pro+"  — $9/mo
+  // Superseded ids, kept so an existing subscriber's period is never under-set.
+  plan_CGlYdJJr3Btlu: 30, // solo — $5/mo (grandfathered)
+  plan_Ogrl3wQ8GM8zr: 30, // plus — $7/mo (superseded id)
+  plan_lOhMcnZspvgnm: 30, // pro  — $10/mo (superseded id)
   // Legacy plans (retired from sale 2026-07-05, kept so existing subscribers'
   // periods are never under-set):
   plan_1nEzOOzXxPDJC: 30, // Monthly — $9

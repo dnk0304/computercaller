@@ -47,20 +47,51 @@ eq('null → solo (safe default)', planIdToTier(null), 'solo');
 eq('undefined → solo', planIdToTier(undefined), 'solo');
 eq('unknown id → solo', planIdToTier('plan_totally_unknown'), 'solo');
 eq('empty string → solo', planIdToTier(''), 'solo');
-// The 3 ids are exactly Dennis's locked values (guards against a typo edit).
-eq('solo id locked', PLAN_IDS.solo, 'plan_CGlYdJJr3Btlu');
-eq('plus id locked', PLAN_IDS.plus, 'plan_Ogrl3wQ8GM8zr');
-eq('pro id locked', PLAN_IDS.pro, 'plan_lOhMcnZspvgnm');
+// The 3 CURRENT ids, pinned against a typo edit. The price in each label is the audit trail:
+// Solo $6, Pro $7, Pro+ $9 — Dennis's final answer, corroborated against Whop's product page.
+eq('solo id pinned ($6)', PLAN_IDS.solo, 'plan_6DJ4H4iPEQo5X');
+eq('plus id pinned ($7, displays "Pro")', PLAN_IDS.plus, 'plan_IvKRyvHtl4Q8w');
+eq('pro id pinned ($9, displays "Pro+")', PLAN_IDS.pro, 'plan_h587GLZLlOXP4');
+
+// ⭐ GRANDFATHERING. Every current paying customer sits on the $5 Solo id. If a legacy id stops
+// resolving it does NOT error — it falls through the fail-closed default to `solo`. Harmless for a
+// legacy Solo subscriber, and a silent demotion for a legacy plus/pro one. Hence explicit tests.
+eq('legacy $5 id → solo (grandfathered)', planIdToTier('plan_CGlYdJJr3Btlu'), 'solo');
+eq('legacy $7 id → plus', planIdToTier('plan_Ogrl3wQ8GM8zr'), 'plus');
+eq('legacy $10 id → pro', planIdToTier('plan_lOhMcnZspvgnm'), 'pro');
+
+// ⛔ THE DUPLICATE-PLAN-ID GUARD. Dennis supplied the same id for two tiers on 2026-08-11 and it
+// was caught by eye. A shared id silently grants a $9 customer $7 limits — no error, no log.
+// NEGATIVE: a planted duplicate must be refused BY NAME. The real module source is re-compiled
+// with the duplicate planted, so this exercises the ACTUAL guard rather than a copy of it.
+{
+  let code = '';
+  try {
+    const Module = require('module');
+    const fs = require('fs');
+    const src = fs
+      .readFileSync(require.resolve('../lib/tiers-core.js'), 'utf8')
+      .replace("pro: 'plan_h587GLZLlOXP4'", "pro: 'plan_IvKRyvHtl4Q8w'");
+    const m = new Module('dup-probe');
+    m._compile(src, require.resolve('../lib/tiers-core.js'));
+  } catch (e) {
+    code = String((e && e.message) || e);
+  }
+  eq('duplicate plan id is REFUSED by name', code.includes('ERR_TIER_PLAN_ID_COLLISION'), true);
+}
+// ACCEPT-CONTROL: three distinct ids load fine. Without this the negative above would still pass
+// if the guard simply rejected everything.
+eq('the three current ids are distinct', new Set([PLAN_IDS.solo, PLAN_IDS.plus, PLAN_IDS.pro]).size, 3);
 
 // ── 2. tier → limit set ─────────────────────────────────────────────────────
 eq('solo limits', TIER_LIMITS.solo, {
-  templates: 3, quickReplies: 5, syncRangeMax: '30d', contactSync: false, mirroring: false,
+  templates: 3, quickReplies: 1, syncRangeMax: '30d', contactSync: false,
 });
 eq('plus limits', TIER_LIMITS.plus, {
-  templates: 10, quickReplies: 5, syncRangeMax: '6mo', contactSync: true, mirroring: false,
+  templates: 10, quickReplies: 3, syncRangeMax: '6mo', contactSync: true,
 });
 eq('pro limits', TIER_LIMITS.pro, {
-  templates: 30, quickReplies: 5, syncRangeMax: '1yr', contactSync: true, mirroring: true,
+  templates: 30, quickReplies: 5, syncRangeMax: '1yr', contactSync: true,
 });
 eq('limitsForTier(unknown) → solo', limitsForTier('nope'), TIER_LIMITS.solo);
 
@@ -99,7 +130,11 @@ eq('active+plus → 10 templates', r.limits.templates, 10);
 
 r = ent({ isAdmin: false, email: 'a@b.c', subscription: { status: 'active', trialEndsAt: past, currentPeriodEnd: future, planId: PLAN_IDS.pro } });
 eq('active+pro → pro tier', r.tier, 'pro');
-eq('active+pro → contactSync + mirroring', [r.limits.contactSync, r.limits.mirroring], [true, true]);
+eq('active+pro → contactSync', r.limits.contactSync, true);
+// `mirroring` was REMOVED 2026-08-11 — it advertised a feature that was never built. Asserted as
+// ABSENT rather than deleted from the test, so a reintroduction fails loudly instead of quietly
+// re-adding a promise we cannot keep.
+eq('pro limits carry NO mirroring field', 'mirroring' in r.limits, false);
 
 // active + null planId → Solo (the backfill rule: legacy $5 buyers).
 r = ent({ isAdmin: false, email: 'a@b.c', subscription: { status: 'active', trialEndsAt: past, currentPeriodEnd: future, planId: null } });
@@ -154,7 +189,6 @@ function buildEntitlementResponse(entResult, usage) {
       quickReplies: entResult.limits.quickReplies,
       syncRangeMax: entResult.limits.syncRangeMax,
       contactSync: entResult.limits.contactSync,
-      mirroring: entResult.limits.mirroring,
     },
     usage: { templates: usage.templates, quickReplies: usage.quickReplies },
   };
@@ -165,13 +199,14 @@ const resp = buildEntitlementResponse(
   { templates: 2, quickReplies: 1 },
 );
 eq('contract top-level keys', Object.keys(resp).sort(), ['allowed', 'limits', 'state', 'tier', 'trialDaysLeft', 'usage']);
-eq('contract limits keys', Object.keys(resp.limits).sort(), ['contactSync', 'mirroring', 'quickReplies', 'syncRangeMax', 'templates']);
+eq('contract limits keys (no mirroring)', Object.keys(resp.limits).sort(), ['contactSync', 'quickReplies', 'syncRangeMax', 'templates']);
 eq('contract usage keys', Object.keys(resp.usage).sort(), ['quickReplies', 'templates']);
 eq('contract tier', resp.tier, 'plus');
 eq('contract limits.templates', resp.limits.templates, 10);
 eq('contract limits.syncRangeMax', resp.limits.syncRangeMax, '6mo');
 eq('contract limits.contactSync', resp.limits.contactSync, true);
-eq('contract limits.mirroring', resp.limits.mirroring, false);
+// The route no longer projects `mirroring`; assert its ABSENCE so a reintroduction fails.
+eq('contract carries NO mirroring', 'mirroring' in resp.limits, false);
 eq('contract usage.templates', resp.usage.templates, 2);
 ok('contract allowed is boolean', typeof resp.allowed === 'boolean');
 ok('contract trialDaysLeft number|null', resp.trialDaysLeft === null || typeof resp.trialDaysLeft === 'number');

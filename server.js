@@ -1268,7 +1268,7 @@ function startRelay(httpServer) {
     ws.tierLimits =
       ent.limits && typeof ent.limits === 'object'
         ? ent.limits
-        : { templates: 3, quickReplies: 5, syncRangeMax: '30d', contactSync: false, mirroring: false };
+        : { templates: 3, quickReplies: 1, syncRangeMax: '30d', contactSync: false };
     // F-A: only browser sessions (relay-ticket) are subject to the
     // single-active-session kick. Phone sockets (legacy-token /
     // legacy-token-bearer) are NEVER indexed and NEVER kicked.
