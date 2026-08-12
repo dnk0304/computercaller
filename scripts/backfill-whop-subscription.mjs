@@ -43,7 +43,28 @@ const {
   extractPayloadEmail,
 } = whopCore;
 
-const WHOP_API_BASE = 'https://api.whop.com/api/v5';
+// Always the real Whop API. WHOP_API_BASE_OVERRIDE exists ONLY so the harness
+// can serve the recorded incident fixtures from loopback — it is rejected
+// unless it points at localhost, so it can never redirect a real run at an
+// attacker-controlled host.
+function resolveApiBase() {
+  const override = (process.env.WHOP_API_BASE_OVERRIDE || '').trim();
+  if (!override) return 'https://api.whop.com/api/v5';
+  const host = (() => {
+    try {
+      return new URL(override).hostname;
+    } catch {
+      return '';
+    }
+  })();
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
+    console.error(`ERROR: WHOP_API_BASE_OVERRIDE must be loopback, got "${host}".`);
+    process.exit(1);
+  }
+  console.warn(`⚠ Using WHOP_API_BASE_OVERRIDE=${override} (test fixture server, not real Whop).`);
+  return override;
+}
+const WHOP_API_BASE = resolveApiBase();
 
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
