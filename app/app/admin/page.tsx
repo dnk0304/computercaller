@@ -20,8 +20,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ShieldAlert, AlertCircle, Users, RefreshCw } from 'lucide-react';
+import { clsx } from 'clsx';
 import { CustomerTable } from '@/components/admin/CustomerTable';
 import { FreeAccessManager } from '@/components/admin/FreeAccessManager';
+import { ReconcileWhopButton } from '@/components/admin/ReconcileWhopButton';
+import { ArticlesSection } from '@/components/admin/ArticlesSection';
 import type { AdminCustomersResponse } from '@/components/admin/adminTypes';
 import { mockCustomersResponse } from '@/components/admin/mockCustomers';
 
@@ -49,9 +52,32 @@ function useMockPreview(): boolean {
   return mock;
 }
 
+/**
+ * The panel's two jobs. They share a gate and a shell but nothing else, so they
+ * are tabs rather than two stacked sections — a long customer table above the
+ * guides list would bury the CMS.
+ */
+type AdminTab = 'customers' | 'articles';
+
+const TABS: ReadonlyArray<{ id: AdminTab; label: string; heading: string; blurb: string }> = [
+  {
+    id: 'customers',
+    label: 'Customers',
+    heading: 'Customers',
+    blurb: 'Account, trial, billing and same-IP signal for every registered user.',
+  },
+  {
+    id: 'articles',
+    label: 'Guides',
+    heading: 'Guides',
+    blurb: 'Write, edit and publish the guides on computercaller.com.',
+  },
+];
+
 export default function AdminPage() {
   const mockPreview = useMockPreview();
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const [tab, setTab] = useState<AdminTab>('customers');
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setState({ kind: 'loading' });
@@ -87,17 +113,18 @@ export default function AdminPage() {
     return () => controller.abort();
   }, [mockPreview, load]);
 
+  const active = TABS.find((t) => t.id === tab) ?? TABS[0];
+  const showTabs = state.kind !== 'loading' && state.kind !== 'forbidden';
+
   return (
     <div className="mx-auto max-w-[1400px]">
       {/* Page heading */}
       <div className="mb-5 flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-lg font-bold text-slate-800">Customers</h1>
-          <p className="text-xs text-slate-500">
-            Account, trial, billing and same-IP signal for every registered user.
-          </p>
+          <h1 className="text-lg font-bold text-slate-800">{active.heading}</h1>
+          <p className="text-xs text-slate-500">{active.blurb}</p>
         </div>
-        {state.kind === 'ready' && !mockPreview && (
+        {tab === 'customers' && state.kind === 'ready' && !mockPreview && (
           <button
             type="button"
             onClick={() => void load()}
@@ -115,11 +142,51 @@ export default function AdminPage() {
         </p>
       )}
 
+      {/* Section switcher. A real tablist so arrow keys and the roving
+          aria-selected state work; the panels below are labelled by their tab. */}
+      {showTabs && (
+        <div
+          role="tablist"
+          aria-label="Admin sections"
+          className="mb-5 inline-flex gap-1 rounded-xl border border-slate-200 bg-white p-1"
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              id={`admin-tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`admin-panel-${t.id}`}
+              onClick={() => setTab(t.id)}
+              className={clsx(
+                'rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30',
+                tab === t.id
+                  ? 'bg-slate-800 text-white'
+                  : 'text-slate-600 hover:bg-slate-50',
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {state.kind === 'loading' && <TableSkeleton />}
       {state.kind === 'forbidden' && <ForbiddenCard />}
-      {state.kind === 'error' && <ErrorCard message={state.message} onRetry={() => void load()} />}
-      {state.kind === 'ready' && (
-        <div className="space-y-6">
+
+      {tab === 'customers' && state.kind === 'error' && (
+        <ErrorCard message={state.message} onRetry={() => void load()} />
+      )}
+
+      {tab === 'customers' && state.kind === 'ready' && (
+        <div role="tabpanel" id="admin-panel-customers" aria-labelledby="admin-tab-customers" className="space-y-6">
+          {/* Whop reconciliation — the ONLY trigger for the sync (there is no
+              cron), so it sits above the table rather than in a menu. A run
+              refetches the customers feed so a newly-matched payer appears
+              without a manual refresh. */}
+          {!mockPreview && <ReconcileWhopButton onReconciled={() => void load()} />}
+
           {/* Free-access allowlist manager — a live-only tool (it reads/writes
               /api/admin/free-access), so it's hidden in the ?mock=1 preview
               where those endpoints aren't being hit. A grant/revoke here
@@ -135,6 +202,12 @@ export default function AdminPage() {
               onMutated={mockPreview ? undefined : () => void load()}
             />
           )}
+        </div>
+      )}
+
+      {tab === 'articles' && showTabs && (
+        <div role="tabpanel" id="admin-panel-articles" aria-labelledby="admin-tab-articles">
+          <ArticlesSection />
         </div>
       )}
     </div>
