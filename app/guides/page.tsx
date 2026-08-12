@@ -1,15 +1,23 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { ArrowRight, BookOpen } from 'lucide-react';
-import { getAllGuides, formatGuideDate } from '@/lib/guides';
+import { getAllArticles, formatGuideDate } from '@/lib/articles';
 import { GuidesHeader, GuidesFooter } from '@/components/guides/GuidesChrome';
 
 /**
- * /guides — SEO article index. Statically generated: getAllGuides() reads
- * content/guides/*.md from disk at build time (server component, no dynamic
- * APIs → Next prerenders it). If the content folder is empty or missing the
- * page still builds and renders an inviting empty state — the content agent
- * may land articles after this ships.
+ * /guides — SEO article index.
+ *
+ * Reads PUBLISHED articles out of Postgres via getAllArticles() and is
+ * revalidated every 300s (ISR). The admin publish/unpublish actions call
+ * revalidatePath('/guides'), so an edit is live in seconds without a deploy —
+ * that swap (from a build-time content/guides/*.md read) is the whole point of
+ * dispatch feat/articles-cms-backend, 2026-08-12.
+ *
+ * getAllArticles() falls back to the original file reader when the Article
+ * table is empty or the query throws, so this page renders the 17 guides
+ * exactly as before on an un-seeded or degraded database. The empty state below
+ * is therefore reachable only when BOTH the table and content/guides/ are
+ * empty.
  */
 
 export const metadata: Metadata = {
@@ -26,8 +34,10 @@ export const metadata: Metadata = {
   },
 };
 
-export default function GuidesIndexPage() {
-  const guides = getAllGuides();
+export const revalidate = 300;
+
+export default async function GuidesIndexPage() {
+  const guides = await getAllArticles();
 
   return (
     <div className="min-h-screen bg-white text-slate-900 flex flex-col">
