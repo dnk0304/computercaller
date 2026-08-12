@@ -162,3 +162,53 @@ export interface FreeAccessRevokeResponse {
   email: string;
   removed: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Guides CMS (2026-08-12) — the contract for `/api/admin/articles/*`, mirrored
+// verbatim from `lib/admin-articles.ts` (toListRow / toFullRecord). The list
+// feed deliberately omits `body` so the index stays light; the editor fetches
+// the full record by id.
+// ---------------------------------------------------------------------------
+
+/** `status` is a free string column server-side; 'published' is the only live value. */
+export type ArticleStatus = 'draft' | 'published';
+
+/** One row of `GET /api/admin/articles`. No `body`. */
+export interface ArticleListRow {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  status: ArticleStatus;
+  /** ISO timestamp, or null while the article has never been published. */
+  publishedAt: string | null;
+  updatedAt: string;
+  /** Admin email that last wrote to the row — the audit trail. */
+  updatedBy: string | null;
+}
+
+/** The full record: detail GET *and* the response to every mutation. */
+export interface ArticleRecord extends ArticleListRow {
+  body: string;
+  keywords: string[];
+  createdAt: string;
+}
+
+/** `GET /api/admin/articles` */
+export interface ArticleListResponse {
+  articles: ArticleListRow[];
+}
+
+/** Every single-article endpoint answers with the full record under `article`. */
+export interface ArticleResponse {
+  article: ArticleRecord;
+}
+
+/** The writable subset, as the create/update endpoints accept it. */
+export interface ArticleDraftInput {
+  slug: string;
+  title: string;
+  description: string;
+  body: string;
+  keywords: string[];
+}
