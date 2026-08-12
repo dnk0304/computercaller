@@ -208,6 +208,159 @@ export async function fetchMembershipState(
 }
 
 /**
+ * ---------------------------------------------------------------------------
+ * Whop user lookup (2026-08-12, dispatch fix/whop-payment-reconcile).
+ * ---------------------------------------------------------------------------
+ * The modern v1 webhook Membership payload is SLIM: it carries `user_id` but no
+ * user object and therefore NO email. Before this, a first-time buyer whose
+ * event arrived in that shape could not be matched to an app account at all —
+ * the only fallback was a lookup by whopMembershipId, which by definition
+ * cannot exist for a customer's FIRST purchase. The paying customer was
+ * silently dropped. This turns `user_id` back into an email.
+ */
+
+const USER_CACHE_TTL_MS = 5 * 60_000;
+
+interface UserCacheEntry {
+  value: string | null;
+  expiresAt: number;
+}
+
+// Misses are cached too — a deleted/unknown Whop user id must not re-hit the
+// API on every webhook retry.
+const userEmailCache = new Map<string, UserCacheEntry>();
+
+/**
+ * Email for a Whop user id via `GET /api/v5/company/users/{id}`, lowercased.
+ * Returns null when the key isn't configured, the call 404s/times out, or the
+ * response carries no email. NEVER throws — a webhook must not 500 because
+ * Whop was slow.
+ */
+export async function fetchWhopUserEmail(
+  whopUserId: string,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<string | null> {
+  if (!whopUserId || !isWhopKeyConfigured()) return null;
+
+  const cached = userEmailCache.get(whopUserId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const key = process.env.WHOP_API_KEY!.trim();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(
+      `${WHOP_API_BASE}/company/users/${encodeURIComponent(whopUserId)}`,
+      {
+        headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+        signal: controller.signal,
+        cache: 'no-store',
+      },
+    );
+    if (!res.ok) {
+      userEmailCache.set(whopUserId, { value: null, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+      return null;
+    }
+    const payload: unknown = await res.json();
+    const root = membershipRoot(payload); // same `{data:{…}}`-or-bare unwrap
+    const raw = root && typeof root.email === 'string' ? root.email : '';
+    const email = raw.trim().toLowerCase() || null;
+    userEmailCache.set(whopUserId, { value: email, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+    return email;
+  } catch {
+    // Transient — do NOT cache, so the next event can recover.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** One page of the company memberships list, plus whether more pages exist. */
+export interface WhopMembershipPage {
+  memberships: unknown[];
+  /** True when the page was fetched successfully (even if empty). */
+  ok: boolean;
+  /** True when Whop indicates further pages. */
+  hasMore: boolean;
+}
+
+/**
+ * Pull one page of `GET /api/v5/company/memberships`. Whop's list envelope has
+ * drifted, so read every known shape: `{data:[…]}`, `{memberships:[…]}`, or a
+ * bare array. Pagination is likewise read defensively — when Whop gives us no
+ * page metadata we fall back to "a full page means there is probably another",
+ * which terminates naturally on the first short page.
+ */
+export async function fetchCompanyMembershipsPage(
+  page: number,
+  perPage: number,
+  timeoutMs: number = 10_000,
+): Promise<WhopMembershipPage> {
+  if (!isWhopKeyConfigured()) return { memberships: [], ok: false, hasMore: false };
+
+  const key = process.env.WHOP_API_KEY!.trim();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const url = `${WHOP_API_BASE}/company/memberships?page=${page}&per=${perPage}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+    if (!res.ok) return { memberships: [], ok: false, hasMore: false };
+
+    const payload = (await res.json()) as Record<string, unknown> | unknown[];
+    const list = Array.isArray(payload)
+      ? payload
+      : Array.isArray((payload as Record<string, unknown>).data)
+        ? ((payload as Record<string, unknown>).data as unknown[])
+        : Array.isArray((payload as Record<string, unknown>).memberships)
+          ? ((payload as Record<string, unknown>).memberships as unknown[])
+          : [];
+
+    let hasMore = list.length >= perPage;
+    const pagination = !Array.isArray(payload)
+      ? ((payload as Record<string, unknown>).pagination as Record<string, unknown> | undefined)
+      : undefined;
+    if (pagination) {
+      const current = Number(pagination.current_page ?? pagination.page ?? page);
+      const total = Number(pagination.total_page ?? pagination.total_pages ?? NaN);
+      if (Number.isFinite(total)) hasMore = current < total;
+    }
+
+    return { memberships: list, ok: true, hasMore };
+  } catch {
+    return { memberships: [], ok: false, hasMore: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Every membership on the company, paginated. `complete` is false when a page
+ * failed or the page cap was hit — callers must not treat a partial list as
+ * "these are all the memberships that exist". (Reconciliation only ever
+ * UPSERTS, never deletes, so a partial list is safe to act on; it just means
+ * some customers were not visited this run.)
+ */
+export async function listCompanyMemberships(
+  perPage = 50,
+  maxPages = 100,
+): Promise<{ memberships: unknown[]; complete: boolean }> {
+  const all: unknown[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await fetchCompanyMembershipsPage(page, perPage);
+    if (!res.ok) return { memberships: all, complete: false };
+    all.push(...res.memberships);
+    if (!res.hasMore) return { memberships: all, complete: true };
+  }
+  return { memberships: all, complete: false };
+}
+
+/**
  * Resolve live state for many memberships with bounded concurrency. Returns a
  * Map membershipId → WhopMembershipState. Never throws; every per-id failure
  * degrades to the all-null state for that id. When no real key is configured,

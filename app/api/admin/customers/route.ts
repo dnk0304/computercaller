@@ -136,6 +136,13 @@ export async function GET(req: NextRequest) {
       .filter((id): id is string => typeof id === 'string' && id.length > 0);
     const liveState = await resolveMembershipStates(membershipIds);
 
+    // Write-backs collected during the map and flushed once, below. Until
+    // 2026-08-12 the live Whop values above were DISPLAY-ONLY: the panel could
+    // show the truth while Postgres — and therefore lib/entitlement-core.js —
+    // disagreed. That is how a cancelled customer keeps access and a paying one
+    // loses it. Reading the truth and then discarding it was the bug.
+    const writeBacks: Array<Promise<unknown>> = [];
+
     const customers = users.map((u) => {
       const freeAccess = freeAccessSet.has(u.email.toLowerCase());
       const ent = evaluateEntitlement(
@@ -188,6 +195,52 @@ export async function GET(req: NextRequest) {
       // next-bill date rather than a stale stored one.
       const effectivePeriodEnd =
         live?.currentPeriodEnd ?? u.subscription?.currentPeriodEnd?.toISOString() ?? null;
+
+      // PERSIST what we just learned (2026-08-12). Only for rows that HAVE a
+      // subscription and where Whop actually answered with a value that DIFFERS
+      // from the stored one — so a normal dashboard refresh writes nothing.
+      //
+      // Deliberately does NOT touch `status`: a membership read cannot tell
+      // active from expired on its own, and status is owned by the webhook and
+      // by lib/whop-reconcile.ts. This only repairs the three columns the live
+      // read genuinely resolves.
+      if (u.subscription && live) {
+        const patch: Record<string, unknown> = {};
+        if (
+          typeof live.cardOnFile === 'boolean' &&
+          live.cardOnFile !== u.subscription.paymentMethodAttached
+        ) {
+          patch.paymentMethodAttached = live.cardOnFile;
+        }
+        if (
+          typeof live.cancelAtPeriodEnd === 'boolean' &&
+          live.cancelAtPeriodEnd !== u.subscription.cancelAtPeriodEnd
+        ) {
+          patch.cancelAtPeriodEnd = live.cancelAtPeriodEnd;
+          // Stamp the churn date ONCE, exactly like the webhook does — never
+          // overwrite an existing one, and clear it on an uncancel.
+          if (live.cancelAtPeriodEnd && !u.subscription.canceledAt) patch.canceledAt = new Date();
+          if (!live.cancelAtPeriodEnd) patch.canceledAt = null;
+        }
+        if (live.currentPeriodEnd) {
+          const liveMs = Date.parse(live.currentPeriodEnd);
+          if (
+            Number.isFinite(liveMs) &&
+            liveMs !== (u.subscription.currentPeriodEnd?.getTime() ?? NaN)
+          ) {
+            patch.currentPeriodEnd = new Date(liveMs);
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          // Never throws into the response — a failed repair must not break the
+          // admin panel. Awaited in a batch after the map.
+          writeBacks.push(
+            db.subscription
+              .update({ where: { userId: u.id }, data: patch })
+              .catch((e) => console.error('[admin/customers] write-back failed', u.id, e)),
+          );
+        }
+      }
 
       // subscription block is NEVER omitted — when the row has no subscription
       // we return an explicit null-filled object with the evaluated state (which
@@ -245,6 +298,15 @@ export async function GET(req: NextRequest) {
         flagged,
       };
     });
+
+    // Flush the live-value repairs. allSettled + the per-write .catch above:
+    // the dashboard must render even if every repair fails. The response body
+    // already carries the live values, so a failed write only means the repair
+    // is retried on the next refresh (or by /api/admin/reconcile-whop).
+    if (writeBacks.length > 0) {
+      await Promise.allSettled(writeBacks);
+      console.log('[admin/customers] persisted', writeBacks.length, 'live Whop correction(s)');
+    }
 
     return NextResponse.json({
       customers,

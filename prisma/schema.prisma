@@ -94,6 +94,20 @@ model User {
   // reply-and-hangup chips on an incoming call — never general SMS, never
   // surfaced in the normal templates list or composer. onDelete: Cascade.
   quickReplyTemplates QuickReplyTemplate[]
+  // whopUserId (2026-08-12, dispatch fix/whop-payment-reconcile). Nullable +
+  // indexed, NOT unique → `prisma db push` additive, zero data loss, and a
+  // duplicate can never block a signup or a webhook.
+  //
+  // WHY: Whop's modern v1 webhook Membership payload is SLIM — it carries
+  // `user_id` but no user object and therefore NO email. Matching a payment to
+  // an account by email alone breaks the moment the payload omits it, or the
+  // moment either side changes the email. This column is the DURABLE link:
+  // written the first time we successfully match a Whop user to an account
+  // (from any rung of the resolution ladder), then preferred over email on
+  // every later event. See lib/whop-resolve.ts.
+  whopUserId        String?
+
+  @@index([whopUserId])
 }
 
 // Template (Item C1, 2026-05-27). One reusable SMS body per row, owned by a User.
@@ -258,8 +272,64 @@ model Subscription {
   //   lives in lib/tiers-core.js (planIdToTier: null/unknown → 'solo'); this
   //   column is the raw input, never the resolved tier.
   planId                String?
+  // Failed-payment tracking (2026-08-12, dispatch fix/whop-payment-reconcile).
+  // Nullable / defaulted → `prisma db push` additive, zero data loss.
+  //
+  // ENTITLEMENT DELIBERATELY IGNORES BOTH. A single failed charge must NOT
+  // revoke access — Whop retries dunning for days and the customer may simply
+  // have a expired card. `membership.went_invalid` remains the ONLY revocation
+  // signal. These columns exist so a failing customer is VISIBLE before they
+  // churn, which is the whole point of the incident this dispatch closes.
+  //   lastPaymentFailedAt  — most recent payment.failed event.
+  //   paymentFailureCount  — consecutive failures; reset to 0 on any success.
+  lastPaymentFailedAt   DateTime?
+  paymentFailureCount   Int      @default(0)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+
+  // whopMembershipId was neither unique nor indexed until 2026-08-12 — every
+  // webhook that fell back to the membership-id rung did a SEQUENTIAL SCAN.
+  // Indexed, NOT unique: Whop legitimately issues a customer several
+  // memberships (trial + real subscription), and a unique constraint would
+  // make the webhook throw mid-payment rather than simply re-point the row.
+  @@index([whopMembershipId])
+}
+
+/**
+ * UnmatchedWhopEvent (2026-08-12, dispatch fix/whop-payment-reconcile).
+ *
+ * A signed, verified Whop event we could NOT attach to an app account. Before
+ * this table those events returned a bare `{ok:true}` and vanished: Whop saw
+ * success, nobody was alerted, and a paying customer stayed invisible until he
+ * complained. That silence is what turned a match failure into an unnoticed
+ * revenue incident on 2026-08-11.
+ *
+ * We still answer 200 (a non-2xx would make Whop retry-storm on an event we
+ * genuinely cannot process yet — e.g. the customer pays BEFORE registering),
+ * but the evidence is now durable and replayable: `rawPayload` holds the whole
+ * verified event, so reconciliation or a manual fix can resolve it later and
+ * stamp resolvedUserId/resolvedAt.
+ *
+ * Contains customer PII (email) by design — it is the recovery key. Same
+ * retention posture as the User table.
+ */
+model UnmatchedWhopEvent {
+  id               String   @id @default(cuid())
+  eventName        String
+  whopMembershipId String?
+  whopUserId       String?
+  payloadEmail     String?
+  rawPayload       Json
+  // Filled in when the event is later attached to an account (reconciliation
+  // or a manual fix). Null = still unresolved = still needs attention.
+  resolvedUserId   String?
+  resolvedAt       DateTime?
+  createdAt        DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([resolvedAt])
+  @@index([whopUserId])
+  @@index([payloadEmail])
 }
 
 // -- Article -- the /guides CMS (dispatch feat/articles-cms-backend, 2026-08-12)
