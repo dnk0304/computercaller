@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db } from '@/lib/db';
 import { resolveWhopCardState, resolveWhopCancellation } from '@/lib/entitlement-core';
+import {
+  extractWhopIdentity,
+  recordUnmatchedWhopEvent,
+  resolveUnmatchedWhopEvents,
+  resolveWhopAccount,
+} from '@/lib/whop-resolve';
 
 // Whop sends membership / payment webhooks signed with HMAC-SHA256 over the
 // raw request body using WHOP_WEBHOOK_SECRET. Header: "x-whop-signature".
@@ -247,23 +253,33 @@ export async function POST(req: NextRequest) {
     const membershipId: string | null =
       typeof data?.id === 'string' && data.id ? data.id : null;
 
-    // Resolve the account. Primary: the email on the payload (legacy v2/v5
-    // carries a nested `user` object). FALLBACK: the modern v1 Membership
-    // payload is SLIM — it has `user_id` but NO user object and therefore no
-    // email, so an email-only lookup would silently drop every v1 event. Fall
-    // back to the membership id we already stored at conversion time.
-    const email: string | undefined = data?.user?.email?.toLowerCase();
-    const user = email
-      ? await db.user.findUnique({ where: { email } })
-      : membershipId
-        ? (
-            await db.subscription.findFirst({
-              where: { whopMembershipId: membershipId },
-              select: { user: { select: { id: true } } },
-            })
-          )?.user ?? null
-        : null;
-    if (!user) return NextResponse.json({ ok: true }); // user not registered yet
+    // Resolve the account via the full ladder — payload email, the durable
+    // whopUserId link, an existing Subscription for this membership, and
+    // finally the Whop company API (user_id → email). See lib/whop-resolve.ts
+    // for why each rung exists; the short version is that the previous
+    // email-or-membership-id match dropped a customer's FIRST purchase whenever
+    // the payload was the slim v1 shape, and dropped it SILENTLY.
+    const identity = extractWhopIdentity(data);
+    const match = await resolveWhopAccount(identity);
+
+    if (!match) {
+      // Not a 4xx/5xx: a genuinely unmatched event (customer paid before he
+      // registered) must not put Whop into a retry storm. But it is no longer
+      // silent — the verified payload is persisted for replay and the log line
+      // is greppable. Nobody should learn about a missing payment from the
+      // customer again.
+      await recordUnmatchedWhopEvent(action, identity, body);
+      return NextResponse.json({ ok: true, matched: false });
+    }
+
+    const user = { id: match.userId };
+    console.log('[Whop webhook] matched account via', match.via);
+
+    // Any event we could not attach earlier for this same customer is now
+    // attributable. Best-effort bookkeeping; never blocks the write below.
+    // Awaited, not fire-and-forget: a floating promise in Next's server runtime
+    // can be cut off when the response is returned.
+    await resolveUnmatchedWhopEvents(identity, user.id);
 
     // Cancellation intent carried by THIS event (true | false | null=unknown).
     // Read on every event, not just the cancellation one: a membership payload
@@ -346,7 +362,7 @@ export async function POST(req: NextRequest) {
         where: { userId: user.id },
         create: {
           userId: user.id,
-          whopMembershipId: data?.id,
+          whopMembershipId: membershipId,
           status: 'active',
           trialEndsAt: new Date(),
           currentPeriodEnd: periodEnd,
@@ -361,9 +377,11 @@ export async function POST(req: NextRequest) {
           planId: eventPlanId,
         },
         update: {
-          whopMembershipId: data?.id,
+          whopMembershipId: membershipId,
           status: 'active',
           currentPeriodEnd: periodEnd,
+          // A charge cleared → any dunning streak is over.
+          paymentFailureCount: 0,
           // Cancellation markers are cleared ONLY on a positive not-cancelled
           // signal (cancelIntent === false), never on an ambiguous event.
           //
@@ -403,6 +421,32 @@ export async function POST(req: NextRequest) {
           data: { canceledAt: now },
         });
       }
+    }
+
+    // payment.failed (2026-08-12). Whop had no branch here at all, so a
+    // customer whose card started failing was indistinguishable from a happy
+    // one right up until the membership finally went invalid.
+    //
+    // RECORDS ONLY — it deliberately does NOT touch `status` and does NOT
+    // revoke access. Whop retries dunning for days and the customer may just
+    // have an expired card; `membership.went_invalid` remains the ONE
+    // revocation signal (unchanged, see below). updateMany (not upsert) so an
+    // isolated failure event can never CREATE a subscription row out of
+    // nothing.
+    if (action === 'payment.failed') {
+      const updated = await db.subscription.updateMany({
+        where: { userId: user.id },
+        data: {
+          lastPaymentFailedAt: new Date(),
+          paymentFailureCount: { increment: 1 },
+        },
+      });
+      console.warn(
+        '[Whop webhook] payment.failed for user',
+        user.id,
+        updated.count === 0 ? '(no subscription row to record it on)' : '',
+      );
+      return NextResponse.json({ ok: true });
     }
 
     if (action === 'membership.went_invalid' || action === 'membership.expired') {
