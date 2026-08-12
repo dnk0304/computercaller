@@ -261,3 +261,48 @@ model Subscription {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 }
+
+// -- Article -- the /guides CMS (dispatch feat/articles-cms-backend, 2026-08-12)
+//
+// WHY A TABLE AT ALL: the 17 guides used to live ONLY as Markdown files in
+// content/guides/ and were read off disk at BUILD time. Publishing an edit
+// therefore cost a full Coolify container rebuild (minutes) and made the CMS
+// depend on CI being healthy. Articles now live here; /guides reads the DB with
+// ISR (revalidate 300) and the admin publish action calls revalidatePath(), so
+// a publish is live in seconds with no deploy.
+//
+// FILES ARE NOT DELETED. content/guides/*.md and lib/guides.ts remain as the
+// SEED SOURCE and -- critically -- as the FALLBACK: lib/articles.ts serves the
+// file-based guides whenever this table is empty or the query throws. These are
+// 17 live SEO pages; a bad migration must never be able to blank /guides.
+//
+// status is a plain String, not a Postgres enum, on purpose: adding a future
+// state ('scheduled', 'archived') to an enum needs a DDL migration, and an enum
+// value cannot be resolved inside a prepared IN-list without being registered
+// first. Only 'draft' | 'published' are written; every read filters on the
+// literal 'published'.
+model Article {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  title       String
+  description String    @default("")
+  // Markdown, frontmatter already stripped. Rendered on a PUBLIC page by
+  // react-markdown WITHOUT rehype-raw, so embedded HTML is escaped and never
+  // executed. See app/guides/[slug]/page.tsx for the full invariant note.
+  body        String
+  keywords    String[]
+  status      String    @default("draft")
+  // Stamped once, on the FIRST publish, and preserved across
+  // unpublish -> republish so the article keeps its original publication date
+  // (its SEO datePublished and sitemap lastModified do not churn).
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  // Admin email of the last human editor. Also the seed script's idempotency
+  // guard: a row with updatedBy set has been touched in the admin and is NEVER
+  // overwritten by a re-run of scripts/seed-articles-from-files.mjs.
+  updatedBy   String?
+
+  // Covers the only hot read path: published articles, newest first.
+  @@index([status, publishedAt])
+}

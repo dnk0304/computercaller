@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ChevronRight } from 'lucide-react';
-import { getAllGuides, getGuideBySlug, formatGuideDate } from '@/lib/guides';
+import { getAllArticles, getArticleBySlug, formatGuideDate } from '@/lib/articles';
 import {
   GuidesHeader,
   GuidesFooter,
@@ -12,11 +12,34 @@ import {
 } from '@/components/guides/GuidesChrome';
 
 /**
- * /guides/[slug] — statically generated article page.
+ * /guides/[slug] — the article page. Incrementally static (revalidate 300).
  *
- * - generateStaticParams enumerates content/guides/*.md at build time;
- *   dynamicParams = false makes any other slug a static 404 (no server work).
- * - Metadata (title/description/OG/keywords/canonical) comes from frontmatter.
+ * - Content comes from the Article table via getArticleBySlug() — PUBLISHED
+ *   rows only, with a fall back to the file reader when the table is empty or
+ *   errors (dispatch feat/articles-cms-backend, 2026-08-12).
+ * - generateStaticParams prerenders the slugs that are published AT BUILD TIME.
+ *   dynamicParams is now TRUE (it was false): an article published from the
+ *   admin panel after the container was built has a slug the build never saw,
+ *   and with dynamicParams=false it would serve a permanent static 404 —
+ *   publishing without a deploy would silently not work. Unknown slugs now
+ *   render on demand and notFound() if there is no published row, and the
+ *   result is cached for 300s like every other guide.
+ * - Metadata (title/description/OG/keywords/canonical) comes from the record.
+ *
+ * ── MARKDOWN SAFETY ─────────────────────────────────────────────────────────
+ * `guide.content` is now ADMIN-AUTHORED input from the CMS, not a file a
+ * developer committed, so it is treated as untrusted. It is safe because of two
+ * react-markdown defaults that must NOT be changed here:
+ *   1. NO `rehype-raw` (and no rehypePlugins at all) → raw HTML in the Markdown
+ *      is escaped as text, never parsed. `<script>` and `<img onerror=...>`
+ *      cannot execute. Adding rehype-raw to this component would open stored
+ *      XSS on a public page.
+ *   2. react-markdown's default `urlTransform` sanitises link/image URLs to a
+ *      safe protocol allow-list, so `[x](javascript:alert(1))` renders with a
+ *      stripped href. Do not pass a custom `urlTransform` that weakens it.
+ * The only dangerouslySetInnerHTML on this page is the JSON-LD block, which is
+ * JSON.stringify of a server-built object — see the note at its call site.
+ * Verified by scripts/articles-cms-proof.mts (assertion group 6).
  * - Article JSON-LD is a plain inline <script> in the server-rendered HTML —
  *   NOT next/script afterInteractive — so crawlers see it on first fetch.
  * - No @tailwindcss/typography dep: react-markdown's `components` map styles
@@ -24,10 +47,32 @@ import {
  *   plugin and keeps every value on the existing slate/blue tokens.
  */
 
-export const dynamicParams = false;
+/**
+ * Serialise an object for an inline <script> tag.
+ *
+ * JSON.stringify alone is NOT safe here. Inside a raw <script> element the HTML
+ * parser looks for the literal `</script` before any JS parsing happens, so a
+ * title of `</script><img src=x onerror=alert(1)>` would close the JSON-LD
+ * block and inject live markup. That string used to come from a file a
+ * developer committed; since the articles CMS shipped it comes from the
+ * database, so it is untrusted. Escaping `<` (and, for symmetry, `>` and `&`)
+ * to its \uXXXX JSON escape is transparent to every JSON-LD consumer — the
+ * value parses back to the identical string — and makes the break-out
+ * impossible. U+2028/2029 need no handling: this is `application/ld+json`, not
+ * executable JS, so they are never parsed as line terminators.
+ */
+function jsonLdScript(obj: unknown): string {
+  return JSON.stringify(obj)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
 
-export function generateStaticParams() {
-  return getAllGuides().map((g) => ({ slug: g.slug }));
+export const dynamicParams = true;
+export const revalidate = 300;
+
+export async function generateStaticParams() {
+  return (await getAllArticles()).map((g) => ({ slug: g.slug }));
 }
 
 export async function generateMetadata({
@@ -36,7 +81,7 @@ export async function generateMetadata({
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const guide = getGuideBySlug(slug);
+  const guide = await getArticleBySlug(slug);
   if (!guide) return {};
   return {
     title: guide.title,
@@ -143,7 +188,7 @@ export default async function GuidePage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const guide = getGuideBySlug(slug);
+  const guide = await getArticleBySlug(slug);
   if (!guide) notFound();
 
   const articleJsonLd = {
@@ -179,7 +224,7 @@ export default async function GuidePage({
           data is present on the crawler's first fetch. */}
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
+        dangerouslySetInnerHTML={{ __html: jsonLdScript(articleJsonLd) }}
       />
 
       <GuidesHeader />

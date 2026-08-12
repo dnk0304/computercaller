@@ -1,5 +1,5 @@
 import type { MetadataRoute } from 'next';
-import { getAllGuides } from '@/lib/guides';
+import { getAllArticles } from '@/lib/articles';
 
 /**
  * Sitemap — generated at /sitemap.xml by Next's app-router metadata file
@@ -22,7 +22,7 @@ import { getAllGuides } from '@/lib/guides';
 
 const BASE_URL = 'https://computercaller.com';
 
-export default function sitemap(): MetadataRoute.Sitemap {
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const now = new Date();
   return [
     {
@@ -56,16 +56,21 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.3,
     },
     // Guides — the SEO article section. The index is always listed (it renders
-    // an empty state even with no content); each article URL is derived from
-    // content/guides/*.md at build time, so the sitemap and the statically
-    // generated /guides/[slug] pages can never drift apart.
+    // an empty state even with no content); each article URL comes from
+    // getAllArticles(), the SAME reader /guides and /guides/[slug] use, so the
+    // sitemap and the rendered pages can never drift apart.
+    //
+    // getAllArticles() returns PUBLISHED rows only and falls back to the
+    // file-based reader when the Article table is empty or errors — so a draft
+    // can never be listed here, and a DB outage can never empty the sitemap.
+    // (dispatch feat/articles-cms-backend, 2026-08-12.)
     {
       url: `${BASE_URL}/guides`,
       lastModified: now,
       changeFrequency: 'weekly',
       priority: 0.7,
     },
-    ...getAllGuides().map((guide) => ({
+    ...(await getAllArticles()).map((guide) => ({
       url: `${BASE_URL}/guides/${guide.slug}`,
       lastModified: guide.date ? new Date(guide.date) : now,
       changeFrequency: 'monthly' as const,
