@@ -18,61 +18,24 @@
  *   DELETE { email }        → revoke (delete row; idempotent).
  *
  * No PII leaks in error bodies — validation failures return generic messages.
+ *
+ * 2026-08-15 (forge/admin-create-account) — REFACTOR, no behaviour change.
+ * The admin gate, the email/note normalizers and the grant/revoke bodies moved
+ * to lib/adminGate.ts and lib/freeAccessGrant.ts so POST /api/admin/users can
+ * comp an account through the EXACT same code path instead of hand-rolling a
+ * second one. Same status codes, same response shapes, same audit rows.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { validateSessionToken, requireSameOrigin } from '@/lib/auth';
+import { requireSameOrigin } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { isAdminUser } from '@/lib/entitlement';
-
-// Pragmatic email shape check. Not RFC-5322-exhaustive on purpose: we only need
-// to reject obviously-malformed input before it becomes an allowlist key. One
-// @, non-empty local part, a dotted domain, no whitespace.
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function normalizeEmail(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  const email = raw.trim().toLowerCase();
-  if (!email || email.length > 254 || !EMAIL_RE.test(email)) return null;
-  return email;
-}
-
-type AdminOk = { ok: true; adminEmail: string };
-type AdminErr = { ok: false; res: NextResponse };
-
-/**
- * Shared admin gate for every method: valid session → load {isAdmin,email} →
- * isAdminUser. Returns the admin's email for audit attribution on success.
- * Deny-by-default: any failure → 401/403, no data.
- */
-async function requireAdmin(req: NextRequest): Promise<AdminOk | AdminErr> {
-  const token = req.cookies.get('auth_token')?.value;
-  if (!token) {
-    return { ok: false, res: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }) };
-  }
-  const payload = await validateSessionToken(token);
-  if (!payload) {
-    return { ok: false, res: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }) };
-  }
-  const requester = await db.user.findUnique({
-    where: { id: payload.userId },
-    select: { isAdmin: true, email: true },
-  });
-  if (!isAdminUser({ isAdmin: requester?.isAdmin, email: requester?.email })) {
-    return { ok: false, res: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) };
-  }
-  // requester is non-null here (isAdminUser returned true off its fields).
-  return { ok: true, adminEmail: (requester!.email ?? '').toLowerCase() };
-}
-
-async function parseBody(req: NextRequest): Promise<Record<string, unknown> | null> {
-  try {
-    const b = await req.json();
-    return b && typeof b === 'object' ? (b as Record<string, unknown>) : {};
-  } catch {
-    return null;
-  }
-}
+import { requireAdmin, parseJsonBody } from '@/lib/adminGate';
+import {
+  grantFreeAccess,
+  revokeFreeAccess,
+  normalizeEmail,
+  normalizeNote,
+} from '@/lib/freeAccessGrant';
 
 // ── GET: list the allowlist ──────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -122,39 +85,18 @@ export async function POST(req: NextRequest) {
     const gate = await requireAdmin(req);
     if (!gate.ok) return gate.res;
 
-    const body = await parseBody(req);
+    const body = await parseJsonBody(req);
     if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
 
     const email = normalizeEmail(body.email);
     if (!email) {
       return NextResponse.json({ error: 'A valid email is required' }, { status: 400 });
     }
-    const note =
-      typeof body.note === 'string' && body.note.trim() ? body.note.trim().slice(0, 500) : null;
+    const note = normalizeNote(body.note);
 
-    // Idempotent: re-granting an existing email refreshes note/grantedBy without
-    // erroring. createdAt (grantedAt) is preserved on update (only set on create).
-    const row = await db.freeAccessEmail.upsert({
-      where: { email },
-      create: { email, note, grantedBy: gate.adminEmail },
-      update: { note, grantedBy: gate.adminEmail },
-      select: { id: true, email: true, note: true, grantedBy: true, createdAt: true },
-    });
+    const entry = await grantFreeAccess(email, gate.adminEmail, note);
 
-    // Append-only audit — durable who/when/what for the billing bypass.
-    await db.freeAccessAudit.create({
-      data: { action: 'grant', email, actor: gate.adminEmail, note },
-    });
-
-    return NextResponse.json({
-      entry: {
-        id: row.id,
-        email: row.email,
-        note: row.note ?? null,
-        grantedBy: row.grantedBy,
-        grantedAt: row.createdAt.toISOString(),
-      },
-    });
+    return NextResponse.json({ entry });
   } catch (e) {
     console.error('[FreeAccess] POST error:', e);
     return NextResponse.json({ error: 'Failed to grant free access' }, { status: 500 });
@@ -170,7 +112,7 @@ export async function DELETE(req: NextRequest) {
     const gate = await requireAdmin(req);
     if (!gate.ok) return gate.res;
 
-    const body = await parseBody(req);
+    const body = await parseJsonBody(req);
     if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
 
     const email = normalizeEmail(body.email);
@@ -178,18 +120,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'A valid email is required' }, { status: 400 });
     }
 
-    // deleteMany → idempotent (revoking an absent email is a no-op success, not
-    // a 404). removed reflects whether a row actually existed.
-    const result = await db.freeAccessEmail.deleteMany({ where: { email } });
-    const removed = result.count > 0;
-
-    // Audit both the durable log AND a server warn line (brief F5).
-    await db.freeAccessAudit.create({
-      data: { action: 'revoke', email, actor: gate.adminEmail, note: null },
-    });
-    console.warn(
-      `[FreeAccess] revoked ${email} by ${gate.adminEmail} at ${new Date().toISOString()} (existed=${removed})`,
-    );
+    const { removed } = await revokeFreeAccess(email, gate.adminEmail);
 
     return NextResponse.json({ revoked: true, email, removed });
   } catch (e) {

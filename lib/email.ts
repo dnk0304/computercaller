@@ -114,3 +114,66 @@ export async function sendPasswordResetEmail(email: string, token: string) {
     `,
   });
 }
+
+/**
+ * Admin invite — sent when Dennis creates an account by hand via the admin
+ * panel (POST /api/admin/users, 2026-08-15).
+ *
+ * Distinct from sendPasswordResetEmail on purpose. The recipient did NOT ask
+ * for this and has never seen the product, so the copy has to explain who sent
+ * it and why, or it reads as phishing and gets deleted. It also carries a 72h
+ * expiry (not 1h) — an unsolicited invite has to survive a weekend.
+ *
+ * `url` is built by lib/passwordSetToken.buildSetPasswordUrl so the emailed link
+ * and the admin panel's "copy link" fallback can never disagree.
+ *
+ * The CALLER must wrap this in try/catch: a mail failure must never roll back a
+ * created account. The admin panel shows the one-time link so it can be handed
+ * over manually when the send fails.
+ */
+export async function sendAdminInviteEmail(opts: {
+  email: string;
+  url: string;
+  name?: string | null;
+  invitedBy?: string | null;
+  freeAccess?: boolean;
+}) {
+  const { email, url, name, invitedBy, freeAccess } = opts;
+  const greeting = name?.trim() ? `Hi ${escapeHtml(name.trim())},` : 'Hi,';
+  const from = invitedBy?.trim() ? escapeHtml(invitedBy.trim()) : 'the ComputerCaller team';
+  const perk = freeAccess
+    ? `<p>Your account has been set up with <strong>full free access</strong> — there's nothing to pay and no card to enter.</p>`
+    : '';
+  await getResend().emails.send({
+    from: FROM,
+    to: email,
+    replyTo: REPLY_TO,
+    subject: 'Your ComputerCaller account is ready',
+    html: `
+      <h2>Your ComputerCaller account is ready</h2>
+      <p>${greeting}</p>
+      <p>${from} created a ComputerCaller account for <strong>${escapeHtml(email)}</strong>.
+         Choose a password below to activate it and sign in.</p>
+      ${perk}
+      <a href="${url}" style="display:inline-block;padding:12px 24px;background:#1e293b;color:#fff;text-decoration:none;border-radius:8px;">Choose your password</a>
+      <p style="color:#888;font-size:12px;">This link works once and expires in 72 hours.</p>
+      <p style="color:#888;font-size:12px;">If you weren't expecting this, you can safely ignore this email — the account cannot be used until a password is set.</p>
+      <p style="color:#888;font-size:12px;">Questions? Just reply to this email and we'll help.</p>
+    `,
+  });
+}
+
+/**
+ * Minimal HTML-escape for values interpolated into email bodies. `name` and the
+ * admin email are operator-supplied free text; without this, a name containing
+ * markup would break out of the surrounding tag and could inject a link into an
+ * email sent under our verified domain.
+ */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
