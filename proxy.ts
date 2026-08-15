@@ -7,7 +7,7 @@ import {
 } from '@/lib/auth';
 import { IDLE_LOGOUT_REASON } from '@/lib/idleTimeout';
 import { db } from '@/lib/db';
-import { evaluateEntitlement } from '@/lib/entitlement';
+import { evaluateUserEntitlement, isEntitlementIndeterminate } from '@/lib/entitlement';
 
 const PROTECTED = ['/app'];
 const AUTH_PAGES = ['/auth/login', '/auth/register', '/auth/verify-email', '/auth/forgot-password', '/auth/reset-password'];
@@ -123,47 +123,42 @@ export async function proxy(req: NextRequest) {
     // ── Trial / subscription entitlement gate (2026-07-03) ─────────────────
     //
     // The session is valid (authenticated). Now check the user is ENTITLED to
-    // the paid product. One extra indexed PK lookup for isAdmin + email +
-    // subscription, fed to the shared pure evaluateEntitlement. If not allowed,
-    // redirect to the /subscribe lock screen. We do NOT clear the cookie — the
-    // user stays logged in, they just can't reach /app until they pay (or their
-    // trial is still live). /subscribe is NOT in this proxy's matcher, so the
-    // redirect can't loop.
+    // the paid product. If not allowed, redirect to the /subscribe lock screen.
+    // We do NOT clear the cookie — the user stays logged in, they just can't
+    // reach /app until they pay (or their trial is still live). /subscribe is
+    // NOT in this proxy's matcher, so the redirect can't loop.
+    //
+    // ONE SOURCE (2026-08-15): this used to hand-roll its own user lookup
+    // (a raw findUnique) + a pure `evaluateEntitlement` call, which selected
+    // isAdmin/email/subscription and NEVER resolved the DB-backed
+    // FreeAccessEmail allowlist. The relay gate (server.js →
+    // evaluateUserEntitlement) DID. Result: admin-panel free-access grants
+    // worked on the relay but the browser gate bounced those users to
+    // /subscribe forever (netsoftgi@, eines.josef@ — proven in prod). Both
+    // gates now call the SAME evaluateUserEntitlement, which folds in
+    // isFreeAccessEmail, so the free-access lookup can never drift again.
     //
     // NO-LOCKOUT: /app/admin and every Dennis request pass because
     // evaluateEntitlement rule (1) isAdmin short-circuits to allowed=true, and
     // rule (2) covers ENTITLEMENT_ALLOWLIST emails.
     //
     // FAIL-OPEN by design: this proxy redirect is the UX layer, not the money
-    // chokepoint. If the DB lookup throws (transient blip), we let the request
+    // chokepoint. If the lookup throws (transient blip), we let the request
     // through rather than risk bouncing a legitimate paying user — including
-    // Dennis, whose isAdmin flag we could not read during the outage. The HARD
-    // enforcement lives in /api/auth/relay-ticket (fail-CLOSED): an unentitled
-    // user who slips past this redirect during a blip still cannot mint a relay
-    // ticket, so they cannot actually drive the phone. See relay-ticket route.
+    // Dennis, whose isAdmin flag we could not read during the outage.
+    // evaluateUserEntitlement itself fails CLOSED (it is the relay's chokepoint
+    // too), so we must not read its allowed:false as a verdict blindly:
+    // `isEntitlementIndeterminate` separates "we couldn't tell" (DB error /
+    // missing row) from "genuinely not entitled", and only the latter
+    // redirects. The outer try/catch stays as a belt-and-braces fail-open.
+    // The HARD enforcement lives in /api/auth/relay-ticket (fail-CLOSED): an
+    // unentitled user who slips past this redirect during a blip still cannot
+    // mint a relay ticket, so they cannot actually drive the phone.
     try {
-      const user = await db.user.findUnique({
-        where: { id: payload.userId },
-        select: {
-          isAdmin: true,
-          email: true,
-          subscription: {
-            select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
-          },
-        },
-      });
-      if (user) {
-        const ent = evaluateEntitlement({
-          isAdmin: user.isAdmin,
-          email: user.email,
-          subscription: user.subscription,
-        });
-        if (!ent.allowed) {
-          return NextResponse.redirect(new URL('/subscribe', req.url));
-        }
+      const ent = await evaluateUserEntitlement(db, payload.userId);
+      if (!ent.allowed && !isEntitlementIndeterminate(ent)) {
+        return NextResponse.redirect(new URL('/subscribe', req.url));
       }
-      // user === null shouldn't happen (validateSessionToken already confirmed
-      // the row exists) — fail OPEN and let the request through if it does.
     } catch (err) {
       console.error('[proxy] entitlement lookup failed — failing open:', err);
       // Fall through to NextResponse.next() below. relay-ticket still gates.
