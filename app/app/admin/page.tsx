@@ -86,8 +86,20 @@ export default function AdminPage() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [tab, setTab] = useState<AdminTab>('customers');
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setState({ kind: 'loading' });
+  /**
+   * `silent` (2026-08-15) — refresh the feed WITHOUT dropping the page back to
+   * the skeleton.
+   *
+   * This is a correctness fix, not a polish one. Every mutation tool calls this
+   * to reconcile the table, and the old unconditional `setState({kind:'loading'})`
+   * flipped `showTabs` to false, which unmounted the whole tab body. On the
+   * accounts tab that destroyed the one-time invite link about a second after it
+   * appeared — the admin's own successful creation was what erased it. A
+   * background reconcile must never tear down the UI that triggered it.
+   */
+  const load = useCallback(async (opts: { signal?: AbortSignal; silent?: boolean } = {}) => {
+    const { signal, silent } = opts;
+    if (!silent) setState({ kind: 'loading' });
     try {
       const res = await fetch('/api/admin/customers', { signal });
       if (res.status === 403 || res.status === 401) {
@@ -116,9 +128,53 @@ export default function AdminPage() {
       return;
     }
     const controller = new AbortController();
-    void load(controller.signal);
+    void load({ signal: controller.signal });
     return () => controller.abort();
   }, [mockPreview, load]);
+
+  /**
+   * ── The one-time invite guard (2026-08-15) ────────────────────────────────
+   *
+   * `POST /api/admin/users` stores only a SHA-256 of the invite URL, so the
+   * single render inside CreateAccountPanel is the only time it is readable.
+   * `pendingInvite` is true while such a link is on screen un-acknowledged.
+   *
+   * Two protections, because there are two ways to lose it:
+   *   • the panel is now permanently MOUNTED (see the tabpanel below), so a tab
+   *     change can no longer unmount it — the link survives and is still there
+   *     when the admin comes back;
+   *   • refresh / close / back still destroy it, and no React state survives
+   *     those, so they get a native beforeunload prompt.
+   *
+   * The in-app confirm below covers the remaining case: the admin walks away to
+   * another tab and forgets. Nothing is destroyed by that any more, but a
+   * warning at the moment of leaving is what stops the link going stale unseen.
+   */
+  const [pendingInvite, setPendingInvite] = useState(false);
+  const [confirmLeaveTo, setConfirmLeaveTo] = useState<AdminTab | null>(null);
+
+  useEffect(() => {
+    if (!pendingInvite) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [pendingInvite]);
+
+  /** Every tab change goes through here so none of them can skip the guard. */
+  const requestTab = useCallback(
+    (next: AdminTab) => {
+      if (next === tab) return;
+      if (pendingInvite && tab === 'accounts') {
+        setConfirmLeaveTo(next);
+        return;
+      }
+      setTab(next);
+    },
+    [tab, pendingInvite],
+  );
 
   const active = TABS.find((t) => t.id === tab) ?? TABS[0];
   const showTabs = state.kind !== 'loading' && state.kind !== 'forbidden';
@@ -165,15 +221,26 @@ export default function AdminPage() {
               id={`admin-tab-${t.id}`}
               aria-selected={tab === t.id}
               aria-controls={`admin-panel-${t.id}`}
-              onClick={() => setTab(t.id)}
+              onClick={() => requestTab(t.id)}
               className={clsx(
-                'rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30',
+                'inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30',
                 tab === t.id
                   ? 'bg-slate-800 text-white'
                   : 'text-slate-600 hover:bg-slate-50',
               )}
             >
               {t.label}
+              {/* A link is waiting on that tab. Never colour alone — the dot
+                  carries visually-hidden text so it is not a silent signal. */}
+              {t.id === 'accounts' && pendingInvite && (
+                <>
+                  <span
+                    aria-hidden="true"
+                    className="h-1.5 w-1.5 rounded-full bg-amber-500 ring-2 ring-amber-200"
+                  />
+                  <span className="sr-only">(an invite link is waiting to be copied)</span>
+                </>
+              )}
             </button>
           ))}
         </div>
@@ -192,13 +259,38 @@ export default function AdminPage() {
               cron), so it sits above the table rather than in a menu. A run
               refetches the customers feed so a newly-matched payer appears
               without a manual refresh. */}
-          {!mockPreview && <ReconcileWhopButton onReconciled={() => void load()} />}
+          {/* Degraded read (2026-08-15). The free-access allowlist query failed,
+              so the free_access short-circuit never ran for ANY row on this
+              page — a comped user renders a confident "None"/"Expired". The
+              failure is page-wide, so it is reported once, here, rather than
+              guessed at per row. Same rule as the badge: a failed read must
+              never be presented as a verdict. */}
+          {state.data.meta.freeAccessDegraded && (
+            <div
+              role="alert"
+              className="flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" aria-hidden="true" />
+              <div>
+                <p className="text-xs font-bold text-amber-900">
+                  Free-access list unavailable — access columns on this page are not reliable
+                </p>
+                <p className="mt-0.5 text-xs text-amber-800">
+                  The allowlist could not be read, so comped users are missing their free-access
+                  admit. Any row below may understate what someone can actually do. Refresh to try
+                  again; do not act on Plan or Status until it loads cleanly.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {!mockPreview && <ReconcileWhopButton onReconciled={() => void load({ silent: true })} />}
 
           {/* Free-access allowlist manager — a live-only tool (it reads/writes
               /api/admin/free-access), so it's hidden in the ?mock=1 preview
               where those endpoints aren't being hit. A grant/revoke here
               refetches the customers feed so the table's rows reconcile. */}
-          {!mockPreview && <FreeAccessManager onChanged={() => void load()} />}
+          {!mockPreview && <FreeAccessManager onChanged={() => void load({ silent: true })} />}
 
           {state.data.customers.length === 0 ? (
             <EmptyCard />
@@ -206,22 +298,77 @@ export default function AdminPage() {
             <CustomerTable
               data={state.data}
               now={mockPreview ? Date.parse(state.data.meta.generatedAt) : undefined}
-              onMutated={mockPreview ? undefined : () => void load()}
+              onMutated={mockPreview ? undefined : () => void load({ silent: true })}
             />
           )}
         </div>
       )}
 
       {/* Create account — live-only (it writes through /api/admin/users), so it
-          is hidden in the ?mock=1 preview like the other write tools. Creating
-          an account refetches the customers feed so the new row is already
-          there when the operator switches back. */}
-      {tab === 'accounts' && showTabs && !mockPreview && (
-        <div role="tabpanel" id="admin-panel-accounts" aria-labelledby="admin-tab-accounts">
+          is hidden in the ?mock=1 preview like the other write tools.
+
+          ⛔ PERMANENTLY MOUNTED, hidden rather than conditionally rendered
+          (2026-08-15). It holds a one-time invite URL that exists nowhere else —
+          not on the server, which keeps only its hash. Unmounting this subtree
+          for ANY reason destroys that link and burns the account, and it used to
+          be unmounted by three ordinary things: switching tabs, a background
+          refresh dropping `showTabs`, and its own onCreated triggering that
+          refresh. `hidden` keeps the state alive and correctly removes the
+          panel from the accessibility tree and the tab order while it is away.
+
+          Do not "simplify" this back into a `tab === 'accounts' &&` guard. */}
+      {!mockPreview && (
+        <div
+          role="tabpanel"
+          id="admin-panel-accounts"
+          aria-labelledby="admin-tab-accounts"
+          hidden={tab !== 'accounts' || !showTabs}
+        >
           <CreateAccountPanel
-            onCreated={() => void load()}
-            onViewCustomers={() => setTab('customers')}
+            // Silent: this refresh must not tear down the panel that fired it.
+            onCreated={() => void load({ silent: true })}
+            onViewCustomers={() => requestTab('customers')}
+            onPendingInviteChange={setPendingInvite}
           />
+        </div>
+      )}
+
+      {/* In-app guard. Same shape as the articles CMS dirty guard: an
+          alertdialog that names the cost, with the safe choice first. */}
+      {confirmLeaveTo && (
+        <div
+          role="alertdialog"
+          aria-labelledby="invite-guard-heading"
+          aria-describedby="invite-guard-body"
+          className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-5"
+        >
+          <h3 id="invite-guard-heading" className="text-sm font-semibold text-amber-900">
+            You haven’t confirmed the invite link yet
+          </h3>
+          <p id="invite-guard-body" className="mt-1 text-sm text-amber-800">
+            The one-time link is still on the New account tab and cannot be recovered once this
+            page is reloaded or closed. Copy it first — it will still be there when you go back.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => setConfirmLeaveTo(null)}
+              className="inline-flex items-center rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/40"
+            >
+              Stay and copy it
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTab(confirmLeaveTo);
+                setConfirmLeaveTo(null);
+              }}
+              className="inline-flex items-center rounded-xl border border-amber-300 bg-white px-4 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/30"
+            >
+              Switch tabs — the link stays open
+            </button>
+          </div>
         </div>
       )}
 

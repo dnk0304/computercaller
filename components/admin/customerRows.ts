@@ -64,10 +64,26 @@ export function trialStatusPill(state: SubscriptionState): PillMeta {
     case 'error':
       return { label: 'Unknown', className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200' };
     case 'none':
-    default:
       return { label: 'None', className: 'bg-slate-50 text-slate-400 ring-1 ring-inset ring-slate-200' };
+    default: {
+      // 'none' is a VERDICT ("the evaluator looked and there is no billing
+      // lifecycle"). A state this switch has never heard of is the absence of a
+      // verdict. Sharing a branch laundered the second into the first — the
+      // same lie the badge-truth fix removed, one level down. The compiler
+      // proves the union is covered; the runtime arm covers a server that
+      // starts sending a state this build predates.
+      const _exhaustive: never = state;
+      void _exhaustive;
+      return UNKNOWN_PILL;
+    }
   }
 }
+
+/** Shared by both pills: the evaluator's answer was not one we can read. */
+const UNKNOWN_PILL: PillMeta = {
+  label: 'Unknown',
+  className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200',
+};
 
 // ---------- Plan badge -------------------------------------------------------
 
@@ -120,8 +136,14 @@ export function planPill(state: SubscriptionState, planLabel: PlanLabel): PillMe
     case 'cancelled':
       return { label: 'Cancelled', className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200' };
     case 'none':
-    default:
       return { label: 'None', className: 'bg-slate-50 text-slate-400 ring-1 ring-inset ring-slate-200' };
+    default: {
+      // See trialStatusPill: "no plan" and "no idea" are different answers and
+      // must not share a branch.
+      const _exhaustive: never = state;
+      void _exhaustive;
+      return UNKNOWN_PILL;
+    }
   }
 }
 

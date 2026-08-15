@@ -1,9 +1,15 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
-import { AlertCircle, Loader2, UserPlus, ArrowRight } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertCircle, Loader2, UserPlus, ArrowRight, HelpCircle, Send } from 'lucide-react';
 import { InviteReveal } from './InviteReveal';
-import { createUser, CreateUserError, EMAIL_RE } from './usersClient';
+import {
+  createUser,
+  resendInvite,
+  canResendInvite,
+  CreateUserError,
+  EMAIL_RE,
+} from './usersClient';
 import type { CreateUserResponse, ExistingUserConflict } from './adminTypes';
 
 /**
@@ -33,17 +39,39 @@ import type { CreateUserResponse, ExistingUserConflict } from './adminTypes';
 
 type PanelState =
   | { kind: 'form' }
-  | { kind: 'created'; result: CreateUserResponse }
-  | { kind: 'exists'; user: ExistingUserConflict['user'] };
+  | { kind: 'created'; result: CreateUserResponse; resent: boolean }
+  | { kind: 'exists'; user: ExistingUserConflict['user'] }
+  /**
+   * The request failed in a way that does NOT tell us whether it committed —
+   * a 5xx after the transaction, or a dropped connection. Its own face because
+   * "we don't know" is a different instruction to the admin than "it failed":
+   * one says retry, the other says go and look first.
+   */
+  | { kind: 'unknown'; email: string; detail: string };
 
 export interface CreateAccountPanelProps {
   /** Refresh the customer feed. Called once the account actually exists. */
   onCreated?: () => void;
   /** Send the admin to the Customers tab (the duplicate-email route out). */
   onViewCustomers?: () => void;
+  /**
+   * `true` while a one-time invite link is on screen and the admin has NOT
+   * ticked the acknowledgement (2026-08-15).
+   *
+   * The link is unrecoverable — the server keeps only its hash — so the parent
+   * uses this to put a `beforeunload` guard on refresh/close and to confirm
+   * before a tab switch takes the panel out of view. Reported, not owned: the
+   * panel knows when a link is exposed; only the parent knows what navigation
+   * is possible around it.
+   */
+  onPendingInviteChange?: (pending: boolean) => void;
 }
 
-export function CreateAccountPanel({ onCreated, onViewCustomers }: CreateAccountPanelProps) {
+export function CreateAccountPanel({
+  onCreated,
+  onViewCustomers,
+  onPendingInviteChange,
+}: CreateAccountPanelProps) {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [note, setNote] = useState('');
@@ -51,6 +79,8 @@ export function CreateAccountPanel({ onCreated, onViewCustomers }: CreateAccount
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [state, setState] = useState<PanelState>({ kind: 'form' });
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
 
   const emailRef = useRef<HTMLInputElement | null>(null);
 
@@ -62,11 +92,47 @@ export function CreateAccountPanel({ onCreated, onViewCustomers }: CreateAccount
     setNote('');
     setFreeAccess(false);
     setFormError(null);
+    setResendError(null);
     setState({ kind: 'form' });
     // Return the operator to the top of the next entry, not to wherever the
     // dismissed panel happened to leave focus.
     window.setTimeout(() => emailRef.current?.focus(), 0);
   }, []);
+
+  /**
+   * Re-invite the existing account the 409 just described. This is THE recovery
+   * for a burned link, so it lives on the face the admin already reached by
+   * re-submitting the email — no second place to look, no impossible
+   * instruction. It lands in the same InviteReveal, flagged `resent` so nothing
+   * on screen claims an account was created.
+   */
+  const handleResend = useCallback(
+    async (user: ExistingUserConflict['user']) => {
+      if (resending) return;
+      setResendError(null);
+      setResending(true);
+      try {
+        const result = await resendInvite(user.email, note);
+        setState({ kind: 'created', result, resent: true });
+        // The token rotated, so the row's invite state changed — refresh.
+        onCreated?.();
+      } catch (err) {
+        if (err instanceof CreateUserError && err.indeterminate) {
+          setState({ kind: 'unknown', email: user.email, detail: err.message });
+          onCreated?.();
+          return;
+        }
+        setResendError(
+          err instanceof Error
+            ? err.message
+            : 'Couldn’t send a new invite. Please try again.',
+        );
+      } finally {
+        setResending(false);
+      }
+    },
+    [resending, note, onCreated],
+  );
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -87,13 +153,21 @@ export function CreateAccountPanel({ onCreated, onViewCustomers }: CreateAccount
           note,
           freeAccess,
         });
-        setState({ kind: 'created', result });
+        setState({ kind: 'created', result, resent: false });
         // The account exists now — refresh the list regardless of whether the
         // invite email made it out.
         onCreated?.();
       } catch (err) {
         if (err instanceof CreateUserError && err.conflict) {
           setState({ kind: 'exists', user: err.conflict });
+        } else if (err instanceof CreateUserError && err.indeterminate) {
+          // ⚠️ The write may have committed. Saying "couldn't create the
+          // account" here would be a guess presented as a fact, and the admin
+          // would retry into a 409 — or worse, walk away from a real account
+          // whose one-time link was minted and lost. Refresh the feed so the
+          // answer is one tab away, and say plainly that we do not know.
+          setState({ kind: 'unknown', email: email.trim(), detail: err.message });
+          onCreated?.();
         } else {
           setFormError(
             err instanceof Error ? err.message : 'Couldn’t create the account. Please try again.',
@@ -138,11 +212,23 @@ export function CreateAccountPanel({ onCreated, onViewCustomers }: CreateAccount
           expiresAt={state.result.invite.expiresAt}
           emailSent={state.result.invite.emailSent}
           emailError={state.result.invite.emailError}
+          resent={state.resent}
+          onAcknowledgedChange={(ack) => onPendingInviteChange?.(!ack)}
           onDone={reset}
         />
       ) : state.kind === 'exists' ? (
         <ExistingAccount
           user={state.user}
+          onBack={reset}
+          onViewCustomers={onViewCustomers}
+          onResend={handleResend}
+          resending={resending}
+          resendError={resendError}
+        />
+      ) : state.kind === 'unknown' ? (
+        <UnknownOutcome
+          email={state.email}
+          detail={state.detail}
           onBack={reset}
           onViewCustomers={onViewCustomers}
         />
@@ -259,13 +345,29 @@ function ExistingAccount({
   user,
   onBack,
   onViewCustomers,
+  onResend,
+  resending,
+  resendError,
 }: {
   user: ExistingUserConflict['user'];
   onBack: () => void;
   onViewCustomers?: () => void;
+  onResend: (user: ExistingUserConflict['user']) => void;
+  resending: boolean;
+  resendError: string | null;
 }) {
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const [registered, setRegistered] = useState<string>('');
+
+  // Take the reader to the outcome, matching InviteReveal. Without this a
+  // keyboard user is left on a submit button that no longer exists.
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
+
+  // Mirrors the server's refusal rules, so the action is never offered when it
+  // is guaranteed to be refused — and the reason is spelled out either way.
+  const resendable = canResendInvite(user);
 
   // Formatted in an effect: toLocaleDateString during render differs between
   // server and client and would trip both hydration and the purity lint.
@@ -275,7 +377,10 @@ function ExistingAccount({
   }
 
   return (
-    <div className="px-5 py-4" role="alert">
+    // No role="alert" on the wrapper: focus moves to the heading below, which
+    // is the announcement. A live region around the whole face would also read
+    // out the resend controls, and re-read them on every state change inside.
+    <div className="px-5 py-4">
       <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3">
         <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" aria-hidden="true" />
         <div>
@@ -315,6 +420,58 @@ function ExistingAccount({
         membership on its own does not decide it.
       </p>
 
+      {/* ── The recovery path ────────────────────────────────────────────
+          A duplicate is often not a mistake: it is an admin whose one-time
+          link was lost, doing the only thing available — typing the email
+          again. Before 2026-08-15 that reached this screen and stopped, while
+          the invite panel told them to "create the invite again", which the
+          409 makes impossible. The resend lives here because this is exactly
+          where they already are. */}
+      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+        <h4 className="text-xs font-semibold text-slate-800">Lost their invite link?</h4>
+        {resendable ? (
+          <>
+            <p className="mt-0.5 text-[11px] text-slate-600">
+              This account has never been activated, so a replacement link can be issued. The
+              previous link stops working immediately.
+            </p>
+            <button
+              type="button"
+              onClick={() => onResend(user)}
+              disabled={resending}
+              aria-describedby={resendError ? 'create-account-resend-error' : undefined}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {resending ? (
+                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden="true" />
+              ) : (
+                <Send className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {resending ? 'Sending…' : 'Send a new invite'}
+            </button>
+          </>
+        ) : (
+          /* Not an error — a correct refusal, so it reads as an explanation.
+             Re-issuing a set-password link for an account somebody already
+             controls would be a credential reset, which this tool does not do. */
+          <p className="mt-0.5 text-[11px] text-slate-600">
+            {user.hasPassword
+              ? 'Not available — they have already set a password, so they can sign in or use password reset. Re-inviting would reset a live account, which this tool deliberately does not do.'
+              : 'Not available — this account signs in with Google, so it has no password to set.'}
+          </p>
+        )}
+        {resendError && (
+          <p
+            id="create-account-resend-error"
+            role="alert"
+            className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-red-600"
+          >
+            <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+            {resendError}
+          </p>
+        )}
+      </div>
+
       <div className="mt-3 flex flex-wrap gap-2">
         {onViewCustomers && (
           <button
@@ -332,6 +489,89 @@ function ExistingAccount({
           className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30"
         >
           Try a different email
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The "we don't know" face (2026-08-15).
+ *
+ * The route commits the account, its comp and its audit row in ONE transaction
+ * and only then sends mail. So a 5xx — or a connection that drops mid-flight —
+ * is genuinely ambiguous: the account may exist, with a one-time link that was
+ * minted and never shown to anyone.
+ *
+ * The panel previously rendered "Couldn’t create the account" here, which is a
+ * guess dressed as a fact and points the admin straight at a retry that will
+ * 409. This says what is actually known, gives the one action that resolves it
+ * (go and look), and warns about the retry BEFORE they make it.
+ *
+ * Amber, not red: nothing is confirmed broken.
+ */
+function UnknownOutcome({
+  email,
+  detail,
+  onBack,
+  onViewCustomers,
+}: {
+  email: string;
+  detail: string;
+  onBack: () => void;
+  onViewCustomers?: () => void;
+}) {
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="px-5 py-4">
+      <div className="flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3">
+        <HelpCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" aria-hidden="true" />
+        <div>
+          <h3
+            ref={headingRef}
+            tabIndex={-1}
+            className="text-sm font-bold text-amber-900 focus:outline-none"
+          >
+            We don’t know whether the account was created
+          </h3>
+          <p className="mt-0.5 text-xs text-amber-800">
+            The request to create <span className="font-medium">{email}</span> did not come back
+            with an answer. The account may or may not exist, and if it does, its one-time invite
+            link was never shown to anyone.
+          </p>
+          <p className="mt-1.5 text-xs font-medium text-amber-900">
+            Check the Customers tab for this email before you try again.
+          </p>
+          <p className="mt-0.5 text-xs text-amber-800">
+            If it is there, come back and use{' '}
+            <span className="font-medium">Send a new invite</span> — re-submitting the form will
+            only report that it already exists.
+          </p>
+          <p className="mt-1 font-mono text-[11px] text-amber-700">{detail}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {onViewCustomers && (
+          <button
+            type="button"
+            onClick={onViewCustomers}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-slate-800 px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          >
+            Check Customers
+            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30"
+        >
+          Back to the form
         </button>
       </div>
     </div>
