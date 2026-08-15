@@ -94,12 +94,31 @@ export function evaluateEntitlement(
 ): EntitlementResult;
 
 export function evaluateUserEntitlement(
-  // Prisma client (or a mock exposing user.findUnique). Typed loosely because
-  // only server.js (plain JS) calls this; TS callers use evaluateEntitlement.
-  dbClient: { user: { findUnique: (args: unknown) => Promise<unknown> } },
+  // Prisma client (or a mock exposing user.findUnique). `any` on the arg for
+  // the same contravariance reason as isFreeAccessEmail above: a real
+  // PrismaClient's findUnique takes a far stricter arg type than `unknown`, so
+  // an `unknown`-arg slot would REJECT it. The browser proxy gate (proxy.ts)
+  // passes the real client here.
+  dbClient: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    user: { findUnique: (args: any) => Promise<unknown> };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    freeAccessEmail?: { findUnique: (args: any) => Promise<unknown> };
+  },
   userId: string,
   now?: Date,
 ): Promise<EntitlementResult>;
+
+/**
+ * True when an entitlement result means "we could not TELL" (a DB error or a
+ * missing user row) rather than "genuinely not entitled". The browser proxy
+ * gate fails OPEN on this; the relay / relay-ticket money chokepoint does NOT
+ * (it stays fail-CLOSED on every allowed:false). A null/malformed result reads
+ * as indeterminate so a shape bug can never bounce a paying user.
+ */
+export function isEntitlementIndeterminate(
+  result: { reason?: unknown } | null | undefined,
+): boolean;
 
 export function resolveWhopCardState(action: string, data: unknown): boolean | null;
 
