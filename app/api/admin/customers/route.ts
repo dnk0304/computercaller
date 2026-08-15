@@ -110,12 +110,22 @@ export async function GET(req: NextRequest) {
     // the relay + browser gates use — one source, no drift. Fail-open to an
     // empty set on error: a free-access lookup failure must not break the whole
     // admin feed, and it can only UNDER-report free access (never grant it).
+    //
+    // ⚠️ 2026-08-15: failing open is right, failing SILENTLY was not. With an
+    // empty set the free_access short-circuit never fires, so a comped user
+    // renders a confident "None"/"Expired" — a failed READ masquerading as a
+    // verdict, which is exactly the class of lie the badge-truth fix removed.
+    // The failure is global (one query for the whole page), so it is reported
+    // once at feed level as `meta.freeAccessDegraded` and the panel says so
+    // above the table. Every row on the page is suspect, not a nameable subset.
     let freeAccessSet = new Set<string>();
+    let freeAccessDegraded = false;
     try {
       const rows = await db.freeAccessEmail.findMany({ select: { email: true } });
       freeAccessSet = new Set(rows.map((r) => r.email.toLowerCase()));
     } catch (e) {
       console.error('[AdminCustomers] free-access load failed:', e);
+      freeAccessDegraded = true;
     }
 
     const threshold = sameIpThreshold();
@@ -314,6 +324,10 @@ export async function GET(req: NextRequest) {
         total: customers.length,
         sameIpThreshold: threshold,
         generatedAt: now.toISOString(),
+        // ADDITIVE. `true` = the free-access allowlist could not be read, so
+        // free-access admits are missing from EVERY row's entitlement on this
+        // page. Consumers must degrade the display, never trust it.
+        freeAccessDegraded,
       },
     });
   } catch (e) {
