@@ -134,6 +134,16 @@ export interface AdminCustomersMeta {
   /** Accounts-per-IP count at/above which a row is flagged (e.g. 3). */
   sameIpThreshold: number;
   generatedAt: string;
+  /**
+   * The free-access allowlist could not be read (2026-08-15, ADDITIVE,
+   * optional — an omitted field means the read succeeded).
+   *
+   * The lookup fails OPEN so one bad query cannot blank the whole panel, which
+   * means comped users silently lose their free_access short-circuit and render
+   * as "None" / "Expired" — a confident wrong answer. When this is `true` the
+   * UI must say the page is degraded rather than present those states as fact.
+   */
+  freeAccessDegraded?: boolean;
 }
 
 export interface AdminCustomersResponse {
@@ -296,4 +306,22 @@ export interface CreateUserInput {
   name?: string;
   freeAccess?: boolean;
   note?: string;
+  /**
+   * Re-invite an existing, un-redeemed account instead of creating one
+   * (2026-08-15). Mints a fresh one-time link and kills the previous one.
+   * `name` / `freeAccess` are ignored on this path — a resend is not a re-grant.
+   */
+  resend?: true;
 }
+
+/**
+ * Why a resend was refused. Both are 409s and both are correct outcomes, not
+ * bugs — they are the reason the button is disabled up front.
+ *
+ *   already_redeemed — the invitee set their password. Re-issuing would be an
+ *                      admin-triggered credential reset of a live account.
+ *   not_resendable   — a Google account. Already controlled by a real person;
+ *                      a set-password link would be an escalation path.
+ *   user_not_found   — nothing to re-invite (404).
+ */
+export type ResendRefusal = 'already_redeemed' | 'not_resendable' | 'user_not_found';

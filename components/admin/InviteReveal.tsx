@@ -45,6 +45,22 @@ export interface InviteRevealProps {
   emailSent: boolean;
   /** The mail failure detail, when there is one. Operator-facing. */
   emailError: string | null;
+  /**
+   * This link REPLACED an earlier one for an account that already existed
+   * (2026-08-15). The account was not created just now, so every heading that
+   * says "created" would be false — and the previous link is now dead, which
+   * the admin must be told in case they already sent it.
+   */
+  resent?: boolean;
+  /**
+   * Fires whenever the acknowledgement checkbox changes, and `false` on unmount.
+   *
+   * The parent uses it to guard the destructive exits — refresh, tab change,
+   * navigation — while an un-copied one-time link is still on screen. Reported
+   * upward rather than owned upward because the checkbox is this component's
+   * own affordance and the meaning ("the admin has taken the link") is its own.
+   */
+  onAcknowledgedChange?: (acknowledged: boolean) => void;
   /** Dismiss — the parent returns the panel to its empty form. */
   onDone: () => void;
 }
@@ -61,7 +77,7 @@ export interface InviteRevealProps {
 function formatExpiry(expiresAt: string, nowMs: number): string | null {
   const ms = new Date(expiresAt).getTime() - nowMs;
   if (!Number.isFinite(ms)) return null;
-  if (ms <= 0) return 'now — it has already expired, create a new invite';
+  if (ms <= 0) return 'now — it has already expired, send a new invite';
   const hours = Math.round(ms / 3_600_000);
   if (hours < 1) return `in about ${Math.max(1, Math.round(ms / 60_000))} minutes`;
   if (hours < 48) return `in about ${hours} hour${hours === 1 ? '' : 's'}`;
@@ -86,6 +102,8 @@ export function InviteReveal({
   expiresAt,
   emailSent,
   emailError,
+  resent = false,
+  onAcknowledgedChange,
   onDone,
 }: InviteRevealProps) {
   const [copied, setCopied] = useState(false);
@@ -93,6 +111,19 @@ export function InviteReveal({
   const [acknowledged, setAcknowledged] = useState(false);
   const copyTimer = useRef<number | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
+
+  // Report the guard state up, and ALWAYS clear it on unmount — a parent left
+  // holding `true` after this panel is gone would block navigation forever.
+  // Held in a ref (synced in its own effect, never mutated during render) so an
+  // inline arrow from the parent cannot re-fire the notify effect every render.
+  const ackChangeRef = useRef(onAcknowledgedChange);
+  useEffect(() => {
+    ackChangeRef.current = onAcknowledgedChange;
+  });
+  useEffect(() => {
+    ackChangeRef.current?.(acknowledged);
+  }, [acknowledged]);
+  useEffect(() => () => ackChangeRef.current?.(false), []);
 
   // Focus lands on the outcome, so a keyboard or screen-reader user is taken to
   // the thing that just happened rather than left at the submit button.
@@ -128,7 +159,9 @@ export function InviteReveal({
       `For: ${email}\n` +
       `Expires: ${new Date(expiresAt).toUTCString()}\n` +
       `\n${url}\n\n` +
-      `This link can be used once. If it is lost or expires, create the invite again from the admin panel.\n`;
+      `This link can be used once. If it is lost or expires, open the admin panel,\n` +
+      `enter this email under "New account" and choose "Send a new invite" — that\n` +
+      `issues a replacement and retires this link.\n`;
     const blob = new Blob([body], { type: 'text/plain' });
     const objectUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -161,7 +194,7 @@ export function InviteReveal({
               tabIndex={-1}
               className="text-sm font-bold text-emerald-900 focus:outline-none"
             >
-              Account created and invite emailed
+              {resent ? 'New invite emailed' : 'Account created and invite emailed'}
             </h3>
             <p className="mt-0.5 text-xs text-emerald-800">
               <span className="font-medium">{email}</span> has been sent a link to set their
@@ -178,11 +211,22 @@ export function InviteReveal({
               tabIndex={-1}
               className="text-sm font-bold text-amber-900 focus:outline-none"
             >
-              Account created — the email did not send
+              {resent
+                ? 'New invite issued — the email did not send'
+                : 'Account created — the email did not send'}
             </h3>
             <p className="mt-0.5 text-xs text-amber-800">
-              The account for <span className="font-medium">{email}</span> exists, but nobody has
-              been told. Send them the link below yourself.
+              {resent ? (
+                <>
+                  A fresh link for <span className="font-medium">{email}</span> exists and the old
+                  one no longer works, but nobody has been told. Send them the link below yourself.
+                </>
+              ) : (
+                <>
+                  The account for <span className="font-medium">{email}</span> exists, but nobody
+                  has been told. Send them the link below yourself.
+                </>
+              )}
             </p>
             {emailError && (
               <p className="mt-1 font-mono text-[11px] text-amber-700">{emailError}</p>
@@ -236,10 +280,24 @@ export function InviteReveal({
         </button>
       </div>
 
+      {/* RECOVERY, STATED ACCURATELY (2026-08-15). This used to read "if it is
+          lost, create the invite again" — which was impossible: the account
+          exists, so creating it again only ever returned a 409, and following
+          the instruction led into a dead end. The real recovery is Resend, and
+          it is described by the exact steps that perform it. */}
       <p className="mt-2 text-[11px] text-slate-500">
         Works once{expiry ? `, and stops working ${expiry}` : ''}. It is not stored anywhere we can
-        read it back — if it is lost, create the invite again.
+        read it back. If it is lost, enter{' '}
+        <span className="font-medium text-slate-600">{email}</span> in this form again and choose{' '}
+        <span className="font-medium text-slate-600">Send a new invite</span> — that issues a fresh
+        link and retires this one.
       </p>
+
+      {resent && (
+        <p className="mt-1 text-[11px] font-medium text-amber-700">
+          The previous link for this account stopped working the moment this one was issued.
+        </p>
+      )}
 
       {/* The acknowledgement is a guard, not ceremony: dismissing this panel is
           an irreversible data-loss action and every accidental exit route

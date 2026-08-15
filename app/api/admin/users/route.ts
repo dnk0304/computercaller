@@ -38,6 +38,13 @@
  *
  * ── CONTRACT ────────────────────────────────────────────────────────────────
  * Request  { email: string, name?: string, freeAccess?: boolean, note?: string }
+ *          { email: string, resend: true, note?: string }   ← re-invite path
+ *
+ * 200 { user, invite, resent: true }   RESEND only. A fresh one-time link for an
+ *     existing, un-redeemed, admin-invited account; the previous link is dead.
+ *     Refused (409 already_redeemed / not_resendable) for an account that has a
+ *     password or signs in with Google — see the RESEND note below.
+ * 404 { error, code: 'user_not_found' }  RESEND only: nothing to re-invite.
  *
  * 201 { user: { id, email, name, freeAccess, createdAt },
  *       invite: { url, expiresAt, emailSent, emailError } }
@@ -70,6 +77,41 @@ import {
   INVITE_TTL_MS,
 } from '@/lib/passwordSetToken';
 import { sendAdminInviteEmail } from '@/lib/email';
+import { resendRefusal, RESEND_REFUSAL_MESSAGE } from '@/lib/inviteResend-core';
+
+/**
+ * ── RESEND ──────────────────────────────────────────────────────────────────
+ * Added 2026-08-15 (dispatch pixel/invite-resend) because the panel had a
+ * genuine dead end: the one-time invite URL is shown once and only its SHA-256
+ * is stored, so a lost link permanently burned the account — the 409 above is
+ * the ONLY thing a re-submit could produce, and the UI's "create the invite
+ * again" advice was therefore impossible to follow.
+ *
+ * `{ email, resend: true }` mints a FRESH token for an existing account and
+ * revokes the previous one (one token column, overwritten).
+ *
+ * ⛔ WHAT IT REFUSES, AND WHY. This is deliberately NOT a password reset. A
+ * set-password token is a credential-bearing capability for whoever holds the
+ * link, so it may only ever be issued for an account that has no credential to
+ * take over:
+ *
+ *   passwordHash !== null   → 409 already_redeemed. The invitee has set their
+ *                             password. Re-inviting would be an admin-triggered
+ *                             credential RESET of a live account — a different
+ *                             act, with different consent and audit needs.
+ *   authProvider !== 'email'→ 409 not_resendable. A Google account has
+ *                             passwordHash null but IS already controlled by a
+ *                             real person; minting a set-password link for it
+ *                             would let the link-holder add a password
+ *                             credential to someone else's live account.
+ *
+ * Both checks are re-asserted INSIDE the transaction as a conditional
+ * updateMany, so a redemption racing this request cannot slip through the
+ * read-then-write window.
+ *
+ * Free access is never touched on a resend: re-sending a link is not a
+ * re-grant, and `body.freeAccess` is ignored on this path entirely.
+ */
 
 export async function POST(req: NextRequest) {
   try {
@@ -89,6 +131,10 @@ export async function POST(req: NextRequest) {
     const name = normalizeNote(body.name, 120);
     const note = normalizeNote(body.note);
     const freeAccess = body.freeAccess === true;
+
+    // Resend is an explicit, separate verb on the same route — it shares the
+    // exact requireSameOrigin + requireAdmin gate above and adds no auth path.
+    if (body.resend === true) return await resendInvite(email, note, gate.adminEmail);
 
     // ── Idempotent-SAFE, not idempotent ─────────────────────────────────────
     // Re-POSTing an existing email must NOT quietly re-mint a token, reset a
@@ -237,6 +283,133 @@ export async function POST(req: NextRequest) {
     console.error('[AdminUsers] POST error:', e);
     return NextResponse.json({ error: 'Failed to create account' }, { status: 500 });
   }
+}
+
+/**
+ * Mint a fresh invite for an EXISTING, un-redeemed, admin-invited account.
+ * See the RESEND note at the top of this file for the refusal rules.
+ */
+async function resendInvite(email: string, note: string | null, actor: string) {
+  const existing = await db.user.findUnique({
+    where: { email },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      createdAt: true,
+      authProvider: true,
+      passwordHash: true,
+    },
+  });
+
+  // Nothing to resend to. Distinct from 409: the admin's next move is "create
+  // it", not "look at it".
+  if (!existing) {
+    return NextResponse.json(
+      { error: RESEND_REFUSAL_MESSAGE.user_not_found, code: 'user_not_found' },
+      { status: 404 },
+    );
+  }
+
+  // ⛔ Out of scope by design — this is not a password reset. The rule (and the
+  // reasoning behind each half of it) lives in lib/inviteResend-core.js, shared
+  // verbatim with the admin panel so the UI cannot offer what this refuses.
+  const refusal = resendRefusal({
+    hasPassword: existing.passwordHash !== null,
+    authProvider: existing.authProvider,
+  });
+  if (refusal) {
+    return NextResponse.json(
+      { error: RESEND_REFUSAL_MESSAGE[refusal], code: refusal },
+      { status: 409 },
+    );
+  }
+
+  const invite = mintPasswordSetToken(INVITE_TTL_MS);
+
+  // The refusal conditions are re-asserted HERE, in the WHERE clause, so a
+  // redemption landing between the read above and this write cannot be
+  // overwritten. count === 0 means the account changed under us.
+  const rotated = await db.$transaction(async (tx) => {
+    const { count } = await tx.user.updateMany({
+      where: { id: existing.id, passwordHash: null, authProvider: 'email' },
+      data: invite.fields,
+    });
+    if (count !== 1) return false;
+
+    // Its own verb in the append-only ledger. Re-issuing a credential-bearing
+    // link is a distinct act from creating the account and must read as one.
+    await tx.adminUserAudit.create({
+      data: {
+        action: 'user_invite_resend',
+        email: existing.email,
+        actor,
+        targetId: existing.id,
+        freeAccess: false,
+        note,
+      },
+    });
+    return true;
+  });
+
+  if (!rotated) {
+    return NextResponse.json(
+      {
+        error:
+          'That account was activated while this request was in flight. Nothing was changed.',
+        code: 'already_redeemed',
+      },
+      { status: 409 },
+    );
+  }
+
+  const comped = await db.freeAccessEmail
+    .findUnique({ where: { email: existing.email }, select: { id: true } })
+    .catch(() => null);
+
+  const url = buildSetPasswordUrl(invite.rawToken);
+
+  // Same best-effort delivery as creation: the OLD link is already dead, so a
+  // mail failure must still surface the new link rather than roll anything back.
+  let emailSent = false;
+  let emailError: string | null = null;
+  try {
+    await sendAdminInviteEmail({
+      email: existing.email,
+      url,
+      name: existing.name,
+      invitedBy: actor,
+      freeAccess: comped !== null,
+    });
+    emailSent = true;
+  } catch (e) {
+    console.error('[AdminUsers] resend email failed for', existing.email, e);
+    emailError = e instanceof Error ? e.message : 'Unknown mail error';
+  }
+
+  console.warn(
+    `[AdminUsers] resent invite for ${existing.email} by ${actor} at ${new Date().toISOString()} (emailSent=${emailSent})`,
+  );
+
+  return NextResponse.json(
+    {
+      user: {
+        id: existing.id,
+        email: existing.email,
+        name: existing.name ?? null,
+        freeAccess: comped !== null,
+        createdAt: existing.createdAt.toISOString(),
+      },
+      invite: {
+        url,
+        expiresAt: invite.expiresAt.toISOString(),
+        emailSent,
+        emailError,
+      },
+      resent: true,
+    },
+    { status: 200 },
+  );
 }
 
 /** Prisma unique-constraint violation, without importing the runtime error class. */
