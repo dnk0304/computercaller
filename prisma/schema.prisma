@@ -106,8 +106,33 @@ model User {
   // (from any rung of the resolution ladder), then preferred over email on
   // every later event. See lib/whop-resolve.ts.
   whopUserId        String?
+  // invitedBy (2026-08-15, dispatch forge/admin-create-account). Email of the
+  // admin who provisioned this account via POST /api/admin/users. NULL for every
+  // self-serve (Google / legacy email) account — additive, zero data loss.
+  //
+  // Load-bearing, not decorative: `isEmailAllowed` (lib/auth.ts) closes LOGIN to
+  // everyone outside AUTH_ALLOWLIST while WAITLIST_MODE is on (the fail-safe
+  // default). Without this column an admin-minted account could set its password
+  // once and then be locked out of every subsequent login — the invite would be
+  // a dead end. An admin explicitly vouching for an email IS the allowlist
+  // decision, so /api/auth/login treats a non-null invitedBy as satisfying the
+  // auth allowlist. It grants NO entitlement: billing is still decided solely by
+  // the shared entitlement core (subscription / free-access / admin), so this is
+  // NOT a fourth admit path.
+  invitedBy         String?
+  // name (2026-08-15, same dispatch). Optional display name. The User model had
+  // no name column at all — Google signups never captured one and the admin
+  // panel lists accounts by email. An admin creating an account by hand usually
+  // knows who it is for, and the invite email reads far less like phishing when
+  // it can open with a name. Nullable → additive, zero data loss, and every
+  // existing row stays valid.
+  name              String?
 
   @@index([whopUserId])
+  // Set-password / reset tokens are looked up BY TOKEN HASH (see
+  // lib/passwordSetToken.ts). Without this index that lookup is a full table
+  // scan on every invite redemption.
+  @@index([resetToken])
 }
 
 // Template (Item C1, 2026-05-27). One reusable SMS body per row, owned by a User.
@@ -206,6 +231,38 @@ model FreeAccessAudit {
   actor     String
   note      String?
   createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([createdAt])
+}
+
+// AdminUserAudit (2026-08-15, dispatch forge/admin-create-account). Append-only
+// trail for admin-initiated ACCOUNT-LIFECYCLE actions. Deliberately a SEPARATE
+// table from FreeAccessAudit rather than a new `action` value on it:
+//   • FreeAccessAudit answers "who was comped, by whom, when" — its indexes and
+//     its every consumer assume every row is a billing-bypass event. Minting an
+//     account is not one.
+//   • An append-only ledger means the verb chosen today is the verb those rows
+//     carry forever; history cannot be relabelled. `user_create` deserves to be
+//     its own verb, not folded into a free-access grant.
+// A create WITH freeAccess:true therefore writes BOTH: one row here (the account
+// was minted) and one FreeAccessAudit `grant` row (the bypass was granted).
+// Never updated, never deleted by app code. Additive/isolated → `db push` clean.
+//   action     — 'user_create' (the only verb today; more may follow).
+//   email      — the target account email (lowercased).
+//   actor      — admin email that performed the action.
+//   targetId   — the created User.id, so the trail survives an email change.
+//   freeAccess — whether the same request also granted the free-access bypass.
+//   note       — optional admin note.
+model AdminUserAudit {
+  id         String   @id @default(cuid())
+  action     String
+  email      String
+  actor      String
+  targetId   String?
+  freeAccess Boolean  @default(false)
+  note       String?
+  createdAt  DateTime @default(now())
 
   @@index([email])
   @@index([createdAt])

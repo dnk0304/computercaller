@@ -23,11 +23,36 @@ export async function POST(req: NextRequest) {
     // non-allowed user learns nothing about whether the account exists, and
     // before any session work. See lib/auth.ts isEmailAllowed for the no-lockout
     // guarantee (env AUTH_ALLOWLIST with a hardcoded Dennis+reviewer fallback).
+    // Admin-provisioned exemption (2026-08-15, forge/admin-create-account).
+    // WAITLIST_MODE defaults ON (fail-safe), so isEmailAllowed closes login to
+    // everyone outside AUTH_ALLOWLIST. That would make the whole admin
+    // "create account" feature a dead end: the invitee redeems their link, gets
+    // signed in once by /api/auth/set-password, and is then locked out of every
+    // subsequent login by a gate that exists to stop UNINVITED signups. An admin
+    // deliberately minting the account IS the allowlist decision — recorded
+    // durably on the row (User.invitedBy) and in AdminUserAudit, not inferred.
+    //
+    // Scope is exactly one thing: permission to attempt a login. It grants NO
+    // entitlement — billing is still decided solely by the shared entitlement
+    // core (subscription / free-access / admin), so this is not a bypass of the
+    // paywall and not a fourth admit path.
+    //
+    // Same 403 body either way, so the response leaks nothing new; the extra
+    // lookup only runs on the already-rejected path.
     if (!isEmailAllowed(email)) {
-      return NextResponse.json(
-        { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
-        { status: 403 },
-      );
+      const vouched =
+        typeof email === 'string'
+          ? await db.user.findUnique({
+              where: { email: email.toLowerCase() },
+              select: { invitedBy: true },
+            })
+          : null;
+      if (!vouched?.invitedBy) {
+        return NextResponse.json(
+          { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
+          { status: 403 },
+        );
+      }
     }
 
     const user = await db.user.findUnique({
