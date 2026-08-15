@@ -54,6 +54,15 @@ export function trialStatusPill(state: SubscriptionState): PillMeta {
       return { label: 'Expired', className: 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200' };
     case 'cancelled':
       return { label: 'Cancelled', className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200' };
+    // The privileged admits have no billing lifecycle at all. They previously
+    // fell through to "None", which in a STATUS column reads as "no access" —
+    // the precise opposite of the truth for an admin or a free-access user.
+    case 'admin':
+    case 'allowlisted':
+    case 'free_access':
+      return { label: 'Not billed', className: 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200' };
+    case 'error':
+      return { label: 'Unknown', className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200' };
     case 'none':
     default:
       return { label: 'None', className: 'bg-slate-50 text-slate-400 ring-1 ring-inset ring-slate-200' };
@@ -78,6 +87,19 @@ export function trialStatusPill(state: SubscriptionState): PillMeta {
  */
 export function planPill(state: SubscriptionState, planLabel: PlanLabel): PillMeta {
   switch (state) {
+    // 'admin' and 'allowlisted' are privileged admits that resolve to Pro. They
+    // used to fall through to the `default` and render "None" — so the admin's
+    // OWN row claimed no plan while holding the highest access in the system.
+    // Naming them is the same correction as the free-access badge: say what the
+    // evaluator decided, and never let a fall-through invent an answer.
+    case 'admin':
+      return { label: 'Admin', className: 'bg-slate-800 text-white ring-1 ring-inset ring-slate-800' };
+    case 'allowlisted':
+      return { label: 'Allowlisted', className: 'bg-teal-100 text-teal-700 ring-1 ring-inset ring-teal-200' };
+    // The evaluator could not tell (a DB error). It is NOT a denial and it is
+    // NOT a plan — so this says so rather than picking a side.
+    case 'error':
+      return { label: 'Unknown', className: 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-200' };
     case 'free_access':
       return { label: 'Free access', className: 'bg-violet-100 text-violet-700 ring-1 ring-inset ring-violet-200' };
     case 'active':
@@ -327,7 +349,12 @@ export function summarise(rows: AdminCustomer[]): SummaryCounts {
     if (state === 'trialing') onTrial += 1;
     if (state === 'active') paying += 1;
     if (state === 'trial_expired') trialExpired += 1;
-    if (c.freeAccess) freeAccess += 1;
+    // Counted from the evaluator's state, NOT the `freeAccess` allowlist flag —
+    // the same correction made to the row badge in CustomerTable. A summary that
+    // counted list rows while the badges below it counted admitted users would
+    // reproduce the 2026-08-15 misdiagnosis in aggregate, and disagree with the
+    // very rows it sits above.
+    if (state === 'free_access') freeAccess += 1;
     if (c.flagged) flagged += 1;
   }
   return { total: rows.length, onTrial, paying, trialExpired, freeAccess, flagged };

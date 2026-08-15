@@ -29,14 +29,31 @@ export type SubscriptionStatus = 'trial' | 'active' | 'expired' | 'cancelled' | 
  * Pro tier (state `free_access`, `allowed:true`) ranked with admin/allowlist —
  * so the feed reports `state:'free_access'` and `tier:'pro'` for these rows.
  */
+/**
+ * `subscription.state` is evaluateEntitlement's OWN state — the admin feed
+ * assigns `ent.state` straight into this field, so this union must cover every
+ * `EntitlementState` the evaluator can produce.
+ *
+ * WIDENED 2026-08-15: 'admin', 'allowlisted' and 'error' were missing, so three
+ * states the server demonstrably sends were not representable here. TypeScript
+ * was consequently calling `state === 'admin'` an impossible comparison while
+ * the running feed emitted exactly that for Dennis's own row. A narrower type
+ * than the wire format does not prevent the value arriving — it only prevents
+ * anyone handling it.
+ */
 export type SubscriptionState =
+  | 'admin'
+  | 'allowlisted'
   | 'trialing'
   | 'active'
   | 'trial_expired'
   | 'expired'
   | 'cancelled'
   | 'free_access'
-  | 'none';
+  | 'none'
+  /** The evaluator could not tell (DB error). Never a denial — see
+   *  isEntitlementIndeterminate. */
+  | 'error';
 
 /** Resolved billing tier (mirrors the shared entitlement core). */
 export type Tier = 'solo' | 'plus' | 'pro';
@@ -211,4 +228,72 @@ export interface ArticleDraftInput {
   description: string;
   body: string;
   keywords: string[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Create account (2026-08-15) — `POST /api/admin/users`
+//
+// Mirrors the route's response EXACTLY. The one thing to understand here is that
+// creating the account and emailing the invite are INDEPENDENT outcomes: mail
+// failure never rolls the account back, so `emailSent: false` means "the account
+// exists and nobody has been told". The UI must treat that as an unfinished job
+// with a link to hand over, not as a failure and not as a plain success.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The account that was just created. */
+export interface CreatedUser {
+  id: string;
+  email: string;
+  name: string | null;
+  /** Whether the create call also added the email to the free-access allowlist. */
+  freeAccess: boolean;
+  createdAt: string;
+}
+
+/**
+ * The single-use invite. `url` is shown ONCE and is unrecoverable — it is stored
+ * server-side only as a hash. It is never persisted client-side, never logged,
+ * and never placed in a link the browser could leak by referrer.
+ */
+export interface CreatedInvite {
+  url: string;
+  expiresAt: string;
+  /** Did the invite email actually leave? Independent of account creation. */
+  emailSent: boolean;
+  /** The mail exception's message when `emailSent` is false. Operator detail. */
+  emailError: string | null;
+}
+
+/** `POST /api/admin/users` → 201 */
+export interface CreateUserResponse {
+  user: CreatedUser;
+  invite: CreatedInvite;
+}
+
+/**
+ * `POST /api/admin/users` → 409. Rich on purpose: the admin needs to see what
+ * the existing account already IS, so a duplicate is a routing moment rather
+ * than a dead end.
+ */
+export interface ExistingUserConflict {
+  error: string;
+  code: 'user_exists';
+  user: {
+    id: string;
+    email: string;
+    createdAt: string;
+    authProvider: AuthProvider;
+    /** Can they already sign in with a password? Decides what to offer next. */
+    hasPassword: boolean;
+    /** Allowlist membership — NOT an entitlement verdict. See CustomerTable. */
+    freeAccess: boolean;
+  };
+}
+
+/** The writable subset the create endpoint accepts. */
+export interface CreateUserInput {
+  email: string;
+  name?: string;
+  freeAccess?: boolean;
+  note?: string;
 }

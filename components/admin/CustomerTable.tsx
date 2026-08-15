@@ -421,12 +421,40 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
                   const daysLeft = c.subscription?.trialDaysLeft ?? null;
                   const daysUrgent = isTrialing && daysLeft !== null && daysLeft <= 3;
                   const isPaying = state === 'active';
-                  // Plan badge reflects the OPTIMISTIC free-access value so a grant
-                  // flips the tier to "Free access" instantly; otherwise it shows
-                  // the server-resolved tier / lifecycle plan.
-                  const isFree = effectiveFreeAccess(c);
-                  const planState = isFree ? 'free_access' : state;
-                  const plan = planPill(planState, c.subscription?.planLabel ?? 'Solo');
+                  // ── The plan badge tells the TRUTH, or it says nothing ──────
+                  // On 2026-08-15 this badge read "Free access" for a user who
+                  // had been locked out for six days, and it sent the diagnosis
+                  // in the wrong direction for most of a week. The cause is the
+                  // line that used to be here: it OVERRODE the evaluator's own
+                  // verdict with an allowlist row, so the badge answered "is
+                  // this email on a list" while appearing to answer "is this
+                  // person getting in".
+                  //
+                  // Those are two different questions and they now have two
+                  // different variables:
+                  //
+                  //   state             — `subscription.state` is evaluateEntitlement's
+                  //                       OWN state, the same call the relay and
+                  //                       browser gates enforce with. This, and
+                  //                       only this, drives the badge.
+                  //   isAllowlisted     — membership of the FreeAccessEmail table.
+                  //                       Correct for the grant/revoke control
+                  //                       (you revoke a ROW), wrong for a claim
+                  //                       about access.
+                  //
+                  // The optimistic value still exists so a grant feels instant,
+                  // but it may no longer manufacture an entitlement: it moves
+                  // the control, never the badge. A badge that can lie is worse
+                  // than no badge.
+                  const isAllowlisted = effectiveFreeAccess(c);
+                  const plan = planPill(state, c.subscription?.planLabel ?? 'Solo');
+                  const isFree = state === 'free_access';
+                  // The exact 2026-08-15 shape: on the list, yet the gate is not
+                  // admitting them. Never silently reconciled — an operator who
+                  // cannot see this divergence will debug the wrong system.
+                  // 'admin' outranks free access legitimately, so it is not drift.
+                  const freeAccessDrift =
+                    isAllowlisted && !isFree && state !== 'admin' && state !== 'allowlisted';
                   // Cancellation signal. Independent of the status pill on
                   // purpose: a mid-period cancellation is still "Active" and
                   // still "Paying" — correct, and exactly why it needs its own
@@ -478,12 +506,23 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
                         </span>
                       </td>
 
-                      {/* Plan (tier / free access) */}
+                      {/* Plan (tier / free access) — see the derivation above:
+                          this reflects evaluateEntitlement's verdict, never the
+                          allowlist read. */}
                       <td className="px-3 py-2.5">
                         <span className={clsx('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium', plan.className)}>
                           {isFree && <Gift className="h-3 w-3" aria-hidden="true" />}
                           {plan.label}
                         </span>
+                        {freeAccessDrift && (
+                          <span
+                            className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-amber-700"
+                            title="This email is on the free-access list, but the access check is not admitting them. The list and the gate disagree."
+                          >
+                            <AlertTriangle className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+                            On list, not admitted
+                          </span>
+                        )}
                       </td>
 
                       {/* Trial days left */}
@@ -601,7 +640,12 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
                       <td className="px-3 py-2.5 text-right align-middle">
                         {mutable ? (
                           <div className="flex flex-col items-end gap-1">
-                            {isFree ? (
+                            {/* Allowlist membership, NOT the entitlement verdict:
+                                this control adds and removes a FreeAccessEmail
+                                ROW, so it must reflect whether that row exists.
+                                During a drift it correctly offers "Revoke" for
+                                someone the gate is already refusing. */}
+                            {isAllowlisted ? (
                               <button
                                 type="button"
                                 onClick={() => setConfirm({ customer: c, action: 'revoke' })}
@@ -638,7 +682,7 @@ export function CustomerTable({ data, now, onMutated }: CustomerTableProps) {
                               </span>
                             )}
                           </div>
-                        ) : isFree ? (
+                        ) : isAllowlisted ? (
                           <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 ring-1 ring-inset ring-violet-200">
                             <Gift className="h-3 w-3" aria-hidden="true" />
                             Granted
