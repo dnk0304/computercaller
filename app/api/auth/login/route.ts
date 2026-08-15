@@ -12,6 +12,34 @@ import {
 } from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 
+// Generic auth failure. ONE body + ONE status for every "you are not getting a
+// session" outcome on this route (see the enumeration note below), so the
+// response can never be used to probe which emails exist.
+const INVALID_CREDENTIALS = { error: 'Invalid email or password' } as const;
+const INVALID_CREDENTIALS_STATUS = 401;
+
+// A real bcrypt hash of a random throwaway string, used ONLY to burn the same
+// ~work-factor-12 CPU time on the paths where there is no stored hash to compare
+// against (no such user / waitlist reject / invite not yet redeemed). Without
+// it, `!user || !user.passwordHash` short-circuits and those requests return in
+// ~1ms while a real account with a wrong password takes ~250ms — a timing oracle
+// that reveals account existence just as loudly as a distinct status code.
+const TIMING_EQUALIZER_HASH =
+  '$2b$12$yDye2rho5BLIB3n.8sk/2eK0JfbOJjW8SLk9NigW05T65mI2qtDtK';
+
+/**
+ * Reject with the generic 401, having spent bcrypt time first so this path is
+ * not distinguishable from a wrong-password attempt by wall clock.
+ */
+async function genericAuthFailure(password: unknown): Promise<NextResponse> {
+  try {
+    await bcrypt.compare(typeof password === 'string' ? password : '', TIMING_EQUALIZER_HASH);
+  } catch {
+    // A malformed input must not change the response shape or leak a 500.
+  }
+  return NextResponse.json(INVALID_CREDENTIALS, { status: INVALID_CREDENTIALS_STATUS });
+}
+
 export async function POST(req: NextRequest) {
   try {
     const csrf = requireSameOrigin(req);
@@ -37,8 +65,23 @@ export async function POST(req: NextRequest) {
     // core (subscription / free-access / admin), so this is not a bypass of the
     // paywall and not a fourth admit path.
     //
-    // Same 403 body either way, so the response leaks nothing new; the extra
-    // lookup only runs on the already-rejected path.
+    // USER-ENUMERATION FIX (2026-08-15). The exemption above is correct, but the
+    // response it used to return was not: rejecting with a distinct
+    // `403 Sign-ups are closed` while a vouched account fell through to
+    // `401 Invalid email or password` turned this route into an oracle. Three
+    // probes, three distinguishable answers:
+    //     403 → email is NOT invited (or does not exist)
+    //     400 → invited, invite not yet redeemed   ← the old passwordHash guard
+    //     401 → invited AND redeemed
+    // That cleanly enumerates every admin-provisioned account, which is exactly
+    // the set an attacker most wants: hand-picked, known-good, real users.
+    //
+    // Every non-admitting outcome now returns the SAME generic 401 via
+    // `genericAuthFailure`, with the same bcrypt cost burned. The waitlist copy
+    // moves off this route entirely — LOGIN is not where a stranger learns the
+    // signup policy, /register is (and it still says so). A person who was never
+    // invited has no password here anyway, so "Invalid email or password" is
+    // both non-revealing AND true.
     if (!isEmailAllowed(email)) {
       const vouched =
         typeof email === 'string'
@@ -48,10 +91,7 @@ export async function POST(req: NextRequest) {
             })
           : null;
       if (!vouched?.invitedBy) {
-        return NextResponse.json(
-          { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
-          { status: 403 },
-        );
+        return genericAuthFailure(password);
       }
     }
 
@@ -62,23 +102,35 @@ export async function POST(req: NextRequest) {
 
     // Google-only account guard (dispatch #36, 2026-05-25).
     // If a user signed up via Google, passwordHash is NULL. Returning the
-    // generic "Invalid email or password" would be misleading — they HAVE
-    // an account, they just need to use the Google button. Surface a clear
-    // message so they don't get stuck.
-    // We deliberately respond BEFORE the bcrypt.compare so we don't leak
-    // timing info on the password — but this also means we leak the
-    // existence of the email + the fact that it's Google-linked. Acceptable
-    // trade-off: this is a sign-in form, not a recovery flow, and the
-    // alternative (silent generic 401) is a UX dead-end.
-    if (user && user.passwordHash === null) {
+    // generic "Invalid email or password" would be misleading — they HAVE an
+    // account, they just need to use the Google button.
+    //
+    // NARROWED 2026-08-15. This used to fire on `passwordHash === null` ALONE,
+    // which was factually wrong and a leak. Admin-provisioned invitees have
+    // `authProvider: 'email'` and a null hash until they redeem their invite
+    // link, so they were told "This account uses Google" — an account they have
+    // never touched Google with — and that 400 doubled as the enumeration
+    // signal described above. Gate on the field that actually means it:
+    // authProvider === 'google'. ('both' keeps its hash, so it never lands here.)
+    //
+    // Residual, ACCEPTED leak: a genuine Google account is still confirmed to
+    // exist. That is the deliberate dispatch #36 trade-off and it is bounded to
+    // self-serve Google signups — it no longer touches admin-provisioned rows,
+    // which is the set that mattered.
+    if (user && user.authProvider === 'google' && user.passwordHash === null) {
       return NextResponse.json(
         { error: 'This account uses Google. Sign in with Google.' },
         { status: 400 },
       );
     }
 
-    if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
-      return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 });
+    // An email-provider row with a null hash (invite issued, not yet redeemed)
+    // now falls through to here and reads as an ordinary bad credential.
+    if (!user || !user.passwordHash) {
+      return genericAuthFailure(password);
+    }
+    if (!(await bcrypt.compare(password, user.passwordHash))) {
+      return NextResponse.json(INVALID_CREDENTIALS, { status: INVALID_CREDENTIALS_STATUS });
     }
 
     if (!user.emailVerified) {
