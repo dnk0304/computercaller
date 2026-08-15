@@ -41,7 +41,7 @@ import {
   isIdleTokenValid,
   IDLE_COOKIE_NAME,
 } from '@/lib/auth';
-import { evaluateEntitlement } from '@/lib/entitlement';
+import { evaluateUserEntitlement } from '@/lib/entitlement';
 
 export async function POST(req: NextRequest) {
   try {
@@ -70,18 +70,13 @@ export async function POST(req: NextRequest) {
     }
     let user;
     try {
-      // Entitlement gate (2026-07-03): load isAdmin + email + subscription in
-      // the SAME lookup that already fetched sessionVersion — no extra query.
+      // Session-version lookup ONLY (2026-08-15). This used to also select
+      // isAdmin/email/subscription to feed a local `evaluateEntitlement` call —
+      // see the ONE SOURCE note at the entitlement chokepoint below for why that
+      // was wrong and why entitlement now owns its own lookup.
       user = await db.user.findUnique({
         where: { id: payload.userId },
-        select: {
-          sessionVersion: true,
-          isAdmin: true,
-          email: true,
-          subscription: {
-            select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
-          },
-        },
+        select: { sessionVersion: true },
       });
     } catch (e) {
       console.error('[RelayTicket] DB lookup failed:', e);
@@ -122,13 +117,41 @@ export async function POST(req: NextRequest) {
     // send SMS). Gate it on entitlement so an unentitled user gets ZERO product
     // value even if they somehow reach /app (e.g. the proxy redirect failed
     // open during a DB blip). Fail-CLOSED here is correct: no ticket for a
-    // trial_expired / expired / none user. Admin + ENTITLEMENT_ALLOWLIST bypass
-    // via evaluateEntitlement rules (1)/(2), so Dennis is never blocked.
-    const ent = evaluateEntitlement({
-      isAdmin: user.isAdmin,
-      email: user.email,
-      subscription: user.subscription,
-    });
+    // trial_expired / expired / none user. Admin + ENTITLEMENT_ALLOWLIST +
+    // free-access bypass via evaluateEntitlement rules (1)/(2)/(2b), so Dennis
+    // and every granted account are never blocked.
+    //
+    // ONE SOURCE (2026-08-15): this route used to hand-roll its own findUnique
+    // (isAdmin/email/subscription, NO planId) and call the PURE
+    // `evaluateEntitlement` — the exact drift merge 6235d6c fixed in proxy.ts.
+    // Two live bugs came out of it:
+    //   1. It never resolved the DB-backed FreeAccessEmail allowlist, so a
+    //      free-access user cleared the proxy AND server.js' relay gate (both of
+    //      which call evaluateUserEntitlement) and was then denied 403 HERE —
+    //      the wall just moved one step in. netsoftgi@ / eines.josef@ reached
+    //      /app but could not drive the phone.
+    //   2. `planId` was never selected, so resolveTier silently resolved EVERY
+    //      ticket to 'solo' — under-serving paying Plus/Pro customers their tier
+    //      limits at the relay, which caches ws.tier off this admission result.
+    // evaluateUserEntitlement does its own select (planId included) and folds in
+    // isFreeAccessEmail, so neither can drift again.
+    //
+    // COST: this is a second round-trip (the sessionVersion select above can no
+    // longer piggy-back the entitlement columns). Deliberate — one source of
+    // truth for the money decision beats one saved query on a 30 s ticket mint.
+    //
+    // STILL FAIL-CLOSED: evaluateUserEntitlement returns allowed:false on a
+    // missing row OR any DB error, and the check below is UNCONDITIONAL. We
+    // deliberately do NOT apply `isEntitlementIndeterminate` here — that
+    // predicate exists solely so the UX-layer proxy can fail OPEN. At this
+    // chokepoint a DB error MUST deny, or an outage becomes free product.
+    // Cast: entitlement-core.d.ts types dbClient's findUnique loosely (it is
+    // normally called from plain-JS server.js); arg contravariance makes the
+    // stricter PrismaClient un-assignable. Same documented cast the m2m route uses.
+    const ent = await evaluateUserEntitlement(
+      db as unknown as Parameters<typeof evaluateUserEntitlement>[0],
+      payload.userId,
+    );
     if (!ent.allowed) {
       console.warn(`[RelayTicket] entitlement denied (${ent.reason}) for user ${payload.userId}`);
       return NextResponse.json({ error: 'subscription_required' }, { status: 403 });
