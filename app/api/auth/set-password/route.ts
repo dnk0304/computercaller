@@ -50,6 +50,7 @@ import {
 } from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 import { lookupPasswordSetToken, consumePasswordSetToken } from '@/lib/passwordSetToken';
+import { MIN_PASSWORD, MAX_PASSWORD_BYTES } from '@/lib/passwordPolicy';
 
 // ── Rate limit ───────────────────────────────────────────────────────────────
 // In-process sliding window, same shape as lib/m2mMintAudit and /api/waitlist
@@ -77,8 +78,11 @@ function rateLimited(ip: string | null, nowMs: number = Date.now()): boolean {
 // bcrypt SILENTLY TRUNCATES at 72 BYTES. Accepting a longer password would mean
 // a 72-byte prefix authenticates — so reject it outright rather than quietly
 // weakening the credential the user thinks they chose.
-const MIN_PASSWORD = 8;
-const MAX_PASSWORD_BYTES = 72;
+//
+// These now come from lib/passwordPolicy so the set-password PAGE can show the
+// reader the same rules this route enforces. They were literals here; a screen
+// that mirrors them by copy-paste drifts, and then the form promises one thing
+// while the server enforces another. Enforcement is still, only, right here.
 
 const INVALID_TOKEN = 'This link is invalid or has expired. Ask for a new one.';
 

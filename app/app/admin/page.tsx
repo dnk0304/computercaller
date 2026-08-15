@@ -25,6 +25,7 @@ import { CustomerTable } from '@/components/admin/CustomerTable';
 import { FreeAccessManager } from '@/components/admin/FreeAccessManager';
 import { ReconcileWhopButton } from '@/components/admin/ReconcileWhopButton';
 import { ArticlesSection } from '@/components/admin/ArticlesSection';
+import { CreateAccountPanel } from '@/components/admin/CreateAccountPanel';
 import type { AdminCustomersResponse } from '@/components/admin/adminTypes';
 import { mockCustomersResponse } from '@/components/admin/mockCustomers';
 
@@ -57,7 +58,7 @@ function useMockPreview(): boolean {
  * are tabs rather than two stacked sections — a long customer table above the
  * guides list would bury the CMS.
  */
-type AdminTab = 'customers' | 'articles';
+type AdminTab = 'customers' | 'accounts' | 'articles';
 
 const TABS: ReadonlyArray<{ id: AdminTab; label: string; heading: string; blurb: string }> = [
   {
@@ -65,6 +66,12 @@ const TABS: ReadonlyArray<{ id: AdminTab; label: string; heading: string; blurb:
     label: 'Customers',
     heading: 'Customers',
     blurb: 'Account, trial, billing and same-IP signal for every registered user.',
+  },
+  {
+    id: 'accounts',
+    label: 'New account',
+    heading: 'New account',
+    blurb: 'Create an account by hand and hand over a one-time link for setting a password.',
   },
   {
     id: 'articles',
@@ -202,6 +209,19 @@ export default function AdminPage() {
               onMutated={mockPreview ? undefined : () => void load()}
             />
           )}
+        </div>
+      )}
+
+      {/* Create account — live-only (it writes through /api/admin/users), so it
+          is hidden in the ?mock=1 preview like the other write tools. Creating
+          an account refetches the customers feed so the new row is already
+          there when the operator switches back. */}
+      {tab === 'accounts' && showTabs && !mockPreview && (
+        <div role="tabpanel" id="admin-panel-accounts" aria-labelledby="admin-tab-accounts">
+          <CreateAccountPanel
+            onCreated={() => void load()}
+            onViewCustomers={() => setTab('customers')}
+          />
         </div>
       )}
 
