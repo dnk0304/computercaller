@@ -11,13 +11,21 @@
  * resolution lives HERE, never inside the pure row-cap map.
  */
 
-export type { Tier, TierLimits } from './tiers-core';
+export type { Tier, ResolvedTier, GrandfatheredTier, TierLimits, UpgradePath } from './tiers-core';
 
 export {
   PLAN_IDS,
+  PROMOTED_PLAN_ID,
+  HIDDEN_PLAN_IDS,
+  GRANDFATHERED_PLAN_IDS,
   TIER_LIMITS,
+  GRANDFATHERED_TIER_LIMITS,
   SYNC_RANGE_WINDOW_DAYS,
   planIdToTier,
+  planIdToTierGrandfathered,
   limitsForTier,
   syncSinceFloorMs,
+  syncSinceFloorMsFromLimits,
+  upgradePathForTier,
+  UPGRADE_REASON,
 } from './tiers-core';

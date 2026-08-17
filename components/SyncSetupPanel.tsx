@@ -31,6 +31,7 @@ const RANGE_OPTIONS: ReadonlyArray<RangeOption> = [
 ];
 
 const RANGE_TO_MS: Record<RangeKey, number> = {
+  '3d':  3   * 24 * 60 * 60 * 1000, // limited-trial window (2026-08-17)
   '30d': 30  * 24 * 60 * 60 * 1000,
   '3mo': 90  * 24 * 60 * 60 * 1000,
   '6mo': 180 * 24 * 60 * 60 * 1000,
@@ -400,6 +401,7 @@ export const SyncSetupPanel = () => {
 
   // Short human labels for the tier's max window, used in the range-lock hint.
   const RANGE_SHORT_LABEL: Record<RangeKey, string> = {
+    '3d': '3 days',
     '30d': '30 days',
     '3mo': '3 months',
     '6mo': '6 months',

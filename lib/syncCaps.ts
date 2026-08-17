@@ -15,10 +15,16 @@
 // were intentionally removed — these four are the only supported ranges.
 // SyncSetupPanel imports this type so the UI options and the cap map can never
 // drift apart.
-export type RangeKey = '30d' | '3mo' | '6mo' | '1yr';
+// '3d' added 2026-08-17 (dispatch forge/pricing-trial-limited) for the limited
+// free trial: the trial tier's syncRangeMax is '3d' (~last 3 days of history).
+export type RangeKey = '3d' | '30d' | '3mo' | '6mo' | '1yr';
 
 // Newest-N ceiling per range, applied separately to messages and to call logs.
+// '3d' cap = 300: a 3-day window is small, but a very chatty line can still
+// exceed a few hundred; 300 bounds the trial pull without truncating a normal
+// user's recent history. Sized to sit well below the 30d cap.
 export const RANGE_CAP: Record<RangeKey, number> = {
+  '3d': 300,
   '30d': 1500,
   '3mo': 2500,
   '6mo': 5000,

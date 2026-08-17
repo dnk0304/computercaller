@@ -5,7 +5,7 @@
  * .d.ts gives the TS callers full types with zero drift.
  */
 
-import type { Tier, TierLimits } from './tiers-core';
+import type { ResolvedTier, TierLimits, UpgradePath } from './tiers-core';
 
 export type EntitlementState =
   | 'admin'
@@ -26,12 +26,30 @@ export interface EntitlementResult {
   /** Machine-readable reason for the decision — logged, never shown to the user. */
   reason: string;
   /**
-   * Billing tier (2026-07-27, additive). Derived from state + subscription.planId:
-   * admin/allowlisted → 'pro'; else planIdToTier(planId) (unknown/null → 'solo').
+   * Billing tier (2026-07-27, additive; extended 2026-08-17). Derived from
+   * state + subscription.planId + subscription.grandfathered:
+   * admin/allowlisted/free_access → 'pro'; a NEW trialing row → 'trial'; a
+   * grandfathered row → its frozen pre-launch tier; else planIdToTier(planId).
+   * `trial` here is the limited-trial tier (a ResolvedTier, not a paid Tier).
    */
-  tier: Tier;
-  /** The limit set for `tier` (TIER_LIMITS[tier]). Additive. */
+  tier: ResolvedTier;
+  /**
+   * The limit set for `tier` — from GRANDFATHERED_TIER_LIMITS for a grandfathered
+   * row, TIER_LIMITS otherwise. Additive.
+   */
   limits: TierLimits;
+  /**
+   * Whether this decision used the frozen pre-launch (grandfathered) maps
+   * (2026-08-17, additive). false for every post-launch row and every
+   * privileged/no-subscription admit.
+   */
+  grandfathered: boolean;
+  /**
+   * Machine-readable upgrade signal for the client (2026-08-17, additive):
+   * trial → activate-$5, plus → upgrade-$7, else null. Pixel reads this to pick
+   * the right prompt when a cap is hit.
+   */
+  upgrade: UpgradePath;
 }
 
 export interface EntitlementSubscriptionInput {
@@ -43,6 +61,12 @@ export interface EntitlementSubscriptionInput {
    * resolve to the 'solo' default. Any path that ENFORCES a tier must select it.
    */
   planId?: string | null;
+  /**
+   * Grandfathered flag (2026-08-17). true = a pre-launch row → frozen pre-launch
+   * maps (prior caps + full trial). Optional/undefined → treated as a NEW row
+   * (limited trial + new caps). Any path that reads tier/limits must select it.
+   */
+  grandfathered?: boolean | null;
 }
 
 export interface EntitlementInput {

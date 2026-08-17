@@ -1,36 +1,33 @@
 import type { QuickReplyTemplate } from '@prisma/client';
-import type { EntitlementState } from '@/lib/entitlement';
+import type { EntitlementResult } from '@/lib/entitlement';
 
 // Dispatch CC-quickreply-templates-v2 (2026-06-03) — shared helpers used by
 // the /api/quick-replies routes. Mirrors lib/templates.ts conventions; the
 // quick-reply store is SEPARATE from the normal SMS-templates store and only
 // drives the reply-and-hangup chips on an incoming call.
 
-// Max quick-replies per user. Dennis-locked at 5. Enforced in POST
-// /api/quick-replies (count → 409) so the cap holds even if the UI is
-// bypassed; deliberately NOT a DB constraint so it can change without a
-// migration (matches the TEMPLATE_LIMIT pattern).
+// Absolute max quick-replies any tier can grant (Pro = 5). Retained as the
+// client-side render/fallback ceiling; the REAL per-user cap is tier-driven and
+// comes from the entitlement result — see effectiveQuickReplyLimit.
 export const QUICK_REPLY_LIMIT = 5;
 
-// Trial-tier cap (dispatch forge/trial7-caps-whopcard, 2026-07-03). Dennis:
-// "max 1 quick reply template" during the free trial. Non-paying users
-// (trialing, trial_expired, expired, none) get this reduced cap; paying/
-// privileged users (admin, allowlisted, active) keep the full
-// QUICK_REPLY_LIMIT. Code-constant, no env.
+// Trial-tier cap. Named constant kept for the historical reference and tests;
+// the authoritative value now flows from TIER_LIMITS.trial.quickReplies (0) via
+// the entitlement result.
 export const TRIAL_QUICK_REPLY_LIMIT = 1;
 
-// Effective quick-reply create-limit for a given entitlement state. Full cap
-// applies ONLY to paying/privileged states; everyone else is on the trial cap.
+// Effective quick-reply create-limit for an evaluated entitlement result.
 //
-// D5 (Ken/Dennis, 2026-07-27, dispatch feature/tier-gating): quick-replies are
-// deliberately NOT a tier differentiator — this stays STATE-based (paying=5 /
-// trial=1), exactly as before the 3-tier rollout. The tier map's
-// TIER_LIMITS[*].quickReplies=5 is only a contract placeholder surfaced by
-// /api/entitlement; the real enforced quick-reply cap is this state value. If
-// Dennis later scales quick-replies per tier, migrate this to the tier map then.
-export function effectiveQuickReplyLimit(state: EntitlementState): number {
-  const paying = state === 'admin' || state === 'allowlisted' || state === 'active';
-  return paying ? QUICK_REPLY_LIMIT : TRIAL_QUICK_REPLY_LIMIT;
+// 2026-08-17 (dispatch forge/pricing-trial-limited): quick-replies are now
+// enforced TIER-WIDE off the entitlement result's limit set — trial 0 / $5(plus)
+// 3 / $7(pro) 5 — exactly like effectiveTemplateLimit. This supersedes the old
+// STATE-based (paying=5 / trial=1) rule: it was correct while quick-replies were
+// not a differentiator, but the limited trial (0) and the $5/$7 split (3/5) are
+// real tier caps now, and grandfathered rows must keep their frozen cap — all of
+// which the tier map already encodes. Single source: the same TIER_LIMITS the
+// relay and /api/entitlement read.
+export function effectiveQuickReplyLimit(ent: EntitlementResult): number {
+  return ent.limits.quickReplies;
 }
 
 // The wire shape the client consumes. createdAt is epoch-ms (number) to match
