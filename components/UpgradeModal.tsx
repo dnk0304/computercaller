@@ -1,60 +1,54 @@
 'use client';
 
 /**
- * UpgradeModal — the in-app 3-tier pricing / upgrade dialog (dispatch
- * feature/tier-gating, 2026-07-27).
+ * UpgradeModal — the in-app upgrade / activate prompt ($5-promoted / $7-hidden +
+ * limited trial, dispatch pricing-5-promoted-7-hidden, 2026-08-17).
  *
- * Two phases in one dialog:
- *   1. COMPARE  — Solo $5 / Plus $7 (recommended) / Pro $10 side by side as a
- *                 cumulative VALUE LADDER: each higher card leads with
- *                 "Everything in <lower>, plus" and then its added benefits
- *                 (3 / 10 / 30 templates, 30-day / 6-month / 1-year history,
- *                 contact sync from Plus up). The caller's current tier is
- *                 marked and its CTA disabled; higher tiers offer an "Upgrade"
- *                 CTA. (No mirroring — that feature was never built.)
- *   2. CHECKOUT — the chosen tier's in-page Whop embedded checkout (same
- *                 <WhopEmbedCheckout> the lock screen uses). A Back control
- *                 returns to COMPARE.
+ * ⭐ THE PROMPT IS SELECTED BY THE SERVER, NEVER GUESSED HERE. The modal renders
+ * whatever `getUpgradePrompt(upgrade)` returns for the server's machine-readable
+ * `upgrade` signal (off /api/entitlement, or a template/quick-reply 409 body):
+ *   • reason 'trial-limit-hit' → "Activate your $5/month subscription"  (→ $5)
+ *   • reason 'plus-limit-hit'  → "Upgrade to $7/month"                  (→ $7)
+ *   • null (top / grandfathered-top / privileged) → the calm "highest plan"
+ *     state: no price, no checkout, no $7 named. A grandfathered user therefore
+ *     never sees a prompt for a limit that doesn't apply to them.
  *
- * Data source: getTierPlans() from lib/pricing (FORGE owns that display map;
- * this modal consumes it read-only). Runtime tier/limits come from
- * /api/entitlement via the provider — never re-derived here.
+ * $7 is named in THIS component and nowhere else in the product — and only when
+ * the server's signal put it there.
  *
- * Audience note: these users are already inside /app on a live plan, so the
- * framing is "upgrade", not "start a trial" — we don't promise a fresh 7-day
- * trial here (that copy belongs on the signup/lock surfaces). The reassurance
- * is the honest, always-true "cancel anytime".
+ * The optional `context` names which limit the user just hit (a fact the caller
+ * knows — it called the templates vs quick-replies route), for one honest
+ * descriptive line. It does NOT choose the prompt (activate vs upgrade); the
+ * server's `reason` does.
  *
- * A11y (parity with PricingModal): role="dialog" + aria-modal + aria-labelledby,
- * focus trap, initial focus into the dialog, Escape + backdrop close, body
- * scroll lock, focus return to the opener, visible focus rings. Motion is
- * gated behind motion-safe: so prefers-reduced-motion users get no transforms.
+ * A11y: role="dialog" + aria-modal + aria-labelledby, focus trap, initial focus,
+ * Escape + backdrop close, body scroll lock, focus return to the opener,
+ * aria-live on the async prompt region, visible focus rings, motion-safe gating.
  */
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { X, Check, ArrowRight, ArrowLeft, Star, ShieldCheck } from 'lucide-react';
+import { X, Check, ArrowRight, ArrowLeft, ShieldCheck, Crown } from 'lucide-react';
 import { clsx } from 'clsx';
-import { getTierPlans, type TierPlanDisplay } from '@/lib/pricing';
-import type { Tier } from '@/lib/tiers';
+import { getUpgradePrompt } from '@/lib/pricing';
+import type { UpgradePath } from '@/lib/tiers';
 import { WhopEmbedCheckout } from './WhopEmbedCheckout';
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
-/** Why the modal opened — drives a short contextual line above the plans. */
-export type UpgradeReason = 'templates' | 'contactSync' | 'syncRange' | undefined;
+/** Which limit the caller just hit — drives one descriptive line only. */
+export type LimitContext = 'templates' | 'quickReplies' | 'syncRange' | 'contactSync' | undefined;
 
-/** Tier rank so we can tell "current" from "upgrade" from "already included". */
-const TIER_RANK: Record<Tier, number> = { solo: 0, plus: 1, pro: 2 };
-
-function reasonLine(reason: UpgradeReason): string | null {
-  switch (reason) {
+function contextLine(context: LimitContext): string | null {
+  switch (context) {
     case 'templates':
-      return "You've reached your template limit on this plan.";
-    case 'contactSync':
-      return 'Contact sync is available on Plus and Pro.';
+      return 'You’ve reached the number of message templates your plan includes.';
+    case 'quickReplies':
+      return 'You’ve reached the number of quick replies your plan includes.';
     case 'syncRange':
-      return 'A longer sync history is available on higher plans.';
+      return 'You’ve reached how far back your plan syncs your history.';
+    case 'contactSync':
+      return 'Phone contacts aren’t included on your current plan.';
     default:
       return null;
   }
@@ -63,29 +57,26 @@ function reasonLine(reason: UpgradeReason): string | null {
 export interface UpgradeModalProps {
   open: boolean;
   onClose: () => void;
-  /** The caller's current tier, or null if not yet resolved. */
-  currentTier: Tier | null;
-  /** Why the modal opened (optional contextual line). */
-  reason?: UpgradeReason;
+  /**
+   * The server's machine-readable upgrade signal for the current user. The modal
+   * renders the prompt from THIS — it never inspects the tier or guesses.
+   */
+  upgrade: UpgradePath | null;
+  /** Which limit was hit (optional descriptive line only). */
+  context?: LimitContext;
 }
 
-export function UpgradeModal({ open, onClose, currentTier, reason }: UpgradeModalProps) {
+export function UpgradeModal({ open, onClose, upgrade, context }: UpgradeModalProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const titleId = useId();
 
-  // The tier whose checkout is showing, or null while comparing.
-  const [checkoutTier, setCheckoutTier] = useState<TierPlanDisplay | null>(null);
+  // The prompt is derived purely from the server's signal.
+  const prompt = useMemo(() => getUpgradePrompt(upgrade), [upgrade]);
+  const [showCheckout, setShowCheckout] = useState(false);
 
-  const plans = useMemo(() => getTierPlans(), []);
-  const currentRank = currentTier ? TIER_RANK[currentTier] : -1;
-
-  // Close AND reset to the compare phase, so the next open never reopens on a
-  // stale checkout view. Done in the close handler (an event path) rather than
-  // an effect — no set-state-in-effect. Every close route (X, backdrop, Escape)
-  // funnels through here.
   const handleClose = useCallback(() => {
-    setCheckoutTier(null);
+    setShowCheckout(false);
     onClose();
   }, [onClose]);
 
@@ -107,15 +98,13 @@ export function UpgradeModal({ open, onClose, currentTier, reason }: UpgradeModa
     const opener = (document.activeElement as HTMLElement | null) ?? null;
     return () => {
       cancelAnimationFrame(raf);
-      // Only restore if the opener is still in the document and focusable.
       if (opener && document.contains(opener) && typeof opener.focus === 'function') {
         opener.focus();
       }
     };
-    // Re-run when the phase flips so focus lands on the new heading.
-  }, [open, checkoutTier]);
+  }, [open, showCheckout]);
 
-  // Escape-to-close + focus trap. One keydown listener while open.
+  // Escape-to-close + focus trap.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -150,7 +139,7 @@ export function UpgradeModal({ open, onClose, currentTier, reason }: UpgradeModa
 
   if (!open) return null;
 
-  const intro = reasonLine(reason);
+  const intro = contextLine(context);
 
   return (
     <div
@@ -166,7 +155,7 @@ export function UpgradeModal({ open, onClose, currentTier, reason }: UpgradeModa
         className={clsx(
           'relative flex w-full flex-col bg-white shadow-2xl shadow-slate-900/20',
           'p-6 sm:p-8',
-          'min-h-full sm:min-h-0 sm:w-full sm:max-w-3xl sm:rounded-2xl sm:border sm:border-slate-200',
+          'min-h-full sm:min-h-0 sm:w-full sm:max-w-md sm:rounded-2xl sm:border sm:border-slate-200',
           'motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-4 motion-safe:duration-200 sm:motion-safe:zoom-in-95 sm:motion-safe:slide-in-from-bottom-0',
         )}
       >
@@ -179,177 +168,125 @@ export function UpgradeModal({ open, onClose, currentTier, reason }: UpgradeModa
           <X className="h-5 w-5" aria-hidden="true" />
         </button>
 
-        {checkoutTier ? (
-          /* ---- Phase 2: checkout for the chosen tier ---- */
-          <div className="mx-auto w-full max-w-md">
-            <button
-              type="button"
-              onClick={() => setCheckoutTier(null)}
-              className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 -ml-2 text-sm font-medium text-slate-500 transition-colors hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            >
-              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-              All plans
-            </button>
-
-            <div className="mt-4 pr-8 text-center">
-              <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Upgrade</p>
+        {/* aria-live so the async prompt is announced when it resolves. */}
+        <div aria-live="polite" className="w-full">
+          {!prompt ? (
+            /* ---- No upgrade path: top / grandfathered-top user ---- */
+            <div className="pr-8 text-center">
+              <span
+                className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600"
+                aria-hidden="true"
+              >
+                <Crown className="h-6 w-6" />
+              </span>
+              <h2
+                id={titleId}
+                ref={headingRef}
+                tabIndex={-1}
+                className="text-2xl font-semibold tracking-tight text-slate-900 focus:outline-none"
+              >
+                You’re on the highest plan
+              </h2>
+              <p className="mx-auto mt-3 max-w-sm text-slate-600">
+                {intro
+                  ? `${intro} That’s the limit of your current plan — there’s nothing higher to move to.`
+                  : 'You already have everything ComputerCaller offers on your plan.'}
+              </p>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="mt-6 inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-800 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40"
+              >
+                Got it
+              </button>
+            </div>
+          ) : showCheckout ? (
+            /* ---- Checkout for the selected offer ---- */
+            <div className="mx-auto w-full max-w-md">
+              <button
+                type="button"
+                onClick={() => setShowCheckout(false)}
+                className="-ml-2 inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-medium text-slate-500 transition-colors hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+                Back
+              </button>
+              <div className="mt-4 pr-8 text-center">
+                <h2
+                  id={titleId}
+                  ref={headingRef}
+                  tabIndex={-1}
+                  className="text-2xl font-semibold tracking-tight text-slate-900 focus:outline-none"
+                >
+                  {prompt.heading}
+                </h2>
+                <p className="mt-2 text-sm text-slate-500">
+                  <span className="font-semibold text-slate-700">{prompt.price}</span> {PERIOD_LABEL} ·
+                  cancel anytime
+                </p>
+              </div>
+              <div className="mt-6 text-left">
+                <WhopEmbedCheckout key={prompt.planId} planId={prompt.planId} accentColor="#3358d4" />
+              </div>
+            </div>
+          ) : (
+            /* ---- The offer (activate $5 OR upgrade $7) ---- */
+            <div className="pr-8">
+              <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
+                {prompt.reason === 'trial-limit-hit' ? 'Free trial' : 'Upgrade'}
+              </p>
               <h2
                 id={titleId}
                 ref={headingRef}
                 tabIndex={-1}
                 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900 focus:outline-none"
               >
-                Upgrade to {checkoutTier.name}
+                {prompt.heading}
               </h2>
-              <p className="mt-2 text-sm text-slate-500">
-                <span className="font-semibold text-slate-700">{checkoutTier.price}</span>{' '}
-                {checkoutTier.period} · cancel anytime
-              </p>
-            </div>
+              {intro && <p className="mt-3 text-sm text-slate-600">{intro}</p>}
+              <p className="mt-2 text-slate-600">{prompt.subtext}</p>
 
-            <div className="mt-6 text-left">
-              <WhopEmbedCheckout key={checkoutTier.planId} planId={checkoutTier.planId} accentColor="#3358d4" />
-            </div>
-          </div>
-        ) : (
-          /* ---- Phase 1: compare the three tiers ---- */
-          <>
-            <div className="pr-8 text-center">
-              <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">Plans</p>
-              <h2
-                id={titleId}
-                ref={headingRef}
-                tabIndex={-1}
-                className="mt-2 text-2xl font-semibold tracking-tight text-slate-900 focus:outline-none sm:text-3xl"
-              >
-                Choose your plan
-              </h2>
-              {intro ? (
-                <p className="mx-auto mt-3 max-w-lg text-slate-600">{intro}</p>
-              ) : (
-                <p className="mx-auto mt-3 max-w-lg text-slate-600">
-                  Pick the plan that fits how you use ComputerCaller.
-                </p>
-              )}
-            </div>
+              <div className="mt-5 flex items-baseline gap-1">
+                <span className="text-3xl font-semibold tracking-tight text-slate-900">{prompt.price}</span>
+                <span className="text-sm text-slate-500">{PERIOD_LABEL}</span>
+              </div>
 
-            <ul className="mt-8 grid gap-4 sm:grid-cols-3" role="list">
-              {plans.map((plan) => {
-                const rank = TIER_RANK[plan.tier];
-                const isCurrent = currentRank === rank;
-                const isLower = currentRank >= 0 && rank < currentRank;
-                return (
-                  <li
-                    key={plan.tier}
-                    className={clsx(
-                      'relative flex flex-col rounded-2xl border p-5 text-left transition-shadow',
-                      plan.highlight
-                        ? 'border-blue-600 ring-1 ring-blue-600/20 shadow-sm shadow-blue-600/10 sm:-mt-2 sm:mb-2'
-                        : 'border-slate-200',
-                      isCurrent && 'bg-slate-50/60',
-                    )}
-                  >
-                    {plan.highlight && (
-                      <span className="absolute -top-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">
-                        <Star className="h-3 w-3 fill-current" aria-hidden="true" />
-                        Recommended
-                      </span>
-                    )}
-
-                    <div className="flex items-baseline justify-between gap-2">
-                      <h3 className="text-base font-bold text-slate-900">{plan.name}</h3>
-                      {isCurrent && (
-                        <span className="inline-flex items-center rounded-full border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                          Current
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="mt-2 flex items-baseline gap-1">
-                      <span className="text-3xl font-semibold tracking-tight text-slate-900">
-                        {plan.price}
-                      </span>
-                      <span className="text-sm text-slate-500">{plan.period}</span>
-                    </div>
-
-                    <div className="mt-4 flex-1">
-                      <p
-                        className={clsx(
-                          'text-xs font-semibold uppercase tracking-wide',
-                          plan.highlight ? 'text-blue-600' : 'text-slate-500',
-                        )}
-                      >
-                        {plan.inheritsFrom
-                          ? `Everything in ${plan.inheritsFrom}, plus`
-                          : 'Core essentials'}
-                      </p>
-                      <ul className="mt-2.5 space-y-2.5" role="list">
-                      {plan.features.map((f) => (
-                        <li key={f} className="flex items-start gap-2 text-sm text-slate-700">
-                          <span
-                            className={clsx(
-                              'mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border',
-                              plan.highlight
-                                ? 'border-blue-100 bg-blue-50'
-                                : 'border-slate-200 bg-slate-50',
-                            )}
-                          >
-                            <Check
-                              className={clsx('h-2.5 w-2.5', plan.highlight ? 'text-blue-600' : 'text-slate-500')}
-                              strokeWidth={3}
-                              aria-hidden="true"
-                            />
-                          </span>
-                          <span>{f}</span>
-                        </li>
-                      ))}
-                      </ul>
-                    </div>
-
-                    <div className="mt-5">
-                      {isCurrent ? (
-                        <span className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-semibold text-slate-500">
-                          <Check className="h-4 w-4" aria-hidden="true" />
-                          Current plan
-                        </span>
-                      ) : isLower ? (
-                        <span className="flex w-full items-center justify-center rounded-xl border border-dashed border-slate-200 py-2.5 text-sm font-medium text-slate-400">
-                          Included in your plan
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setCheckoutTier(plan)}
-                          aria-label={`Upgrade to ${plan.name} — ${plan.a11yLabel}`}
-                          className={clsx(
-                            'flex w-full items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
-                            plan.highlight
-                              ? 'bg-blue-600 text-white shadow-sm shadow-blue-600/20 hover:bg-blue-700 focus-visible:ring-blue-500/40'
-                              : 'border border-slate-300 bg-white text-slate-800 hover:bg-slate-50 focus-visible:ring-slate-400/40',
-                          )}
-                        >
-                          Choose {plan.name}
-                          <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                        </button>
-                      )}
-                    </div>
+              <ul className="mt-4 space-y-2.5" role="list">
+                {prompt.features.map((f) => (
+                  <li key={f} className="flex items-start gap-2 text-sm text-slate-700">
+                    <span
+                      className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border border-blue-100 bg-blue-50"
+                      aria-hidden="true"
+                    >
+                      <Check className="h-2.5 w-2.5 text-blue-600" strokeWidth={3} />
+                    </span>
+                    <span>{f}</span>
                   </li>
-                );
-              })}
-            </ul>
+                ))}
+              </ul>
 
-            {/* Risk-reversal band — honest for existing subscribers (no trial promise). */}
-            <div className="mt-8 flex justify-center">
-              <p className="inline-flex items-center gap-2.5 rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-600 shadow-sm">
+              <button
+                type="button"
+                onClick={() => setShowCheckout(true)}
+                aria-label={`${prompt.ctaLabel} — cancel anytime`}
+                className="mt-6 flex w-full items-center justify-center gap-1.5 rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+              >
+                {prompt.ctaLabel}
+                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </button>
+
+              <p className="mt-4 flex items-center justify-center gap-2 text-xs text-slate-500">
                 <ShieldCheck className="h-4 w-4 flex-shrink-0 text-emerald-500" aria-hidden="true" />
-                Change or cancel your plan anytime — no lock-in.
+                Cancel anytime — no lock-in.
               </p>
             </div>
-          </>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
 }
+
+const PERIOD_LABEL = 'per month';
 
 export default UpgradeModal;

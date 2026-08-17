@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { Tier, TierLimits } from '@/lib/tiers';
+import type { ResolvedTier, TierLimits, UpgradePath } from '@/lib/tiers';
 
 // ---------------------------------------------------------------------------
 // useEntitlement — the client-side reader for the canonical tier + limits +
@@ -14,13 +14,15 @@ import type { Tier, TierLimits } from '@/lib/tiers';
 // route, and this hook all read the same shared entitlement core, so the UI
 // and the backend can never disagree about a user's tier.
 //
-// Contract (verbatim, FROZEN by Forge):
+// Contract (verbatim, FROZEN by Forge — extended 2026-08-17):
 //   200 {
-//     tier: 'solo' | 'plus' | 'pro',
+//     tier: 'trial' | 'solo' | 'plus' | 'pro',
 //     state: 'active'|'trialing'|'trial_expired'|'expired'|'none'|'admin'|'allowlisted'|'free_access',
 //     allowed: boolean,
 //     trialDaysLeft: number | null,
+//     grandfathered: boolean,
 //     limits: { templates, quickReplies, syncRangeMax, contactSync },
+//     upgrade: { reason, cta, targetTier },
 //     usage:  { templates, quickReplies }
 //   }
 //   401 { error } when unauthenticated.
@@ -46,13 +48,22 @@ export type EntitlementLifecycle =
   // Billing/upgrade prompts are suppressed for this state (they're not paying).
   | 'free_access';
 
-/** The full entitlement payload the UI consumes. */
+/** The full entitlement payload the UI consumes (extended 2026-08-17). */
 export interface Entitlement {
-  tier: Tier;
+  /** Resolved tier — a paid tier OR the limited `trial` tier. */
+  tier: ResolvedTier;
   state: EntitlementLifecycle;
   allowed: boolean;
   trialDaysLeft: number | null;
+  /** True = a pre-launch (grandfathered) row on frozen caps. */
+  grandfathered: boolean;
   limits: TierLimits;
+  /**
+   * Machine-readable upgrade signal — the UI renders the prompt from THIS, never
+   * by guessing which wall was hit. All-null for top/grandfathered-top users, so
+   * they never see a prompt for a limit that doesn't apply to them.
+   */
+  upgrade: UpgradePath;
   usage: { templates: number; quickReplies: number };
 }
 

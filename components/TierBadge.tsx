@@ -18,13 +18,24 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { Sparkles, Gift } from 'lucide-react';
 import { useUpgrade } from '@/hooks/upgradeModalContext';
-import type { Tier } from '@/lib/tiers';
+import type { ResolvedTier } from '@/lib/tiers';
 
-const TIER_LABEL: Record<Tier, string> = { solo: 'Solo', plus: 'Plus', pro: 'Pro' };
+// Display labels. 2026-08-17: the resolved tier may be the limited `trial`; a
+// trialing user sees a "Free trial" pill (clicking it opens the activate-$5
+// prompt, since their entitlement.upgrade already targets $5). `plus` is the
+// $5 promoted plan; `pro` the $7 upgrade; `solo` is grandfathered-legacy only.
+const TIER_LABEL: Record<ResolvedTier, string> = {
+  trial: 'Free trial',
+  solo: 'Solo',
+  plus: 'Plus',
+  pro: 'Pro',
+};
 
-// Per-tier styling. Solo is quiet slate; Plus is the recommended blue; Pro is
-// an indigo→violet gradient so the top tier reads as the premium one.
-const TIER_STYLE: Record<Tier, string> = {
+// Per-tier styling — colour is never the sole signal (the label is always
+// spelled out). Trial is a calm amber; solo quiet slate; plus the promoted
+// blue; pro an indigo→violet gradient for the top tier.
+const TIER_STYLE: Record<ResolvedTier, string> = {
+  trial: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100',
   solo: 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
   plus: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100',
   pro: 'border-transparent bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:from-indigo-700 hover:to-violet-700 shadow-sm',

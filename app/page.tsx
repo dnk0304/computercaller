@@ -19,7 +19,13 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import WaitlistCTA from '@/components/WaitlistCTA';
-import { PLAN_PRICE_RANGE, PLAN_TIERS, RECOMMENDED_TIER, type PlanTierId } from '@/lib/pricing';
+import {
+  PROMOTED_PRICE,
+  PROMOTED_PRICE_VALUE,
+  PROMOTED_TIER,
+  TRIAL_DAYS,
+  type PlanTierId,
+} from '@/lib/pricing';
 import { SignupModal } from '@/components/SignupModal';
 import { PricingModal } from '@/components/PricingModal';
 import { WAITLIST_MODE } from '@/lib/waitlistMode';
@@ -112,12 +118,12 @@ const faqs = [
   {
     q: 'Can I call from my computer for free?',
     // Waitlist mode: no price reaches the visible FAQ OR the JSON-LD, which is
-    // built from this same array. Flag off → the three-tier answer below, whose
-    // prices are INTERPOLATED from PLAN_TIERS so this answer cannot drift from
-    // the pricing modal the way the old hardcoded "$5/month" did.
+    // built from this same array. Flag off → the single-plan answer below, whose
+    // price is INTERPOLATED from lib/pricing (PROMOTED_PRICE) so this answer
+    // cannot drift from the pricing modal the way a hardcoded "$5/month" did.
     a: WAITLIST_MODE
       ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
-      : `Your first 7 days are free. After the trial there are three plans — ${PLAN_TIERS.map((t) => `${t.name} ${t.price}`).join(', ')} per month — and you can cancel anytime. There is no usage-based fee on top: your call minutes come from your existing carrier plan, so a call from your computer costs the same as a call from your phone.`,
+      : `Your first ${TRIAL_DAYS} days are free, then it's ${PROMOTED_PRICE} per month — cancel anytime. There is no usage-based fee on top: your call minutes come from your existing carrier plan, so a call from your computer costs the same as a call from your phone.`,
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -159,7 +165,7 @@ export default function LandingPage() {
    * no plan, which silently reverts to /subscribe's own default and re-opens the
    * hole this fix closes.
    */
-  const [selectedPlanTier, setSelectedPlanTier] = useState<PlanTierId>(RECOMMENDED_TIER);
+  const [selectedPlanTier, setSelectedPlanTier] = useState<PlanTierId>(PROMOTED_TIER);
   const signupTriggerRef = useRef<HTMLElement | null>(null);
 
   // Intercept a CTA click. Bail (let the browser navigate) on any modified
@@ -264,23 +270,20 @@ export default function LandingPage() {
         // reaches crawlers / structured data. That suppression is deliberate and
         // is tested in BOTH flag states.
         //
-        // ⭐ AggregateOffer, DERIVED — not a hardcoded number (2026-08-11).
-        // This previously shipped `price: '5.00'` as a literal and kept telling
-        // Google $5 long after Solo became $6: a structured-data price that
-        // contradicts checkout is what generates "price mismatch" penalties and
-        // erodes listing trust. Replacing one stale literal with three would
-        // just move the staleness, so the range is COMPUTED from PLAN_TIERS —
-        // the same array the pricing modal renders. Change a price in one place
-        // and the JSON-LD follows; it cannot silently disagree with the product.
+        // ⭐ Single Offer, DERIVED — not a hardcoded number. The storefront now
+        // sells ONE plan ($5/mo), so a single Offer is the honest structured
+        // data. The price comes from lib/pricing (PROMOTED_PRICE_VALUE — the
+        // same $5 the pricing modal renders), so the JSON-LD cannot silently
+        // disagree with checkout. $7 is an in-app upgrade only and is
+        // deliberately NOT advertised to crawlers.
         ...(WAITLIST_MODE
           ? {}
           : {
               offers: {
-                '@type': 'AggregateOffer',
+                '@type': 'Offer',
                 priceCurrency: 'USD',
-                lowPrice: PLAN_PRICE_RANGE.low,
-                highPrice: PLAN_PRICE_RANGE.high,
-                offerCount: PLAN_TIERS.length,
+                price: PROMOTED_PRICE_VALUE,
+                availability: 'https://schema.org/InStock',
               },
             }),
         publisher: { '@id': 'https://computercaller.com/#organization' },
@@ -692,8 +695,8 @@ export default function LandingPage() {
 
       {/* Pricing lives in a header-triggered pop-up now (<PricingModal>, Dennis
           2026-07-04) — the standalone section was removed from the body. The
-          pricing JSON-LD (AggregateOffer, $6-$9 USD, derived from PLAN_TIERS) STAYS in the head Script
-          above, so the price is still declared for SEO. */}
+          single-plan JSON-LD Offer ($5 USD, derived from PROMOTED_PRICE_VALUE)
+          STAYS in the head Script above, so the price is still declared for SEO. */}
 
       {/* Reviews / testimonials section REMOVED (2026-07-27, Dennis): the copy
           shipping in it was ILLUSTRATIVE placeholder, not real customer quotes
@@ -771,7 +774,7 @@ export default function LandingPage() {
           <p className="mt-3 text-slate-600 text-lg max-w-xl mx-auto">
             {WAITLIST_MODE
               ? "We're opening the doors soon. Sign up on the waitlist — get a 30-day free trial when we launch."
-              : `7 days free, then from $${PLAN_PRICE_RANGE.low.replace(/\.00$/, '')}/month — cancel anytime. Pair your phone and you’re calling from your browser in under two minutes.`}
+              : `${TRIAL_DAYS} days free, then ${PROMOTED_PRICE}/month — cancel anytime. Pair your phone and you’re calling from your browser in under two minutes.`}
           </p>
           {WAITLIST_MODE ? (
             <div className="mt-8 mx-auto max-w-xl">
