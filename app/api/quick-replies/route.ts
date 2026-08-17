@@ -9,24 +9,40 @@ import { evaluateEntitlement } from '@/lib/entitlement';
 // capped at TRIAL_QUICK_REPLY_LIMIT (1); paying/privileged keep the full
 // QUICK_REPLY_LIMIT (5). Reuses the shared evaluateEntitlement. `select`
 // mirrors app/subscribe/page.tsx.
-async function resolveQuickReplyLimit(userId: string): Promise<number> {
+// Returns the effective quick-reply cap AND the machine-readable upgrade signal
+// (dispatch forge/pricing-trial-limited, 2026-08-17). planId + grandfathered are
+// now selected because the cap is tier-driven off the entitlement result (trial
+// 0 / $5 3 / $7 5), matching the /api/templates path.
+type UpgradeSignal = { reason: string | null; cta: string | null; targetTier: string | null };
+async function resolveQuickReplyLimit(
+  userId: string,
+): Promise<{ limit: number; upgrade: UpgradeSignal }> {
   const user = await db.user.findUnique({
     where: { id: userId },
     select: {
       isAdmin: true,
       email: true,
       subscription: {
-        select: { status: true, trialEndsAt: true, currentPeriodEnd: true },
+        select: {
+          status: true,
+          trialEndsAt: true,
+          currentPeriodEnd: true,
+          planId: true,
+          grandfathered: true,
+        },
       },
     },
   });
-  if (!user) return effectiveQuickReplyLimit('none');
+  if (!user) {
+    const ent = evaluateEntitlement({ isAdmin: false, email: '', subscription: null });
+    return { limit: effectiveQuickReplyLimit(ent), upgrade: ent.upgrade };
+  }
   const ent = evaluateEntitlement({
     isAdmin: user.isAdmin,
     email: user.email,
     subscription: user.subscription,
   });
-  return effectiveQuickReplyLimit(ent.state);
+  return { limit: effectiveQuickReplyLimit(ent), upgrade: ent.upgrade };
 }
 
 // Dispatch CC-quickreply-templates-v2 (2026-06-03) — per-user quick-reply
@@ -45,7 +61,7 @@ export async function GET(req: NextRequest) {
     const payload = await validateSessionToken(token);
     if (!payload) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const [rows, limit] = await Promise.all([
+    const [rows, resolved] = await Promise.all([
       db.quickReplyTemplate.findMany({
         where: { userId: payload.userId },
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
@@ -55,7 +71,10 @@ export async function GET(req: NextRequest) {
 
     // `limit` added for the UI (Pixel wave 3). Existing `quickReplies` key
     // unchanged.
-    return NextResponse.json({ quickReplies: rows.map(serializeQuickReplyTemplate), limit });
+    return NextResponse.json({
+      quickReplies: rows.map(serializeQuickReplyTemplate),
+      limit: resolved.limit,
+    });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -118,11 +137,14 @@ export async function POST(req: NextRequest) {
     // UX guardrail, not a security/billing boundary. Matches the Template-cap
     // pattern in /api/templates so the 409 shape is identical → Pixel reuses
     // the same handling.
-    const limit = await resolveQuickReplyLimit(payload.userId);
+    const { limit, upgrade } = await resolveQuickReplyLimit(payload.userId);
     const count = await db.quickReplyTemplate.count({ where: { userId: payload.userId } });
     if (count >= limit) {
+      // `upgrade` (2026-08-17) mirrors the /api/templates 409 so Pixel reuses one
+      // handler: trial→activate-$5 vs $5→upgrade-$7. Additive; `error`+`limit`
+      // unchanged.
       return NextResponse.json(
-        { error: 'Quick-reply limit reached', limit },
+        { error: 'Quick-reply limit reached', limit, upgrade },
         { status: 409 },
       );
     }

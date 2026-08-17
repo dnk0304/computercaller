@@ -9,26 +9,31 @@ import { evaluateEntitlement, isFreeAccessEmail } from '@/lib/entitlement';
 // null. This is the ONE endpoint Pixel's useEntitlement() hook builds against;
 // the shape below is FROZEN.
 //
-// Response (200):
+// Response (200) — shape extended 2026-08-17 (dispatch forge/pricing-trial-limited):
 // {
-//   tier: 'solo' | 'plus' | 'pro',
-//   state: 'active' | 'trialing' | 'trial_expired' | 'expired' | 'none' | 'admin' | 'allowlisted',
+//   tier: 'trial' | 'solo' | 'plus' | 'pro',
+//   state: 'active' | 'trialing' | 'trial_expired' | 'expired' | 'none' | 'admin' | 'allowlisted' | 'free_access',
 //   allowed: boolean,
 //   trialDaysLeft: number | null,
+//   grandfathered: boolean,           // ADDED — true = pre-launch row, frozen caps
 //   limits: { templates, quickReplies, syncRangeMax, contactSync },
+//   upgrade: { reason, cta, targetTier },  // ADDED — Pixel's prompt signal
 //   usage:  { templates, quickReplies }
 // }
 //
-// tier/limits come straight off the shared entitlement core (same resolution
-// the relay gate and the template-cap route use — one source, no drift). usage
-// is two cheap count() queries on the caller's rows so the UI can render
-// "2 / 3 used" without a second round-trip.
+// tier/limits/upgrade come straight off the shared entitlement core (same
+// resolution the relay gate and the template/quick-reply cap routes use — one
+// source, no drift). usage is two cheap count() queries on the caller's rows so
+// the UI can render "2 / 3 used" without a second round-trip.
 //
-// NOTE on limits.quickReplies: it is the tier-map placeholder (5 for all tiers,
-// D5). The ACTUALLY enforced quick-reply cap is still state-based (paying=5 /
-// trial=1) in /api/quick-replies — quick-replies are intentionally not a tier
-// differentiator yet. The per-list `limit` on GET /api/quick-replies is the
-// real enforced number for that surface.
+// `upgrade` distinguishes the two upsell paths for Pixel:
+//   trial cap hit → { reason:'trial-limit-hit', cta:'activate-5', targetTier:'plus' }
+//   $5   cap hit → { reason:'plus-limit-hit',  cta:'upgrade-7',  targetTier:'pro'  }
+//   $7 / top / grandfathered-top → all-null (nowhere up).
+//
+// limits.quickReplies is now the REAL tier-enforced cap (trial 0 / $5 3 / $7 5),
+// matching /api/quick-replies which reads the same TIER_LIMITS off the
+// entitlement result (no longer a placeholder).
 export async function GET(req: NextRequest) {
   try {
     const token = req.cookies.get('auth_token')?.value;
@@ -43,9 +48,17 @@ export async function GET(req: NextRequest) {
         isAdmin: true,
         email: true,
         subscription: {
-          // planId is REQUIRED here — this endpoint discloses the tier, so an
-          // omitted planId would silently report Solo for a Plus/Pro customer.
-          select: { status: true, trialEndsAt: true, currentPeriodEnd: true, planId: true },
+          // planId + grandfathered are REQUIRED here — this endpoint discloses
+          // the tier AND caps, so an omitted planId would report Solo for a
+          // Plus/Pro customer, and an omitted grandfathered would show a
+          // pre-launch payer the new (possibly narrower) caps.
+          select: {
+            status: true,
+            trialEndsAt: true,
+            currentPeriodEnd: true,
+            planId: true,
+            grandfathered: true,
+          },
         },
       },
     });
@@ -74,12 +87,18 @@ export async function GET(req: NextRequest) {
       state: ent.state,
       allowed: ent.allowed,
       trialDaysLeft: ent.trialDaysLeft,
+      grandfathered: ent.grandfathered,
       limits: {
         templates: ent.limits.templates,
         quickReplies: ent.limits.quickReplies,
         syncRangeMax: ent.limits.syncRangeMax,
         contactSync: ent.limits.contactSync,
       },
+      // `upgrade` (2026-08-17) — the machine-readable prompt signal Pixel reads:
+      // { reason:'trial-limit-hit', cta:'activate-5', targetTier:'plus' } on a
+      // trial, { reason:'plus-limit-hit', cta:'upgrade-7', targetTier:'pro' } on
+      // $5, all-null on $7/top/grandfathered-top.
+      upgrade: ent.upgrade,
       usage: {
         templates: templatesUsed,
         quickReplies: quickRepliesUsed,

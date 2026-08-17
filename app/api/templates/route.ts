@@ -13,31 +13,45 @@ import { evaluateEntitlement } from '@/lib/entitlement';
 // users are capped at TRIAL_TEMPLATE_LIMIT; paying/privileged keep the full
 // TEMPLATE_LIMIT. Reuses the shared evaluateEntitlement — never re-implements
 // the paying test. `select` mirrors app/subscribe/page.tsx.
-async function resolveTemplateLimit(userId: string): Promise<number> {
+// Returns the effective template cap AND the machine-readable upgrade signal
+// (dispatch forge/pricing-trial-limited, 2026-08-17) so the POST 409 can tell
+// Pixel which prompt to show: trial→activate-$5 vs $5→upgrade-$7.
+type UpgradeSignal = { reason: string | null; cta: string | null; targetTier: string | null };
+async function resolveTemplateLimit(
+  userId: string,
+): Promise<{ limit: number; upgrade: UpgradeSignal }> {
   const user = await db.user.findUnique({
     where: { id: userId },
     select: {
       isAdmin: true,
       email: true,
       subscription: {
-        // planId added 2026-07-27 so the tier (Solo 3 / Plus 10 / Pro 30)
-        // resolves correctly — WITHOUT it every active sub would fall to the
-        // Solo default. This is a tier-enforcing path, so it MUST select planId.
-        select: { status: true, trialEndsAt: true, currentPeriodEnd: true, planId: true },
+        // planId (2026-07-27) + grandfathered (2026-08-17) are BOTH required on
+        // this tier-enforcing path: planId resolves the tier, grandfathered
+        // selects the new-vs-frozen limit world. Without either, an existing
+        // payer/trialer would be gated by the wrong limit set.
+        select: {
+          status: true,
+          trialEndsAt: true,
+          currentPeriodEnd: true,
+          planId: true,
+          grandfathered: true,
+        },
       },
     },
   });
   // Row vanished mid-session — treat as Solo (least privilege). Defensive; the
   // downstream db call would 401/500 anyway.
   if (!user) {
-    return effectiveTemplateLimit(evaluateEntitlement({ isAdmin: false, email: '', subscription: null }));
+    const ent = evaluateEntitlement({ isAdmin: false, email: '', subscription: null });
+    return { limit: effectiveTemplateLimit(ent), upgrade: ent.upgrade };
   }
   const ent = evaluateEntitlement({
     isAdmin: user.isAdmin,
     email: user.email,
     subscription: user.subscription,
   });
-  return effectiveTemplateLimit(ent);
+  return { limit: effectiveTemplateLimit(ent), upgrade: ent.upgrade };
 }
 
 // GET /api/templates → { templates: [...] } ordered sortOrder ASC, createdAt DESC.
@@ -49,7 +63,7 @@ export async function GET(req: NextRequest) {
     const payload = await validateSessionToken(token);
     if (!payload) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const [rows, limit] = await Promise.all([
+    const [rows, resolved] = await Promise.all([
       db.template.findMany({
         where: { userId: payload.userId },
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
@@ -59,7 +73,7 @@ export async function GET(req: NextRequest) {
 
     // `limit` added for the UI (Pixel wave 3) so it can show the cap without a
     // second call. Existing `templates` array key unchanged.
-    return NextResponse.json({ templates: rows.map(serializeTemplate), limit });
+    return NextResponse.json({ templates: rows.map(serializeTemplate), limit: resolved.limit });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -106,11 +120,15 @@ export async function POST(req: NextRequest) {
     // single active session (sessionVersion), and the cap is a UX/entitlement
     // guardrail, not a security/billing boundary. The list/UI self-corrects on
     // next load. Existing over-cap rows are grandfathered (create-only block).
-    const limit = await resolveTemplateLimit(payload.userId);
+    const { limit, upgrade } = await resolveTemplateLimit(payload.userId);
     const count = await db.template.count({ where: { userId: payload.userId } });
     if (count >= limit) {
+      // `upgrade` (2026-08-17) tells Pixel which prompt to render on a cap hit:
+      // { reason:'trial-limit-hit', cta:'activate-5' } vs
+      // { reason:'plus-limit-hit', cta:'upgrade-7' }. Additive to the 409 body;
+      // `error` + `limit` unchanged so existing clients keep working.
       return NextResponse.json(
-        { error: 'Template limit reached', limit },
+        { error: 'Template limit reached', limit, upgrade },
         { status: 409 },
       );
     }

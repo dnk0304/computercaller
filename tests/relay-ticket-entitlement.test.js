@@ -172,7 +172,9 @@ const VER0 = { userId: 'u', ver: 0 };
     eq(`3. paying ${tier} customer resolves to '${tier}' (not solo)`, d.tier, tier);
   }
 
-  // 3b. A TRIALING sub carries the tier the user picked at card-first checkout.
+  // 3b. NEW limited trial (2026-08-17): a trialing NEW row mints a ticket (the
+  //     paywall still admits — trial users drive the phone) but resolves to the
+  //     limited 'trial' tier REGARDLESS of the plan attached at checkout.
   {
     const db = makeDb({
       user: {
@@ -188,7 +190,27 @@ const VER0 = { userId: 'u', ver: 0 };
     });
     const d = await relayTicketDecision(db, VER0, NOW);
     eq('3b. live trial mints a ticket', d.status, 200);
-    eq('3b. trial honors the chosen plan tier', d.tier, 'pro');
+    eq('3b. new trial resolves to the limited trial tier (ignores plan)', d.tier, 'trial');
+  }
+
+  // 3c. GRANDFATHERED trialing row keeps the OLD behavior: its plan's full tier.
+  {
+    const db = makeDb({
+      user: {
+        isAdmin: false,
+        email: 'sendyfeldheim@gmail.com',
+        subscription: {
+          status: 'trial',
+          trialEndsAt: new Date(NOW.getTime() + 5 * DAY_MS),
+          currentPeriodEnd: null,
+          planId: 'plan_IvKRyvHtl4Q8w',
+          grandfathered: true,
+        },
+      },
+    });
+    const d = await relayTicketDecision(db, VER0, NOW);
+    eq('3c. grandfathered trial mints a ticket', d.status, 200);
+    eq('3c. grandfathered trial keeps its plan full tier (plus)', d.tier, 'plus');
   }
 
   // 4. UNENTITLED USERS STILL GET 403 — the paywall must be byte-stable.

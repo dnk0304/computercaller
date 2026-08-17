@@ -35,7 +35,7 @@ const { evaluateUserEntitlement } = require('./lib/entitlement-core.js');
 // gate relay frames is identical to the tier the browser/entitlement endpoint
 // sees. syncSinceFloorMs derives the oldest `since` a tier may pull.
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
-const { syncSinceFloorMs } = require('./lib/tiers-core.js');
+const { syncSinceFloorMsFromLimits } = require('./lib/tiers-core.js');
 
 // Bundle A (2026-05-28) — Phase 4 security review fix (H7).
 // Every server.js log site that previously included the raw phoneToken (and
@@ -947,7 +947,6 @@ function startRelay(httpServer) {
    */
   function gateBrowserSyncFrame(ws, msg) {
     const limits = ws.tierLimits || {};
-    const tier = ws.tier || 'solo';
 
     // Contact book pull (Plus/Pro only). Frame is `GET_CONTACTS:{}` or
     // `GET_CONTACTS` — match the prefix without the colon to cover both.
@@ -968,7 +967,12 @@ function startRelay(httpServer) {
       }
       if (!payload || typeof payload !== 'object') return { action: 'pass', msg };
       if (typeof payload.since === 'number' && Number.isFinite(payload.since)) {
-        const floor = syncSinceFloorMs(tier);
+        // Derive the floor from the EXACT limits this socket was admitted with
+        // (ws.tierLimits, cached off the entitlement result) — NOT re-derived
+        // from `tier` against the NEW map. This honors a grandfathered Plus
+        // user's 6mo window and a limited-trial user's 3d window, both of which
+        // differ from the new-map value for their tier key (2026-08-17).
+        const floor = syncSinceFloorMsFromLimits(limits);
         if (payload.since < floor) {
           const clamped = Object.assign({}, payload, { since: floor });
           return { action: 'clamp', msg: `${prefix}:${JSON.stringify(clamped)}`, floor };

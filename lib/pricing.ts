@@ -50,7 +50,7 @@
  *     30 days.
  */
 
-import { PLAN_IDS, TIER_LIMITS, planIdToTier, type Tier } from './tiers';
+import { TIER_LIMITS, planIdToTier, type Tier } from './tiers';
 
 /**
  * The confirmed Whop plan ids (Dennis 2026-08-11, corroborated against Whop's
@@ -354,11 +354,22 @@ export function reconcilePlanIdsWithBackend(): { tier: Tier; planId: string; res
     .filter((r) => r.resolvesTo !== r.tier);
 }
 
-/** Legacy ids kept mapped for grandfathered subscribers. Display only. */
+/**
+ * Legacy ids kept mapped for grandfathered subscribers. Display only.
+ *
+ * ⚠️ PIXEL (2026-08-17, dispatch forge/pricing-trial-limited): this file's
+ * storefront copy (PLAN_TIERS / FEATURE_MATRIX / CONFIRMED_PLAN_IDS) still shows
+ * the OLD 3-plan pricing ($6/$7/$9) and is YOUR surface to reshape for the
+ * $5-promoted / $7-hidden / limited-trial page. This map is only sourced off
+ * CONFIRMED_PLAN_IDS (display ids) now that the backend `PLAN_IDS` shape changed
+ * to the two purchasable ids — see lib/tiers-core.js for the authoritative
+ * entitlement mapping ($5 plan_CGlYdJJr3Btlu → plus, $7 plan_IvKRyvHtl4Q8w →
+ * pro, and the grandfathered/hidden ids).
+ */
 export const LEGACY_PLAN_IDS: Readonly<Record<string, Tier>> = {
-  [PLAN_IDS.solo]: 'solo',
-  [PLAN_IDS.plus]: 'plus',
-  [PLAN_IDS.pro]: 'pro',
+  [CONFIRMED_PLAN_IDS.solo]: 'solo',
+  [CONFIRMED_PLAN_IDS.plus]: 'plus',
+  [CONFIRMED_PLAN_IDS.pro]: 'pro',
 };
 
 // ───────────────────────────────────────────────────────────────────────────
