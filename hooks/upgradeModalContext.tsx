@@ -2,7 +2,8 @@
 
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import { useEntitlement, type Entitlement } from '@/hooks/useEntitlement';
-import { UpgradeModal, type UpgradeReason } from '@/components/UpgradeModal';
+import { UpgradeModal, type LimitContext } from '@/components/UpgradeModal';
+import type { UpgradePath } from '@/lib/tiers';
 
 // ---------------------------------------------------------------------------
 // UpgradeModalProvider — one shared entitlement read + one upgrade-modal
@@ -29,8 +30,14 @@ interface UpgradeModalContextValue {
   error: boolean;
   /** Refetch the shared entitlement (e.g. after an upgrade). */
   refetchEntitlement: () => void;
-  /** Open the pricing/upgrade modal, optionally tagged with why it opened. */
-  openUpgrade: (reason?: UpgradeReason) => void;
+  /**
+   * Open the upgrade prompt. `context` names which limit was hit (descriptive
+   * line only). `upgradeOverride` lets a 409 handler pass the freshest server
+   * `upgrade` signal; when omitted, the modal uses the shared entitlement's
+   * `upgrade`. The PROMPT (activate-$5 vs upgrade-$7) is always the server's
+   * choice — never guessed here.
+   */
+  openUpgrade: (context?: LimitContext, upgradeOverride?: UpgradePath) => void;
   /** Close the modal. */
   closeUpgrade: () => void;
 }
@@ -51,10 +58,13 @@ const UpgradeModalContext = createContext<UpgradeModalContextValue>(DEFAULT_VALU
 export function UpgradeModalProvider({ children }: { children: React.ReactNode }) {
   const { entitlement, loading, error, refetch } = useEntitlement();
   const [open, setOpen] = useState(false);
-  const [reason, setReason] = useState<UpgradeReason>(undefined);
+  const [context, setContext] = useState<LimitContext>(undefined);
+  // An explicit upgrade signal from a 409 body, if the opener supplied one.
+  const [upgradeOverride, setUpgradeOverride] = useState<UpgradePath | null>(null);
 
-  const openUpgrade = useCallback((r?: UpgradeReason) => {
-    setReason(r);
+  const openUpgrade = useCallback((c?: LimitContext, override?: UpgradePath) => {
+    setContext(c);
+    setUpgradeOverride(override ?? null);
     setOpen(true);
   }, []);
 
@@ -78,8 +88,8 @@ export function UpgradeModalProvider({ children }: { children: React.ReactNode }
       <UpgradeModal
         open={open}
         onClose={closeUpgrade}
-        currentTier={entitlement?.tier ?? null}
-        reason={reason}
+        upgrade={upgradeOverride ?? entitlement?.upgrade ?? null}
+        context={context}
       />
     </UpgradeModalContext.Provider>
   );
