@@ -21,6 +21,7 @@
     android:layout_height="wrap_content"
     android:orientation="horizontal"
     android:gravity="center_vertical"
+    android:minHeight="56dp"
     android:background="@drawable/bg_url_block"
     android:paddingStart="@dimen/space_12"
     android:paddingEnd="@dimen/space_12"
@@ -28,13 +29,22 @@
     android:paddingBottom="@dimen/space_12"
     android:layout_marginBottom="@dimen/space_8">
 
-    <View
+    <!-- Status glyph. A TextView (not a bare coloured dot) so status is
+         conveyed by SHAPE — ✓ granted / ✕ missing / ! optional — and NOT
+         by colour alone. Glyph char + colour are both set in
+         MainActivity.renderChecklist. 24dp box = comfortably legible and
+         keeps the leading column aligned. -->
+    <TextView
         android:id="@+id/permStatusIcon"
-        android:layout_width="@dimen/dot_size"
-        android:layout_height="@dimen/dot_size"
-        android:background="@drawable/status_dot"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:gravity="center"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:includeFontPadding="false"
         android:layout_marginEnd="@dimen/space_12"
-        android:importantForAccessibility="no" />
+        android:importantForAccessibility="no"
+        tools:text="✓" />
 
     <LinearLayout
         android:layout_width="0dp"

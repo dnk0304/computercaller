@@ -1695,23 +1695,51 @@ class MainActivity : AppCompatActivity() {
         val inflater = LayoutInflater.from(this)
         for (item in items) {
             val row = inflater.inflate(R.layout.item_permission_status, container, false)
-            row.findViewById<TextView>(R.id.permTitle).text = item.displayName
-            row.findViewById<TextView>(R.id.permWhy).text = item.why
+            val titleView: TextView = row.findViewById(R.id.permTitle)
+            val whyView: TextView = row.findViewById(R.id.permWhy)
+            titleView.text = item.displayName
+            whyView.text = item.why
 
-            val (colorRes, badgeRes) = when (item.status) {
+            // colour + badge label + status GLYPH (shape, so meaning survives
+            // without colour) + spoken status phrase, all keyed off the ONE
+            // real status. There is deliberately no fourth "unverifiable"
+            // branch: every row rendered here is backed by a genuine check,
+            // so we never show a status the app can't actually confirm.
+            val (colorRes, badgeRes, glyphRes) = when (item.status) {
                 PermissionChecker.Status.GRANTED ->
-                    R.color.dot_live to R.string.perm_status_granted
+                    Triple(R.color.dot_live, R.string.perm_status_granted, R.string.perm_glyph_granted)
                 PermissionChecker.Status.MISSING_REQUIRED ->
-                    R.color.dot_failed to R.string.perm_status_missing_required
+                    Triple(R.color.dot_failed, R.string.perm_status_missing_required, R.string.perm_glyph_missing)
                 PermissionChecker.Status.MISSING_SOFT ->
-                    R.color.dot_waiting to R.string.perm_status_missing_soft
+                    Triple(R.color.dot_waiting, R.string.perm_status_missing_soft, R.string.perm_glyph_soft)
+            }
+            val a11yStatusRes = when (item.status) {
+                PermissionChecker.Status.GRANTED -> R.string.perm_a11y_granted
+                PermissionChecker.Status.MISSING_REQUIRED -> R.string.perm_a11y_missing
+                PermissionChecker.Status.MISSING_SOFT -> R.string.perm_a11y_soft
             }
             val color = ContextCompat.getColor(this, colorRes)
-            row.findViewById<View>(R.id.permStatusIcon).backgroundTintList =
-                ColorStateList.valueOf(color)
+
+            val statusIcon: TextView = row.findViewById(R.id.permStatusIcon)
+            statusIcon.text = getString(glyphRes)
+            statusIcon.setTextColor(color)
+
             val badge: TextView = row.findViewById(R.id.permStatusBadge)
             badge.text = getString(badgeRes)
             badge.setTextColor(color)
+
+            // A11y — announce the whole row as one unit ("{name}. {status}.
+            // {why}") and silence the child text views so TalkBack doesn't
+            // read the same content three times in fragments.
+            row.contentDescription = getString(
+                R.string.perm_row_cd,
+                item.displayName,
+                getString(a11yStatusRes),
+                item.why
+            )
+            titleView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            whyView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            badge.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
 
             // Tap a missing row to deep-link straight into the relevant
             // grant surface. Granted rows are non-interactive. Helpful

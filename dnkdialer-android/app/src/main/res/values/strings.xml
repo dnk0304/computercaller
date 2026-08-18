@@ -143,41 +143,47 @@
 
     <!-- Per-permission rows. Display name on top of each card,
          single-line "why we need this" below. -->
+    <!-- Trust copy (2026-08-18 review). This pane is the FIRST thing a new
+         user sees, and the SMS / call-log lines are exactly what a phone-
+         calling app has to EARN. Each "why" is plain-English and, for the
+         sensitive permissions, states plainly where the data goes: to the
+         user's OWN paired computer, never to us or a third party. Honest —
+         no capability is claimed that the app doesn't use. -->
     <string name="perm_name_notifications">Notifications</string>
-    <string name="perm_why_notifications">Show incoming-call alerts on your phone.</string>
+    <string name="perm_why_notifications">Alert you on your phone when a call or message needs you.</string>
 
     <string name="perm_name_notif_listener">Notification access</string>
-    <string name="perm_why_notif_listener">Mirror messaging app notifications to the web app.</string>
+    <string name="perm_why_notif_listener">Mirror messaging-app alerts (like WhatsApp) to your computer. Reads only the notification text, on your device.</string>
 
     <string name="perm_name_phone">Phone</string>
-    <string name="perm_why_phone">Place calls dialed from the web app.</string>
+    <string name="perm_why_phone">Place calls on your phone that you start from your computer.</string>
 
     <string name="perm_name_phone_state">Phone state</string>
-    <string name="perm_why_phone_state">Detect when a call connects or ends.</string>
+    <string name="perm_why_phone_state">Know when a call connects or ends so your computer stays in sync.</string>
 
     <string name="perm_name_answer">Answer calls</string>
-    <string name="perm_why_answer">Accept incoming calls from the web app UI.</string>
+    <string name="perm_why_answer">Answer incoming calls from your computer screen.</string>
 
     <string name="perm_name_contacts">Contacts</string>
-    <string name="perm_why_contacts">Match incoming callers to your saved names.</string>
+    <string name="perm_why_contacts">Show a caller\'s saved name instead of a bare number. Stays between your phone and your computer.</string>
 
     <string name="perm_name_call_log">Call logs</string>
-    <string name="perm_why_call_log">Sync recent calls to the web app.</string>
+    <string name="perm_why_call_log">Show your recent calls on your computer. Read-only — nothing is uploaded to us or shared.</string>
 
     <string name="perm_name_read_sms">Read SMS</string>
-    <string name="perm_why_read_sms">Show your SMS threads in the web app.</string>
+    <string name="perm_why_read_sms">Show your texts on your computer. They go only to your paired computer — never to us or anyone else.</string>
 
     <string name="perm_name_send_sms">Send SMS</string>
-    <string name="perm_why_send_sms">Send SMS from your computer.</string>
+    <string name="perm_why_send_sms">Send a text from your computer using your own phone number.</string>
 
     <string name="perm_name_receive_sms">Receive SMS</string>
-    <string name="perm_why_receive_sms">Forward incoming SMS to the web app.</string>
+    <string name="perm_why_receive_sms">Show new texts on your computer the moment they arrive.</string>
 
     <string name="perm_name_camera">Camera</string>
-    <string name="perm_why_camera">Scan QR codes for pairing.</string>
+    <string name="perm_why_camera">Optional. Not needed for the current pairing method — you can leave this off.</string>
 
     <string name="perm_name_battery">Battery — don\'t optimize</string>
-    <string name="perm_why_battery">Samsung-specific. Keeps the connection alive when the screen is off.</string>
+    <string name="perm_why_battery">Lets the connection keep running while your screen is off. On Samsung phones especially, this prevents dropouts.</string>
 
     <string name="perm_name_auto_revoke">Keep permissions when unused</string>
     <string name="perm_why_auto_revoke">Stops Android from silently revoking call/SMS access if the app sits in the background for days.</string>
@@ -332,10 +338,26 @@
     <!-- with ✓ green / ✗ red / ⚠ amber.                      -->
     <!-- =================================================== -->
     <string name="perm_status_granted">Granted</string>
-    <string name="perm_status_missing_required">Required</string>
+    <string name="perm_status_missing_required">Missing</string>
     <string name="perm_status_missing_soft">Optional</string>
     <string name="perm_continue_button">Done</string>
     <string name="perm_done_button">Done</string>
+
+    <!-- Status glyphs — carry the granted/missing meaning by SHAPE, not just
+         colour, so the row is readable to colour-blind users and reinforces
+         the coloured badge. checkmark = granted, cross = missing-required,
+         exclamation = optional-not-granted. -->
+    <string name="perm_glyph_granted">✓</string>
+    <string name="perm_glyph_missing">✕</string>
+    <string name="perm_glyph_soft">!</string>
+
+    <!-- TalkBack row descriptions. Rendered onto the whole row so a screen
+         reader announces "{name}. {status}. {why}" as one unit instead of
+         three disconnected fragments. -->
+    <string name="perm_a11y_granted">Granted</string>
+    <string name="perm_a11y_missing">Required, not yet granted. Double-tap to fix.</string>
+    <string name="perm_a11y_soft">Optional, not granted. Double-tap to set up.</string>
+    <string name="perm_row_cd">%1$s. %2$s %3$s</string>
 
     <!-- Warn-and-continue (revision 2026-08-18). "Done" is always enabled;
          tapping it while a REQUIRED permission is missing pops this dialog
