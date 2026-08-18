@@ -27,6 +27,7 @@ import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -69,6 +70,37 @@ class MainActivity : AppCompatActivity() {
      * the polling loop. See [onRelayPhaseChanged] in onServiceConnected.
      */
     private enum class ConnState { LIVE, WAITING, IDLE, CONNECTING, FAILED }
+
+    /**
+     * Warn-and-continue revision (2026-08-18) — the permissions pane is ONE
+     * reusable component reached two ways:
+     *   GATE     — setup / required-missing-at-launch. "Done" is always
+     *              enabled; tapping it while a REQUIRED item is missing pops
+     *              the "continue anyway?" dialog (never a hard gate).
+     *   SETTINGS — persistent post-login entry (permissionsStatusButton on
+     *              the main pane). Same list, same tap-to-fix, but "Done"
+     *              just returns to the main pane with no dialog.
+     *
+     * Only meaningful while [inPermissionsRequiredPane] is true.
+     */
+    private enum class PermsMode { GATE, SETTINGS }
+    private var permsMode: PermsMode = PermsMode.GATE
+
+    /**
+     * Back handling for the SETTINGS-mode permissions screen. Enabled only
+     * while the user is viewing the permissions list via the persistent
+     * post-login entry, so Back returns to the main pane instead of leaving
+     * the app. Disabled everywhere else, so GATE-mode/main-pane Back keeps
+     * its default behaviour (warn-and-continue never traps). Uses the
+     * AndroidX dispatcher so it works with predictive/gesture back.
+     */
+    private val settingsBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            android.util.Log.d("MainActivity", "Back (settings mode) — returning to main pane")
+            grantAllInProgress = false
+            enterMainPaneAfterPerms()
+        }
+    }
 
     private var phoneService: PhoneService? = null
     private var serviceBound = false
@@ -351,6 +383,10 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Register the settings-mode back handler once. It stays disabled
+        // until the user opens the permissions list from the main pane.
+        onBackPressedDispatcher.addCallback(this, settingsBackCallback)
+
         // Dispatch #28 (2026-05-24) — first-launch sign-in gate. Before any
         // permission audit, check we have a phoneToken stored. Without one
         // there is no relay room to join, so showing the permissions pane
@@ -380,7 +416,8 @@ class MainActivity : AppCompatActivity() {
         val missing = PermissionChecker.checkAll(this)
         val runtimeMissing = missing.any { it.kind == PermissionChecker.Kind.RUNTIME }
         if (runtimeMissing) {
-            android.util.Log.d("MainActivity", "onCreate: runtime permissions missing (${missing.filter { it.kind == PermissionChecker.Kind.RUNTIME }.map { it.id }}) — showing blocking pane")
+            android.util.Log.d("MainActivity", "onCreate: runtime permissions missing (${missing.filter { it.kind == PermissionChecker.Kind.RUNTIME }.map { it.id }}) — showing setup pane")
+            permsMode = PermsMode.GATE
             renderPermissionsRequiredPane(missing)
             return
         }
@@ -406,6 +443,44 @@ class MainActivity : AppCompatActivity() {
             return
         }
         mainPaneInitialized = true
+        wireMainPaneView()
+
+        // Auto-start flow: request battery exemption then start the
+        // service. Permissions were already audited via the
+        // permissions-required pane gate in onCreate, so we don't need
+        // to redundantly re-request them here.
+        if (hasPermissions()) {
+            android.util.Log.d("MainActivity", "Permissions already granted")
+
+            if (!isBatteryOptimizationDisabled()) {
+                android.util.Log.d("MainActivity", "Requesting battery optimization exemption")
+                statusText.text = getString(R.string.status_battery_request)
+                setStatusVisual(ConnState.WAITING)
+                requestBatteryOptimizationExemption()
+            } else {
+                android.util.Log.d("MainActivity", "Battery optimization already disabled, starting service")
+                statusText.text = getString(R.string.status_connecting)
+                setStatusVisual(ConnState.WAITING)
+                startPhoneService()
+            }
+        } else {
+            android.util.Log.d("MainActivity", "Permissions not granted, requesting automatically")
+            statusText.text = getString(R.string.status_perms_requesting)
+            setStatusVisual(ConnState.IDLE)
+            requestPermissions()
+        }
+    }
+
+    /**
+     * Inflate + wire the main-pane views and their click listeners.
+     * Extracted from [initializeMainPane] so it can be re-run when we
+     * return to the main pane from the Settings-mode permissions screen
+     * ([enterMainPaneAfterPerms]) WITHOUT re-triggering the one-time
+     * service auto-start block (which lives in [initializeMainPane]).
+     * Re-inflating rebinds every lateinit view + listener, so it is
+     * safe to call repeatedly.
+     */
+    private fun wireMainPaneView() {
         inPermissionsRequiredPane = false
         setContentView(R.layout.activity_main)
 
@@ -560,29 +635,12 @@ class MainActivity : AppCompatActivity() {
         // hint pointing the user at the vendor Battery/Auto-launch toggles.
         setupColorOsHint()
 
-        // Auto-start flow: request battery exemption then start the
-        // service. Permissions were already audited via the
-        // permissions-required pane gate in onCreate, so we don't need
-        // to redundantly re-request them here.
-        if (hasPermissions()) {
-            android.util.Log.d("MainActivity", "Permissions already granted")
-
-            if (!isBatteryOptimizationDisabled()) {
-                android.util.Log.d("MainActivity", "Requesting battery optimization exemption")
-                statusText.text = getString(R.string.status_battery_request)
-                setStatusVisual(ConnState.WAITING)
-                requestBatteryOptimizationExemption()
-            } else {
-                android.util.Log.d("MainActivity", "Battery optimization already disabled, starting service")
-                statusText.text = getString(R.string.status_connecting)
-                setStatusVisual(ConnState.WAITING)
-                startPhoneService()
-            }
-        } else {
-            android.util.Log.d("MainActivity", "Permissions not granted, requesting automatically")
-            statusText.text = getString(R.string.status_perms_requesting)
-            setStatusVisual(ConnState.IDLE)
-            requestPermissions()
+        // Persistent Permissions & status entry (revision 2026-08-18).
+        // Opens the SAME permissions list in SETTINGS mode: live status +
+        // tap-to-fix, dismissible, no gate. Lets the user diagnose an
+        // Android/OEM revocation months after setup.
+        findViewById<Button>(R.id.permissionsStatusButton).setOnClickListener {
+            openPermissionsSettings()
         }
     }
 
@@ -1259,6 +1317,19 @@ class MainActivity : AppCompatActivity() {
         // so the user doesn't have to dive into the shade.
         registerPairingForegroundReceiver()
 
+        // SETTINGS-mode permissions screen (persistent post-login entry).
+        // This is NOT a gate — the user opened the list themselves to check
+        // status / fix something. Just re-render the live checklist so any
+        // grant they just made is reflected, and advance an in-flight Grant
+        // All flow. Never auto-exit; the user leaves via Done or Back.
+        if (inPermissionsRequiredPane && permsMode == PermsMode.SETTINGS) {
+            renderPermissionsRequiredPane(PermissionChecker.checkAll(this))
+            if (grantAllInProgress && !awaitingRuntimeResultForGrantAll) {
+                continueGrantAllFlow()
+            }
+            return
+        }
+
         // Samsung One UI auto-revoke defense — re-check on EVERY resume.
         // This catches two cases:
         //   1. User opened the app, was shown the permissions pane, went
@@ -1289,9 +1360,11 @@ class MainActivity : AppCompatActivity() {
             if (!inPermissionsRequiredPane) {
                 // We were on the main pane — Android revoked a RUNTIME
                 // permission in the background. Tear down the service-bound
-                // state and switch to the blocking pane.
+                // state and switch to the setup pane. Not a trap: "Done" is
+                // always enabled (warn-and-continue).
                 handleRevocationMidSession()
             }
+            permsMode = PermsMode.GATE
             renderPermissionsRequiredPane(missing)
 
             // Round 8 — if a Grant All flow is in progress and we're
@@ -1311,9 +1384,9 @@ class MainActivity : AppCompatActivity() {
         // Otherwise (already on main pane), continue with the normal
         // onResume flow that was here before.
         if (inPermissionsRequiredPane) {
-            android.util.Log.d("MainActivity", "onResume: all permissions granted — playing success animation")
+            android.util.Log.d("MainActivity", "onResume: all runtime permissions granted — playing success animation")
             grantAllInProgress = false
-            playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+            playSuccessAnimationThen { enterMainPaneAfterPerms() }
             return
         }
 
@@ -1400,6 +1473,67 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Open the permissions screen in SETTINGS mode from the main pane's
+     * persistent "Permissions & status" button. Same list, same tap-to-fix,
+     * but "Done" returns here with no dialog (see [renderPermissionsRequiredPane]).
+     */
+    private fun openPermissionsSettings() {
+        android.util.Log.d("MainActivity", "Permissions & status tapped — opening settings-mode pane")
+        permsMode = PermsMode.SETTINGS
+        settingsBackCallback.isEnabled = true
+        renderPermissionsRequiredPane(PermissionChecker.checkAll(this))
+    }
+
+    /**
+     * Leave the permissions pane and (re)enter the main pane. Handles both
+     * cases:
+     *   - First run / not yet initialized → run the one-time
+     *     [initializeMainPane] (inflate + service auto-start).
+     *   - Already initialized (returning from SETTINGS mode, or after a
+     *     mid-session grant) → re-inflate the view via [wireMainPaneView]
+     *     WITHOUT re-firing the battery/service auto-start block, then let
+     *     [runMainPaneOnResume] rebind/repaint (its guards no-op when the
+     *     service is already bound).
+     */
+    private fun enterMainPaneAfterPerms() {
+        permsMode = PermsMode.GATE
+        settingsBackCallback.isEnabled = false
+        if (!mainPaneInitialized) {
+            initializeMainPane()
+        } else {
+            wireMainPaneView()
+        }
+        runMainPaneOnResume()
+    }
+
+    /**
+     * Warn-and-continue dialog (revision 2026-08-18). Shown when the user
+     * taps "Done" in GATE mode while one or more REQUIRED permissions are
+     * still missing. Names each missing item; [Continue anyway] proceeds to
+     * the main pane, [Go back and fix] just dismisses. Never a hard gate.
+     */
+    private fun showWarnContinueDialog(
+        missingRequired: List<PermissionChecker.PermissionStatusItem>
+    ) {
+        val names = missingRequired.joinToString("\n") { "•  ${it.displayName}" }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.perms_warn_dialog_title)
+            .setMessage(getString(R.string.perms_warn_dialog_message, names))
+            .setPositiveButton(R.string.perms_warn_continue) { d, _ ->
+                d.dismiss()
+                android.util.Log.d(
+                    "MainActivity",
+                    "Continue anyway — proceeding with missing required: ${missingRequired.map { it.id }}"
+                )
+                grantAllInProgress = false
+                playSuccessAnimationThen { enterMainPaneAfterPerms() }
+            }
+            .setNegativeButton(R.string.perms_warn_goback) { d, _ -> d.dismiss() }
+            .setCancelable(true)
+            .show()
+    }
+
+    /**
      * Inflate / refresh the permissions-required pane (Round 8 — Grant
      * All flow). Idempotent — safe to call repeatedly.
      *
@@ -1438,27 +1572,56 @@ class MainActivity : AppCompatActivity() {
         val statusItems = PermissionChecker.checkAllWithStatus(this)
         renderChecklist(checklistList, statusItems)
 
+        // Mode-specific subtitle. SETTINGS mode is informational; GATE mode
+        // is the one-tap setup framing.
+        findViewById<TextView>(R.id.permsSubtitle).text = getString(
+            if (permsMode == PermsMode.SETTINGS) R.string.perms_settings_subtitle
+            else R.string.perms_subtitle
+        )
+
         // Primary CTA — Grant All. Kicks off the full sequence.
         val grantAllButton: Button = findViewById(R.id.permsGrantAllButton)
         grantAllButton.setOnClickListener {
             startGrantAllFlow(runtimeMissing, specialMissing)
         }
 
-        // v18 — Continue button. Enabled iff every REQUIRED permission
-        // is GRANTED. SOFT misses are tolerated (the user can grant
-        // them later from app settings; reliability may degrade but
-        // the core flow works). Disabled state mutes opacity so the
-        // user can SEE it's not actionable yet without it disappearing.
+        // Done / Continue button (revision 2026-08-18 — warn-and-continue).
+        // ALWAYS enabled. Behaviour depends on mode:
+        //   GATE     — if every REQUIRED item is granted, proceed straight
+        //              through (no dialog). If any REQUIRED item is missing,
+        //              pop the "continue anyway?" dialog naming the missing
+        //              items. Never a hard block.
+        //   SETTINGS — purely a "close" affordance; return to the main pane
+        //              with no dialog (the user came here to check/fix, not
+        //              to pass a gate).
         val continueButton: Button = findViewById(R.id.permsContinueButton)
-        val anyRequiredMissing = statusItems.any {
-            it.status == PermissionChecker.Status.MISSING_REQUIRED
-        }
-        continueButton.isEnabled = !anyRequiredMissing
-        continueButton.alpha = if (anyRequiredMissing) 0.4f else 1.0f
+        continueButton.isEnabled = true
+        continueButton.alpha = 1.0f
+        continueButton.text = getString(
+            if (permsMode == PermsMode.SETTINGS) R.string.perm_done_button
+            else R.string.perm_continue_button
+        )
         continueButton.setOnClickListener {
-            android.util.Log.d("MainActivity", "Continue tapped — required permissions satisfied")
-            grantAllInProgress = false
-            playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+            if (permsMode == PermsMode.SETTINGS) {
+                android.util.Log.d("MainActivity", "Done tapped (settings mode) — returning to main pane")
+                grantAllInProgress = false
+                enterMainPaneAfterPerms()
+                return@setOnClickListener
+            }
+            val missingRequired = statusItems.filter {
+                it.status == PermissionChecker.Status.MISSING_REQUIRED
+            }
+            if (missingRequired.isEmpty()) {
+                android.util.Log.d("MainActivity", "Done tapped — all required granted, proceeding")
+                grantAllInProgress = false
+                playSuccessAnimationThen { enterMainPaneAfterPerms() }
+            } else {
+                android.util.Log.d(
+                    "MainActivity",
+                    "Done tapped with required missing (${missingRequired.map { it.id }}) — warn dialog"
+                )
+                showWarnContinueDialog(missingRequired)
+            }
         }
 
         // "I've granted everything — re-check" button.
@@ -1487,7 +1650,7 @@ class MainActivity : AppCompatActivity() {
 
             if (now.isEmpty()) {
                 grantAllInProgress = false
-                playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+                playSuccessAnimationThen { enterMainPaneAfterPerms() }
             } else if (!stillRuntimeMissing) {
                 // Only soft (SPECIAL) entries remain — let the user through.
                 android.util.Log.d(
@@ -1500,7 +1663,7 @@ class MainActivity : AppCompatActivity() {
                     R.string.perms_continue_anyway_hint,
                     Toast.LENGTH_LONG
                 ).show()
-                playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+                playSuccessAnimationThen { enterMainPaneAfterPerms() }
             } else {
                 // Real blockers still missing — re-render and keep them here.
                 android.util.Log.d(
@@ -1638,7 +1801,7 @@ class MainActivity : AppCompatActivity() {
         if (now.isEmpty()) {
             android.util.Log.d("MainActivity", "Grant All complete — all permissions resolved")
             grantAllInProgress = false
-            playSuccessAnimationThen { initializeMainPane(); runMainPaneOnResume() }
+            playSuccessAnimationThen { enterMainPaneAfterPerms() }
             return
         }
 

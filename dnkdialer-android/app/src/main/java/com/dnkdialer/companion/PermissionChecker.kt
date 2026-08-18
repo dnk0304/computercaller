@@ -97,13 +97,41 @@ object PermissionChecker {
      *                          reliability hardening, not core function).
      *                          Renders ⚠ amber. Does NOT block Continue.
      *
-     * "REQUIRED" here means "Continue can't proceed without it". The
-     * triage matches the v18 spec: Phone, Contacts, SMS triplet are the
-     * real blockers; everything else (battery exemption, notification
-     * listener, notification post permission, auto-revoke whitelist,
-     * camera) is SOFT.
+     * "REQUIRED" here means "core to running smoothly — warn if missing".
+     * Under the warn-and-continue model it drives the confirmation dialog,
+     * not a hard gate. The phone/contacts/call-log/SMS runtime grants plus
+     * POST_NOTIFICATIONS, Notification-listener and Battery-exemption are
+     * REQUIRED; camera, bluetooth and the auto-revoke whitelist are SOFT.
      */
     enum class Status { GRANTED, MISSING_REQUIRED, MISSING_SOFT }
+
+    /**
+     * Canonical REQUIRED set — the single source of truth for which
+     * checklist rows count as "core to running smoothly" and therefore
+     * trigger the warn-and-continue dialog when missing. Everything NOT in
+     * this set is SOFT (never warns). [statusItem] derives each row's
+     * required/soft classification from membership here, so the contract is
+     * defined in exactly one place and can be asserted in a pure unit test
+     * (see PermissionCheckerRequiredSetTest).
+     *
+     * Kept as stable string ids (matching the row ids in [checkAllWithStatus]
+     * / [checkAll]) rather than Manifest constants because two members
+     * (notification_listener, battery_optimization) are special-access grants
+     * with no Manifest permission constant.
+     */
+    val REQUIRED_PERMISSION_IDS: Set<String> = setOf(
+        "post_notifications",
+        "notification_listener",
+        "call_phone",
+        "read_phone_state",
+        "answer_phone_calls",
+        "read_contacts",
+        "read_call_log",
+        "read_sms",
+        "send_sms",
+        "receive_sms",
+        "battery_optimization",
+    )
 
     /**
      * One row in the live-status checklist. Mirrors [MissingPermission]'s
@@ -130,9 +158,14 @@ object PermissionChecker {
      * Ordering matches [checkAll] — most-critical-first — so granted and
      * missing rows interleave in the natural reading order.
      *
-     * REQUIRED set (blocks "Continue" button when missing): CALL_PHONE,
-     * READ_PHONE_STATE, ANSWER_PHONE_CALLS, READ_CONTACTS, READ_CALL_LOG,
-     * READ_SMS, SEND_SMS, RECEIVE_SMS. Everything else is SOFT.
+     * REQUIRED set (warn-and-continue: a missing REQUIRED item triggers the
+     * "it may not work properly … continue anyway?" dialog on Done; it never
+     * hard-blocks): POST_NOTIFICATIONS, Notification-listener access,
+     * CALL_PHONE, READ_PHONE_STATE, ANSWER_PHONE_CALLS, READ_CONTACTS,
+     * READ_CALL_LOG, READ_SMS, SEND_SMS, RECEIVE_SMS, Battery-optimization
+     * exemption. OPTIONAL/SOFT (never warns): CAMERA, BLUETOOTH_CONNECT,
+     * auto-revoke whitelist, and any OEM auto-start/background toggle that
+     * can't be read programmatically (surfaced as guidance only).
      */
     fun checkAllWithStatus(context: Context): List<PermissionStatusItem> {
         val items = mutableListOf<PermissionStatusItem>()
@@ -145,7 +178,6 @@ object PermissionChecker {
                 context,
                 id = "post_notifications",
                 granted = isGranted(context, Manifest.permission.POST_NOTIFICATIONS),
-                requiredWhenMissing = false,
                 displayNameRes = R.string.perm_name_notifications,
                 whyRes = R.string.perm_why_notifications,
                 missingIntent = appDetailsIntent(context),
@@ -158,7 +190,6 @@ object PermissionChecker {
             context,
             id = "notification_listener",
             granted = isNotificationListenerEnabled(context),
-            requiredWhenMissing = false,
             displayNameRes = R.string.perm_name_notif_listener,
             whyRes = R.string.perm_why_notif_listener,
             missingIntent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
@@ -171,7 +202,6 @@ object PermissionChecker {
             context,
             id = "call_phone",
             granted = isGranted(context, Manifest.permission.CALL_PHONE),
-            requiredWhenMissing = true,
             displayNameRes = R.string.perm_name_phone,
             whyRes = R.string.perm_why_phone,
             missingIntent = appDetailsIntent(context),
@@ -180,7 +210,6 @@ object PermissionChecker {
             context,
             id = "read_phone_state",
             granted = isGranted(context, Manifest.permission.READ_PHONE_STATE),
-            requiredWhenMissing = true,
             displayNameRes = R.string.perm_name_phone_state,
             whyRes = R.string.perm_why_phone_state,
             missingIntent = appDetailsIntent(context),
@@ -189,7 +218,6 @@ object PermissionChecker {
             context,
             id = "answer_phone_calls",
             granted = isGranted(context, Manifest.permission.ANSWER_PHONE_CALLS),
-            requiredWhenMissing = true,
             displayNameRes = R.string.perm_name_answer,
             whyRes = R.string.perm_why_answer,
             missingIntent = appDetailsIntent(context),
@@ -200,7 +228,6 @@ object PermissionChecker {
             context,
             id = "read_contacts",
             granted = isGranted(context, Manifest.permission.READ_CONTACTS),
-            requiredWhenMissing = true,
             displayNameRes = R.string.perm_name_contacts,
             whyRes = R.string.perm_why_contacts,
             missingIntent = appDetailsIntent(context),
@@ -211,7 +238,6 @@ object PermissionChecker {
             context,
             id = "read_call_log",
             granted = isGranted(context, Manifest.permission.READ_CALL_LOG),
-            requiredWhenMissing = true,
             displayNameRes = R.string.perm_name_call_log,
             whyRes = R.string.perm_why_call_log,
             missingIntent = appDetailsIntent(context),
@@ -222,7 +248,6 @@ object PermissionChecker {
             context,
             id = "read_sms",
             granted = isGranted(context, Manifest.permission.READ_SMS),
-            requiredWhenMissing = true,
             displayNameRes = R.string.perm_name_read_sms,
             whyRes = R.string.perm_why_read_sms,
             missingIntent = appDetailsIntent(context),
@@ -231,7 +256,6 @@ object PermissionChecker {
             context,
             id = "send_sms",
             granted = isGranted(context, Manifest.permission.SEND_SMS),
-            requiredWhenMissing = true,
             displayNameRes = R.string.perm_name_send_sms,
             whyRes = R.string.perm_why_send_sms,
             missingIntent = appDetailsIntent(context),
@@ -240,7 +264,6 @@ object PermissionChecker {
             context,
             id = "receive_sms",
             granted = isGranted(context, Manifest.permission.RECEIVE_SMS),
-            requiredWhenMissing = true,
             displayNameRes = R.string.perm_name_receive_sms,
             whyRes = R.string.perm_why_receive_sms,
             missingIntent = appDetailsIntent(context),
@@ -253,7 +276,6 @@ object PermissionChecker {
             context,
             id = "camera",
             granted = isGranted(context, Manifest.permission.CAMERA),
-            requiredWhenMissing = false,
             displayNameRes = R.string.perm_name_camera,
             whyRes = R.string.perm_why_camera,
             missingIntent = appDetailsIntent(context),
@@ -271,7 +293,6 @@ object PermissionChecker {
                 context,
                 id = "bluetooth_connect",
                 granted = isGranted(context, Manifest.permission.BLUETOOTH_CONNECT),
-                requiredWhenMissing = false,
                 displayNameRes = R.string.perm_name_bluetooth_connect,
                 whyRes = R.string.perm_why_bluetooth_connect,
                 missingIntent = appDetailsIntent(context),
@@ -283,7 +304,6 @@ object PermissionChecker {
             context,
             id = "battery_optimization",
             granted = isBatteryOptimizationIgnored(context),
-            requiredWhenMissing = false,
             displayNameRes = R.string.perm_name_battery,
             whyRes = R.string.perm_why_battery,
             missingIntent = batteryOptimizationIntent(context),
@@ -302,7 +322,6 @@ object PermissionChecker {
                 context,
                 id = "auto_revoke",
                 granted = whitelisted,
-                requiredWhenMissing = false,
                 displayNameRes = R.string.perm_name_auto_revoke,
                 whyRes = R.string.perm_why_auto_revoke,
                 missingIntent = autoRevokeIntent(context),
@@ -322,14 +341,13 @@ object PermissionChecker {
         context: Context,
         id: String,
         granted: Boolean,
-        requiredWhenMissing: Boolean,
         displayNameRes: Int,
         whyRes: Int,
         missingIntent: Intent,
     ): PermissionStatusItem {
         val status = when {
             granted -> Status.GRANTED
-            requiredWhenMissing -> Status.MISSING_REQUIRED
+            REQUIRED_PERMISSION_IDS.contains(id) -> Status.MISSING_REQUIRED
             else -> Status.MISSING_SOFT
         }
         return PermissionStatusItem(

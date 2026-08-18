@@ -334,7 +334,21 @@
     <string name="perm_status_granted">Granted</string>
     <string name="perm_status_missing_required">Required</string>
     <string name="perm_status_missing_soft">Optional</string>
-    <string name="perm_continue_button">Continue</string>
+    <string name="perm_continue_button">Done</string>
+    <string name="perm_done_button">Done</string>
+
+    <!-- Warn-and-continue (revision 2026-08-18). "Done" is always enabled;
+         tapping it while a REQUIRED permission is missing pops this dialog
+         naming the missing items. Never a hard gate. -->
+    <string name="perms_warn_dialog_title">Some permissions are missing</string>
+    <string name="perms_warn_dialog_message">It may not work properly because some permissions are missing:\n\n%1$s\n\nContinue anyway?</string>
+    <string name="perms_warn_continue">Continue anyway</string>
+    <string name="perms_warn_goback">Go back and fix</string>
+
+    <!-- Persistent post-login entry point into the same permissions list
+         (Settings mode — informational + fixable, no dialog on exit). -->
+    <string name="perms_settings_entry">Permissions &amp; status</string>
+    <string name="perms_settings_subtitle">Check which permissions are granted and fix any that Android or your phone maker turned off. Tap any item to open its settings.</string>
 
     <!-- ============ Synced data viewer (Play verifiability fix, v40) ============ -->
     <!-- On-device view of the SMS + call log this app syncs. Lets a Play

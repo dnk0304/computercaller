@@ -269,6 +269,25 @@
             android:stateListAnimator="@null"
             android:layout_marginTop="@dimen/space_12" />
 
+        <!-- Persistent Permissions & status entry (revision 2026-08-18).
+             Opens the SAME permissions list used at setup, in Settings mode:
+             live granted/not-granted status + tap-to-fix, no gate, dismiss
+             any time. This is how the user diagnoses "Android revoked
+             something" or "my OEM killed background activity" after setup. -->
+        <Button
+            android:id="@+id/permissionsStatusButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/button_height_small"
+            android:text="@string/perms_settings_entry"
+            android:textSize="@dimen/text_body"
+            android:textAllCaps="false"
+            android:textColor="@color/text_secondary"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="0.02"
+            android:background="@drawable/bg_button_ghost"
+            android:stateListAnimator="@null"
+            android:layout_marginTop="@dimen/space_24" />
+
         <!-- ============ 4. Action stack ============ -->
         <!-- reconnectButton kept hidden for back-compat with the Kotlin
              field declaration (initializeMainPane findViewById still

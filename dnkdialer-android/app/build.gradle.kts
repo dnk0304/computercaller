@@ -309,8 +309,12 @@ android {
         // cosmetic downgrade below what's live). applicationId stays
         // com.dnkdialer.companion — the July-3 com.computercaller.app rename
         // never shipped; this AAB must match the live package to update it.
-        versionCode = 50
-        versionName = "1.0.27"
+        // v51 (1.0.28) 2026-08-18: warn-and-continue permissions screen +
+        // persistent post-login "Permissions & status" entry. versionCode 50
+        // (1.0.27) was the prior free integer; 51 is next. isMinifyEnabled
+        // stays false (see buildTypes.release below — v50 R8-strip incident).
+        versionCode = 51
+        versionName = "1.0.28"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client

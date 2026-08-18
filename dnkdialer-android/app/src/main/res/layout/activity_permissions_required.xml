@@ -159,7 +159,7 @@
                 android:letterSpacing="0.02"
                 android:background="@drawable/bg_button_primary"
                 android:stateListAnimator="@null"
-                android:enabled="false"
+                android:enabled="true"
                 android:layout_marginTop="@dimen/space_24" />
 
             <!-- Refresh — the safety net. Quieter ghost styling — the
