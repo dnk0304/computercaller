@@ -347,8 +347,15 @@ android {
             // -keep rules for Gson model classes, Java-WebSocket reflection
             // entry points, and the manifest-referenced services /
             // receivers / activities (all of which must survive R8).
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // v50 (1.0.27) FIX 2026-08-18: minify MUST stay false to match the
+            // live v46-v49 production lineage (un-minified, ~6MB). The merge into
+            // feature/saas-multiuser silently flipped these back to true, which
+            // R8-stripped the 13MB dex down to a 2.2MB single-dex build (v50 was
+            // 2.32MB vs live v49 6.81MB) and risks stripping reflection entry
+            // points (Java-WebSocket / Gson models / zxing / credential providers).
+            // Reverting to the v49 config restores full-code parity.
+            isMinifyEnabled = false
+            isShrinkResources = false
             // Wire the release signing config so `assembleRelease` produces
             // a signed APK ready for Play Console + sideload.
             if (keystorePropertiesFile.exists()) {
