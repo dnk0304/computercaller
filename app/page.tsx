@@ -361,7 +361,7 @@ export default function LandingPage() {
               <>
                 <Link
                   href="/auth/login"
-                  className="hidden sm:inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+                  className="inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
                 >
                   Log in
                 </Link>
@@ -371,7 +371,7 @@ export default function LandingPage() {
               <>
                 <Link
                   href="/auth/login"
-                  className="hidden sm:inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+                  className="inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
                 >
                   Sign in
                 </Link>
