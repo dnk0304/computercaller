@@ -4,6 +4,33 @@ import { db } from '@/lib/db';
 import { isEmailAllowed } from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 
+// Generic auth failure. ONE body + ONE status for every "you are not getting a
+// phoneToken" outcome on this route, so the response can never be used to probe
+// which emails exist. Mirrors /api/auth/login (fb1983b, the web enumeration fix).
+const INVALID_CREDENTIALS = { error: 'Invalid email or password' } as const;
+const INVALID_CREDENTIALS_STATUS = 401;
+
+// Real bcrypt hash of a random throwaway string. Burns the same ~work-factor-12
+// CPU on the no-stored-hash paths (no such user / waitlist reject / invite not
+// yet redeemed) so those requests don't return in ~1ms while a real wrong
+// password takes ~250ms — the timing oracle equalized on web. Same constant as
+// app/api/auth/login/route.ts by design.
+const TIMING_EQUALIZER_HASH =
+  '$2b$12$yDye2rho5BLIB3n.8sk/2eK0JfbOJjW8SLk9NigW05T65mI2qtDtK';
+
+/**
+ * Reject with the generic 401, having spent bcrypt time first so this path is
+ * indistinguishable from a wrong-password attempt by wall clock.
+ */
+async function genericAuthFailure(password: unknown): Promise<NextResponse> {
+  try {
+    await bcrypt.compare(typeof password === 'string' ? password : '', TIMING_EQUALIZER_HASH);
+  } catch {
+    // A malformed input must not change the response shape or leak a 500.
+  }
+  return NextResponse.json(INVALID_CREDENTIALS, { status: INVALID_CREDENTIALS_STATUS });
+}
+
 /**
  * Dispatch #28 (2026-05-24) — APK sign-in endpoint.
  *
@@ -39,11 +66,26 @@ export async function POST(req: NextRequest) {
     // as the web login. This is the interactive APK password login — gating it
     // does NOT touch the phoneToken bearer flow (which is not an interactive
     // login and stays working for Dennis's paired phone). See lib/auth.ts.
+    //
+    // Admin-provisioned exemption (2026-08-19, forge/apk-invitee-login) — mirrors
+    // /api/auth/login. A non-null User.invitedBy IS the allowlist decision an
+    // admin made deliberately (recorded on the row + AdminUserAudit), so an
+    // invited user can log into the Android app, not just the web. Auth-gate
+    // ONLY — grants no entitlement; billing is still the entitlement core's call.
+    //
+    // ANTI-ENUMERATION: every non-admitting outcome from here down returns the
+    // SAME generic 401 via genericAuthFailure with the same bcrypt cost. The old
+    // distinct `403 Sign-ups are closed` was an enumeration oracle (it told a
+    // prober "this email is not invited"); it is gone. LOGIN is not where a
+    // stranger learns the signup policy — /register is.
     if (!isEmailAllowed(email)) {
-      return NextResponse.json(
-        { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
-        { status: 403 },
-      );
+      const vouched = await db.user.findUnique({
+        where: { email: email.toLowerCase() },
+        select: { invitedBy: true },
+      });
+      if (!vouched?.invitedBy) {
+        return genericAuthFailure(password);
+      }
     }
 
     const user = await db.user.findUnique({
@@ -54,15 +96,19 @@ export async function POST(req: NextRequest) {
         passwordHash: true,
         emailVerified: true,
         phoneToken: true,
+        authProvider: true,
       },
     });
 
-    // Google-only account guard (dispatch #36, 2026-05-25). passwordHash
-    // is NULL for OAuth-only users. The APK currently has no Google sign-in
-    // path — surface a specific error so the user knows to set a password
-    // (via /auth/forgot-password, once that ships) rather than retrying
-    // with the same Google email + a guessed password forever.
-    if (user && user.passwordHash === null) {
+    // Google-only account guard (dispatch #36, 2026-05-25). NARROWED 2026-08-19
+    // to mirror the web enumeration fix: gate on authProvider === 'google', NOT
+    // on `passwordHash === null` alone. An admin-provisioned invitee has
+    // authProvider 'email' with a null hash until they redeem their invite link;
+    // the old check told them "this account uses Google" (wrong) and doubled as
+    // an enumeration signal. Now only genuine Google-only accounts land here;
+    // the residual "a Google account exists" leak is the accepted #36 trade-off,
+    // bounded to self-serve Google signups.
+    if (user && user.authProvider === 'google' && user.passwordHash === null) {
       return NextResponse.json(
         {
           error:
@@ -72,8 +118,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
-      return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 });
+    // An email-provider row with a null hash (invite issued, not yet redeemed)
+    // falls through to here and reads as an ordinary bad credential — no leak.
+    if (!user || !user.passwordHash) {
+      return genericAuthFailure(password);
+    }
+    if (!(await bcrypt.compare(password, user.passwordHash))) {
+      return NextResponse.json(INVALID_CREDENTIALS, { status: INVALID_CREDENTIALS_STATUS });
     }
 
     if (!user.emailVerified) {

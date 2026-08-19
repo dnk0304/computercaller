@@ -66,15 +66,30 @@ export async function POST(req: NextRequest) {
     const googleId = claims.sub;
 
     // Auth allowlist (2026-06-15). Block non-allowed Google emails BEFORE any
-    // find/link/create — critically blocking branch-c auto-create. 403 JSON
-    // (the APK shows a generic error). The phoneToken bearer flow is untouched.
-    // See lib/auth.ts isEmailAllowed.
+    // find/link/create — critically blocking branch-c auto-create. The phoneToken
+    // bearer flow is untouched. See lib/auth.ts isEmailAllowed.
+    //
+    // Admin-provisioned exemption (2026-08-19, forge/apk-invitee-login) — mirrors
+    // /api/auth/login. A non-null User.invitedBy IS a deliberate admin allowlist
+    // decision, so an invited user can also reach the app via Google. The lookup
+    // is only reachable AFTER verifyIdToken has proven the caller owns this exact
+    // email (aud + signature checked above), so it is not an enumeration oracle:
+    // an attacker cannot forge a token for someone else's address. Auth-gate ONLY
+    // — grants no entitlement.
+    //
+    // ANTI-ENUMERATION: a non-allowlisted, non-invited email returns the SAME
+    // generic 401 'Google sign-in failed' as a token-verification failure above,
+    // so the two are indistinguishable. The old distinct `403 Sign-ups are
+    // closed` is gone.
     if (!isEmailAllowed(email)) {
-      console.warn(`[APKGoogleLogin] Blocked non-allowlisted email: ${email}`);
-      return NextResponse.json(
-        { error: 'Sign-ups are closed — join the waitlist at computercaller.com' },
-        { status: 403 },
-      );
+      const vouched = await db.user.findUnique({
+        where: { email },
+        select: { invitedBy: true },
+      });
+      if (!vouched?.invitedBy) {
+        console.warn(`[APKGoogleLogin] Blocked non-allowlisted email: ${email}`);
+        return NextResponse.json({ error: 'Google sign-in failed' }, { status: 401 });
+      }
     }
 
     // Branch a — exact match on Google's stable subject ID wins.
