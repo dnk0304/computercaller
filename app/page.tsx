@@ -353,9 +353,20 @@ export default function LandingPage() {
           </nav>
           <div className="flex items-center gap-2">
             {WAITLIST_MODE ? (
-              // Waitlist mode: no public sign-in link, no register/trial link —
-              // the only header action is joining the waitlist.
-              <WaitlistCTA variant="nav" />
+              // Waitlist mode: no public register/trial link — the signup action
+              // is joining the waitlist. "Log in" IS shown (Dennis, 2026-08-19):
+              // existing/invited users need a way into the app from the homepage;
+              // the login route itself still enforces the waitlist auth gate, so
+              // this link admits nobody who isn't already allowed.
+              <>
+                <Link
+                  href="/auth/login"
+                  className="hidden sm:inline-flex px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+                >
+                  Log in
+                </Link>
+                <WaitlistCTA variant="nav" />
+              </>
             ) : (
               <>
                 <Link
