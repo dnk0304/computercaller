@@ -96,6 +96,18 @@ const nextConfig: NextConfig = {
         source: '/(.*)',
         headers: SECURITY_HEADERS,
       },
+      {
+        // GSC fix (2026-08-21): Google indexed woff2 font URLs under
+        // /_next/static/media/ as if they were pages. noindex the media
+        // folder (hashed fonts + imported assets) via X-Robots-Tag.
+        // Deliberately NOT robots.txt-disallowed: Googlebot must still
+        // FETCH /_next/static JS/CSS to render pages — this header only
+        // keeps the assets out of the index. CSS/JS live under
+        // /_next/static/css and /_next/static/chunks, NOT media, so
+        // rendering resources are unaffected by this rule.
+        source: '/_next/static/media/:path*',
+        headers: [{ key: 'X-Robots-Tag', value: 'noindex' }],
+      },
     ];
   },
 };
