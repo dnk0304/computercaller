@@ -10,6 +10,7 @@ import { TierBadge } from '@/components/TierBadge';
 import { PhoneModeShell } from '@/components/PhoneModeShell';
 import { SyncMenuButton } from '@/components/SyncMenuButton';
 import { ReconnectionPill } from '@/components/ReconnectionPill';
+import { TabConnectionTitle } from '@/components/TabConnectionTitle';
 import { SyncProgressBar } from '@/components/SyncProgressBar';
 import { CallQueueBand } from '@/components/CallQueueBand';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
@@ -222,6 +223,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 ConnectionStatus owns the green happy-path pill. Never blocks
                 an action; never a modal. */}
             <ReconnectionPill />
+            {/* Tab-title/favicon mirror of the same connection state (2026-08-21). */}
+            <TabConnectionTitle />
             {/* Phone Mode entry was here until dispatch #34 (2026-05-26) —
                 Dennis moved it into the ProfileMenu dropdown (right side of
                 header, under the avatar) so the chrome stays tighter and the
