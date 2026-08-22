@@ -45,7 +45,10 @@ import {
 import { MIN_PASSWORD, MAX_PASSWORD_BYTES } from '@/lib/passwordPolicy';
 
 const RL_WINDOW_MS = 15 * 60 * 1000;
-const RL_MAX = 10;
+// 5 / 15 min per user — this is an authed password-GUESSING oracle (each accepted
+// call runs bcrypt.compare against the real hash), so it must be no looser than
+// forgot-password's 5/15 min. Was 10; tightened per audit round 1 (Mi1).
+const RL_MAX = 5;
 const rlHits = new Map<string, number[]>();
 function rateLimited(key: string, nowMs: number = Date.now()): boolean {
   const cutoff = nowMs - RL_WINDOW_MS;

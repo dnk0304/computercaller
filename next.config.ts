@@ -97,6 +97,18 @@ const nextConfig: NextConfig = {
         headers: SECURITY_HEADERS,
       },
       {
+        // audit round 1, Mi2: /auth/set-password carries a live single-use
+        // reset token in its query string. The global policy is
+        // strict-origin-when-cross-origin, which still sends the ORIGIN on
+        // cross-site navigation and the full URL (path + query) on same-origin
+        // navigation — either can leak the token via Referer. Override to
+        // no-referrer for this path only so no navigation off this page ever
+        // carries the token. This entry sits AFTER the global block, so for the
+        // Referrer-Policy key it wins on /auth/set-password.
+        source: '/auth/set-password',
+        headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
+      },
+      {
         // GSC fix (2026-08-21): Google indexed woff2 font URLs under
         // /_next/static/media/ as if they were pages. noindex the media
         // folder (hashed fonts + imported assets) via X-Robots-Tag.

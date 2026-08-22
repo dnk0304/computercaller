@@ -15,13 +15,14 @@
  * is "the account exists AND emailVerified" — provider is deliberately NOT a
  * filter.
  *
- * NO USER ENUMERATION. The response is ALWAYS the same generic 200, whether or
- * not the email matched, whether or not a mail was sent, whether or not the send
- * failed. The DB lookup happens either way and the response never branches on
- * it, so neither the body nor the status can be used to probe which addresses
- * have accounts. (Timing is not perfectly constant — a matched account does an
- * extra token write + mail dispatch — but the mail send is fire-and-forgotten
- * off the response path so the wall-clock difference is bounded and small.)
+ * NO USER ENUMERATION. The response is ALWAYS the same generic 200, returned
+ * immediately and identically whether or not the email matched, whether or not a
+ * mail was sent, whether or not the send failed. Neither the body nor the status
+ * branches on the lookup. TIMING is also flat: the whole eligible-user branch —
+ * DB lookup, token mint, and mail dispatch — is fire-and-forgotten OFF the
+ * response path (see POST body), so a matched+verified account and an unknown
+ * address are wall-clock indistinguishable. Only the synchronous rate-limit
+ * bookkeeping runs before the return.
  *
  * DEFENCES
  *   • Rate limited per IP (5 / 15 min) — a public endpoint that writes a row and
@@ -101,27 +102,35 @@ export async function POST(req: NextRequest) {
         : null;
 
     if (email && !slidingLimited(emailHits, email, EMAIL_WINDOW_MS, EMAIL_MAX)) {
-      // Do the lookup unconditionally-shaped: eligible = exists AND emailVerified.
-      // Google-only accounts included on purpose (see header).
-      const user = await db.user.findUnique({
-        where: { email },
-        select: { id: true, emailVerified: true },
-      });
-
-      if (user && user.emailVerified) {
+      // TIMING: the entire eligible-user branch — DB lookup, token mint, and mail
+      // dispatch — is fire-and-forgotten OFF the response path. If any of it were
+      // awaited here, a matched+verified email would answer measurably slower than
+      // an unknown one, and that wall-clock gap is itself an enumeration oracle.
+      // Detaching it makes the response time independent of whether the account
+      // exists. Safe here because server.js is a long-lived Node process (not
+      // serverless) — the detached promise runs to completion after we respond.
+      void (async () => {
         try {
-          const { rawToken } = await issuePasswordSetToken(user.id, RESET_TTL_MS);
-          await sendPasswordResetEmail(email, rawToken);
+          // Eligible = exists AND emailVerified. Google-only accounts included on
+          // purpose (see header).
+          const user = await db.user.findUnique({
+            where: { email },
+            select: { id: true, emailVerified: true },
+          });
+          if (user && user.emailVerified) {
+            const { rawToken } = await issuePasswordSetToken(user.id, RESET_TTL_MS);
+            await sendPasswordResetEmail(email, rawToken);
+          }
         } catch (err) {
-          // A mint or mail failure must NOT change the response — logging it
-          // server-side is the only signal we allow ourselves. Returning a 500
-          // here would leak "this address exists and we tried to mail it".
-          console.error('[ForgotPassword] issue/send failed:', err);
+          // A lookup/mint/mail failure must NOT surface anywhere the caller can
+          // observe — logging server-side is the only signal we allow ourselves.
+          console.error('[ForgotPassword] async lookup/issue/send failed:', err);
         }
-      }
+      })().catch((err) => console.error('[ForgotPassword] async send failed', err));
     }
 
-    // Always the same answer.
+    // Always the same answer, returned immediately and identically on every path
+    // (unknown / unverified / eligible) — the send happens after this returns.
     return NextResponse.json(GENERIC_OK);
   } catch (e) {
     console.error('[ForgotPassword] POST error:', e);
