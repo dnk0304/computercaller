@@ -240,7 +240,7 @@ export function SetPasswordForm({ token }: { token: string }) {
           This link no longer works
         </h1>
         <p className="mt-1.5 text-slate-500 text-sm">
-          Invite links expire after a while, and each one works only once — so a
+          These links expire after a while, and each one works only once — so a
           link you have already used, or one that has been sitting in your inbox
           for too long, will land you here.
         </p>
@@ -250,8 +250,15 @@ export function SetPasswordForm({ token }: { token: string }) {
           </div>
         )}
         <p className="mt-6 text-slate-600 text-sm">
-          Ask an administrator to send you a new invite link, then open that one
-          instead.
+          You can{' '}
+          <Link
+            href="/auth/forgot-password"
+            className="font-medium text-blue-600 hover:text-blue-700 transition-colors"
+          >
+            request a fresh link
+          </Link>{' '}
+          and open that one instead. If you were invited by an administrator, ask
+          them to send you a new invite.
         </p>
         <div className="mt-6 text-center">
           <Link

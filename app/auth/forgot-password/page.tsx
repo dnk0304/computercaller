@@ -63,30 +63,56 @@ export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [phase, setPhase] = useState<'form' | 'sending' | 'sent'>('form');
   const [error, setError] = useState<string | null>(null);
+  // On the sent screen a "Send again" button re-POSTs the same email. Track its
+  // own in-flight + error state so a rate-limit there is handled gracefully
+  // without kicking the reader back to the form.
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
+  const [resentAt, setResentAt] = useState<number | null>(null);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setPhase('sending');
+  async function post(address: string): Promise<{ ok: boolean; error?: string }> {
     try {
       const res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: address }),
       });
-      if (res.ok) {
-        setPhase('sent');
-        return;
-      }
-      // 429 (rate limited) or 403 (CSRF) — surface a real error and let them retry.
+      if (res.ok) return { ok: true };
+      // 429 (rate limited) or 403 (CSRF) — surface the server's own words.
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
-      setError(data?.error ?? 'Something went wrong. Please try again.');
-      setPhase('form');
+      return { ok: false, error: data?.error ?? 'Something went wrong. Please try again.' };
     } catch {
-      setError('Network error. Please try again.');
-      setPhase('form');
+      return { ok: false, error: 'Network error. Please try again.' };
     }
+  }
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setPhase('sending');
+    const result = await post(email);
+    if (result.ok) {
+      setPhase('sent');
+      return;
+    }
+    setError(result.error ?? null);
+    setPhase('form');
+  }
+
+  async function onResend() {
+    setResendError(null);
+    setResending(true);
+    const result = await post(email);
+    setResending(false);
+    if (result.ok) {
+      setResentAt(Date.now());
+      return;
+    }
+    // Rate-limited resend: keep the reader on the sent screen, just tell them
+    // to wait. No enumeration risk — the message is about throttling, not the
+    // address.
+    setResendError(result.error ?? 'Please wait a short while before trying again.');
   }
 
   if (phase === 'sent') {
@@ -94,15 +120,49 @@ export default function ForgotPasswordPage() {
       <Shell>
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8 text-center">
           <div className="mx-auto w-12 h-12 rounded-xl bg-green-50 border border-green-100 flex items-center justify-center">
-            <CheckCircle2 className="w-6 h-6 text-green-600" />
+            <CheckCircle2 className="w-6 h-6 text-green-600" aria-hidden="true" />
           </div>
           <h1 className="mt-5 text-2xl font-semibold text-slate-900 tracking-tight">
             Check your email
           </h1>
           <p className="mt-3 text-slate-600 text-sm leading-relaxed">
-            If an account exists for that email, we&apos;ve sent a link to set your
-            password. The link expires in one hour.
+            If an account exists for that email, a link is on its way — check your
+            spam folder too. The link expires in one hour.
           </p>
+
+          {resentAt && (
+            <p
+              className="mt-4 text-sm text-emerald-700"
+              role="status"
+              aria-live="polite"
+            >
+              Sent again. Give it a minute to arrive.
+            </p>
+          )}
+          {resendError && (
+            <div className={`mt-4 text-left ${ALERT_CLASS}`} role="alert">
+              {resendError}
+            </div>
+          )}
+
+          <div className="mt-6">
+            <p className="text-sm text-slate-500">Didn&apos;t get it?</p>
+            <button
+              type="button"
+              onClick={onResend}
+              disabled={resending}
+              className="mt-2 inline-flex items-center justify-center gap-2 text-sm font-medium text-blue-600 hover:text-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 rounded"
+            >
+              {resending ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                  Sending…
+                </>
+              ) : (
+                'Send the email again'
+              )}
+            </button>
+          </div>
         </div>
       </Shell>
     );
@@ -112,13 +172,15 @@ export default function ForgotPasswordPage() {
     <Shell>
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-8">
         <div className="mx-auto w-12 h-12 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
-          <Mail className="w-6 h-6 text-blue-600" />
+          <Mail className="w-6 h-6 text-blue-600" aria-hidden="true" />
         </div>
         <h1 className="mt-5 text-2xl font-semibold text-slate-900 tracking-tight text-center">
-          Reset password
+          Reset or set your password
         </h1>
         <p className="mt-3 text-slate-600 text-sm leading-relaxed text-center">
-          Enter your email and we&apos;ll send you a link to set a new password.
+          Enter your email and we&apos;ll send you a link to choose a new password.
+          Sign in with Google? This works for you too — it adds a password so you
+          can also sign in with email.
         </p>
 
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
@@ -138,16 +200,20 @@ export default function ForgotPasswordPage() {
             />
           </div>
 
-          {error && <div className={ALERT_CLASS}>{error}</div>}
+          {error && (
+            <div className={ALERT_CLASS} role="alert">
+              {error}
+            </div>
+          )}
 
           <button type="submit" disabled={phase === 'sending'} className={PRIMARY_BUTTON_CLASS}>
             {phase === 'sending' ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                 Sending…
               </>
             ) : (
-              'Send reset link'
+              'Send the link'
             )}
           </button>
         </form>

@@ -12,10 +12,16 @@ import {
   clearDeviceLabelOverride,
 } from '@/lib/deviceLabel';
 // SyncSetupPanel is mounted in app/app/layout.tsx — no import needed here.
+import { SignInSecuritySection } from './SignInSecuritySection';
 
 interface UserData {
   id: string;
   email: string;
+  // hasPassword (2026-08-22, pixel/set-password): DERIVED boolean from
+  // /api/auth/me — true once the account has a passwordHash. Drives the
+  // "Sign-in & security" section's Set-vs-Change state. Chosen by the SERVER,
+  // never inferred client-side.
+  hasPassword?: boolean;
   // Bundle A (2026-05-28): phoneToken removed from /api/auth/me response
   // (Phase 4 fix L9 / C1). This page never rendered it (the comment near
   // line 287 explicitly says no phoneToken or pairing metadata is shown).
@@ -432,6 +438,14 @@ export default function SettingsPage() {
           </p>
         )}
       </section>
+
+      {/* Sign-in & security (dispatch pixel/set-password, 2026-08-22). Only
+          rendered when the SERVER told us has-password as a real boolean —
+          if the field is absent we show nothing rather than guess which form
+          is correct. Set-vs-Change is driven entirely by user.hasPassword. */}
+      {typeof user.hasPassword === 'boolean' && (
+        <SignInSecuritySection hasPassword={user.hasPassword} />
+      )}
 
       {/* Android companion app — Google Play only. Policy (Dennis,
           2026-07-09): NO APK is ever served from the web; the official
