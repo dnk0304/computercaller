@@ -31,7 +31,16 @@ export async function GET(req: NextRequest) {
     const user = await db.user.findUnique({
       where: { id: payload.userId },
       // isAdmin selected (2026-07-30) to derive the client admin signal below.
-      select: { id: true, email: true, emailVerified: true, isAdmin: true, subscription: true },
+      // passwordHash selected (2026-08-22, forge/set-password) ONLY to derive the
+      // boolean hasPassword below — the hash itself is stripped and NEVER returned.
+      select: {
+        id: true,
+        email: true,
+        emailVerified: true,
+        isAdmin: true,
+        passwordHash: true,
+        subscription: true,
+      },
     });
 
     if (!user) return NextResponse.json({ user: null }, { status: 401 });
@@ -42,7 +51,14 @@ export async function GET(req: NextRequest) {
     // boolean leaks no admin data. Overwrite the raw isAdmin with the computed
     // effective value on the returned object.
     const isAdmin = isAdminUser({ isAdmin: user.isAdmin, email: user.email });
-    return NextResponse.json({ user: { ...user, isAdmin } });
+    // hasPassword (2026-08-22, forge/set-password): a DERIVED boolean the UI uses
+    // to choose "Set a password" vs "Change password". The raw passwordHash is
+    // destructured OUT here and NEVER travels to the client — only the boolean does.
+    const { passwordHash, ...safeUser } = user;
+    void passwordHash;
+    return NextResponse.json({
+      user: { ...safeUser, isAdmin, hasPassword: passwordHash !== null },
+    });
   } catch {
     // Database not available (no DATABASE_URL in dev) — return null gracefully
     return NextResponse.json({ user: null }, { status: 401 });
