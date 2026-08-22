@@ -1,4 +1,5 @@
 import { Resend } from 'resend';
+import { buildSetPasswordUrl } from '@/lib/passwordSetToken';
 
 // Lazy Resend client. The constructor throws "Missing API key" if
 // `RESEND_API_KEY` is empty/undefined — which used to happen at module
@@ -100,7 +101,12 @@ export async function sendNewWaitlistAdminEmail(email: string) {
 }
 
 export async function sendPasswordResetEmail(email: string, token: string) {
-  const url = `${APP_URL}/auth/reset-password?token=${token}`;
+  // Build via the token core so the emailed link matches the redeem PAGE that
+  // actually exists (/auth/set-password). The old hardcoded /auth/reset-password
+  // pointed at a page that was never built — every reset link 404'd. (Fixed
+  // 2026-08-22, forge/set-password.) The reset TTL is RESET_TTL_MS = 1 hour, so
+  // the "expires in 1 hour" copy below is accurate.
+  const url = buildSetPasswordUrl(token, APP_URL);
   await getResend().emails.send({
     from: FROM,
     to: email,

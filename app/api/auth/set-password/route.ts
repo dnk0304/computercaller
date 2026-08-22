@@ -163,6 +163,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: INVALID_TOKEN }, { status: 400 });
     }
 
+    // Double-link the account (2026-08-22, forge/set-password). A Google-only
+    // user who redeems a set-password link now has BOTH a Google identity and a
+    // password, so flip authProvider 'google' → 'both' — the state the Google
+    // callback and apk-google-login already produce when they link the other
+    // way. Without it the apk-login guard (authProvider==='google' && no hash)
+    // would keep blocking the Android app even though a hash now exists.
+    //
+    // A guarded follow-up updateMany, NOT part of the atomic consume: the flip
+    // is idempotent and non-security-critical (the hash write is the critical
+    // atomic part). The WHERE pins authProvider:'google' so an 'email' or 'both'
+    // row is left untouched. A relay/DB hiccup here must not fail the redemption
+    // that already succeeded, so it is best-effort logged.
+    try {
+      await db.user.updateMany({
+        where: { id: consumed.userId, authProvider: 'google' },
+        data: { authProvider: 'both' },
+      });
+    } catch (err) {
+      console.error('[SetPassword] authProvider google→both flip failed:', err);
+    }
+
     // Setting a password is a credential change: any session that predates it
     // must die. consumePasswordSetToken already incremented sessionVersion (the
     // lazy kick); ask the relay to close any open browser socket for this user
