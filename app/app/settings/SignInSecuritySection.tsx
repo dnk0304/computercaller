@@ -15,7 +15,7 @@ import { passwordRules } from '@/lib/passwordPolicy';
  *            in. POST /api/auth/account/set-password { password }. No current
  *            password: the live session IS the authorization.
  *   change — an account that already has a password rotating it. POST
- *            /api/auth/account/change-password { currentPassword, password }.
+ *            /api/auth/account/change-password { currentPassword, newPassword }.
  *
  * SAFETY NET. `hasPassword` can be a beat stale (another tab just set one). The
  * server answers that race with a 409 — set-password 409 means "you already have
@@ -109,7 +109,7 @@ export function SignInSecuritySection({
         ? '/api/auth/account/set-password'
         : '/api/auth/account/change-password';
     const body =
-      mode === 'set' ? { password } : { currentPassword, password };
+      mode === 'set' ? { password } : { currentPassword, newPassword: password };
 
     try {
       const res = await fetch(url, {
