@@ -31,14 +31,24 @@
  * ─────────────────────────────────────────────────────────────────────────
  * AUTH CONTRACT (for the CRM backend)
  * ─────────────────────────────────────────────────────────────────────────
- *   Header:  Authorization: Bearer <CC_M2M_MINT_KEY>
+ *   Header:  Authorization: Bearer <credential>
+ *              where <credential> is EITHER
+ *                (A) a per-partner key `ccp_live_<keyId>.<secret>`  (SDK partners), or
+ *                (B) the legacy shared `CC_M2M_MINT_KEY`  (DEPRECATED — dnk-crm).
  *   Body:    { "ccUserId": "<the rep's CC user id>" }
  *
- *   401  → missing / malformed / wrong key (or the server has no key set:
- *          the M2M path is then disabled and fails closed, non-revealing).
+ *   401  → missing / malformed / wrong / revoked key, or suspended partner
+ *          (all collapse to one opaque 401; the legacy path is also disabled +
+ *          fails closed, non-revealing, if CC_M2M_MINT_KEY is unset).
+ *   403  → partner key lacks the 'call' scope (insufficient_scope), OR key OK but
+ *          ccUserId is not entitled (entitlement held — never bypassable).
+ *   429  → per-IP flood backstop, or per-partner rate limit exceeded.
  *   400  → missing / non-string ccUserId.
- *   403  → key OK but ccUserId is not entitled (entitlement held).
  *   200  → { ticket } — a 30 s relay-ticket, identical in shape to the browser mint.
+ *
+ * SDK-PKG-2 Phase 1 (2026-08-25): per-partner keys are DB-backed (Partner /
+ * PartnerApiKey), stored HASHED (SHA-256), scoped, and per-partner rate-limited.
+ * See lib/partnerKeys.ts. The legacy shared key stays a working fallback.
  *
  * SECURITY POSTURE:
  *   - CC_M2M_MINT_KEY is a TOP-TIER secret: >=32 bytes of randomness, TLS-only
@@ -60,7 +70,19 @@ import jwt from 'jsonwebtoken';
 import { db } from '@/lib/db';
 import { getJwtSecret } from '@/lib/auth';
 import { evaluateUserEntitlement } from '@/lib/entitlement';
-import { m2mSourceIp, m2mRateLimited, auditM2MMint } from '@/lib/m2mMintAudit';
+import {
+  m2mSourceIp,
+  m2mRateLimited,
+  m2mPartnerRateLimited,
+  auditM2MMint,
+} from '@/lib/m2mMintAudit';
+import {
+  looksLikePartnerKey,
+  resolvePartnerKey,
+  hasScope,
+  touchPartnerKeyLastUsed,
+  type PartnerKeyDbClient,
+} from '@/lib/partnerKeys';
 
 // jsonwebtoken + node:crypto require the Node.js runtime (not Edge).
 export const runtime = 'nodejs';
@@ -104,25 +126,71 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Server-to-server auth (NOT a user session) ─────────────────────────
-    // The configured key is the gate. If it is unset, the M2M path is disabled
-    // and fails CLOSED: every caller gets 401, and we do NOT reveal that the
-    // server has no key (an attacker learns nothing beyond "wrong key"). Ops
-    // sees the reason in the server log only.
-    const expectedKey = process.env.CC_M2M_MINT_KEY;
-    if (!expectedKey || expectedKey.length < 32) {
-      console.warn(
-        '[RelayTicketM2M] CC_M2M_MINT_KEY is unset or <32 chars — M2M mint disabled (failing closed).',
-      );
-      auditM2MMint(sourceIp, null, 'unauthorized');
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
+    // TWO accepted credentials (SDK-PKG-2 Phase 1):
+    //   (A) a PER-PARTNER key  `ccp_live_<keyId>.<secret>` — DB-backed, scoped,
+    //       per-partner rate-limited. The path outside companies use.
+    //   (B) the LEGACY shared `CC_M2M_MINT_KEY` (env) — DEPRECATED, kept fully
+    //       working so our own dnk-crm does not break during the transition.
+    // We branch on the key SHAPE (cheap, no DB) so a caller never learns which
+    // credential type failed — every failure is one opaque 401.
     const providedKey = extractBearer(req);
-    if (!constantTimeKeyEqual(providedKey, expectedKey)) {
-      // No detail on WHY (missing vs wrong) — a single opaque 401.
-      console.warn('[RelayTicketM2M] auth reject: missing or invalid M2M key');
-      auditM2MMint(sourceIp, null, 'unauthorized');
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    // partnerId/apiKeyId/rateLimit are populated ONLY on the partner path; they
+    // stay null for the legacy path (which keeps its per-IP-only limiting).
+    let partnerId: string | null = null;
+    let partnerApiKeyId: string | null = null;
+
+    if (looksLikePartnerKey(providedKey)) {
+      // ── (A) Per-partner key ────────────────────────────────────────────────
+      // resolvePartnerKey fails CLOSED and is constant-time on the secret compare
+      // (it burns a dummy hash even on a keyId miss, so "does this keyId exist?"
+      // is not answerable by timing). invalid / revoked / suspended all collapse
+      // here to ONE opaque 401 — the caller cannot tell them apart.
+      const res = await resolvePartnerKey(db as unknown as PartnerKeyDbClient, providedKey);
+      if (!res.ok) {
+        console.warn(`[RelayTicketM2M] partner auth reject: ${res.reason}`);
+        auditM2MMint(sourceIp, null, 'unauthorized');
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      }
+
+      // Scope enforcement (server-side, deny by default). Minting a relay-ticket
+      // is the precursor to placing a call, so it requires the 'call' scope.
+      if (!hasScope(res.scopes, 'call')) {
+        console.warn(`[RelayTicketM2M] partner ${res.partnerId} lacks 'call' scope`);
+        auditM2MMint(sourceIp, null, 'insufficient_scope', Date.now(), res.partnerId);
+        return NextResponse.json({ error: 'insufficient_scope' }, { status: 403 });
+      }
+
+      // Per-partner rate limit (configurable per key; default in lib/partnerKeys).
+      // Replaces the per-IP bucket for partner traffic so one partner's shared
+      // egress IP can't starve another, and abuse is contained per-partner. The
+      // per-IP backstop above still guards the pre-DB flood surface for everyone.
+      if (m2mPartnerRateLimited(res.partnerId, res.rateLimitPerMin)) {
+        auditM2MMint(sourceIp, null, 'rate_limited', Date.now(), res.partnerId);
+        return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+      }
+
+      partnerId = res.partnerId;
+      partnerApiKeyId = res.apiKeyId;
+    } else {
+      // ── (B) LEGACY shared key (DEPRECATED — remove once dnk-crm migrates) ────
+      // The configured key is the gate. If it is unset, the legacy path is
+      // disabled and fails CLOSED: every caller gets 401, and we do NOT reveal
+      // that the server has no key. Ops sees the reason in the server log only.
+      const expectedKey = process.env.CC_M2M_MINT_KEY;
+      if (!expectedKey || expectedKey.length < 32) {
+        console.warn(
+          '[RelayTicketM2M] CC_M2M_MINT_KEY is unset or <32 chars — legacy M2M mint disabled (failing closed).',
+        );
+        auditM2MMint(sourceIp, null, 'unauthorized');
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      }
+      if (!constantTimeKeyEqual(providedKey, expectedKey)) {
+        // No detail on WHY (missing vs wrong) — a single opaque 401.
+        console.warn('[RelayTicketM2M] auth reject: missing or invalid legacy M2M key');
+        auditM2MMint(sourceIp, null, 'unauthorized');
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      }
     }
 
     // ── Input ──────────────────────────────────────────────────────────────
@@ -139,6 +207,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'ccUserId (string) is required' }, { status: 400 });
     }
     const userId = ccUserId.trim();
+
+    // SECURITY: Phase-1 trust boundary — partner may mint for any entitled
+    // ccUserId; per-user consent binding (proving THIS ccUserId authorized THIS
+    // partner) is deferred to Phase 2 OAuth. Today a partner key is trusted to
+    // pass only ccUserIds it manages, exactly like dnk-crm with the shared key.
+    // The entitlement gate below still independently gates the TARGET user, so a
+    // partner key can NEVER bypass the paywall — it only authenticates the CALLER.
 
     // ── HARD entitlement chokepoint (KEPT — mirrors the browser mint) ──────
     // evaluateUserEntitlement does its own DB lookup (subscription + admin +
@@ -160,7 +235,7 @@ export async function POST(req: NextRequest) {
     );
     if (!ent.allowed) {
       console.warn(`[RelayTicketM2M] entitlement denied (${ent.reason}) for user ${userId}`);
-      auditM2MMint(sourceIp, userId, 'denied_entitlement');
+      auditM2MMint(sourceIp, userId, 'denied_entitlement', Date.now(), partnerId);
       return NextResponse.json({ error: 'subscription_required' }, { status: 403 });
     }
 
@@ -171,9 +246,16 @@ export async function POST(req: NextRequest) {
       { algorithm: 'HS256', expiresIn: '30s' },
     );
 
+    // Best-effort lastUsedAt bump for a partner key (fire-and-forget; a failure
+    // here never fails an already-authorized mint). No-op for the legacy path.
+    if (partnerApiKeyId) {
+      void touchPartnerKeyLastUsed(db as unknown as PartnerKeyDbClient, partnerApiKeyId);
+    }
+
     // Audit the successful mint (this also evaluates the anomaly trip-wire).
-    // Only ccUserId + outcome + IP are recorded — never the minted `ticket`.
-    auditM2MMint(sourceIp, userId, 'minted');
+    // Only partnerId + ccUserId + outcome + IP are recorded — never the minted
+    // `ticket` and never the key/secret.
+    auditM2MMint(sourceIp, userId, 'minted', Date.now(), partnerId);
     return NextResponse.json({ ticket });
   } catch (e) {
     // getJwtSecret throws if JWT_SECRET is missing in prod → server-config, 500.

@@ -36,9 +36,10 @@ import { getClientIp } from '@/lib/ip';
 export type M2MOutcome =
   | 'minted' // key OK + entitled → 200, a real 30 s relay ticket was issued
   | 'denied_entitlement' // key OK but ccUserId not entitled → 403
-  | 'unauthorized' // missing/invalid key, or key not configured → 401
+  | 'insufficient_scope' // partner key OK but lacks the 'call' scope → 403
+  | 'unauthorized' // missing/invalid/revoked key, or key not configured → 401
   | 'bad_request' // missing/non-string ccUserId or invalid JSON → 400
-  | 'rate_limited'; // per-IP throttle tripped → 429 (logged for completeness)
+  | 'rate_limited'; // per-IP or per-partner throttle tripped → 429 (logged)
 
 // ── Rate limit (M2M-3) — mirrors app/api/waitlist token bucket ──────────────
 // Sliding window, per-IP. RL_MAX is generous for a trusted backend that may
@@ -48,6 +49,42 @@ export type M2MOutcome =
 const RL_WINDOW_MS = 60_000; // 1 minute
 const RL_MAX = 60; // 60 attempts / IP / minute (~1/s sustained)
 const rlHits = new Map<string, number[]>();
+
+// ── Per-partner rate limit (SDK-PKG-2 P1) ───────────────────────────────────
+// When a PARTNER key is used, the sliding window is keyed on partnerId instead
+// of IP, so one partner's egress-IP sharing (many reps, one NAT) does not starve
+// another partner, and each partner's abuse is contained to its own bucket. The
+// per-partner limit is configurable per key (PartnerApiKey.rateLimitPerMin);
+// legacy shared-key callers keep using the per-IP bucket above.
+//
+// SAME single-process, in-memory design as the per-IP limiter (custom server.js
+// is single-process). MULTI-INSTANCE CAVEAT: if CC is ever scaled to >1 process,
+// both limiters become per-process and the effective limit multiplies by the
+// instance count — a shared store (Redis) is the eventual fix. Flagged for
+// Security. Not a regression: the legacy path already had this exact property.
+const partnerRlHits = new Map<string, number[]>();
+
+/**
+ * Per-partner sliding-window rate limit. Returns true when the partner has
+ * EXCEEDED `limitPerMin` in the last minute. Records the hit as a side effect.
+ * `nowMs` is injectable for deterministic tests.
+ */
+export function m2mPartnerRateLimited(
+  partnerId: string,
+  limitPerMin: number,
+  nowMs: number = Date.now(),
+): boolean {
+  const cutoff = nowMs - RL_WINDOW_MS;
+  const hits = (partnerRlHits.get(partnerId) ?? []).filter((t) => t > cutoff);
+  hits.push(nowMs);
+  partnerRlHits.set(partnerId, hits);
+  if (partnerRlHits.size > 5_000) {
+    for (const [k, v] of partnerRlHits) {
+      if (v.every((t) => t <= cutoff)) partnerRlHits.delete(k);
+    }
+  }
+  return hits.length > limitPerMin;
+}
 
 // ── Anomaly trip-wire (M2M-1) ───────────────────────────────────────────────
 // A leaked key sprayed from one IP, or across many reps, should raise a WARN
@@ -100,17 +137,22 @@ export function m2mRateLimited(ip: string, nowMs: number = Date.now()): boolean 
  * @param ccUserId  the target rep's CC user id, or null when unknown (401/400)
  * @param outcome   the audited disposition
  * @param nowMs     injectable clock for deterministic tests
+ * @param partnerId the authenticated partner's id when a PARTNER key was used;
+ *                  null/undefined for the legacy shared-key path. Recorded in
+ *                  the audit line so per-partner abuse is attributable. NEVER the
+ *                  key or secret — only the opaque partner id.
  */
 export function auditM2MMint(
   sourceIp: string,
   ccUserId: string | null,
   outcome: M2MOutcome,
   nowMs: number = Date.now(),
+  partnerId: string | null = null,
 ): void {
   // Structured, greppable, alert-taggable. No key, no token — ever.
   console.info(
     '[M2M-AUDIT]',
-    JSON.stringify({ ts: new Date(nowMs).toISOString(), sourceIp, ccUserId, outcome }),
+    JSON.stringify({ ts: new Date(nowMs).toISOString(), sourceIp, partnerId, ccUserId, outcome }),
   );
 
   if (outcome !== 'minted' || !ccUserId) return;
@@ -148,6 +190,7 @@ export function auditM2MMint(
 /** Test-only: reset all module-level counters so tests don't leak state. */
 export function __resetM2MMintAuditState(): void {
   rlHits.clear();
+  partnerRlHits.clear();
   mintEvents = [];
   lastAlertTs = 0;
 }
