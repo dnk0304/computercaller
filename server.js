@@ -231,20 +231,35 @@ const PAIRING_TTL_MS = 30_000;
 // clicking Disconnect), the relay remembers the broken pair for this long.
 // If the dropped side reconnects within the window while its counterpart is
 // still around, the relay silently re-links them — no browser Connect click,
-// no phone Accept tap. 30 s covers the common blip (keepalive terminate +
-// ~5 s reconnect, and the observed 6 s browser-side gap) while dropping a
-// genuinely-gone peer to the lobby fast rather than holding the browser for
-// two minutes (tightened from 120 s → 30 s, 2026-07-16, Dennis-approved).
+// no phone Accept tap.
+//
+// History of this value:
+//   • 120 s originally (Issue 3, 2026-06-11).
+//   • Tightened 120 s → 30 s (2026-07-16, Dennis-approved) to drop a
+//     genuinely-gone peer to the lobby fast rather than hold the browser.
+//   • REVERSED 30 s → 180 s (2026-08-25, Dennis-approved). Reason: on
+//     OPPO/ColorOS the aggressive app-freeze (background-kill) can delay the
+//     phone's own dead-socket detector by ~4 min, so the phone often wakes and
+//     tries to reconnect LONG after 30 s. With a 30 s window the relay had
+//     already torn the pair down, forcing a full re-pair (browser Connect +
+//     phone Accept). A 180 s window lets a late-waking phone (WiFi blip,
+//     ColorOS/OPPO freeze, screen-off doze) resume the SAME session silently.
+//     Accepted tradeoff: for a phone that is TRULY gone, the surviving browser
+//     shows "reconnecting" (soft-hold, PEER_RECONNECTING) for up to 180 s
+//     before dropping to the lobby — acceptable per Dennis.
 // Security: resume is scoped to the same room token (the shared secret both
 // sides already authenticated with), is only armed by a non-user-initiated
 // close, and expires — no new attack surface beyond what a normal
-// Connect+Accept inside the same room already grants.
-const RESUME_WINDOW_MS = 30_000;
+// Connect+Accept inside the same room already grants. The longer window does
+// not widen this surface; it only lengthens the same token-scoped hold.
+const RESUME_WINDOW_MS = 180_000;
 
 // Fix 2 (2026-07-16): hard cap on the per-room replay buffer. While a resume
-// claim is armed (a <=30s socket blip), phone data-plane frames that would
-// otherwise drop from the lobby are buffered and replayed on soft-hold resume.
-// Bounded to protect memory — drop-oldest on overflow.
+// claim is armed (a socket blip, up to RESUME_WINDOW_MS), phone data-plane
+// frames that would otherwise drop from the lobby are buffered and replayed on
+// soft-hold resume. Bounded to protect memory — drop-oldest on overflow, so the
+// buffer never exceeds FRAME_BUFFER_MAX entries regardless of how long the
+// resume window is (memory bound is entry-count, not time).
 const FRAME_BUFFER_MAX = 200;
 
 /**
@@ -269,7 +284,7 @@ const FRAME_BUFFER_MAX = 200;
  *                               phone has not yet answered. 30 s TTL.
  *   room.frameBuffer          — [{ msg, at }] bounded replay buffer. Phone
  *                               data-plane frames captured while a resume
- *                               claim is armed (a <=30s blip), replayed to
+ *                               claim is armed (a blip, up to RESUME_WINDOW_MS), replayed to
  *                               the browser on soft-hold resume (Fix 2). A new
  *                               pair forms ONLY via explicit Connect + Accept.
  *
