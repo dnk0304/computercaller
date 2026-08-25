@@ -17,20 +17,20 @@ datasource db {
 }
 
 model User {
-  id                String    @id @default(cuid())
-  email             String    @unique
+  id                  String               @id @default(cuid())
+  email               String               @unique
   // passwordHash — nullable as of dispatch #36 (2026-05-25). Google-OAuth-only
   // users have no password set. Email/password users retain a hash; users who
   // started one way and later linked the other (authProvider = 'both') keep
   // their hash. The /api/auth/login route returns a clear "use Google" 400 if
   // a user with passwordHash=null tries to sign in via the password form.
-  passwordHash      String?
-  emailVerified     Boolean   @default(false)
-  emailVerifyToken  String?
-  resetToken        String?
-  resetTokenExpiry  DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  passwordHash        String?
+  emailVerified       Boolean              @default(false)
+  emailVerifyToken    String?
+  resetToken          String?
+  resetTokenExpiry    DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
   // phoneToken — relay/WS auth bearer used by the Android APK.
   //
   // Bundle A (2026-05-28) Phase 4 fix (C2):
@@ -46,12 +46,12 @@ model User {
   // Dennis (the only paying user) re-pairs via /api/auth/apk-login. Once
   // Bundle C v30 lands the APK switches to relay-ticket and the legacy
   // ?token= path can be deprecated.
-  phoneToken        String    @unique  // set in app code, never via @default
+  phoneToken          String               @unique // set in app code, never via @default
   // sessionVersion — monotonic counter, bumped on every successful login.
   // JWTs are signed with the post-bump value in their `ver` claim. Any token
   // whose `ver` no longer matches the DB column is rejected → effectively a
   // single-active-session policy (dispatch #27, 2026-05-24, Option III).
-  sessionVersion    Int       @default(0)
+  sessionVersion      Int                  @default(0)
   // Google OAuth (dispatch #36, 2026-05-25).
   // googleId      — Google's stable user identifier (the `sub` claim from the
   //                 ID token). Nullable for legacy email/password-only users.
@@ -59,15 +59,15 @@ model User {
   // authProvider  — 'email' | 'google' | 'both'. Drives UX hints and the
   //                 lib/auth login path. 'both' = the user signed up one way
   //                 and later linked the other on the same email.
-  googleId          String?   @unique
-  authProvider      String    @default("email")
+  googleId            String?              @unique
+  authProvider        String               @default("email")
   // isAdmin (2026-06-09). Sole-admin flag. ADDITIVE, non-breaking: default
   // false so every existing + future row is a non-admin unless explicitly
   // promoted. Currently TRUE for exactly one account (dennis.kotlenko@gmail.com)
   // — set via a one-off prod UPDATE, NOT seeded in code. Coolify's pre-deploy
   // `prisma db push` applies this column cleanly (adds a NOT NULL column with a
   // default, no data loss). Gate any admin-only feature/route on this flag.
-  isAdmin           Boolean   @default(false)
+  isAdmin             Boolean              @default(false)
   // IP tracking + same-IP abuse flagging (2026-07-03, dispatch forge/trial-lock
   // -and-admin-dashboard). ALL nullable/additive — Coolify's pre-deploy
   // `prisma db push` adds them cleanly with zero data loss (no NOT NULL without
@@ -78,16 +78,16 @@ model User {
   //   lastLoginIp  — client IP at the most recent interactive login.
   //   lastActiveAt — timestamp of the most recent interactive login (proxy for
   //                  "last seen"; NOT bumped on every request, only on login).
-  signupIp          String?
-  lastLoginIp       String?
-  lastActiveAt      DateTime?
-  subscription      Subscription?
+  signupIp            String?
+  lastLoginIp         String?
+  lastActiveAt        DateTime?
+  subscription        Subscription?
   // Message templates (Item C1, 2026-05-27). Per-user reusable SMS bodies that
   // previously lived ONLY in browser localStorage (key `dnkdialer_templates`) and
   // were wiped on cache clear. Now persisted server-side, capped at 15/user
   // (enforced in app/api/templates). onDelete: Cascade so deleting a user removes
   // their templates.
-  templates         Template[]
+  templates           Template[]
   // Quick-reply templates (2026-06-03, dispatch CC-quickreply-templates-v2).
   // SEPARATE store from the normal SMS templates above. Hard-capped at 5/user
   // (enforced in app/api/quick-replies POST → 409). Used ONLY for the
@@ -105,7 +105,7 @@ model User {
   // written the first time we successfully match a Whop user to an account
   // (from any rung of the resolution ladder), then preferred over email on
   // every later event. See lib/whop-resolve.ts.
-  whopUserId        String?
+  whopUserId          String?
   // invitedBy (2026-08-15, dispatch forge/admin-create-account). Email of the
   // admin who provisioned this account via POST /api/admin/users. NULL for every
   // self-serve (Google / legacy email) account — additive, zero data loss.
@@ -119,14 +119,14 @@ model User {
   // auth allowlist. It grants NO entitlement: billing is still decided solely by
   // the shared entitlement core (subscription / free-access / admin), so this is
   // NOT a fourth admit path.
-  invitedBy         String?
+  invitedBy           String?
   // name (2026-08-15, same dispatch). Optional display name. The User model had
   // no name column at all — Google signups never captured one and the admin
   // panel lists accounts by email. An admin creating an account by hand usually
   // knows who it is for, and the invite email reads far less like phishing when
   // it can open with a name. Nullable → additive, zero data loss, and every
   // existing row stays valid.
-  name              String?
+  name                String?
 
   @@index([whopUserId])
   // Set-password / reset tokens are looked up BY TOKEN HASH (see
@@ -269,10 +269,10 @@ model AdminUserAudit {
 }
 
 model Subscription {
-  id                String    @id @default(cuid())
-  userId            String    @unique
-  user              User      @relation(fields: [userId], references: [id])
-  whopMembershipId  String?
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id])
+  whopMembershipId      String?
   // trial | active | expired | cancelled
   //   'cancelled' — the sub ended AFTER the customer cancelled (we saw
   //                 cancelAtPeriodEnd, or a cancellation event, first).
@@ -283,9 +283,9 @@ model Subscription {
   // (voluntary vs involuntary churn), never access. Until 2026-08-11 the
   // webhook wrote 'expired' for BOTH and 'cancelled' was never written despite
   // being documented here.
-  status            String    @default("trial")
-  trialEndsAt       DateTime
-  currentPeriodEnd  DateTime?
+  status                String    @default("trial")
+  trialEndsAt           DateTime
+  currentPeriodEnd      DateTime?
   // Customer-tracking columns (2026-07-03, dispatch forge/trial-lock-and-admin
   // -dashboard). ALL nullable/defaulted → `prisma db push` additive, zero data
   // loss.
@@ -304,7 +304,7 @@ model Subscription {
   //                          overwrite it with the lapse time. null while
   //                          active/trial.
   convertedAt           DateTime?
-  paymentMethodAttached Boolean  @default(false)
+  paymentMethodAttached Boolean   @default(false)
   canceledAt            DateTime?
   // cancelAtPeriodEnd (2026-08-11, dispatch forge/whop-payment-tracking-admin).
   // Boolean @default(false) → `prisma db push` additive, zero data loss.
@@ -319,7 +319,7 @@ model Subscription {
   // ENTITLEMENT DELIBERATELY IGNORES IT: lib/entitlement-core.js never reads
   // this column. A cancelled-but-paid-through customer keeps full access until
   // currentPeriodEnd, which is exactly what they bought. Reporting only.
-  cancelAtPeriodEnd     Boolean  @default(false)
+  cancelAtPeriodEnd     Boolean   @default(false)
   // Whop plan id → billing tier (2026-07-27, dispatch feature/tier-gating).
   // Nullable & un-defaulted → `prisma db push` additive, zero data loss. The
   // Whop webhook persists extractPlanId(data) on every upsert going forward.
@@ -340,7 +340,7 @@ model Subscription {
   //   lastPaymentFailedAt  — most recent payment.failed event.
   //   paymentFailureCount  — consecutive failures; reset to 0 on any success.
   lastPaymentFailedAt   DateTime?
-  paymentFailureCount   Int      @default(0)
+  paymentFailureCount   Int       @default(0)
   // grandfathered (2026-08-17, dispatch forge/pricing-trial-limited).
   // Boolean @default(false) → additive `prisma migrate deploy`, zero data loss.
   //
@@ -358,9 +358,9 @@ model Subscription {
   // It NEVER changes `allowed` (the paywall) — only which limit-set world
   // applies. The Whop webhook does not touch it, so a grandfathered trial that
   // converts to active stays grandfathered forever.
-  grandfathered     Boolean   @default(false)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  grandfathered         Boolean   @default(false)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   // whopMembershipId was neither unique nor indexed until 2026-08-12 — every
   // webhook that fell back to the membership-id rung did a SEQUENTIAL SCAN.
@@ -372,24 +372,21 @@ model Subscription {
 
 /**
  * UnmatchedWhopEvent (2026-08-12, dispatch fix/whop-payment-reconcile).
- *
  * A signed, verified Whop event we could NOT attach to an app account. Before
  * this table those events returned a bare `{ok:true}` and vanished: Whop saw
  * success, nobody was alerted, and a paying customer stayed invisible until he
  * complained. That silence is what turned a match failure into an unnoticed
  * revenue incident on 2026-08-11.
- *
  * We still answer 200 (a non-2xx would make Whop retry-storm on an event we
  * genuinely cannot process yet — e.g. the customer pays BEFORE registering),
  * but the evidence is now durable and replayable: `rawPayload` holds the whole
  * verified event, so reconciliation or a manual fix can resolve it later and
  * stamp resolvedUserId/resolvedAt.
- *
  * Contains customer PII (email) by design — it is the recovery key. Same
  * retention posture as the User table.
  */
 model UnmatchedWhopEvent {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   eventName        String
   whopMembershipId String?
   whopUserId       String?
@@ -399,7 +396,7 @@ model UnmatchedWhopEvent {
   // or a manual fix). Null = still unresolved = still needs attention.
   resolvedUserId   String?
   resolvedAt       DateTime?
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
 
   @@index([createdAt])
   @@index([resolvedAt])
@@ -450,4 +447,83 @@ model Article {
 
   // Covers the only hot read path: published articles, newest first.
   @@index([status, publishedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SDK-PKG-2 Phase 1 (feat/partner-api-keys, 2026-08-25) — per-company API keys.
+//
+// Until now the server-to-server relay-ticket mint authenticated ONE shared
+// `CC_M2M_MINT_KEY` (env) that our own dnk-crm holds. To SELL ComputerCaller as
+// an SDK to outside companies we need real per-partner credentials: each partner
+// gets its own hashed key, its own scopes, and its own rate limit — issuable and
+// revocable without touching env or redeploying.
+//
+// TRUST MODEL (Phase 1): a partner key authenticates the CALLER (the company).
+// The partner is trusted to pass only ccUserIds it manages — the SAME trust
+// dnk-crm has today. Per-user consent binding (proving a ccUserId authorized
+// THIS partner) is Phase-2 OAuth and is deliberately NOT modelled here.
+//
+// The entitlement gate (evaluateUserEntitlement) is UNCHANGED and still gates
+// the TARGET user — a partner key never bypasses the paywall.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A company that has bought SDK access. Identified by a stable slug; may hold
+// many API keys (issue a new one, revoke the old — key rotation without losing
+// the partner's identity, scopes history, or plan).
+model Partner {
+  id        String   @id @default(cuid())
+  name      String
+  // URL/log-safe stable handle, unique. Used in audit lines + admin display.
+  slug      String   @unique
+  // 'active' | 'suspended'. A suspended partner's keys all fail closed at auth
+  // time regardless of individual key status (org-level kill switch).
+  status    String   @default("active")
+  // Nullable free-text plan tag ("starter"/"pro"/…). Carries future per-seat
+  // billing metadata; NOT read by the auth path in Phase 1.
+  plan      String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  apiKeys PartnerApiKey[]
+
+  @@index([status])
+}
+
+// One issued API key for a Partner. The plaintext secret is shown ONCE at
+// issuance and NEVER stored — only a SHA-256 hash of the secret is persisted.
+//
+// Key material handed to the partner:  ccp_live_<keyId>.<secret>
+//   • keyId  — public, non-secret, indexed lookup handle + display prefix.
+//   • secret — 32 random bytes (base64url). Hashed on write, constant-time
+//              compared on read. `.` is not in the base64url alphabet, so it is
+//              an unambiguous separator between keyId and secret.
+model PartnerApiKey {
+  id              String    @id @default(cuid())
+  partnerId       String
+  partner         Partner   @relation(fields: [partnerId], references: [id])
+  // Public identifier parsed from the presented key and used for the DB lookup
+  // BEFORE any secret compare. Non-secret by design; safe to display/log.
+  keyId           String    @unique
+  // SHA-256(secret) hex. NEVER the plaintext. The secret has >=256 bits of
+  // entropy (crypto.randomBytes(32)), so a fast cryptographic hash is the right
+  // tool — it is not a low-entropy password, so argon2/bcrypt work-factor cost
+  // (which would tax every mint) buys nothing here. Constant-time compared.
+  hashedSecret    String
+  // Capabilities this key may exercise, server-enforced. Phase-1 vocabulary:
+  //   'call'       — mint a relay-ticket (precursor to placing a call).
+  //   'presence'   — (reserved) presence/status reads.
+  //   'read_logs'  — (reserved) call-log reads.
+  //   'sms'        — (reserved) future SMS. Not honoured yet.
+  scopes          String[]  @default([])
+  // 'active' | 'revoked'. A revoked key fails auth closed (opaque 401).
+  status          String    @default("active")
+  // Per-partner-key sliding-window limit (mints/min). NULL → server default.
+  rateLimitPerMin Int?
+  lastUsedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  revokedAt       DateTime?
+
+  @@index([partnerId])
+  @@index([status])
 }
