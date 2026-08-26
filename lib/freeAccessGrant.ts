@@ -22,6 +22,7 @@
  */
 
 import { db } from '@/lib/db';
+import { grantStatus } from '@/lib/entitlement';
 
 // Pragmatic email shape check — one @, non-empty local part, a dotted domain,
 // no whitespace. Not RFC-5322-exhaustive on purpose: we only need to reject
@@ -43,12 +44,18 @@ export function normalizeNote(raw: unknown, max = 500): string | null {
   return typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, max) : null;
 }
 
+export type GrantStatus = 'permanent' | 'active' | 'expired';
+
 export type FreeAccessEntry = {
   id: string;
   email: string;
   note: string | null;
   grantedBy: string;
   grantedAt: string;
+  /** ISO expiry instant, or null for a permanent grant. */
+  expiresAt: string | null;
+  /** Derived at read/write time from expiresAt vs now (single source: grantStatus). */
+  status: GrantStatus;
 };
 
 /**
@@ -63,6 +70,11 @@ export type FreeAccessEntry = {
  * @param email  MUST already be normalized (caller validates, so it can return
  *               a 400 with its own error shape).
  * @param actor  admin email, for audit attribution.
+ * @param expiresAt When the grant lapses. `null` (default) = permanent. Written
+ *               on BOTH create and update, so re-granting an email REFRESHES its
+ *               window (extend a shrinking one, or resurrect a lapsed one) —
+ *               the same way the upsert already refreshes note/grantedBy. The
+ *               shared entitlement gate auto-lapses it at request time.
  * @param client Prisma client or an interactive-transaction client, so the
  *               account-create path can put the user row, the allowlist row and
  *               both audit rows in ONE transaction.
@@ -71,18 +83,25 @@ export async function grantFreeAccess(
   email: string,
   actor: string,
   note: string | null = null,
+  expiresAt: Date | null = null,
   client: Pick<typeof db, 'freeAccessEmail' | 'freeAccessAudit'> = db,
 ): Promise<FreeAccessEntry> {
   const row = await client.freeAccessEmail.upsert({
     where: { email },
-    create: { email, note, grantedBy: actor },
-    update: { note, grantedBy: actor },
-    select: { id: true, email: true, note: true, grantedBy: true, createdAt: true },
+    create: { email, note, grantedBy: actor, expiresAt },
+    update: { note, grantedBy: actor, expiresAt },
+    select: { id: true, email: true, note: true, grantedBy: true, createdAt: true, expiresAt: true },
   });
 
-  // Append-only audit — durable who/when/what for the billing bypass.
+  // Append-only audit — durable who/when/what/HOW-LONG for the billing bypass.
+  // The duration lives in the audit note (the FreeAccessAudit schema has no
+  // dedicated expiry column, and adding one is more churn than the trail needs):
+  // the human note plus a machine-readable expiry marker so the trail records
+  // exactly how long each grant was for. Never mutated — this is the record.
+  const expiryMark = expiresAt ? `expires=${expiresAt.toISOString()}` : 'expires=never';
+  const auditNote = note ? `${note} [${expiryMark}]` : `[${expiryMark}]`;
   await client.freeAccessAudit.create({
-    data: { action: 'grant', email, actor, note },
+    data: { action: 'grant', email, actor, note: auditNote },
   });
 
   return {
@@ -91,6 +110,8 @@ export async function grantFreeAccess(
     note: row.note ?? null,
     grantedBy: row.grantedBy,
     grantedAt: row.createdAt.toISOString(),
+    expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
+    status: grantStatus(row.expiresAt),
   };
 }
 

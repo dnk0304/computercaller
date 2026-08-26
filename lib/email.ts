@@ -170,6 +170,49 @@ export async function sendAdminInviteEmail(opts: {
 }
 
 /**
+ * Free-access grant notification — sent when an admin comps an email via the
+ * free-access panel (POST /api/admin/free-access, 2026-08-26).
+ *
+ * The recipient may or may not already have an account (grants can pre-date
+ * signup), so a single "Open ComputerCaller" CTA to APP_URL works for both.
+ * Honest copy only — "free access" and the expiry date, no pricing claims.
+ *
+ * The CALLER MUST wrap this in try/catch: a mail failure must NEVER fail the
+ * grant (the row + audit are already committed). The panel surfaces emailSent
+ * so the admin can follow up manually if the send failed.
+ */
+export async function sendFreeAccessGrantedEmail(opts: {
+  email: string;
+  expiresAt: Date | null;
+}) {
+  const { email, expiresAt } = opts;
+  const until = expiresAt
+    ? `until <strong>${escapeHtml(
+        expiresAt.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          timeZone: 'UTC',
+        }),
+      )}</strong>`
+    : 'with <strong>no expiry</strong>';
+  await getResend().emails.send({
+    from: FROM,
+    to: email,
+    replyTo: REPLY_TO,
+    subject: `You've been granted free access to ComputerCaller`,
+    html: `
+      <h2>You've been granted free access to ComputerCaller</h2>
+      <p>Good news — <strong>${escapeHtml(email)}</strong> has been granted free access to ComputerCaller ${until}.</p>
+      <p>That's full Pro-tier access — no card needed. Just open the app and sign in (or create your account with this email if you haven't yet).</p>
+      <a href="${APP_URL}" style="display:inline-block;padding:12px 24px;background:#1e293b;color:#fff;text-decoration:none;border-radius:8px;">Open ComputerCaller</a>
+      <p style="color:#888;font-size:12px;">If you weren't expecting this, you can safely ignore this email.</p>
+      <p style="color:#888;font-size:12px;">Questions? Just reply to this email and we'll help.</p>
+    `,
+  });
+}
+
+/**
  * Minimal HTML-escape for values interpolated into email bodies. `name` and the
  * admin email are operator-supplied free text; without this, a name containing
  * markup would break out of the surrounding tag and could inject a link into an

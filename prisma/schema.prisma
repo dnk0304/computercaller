@@ -207,12 +207,19 @@ model Waitlist {
 //               the standing audit field for an active grant.
 //   createdAt — when the grant was made ("granted at"). Exposed as `grantedAt`
 //               in the admin API.
+//   expiresAt — when the grant lapses (2026-08-26, dispatch forge/free-access-
+//               duration). NULL = permanent (all pre-2026-08-26 grants stay
+//               permanent — the field is nullable, so `prisma db push` is
+//               additive/non-destructive). Non-null = free access is honoured
+//               ONLY while expiresAt > now; the shared entitlement gate lapses
+//               it live at request time (no cron). Re-granting refreshes it.
 model FreeAccessEmail {
   id        String   @id @default(cuid())
   email     String   @unique
   note      String?
   grantedBy String
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
 }
 
 // FreeAccessAudit (2026-07-30). Append-only audit trail for the free-access

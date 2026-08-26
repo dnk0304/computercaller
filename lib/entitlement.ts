@@ -32,5 +32,7 @@ export {
   isEntitlementAllowed,
   isAdminUser,
   isFreeAccessEmail,
+  isGrantActive,
+  grantStatus,
   isEntitlementIndeterminate,
 } from './entitlement-core';

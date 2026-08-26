@@ -108,7 +108,26 @@ export function isFreeAccessEmail(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dbClient: { freeAccessEmail?: { findUnique: (args: any) => Promise<unknown> } },
   email: string | null | undefined,
+  // Optional clock, threaded from the evaluator for deterministic tests. Absent
+  // → live clock. A grant lapses once its expiresAt passes `now` (no cron).
+  now?: Date | number,
 ): Promise<boolean>;
+
+/**
+ * THE single free-access expiry predicate. `expiresAt == null` = permanent
+ * (always active); otherwise active strictly while `expiresAt > now`. Shared by
+ * isFreeAccessEmail and the admin-feed batch badge so the two never drift.
+ */
+export function isGrantActive(
+  expiresAt: Date | string | number | null | undefined,
+  now?: Date | number,
+): boolean;
+
+/** Display status of a grant, from the same source of truth as isGrantActive. */
+export function grantStatus(
+  expiresAt: Date | string | number | null | undefined,
+  now?: Date | number,
+): 'permanent' | 'active' | 'expired';
 
 export const ADMIN_EMAIL_FALLBACK: string;
 

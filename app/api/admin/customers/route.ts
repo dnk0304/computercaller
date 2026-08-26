@@ -14,7 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { evaluateEntitlement, isAdminUser } from '@/lib/entitlement';
+import { evaluateEntitlement, isAdminUser, isGrantActive } from '@/lib/entitlement';
 import { resolveMembershipStates } from '@/lib/whop';
 
 // Human-readable plan label per resolved tier. Kept local to the admin feed —
@@ -121,8 +121,15 @@ export async function GET(req: NextRequest) {
     let freeAccessSet = new Set<string>();
     let freeAccessDegraded = false;
     try {
-      const rows = await db.freeAccessEmail.findMany({ select: { email: true } });
-      freeAccessSet = new Set(rows.map((r) => r.email.toLowerCase()));
+      // Only ACTIVE grants count toward the badge. An EXPIRED grant must not
+      // render "Free access" / resolve to Pro here, exactly as it no longer
+      // admits at the relay/browser gate — same isGrantActive predicate, so the
+      // badge and the gate can never disagree (the 2026-08-12 drift bug class).
+      const badgeNow = Date.now();
+      const rows = await db.freeAccessEmail.findMany({ select: { email: true, expiresAt: true } });
+      freeAccessSet = new Set(
+        rows.filter((r) => isGrantActive(r.expiresAt, badgeNow)).map((r) => r.email.toLowerCase()),
+      );
     } catch (e) {
       console.error('[AdminCustomers] free-access load failed:', e);
       freeAccessDegraded = true;

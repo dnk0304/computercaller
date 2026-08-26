@@ -36,6 +36,28 @@ import {
   normalizeEmail,
   normalizeNote,
 } from '@/lib/freeAccessGrant';
+import { grantStatus } from '@/lib/entitlement';
+import { sendFreeAccessGrantedEmail } from '@/lib/email';
+
+// Largest duration an admin may grant in one call (~10 years). Anything longer
+// is meant to be a permanent grant (durationDays omitted / null), not a
+// finite one — the cap rejects a fat-fingered or hostile day count.
+const MAX_DURATION_DAYS = 3650;
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Validate the optional durationDays. Returns:
+ *   { ok:true, days:null }        → permanent (absent/null)
+ *   { ok:true, days:number }      → finite, valid
+ *   { ok:false }                  → present but invalid (caller returns 400)
+ */
+function parseDurationDays(raw: unknown): { ok: true; days: number | null } | { ok: false } {
+  if (raw == null) return { ok: true, days: null }; // permanent
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0 || raw > MAX_DURATION_DAYS) {
+    return { ok: false };
+  }
+  return { ok: true, days: raw };
+}
 
 // ── GET: list the allowlist ──────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -45,8 +67,9 @@ export async function GET(req: NextRequest) {
 
     const rows = await db.freeAccessEmail.findMany({
       orderBy: { createdAt: 'desc' },
-      select: { id: true, email: true, note: true, grantedBy: true, createdAt: true },
+      select: { id: true, email: true, note: true, grantedBy: true, createdAt: true, expiresAt: true },
     });
+    const now = new Date();
 
     // Mark which granted emails belong to a registered account (so the UI can
     // flag pre-grants for emails that haven't signed up yet). One IN query.
@@ -66,6 +89,8 @@ export async function GET(req: NextRequest) {
       note: r.note ?? null,
       grantedBy: r.grantedBy,
       grantedAt: r.createdAt.toISOString(),
+      expiresAt: r.expiresAt ? r.expiresAt.toISOString() : null,
+      status: grantStatus(r.expiresAt, now),
       registered: registered.has(r.email.toLowerCase()),
     }));
 
@@ -94,9 +119,33 @@ export async function POST(req: NextRequest) {
     }
     const note = normalizeNote(body.note);
 
-    const entry = await grantFreeAccess(email, gate.adminEmail, note);
+    // Duration: presets (7/30/90/permanent/custom) are computed CLIENT-side into
+    // a day count, so the API only ever sees durationDays. null/absent =
+    // permanent. Never trust the client's clock — we compute expiresAt here.
+    const parsed = parseDurationDays(body.durationDays);
+    if (!parsed.ok) {
+      return NextResponse.json(
+        { error: `durationDays must be a positive integer up to ${MAX_DURATION_DAYS}, or omitted for permanent` },
+        { status: 400 },
+      );
+    }
+    const expiresAt = parsed.days == null ? null : new Date(Date.now() + parsed.days * MS_PER_DAY);
 
-    return NextResponse.json({ entry });
+    const entry = await grantFreeAccess(email, gate.adminEmail, note, expiresAt);
+
+    // Best-effort notification. A mail failure must NEVER fail the grant — the
+    // row + audit are already committed. We surface emailSent so the panel can
+    // warn "granted, but the email didn't go out." Re-granting re-notifies
+    // (a legitimate re-grant to extend is worth re-telling the recipient).
+    let emailSent = false;
+    try {
+      await sendFreeAccessGrantedEmail({ email, expiresAt });
+      emailSent = true;
+    } catch (mailErr) {
+      console.error('[FreeAccess] grant email failed (grant still succeeded):', mailErr);
+    }
+
+    return NextResponse.json({ entry, emailSent });
   } catch (e) {
     console.error('[FreeAccess] POST error:', e);
     return NextResponse.json({ error: 'Failed to grant free access' }, { status: 500 });

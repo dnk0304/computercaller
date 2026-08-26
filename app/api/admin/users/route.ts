@@ -194,8 +194,11 @@ export async function POST(req: NextRequest) {
 
         if (freeAccess) {
           // THE shared grant — same upsert + same append-only FreeAccessAudit
-          // 'grant' row that POST /api/admin/free-access writes.
-          await grantFreeAccess(email, gate.adminEmail, note, tx);
+          // 'grant' row that POST /api/admin/free-access writes. Account-create
+          // comps are PERMANENT (expiresAt null); a time-boxed comp is granted
+          // via the free-access panel. `tx` is the interactive-transaction
+          // client, now the 5th arg after the expiresAt param.
+          await grantFreeAccess(email, gate.adminEmail, note, null, tx);
         }
 
         // Account-lifecycle audit. Separate from the free-access audit on
