@@ -1984,6 +1984,35 @@ async function main() {
   const handle = app.getRequestHandler();
   await app.prepare();
 
+  // ── CC-RELAY-1006 FIX (2026-08-27) ─────────────────────────────────────────
+  // Next's programmatic server lazily attaches its OWN `httpServer.on('upgrade')`
+  // listener the FIRST time getRequestHandler() serves an HTTP request
+  // (NextServer.setupWebSocketHandler → next/dist/server/next.js). That Next
+  // upgrade path exists only for dev HMR; in production, for any path it does
+  // not own (like our /relay) it tears down the already-upgraded socket. Result:
+  // every browser relay WS got a clean 101 Switching Protocols and then an
+  // immediate FIN — the client saw code 1006 with ZERO application frames
+  // (LOBBY_STATUS never reached the wire), ~1-7ms after open.
+  //
+  // Because Next attaches that listener LAZILY (only after the first HTTP request
+  // has been served), the relay worked on a cold process and broke the instant
+  // ANY page/asset/health request had gone through Next — which is exactly why
+  // this looked environmental/latent even though the relay WS code (last touched
+  // e2d1a01) never changed.
+  //
+  // We own /relay upgrades ourselves via startRelay()'s httpServer.on('upgrade').
+  // Next has no upgrade responsibilities in production, so we set its internal
+  // setup guard to true BEFORE any request is served — Next then never registers
+  // its competing 'upgrade' listener and the relay socket survives. Verified
+  // in-container against the deployed Next build: without this the browser WS
+  // dies 1006 in ~1-7ms; with it the socket holds and LOBBY_STATUS is delivered.
+  //
+  // Prod-only: in dev, Next legitimately needs this listener for the
+  // webpack-HMR websocket, so we leave dev untouched.
+  if (!dev && app && typeof app === 'object') {
+    app.didWebSocketSetup = true;
+  }
+
   const httpServer = http.createServer((req, res) => {
     // Staging gate (2026-06-03): no-op when STAGING !== 'true'. When the gate
     // takes over (401 response on missing/wrong creds) it returns true and we
