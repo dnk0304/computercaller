@@ -175,7 +175,12 @@ ok(
 );
 ok(
   'set-password rejects >72-byte passwords rather than let bcrypt truncate',
-  /MAX_PASSWORD_BYTES\s*=\s*72/.test(setpw) && /Buffer\.byteLength\(password/.test(setpw),
+  // MAX_PASSWORD_BYTES = 72 was refactored into lib/passwordPolicy.ts; the route
+  // now imports it and enforces the byte guard. Assert the shared constant is 72
+  // AND the route imports + enforces it via Buffer.byteLength.
+  /MAX_PASSWORD_BYTES\s*=\s*72/.test(read('lib/passwordPolicy.ts')) &&
+    /MAX_PASSWORD_BYTES/.test(setpw) &&
+    /Buffer\.byteLength\(password/.test(setpw),
 );
 ok(
   'invalid and expired collapse to ONE generic message (no token oracle)',
@@ -215,8 +220,15 @@ ok(
   /select:\s*\{\s*invitedBy:\s*true\s*\}/.test(login),
 );
 ok(
-  'the exemption returns the SAME 403 body, leaking nothing new',
-  (login.match(/Sign-ups are closed — join the waitlist at computercaller\.com/g) || []).length === 1,
+  'every non-admitting login outcome collapses to ONE generic failure (no enumeration oracle)',
+  // Enumeration fix (2026-08-15): the distinct `403 Sign-ups are closed` copy
+  // was removed from this route entirely — a non-invited email now falls through
+  // to genericAuthFailure (same 401 body + same bcrypt cost) exactly like a bad
+  // password. Assert the distinct waitlist copy is GONE and the reject folds into
+  // genericAuthFailure inside the isEmailAllowed branch.
+  (login.match(/Sign-ups are closed — join the waitlist at computercaller\.com/g) || []).length === 0 &&
+    /if \(!isEmailAllowed\(email\)\)/.test(login) &&
+    /return genericAuthFailure\(password\)/.test(login),
 );
 ok(
   'the create route records who vouched',
