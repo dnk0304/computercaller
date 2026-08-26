@@ -35,20 +35,38 @@ export async function listFreeAccess(signal?: AbortSignal): Promise<FreeAccessLi
   return (await res.json()) as FreeAccessListResponse;
 }
 
-/** Grant free access to an email (idempotent). Returns the upserted entry. */
+/**
+ * Grant (or extend) free access for an email (idempotent upsert).
+ *
+ * `durationDays` is computed CLIENT-side from the picker: a positive integer for
+ * a finite window, or `null`/omitted for a permanent grant. The server owns the
+ * clock — it turns the day count into `expiresAt` — so we only ever send the
+ * count, never a computed date. Re-granting an existing email REFRESHES its
+ * window (extend/renew), which is why the caller's copy reads "Extend" when the
+ * email is already listed.
+ *
+ * Returns the full response — the upserted entry AND `emailSent`, so the caller
+ * can warn when the grant landed but the notification email did not.
+ */
 export async function grantFreeAccess(
   email: string,
   note?: string,
-): Promise<FreeAccessGrantResponse['entry']> {
+  durationDays?: number | null,
+): Promise<FreeAccessGrantResponse> {
+  const payload: { email: string; note?: string; durationDays?: number } = { email };
+  if (note && note.trim()) payload.note = note.trim();
+  // Only send durationDays for a finite window. Omitting it (permanent) and
+  // sending null are equivalent server-side; we omit to keep the body minimal.
+  if (typeof durationDays === 'number') payload.durationDays = durationDays;
+
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(note && note.trim() ? { email, note: note.trim() } : { email }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await readError(res, 'Couldn’t grant free access. Please try again.'));
-  const body = (await res.json()) as FreeAccessGrantResponse;
-  return body.entry;
+  return (await res.json()) as FreeAccessGrantResponse;
 }
 
 /** Revoke free access for an email (idempotent). */

@@ -5,9 +5,20 @@
  *
  * Free access is an email-keyed allowlist, so an email can be granted whether
  * or not an account exists yet. This panel lets Dennis:
- *   • add an email (+ optional note) → grant free access (POST)
- *   • see every current grant, with who/when + whether the email is registered
- *   • remove a grant (DELETE), behind a confirm (it's a billing bypass)
+ *   • add an email (+ optional note) and pick a DURATION → grant free access
+ *     (POST). Presets: 7 / 30 / 90 days / Permanent / Custom. Default 30 days —
+ *     a time-boxed comp is the safer default than a permanent bypass.
+ *   • see every current grant, with who/when, whether the email is registered,
+ *     and its window as a status chip (Permanent / Expires in X days / Expired).
+ *   • remove a grant (DELETE), behind a confirm (it's a billing bypass).
+ *
+ * Re-granting an email that already has a grant REFRESHES/EXTENDS its window
+ * (backend upsert), so the button and success copy read "Extend" for a listed
+ * email rather than implying a duplicate.
+ *
+ * The grant email is best-effort: a mail failure never fails the grant, so when
+ * `emailSent` comes back false we surface a non-blocking warning ("access
+ * granted, but the notification email failed to send").
  *
  * It owns its own fetch of `GET /api/admin/free-access` and reconciles after
  * every mutation. When the allowlist changes it also calls `onChanged` so the
@@ -15,12 +26,13 @@
  * there). Presentation matches the admin dashboard: white cards, slate ramp,
  * violet as the free-access accent, rounded-2xl, visible focus rings.
  *
- * A11y: labelled inputs, `role="status"`/`role="alert"` live regions for async
- * feedback, keyboard-operable controls, confirm dialog for removals.
+ * A11y: labelled inputs, a labelled radiogroup (native radios) for the duration,
+ * `role="status"`/`role="alert"` live regions for async feedback, status chips
+ * that carry text (never colour alone), confirm dialog for removals.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Gift, UserPlus, Loader2, Trash2, AlertCircle, MailX, RefreshCw } from 'lucide-react';
+import { Gift, UserPlus, Loader2, Trash2, AlertCircle, MailX, RefreshCw, X } from 'lucide-react';
 import type { FreeAccessEntry } from './adminTypes';
 import {
   listFreeAccess,
@@ -28,6 +40,15 @@ import {
   revokeFreeAccess,
   sortEntriesNewestFirst,
 } from './freeAccessClient';
+import {
+  DURATION_OPTIONS,
+  DEFAULT_PRESET,
+  MAX_DURATION_DAYS,
+  resolveDurationDays,
+  describeExpiry,
+  type DurationPreset,
+  type ChipTone,
+} from './freeAccessDuration';
 import { formatDate } from './customerRows';
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -40,6 +61,14 @@ type ListState =
   | { kind: 'error'; message: string }
   | { kind: 'ready'; entries: FreeAccessEntry[] };
 
+// Chip tone → Tailwind classes, keyed to the admin dashboard's ramp.
+const CHIP_TONE: Record<ChipTone, string> = {
+  neutral: 'bg-slate-100 text-slate-600 ring-slate-200',
+  accent: 'bg-violet-50 text-violet-700 ring-violet-200',
+  warn: 'bg-amber-50 text-amber-700 ring-amber-200',
+  danger: 'bg-red-50 text-red-700 ring-red-200',
+};
+
 interface FreeAccessManagerProps {
   /** Called after any successful grant/revoke so the parent can reconcile. */
   onChanged?: () => void;
@@ -49,13 +78,18 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
   const [state, setState] = useState<ListState>({ kind: 'loading' });
   const [email, setEmail] = useState('');
   const [note, setNote] = useState('');
+  const [preset, setPreset] = useState<DurationPreset>(DEFAULT_PRESET);
+  const [customDays, setCustomDays] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formOk, setFormOk] = useState<string | null>(null);
+  // Non-blocking warning: the grant succeeded but the notification email didn't.
+  const [mailWarning, setMailWarning] = useState<string | null>(null);
   // Removal confirm + per-row pending.
   const [toRemove, setToRemove] = useState<FreeAccessEntry | null>(null);
   const [removing, setRemoving] = useState<Record<string, boolean>>({});
   const emailRef = useRef<HTMLInputElement>(null);
+  const customRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setState({ kind: 'loading' });
@@ -77,23 +111,60 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
     return () => controller.abort();
   }, [load]);
 
+  const normalizedEmail = email.trim().toLowerCase();
+  const emailValid = useMemo(() => EMAIL_RE.test(normalizedEmail), [normalizedEmail]);
+
+  // Does this email already have a grant? Re-granting extends its window, so the
+  // CTA reads "Extend access" and the success copy says the window was extended.
+  const alreadyListed = useMemo(() => {
+    if (state.kind !== 'ready' || !emailValid) return false;
+    return state.entries.some((e) => e.email.toLowerCase() === normalizedEmail);
+  }, [state, emailValid, normalizedEmail]);
+
+  const clearFeedback = useCallback(() => {
+    if (formError) setFormError(null);
+    if (formOk) setFormOk(null);
+  }, [formError, formOk]);
+
   const handleAdd = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
       setFormError(null);
       setFormOk(null);
-      const value = email.trim().toLowerCase();
-      if (!EMAIL_RE.test(value)) {
+      setMailWarning(null);
+
+      if (!EMAIL_RE.test(normalizedEmail)) {
         setFormError('Enter a valid email address.');
         emailRef.current?.focus();
         return;
       }
+      const duration = resolveDurationDays(preset, customDays);
+      if (!duration.ok) {
+        setFormError(duration.reason);
+        customRef.current?.focus();
+        return;
+      }
+
+      const extending = alreadyListed;
       setSubmitting(true);
       try {
-        await grantFreeAccess(value, note);
+        const { emailSent } = await grantFreeAccess(normalizedEmail, note, duration.days);
+        const windowLabel =
+          duration.days == null ? 'permanent access' : `${duration.days}-day access`;
         setEmail('');
         setNote('');
-        setFormOk(`${value} now has free access.`);
+        setPreset(DEFAULT_PRESET);
+        setCustomDays('');
+        setFormOk(
+          extending
+            ? `${normalizedEmail}’s window was extended — now ${windowLabel}.`
+            : `${normalizedEmail} now has ${windowLabel}.`,
+        );
+        if (!emailSent) {
+          setMailWarning(
+            'Access was granted, but the notification email failed to send. Let them know manually.',
+          );
+        }
         await load();
         onChanged?.();
         emailRef.current?.focus();
@@ -103,7 +174,7 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
         setSubmitting(false);
       }
     },
-    [email, note, load, onChanged],
+    [normalizedEmail, note, preset, customDays, alreadyListed, load, onChanged],
   );
 
   const handleRemove = useCallback(async () => {
@@ -135,7 +206,8 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
   }, [toRemove, load, onChanged]);
 
   const total = state.kind === 'ready' ? state.entries.length : null;
-  const emailValid = useMemo(() => EMAIL_RE.test(email.trim().toLowerCase()), [email]);
+  // Single "now" per render pass so every chip agrees on the clock.
+  const now = Date.now();
 
   return (
     <section
@@ -156,8 +228,8 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
               Free access
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Comp any email — registered or not — with full Pro access. It applies the moment they
-              sign in.
+              Comp any email — registered or not — with full Pro access for a set window. It applies
+              the moment they sign in.
             </p>
           </div>
         </div>
@@ -185,8 +257,7 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
               value={email}
               onChange={(e) => {
                 setEmail(e.target.value);
-                if (formError) setFormError(null);
-                if (formOk) setFormOk(null);
+                clearFeedback();
               }}
               placeholder="person@example.com"
               aria-invalid={email.length > 0 && !emailValid}
@@ -209,17 +280,96 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
               className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-500/20"
             />
           </div>
+        </div>
+
+        {/* Duration picker */}
+        <fieldset className="mt-3">
+          <legend className="mb-1.5 text-xs font-medium text-slate-600">Duration</legend>
+          <div
+            role="radiogroup"
+            aria-label="Free-access duration"
+            className="flex flex-wrap gap-1.5"
+          >
+            {DURATION_OPTIONS.map((opt) => {
+              const active = preset === opt.value;
+              return (
+                <label
+                  key={opt.value}
+                  className={[
+                    'inline-flex cursor-pointer items-center rounded-xl border px-3 py-1.5 text-xs font-semibold transition-colors',
+                    'focus-within:ring-2 focus-within:ring-violet-500/40',
+                    active
+                      ? 'border-violet-300 bg-violet-50 text-violet-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
+                  ].join(' ')}
+                >
+                  <input
+                    type="radio"
+                    name="free-access-duration"
+                    value={opt.value}
+                    checked={active}
+                    onChange={() => {
+                      setPreset(opt.value);
+                      clearFeedback();
+                      if (opt.value === 'custom') {
+                        // Focus the day input once it renders.
+                        requestAnimationFrame(() => customRef.current?.focus());
+                      }
+                    }}
+                    className="sr-only"
+                  />
+                  {opt.label}
+                </label>
+              );
+            })}
+          </div>
+
+          {preset === 'custom' && (
+            <div className="mt-2.5">
+              <label
+                htmlFor="free-access-custom-days"
+                className="mb-1 block text-xs font-medium text-slate-600"
+              >
+                Number of days
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={customRef}
+                  id="free-access-custom-days"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={MAX_DURATION_DAYS}
+                  step={1}
+                  value={customDays}
+                  onChange={(e) => {
+                    setCustomDays(e.target.value);
+                    clearFeedback();
+                  }}
+                  placeholder="e.g. 14"
+                  aria-describedby="free-access-custom-hint"
+                  className="w-28 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                />
+                <span id="free-access-custom-hint" className="text-[11px] text-slate-400">
+                  1–{MAX_DURATION_DAYS} days
+                </span>
+              </div>
+            </div>
+          )}
+        </fieldset>
+
+        <div className="mt-3.5 flex justify-end">
           <button
             type="submit"
             disabled={submitting || !emailValid}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? (
               <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />
             ) : (
               <UserPlus className="h-4 w-4" aria-hidden="true" />
             )}
-            Grant access
+            {alreadyListed ? 'Extend access' : 'Grant access'}
           </button>
         </div>
 
@@ -234,6 +384,23 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
             <Gift className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
             {formOk}
           </p>
+        )}
+        {mailWarning && (
+          <div
+            role="alert"
+            className="mt-2 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800"
+          >
+            <MailX className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+            <span className="flex-1">{mailWarning}</span>
+            <button
+              type="button"
+              onClick={() => setMailWarning(null)}
+              aria-label="Dismiss warning"
+              className="flex-shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/40"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
         )}
       </form>
 
@@ -272,12 +439,30 @@ export function FreeAccessManager({ onChanged }: FreeAccessManagerProps) {
           <ul className="divide-y divide-slate-100">
             {state.entries.map((entry) => {
               const isRemoving = !!removing[entry.id];
+              const chip = describeExpiry(entry, now);
+              const expired = entry.status === 'expired';
               return (
-                <li key={entry.id} className="flex items-center gap-3 px-3 py-2.5">
+                <li
+                  key={entry.id}
+                  className={[
+                    'flex items-center gap-3 px-3 py-2.5',
+                    expired ? 'opacity-70' : '',
+                  ].join(' ')}
+                >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate font-mono text-[13px] text-slate-800" title={entry.email}>
                         {entry.email}
+                      </span>
+                      {/* Status chip — text-first, never colour alone. */}
+                      <span
+                        className={[
+                          'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset',
+                          CHIP_TONE[chip.tone],
+                        ].join(' ')}
+                        title={chip.title}
+                      >
+                        {chip.label}
                       </span>
                       {!entry.registered && (
                         <span

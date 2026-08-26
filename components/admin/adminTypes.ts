@@ -157,6 +157,14 @@ export interface AdminCustomersResponse {
 // an email can be granted free access whether or not an account exists yet.
 // ---------------------------------------------------------------------------
 
+/**
+ * A grant's lifecycle state, derived server-side from `expiresAt` vs now
+ * (single source: `grantStatus`). `'permanent'` = no expiry; `'active'` = has a
+ * future expiry; `'expired'` = the window has lapsed (the row is retained for
+ * audit until explicitly revoked).
+ */
+export type FreeAccessStatus = 'permanent' | 'active' | 'expired';
+
 /** One row of the free-access allowlist. */
 export interface FreeAccessEntry {
   id: string;
@@ -168,6 +176,13 @@ export interface FreeAccessEntry {
   grantedBy: string;
   /** ISO timestamp the grant was created. */
   grantedAt: string;
+  /**
+   * ISO instant the grant lapses, or `null` for a permanent grant
+   * (2026-08-26). Computed server-side from the granted duration.
+   */
+  expiresAt: string | null;
+  /** Derived lifecycle state from `expiresAt` vs now (2026-08-26). */
+  status: FreeAccessStatus;
   /** Whether this email currently maps to a registered account. */
   registered: boolean;
 }
@@ -178,9 +193,16 @@ export interface FreeAccessListResponse {
   meta: { total: number };
 }
 
-/** `POST /api/admin/free-access` response — the upserted grant. */
+/**
+ * `POST /api/admin/free-access` response — the upserted grant plus whether the
+ * best-effort "you've been granted free access" email actually left. A grant
+ * NEVER fails on a mail error, so `emailSent: false` means "access is live but
+ * nobody was told" — the panel surfaces that as a non-blocking warning
+ * (2026-08-26).
+ */
 export interface FreeAccessGrantResponse {
   entry: Omit<FreeAccessEntry, 'registered'>;
+  emailSent: boolean;
 }
 
 /** `DELETE /api/admin/free-access` response. */
