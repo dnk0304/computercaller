@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback, memo } from '
 import { Send, Image, Smile, Search, MoreVertical, Phone, Plus, X, Save, Settings, Edit2, Trash2, ChevronDown, ChevronUp, RefreshCw, Inbox } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDebouncedValue } from '@/hooks';
+import { useFreeTier } from '@/hooks/freeTierContext';
 import type { SmsMessage } from '@/hooks';
 
 interface Conversation {
@@ -189,7 +190,12 @@ const MessageBubble = memo(function MessageBubble({
 // receives a finished string via the stable `onSend` callback.
 
 interface ComposeBarProps {
-  onSend: (text: string) => void;
+  /**
+   * Returns whether the send was ACCEPTED. The compose box only clears on true —
+   * so a send blocked by the free-tier daily cap leaves the user's text intact
+   * (dispatch forge/free-tier-p1: a blocked send must never look like it worked).
+   */
+  onSend: (text: string) => boolean;
   disabled: boolean;
 }
 
@@ -197,15 +203,52 @@ const ComposeBar = memo(function ComposeBar({ onSend, disabled }: ComposeBarProp
   const [messageText, setMessageText] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Free-tier async safety net. The proactive guard (inside onSend) catches the
+  // common at-limit case and returns false WITHOUT clearing. But if the local
+  // usage count was stale (boundary race), onSend returns true, the box clears,
+  // and the relay's LIMIT_REACHED arrives a moment later. `messageBlockNonce`
+  // ticks on that breach; we restore the just-cleared draft so it still never
+  // looks sent. `pendingRestoreRef` holds the text only for a short window after
+  // an accepted send, so a much-later breach can't repopulate stale text.
+  const { messageBlockNonce } = useFreeTier();
+  const pendingRestoreRef = useRef<string>('');
+  const restoreTimerRef = useRef<number | null>(null);
+  const firstNonceRef = useRef<number>(messageBlockNonce);
+
   const send = useCallback(() => {
     const trimmed = messageText.trim();
     if (!trimmed) return;
-    onSend(messageText);
+    const accepted = onSend(messageText);
+    if (!accepted) return; // blocked → keep the text; do NOT clear
+    // Accepted: stash for a brief restore window in case an async breach lands.
+    pendingRestoreRef.current = messageText;
+    if (restoreTimerRef.current) window.clearTimeout(restoreTimerRef.current);
+    restoreTimerRef.current = window.setTimeout(() => {
+      pendingRestoreRef.current = '';
+      restoreTimerRef.current = null;
+    }, 5000);
     setMessageText('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
   }, [messageText, onSend]);
+
+  // Restore a dropped draft when a MESSAGE breach lands shortly after a send.
+  useEffect(() => {
+    if (messageBlockNonce === firstNonceRef.current) return; // no breach yet
+    if (pendingRestoreRef.current) {
+      setMessageText(pendingRestoreRef.current);
+      pendingRestoreRef.current = '';
+      if (restoreTimerRef.current) {
+        window.clearTimeout(restoreTimerRef.current);
+        restoreTimerRef.current = null;
+      }
+    }
+  }, [messageBlockNonce]);
+
+  useEffect(() => () => {
+    if (restoreTimerRef.current) window.clearTimeout(restoreTimerRef.current);
+  }, []);
 
   return (
     <div className="p-4 border-t border-slate-100 bg-white">
@@ -261,6 +304,7 @@ interface SMSInterfaceProps {
 
 export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
   const { sendSms, messages: phoneMessages, contacts, isConnected, getMessages } = usePhone();
+  const { guard } = useFreeTier();
   const [recipientNumber, setRecipientNumber] = useState('');
   const [showTemplateManager, setShowTemplateManager] = useState(false);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
@@ -370,20 +414,27 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
   // Stable send callback handed to ComposeBar. Wrapped in useCallback so the
   // memoized child doesn't re-render when the parent re-renders for unrelated
   // reasons (e.g. new SMS arrives in the thread).
+  // Free-tier proactive guard. Returns whether the send was admitted; the
+  // compose box (ComposeBar) only clears on true, so a blocked send keeps the
+  // user's text. When it returns false it has already opened the block modal.
   const handleSend = useCallback(
-    (text: string) => {
-      if (!recipientNumber) return;
+    (text: string): boolean => {
+      if (!recipientNumber) return false;
+      if (!guard('message')) return false; // at cap → blocked, box stays intact
       sendSms(recipientNumber, text);
+      return true;
     },
-    [recipientNumber, sendSms]
+    [recipientNumber, sendSms, guard]
   );
 
-  // Stable retry handler for failed-message bubbles.
+  // Stable retry handler for failed-message bubbles. Also gated — a retry is a
+  // fresh outbound message and must respect the daily cap.
   const handleRetry = useCallback(
     (address: string, body: string) => {
+      if (!guard('message')) return;
       sendSms(address, body);
     },
-    [sendSms]
+    [sendSms, guard]
   );
 
   return (

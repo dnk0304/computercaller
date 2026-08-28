@@ -133,9 +133,33 @@ export type PhoneEventType =
   // a restart is happening (vs a kick). Treated as a normal reconnect trigger
   // — the auto-reconnect backoff handles it.
   //   payload: {}
-  | 'SERVER_RESTART';
+  | 'SERVER_RESTART'
+  // Free-tier daily cap breach (dispatch forge/free-tier-p1, 2026-08-28). The
+  // relay drops the OUTBOUND call/message frame that would exceed the free
+  // tier's daily cap and sends this back instead. It is NOT a close/kick — the
+  // socket stays open; only the one offending action was refused.
+  //   payload: { kind: 'call' | 'message', limit: number,
+  //              resetAt: number /* epoch-ms of next UTC midnight */,
+  //              cta: 'subscribe' }
+  | 'LIMIT_REACHED';
 
 // Message types to phone
+/**
+ * Free-tier daily-cap breach surfaced to the UI (dispatch forge/free-tier-p1,
+ * 2026-08-28). Built from the relay's `LIMIT_REACHED:{kind,limit,resetAt,cta}`
+ * frame. `nonce` is a client-side monotonic counter (NOT from the wire) so a
+ * consumer can distinguish two consecutive breaches of the same kind.
+ */
+export interface LimitReachedInfo {
+  kind: 'call' | 'message';
+  limit: number;
+  /** Epoch-ms of the next UTC midnight (when the daily counters reset). */
+  resetAt: number;
+  cta: 'subscribe';
+  /** Client-assigned; increments on every breach. */
+  nonce: number;
+}
+
 export type PhoneCommandType =
   | 'MAKE_CALL'
   | 'ANSWER_CALL'

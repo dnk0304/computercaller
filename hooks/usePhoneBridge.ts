@@ -8,7 +8,8 @@ import type {
   CallInfo,
   CallState,
   SmsMessage,
-  CallLogEntry
+  CallLogEntry,
+  LimitReachedInfo
 } from './phoneTypes';
 import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
 import { isPlaceholderAddress, evictHealedPlaceholders } from '@/lib/messagePlaceholders';
@@ -37,6 +38,13 @@ import {
 } from '@/lib/permissionsStatus';
 
 const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
+// Epoch-ms of the next UTC midnight — the free-tier daily-counter reset
+// boundary. Used as a defensive fallback when a LIMIT_REACHED frame arrives
+// without a usable `resetAt` (mirrors the server's own computation in
+// app/api/usage/route.ts). Kept module-scope so it isn't re-created per render.
+function nextUtcMidnightMs(now: Date = new Date()): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0);
+}
 // Defensive client-side TTL for a pending pair request. The relay enforces a
 // 30 s TTL too; this is a belt-and-braces fallback so a lost PAIRING_TIMEOUT
 // frame doesn't strand the UI in 'requesting' forever.
@@ -764,6 +772,17 @@ export function usePhoneBridge() {
   // /api/auth/relay-ticket on a reconnect attempt.
   const [kickedReason, setKickedReason] = useState<'session_superseded' | null>(null);
 
+  // Free-tier daily-cap breach (dispatch forge/free-tier-p1, 2026-08-28). Set
+  // when the relay refuses an OUTBOUND call/message with a LIMIT_REACHED frame.
+  // The socket stays open — this is a per-action refusal, not a kick. The UI
+  // (LimitReachedModal, wired through the FreeTierProvider) renders off this.
+  // `nonce` increments on every breach so a consumer can react to a repeat
+  // breach of the SAME kind (e.g. the compose box restoring a dropped draft)
+  // even when the {kind,resetAt} object is otherwise identical.
+  const [limitReached, setLimitReached] = useState<LimitReachedInfo | null>(null);
+  const clearLimitReached = useCallback(() => setLimitReached(null), []);
+  const limitNonceRef = useRef(0);
+
   // Reconnect tuning constants — backoff base/cap from WIRE-CONTRACT §3.
   // Jitter is a multiplicative 0.5x–1.5x to spread reconnect storms across
   // clients after a server restart.
@@ -1211,6 +1230,69 @@ export function usePhoneBridge() {
         // takes over. Log so the dev console reflects what happened.
         console.log('[PhoneBridge] SERVER_RESTART frame — graceful drain, reconnect imminent');
         setBridgeStatus('reconnecting');
+        break;
+      }
+
+      // ---------- Free-tier daily-cap breach ----------
+      // Dispatch forge/free-tier-p1 (2026-08-28). The relay refused an OUTBOUND
+      // call/message that would exceed the free tier's daily cap and sent this
+      // frame INSTEAD of forwarding it to the phone. The socket stays open.
+      //
+      // Two things happen here:
+      //   1. Surface the breach → the FreeTierProvider opens LimitReachedModal.
+      //   2. Roll back the optimistic row we added when the user acted, so the
+      //      dropped action NEVER looks like it silently worked:
+      //        • kind 'message' → remove the newest still-`pending` outbound row
+      //          (its SEND_SMS was dropped; no SMS_SEND_STATUS will ever arrive
+      //          to advance it, so it would otherwise hang on "sending…").
+      //        • kind 'call'    → remove the newest outbound `dialing` row
+      //          (its MAKE_CALL was dropped; no CALL_ANSWERED/ENDED will arrive).
+      case 'LIMIT_REACHED': {
+        const kind = payload?.kind === 'message' ? 'message' : 'call';
+        const limit =
+          typeof payload?.limit === 'number' && Number.isFinite(payload.limit)
+            ? payload.limit
+            : 0;
+        const resetAt =
+          typeof payload?.resetAt === 'number' && Number.isFinite(payload.resetAt)
+            ? payload.resetAt
+            : nextUtcMidnightMs();
+        console.warn('[PhoneBridge] LIMIT_REACHED — outbound', kind, 'refused by relay', {
+          limit,
+          resetAt,
+        });
+
+        if (kind === 'message') {
+          // Drop the newest optimistic pending outbound message. `messages` is
+          // prepend-ordered (newest first), so the first pending sent row is it.
+          setMessages(prev => {
+            const idx = prev.findIndex(m => m.type === 'sent' && m.status === 'pending');
+            if (idx === -1) return prev;
+            const next = prev.slice();
+            next.splice(idx, 1);
+            return next;
+          });
+        } else {
+          // Drop the newest optimistic outbound dialing call.
+          const list = callsRef.current;
+          let target: string | null = null;
+          for (const c of list) {
+            if (!c.isIncoming && c.state === 'dialing') {
+              // callsRef preserves arrival order; keep scanning to land on the
+              // most-recently added dialing leg.
+              target = c.callId;
+            }
+          }
+          if (target) removeCallLocally(target, false);
+        }
+
+        setLimitReached({
+          kind,
+          limit,
+          resetAt,
+          cta: 'subscribe',
+          nonce: limitNonceRef.current++,
+        });
         break;
       }
 
@@ -3989,6 +4071,14 @@ export function usePhoneBridge() {
     //                            full-screen <KickedSessionGate> renders.
     bridgeStatus,
     kickedReason,
+
+    // Free-tier daily-cap breach (dispatch forge/free-tier-p1, 2026-08-28). Set
+    // when the relay refuses an OUTBOUND call/message; null otherwise. The
+    // FreeTierProvider reads this to open LimitReachedModal and to signal the
+    // compose box that a draft was dropped (via the incrementing `nonce`).
+    // `clearLimitReached` dismisses it.
+    limitReached,
+    clearLimitReached,
 
     // Lobby / Connect+Accept state (dispatch #32, 2026-05-25). Pixel renders
     // the entire pair-handshake UI off these fields. See lib/lobbyState.ts.

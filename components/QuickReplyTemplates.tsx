@@ -56,6 +56,12 @@ export function QuickReplyTemplates() {
   const showUpgradeNudge = capReached && limit <= 3;
   const nudgeNoun = count === 1 ? 'quick reply' : 'quick replies';
 
+  // FREE-TIER FEATURE LOCK (dispatch forge/free-tier-p1, 2026-08-28). Free (and
+  // trial) carry a quick-replies limit of 0 — a paid unlock, not an empty list.
+  // Render a dedicated upgrade tease instead of the disabled "create your first"
+  // affordance, and suppress the redundant "0/0 used" nudge + header controls.
+  const featureLocked = !loading && limit === 0;
+
   // Inline delete confirmation: hold the id of the item in "click to confirm" state.
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const pendingDeleteTimerRef = useRef<number | null>(null);
@@ -172,28 +178,30 @@ export function QuickReplyTemplates() {
             Used only on incoming calls — not in your regular messages.
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          <button
-            onClick={openNewForm}
-            disabled={atCap || loading}
-            aria-describedby={atCap ? 'quick-reply-cap-notice' : undefined}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:bg-blue-600 disabled:shadow-none"
-          >
-            <Plus className="w-5 h-5" aria-hidden="true" />
-            <span>New quick reply</span>
-          </button>
-          {!loading && (
-            <p
-              className="text-xs font-medium text-slate-400 tabular-nums"
-              aria-live="polite"
+        {!featureLocked && (
+          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+            <button
+              onClick={openNewForm}
+              disabled={atCap || loading}
+              aria-describedby={atCap ? 'quick-reply-cap-notice' : undefined}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:bg-blue-600 disabled:shadow-none"
             >
-              {count} / {limit} quick replies
-            </p>
-          )}
-        </div>
+              <Plus className="w-5 h-5" aria-hidden="true" />
+              <span>New quick reply</span>
+            </button>
+            {!loading && (
+              <p
+                className="text-xs font-medium text-slate-400 tabular-nums"
+                aria-live="polite"
+              >
+                {count} / {limit} quick replies
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
-      {capReached && (
+      {capReached && !featureLocked && (
         showUpgradeNudge ? (
           <div
             id="quick-reply-cap-notice"
@@ -243,6 +251,25 @@ export function QuickReplyTemplates() {
             aria-hidden="true"
           />
           <p className="mt-4 text-sm text-slate-400">Loading your quick replies…</p>
+        </div>
+      ) : featureLocked ? (
+        /* Free-tier upgrade tease — quick replies are a paid unlock. */
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-blue-200 bg-blue-50/40 px-6 py-12 text-center">
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-100 text-blue-600">
+            <MessageSquareReply className="h-8 w-8" aria-hidden="true" />
+          </div>
+          <h3 className="text-lg font-semibold text-slate-800">Decline a call with a tap</h3>
+          <p className="mt-1.5 max-w-sm text-sm text-slate-600">
+            Quick replies let you reject an incoming call and text the caller back in one step.
+            They’re included on a paid plan.
+          </p>
+          <a
+            href="/subscribe"
+            className="mt-5 inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+          >
+            <Sparkles className="h-4 w-4" aria-hidden="true" />
+            Unlock quick replies
+          </a>
         </div>
       ) : quickReplies.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-center">

@@ -61,6 +61,13 @@ export const Templates = () => {
   const capReached = atCap || showCapNotice;
   const showUpgradeNudge = capReached && limit < 30;
 
+  // FREE-TIER FEATURE LOCK (dispatch forge/free-tier-p1, 2026-08-28). The free
+  // tier's templates limit is 0 — the feature isn't broken, it's a paid unlock.
+  // We render a dedicated upgrade-tease empty state (below) instead of the
+  // "No templates yet / Create your first template" affordance, and suppress the
+  // redundant "0/0 used" cap nudge so the tease is the single, clean message.
+  const featureLocked = !loading && limit === 0;
+
   // Inline delete confirmation: hold the id of the template currently in the "click to confirm" state.
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const pendingDeleteTimerRef = useRef<number | null>(null);
@@ -181,28 +188,32 @@ export const Templates = () => {
           <h2 className="text-2xl font-bold text-slate-800">Message Templates</h2>
           <p className="text-slate-500">Manage your quick responses</p>
         </div>
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          <button
-            onClick={openNewForm}
-            disabled={atCap || loading}
-            aria-describedby={atCap ? 'template-cap-notice' : undefined}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:bg-blue-600 disabled:shadow-none"
-          >
-            <Plus className="w-5 h-5" aria-hidden="true" />
-            <span>New Template</span>
-          </button>
-          {/* Calm count line — matches the SyncSetupPanel count-line style Dennis liked. */}
-          {!loading && (
-            <p className="text-xs font-medium text-slate-400 tabular-nums" aria-live="polite">
-              {count} / {limit} templates
-            </p>
-          )}
-        </div>
+        {/* The create affordance + count line are hidden on the free tier
+            (limit 0) — the upgrade tease below carries the single CTA. */}
+        {!featureLocked && (
+          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+            <button
+              onClick={openNewForm}
+              disabled={atCap || loading}
+              aria-describedby={atCap ? 'template-cap-notice' : undefined}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:bg-blue-600 disabled:shadow-none"
+            >
+              <Plus className="w-5 h-5" aria-hidden="true" />
+              <span>New Template</span>
+            </button>
+            {/* Calm count line — matches the SyncSetupPanel count-line style Dennis liked. */}
+            {!loading && (
+              <p className="text-xs font-medium text-slate-400 tabular-nums" aria-live="polite">
+                {count} / {limit} templates
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Cap notice. Shown at the cap, or after a 409 race. Two variants:
           upgrade nudge (trial) vs calm "delete one" (paying). */}
-      {capReached && (
+      {capReached && !featureLocked && (
         showUpgradeNudge ? (
           <div
             id="template-cap-notice"
@@ -245,6 +256,26 @@ export const Templates = () => {
         >
           <div className="h-8 w-8 rounded-full border-2 border-slate-200 border-t-blue-500 motion-safe:animate-spin" aria-hidden="true" />
           <p className="mt-4 text-sm text-slate-400">Loading your templates…</p>
+        </div>
+      ) : featureLocked ? (
+        /* Free-tier upgrade tease — the feature is a paid unlock, not empty. */
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-blue-200 bg-blue-50/40 px-6 py-16 text-center">
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-100 text-blue-600">
+            <FileText className="h-8 w-8" aria-hidden="true" />
+          </div>
+          <h3 className="text-lg font-semibold text-slate-800">Save your go-to messages</h3>
+          <p className="mt-1.5 max-w-sm text-sm text-slate-600">
+            Message templates let you insert your most-used replies in one tap. They’re included
+            on a paid plan.
+          </p>
+          <button
+            type="button"
+            onClick={() => openUpgrade('templates')}
+            className="mt-5 inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-blue-600/20 transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+          >
+            <Sparkles className="h-4 w-4" aria-hidden="true" />
+            Unlock templates
+          </button>
         </div>
       ) : templates.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">

@@ -22,6 +22,7 @@
 //      globally is safe: the modal only appears on explicit user action.
 import { DashboardTabProvider, PhoneModeProvider } from '@/hooks';
 import { UpgradeModalProvider } from '@/hooks/upgradeModalContext';
+import { FreeTierProvider } from '@/hooks/freeTierContext';
 import { AppShell } from '@/components/AppShell';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
@@ -59,7 +60,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 ONE /api/entitlement read and ONE upgrade-modal instance. The
                 modal itself is rendered inside the provider. */}
             <UpgradeModalProvider>
-              <AppShell>{children}</AppShell>
+              {/* FreeTierProvider (Pixel, forge/free-tier-p1, 2026-08-28) — owns
+                  the daily-usage snapshot, the proactive pre-send guard, and the
+                  LimitReachedModal. Inside UpgradeModalProvider so the block
+                  modal's Subscribe CTA reuses the existing Whop checkout. Wraps
+                  AppShell so both the desktop header meter and the Phone Mode
+                  strip are inside the provider. */}
+              <FreeTierProvider>
+                <AppShell>{children}</AppShell>
+              </FreeTierProvider>
               <SyncSetupPanel />
             </UpgradeModalProvider>
             {/* Web idle/inactivity logout (2026-07-27, forge/web-idle-timeout).

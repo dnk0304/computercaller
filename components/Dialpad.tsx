@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Phone, Delete, Video, Mic, MoreVertical } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
+import { useFreeTier } from '@/hooks/freeTierContext';
 
 interface DialpadProps {
   isCompact?: boolean;
@@ -11,6 +12,9 @@ interface DialpadProps {
 
 export const Dialpad = ({ isCompact = false }: DialpadProps) => {
   const { makeCall } = usePhone();
+  const { guard } = useFreeTier();
+  // Guarded dial — free-tier daily cap opens the block modal instead of dialing.
+  const dial = (n: string) => { if (guard('call')) makeCall(n); };
   const [number, setNumber] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -44,7 +48,7 @@ export const Dialpad = ({ isCompact = false }: DialpadProps) => {
       handleDelete();
     } else if (e.key === 'Enter' && number) {
       e.preventDefault();
-      makeCall(number);
+      dial(number);
     }
   };
 
@@ -141,7 +145,7 @@ export const Dialpad = ({ isCompact = false }: DialpadProps) => {
         )}
 
         <button 
-          onClick={() => number && makeCall(number)}
+          onClick={() => number && dial(number)}
           className={clsx(
             "rounded-full bg-green-500 hover:bg-green-600 shadow-lg shadow-green-200 active:scale-95 transition-all flex items-center justify-center text-white",
             isCompact ? "w-14 h-14" : "w-20 h-20"

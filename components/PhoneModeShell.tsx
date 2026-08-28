@@ -50,6 +50,8 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
+import { UsageMeter } from '@/components/UsageMeter';
+import { useFreeTier } from '@/hooks/freeTierContext';
 import {
   usePhone,
   useNotifications,
@@ -254,6 +256,7 @@ function TabButton({ active, onClick, icon, label, badge }: TabButtonProps) {
 
 function DialerView() {
   const { makeCall, callLogs } = usePhone();
+  const { guard } = useFreeTier();
   const [digits, setDigits] = useState<string>('');
 
   // Newest 15 unique numbers, deduped — surface the "redial" affordance.
@@ -282,7 +285,7 @@ function DialerView() {
 
   const dialKey = (d: string) => setDigits(prev => (prev.length < 15 ? prev + d : prev));
   const backspace = () => setDigits(prev => prev.slice(0, -1));
-  const call = () => digits && makeCall(digits);
+  const call = () => { if (digits && guard('call')) makeCall(digits); };
 
   const keys: { d: string; sub?: string }[] = [
     { d: '1' }, { d: '2', sub: 'ABC' }, { d: '3', sub: 'DEF' },
@@ -390,12 +393,12 @@ function DialerView() {
                   tabIndex={0}
                   onClick={() => {
                     if (window.getSelection()?.toString()) return;
-                    makeCall(r.number);
+                    if (guard('call')) makeCall(r.number);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      makeCall(r.number);
+                      if (guard('call')) makeCall(r.number);
                     }
                   }}
                   className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 px-3 py-2 text-left focus:outline-none focus-visible:bg-slate-50"
@@ -567,6 +570,7 @@ interface ThreadViewProps {
 
 function ThreadView({ threadId }: ThreadViewProps) {
   const { messages, contacts, sendSms, makeCall } = usePhone();
+  const { guard } = useFreeTier();
   const { pop } = usePhoneMode();
 
   const threadMessages = useMemo(
@@ -610,7 +614,7 @@ function ThreadView({ threadId }: ThreadViewProps) {
         <p className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-800">{displayName}</p>
         <button
           type="button"
-          onClick={() => makeCall(threadId)}
+          onClick={() => { if (guard('call')) makeCall(threadId); }}
           className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-emerald-50 hover:text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
           aria-label={`Call ${displayName}`}
           title={`Call ${displayName}`}
@@ -650,13 +654,21 @@ function ThreadView({ threadId }: ThreadViewProps) {
       {/* Sticky compose. key={threadId} on the parent component (PhoneModeShell
           uses keyed rendering) ensures opening thread B after thread A doesn't
           leak the previous draft — risk #6 mitigation. */}
-      <ThreadCompose onSend={(text) => sendSms(threadId, text)} />
+      <ThreadCompose
+        onSend={(text) => {
+          // Free-tier guard — blocked sends return false so the draft stays.
+          if (!guard('message')) return false;
+          sendSms(threadId, text);
+          return true;
+        }}
+      />
     </div>
   );
 }
 
 interface ThreadComposeProps {
-  onSend: (text: string) => void;
+  /** Returns whether the send was accepted; the box only clears on true. */
+  onSend: (text: string) => boolean;
 }
 
 function ThreadCompose({ onSend }: ThreadComposeProps) {
@@ -666,7 +678,7 @@ function ThreadCompose({ onSend }: ThreadComposeProps) {
   const send = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    onSend(text);
+    if (!onSend(text)) return; // blocked → keep the draft
     setText('');
     if (ref.current) ref.current.style.height = 'auto';
   }, [text, onSend]);
@@ -742,6 +754,7 @@ function ThreadCompose({ onSend }: ThreadComposeProps) {
 
 function ComposeView() {
   const { sendSms } = usePhone();
+  const { guard } = useFreeTier();
   const { pop, push } = usePhoneMode();
   const [recipient, setRecipient] = useState('');
   const [text, setText] = useState('');
@@ -750,6 +763,9 @@ function ComposeView() {
 
   const handleSend = () => {
     if (!canSend) return;
+    // Free-tier guard — if blocked, keep the draft AND stay on this screen
+    // (do not navigate into a thread as if the message went out).
+    if (!guard('message')) return;
     sendSms(recipient, text);
     // After sending, dive into the thread we just started — feels more
     // natural than dropping back to the list.
@@ -1133,6 +1149,9 @@ export function PhoneModeShell() {
           onSelect={setTab}
         />
       )}
+      {/* Free-tier usage strip (Pixel, forge/free-tier-p1, 2026-08-28) — thin
+          bar under the tab bar. Self-hides for unlimited (paid) tiers. */}
+      {activeTab && <UsageMeter variant="strip" />}
       <div className="flex-1 overflow-hidden">
         {renderView(current)}
       </div>
