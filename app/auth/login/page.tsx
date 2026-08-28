@@ -72,6 +72,11 @@ function LoginForm() {
       case 'google_error':
       case 'google_internal_error':
         return 'Google sign-in failed. Please try again or use email and password.';
+      // Email-verification link failures (forge/free-signup-verification).
+      case 'invalid_token':
+        return 'That verification link is invalid or has already been used. You can request a new one below.';
+      case 'expired_token':
+        return 'That verification link has expired. You can request a new one below.';
       default:
         return null;
     }
