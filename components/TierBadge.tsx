@@ -25,6 +25,10 @@ import type { ResolvedTier } from '@/lib/tiers';
 // prompt, since their entitlement.upgrade already targets $5). `plus` is the
 // $5 promoted plan; `pro` the $7 upgrade; `solo` is grandfathered-legacy only.
 const TIER_LABEL: Record<ResolvedTier, string> = {
+  // `free` (dispatch forge/free-tier-p1) — the no-card entry tier. Default label
+  // + style below are a type-complete placeholder for Pixel to restyle; clicking
+  // the pill opens the subscribe prompt (entitlement.upgrade → 'subscribe').
+  free: 'Free',
   trial: 'Free trial',
   solo: 'Solo',
   plus: 'Plus',
@@ -35,6 +39,7 @@ const TIER_LABEL: Record<ResolvedTier, string> = {
 // spelled out). Trial is a calm amber; solo quiet slate; plus the promoted
 // blue; pro an indigo→violet gradient for the top tier.
 const TIER_STYLE: Record<ResolvedTier, string> = {
+  free: 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100',
   trial: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100',
   solo: 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
   plus: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100',

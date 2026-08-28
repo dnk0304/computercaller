@@ -21,7 +21,7 @@ export type Tier = 'solo' | 'plus' | 'pro';
  * limited `trial` tier (2026-08-17). Only the entitlement layer produces
  * `trial`; the presentation layer maps it however it likes.
  */
-export type ResolvedTier = Tier | 'trial';
+export type ResolvedTier = Tier | 'trial' | 'free';
 
 /** Grandfathered-world tiers (no 'trial': a grandfathered trial keeps its plan's full tier). */
 export type GrandfatheredTier = Tier;
@@ -39,6 +39,14 @@ export interface TierLimits {
   calls?: boolean;
   /** Descriptive: trial receives notifications (ON). Present only on the `trial` set. */
   notifications?: boolean;
+  /**
+   * Daily OUTBOUND call cap (dispatch forge/free-tier-p1). Present ONLY on the
+   * `free` set — a finite number here marks the tier as metered by the relay;
+   * every paid tier omits it (→ unlimited). Resets at midnight UTC.
+   */
+  callsPerDay?: number;
+  /** Daily OUTBOUND message cap. Present ONLY on the `free` set; see callsPerDay. */
+  messagesPerDay?: number;
 }
 
 /** Machine-readable upgrade signal for a tier at a cap (Pixel renders the prompt). */
@@ -95,5 +103,5 @@ export function syncSinceFloorMsFromLimits(
 /** The upgrade path to offer when a tier hits a cap. */
 export function upgradePathForTier(tier: string): UpgradePath;
 
-/** The two upgrade reason strings, named. */
-export const UPGRADE_REASON: { TRIAL_LIMIT: string; PLUS_LIMIT: string };
+/** The upgrade reason strings, named. */
+export const UPGRADE_REASON: { FREE_LIMIT: string; TRIAL_LIMIT: string; PLUS_LIMIT: string };

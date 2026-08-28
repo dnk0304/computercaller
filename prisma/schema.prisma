@@ -127,6 +127,11 @@ model User {
   // it can open with a name. Nullable → additive, zero data loss, and every
   // existing row stays valid.
   name                String?
+  // Daily outbound usage counters (2026-08-28, dispatch forge/free-tier-p1).
+  // One row per (user, UTC day) tracking free-tier daily call/message caps.
+  // onDelete: Cascade so deleting a user removes their counters. Additive
+  // virtual relation field (no column on User) → `prisma db push` clean.
+  usageCounters       UsageCounter[]
 
   @@index([whopUserId])
   // Set-password / reset tokens are looked up BY TOKEN HASH (see
@@ -533,4 +538,33 @@ model PartnerApiKey {
 
   @@index([partnerId])
   @@index([status])
+}
+
+// UsageCounter (2026-08-28, dispatch forge/free-tier-p1). Per-user, per-UTC-day
+// tally of OUTBOUND actions, used ONLY to enforce the free tier's daily caps
+// (20 calls / 10 messages). One row per (userId, dayKey); the relay does an
+// ATOMIC check-and-increment (INSERT … ON CONFLICT DO UPDATE … WHERE col < cap
+// RETURNING) so two racing frames can never both slip past the cap — no
+// read-modify-write. Paid tiers carry no daily cap, so the relay never touches
+// this table for them (zero new DB traffic for paying users). INBOUND events
+// (SMS_RECEIVED, incoming CALL_*, sync chunks) are NEVER counted here.
+//
+// Fully ADDITIVE (new table only, FK to User) → Coolify's pre-deploy
+// `prisma db push` applies it with zero data loss. Old rows are lazily ignored
+// (dayKey advances at midnight UTC); a cheap prune can come later — not P1.
+//   dayKey    — 'YYYY-MM-DD' in UTC. The reset boundary is UTC midnight.
+//   calls     — outbound calls placed this UTC day.
+//   messages  — outbound SMS sent this UTC day.
+model UsageCounter {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dayKey    String   // 'YYYY-MM-DD' (UTC)
+  calls     Int      @default(0)
+  messages  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, dayKey])
+  @@index([userId])
 }

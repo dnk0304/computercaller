@@ -213,17 +213,26 @@ const VER0 = { userId: 'u', ver: 0 };
     eq('3c. grandfathered trial keeps its plan full tier (plus)', d.tier, 'plus');
   }
 
-  // 4. UNENTITLED USERS STILL GET 403 — the paywall must be byte-stable.
+  // 4. NO SUBSCRIPTION → FREE TIER admits at the relay (dispatch
+  //    forge/free-tier-p1, 2026-08-28). CHANGED DELIBERATELY: previously a
+  //    never-subscribed user got 403 subscription_required. Free tier makes them
+  //    the no-card entry point — they mint a relay ticket and drive the phone,
+  //    with the daily 20-call / 10-message caps enforced at the frame gate
+  //    (server.js), NOT here. The relay-ticket route needs NO code change: it
+  //    keys on ent.allowed, which is now true for free_tier.
   {
     const db = makeDb({
       user: { isAdmin: false, email: NOT_ALLOWLISTED, subscription: null },
       freeAccess: false,
     });
     const d = await relayTicketDecision(db, VER0, NOW);
-    eq('4. never-paid user is denied', d.status, 403);
-    eq('4. body is subscription_required', d.body, 'subscription_required');
-    eq('4. state is none', d.state, 'none');
+    eq('4. free-tier user mints a ticket', d.status, 200);
+    eq('4. state is free_tier', d.state, 'free_tier');
+    eq('4. free-tier resolves to the free tier', d.tier, 'free');
   }
+  // 4a. an EXPIRED trial is still denied — free tier is only for NO subscription
+  //     row, never a lapsed one (that row hits rule 6 → trial_expired → 403).
+  //     Paywall byte-stable for every legacy trial/expired row.
   {
     const db = makeDb({
       user: {

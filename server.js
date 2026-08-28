@@ -934,6 +934,100 @@ function startRelay(httpServer) {
     return false;
   }
 
+  /** 'YYYY-MM-DD' in UTC for a Date — the free-tier daily-counter bucket key. */
+  function utcDayKey(d) {
+    return d.toISOString().slice(0, 10);
+  }
+
+  /** Epoch-ms of the next UTC midnight after `d` — when the daily counters reset. */
+  function nextUtcMidnightMs(d) {
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
+  }
+
+  /**
+   * FREE-TIER daily OUTBOUND cap gate (2026-08-28, dispatch forge/free-tier-p1).
+   *
+   * The relay is the ONLY server chokepoint for MAKE_CALL / SEND_SMS (the browser
+   * drives the phone directly over this WS, no REST), so the free tier's daily
+   * caps (20 calls / 10 messages) MUST be enforced here, server-authoritative.
+   *
+   * Only tiers that carry a FINITE `callsPerDay` / `messagesPerDay` in their
+   * cached limits are metered — i.e. the `free` tier alone. Every paid tier omits
+   * those fields, so this returns null (unlimited) immediately with ZERO DB
+   * traffic for paying users. INBOUND frames never reach this (it is called only
+   * on the active-browser→phone data-plane forward, and matches only the two
+   * outbound verbs).
+   *
+   * The check-and-increment is a SINGLE atomic statement (INSERT … ON CONFLICT DO
+   * UPDATE … WHERE col < cap RETURNING) so two racing frames can never both slip
+   * past the cap — no read-modify-write. On breach: 0 rows returned → blocked. On
+   * pass: the counter is incremented and the frame is forwarded (increment-then-
+   * forward; a dropped/blocked frame never increments — the WHERE fails so no
+   * write happens).
+   *
+   * FAIL-OPEN on a DB error: a counter-store outage must NOT block a legitimate
+   * action. Admission (the money gate) already happened at the entitlement
+   * chokepoint; this is a usage cap, not the paywall.
+   *
+   * @param {{userId:string, tierLimits?:object}} ws
+   * @param {string} msg  the browser→phone frame about to be forwarded
+   * @returns {Promise<null | {blocked:boolean, kind:'call'|'message', limit:number, resetAt:number}>}
+   */
+  async function checkDailyOutboundLimit(ws, msg) {
+    const limits = ws.tierLimits || {};
+    let kind;
+    let cap;
+    let column;
+    if (msg.startsWith('MAKE_CALL')) {
+      kind = 'call';
+      cap = limits.callsPerDay;
+      column = 'calls';
+    } else if (msg.startsWith('SEND_SMS')) {
+      kind = 'message';
+      cap = limits.messagesPerDay;
+      column = 'messages';
+    } else {
+      return null; // not a metered frame
+    }
+    // Unlimited tier (no finite cap field) → never metered, no DB touch.
+    if (typeof cap !== 'number' || !Number.isFinite(cap)) return null;
+
+    const now = new Date();
+    const dayKey = utcDayKey(now);
+    const resetAt = nextUtcMidnightMs(now);
+
+    // A non-positive cap blocks unconditionally without a DB round-trip (the
+    // atomic INSERT below would otherwise seed a first row at 1 and wrongly
+    // admit it). Defensive: the free tier's caps are 20/10, never ≤ 0.
+    if (cap < 1) return { blocked: true, kind, limit: cap, resetAt };
+
+    const callSeed = kind === 'call' ? 1 : 0;
+    const msgSeed = kind === 'message' ? 1 : 0;
+    try {
+      // Column names are code-controlled literals (never user input); the
+      // user-supplied values (id/userId/dayKey/cap) are bound parameters.
+      const rows = await db.$queryRawUnsafe(
+        `INSERT INTO "UsageCounter" ("id","userId","dayKey","calls","messages","createdAt","updatedAt")
+         VALUES ($1,$2,$3,${callSeed},${msgSeed},now(),now())
+         ON CONFLICT ("userId","dayKey")
+         DO UPDATE SET "${column}" = "UsageCounter"."${column}" + 1, "updatedAt" = now()
+         WHERE "UsageCounter"."${column}" < $4
+         RETURNING "${column}" AS used`,
+        crypto.randomUUID(),
+        ws.userId,
+        dayKey,
+        cap,
+      );
+      if (!rows || rows.length === 0) {
+        return { blocked: true, kind, limit: cap, resetAt };
+      }
+      return { blocked: false, kind, limit: cap, resetAt };
+    } catch (e) {
+      console.error(`[Relay] usage-meter error (fail-open, user=${ws.userId} kind=${kind}): ${e.message}`);
+      return null;
+    }
+  }
+
   /**
    * Tier-gate a BROWSER→phone frame (2026-07-27, dispatch feature/tier-gating).
    * The relay is the ONLY server chokepoint for contact-sync + sync-range: the
@@ -1571,11 +1665,16 @@ function startRelay(httpServer) {
       })}`);
     }
 
-    ws.on('message', (data) => {
+    ws.on('message', async (data) => {
       // F-C: inbound traffic is liveness proof. Reset before the body runs.
       ws.missedPongs = 0;
       // F-D: same try/catch envelope as the phone branch — drop frame on
       // handler throw, keep socket alive.
+      // ASYNC (2026-08-28, forge/free-tier-p1): the handler is async so the
+      // free-tier daily-cap gate can await an atomic DB check-and-increment
+      // before forwarding MAKE_CALL/SEND_SMS. Every OTHER frame path has no
+      // await and runs exactly as before (synchronously to its `return`); the
+      // ws 'message' listener ignores the returned promise.
       const msg = data.toString();
       rlog(`[Relay][${redactToken(token)}] Browser ->`, msg.substring(0, 80));
 
@@ -1625,6 +1724,21 @@ function startRelay(httpServer) {
 
       // Data plane — only allowed when this socket is the active browser.
       if (ws === room.active.browser) {
+        // FREE-TIER daily outbound cap (2026-08-28, forge/free-tier-p1). Meter
+        // MAKE_CALL/SEND_SMS here — the ONLY point a frame is about to be
+        // forwarded to the phone (so we count only a real, successful outbound;
+        // a frame dropped for "no active phone" below never counts because the
+        // atomic increment only happens on a pass). Unlimited (paid) tiers →
+        // null, no DB touch. On breach: DROP the frame + tell the browser.
+        const meter = await checkDailyOutboundLimit(ws, forwardMsg);
+        if (meter && meter.blocked) {
+          rlog(`[Relay][${redactToken(token)}] Free-tier daily ${meter.kind} cap hit (tier=${ws.tier} limit=${meter.limit}) — frame DROPPED`);
+          safeSend(
+            ws,
+            `LIMIT_REACHED:${JSON.stringify({ kind: meter.kind, limit: meter.limit, resetAt: meter.resetAt, cta: 'subscribe' })}`,
+          );
+          return;
+        }
         try {
           if (!forwardDataPlane(room, ws, forwardMsg)) {
             rlog(`[Relay][${redactToken(token)}] Browser data frame dropped — no active phone`);
@@ -1639,8 +1753,26 @@ function startRelay(httpServer) {
       // A frame from a lobby browser while a soft-held survivor phone is waiting
       // means the pair hasn't re-formed yet. Re-form now, or passthrough to the
       // held survivor phone, instead of dropping (Bug A, browser→phone half).
-      if (!LEGACY_RESUME_TEARDOWN && deliverLobbyFrameDuringResume(room, ws, forwardMsg, 'browser', token)) {
-        return;
+      //
+      // FREE-TIER meter (2026-08-28, forge/free-tier-p1): this passthrough also
+      // reaches the phone, so a MAKE_CALL/SEND_SMS crossing it during a resume
+      // window must be metered too — otherwise the daily cap could be bypassed
+      // by acting mid-reconnect. checkDailyOutboundLimit is a no-op for every
+      // non-outbound frame (returns null), so control/resume frames are
+      // unaffected. On breach: drop + notify, exactly as the active-pair path.
+      if (!LEGACY_RESUME_TEARDOWN) {
+        const meter = await checkDailyOutboundLimit(ws, forwardMsg);
+        if (meter && meter.blocked) {
+          rlog(`[Relay][${redactToken(token)}] Free-tier daily ${meter.kind} cap hit during resume (limit=${meter.limit}) — frame DROPPED`);
+          safeSend(
+            ws,
+            `LIMIT_REACHED:${JSON.stringify({ kind: meter.kind, limit: meter.limit, resetAt: meter.resetAt, cta: 'subscribe' })}`,
+          );
+          return;
+        }
+        if (deliverLobbyFrameDuringResume(room, ws, forwardMsg, 'browser', token)) {
+          return;
+        }
       }
 
       // Anything else from a lobby browser (e.g. legacy CONNECT_TO from a

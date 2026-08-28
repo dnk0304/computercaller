@@ -11,9 +11,11 @@ import { evaluateEntitlement, isFreeAccessEmail } from '@/lib/entitlement';
 //
 // Response (200) — shape extended 2026-08-17 (dispatch forge/pricing-trial-limited):
 // {
-//   tier: 'trial' | 'solo' | 'plus' | 'pro',
-//   state: 'active' | 'trialing' | 'trial_expired' | 'expired' | 'none' | 'admin' | 'allowlisted' | 'free_access',
-//   allowed: boolean,
+//   tier: 'free' | 'trial' | 'solo' | 'plus' | 'pro',
+//   state: 'active' | 'trialing' | 'trial_expired' | 'expired' | 'free_tier' | 'none' | 'admin' | 'allowlisted' | 'free_access',
+//   allowed: boolean,   // NOTE: 'free_tier' is ALLOWED — a no-subscription user
+//                       // now lands in the FULL app (free tier), not /subscribe.
+//                       // Daily call/message usage is served by GET /api/usage.
 //   trialDaysLeft: number | null,
 //   grandfathered: boolean,           // ADDED — true = pre-launch row, frozen caps
 //   limits: { templates, quickReplies, syncRangeMax, contactSync },

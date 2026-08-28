@@ -90,6 +90,17 @@ eq('gf: unknown → solo', planIdToTierGrandfathered('nope'), 'solo');
 }
 
 // ── 2. tier → limit set (NEW world) ─────────────────────────────────────────
+// FREE TIER (forge/free-tier-p1): 6-key set, carries the two daily-cap fields
+// (callsPerDay/messagesPerDay) that mark it as relay-metered. No paid tier does.
+eq('free limits (daily-capped entry point)', TIER_LIMITS.free, {
+  templates: 0, quickReplies: 0, syncRangeMax: '14d', contactSync: true, callsPerDay: 20, messagesPerDay: 10,
+});
+eq('free carries callsPerDay', TIER_LIMITS.free.callsPerDay, 20);
+eq('free carries messagesPerDay', TIER_LIMITS.free.messagesPerDay, 10);
+eq('solo has NO callsPerDay (unlimited)', 'callsPerDay' in TIER_LIMITS.solo, false);
+eq('plus has NO callsPerDay (unlimited)', 'callsPerDay' in TIER_LIMITS.plus, false);
+eq('pro has NO messagesPerDay (unlimited)', 'messagesPerDay' in TIER_LIMITS.pro, false);
+eq('trial has NO callsPerDay (unlimited)', 'callsPerDay' in TIER_LIMITS.trial, false);
 eq('trial limits (limited)', TIER_LIMITS.trial, {
   templates: 1, quickReplies: 0, syncRangeMax: '3d', contactSync: true, calls: true, notifications: true,
 });
@@ -118,6 +129,7 @@ eq('gf has no trial key', 'trial' in GRANDFATHERED_TIER_LIMITS, false);
 
 // ── 3. since-floor ──────────────────────────────────────────────────────────
 const NOW = 1_800_000_000_000;
+eq('free floor = now − 14d', syncSinceFloorMs('free', NOW), NOW - 14 * DAY_MS);
 eq('trial floor = now − 3d', syncSinceFloorMs('trial', NOW), NOW - 3 * DAY_MS);
 eq('solo floor = now − 30d', syncSinceFloorMs('solo', NOW), NOW - 30 * DAY_MS);
 eq('plus floor = now − 90d (3mo)', syncSinceFloorMs('plus', NOW), NOW - 90 * DAY_MS);
@@ -128,6 +140,7 @@ eq('gf-plus limits floor = 180d', syncSinceFloorMsFromLimits(GRANDFATHERED_TIER_
 eq('trial limits floor = 3d', syncSinceFloorMsFromLimits(TIER_LIMITS.trial, NOW), NOW - 3 * DAY_MS);
 
 // ── 3b. upgrade-path signal ─────────────────────────────────────────────────
+eq('free → subscribe ($5)', upgradePathForTier('free'), { reason: 'free-limit-hit', cta: 'subscribe', targetTier: 'plus' });
 eq('trial → activate $5', upgradePathForTier('trial'), { reason: 'trial-limit-hit', cta: 'activate-5', targetTier: 'plus' });
 eq('plus → upgrade $7', upgradePathForTier('plus'), { reason: 'plus-limit-hit', cta: 'upgrade-7', targetTier: 'pro' });
 eq('pro → nowhere up', upgradePathForTier('pro'), { reason: null, cta: null, targetTier: null });
@@ -202,10 +215,23 @@ eq('new $5 → 7 templates', r.limits.templates, 7);
 r = ent({ isAdmin: false, email: 'a@b.c', subscription: { status: 'active', trialEndsAt: past, currentPeriodEnd: future, planId: 'plan_CGlYdJJr3Btlu', grandfathered: true } });
 eq('gf $5 (same id) → solo (frozen)', r.tier, 'solo');
 
-// ── 4c. non-entitled states still denied, tier still resolves ───────────────
+// ── 4c. FREE TIER: no subscription → ALLOWED entry point (forge/free-tier-p1) ─
+// PREVIOUSLY this was {allowed:false, state:'none'}. Free tier makes a logged-in
+// user with NO subscription the no-card entry point: allowed:true, state
+// 'free_tier', tier 'free', with daily outbound caps. Updated DELIBERATELY.
 r = ent({ isAdmin: false, email: 'a@b.c', subscription: null });
-eq('none denied', r.allowed, false);
-eq('none → solo', r.tier, 'solo');
+eq('no-sub → allowed (free tier)', r.allowed, true);
+eq('no-sub → free_tier state', r.state, 'free_tier');
+eq('no-sub → free tier', r.tier, 'free');
+eq('free → 0 templates', r.limits.templates, 0);
+eq('free → 0 quick-replies', r.limits.quickReplies, 0);
+eq('free → 14d sync', r.limits.syncRangeMax, '14d');
+eq('free → contacts ON', r.limits.contactSync, true);
+eq('free → 20 calls/day', r.limits.callsPerDay, 20);
+eq('free → 10 messages/day', r.limits.messagesPerDay, 10);
+eq('free → subscribe upgrade', r.upgrade, { reason: 'free-limit-hit', cta: 'subscribe', targetTier: 'plus' });
+eq('free not grandfathered', r.grandfathered, false);
+eq('free → null trialDaysLeft', r.trialDaysLeft, null);
 
 r = ent({ isAdmin: false, email: 'a@b.c', subscription: { status: 'trial', trialEndsAt: past, currentPeriodEnd: null, planId: PLAN_IDS.pro } });
 eq('expired trial state', r.state, 'trial_expired');
@@ -264,5 +290,22 @@ eq('trial clamps a 30d-old since up to 3d floor', clampSince(TIER_LIMITS.trial, 
 eq('new plus clamps a 120d-old since up to 3mo floor', clampSince(TIER_LIMITS.plus, NOW - 120 * DAY_MS, NOW), NOW - 90 * DAY_MS);
 eq('gf plus allows a 120d-old since (within 6mo)', clampSince(GRANDFATHERED_TIER_LIMITS.plus, NOW - 120 * DAY_MS, NOW), NOW - 120 * DAY_MS);
 eq('pro allows a 90d-old since (within 1y)', clampSince(TIER_LIMITS.pro, NOW - 90 * DAY_MS, NOW), NOW - 90 * DAY_MS);
+
+// ── 8. FREE TIER 0-caps produce a cap-hit on the FIRST create (§7 of the
+//     dispatch). The /api/templates + /api/quick-replies POST handlers reject
+//     when `count >= effectiveLimit`, where effectiveLimit === ent.limits
+//     .templates / .quickReplies (effectiveTemplateLimit / effectiveQuickReply
+//     Limit are pass-throughs). For a free user both limits are 0, so the very
+//     first create (count 0) is rejected. Mirror that exact decision here.
+{
+  const freeEnt = ent({ isAdmin: false, email: 'a@b.c', subscription: null });
+  const capHit = (count, limit) => count >= limit; // the route's 409 predicate
+  eq('free: first template create is a cap-hit', capHit(0, freeEnt.limits.templates), true);
+  eq('free: first quick-reply create is a cap-hit', capHit(0, freeEnt.limits.quickReplies), true);
+  eq('free: template upgrade signal is subscribe', freeEnt.upgrade.cta, 'subscribe');
+  // A paying $5 user is NOT capped at 0 (regression guard for the predicate).
+  const plusEnt = ent({ isAdmin: false, email: 'a@b.c', subscription: { status: 'active', trialEndsAt: past, currentPeriodEnd: future, planId: PLAN_IDS.plus } });
+  eq('plus: first template create is allowed', capHit(0, plusEnt.limits.templates), false);
+}
 
 console.log(`\n✓ tier-gating: ${passed} assertions passed`);

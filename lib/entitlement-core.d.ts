@@ -15,6 +15,7 @@ export type EntitlementState =
   | 'active'
   | 'trial_expired'
   | 'expired'
+  | 'free_tier'
   | 'none'
   | 'error';
 

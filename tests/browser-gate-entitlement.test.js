@@ -130,13 +130,17 @@ const baseUser = { isAdmin: false, email: NOT_ALLOWLISTED, subscription: null };
     eq('3. state is active', d.state, 'active');
   }
 
-  // 4. no subscription, not free-access, not allowlisted → DENIED → /subscribe.
+  // 4. no subscription, not free-access, not allowlisted → FREE TIER (dispatch
+  //    forge/free-tier-p1, 2026-08-28). CHANGED DELIBERATELY: previously this
+  //    user was DENIED → /subscribe (state 'none'). Free tier makes a logged-in
+  //    user with no subscription the no-card ENTRY POINT — allowed, into the
+  //    FULL app, NOT the lock screen. This is the whole point of the dispatch.
   {
     const db = makeDb({ user: baseUser, freeAccess: false });
     const d = await browserGateDecision(db, 'u4', NOW);
-    eq('4. never-paid user is bounced', d.pass, false);
-    eq('4. redirected to /subscribe', d.redirect, '/subscribe');
-    eq('4. state is none', d.state, 'none');
+    eq('4. never-subscribed user passes (free tier)', d.pass, true);
+    eq('4. no redirect (full app, not /subscribe)', d.redirect, null);
+    eq('4. state is free_tier', d.state, 'free_tier');
   }
 
   // 4b. expired trial, no free access → still bounced (paywall byte-stable).
@@ -206,11 +210,14 @@ const baseUser = { isAdmin: false, email: NOT_ALLOWLISTED, subscription: null };
     eq('6b. missing user row → no redirect', d.redirect, null);
   }
 
-  // 6c. a genuine deny is NOT indeterminate (so case 4 can never be softened).
+  // 6c. no-subscription is now a determinate ALLOW (free tier), NOT
+  //     indeterminate — so the browser gate passes it through without a DB-error
+  //     fail-open ambiguity. (Was: a determinate deny; dispatch forge/free-tier-p1.)
   {
     const db = makeDb({ user: baseUser, freeAccess: false });
     const raw = await evaluateUserEntitlement(db, 'u6c', NOW);
-    eq('6c. no_subscription is a determinate deny', isEntitlementIndeterminate(raw), false);
+    eq('6c. free_tier is allowed', raw.allowed, true);
+    eq('6c. free_tier is a determinate result (not indeterminate)', isEntitlementIndeterminate(raw), false);
   }
   eq('6d. null/malformed result reads as indeterminate', isEntitlementIndeterminate(null), true);
 
