@@ -68,13 +68,21 @@
         <Button
             android:id="@+id/googleSignInButton"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
+            android:layout_height="48dp"
             android:text="@string/signin_google_action"
-            android:textSize="16sp"
-            android:textColor="@color/text_primary"
+            android:textSize="14sp"
+            android:textColor="@color/google_btn_text"
             android:textAllCaps="false"
             android:fontFamily="sans-serif-medium"
-            android:backgroundTint="@color/surface_inset"
+            android:letterSpacing="0.0125"
+            android:background="@drawable/bg_google_button"
+            android:backgroundTint="@null"
+            android:stateListAnimator="@null"
+            android:drawableStart="@drawable/ic_google_g"
+            android:drawablePadding="12dp"
+            android:gravity="center"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
             android:layout_marginBottom="20dp" />
 
         <!-- Divider between Google and the email fallback -->

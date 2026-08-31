@@ -53,6 +53,13 @@
     <color name="accent_blue_dim">#1F3A6B</color>       <!-- muted / disabled -->
     <color name="accent_cyan">#00D4FF</color>           <!-- gradient companion, glow -->
 
+    <!-- Google Sign-in branding (light variant) — fixed per Google's
+         guidelines, NOT part of the app palette. Do not retint. -->
+    <color name="google_btn_surface">#FFFFFF</color>    <!-- white button fill -->
+    <color name="google_btn_stroke">#747775</color>     <!-- 1dp outline -->
+    <color name="google_btn_text">#1F1F1F</color>       <!-- button label -->
+
+
     <!-- Aliases — keep the old `accent_warm` token names resolvable
          so any drawable / theme reference that hasn't been migrated
          yet still compiles to the new palette. Pure mapping; no
