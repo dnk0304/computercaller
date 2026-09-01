@@ -68,6 +68,15 @@ model User {
   // `prisma db push` applies this column cleanly (adds a NOT NULL column with a
   // default, no data loss). Gate any admin-only feature/route on this flag.
   isAdmin             Boolean              @default(false)
+  // layoutPrefs (2026-09-01, dispatch forge/layout-prefs-backend). Per-user
+  // desktop dashboard layout (preset + richer per-module display config; see
+  // lib/layoutPrefs.ts for the validated shape). ADDITIVE, non-breaking:
+  // nullable with no default → null means "no saved layout" = today's power
+  // layout, so every existing + future row is unaffected until the user opts
+  // in. Coolify's pre-deploy `prisma db push` adds this JSON column cleanly
+  // (no NOT NULL, no default, no data loss). Never trust the stored value —
+  // always run it through parseLayoutPrefs (null-on-invalid → power fallback).
+  layoutPrefs         Json?
   // IP tracking + same-IP abuse flagging (2026-07-03, dispatch forge/trial-lock
   // -and-admin-dashboard). ALL nullable/additive — Coolify's pre-deploy
   // `prisma db push` adds them cleanly with zero data loss (no NOT NULL without
