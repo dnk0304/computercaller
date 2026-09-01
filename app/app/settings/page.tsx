@@ -13,6 +13,7 @@ import {
 } from '@/lib/deviceLabel';
 // SyncSetupPanel is mounted in app/app/layout.tsx — no import needed here.
 import { SignInSecuritySection } from './SignInSecuritySection';
+import { LayoutSettings } from '@/components/LayoutSettings';
 
 interface UserData {
   id: string;
@@ -249,6 +250,11 @@ export default function SettingsPage() {
   return (
     <div className="max-w-lg mx-auto p-6 space-y-4">
       <h1 className="text-lg font-bold text-slate-800">Settings</h1>
+
+      {/* Layout — desktop dashboard preset + per-module display options
+          (dispatch pixel/layout-settings-phaseA). Self-contained: owns its own
+          useLayoutPrefs() lifecycle. */}
+      <LayoutSettings />
 
       {/* Phone connection — neutral pointer back to the dashboard. The
           connection model is LAN-only: type the IP your phone is showing in

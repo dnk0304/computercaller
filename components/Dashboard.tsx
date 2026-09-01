@@ -36,7 +36,8 @@ import React, {
   useDeferredValue,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { usePhone, useNotifications, getNotificationIcon, useDashboardTab, useDebouncedValue } from '@/hooks';
+import { usePhone, useNotifications, getNotificationIcon, useDashboardTab, useDebouncedValue, useLayoutPrefs } from '@/hooks';
+import type { ModuleId } from '@/lib/layoutPrefs';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import type { Contact, SmsMessage } from '@/hooks';
 import type { CallLogEntry } from '@/hooks/phoneTypes';
@@ -631,6 +632,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // Notification overlay open/closed. Closed by default — the thin strip is
   // always visible and clicking it raises the floating panel.
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+
+  // ---- Layout presets (Phase A, pixel/layout-settings-phaseA) --------------
+  // `layoutResolved` is the fully-populated 4-module layout: null saved prefs
+  // resolve to POWER_DEFAULT (today's EXACT dashboard). Drives the arrangement
+  // below. Phone Link is a single-focus preset that toggles one pane at a time.
+  const { resolved: layoutResolved } = useLayoutPrefs();
+  const [phoneLinkView, setPhoneLinkView] = useState<'calls' | 'messages'>('calls');
 
   // Shared dial input — the call log / favorites can pre-fill it.
   const [dialNumber, setDialNumber] = useState<string>('');
@@ -1253,68 +1261,34 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
   // ---------- Render --------------------------------------------------------
 
-  return (
-    <div className="flex h-full w-full gap-2">
-      {/* ============================================================ */}
-      {/* Thin notification strip — fixed width, always visible.        */}
-      {/* Click to raise the floating overlay (rendered via portal).    */}
-      {/* ============================================================ */}
-      <NotificationStrip
-        notifications={phoneNotifications}
-        unreadCount={unreadCount}
-        onExpand={() => setNotifPanelOpen(true)}
-      />
+  // ---- Layout preset assembly (Phase A, pixel/layout-settings-phaseA) -------
+  // Build each dashboard surface as an element ONCE, then arrange per preset.
+  // `layoutResolved` resolves null saved prefs to POWER_DEFAULT, so the
+  // power/custom path below renders the identical wrapper markup + column order
+  // as before — existing/default users see ZERO DOM change. `visible` gates a
+  // surface; richer per-module options (variant/density/…) are surfaced in
+  // Settings and persisted (D2). Phase B adds drag-to-reorder.
+  const layoutModule = (id: ModuleId) =>
+    layoutResolved.modules.find((m) => m.id === id)!;
+  const notifVisible = layoutModule('notifications').visible;
+  // Quick Dial + Recent Calls share column 1; show it if EITHER is enabled.
+  const callsColVisible =
+    layoutModule('quickdial').visible || layoutModule('recentcalls').visible;
+  const threadsVisible = layoutModule('threads').visible;
+  const isPhoneLink = layoutResolved.preset === 'phonelink';
 
-      {/* ============================================================ */}
-      {/* Main column — 3-column grid fills the remaining space.        */}
-      {/* The MessengerBar mount was removed (2026-05-18) — the         */}
-      {/* notification sidebar / NotificationStrip / NotificationOverlay*/}
-      {/* now own all messenger surfaces. The MessengerBar sub-component*/}
-      {/* definition is intentionally retained below for easy revert.   */}
-      {/* min-h-0 on both wrapper and grid prevents flex-children from  */}
-      {/* refusing to shrink below their content height — same pattern  */}
-      {/* used inside each column.                                      */}
-      {/* Single stacked column below xl so the columns don't collapse  */}
-      {/* to unusable widths on tablet/mobile.                          */}
-      {/* ============================================================ */}
-      <div className="flex-1 min-w-0 flex flex-col gap-2 h-full min-h-0">
-        <div
-          className={clsx(
-            'flex-1 min-h-0 grid gap-2 overflow-hidden',
-            // Resize-order contract:
-            //   Col 1 (Quick Dial / Recent Calls) is bounded with explicit
-            //     min/max to keep the track visually stable across the
-            //     idle ↔ in-call state change. Previously this was `auto`,
-            //     which sized the track to content min-width — that worked
-            //     in idle state (where phone numbers like "+47 12 34 56 78"
-            //     set the floor), but when the Active Call card mounted
-            //     inside this column it brought wider content (3-pill audio
-            //     toggle, dialpad-style action grid) and the `auto` track
-            //     grew to fit, jumping the whole layout sideways.
-            //     `minmax(270px, 306px)` keeps the floor wide enough for a
-            //     full phone number and locks the ceiling so the in-call
-            //     card lives within the same visual footprint as idle.
-            //     (2026-05-27: both bounds cut 10% — 300→270 / 340→306 — per
-            //     Dennis "make the quick dial column 10% less wide"; freed
-            //     ~34px flows to cols 2/3. Floor verified: all col-1 content
-            //     [Quick Dial input, 2-button Phone|PC audio toggle, Recent
-            //     Calls rows] uses fluid/truncating layout, no clip at 270px.)
-            //   Col 2 (thread list)  — 0.88fr = 1.1fr * 0.8 (20% narrower
-            //     baseline than the prior 1.1fr) with a 260px minimum.
-            //   Col 3 (open thread)  — 1.8fr (unchanged) with 280px minimum.
-            //   When the window narrows, cols 2/3 shrink first to their
-            //     minimums; only after both bottom out does the grid
-            //     overflow horizontally — phone numbers stay visible.
-            // Pure CSS, no JS resize listener.
-            'grid-cols-[minmax(270px,306px)_minmax(260px,0.88fr)_minmax(280px,1.8fr)]'
-          )}
-        >
-      {/* ============================================================ */}
-      {/* COLUMN 1 — Quick Dial + Favorites + Recent Calls              */}
-      {/* ============================================================ */}
-      {/* Per-column ErrorBoundary (P-A, 2026-05-29): a render crash in
-          the dial / favorites / call log subtree falls into the calm
-          fallback without taking down columns 2/3 or the relay WS. */}
+  const notifStripEl = (
+    <NotificationStrip
+      notifications={phoneNotifications}
+      unreadCount={unreadCount}
+      onExpand={() => setNotifPanelOpen(true)}
+    />
+  );
+
+  // COLUMN 1 — Quick Dial + Favorites + Recent Calls. Per-column ErrorBoundary
+  // (P-A, 2026-05-29): a crash here drops into the calm fallback without taking
+  // down cols 2/3 or the relay WS.
+  const col1El = (
       <ErrorBoundary scope="dashboard-col1-calls">
       <section
         className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-0 h-full"
@@ -1874,10 +1848,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         </div>
       </section>
       </ErrorBoundary>
+  );
 
-      {/* ============================================================ */}
-      {/* COLUMN 2 — Thread list (always visible)                        */}
-      {/* ============================================================ */}
+  // COLUMN 2 — Thread list.
+  const col2El = (
       <ErrorBoundary scope="dashboard-col2-threads">
       <section
         className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-0 h-full"
@@ -2095,13 +2069,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         </div>
       </section>
       </ErrorBoundary>
+  );
 
-      {/* ============================================================ */}
-      {/* COLUMN 3 — Chat view (always visible)                          */}
-      {/* ============================================================ */}
-      {/* resetKey=selectedThread so a crash in one thread doesn't lock
-          the user out of OTHER threads — switching threads resets the
-          boundary's error state. */}
+  // COLUMN 3 — Chat view. resetKey=selectedThread so a crash in one thread
+  // doesn't lock the user out of OTHERS — switching threads resets the boundary.
+  const col3El = (
       <ErrorBoundary scope="dashboard-col3-chat" resetKey={selectedThread ?? '__none'}>
       <section
         className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-h-0 h-full"
@@ -2147,8 +2119,46 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         )}
       </section>
       </ErrorBoundary>
-        </div>
-      </div>
+  );
+
+  // ---- Arrange the surfaces per preset ------------------------------------
+  // Power / Custom: identical wrapper markup + column order as before — a
+  // default user (null prefs → POWER_DEFAULT, all modules visible) renders the
+  // exact same DOM. Phone Link: single-focus, one pane at a time, notifications
+  // as a side feed. Portal overlay + toasts (below) are preset-independent.
+  return (
+    <div className="flex h-full w-full gap-2">
+      {isPhoneLink ? (
+        <PhoneLinkLayout
+          callsPane={callsColVisible ? col1El : null}
+          threadsPane={threadsVisible ? col2El : null}
+          chatPane={col3El}
+          notifVisible={notifVisible}
+          notifications={phoneNotifications}
+          unreadCount={unreadCount}
+          onExpandNotifications={() => setNotifPanelOpen(true)}
+          view={phoneLinkView}
+          onViewChange={setPhoneLinkView}
+        />
+      ) : (
+        <>
+          {notifVisible && notifStripEl}
+          <div className="flex-1 min-w-0 flex flex-col gap-2 h-full min-h-0">
+            {/* 3-column grid. Col-width bounds are the shipped power layout —
+                unchanged. min-h-0 lets flex children shrink below content. */}
+            <div
+              className={clsx(
+                'flex-1 min-h-0 grid gap-2 overflow-hidden',
+                'grid-cols-[minmax(270px,306px)_minmax(260px,0.88fr)_minmax(280px,1.8fr)]'
+              )}
+            >
+              {callsColVisible && col1El}
+              {threadsVisible && col2El}
+              {col3El}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ============================================================ */}
       {/* Notification overlay — floating panel rendered via portal so  */}
@@ -2190,6 +2200,179 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 };
 
 // ---------- Sub-components --------------------------------------------------
+
+// ---------- PhoneLinkLayout (Phase A preset) -------------------------------
+//
+// Single-focus dashboard arrangement — INSPIRED BY the "one thing at a time"
+// feel (D1: inspired-by, not a clone). A segmented switch flips the main pane
+// between Calls and Messages; notifications live as a right-hand feed rather
+// than the slim edge strip. It arranges ALREADY-BUILT surfaces (the same
+// col1/col2/col3 elements the power layout renders) so there is zero logic
+// fork — thread/call-log behavior is identical, only the container changes.
+
+interface PhoneLinkLayoutProps {
+  /** Column-1 element (Quick Dial + Recent Calls), or null if both hidden. */
+  callsPane: React.ReactNode | null;
+  /** Column-2 element (thread list), or null if hidden. */
+  threadsPane: React.ReactNode | null;
+  /** Column-3 element (open conversation) — always rendered. */
+  chatPane: React.ReactNode;
+  notifVisible: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  notifications: any[];
+  unreadCount: number;
+  onExpandNotifications: () => void;
+  view: 'calls' | 'messages';
+  onViewChange: (next: 'calls' | 'messages') => void;
+}
+
+const PhoneLinkLayout: React.FC<PhoneLinkLayoutProps> = ({
+  callsPane,
+  threadsPane,
+  chatPane,
+  notifVisible,
+  notifications,
+  unreadCount,
+  onExpandNotifications,
+  view,
+  onViewChange,
+}) => {
+  const segments: { id: 'calls' | 'messages'; label: string; icon: typeof Phone }[] = [
+    { id: 'calls', label: 'Calls', icon: Phone },
+    { id: 'messages', label: 'Messages', icon: MessageSquare },
+  ];
+
+  return (
+    <div className="flex-1 min-w-0 flex flex-col gap-2 h-full min-h-0">
+      {/* Focus switch — single large segmented control. */}
+      <div
+        role="tablist"
+        aria-label="Dashboard focus"
+        className="flex-shrink-0 inline-flex self-start rounded-xl border border-slate-200 bg-slate-100 p-1 shadow-sm"
+      >
+        {segments.map((seg) => {
+          const active = seg.id === view;
+          const Icon = seg.icon;
+          return (
+            <button
+              key={seg.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-controls={`phonelink-pane-${seg.id}`}
+              onClick={() => onViewChange(seg.id)}
+              className={clsx(
+                'flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-colors',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                active
+                  ? 'bg-white text-slate-800 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              )}
+            >
+              <Icon className="w-4 h-4" aria-hidden="true" />
+              {seg.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Main pane + notification feed. */}
+      <div className="flex-1 min-h-0 flex gap-2">
+        <div className="flex-1 min-w-0 min-h-0 flex">
+          {view === 'calls' ? (
+            <div
+              id="phonelink-pane-calls"
+              role="tabpanel"
+              aria-label="Calls"
+              className="flex-1 min-w-0 min-h-0 flex justify-center"
+            >
+              {/* Comfortable, focused width for the single-column calls view. */}
+              <div className="w-full max-w-md min-h-0 flex flex-col">
+                {callsPane ?? (
+                  <div className="flex-1 flex items-center justify-center text-sm text-slate-400">
+                    Calls are hidden. Turn Quick Dial or Recent Calls back on in Settings → Layout.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div
+              id="phonelink-pane-messages"
+              role="tabpanel"
+              aria-label="Messages"
+              className="flex-1 min-w-0 min-h-0 grid gap-2 grid-cols-[minmax(240px,320px)_minmax(280px,1fr)]"
+            >
+              {/* Thread list can be hidden; the open-conversation pane always
+                  renders so the surface never collapses to nothing. */}
+              {threadsPane}
+              <div className={clsx('min-h-0', !threadsPane && 'col-span-2')}>{chatPane}</div>
+            </div>
+          )}
+        </div>
+
+        {notifVisible && (
+          <aside
+            aria-label="Notifications"
+            className="hidden lg:flex w-72 flex-shrink-0 flex-col bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden min-h-0"
+          >
+            <header className="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2 flex-shrink-0">
+              <Bell className="w-4 h-4 text-slate-500" aria-hidden="true" />
+              <span className="text-sm font-semibold text-slate-800">Notifications</span>
+              {unreadCount > 0 && (
+                <span className="ml-auto px-1.5 py-0.5 bg-red-100 text-red-700 text-[10px] font-bold rounded-full">
+                  {unreadCount}
+                </span>
+              )}
+            </header>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {notifications.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <Bell className="w-9 h-9 text-slate-200 mb-2" aria-hidden="true" />
+                  <p className="text-xs text-slate-400">No notifications from your phone</p>
+                </div>
+              ) : (
+                notifications.map((n) => {
+                  const icon = getNotificationIcon(n.packageName);
+                  return (
+                    <button
+                      key={n.id}
+                      type="button"
+                      onClick={onExpandNotifications}
+                      className="w-full flex items-start gap-2 p-2 rounded-lg text-left hover:bg-slate-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                    >
+                      {icon ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={`data:image/png;base64,${icon}`}
+                          alt=""
+                          className="w-6 h-6 rounded-md flex-shrink-0"
+                        />
+                      ) : (
+                        <span className="w-6 h-6 rounded-md bg-slate-100 flex items-center justify-center flex-shrink-0">
+                          <Bell className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[12px] font-semibold text-slate-800 truncate">
+                          {n.title || n.appName || 'Notification'}
+                        </span>
+                        {n.body && (
+                          <span className="block text-[11px] text-slate-500 line-clamp-2">
+                            {n.body}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </aside>
+        )}
+      </div>
+    </div>
+  );
+};
 
 // ---------- AudioSourceToggle (2-mode: Phone | PC) -------------------------
 //
