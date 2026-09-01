@@ -65,8 +65,11 @@ import {
   Delete,
   Bell,
   Hash,
+  Filter,
+  Check,
 } from 'lucide-react';
 import { clsx } from 'clsx';
+import { Tooltip } from '@/components/Tooltip';
 import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { PermissionHint } from '@/components/PermissionHint';
@@ -719,11 +722,44 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // Paginated call log — starts at 25, user loads 25 more at a time.
   // Only the displayed slice is rendered; loading more is additive, not a full re-render.
   const [callLogDisplayCount, setCallLogDisplayCount] = useState(25);
+
+  // ---- Recent Calls: client-side filter + search (frontend only) ----------
+  // Both run over the already-synced call log — no backend. Filter narrows by
+  // the call-type field that already drives the row icon/missed badge; search
+  // matches the number (digit-insensitive) or the contact name.
+  type CallFilter = 'all' | 'missed' | 'incoming' | 'outgoing';
+  const [callFilter, setCallFilter] = useState<CallFilter>('all');
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [callSearch, setCallSearch] = useState('');
+  const debouncedCallSearch = useDebouncedValue(callSearch, 150);
+
+  const filteredCallLogs = useMemo(() => {
+    let rows = deferredCallLogs;
+    if (callFilter !== 'all') {
+      rows = rows.filter((log) => log.type === callFilter);
+    }
+    const q = debouncedCallSearch.trim().toLowerCase();
+    if (q) {
+      const qDigits = q.replace(/\D/g, '');
+      rows = rows.filter((log) => {
+        const name = (log.name || '').toLowerCase();
+        const number = (log.number || '').toLowerCase();
+        if (name.includes(q) || number.includes(q)) return true;
+        if (qDigits) return number.replace(/\D/g, '').includes(qDigits);
+        return false;
+      });
+    }
+    return rows;
+  }, [deferredCallLogs, callFilter, debouncedCallSearch]);
+
+  const isCallListFiltered = callFilter !== 'all' || debouncedCallSearch.trim().length > 0;
+
   const recentCalls = useMemo(
-    () => deferredCallLogs.slice(0, callLogDisplayCount),
-    [deferredCallLogs, callLogDisplayCount]
+    () => filteredCallLogs.slice(0, callLogDisplayCount),
+    [filteredCallLogs, callLogDisplayCount]
   );
-  const hasMoreCalls = deferredCallLogs.length > callLogDisplayCount;
+  const hasMoreCalls = filteredCallLogs.length > callLogDisplayCount;
 
   // Call-history detail panel — when a number is selected, the call log list
   // is replaced with a back-able panel showing every call with that number.
@@ -1484,11 +1520,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
         </div>
 
-        {/* Recent Calls header — sits above the scrolling list. */}
-        <header className="px-5 py-2.5 border-t border-b border-slate-100 bg-slate-50/50 flex items-center justify-between gap-2 flex-shrink-0">
+        {/* Recent Calls header — sits above the scrolling list.
+            Icon-only controls (label, filter, search, resync); each carries a
+            hover/focus Tooltip + aria-label so it stays discoverable. */}
+        <header className="relative px-5 py-2.5 border-t border-b border-slate-100 bg-slate-50/50 flex items-center justify-between gap-2 flex-shrink-0">
           <div className="flex items-center gap-2 min-w-0">
-            <Clock className="w-4 h-4 text-slate-400" aria-hidden="true" />
-            <h3 className="font-semibold text-slate-800 text-sm">Recent Calls</h3>
+            {/* #1 Recent Calls label → icon-only. sr-only heading keeps the
+                landmark for screen readers; the label lives in the tooltip. */}
+            <Tooltip label="Recent calls" placement="bottom">
+              <span
+                tabIndex={0}
+                role="img"
+                aria-label="Recent calls"
+                className="inline-flex rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              >
+                <Clock className="w-4 h-4 text-slate-400" aria-hidden="true" />
+              </span>
+            </Tooltip>
+            <h3 className="sr-only">Recent Calls</h3>
             {missedCallCount > 0 && (
               <span
                 aria-live="polite"
@@ -1498,23 +1547,123 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               </span>
             )}
           </div>
-          {typeof openSyncPanel === 'function' && (
-            <button
-              type="button"
-              onClick={handleResync}
-              className={clsx(
-                'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium',
-                'text-slate-500 hover:text-slate-700 hover:bg-slate-100',
-                'transition-colors',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40'
+
+          <div className="flex items-center gap-1">
+            {/* #3 Number search — icon button expands an inline input. */}
+            {searchOpen ? (
+              <div className="flex items-center gap-1">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+                  <input
+                    autoFocus
+                    type="search"
+                    inputMode="tel"
+                    value={callSearch}
+                    onChange={(e) => setCallSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        setCallSearch('');
+                        setSearchOpen(false);
+                      }
+                    }}
+                    onBlur={() => { if (!callSearch) setSearchOpen(false); }}
+                    placeholder="Search number or name"
+                    aria-label="Search recent calls"
+                    className="w-40 max-w-[45vw] pl-7 pr-6 py-1 rounded-lg border border-slate-200 bg-white text-[12px] text-slate-700 placeholder:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                  />
+                  {callSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setCallSearch('')}
+                      aria-label="Clear search"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 hover:text-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                    >
+                      <X className="w-3.5 h-3.5" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <Tooltip label="Search calls" placement="bottom">
+                <button
+                  type="button"
+                  onClick={() => setSearchOpen(true)}
+                  aria-label="Search recent calls"
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                >
+                  <Search className="w-4 h-4" aria-hidden="true" />
+                </button>
+              </Tooltip>
+            )}
+
+            {/* #2 Call-type filter — icon button opens a small menu. */}
+            <div className="relative">
+              <Tooltip label="Filter calls" placement="bottom">
+                <button
+                  type="button"
+                  onClick={() => setFilterMenuOpen((v) => !v)}
+                  aria-label="Filter recent calls by type"
+                  aria-haspopup="menu"
+                  aria-expanded={filterMenuOpen}
+                  className={clsx(
+                    'relative inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors',
+                    'hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+                    isCallListFiltered ? 'text-blue-600' : 'text-slate-500 hover:text-slate-700'
+                  )}
+                >
+                  <Filter className="w-4 h-4" aria-hidden="true" />
+                  {callFilter !== 'all' && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500 border border-white" aria-hidden="true" />
+                  )}
+                </button>
+              </Tooltip>
+              {filterMenuOpen && (
+                <>
+                  {/* Click-away backdrop */}
+                  <div className="fixed inset-0 z-40" onClick={() => setFilterMenuOpen(false)} aria-hidden="true" />
+                  <div
+                    role="menu"
+                    aria-label="Filter recent calls"
+                    className="absolute right-0 top-full mt-1 z-50 w-40 rounded-xl border border-slate-200 bg-white shadow-lg py-1"
+                  >
+                    {([
+                      { key: 'all', label: 'All calls', Icon: Clock, color: 'text-slate-500' },
+                      { key: 'missed', label: 'Missed', Icon: PhoneMissed, color: 'text-rose-600' },
+                      { key: 'incoming', label: 'Incoming', Icon: ArrowDownLeft, color: 'text-emerald-600' },
+                      { key: 'outgoing', label: 'Outgoing', Icon: ArrowUpRight, color: 'text-blue-600' },
+                    ] as const).map((opt) => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={callFilter === opt.key}
+                        onClick={() => { setCallFilter(opt.key); setFilterMenuOpen(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50"
+                      >
+                        <opt.Icon className={clsx('w-3.5 h-3.5', opt.color)} aria-hidden="true" />
+                        <span className="flex-1 text-left">{opt.label}</span>
+                        {callFilter === opt.key && <Check className="w-3.5 h-3.5 text-blue-600" aria-hidden="true" />}
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
-              aria-label="Resync call history"
-              title="Resync call history from phone"
-            >
-              <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-              Resync
-            </button>
-          )}
+            </div>
+
+            {/* #4 Resync → icon-only. */}
+            {typeof openSyncPanel === 'function' && (
+              <Tooltip label="Resync call history" placement="bottom">
+                <button
+                  type="button"
+                  onClick={handleResync}
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                  aria-label="Resync call history"
+                >
+                  <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                </button>
+              </Tooltip>
+            )}
+          </div>
         </header>
 
         {/* Recent Calls list — fills remaining height, scrolls independently.
@@ -1687,6 +1836,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                 ];
               })}
             </ul>
+          ) : isCallListFiltered ? (
+            <EmptyState
+              icon={<Search className="w-8 h-8" />}
+              title="No matching calls"
+              hint="Try a different filter or search term."
+            />
           ) : (
             <>
               <EmptyState
@@ -1713,7 +1868,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               onClick={() => setCallLogDisplayCount(prev => prev + 25)}
               className="w-full py-2 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-xl transition-colors mt-1"
             >
-              Load 25 more ({deferredCallLogs.length - callLogDisplayCount} remaining)
+              Load 25 more ({filteredCallLogs.length - callLogDisplayCount} remaining)
             </button>
           )}
         </div>
@@ -2022,6 +2177,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
         />,
         document.body
       )}
+
+      {/* Modern phone-style notification floaters — new arrivals slide in as
+          toast cards (bottom-right), auto-dismiss, stack max 3. Click opens
+          the history overlay. See NotificationToasts. */}
+      <NotificationToasts
+        notifications={phoneNotifications}
+        onOpen={() => setNotifPanelOpen(true)}
+      />
     </div>
   );
 };
@@ -4162,7 +4325,7 @@ function appEmojiFromPkg(pkg: string): string {
   return '🔔';
 }
 
-// ---------- NotificationStrip ---------------------------------------------
+// ---------- NotificationStrip (minimized) ---------------------------------
 
 interface NotificationStripProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -4172,84 +4335,205 @@ interface NotificationStripProps {
 }
 
 /**
- * Always-visible thin rail (~56px) showing a bell + unread count and a stack
- * of recent app-icon chips. Click anywhere on the rail to raise the floating
- * NotificationOverlay. Inspired by Windows Phone Link's collapsed sidebar.
- *
- * Icons prefer the base64 PNG from the module-level icon cache (keyed by packageName); falls back
- * to a stable per-package emoji when no icon is available.
+ * Minimized notification affordance (task 6). The old always-visible rail of
+ * app-icon chips is gone — new notifications now arrive as floating toast
+ * cards (NotificationToasts). What remains here is a deliberately unobtrusive
+ * slim edge tab: a bell + unread count, low-emphasis until hover/focus, that
+ * raises the full NotificationOverlay history on demand. The history view is
+ * NOT deleted — it's one click away.
  */
 const NotificationStrip: React.FC<NotificationStripProps> = ({
   notifications,
   unreadCount,
   onExpand,
 }) => {
-  // Newest first. Six chips fits comfortably in a typical viewport without
-  // forcing the strip to scroll; older notifications surface in the overlay.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recent: any[] = notifications.slice(0, 6);
-
   return (
-    <div
-      className="flex-shrink-0 w-14 bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center py-3 gap-2 overflow-hidden cursor-pointer hover:bg-slate-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+    <button
+      type="button"
       onClick={onExpand}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onExpand();
-        }
-      }}
-      role="button"
-      tabIndex={0}
       aria-label={
         unreadCount > 0
-          ? `${unreadCount} unread notifications. Click to open.`
-          : 'Open notifications'
+          ? `${unreadCount} unread notifications. Open notification history.`
+          : 'Open notification history'
       }
-      title="Open notifications"
+      title="Notifications"
+      className={clsx(
+        'group/notiftab flex-shrink-0 self-start mt-1 flex flex-col items-center gap-1 py-2 px-1.5 rounded-xl',
+        'border border-transparent text-slate-400 opacity-60',
+        'hover:opacity-100 hover:text-slate-600 hover:bg-white hover:border-slate-200 hover:shadow-sm',
+        'focus:outline-none focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-blue-500/40',
+        'transition-all'
+      )}
     >
-      {/* Bell + unread badge */}
-      <div className="relative">
-        <Bell className="w-4 h-4 text-slate-500" aria-hidden="true" />
+      <span className="relative">
+        <Bell className="w-4 h-4" aria-hidden="true" />
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-0.5 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+          <span className="absolute -top-1.5 -right-1.5 min-w-[15px] h-[15px] px-0.5 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center border border-white">
             {unreadCount > 9 ? '9+' : unreadCount}
           </span>
         )}
-      </div>
+      </span>
+      <span className="text-[8px] font-medium tracking-wide uppercase opacity-0 group-hover/notiftab:opacity-100 transition-opacity" aria-hidden="true">
+        {notifications.length > 0 ? 'Alerts' : ''}
+      </span>
+    </button>
+  );
+};
 
-      {/* Divider only when there's something to separate from */}
-      {recent.length > 0 && <div className="w-8 h-px bg-slate-100" />}
+// ---------- NotificationToasts --------------------------------------------
 
-      {/* App icon chips — newest first, with an unread dot for unread items */}
-      {recent.map((notif) => (
-        <div key={notif.id} className="relative flex-shrink-0">
-          {getNotificationIcon(notif.packageName) ? (
+interface NotificationToastsProps {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  notifications: any[];
+  /** Open the full notification history/thread (click on a toast). */
+  onOpen: () => void;
+}
+
+const TOAST_TTL_MS = 5200;
+const MAX_TOASTS = 3;
+
+/**
+ * Modern phone-style notification floaters (task 6). Watches the live
+ * notification list; when a genuinely NEW notification arrives (id not seen
+ * before this mount) it slides a toast card in from the right, bottom-up
+ * stacked, max 3, auto-dismissing after ~5s. Click opens the history panel.
+ *
+ * No toast library (AppShell keeps none intentionally) — this is a small
+ * in-house stack. Respects prefers-reduced-motion via the CSS below.
+ */
+interface ToastItem {
+  id: string;
+  appName: string;
+  packageName: string;
+  title: string;
+  body: string;
+}
+
+const NotificationToasts: React.FC<NotificationToastsProps> = ({ notifications, onOpen }) => {
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const seenRef = useRef<Set<string> | null>(null);
+  const timersRef = useRef<Map<string, number>>(new Map());
+
+  const dismiss = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+    const timer = timersRef.current.get(id);
+    if (timer) {
+      window.clearTimeout(timer);
+      timersRef.current.delete(id);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Seed on first mount with everything already present so historical
+    // notifications never toast — only arrivals AFTER mount float in.
+    if (seenRef.current === null) {
+      seenRef.current = new Set(notifications.map((n) => n.id));
+      return;
+    }
+    const seen = seenRef.current;
+    const fresh: ToastItem[] = [];
+    for (const n of notifications) {
+      if (!seen.has(n.id)) {
+        seen.add(n.id);
+        if (!n.read) {
+          fresh.push({
+            id: n.id,
+            appName: n.appName ?? '',
+            packageName: n.packageName ?? '',
+            title: n.title ?? n.appName ?? 'Notification',
+            body: n.body ?? '',
+          });
+        }
+      }
+    }
+    if (fresh.length === 0) return;
+    setToasts((prev) => [...fresh, ...prev].slice(0, MAX_TOASTS));
+  }, [notifications]);
+
+  // (Re)arm auto-dismiss timers for any toast without one.
+  useEffect(() => {
+    for (const t of toasts) {
+      if (!timersRef.current.has(t.id)) {
+        const timer = window.setTimeout(() => dismiss(t.id), TOAST_TTL_MS);
+        timersRef.current.set(t.id, timer);
+      }
+    }
+  }, [toasts, dismiss]);
+
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => { timers.forEach((t) => window.clearTimeout(t)); };
+  }, []);
+
+  if (typeof document === 'undefined' || toasts.length === 0) return null;
+
+  return createPortal(
+    <div
+      className="fixed bottom-4 right-4 z-[70] flex flex-col-reverse gap-2 w-[320px] max-w-[calc(100vw-2rem)] pointer-events-none"
+      role="region"
+      aria-label="New notifications"
+    >
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          role="status"
+          aria-live="polite"
+          onMouseEnter={() => {
+            const timer = timersRef.current.get(t.id);
+            if (timer) { window.clearTimeout(timer); timersRef.current.delete(t.id); }
+          }}
+          onMouseLeave={() => {
+            if (!timersRef.current.has(t.id)) {
+              timersRef.current.set(t.id, window.setTimeout(() => dismiss(t.id), 2000));
+            }
+          }}
+          className="cc-toast pointer-events-auto flex items-start gap-3 rounded-2xl border border-slate-200/80 bg-white/95 backdrop-blur px-3.5 py-3 shadow-xl shadow-slate-900/10 cursor-pointer hover:border-slate-300"
+          onClick={() => { onOpen(); dismiss(t.id); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); dismiss(t.id); }
+          }}
+          tabIndex={0}
+        >
+          {getNotificationIcon(t.packageName) ? (
             <img
-              src={`data:image/png;base64,${getNotificationIcon(notif.packageName)}`}
-              alt={notif.appName ?? 'notification'}
-              className="w-9 h-9 rounded-full object-cover border border-slate-100 shadow-sm"
+              src={`data:image/png;base64,${getNotificationIcon(t.packageName)}`}
+              alt=""
+              className="w-9 h-9 rounded-full object-cover border border-slate-100 flex-shrink-0"
             />
           ) : (
-            <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-base" aria-hidden="true">
-              {appEmojiFromPkg(notif.packageName)}
+            <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-base flex-shrink-0" aria-hidden="true">
+              {appEmojiFromPkg(t.packageName)}
             </div>
           )}
-          {!notif.read && (
-            <span
-              className="absolute top-0 right-0 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"
-              aria-hidden="true"
-            />
-          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="font-semibold text-[13px] text-slate-800 truncate">{t.title}</p>
+              {t.appName && <span className="text-[10px] text-slate-400 truncate">{t.appName}</span>}
+            </div>
+            {t.body && <p className="text-[12px] text-slate-500 leading-snug line-clamp-2 mt-0.5">{t.body}</p>}
+          </div>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); dismiss(t.id); }}
+            aria-label="Dismiss notification"
+            className="flex-shrink-0 p-1 -m-1 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          >
+            <X className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
         </div>
       ))}
-
-      {notifications.length === 0 && (
-        <span className="text-[9px] text-slate-300 text-center px-1 leading-tight mt-1">
-          No notifs
-        </span>
-      )}
-    </div>
+      <style>{`
+        .cc-toast { animation: cc-toast-in 260ms cubic-bezier(0.16,1,0.3,1); }
+        @keyframes cc-toast-in {
+          from { opacity: 0; transform: translateX(24px) scale(0.98); }
+          to   { opacity: 1; transform: translateX(0) scale(1); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .cc-toast { animation: none; }
+        }
+      `}</style>
+    </div>,
+    document.body
   );
 };
 
