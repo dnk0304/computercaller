@@ -69,7 +69,7 @@ export const PhoneStatusButton = () => {
         className={clsx(
           'relative w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0',
           isRinging
-            ? 'bg-rose-100 text-rose-600'
+            ? 'bg-amber-100 text-amber-600'
             : isActive
             ? 'bg-emerald-100 text-emerald-700'
             : isDialing
@@ -80,7 +80,7 @@ export const PhoneStatusButton = () => {
         )}
       >
         {isRinging && (
-          <span className="absolute inset-0 rounded-full ring-2 ring-rose-400 animate-pulse" />
+          <span className="absolute inset-0 rounded-full ring-2 ring-amber-400 animate-pulse" />
         )}
         {isRinging ? (
           <PhoneIncoming className="relative w-3.5 h-3.5" />
@@ -93,8 +93,8 @@ export const PhoneStatusButton = () => {
 
       {/* Label */}
       {isRinging ? (
-        <span className="flex items-center gap-1.5 text-xs font-semibold text-rose-600">
-          <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-600">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
           Incoming
         </span>
       ) : isActive ? (

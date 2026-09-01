@@ -100,7 +100,7 @@ const DEFAULT_QUICK_REPLIES: ReadonlyArray<BandQuickReply> = [
 function bandDot(state: CallState): { label: string; dotCls: string } {
   switch (state) {
     case 'ringing':
-      return { label: 'Ringing', dotCls: 'bg-emerald-500' };
+      return { label: 'Ringing', dotCls: 'bg-amber-500' };
     case 'dialing':
       return { label: 'Dialing', dotCls: 'bg-blue-500' };
     case 'active':
@@ -375,7 +375,7 @@ function CallChip({
       <div className="flex h-5 items-center gap-1">
         <span className="relative flex-shrink-0 w-2 h-2" aria-hidden="true">
           {isRinging && (
-            <span className="absolute -inset-0.5 rounded-full ring-2 ring-emerald-400/50 animate-pulse" />
+            <span className="absolute -inset-0.5 rounded-full ring-2 ring-amber-400/60 animate-pulse" />
           )}
           <span className={clsx('absolute inset-0 rounded-full', dot.dotCls)} />
         </span>

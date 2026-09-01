@@ -313,6 +313,19 @@ export const GlobalDialer = () => {
   const showQueue = calls.length >= 2;
 
   // ----- Expanded panel -----
+  // Single-call session (ringing / dialing / active) adopts the homepage
+  // mockup's dark call card (2026-09-01, Pixel). The multi-call queue keeps
+  // the light list treatment (out of the single-card mockup's scope).
+  const darkSession = hasActiveSession && !showQueue;
+  const sessionBarColor = sentNotice
+    ? 'bg-emerald-500'
+    : callState === 'ringing'
+    ? 'bg-amber-500'
+    : callState === 'active'
+    ? 'bg-emerald-500'
+    : callState === 'dialing'
+    ? 'bg-blue-500'
+    : 'bg-slate-500';
   const panel = isOpen ? (
     <div
       data-dialer-panel
@@ -321,23 +334,33 @@ export const GlobalDialer = () => {
       style={pos ? { position: 'fixed', top: pos.top, right: pos.right, zIndex: 50 } : undefined}
       className={clsx(
         !pos && 'fixed top-16 right-4',
-        'w-52 z-50',
-        'bg-white rounded-2xl shadow-2xl shadow-slate-900/20 border border-slate-200',
-        'overflow-hidden flex flex-col',
+        'w-52 z-50 rounded-2xl overflow-hidden flex flex-col',
         'animate-in fade-in slide-in-from-top-4 duration-200',
+        darkSession
+          ? 'bg-slate-900 border border-slate-800 shadow-2xl shadow-slate-950/60'
+          : 'bg-white border border-slate-200 shadow-2xl shadow-slate-900/20',
         // The queue can hold several cards — give it more vertical room (and
         // it scrolls internally). Single-call/dialer keeps the original cap.
         showQueue ? 'max-h-[28rem]' : 'max-h-72'
       )}
     >
+      {/* Status bar — mirrors the mockup's 3px accent strip while a single
+          call session is showing (colour tracks call state). */}
+      {darkSession && <div className={clsx('h-[3px] flex-shrink-0', sessionBarColor)} />}
       {/* Header — drag handle + close button. */}
       <div
         onMouseDown={handleDragStart}
-        className="flex items-center justify-between px-2 py-1 border-b border-slate-100 bg-slate-50/80 cursor-grab active:cursor-grabbing select-none flex-shrink-0"
+        className={clsx(
+          'flex items-center justify-between px-2 py-1 border-b cursor-grab active:cursor-grabbing select-none flex-shrink-0',
+          darkSession ? 'border-slate-800 bg-slate-900' : 'border-slate-100 bg-slate-50/80'
+        )}
       >
         <span
           aria-hidden="true"
-          className="text-[9px] font-semibold uppercase tracking-wider text-slate-400 pl-1"
+          className={clsx(
+            'text-[9px] font-semibold uppercase tracking-wider pl-1',
+            darkSession ? 'text-slate-500' : 'text-slate-400'
+          )}
         >
           {showQueue ? `Calls · ${calls.length}` : hasActiveSession ? 'Call' : 'Phone'}
         </span>
@@ -345,7 +368,12 @@ export const GlobalDialer = () => {
           type="button"
           onClick={close}
           aria-label="Minimize dialer"
-          className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition-colors"
+          className={clsx(
+            'p-1 rounded-md transition-colors',
+            darkSession
+              ? 'text-slate-500 hover:text-slate-200 hover:bg-slate-800'
+              : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
+          )}
         >
           <X className="w-3 h-3" />
         </button>
@@ -547,6 +575,9 @@ function CallSessionView({
   const isRinging = state === 'ringing';
   const isActive = state === 'active';
   const isDialing = state === 'dialing';
+  // Dark mockup card only when standalone; the multi-call queue embeds this
+  // component as its light foreground card (hasWaitingCall=true there).
+  const dark = !hasWaitingCall;
 
   // Reply panel sub-state for the live call surface. Mirrors CallModal's:
   //   'hidden' = default Answer/Reply/Decline row
@@ -600,6 +631,123 @@ function CallSessionView({
     : isActive
     ? 'text-emerald-600'
     : 'text-blue-600';
+
+  // Single-call session renders as the homepage mockup's dark call card
+  // (2026-09-01, Pixel). When embedded as the foreground card inside the
+  // multi-call CallQueue (hasWaitingCall=true) we keep the original light
+  // layout, so the queue is untouched.
+  if (dark) {
+    const accent = sentNotice
+      ? { av: 'bg-emerald-500/20 text-emerald-300', ring: 'border-emerald-400/60', badge: 'bg-emerald-500/15 text-emerald-300' }
+      : isRinging
+      ? { av: 'bg-amber-500/20 text-amber-300', ring: 'border-amber-400/60', badge: 'bg-amber-500/15 text-amber-300' }
+      : isActive
+      ? { av: 'bg-emerald-500/20 text-emerald-300', ring: 'border-emerald-400/60', badge: 'bg-emerald-500/15 text-emerald-300' }
+      : { av: 'bg-blue-500/20 text-blue-300', ring: 'border-blue-400/60', badge: 'bg-blue-500/15 text-blue-300' };
+    const badgeText = sentNotice ? 'Sent' : isRinging ? 'Ringing' : isActive ? 'In call' : 'Dialing';
+    const showPulseRing = !sentNotice && (isRinging || isDialing);
+
+    return (
+      <div className="px-3 py-3 bg-slate-900">
+        {/* Caller row: avatar · name/sub · state badge (mockup .cm-row). */}
+        <div className="flex items-center gap-2.5">
+          <div className={clsx('relative flex-none w-10 h-10 rounded-full flex items-center justify-center', accent.av)}>
+            {showPulseRing && (
+              <span aria-hidden="true" className={clsx('absolute -inset-1.5 rounded-full border-2 animate-ping', accent.ring)} />
+            )}
+            {sentNotice ? (
+              <Check className="w-[18px] h-[18px]" />
+            ) : isRinging ? (
+              <PhoneIncoming className="w-[18px] h-[18px]" />
+            ) : (
+              <PhoneCall className="w-[18px] h-[18px]" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1 text-left">
+            <p className="text-[13px] font-semibold text-white truncate">
+              {name || number || 'Number hidden'}
+            </p>
+            <p className="text-[10.5px] text-slate-400 truncate">
+              {sentNotice ? sentNotice : name ? number : isRinging ? 'Incoming call' : isDialing ? 'Calling…' : ''}
+            </p>
+          </div>
+          <span className={clsx('flex-none text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full', accent.badge)}>
+            {badgeText}
+          </span>
+        </div>
+
+        {isActive && !sentNotice && (
+          <p className="mt-2 text-center text-base font-bold text-white tabular-nums">
+            {formatDuration(duration)}
+          </p>
+        )}
+
+        {sentNotice ? (
+          <div className="mt-3 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300">
+            <Check className="w-4 h-4 flex-none" />
+            Message sent · call declined
+          </div>
+        ) : (
+          <>
+            {/* Action row — Answer / Reply / Decline (mockup .cm-actions).
+                Hidden while the reply panel owns the space. */}
+            {replyView === 'hidden' && (
+              <div className="flex gap-1.5 mt-3">
+                {isRinging && (
+                  <button
+                    type="button"
+                    onClick={onAnswer}
+                    aria-label="Answer call"
+                    className="flex-1 flex items-center justify-center gap-1 rounded-xl py-2 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-[11px] font-semibold transition-all"
+                  >
+                    <Phone className="w-3.5 h-3.5" />
+                    Answer
+                  </button>
+                )}
+
+                {showReplyAffordance && (
+                  <button
+                    type="button"
+                    onClick={() => setReplyView('chips')}
+                    aria-label="Reply with message and decline"
+                    title="Reply with message"
+                    className="flex-none w-9 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-blue-300 transition-all"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={onEnd}
+                  aria-label={isRinging ? 'Decline call' : isDialing ? 'Cancel call' : 'End call'}
+                  className="flex-1 flex items-center justify-center gap-1 rounded-xl py-2 bg-rose-500 hover:bg-rose-600 active:scale-95 text-white text-[11px] font-semibold transition-all"
+                >
+                  <PhoneOff className="w-3.5 h-3.5" />
+                  {isRinging ? 'Decline' : isDialing ? 'Cancel' : 'End'}
+                </button>
+              </div>
+            )}
+
+            {replyView !== 'hidden' && (
+              <CallReplyPanel
+                dark
+                view={replyView}
+                chips={resolvedChips}
+                customText={customText}
+                onChangeCustomText={setCustomText}
+                onPickChip={handleQuickReply}
+                onPickCustom={() => setReplyView('custom')}
+                onBackToChips={() => setReplyView('chips')}
+                onCancel={() => setReplyView('hidden')}
+                onSendCustom={() => handleQuickReply(customText)}
+              />
+            )}
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="px-2.5 py-3 flex flex-col items-center text-center">
@@ -963,6 +1111,8 @@ interface CallReplyPanelProps {
    *  semantics; the multi-call queue card passes a plain "Send" (no reject). */
   sendLabel?: string;
   sendAriaLabel?: string;
+  /** Dark card variant (homepage mockup) for the standalone call session. */
+  dark?: boolean;
 }
 
 function CallReplyPanel({
@@ -977,6 +1127,7 @@ function CallReplyPanel({
   onSendCustom,
   sendLabel = 'Send & decline',
   sendAriaLabel = 'Send message and decline call',
+  dark = false,
 }: CallReplyPanelProps) {
   if (view === 'custom') {
     return (
@@ -986,11 +1137,16 @@ function CallReplyPanel({
             type="button"
             onClick={onBackToChips}
             aria-label="Back to quick replies"
-            className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+            className={clsx(
+              'p-1 rounded-md transition-colors',
+              dark
+                ? 'text-slate-500 hover:text-slate-200 hover:bg-slate-800'
+                : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100',
+            )}
           >
             <ChevronLeft className="w-3 h-3" />
           </button>
-          <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+          <span className={clsx('text-[9px] font-semibold uppercase tracking-wider', dark ? 'text-slate-400' : 'text-slate-500')}>
             Custom message
           </span>
         </div>
@@ -1007,7 +1163,12 @@ function CallReplyPanel({
           autoFocus
           placeholder="Type a message…"
           aria-label="Custom reply message"
-          className="w-full px-2 py-1.5 text-[11px] border border-slate-200 rounded-md text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-300 resize-none leading-snug"
+          className={clsx(
+            'w-full px-2 py-1.5 text-[11px] rounded-md resize-none leading-snug focus:outline-none focus:ring-1',
+            dark
+              ? 'bg-slate-800 border border-slate-700 text-white placeholder:text-slate-500 focus:ring-blue-500/50 focus:border-blue-500/50'
+              : 'border border-slate-200 text-slate-800 placeholder:text-slate-400 focus:ring-blue-400 focus:border-blue-300',
+          )}
         />
         <button
           type="button"
@@ -1018,6 +1179,8 @@ function CallReplyPanel({
             'w-full h-7 rounded text-[10px] font-semibold flex items-center justify-center gap-1 transition-colors',
             customText.trim()
               ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-500/30'
+              : dark
+              ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
               : 'bg-slate-200 text-slate-400 cursor-not-allowed',
           )}
         >
@@ -1032,13 +1195,13 @@ function CallReplyPanel({
   return (
     <div className="mt-3 w-full text-left space-y-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+        <span className={clsx('text-[9px] font-semibold uppercase tracking-wider', dark ? 'text-slate-400' : 'text-slate-500')}>
           Quick reply
         </span>
         <button
           type="button"
           onClick={onCancel}
-          className="text-[9px] text-slate-400 hover:text-slate-600 transition-colors"
+          className={clsx('text-[9px] transition-colors', dark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')}
         >
           Cancel
         </button>
@@ -1050,7 +1213,12 @@ function CallReplyPanel({
               type="button"
               onClick={() => onPickChip(reply.body)}
               title={reply.body}
-              className="w-full text-left px-2 py-1.5 bg-slate-50 hover:bg-blue-50 active:bg-blue-100 text-slate-700 hover:text-blue-700 text-[11px] rounded-md border border-slate-200 hover:border-blue-200 transition-colors truncate"
+              className={clsx(
+                'w-full text-left px-2 py-1.5 text-[11px] rounded-md border transition-colors truncate',
+                dark
+                  ? 'bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-100 border-slate-700'
+                  : 'bg-slate-50 hover:bg-blue-50 active:bg-blue-100 text-slate-700 hover:text-blue-700 border-slate-200 hover:border-blue-200',
+              )}
             >
               {reply.name}
             </button>
@@ -1060,7 +1228,12 @@ function CallReplyPanel({
           <button
             type="button"
             onClick={onPickCustom}
-            className="w-full text-left px-2 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] rounded-md border border-blue-200 transition-colors inline-flex items-center gap-1"
+            className={clsx(
+              'w-full text-left px-2 py-1.5 text-[11px] rounded-md border transition-colors inline-flex items-center gap-1',
+              dark
+                ? 'bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 border-blue-500/30'
+                : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200',
+            )}
           >
             <MessageSquare className="w-3 h-3" />
             Custom…

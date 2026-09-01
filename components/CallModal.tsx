@@ -278,108 +278,136 @@ export const CallModal = () => {
     );
   };
 
-  // Compact floating widget
+  // Compact floating widget — restyled to match the homepage "how it works"
+  // scene 8 callmodal (2026-09-01, Pixel): dark card, amber pulsing-ring
+  // avatar for the ringing state, uppercase RINGING pill, and an
+  // Answer / Reply / Decline action row. Purely visual; every handler
+  // (answerCall / endCall / declineWithMessage via renderReplyPanel) is
+  // wired exactly as before.
+  //
+  // NOTE (2026-09-01): CallModal is NOT mounted in the production app —
+  // GlobalDialer's CallSessionView is the live floating incoming-call
+  // surface (see GlobalDialer.tsx header comment). This restyle keeps the
+  // reference implementation in sync with the mockup; the user-visible
+  // change ships in GlobalDialer.
   if (!isExpanded) {
+    // Accent tokens per call state, mirroring the mockup's
+    // .callmodal.ringing / .dialing / .active variants.
+    const accent = sentNotice
+      ? { av: 'bg-emerald-500/20 text-emerald-300', ring: 'border-emerald-400/60', badge: 'bg-emerald-500/15 text-emerald-300' }
+      : state === 'ringing'
+      ? { av: 'bg-amber-500/20 text-amber-300', ring: 'border-amber-400/60', badge: 'bg-amber-500/15 text-amber-300' }
+      : state === 'active'
+      ? { av: 'bg-emerald-500/20 text-emerald-300', ring: 'border-emerald-400/60', badge: 'bg-emerald-500/15 text-emerald-300' }
+      : { av: 'bg-blue-500/20 text-blue-300', ring: 'border-blue-400/60', badge: 'bg-blue-500/15 text-blue-300' };
+    const badgeText = sentNotice
+      ? 'Sent'
+      : state === 'ringing'
+      ? 'Ringing'
+      : state === 'dialing'
+      ? 'Dialing'
+      : state === 'active'
+      ? getStatusText()
+      : '';
+    const showPulseRing = !sentNotice && (state === 'ringing' || state === 'dialing');
+
     return (
       <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom-4 duration-300">
-        <div className="bg-slate-900 rounded-2xl shadow-2xl shadow-slate-900/30 overflow-hidden min-w-[280px] max-w-[340px]">
-          {/* Status bar */}
-          <div className={`h-1 ${getStatusColor()}`} />
+        <div className="w-[264px] bg-slate-900 rounded-[18px] shadow-2xl shadow-slate-950/60 overflow-hidden">
+          {/* Status bar — colour tracks call state (amber / blue / emerald). */}
+          <div className={`h-[3px] ${getStatusColor()}`} />
 
-          {/* Content */}
-          <div className="p-4">
-            <div className="flex items-center gap-3 mb-3">
-              {/* Caller avatar/icon */}
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                sentNotice
-                  ? 'bg-emerald-500/20'
-                  : state === 'active' ? 'bg-emerald-500/20' : 'bg-blue-500/20'
-              }`}>
+          <div className="p-3.5">
+            {/* Caller row: avatar · name/sub · state badge. */}
+            <div className="flex items-center gap-3">
+              <div className={`relative flex-none w-10 h-10 rounded-full flex items-center justify-center ${accent.av}`}>
+                {showPulseRing && (
+                  <span
+                    aria-hidden="true"
+                    className={`absolute -inset-1.5 rounded-full border-2 ${accent.ring} animate-ping`}
+                  />
+                )}
                 {sentNotice ? (
-                  <Check className="w-5 h-5 text-emerald-400" />
+                  <Check className="w-[19px] h-[19px]" />
                 ) : (
-                  <Phone className={`w-5 h-5 ${
-                    state === 'active' ? 'text-emerald-400' : 'text-blue-400'
-                  } ${state === 'ringing' || state === 'dialing' ? 'animate-pulse' : ''}`} />
+                  <Phone className="w-[19px] h-[19px]" />
                 )}
               </div>
 
-              {/* Caller info */}
               <div className="flex-1 min-w-0">
-                <p className="text-white font-semibold text-sm truncate">
-                  {name || number}
+                <p className="text-white font-semibold text-[13.5px] leading-tight truncate">
+                  {name || number || 'Number hidden'}
                 </p>
-                <p className="text-slate-400 text-xs truncate">
-                  {sentNotice ? sentNotice : (name ? number : getStatusText())}
+                <p className="text-slate-400 text-[11px] truncate">
+                  {sentNotice ? sentNotice : name ? number : state === 'ringing' ? 'Incoming call' : getStatusText()}
                 </p>
               </div>
 
-              {/* Duration/Status badge */}
-              <div className={`px-2 py-1 rounded-full text-xs font-medium ${
-                sentNotice
-                  ? 'bg-emerald-500/20 text-emerald-400'
-                  : state === 'active'
-                  ? 'bg-emerald-500/20 text-emerald-400'
-                  : state === 'ringing'
-                  ? 'bg-amber-500/20 text-amber-400'
-                  : 'bg-blue-500/20 text-blue-400'
-              }`}>
-                {getStatusText()}
-              </div>
+              {badgeText && (
+                <span className={`flex-none text-[10px] font-bold uppercase tracking-wide px-2 py-[3px] rounded-full ${accent.badge}`}>
+                  {badgeText}
+                </span>
+              )}
             </div>
 
-            {/* Action buttons — hidden while showing "Message sent" confirmation */}
-            {!sentNotice && (
-              <div className="flex items-center gap-2">
-                {/* Answer button (only for incoming calls) */}
+            {/* Action row — Answer / Reply / Decline. Hidden while the reply
+                panel is open (it owns the space) and during the sent notice. */}
+            {!sentNotice && replyView === 'hidden' && (
+              <div className="flex gap-2 mt-3">
                 {state === 'ringing' && (
                   <button
                     onClick={answerCall}
                     aria-label="Answer call"
-                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-medium text-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+                    className="flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold transition-colors"
                   >
-                    <Phone className="w-4 h-4" />
+                    <Phone className="w-[15px] h-[15px]" />
                     Answer
                   </button>
                 )}
 
-                {/* Reply affordance — ringing-only, gated against waitingCall.
-                    Hidden once chips/custom panel is open (it owns the row below). */}
-                {showReplyAffordance && replyView === 'hidden' && (
+                {/* Reply affordance — ringing-only, gated against waitingCall. */}
+                {showReplyAffordance && (
                   <button
                     onClick={() => setReplyView('chips')}
                     aria-label="Reply with message and decline"
                     title="Reply with message"
-                    className="p-2.5 bg-slate-800 hover:bg-slate-700 text-blue-300 hover:text-blue-200 rounded-xl transition-colors"
+                    className="flex-none w-10 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-slate-700 text-blue-300 transition-colors"
                   >
-                    <MessageSquare className="w-4 h-4" />
+                    <MessageSquare className="w-[15px] h-[15px]" />
                   </button>
                 )}
 
-                {/* End/Decline button */}
                 <button
                   onClick={endCall}
                   aria-label={state === 'ringing' ? 'Decline call' : 'End call'}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl font-medium text-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  className="flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2.5 bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold transition-colors"
                 >
-                  <PhoneOff className="w-4 h-4" />
+                  <PhoneOff className="w-[15px] h-[15px]" />
                   {state === 'ringing' ? 'Decline' : 'End'}
                 </button>
 
-                {/* Expand button */}
                 <button
                   onClick={() => setIsExpanded(true)}
                   aria-label="Expand call view"
                   title="Expand"
-                  className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl transition-colors"
+                  className="flex-none w-10 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
                 >
-                  <Maximize2 className="w-4 h-4" />
+                  <Maximize2 className="w-[15px] h-[15px]" />
                 </button>
               </div>
             )}
 
             {/* Reply panel: chips or custom-text composer. */}
             {!sentNotice && renderReplyPanel(true)}
+
+            {/* Sent confirmation — matches the mockup's "Message sent · call
+                declined" line. */}
+            {sentNotice && (
+              <div className="flex items-center gap-1.5 mt-3 text-xs font-semibold text-emerald-300">
+                <Check className="w-4 h-4" />
+                Message sent · call declined
+              </div>
+            )}
           </div>
         </div>
       </div>

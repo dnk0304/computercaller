@@ -2726,6 +2726,59 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
   const displayName = call.name || call.number || 'Number hidden';
   const colorClass = getAvatarColor(displayName);
 
+  // De-dup (2026-09-01, Pixel): while a call is RINGING the polished floating
+  // call popup (GlobalDialer's CallSessionView) is the primary incoming-call
+  // surface. The Quick Dial card here recedes to a quiet pointer — Answer /
+  // Decline stay wired, but the loud emerald gradient + pulsing avatar that
+  // competed with the popup are dropped. The full card returns for
+  // dialing/active (where Mute / Audio Source / Dialpad live).
+  if (isIncomingRinging) {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div
+            className={clsx(
+              'w-9 h-9 rounded-full flex items-center justify-center font-semibold text-xs flex-shrink-0',
+              colorClass,
+            )}
+            aria-hidden="true"
+          >
+            {getInitials(displayName)}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-slate-900 truncate">{displayName}</p>
+            <p className="text-[11px] font-medium text-amber-600 truncate">
+              Incoming call — answer in the call popup
+            </p>
+          </div>
+          <span className="flex-none text-[9px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+            Ringing
+          </span>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <button
+            type="button"
+            onClick={onAnswer}
+            className="flex-1 flex items-center justify-center gap-1 px-2 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-sm transition-colors"
+            aria-label="Answer call"
+          >
+            <PhoneCall className="w-4 h-4" aria-hidden="true" />
+            Answer
+          </button>
+          <button
+            type="button"
+            onClick={onEnd}
+            className="flex-1 flex items-center justify-center gap-1 px-2 py-2 rounded-xl bg-white border border-slate-200 text-rose-600 hover:bg-rose-50 font-semibold text-xs transition-colors"
+            aria-label="Decline call"
+          >
+            <PhoneOff className="w-4 h-4" aria-hidden="true" />
+            Decline
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-emerald-50/40 p-4 shadow-sm">
       <div className="flex items-center gap-3">
