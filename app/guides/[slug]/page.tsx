@@ -218,6 +218,34 @@ export default async function GuidePage({
     },
   };
 
+  // Mirrors the visual <nav aria-label="Breadcrumb"> below (Home → Guides →
+  // article) so Google can render the breadcrumb trail in search results.
+  // Names and item URLs must match that <nav> and the page canonical exactly.
+  const breadcrumbJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      {
+        '@type': 'ListItem',
+        position: 1,
+        name: 'Home',
+        item: 'https://computercaller.com/',
+      },
+      {
+        '@type': 'ListItem',
+        position: 2,
+        name: 'Guides',
+        item: 'https://computercaller.com/guides',
+      },
+      {
+        '@type': 'ListItem',
+        position: 3,
+        name: guide.title,
+        item: `https://computercaller.com/guides/${guide.slug}`,
+      },
+    ],
+  };
+
   return (
     <div className="min-h-screen bg-white text-slate-900 flex flex-col">
       {/* Inline in the server HTML (not afterInteractive) so the structured
@@ -225,6 +253,10 @@ export default async function GuidePage({
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: jsonLdScript(articleJsonLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: jsonLdScript(breadcrumbJsonLd) }}
       />
 
       <GuidesHeader />
