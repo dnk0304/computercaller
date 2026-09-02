@@ -216,39 +216,99 @@ const DEMO_CSS = `/* ===================== U1 · Unified auto-play dashboard dem
 /* Reduced-motion static storyboard */
 .u1-static{display:none}
 
+/* ============ Fluid mobile & tablet (max-width:900px) ============
+   Below the desktop grid, the whole demo scales proportionally instead of
+   jumping at fixed breakpoints. Section chrome (headings, caption, rail,
+   paddings) scales with the viewport via clamp()+vw; everything INSIDE the
+   browser frame scales with the frame itself via container-query units (cqw),
+   so the mockup stays correctly proportioned on any phone or tablet — small
+   phone, large phone, or tablet — and simply grows smoothly between them.
+   Desktop (>=901px) is untouched. */
 @media (max-width:900px){
-  .u1-wrap{padding:56px 18px 64px}
-  .u1-stage{grid-template-columns:1fr;gap:22px}
+  .u1-wrap{padding:clamp(38px,7vw,56px) clamp(14px,4.5vw,18px) clamp(46px,9vw,64px)}
+  .u1-head{margin-bottom:clamp(22px,5vw,40px)}
+  .u1-head h2{font-size:clamp(23px,6.2vw,34px)}
+  .u1-head p{font-size:clamp(14px,3.7vw,16.5px)}
+
+  .u1-stage{grid-template-columns:1fr;gap:clamp(16px,4vw,24px)}
   .u1-cap{order:2;text-align:center;max-width:520px;margin:0 auto}
   .u1-cap .stepn{justify-content:center}
-  .u1-frame{order:1}
-  .u1-tip{max-width:180px;padding:10px 12px}
+  .u1-cap h3{font-size:clamp(19px,5vw,25px)}
+  .u1-cap p{font-size:clamp(13.5px,3.6vw,15px)}
+
+  /* Frame: fluid width, centered, and a query container for its contents */
+  .u1-frame{order:1;width:100%;max-width:clamp(288px,90vw,600px);margin-inline:auto;container-type:inline-size}
+
+  /* --- everything below scales with the frame width (cqw) --- */
+  .u1-tip{max-width:52cqw;padding:2.6cqw 3cqw}
+  .u1-tip .th{font-size:clamp(11px,3.7cqw,14px);gap:2cqw}
+  .u1-tip .th .chk{width:clamp(15px,5cqw,19px);height:clamp(15px,5cqw,19px)}
   .u1-tip p{display:none}
-  /* Give action cards room — the dense 3-col shot is illegible at this size anyway */
-  .u1-pane{left:23%;right:3%;top:9%;bottom:2%;padding:2% 2%}
-  .u1-call{max-width:none}
-  .u1-layer[data-scene="dial"] .u1-dial{left:9.7% !important;width:auto !important;max-width:50% !important;font-size:12px}
-  .u1-callbtn{left:9.7% !important;width:30% !important;top:19.5% !important;font-size:11px}
+
+  /* Action pane centered with the dense dashboard column kept at the left */
+  .u1-pane{left:22%;right:3%;top:8%;bottom:2%;padding:2%}
+
+  /* Call card */
+  .u1-call{max-width:none;padding:clamp(10px,3.4cqw,20px) clamp(10px,3.2cqw,18px)}
+  .u1-call .dir{font-size:clamp(8.5px,2.9cqw,11.5px);padding:clamp(3px,1cqw,5px) clamp(7px,2.4cqw,11px)}
+  .u1-call .av{width:clamp(38px,12cqw,66px);height:clamp(38px,12cqw,66px);font-size:clamp(15px,4.6cqw,23px);margin-top:clamp(6px,2cqw,16px)}
+  .u1-call .nm{font-size:clamp(14px,4.4cqw,18px);margin-top:clamp(5px,1.8cqw,12px)}
+  .u1-call .no{font-size:clamp(10px,3.1cqw,12.5px)}
+  .u1-call .tmr{font-size:clamp(11px,3.4cqw,13.5px);margin-top:clamp(4px,1.6cqw,9px)}
+  .u1-call .ctrls{margin-top:clamp(10px,3.2cqw,20px);gap:clamp(9px,3cqw,14px)}
+  .u1-cbtn{width:clamp(34px,10.6cqw,46px);height:clamp(34px,10.6cqw,46px)}
+  .u1-cbtn svg{width:clamp(15px,4.2cqw,19px);height:clamp(15px,4.2cqw,19px)}
+
+  /* Dial + call button (moved onto the visible left column) */
+  .u1-layer[data-scene="dial"] .u1-dial{left:9.7% !important;width:auto !important;max-width:50% !important;font-size:clamp(10px,3.3cqw,12.5px)}
+  .u1-callbtn{left:9.7% !important;width:30% !important;top:19.5% !important;font-size:clamp(9px,3cqw,11px)}
+
+  /* Contact search results + incoming message row */
   .u1-results{left:26% !important;width:48% !important}
-  .u1-msgrow{left:20% !important;width:44% !important}
-  /* Fit the call card into the short aspect-locked frame */
-  .u1-call{padding:11px 12px}
-  .u1-call .dir{font-size:9px;padding:3px 8px}
-  .u1-call .av{width:40px;height:40px;font-size:16px;margin-top:8px}
-  .u1-call .nm{font-size:15px;margin-top:6px}
-  .u1-call .no{font-size:11px}
-  .u1-call .tmr{margin-top:5px;font-size:12px}
-  .u1-call .ctrls{margin-top:11px;gap:11px}
-  .u1-cbtn{width:37px;height:37px}
-  .u1-cbtn svg{width:15px;height:15px}
-  /* Ribbon to the dead sidebar corner so it never covers an action card */
-  .u1-ribbon{top:8px;left:8px;right:auto;bottom:auto;font-size:9.5px;padding:5px 9px}
-}
-@media (max-width:520px){
-  .u1-head h2{font-size:24px}
-  .u1-step{font-size:12px;padding:7px 12px}
-  .u1-call{padding:16px 14px}
-  .u1-call .av{width:52px;height:52px;font-size:19px}
+  .u1-res b{font-size:clamp(10.5px,3.3cqw,12.5px)}
+  .u1-res small{font-size:clamp(9px,2.8cqw,10.5px)}
+  .u1-res .r-av{width:clamp(22px,7cqw,26px);height:clamp(22px,7cqw,26px);font-size:clamp(9px,3cqw,11px)}
+  .u1-msgrow{left:20% !important;width:44% !important;padding:clamp(7px,2.6cqw,9px) clamp(8px,2.8cqw,10px)}
+  .u1-msgrow b{font-size:clamp(10px,3cqw,11.5px)}
+  .u1-msgrow .mr-msg{font-size:clamp(9px,2.9cqw,10.5px)}
+  .u1-msgrow .mr-av{width:clamp(18px,6cqw,22px);height:clamp(18px,6cqw,22px);font-size:clamp(8px,2.7cqw,10px)}
+
+  /* Message thread */
+  .u1-th-av{width:clamp(26px,8.4cqw,34px);height:clamp(26px,8.4cqw,34px);font-size:clamp(10px,3.4cqw,13px)}
+  .u1-th-top b{font-size:clamp(11.5px,3.7cqw,14px)}
+  .u1-th-top small{font-size:clamp(9px,2.9cqw,11px)}
+  .u1-bub{font-size:clamp(11px,3.5cqw,13.5px)}
+  .u1-chip{font-size:clamp(10px,3.2cqw,12px);padding:clamp(4px,1.6cqw,6px) clamp(8px,3cqw,12px)}
+  .u1-cinput{font-size:clamp(11px,3.5cqw,13px);min-height:clamp(28px,9cqw,34px)}
+  .u1-send{width:clamp(28px,9cqw,34px);height:clamp(28px,9cqw,34px)}
+  .u1-send svg{width:clamp(13px,4.2cqw,16px);height:clamp(13px,4.2cqw,16px)}
+
+  /* Pairing phone (scene 1) — sized to fit the short, wide frame without
+     clipping the CTA, and made a nested container so its own UI scales with it */
+  .u1-phone{width:clamp(112px,33cqw,220px);max-width:none}
+  .u1-phone-shell{padding:clamp(4px,1.8cqw,7px)}
+  .u1-phone-screen{container-type:inline-size}
+  .u1-phone-status{padding:clamp(5px,4cqw,9px) clamp(10px,7cqw,16px) 3px;font-size:clamp(8px,4.8cqw,10px)}
+  .u1-phone-body{padding:clamp(6px,6cqw,12px)}
+  .u1-req{padding:clamp(8px,7cqw,15px) clamp(9px,6cqw,13px)}
+  .u1-req .rq-ic{width:clamp(26px,20cqw,42px);height:clamp(26px,20cqw,42px);margin-bottom:clamp(5px,4cqw,9px)}
+  .u1-req .rq-ic svg{width:clamp(14px,10.5cqw,22px);height:clamp(14px,10.5cqw,22px)}
+  .u1-req h5,.u1-pdone h5{font-size:clamp(10.5px,6.4cqw,14px)}
+  .u1-req .rq-sub{font-size:clamp(8.5px,5cqw,10.5px);margin-top:clamp(3px,2.4cqw,5px)}
+  .u1-req .rq-dev{font-size:clamp(8px,4.6cqw,10px);margin-top:clamp(6px,4cqw,9px);padding:clamp(3px,1.9cqw,4px) clamp(6px,4.3cqw,9px)}
+  .u1-req-actions{margin-top:clamp(8px,5.7cqw,12px);gap:clamp(5px,3.8cqw,8px)}
+  .u1-pbtn{padding:clamp(6px,4.3cqw,9px);font-size:clamp(9px,5.7cqw,12px)}
+  .u1-pdone{gap:clamp(7px,5cqw,11px);padding:clamp(6px,4cqw,8px)}
+  .u1-pdone .pd-ic{width:clamp(40px,26cqw,56px);height:clamp(40px,26cqw,56px)}
+  .u1-pdone .pd-ic svg{width:clamp(20px,13cqw,28px);height:clamp(20px,13cqw,28px)}
+  .u1-pdone p{font-size:clamp(9px,5.2cqw,11px)}
+
+  /* Ribbon parked in the dead sidebar corner so it never covers a card */
+  .u1-ribbon{top:8px;left:8px;right:auto;bottom:auto;font-size:clamp(9px,2.9cqw,11px);padding:5px 9px}
+
+  /* Step rail + controls */
+  .u1-steps{gap:clamp(6px,2vw,8px);margin-top:clamp(24px,5vw,38px)}
+  .u1-step{font-size:clamp(12px,3.3vw,13px);padding:clamp(6px,2vw,8px) clamp(11px,3vw,15px)}
 }
 
 @media (prefers-reduced-motion:reduce){
