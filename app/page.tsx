@@ -29,6 +29,7 @@ import {
 import { SignupModal } from '@/components/SignupModal';
 import { PricingModal } from '@/components/PricingModal';
 import { WAITLIST_MODE } from '@/lib/waitlistMode';
+import HowItWorksDemo from '@/components/HowItWorksDemo';
 
 /**
  * Landing page — SEO + content rewrite (dispatch 2026-05-25, revised 2026-05-25
@@ -553,6 +554,14 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* See it in action — the approved unified auto-playing product demo
+          (Dennis-approved mockup, u1 final build). Sits directly under the hero
+          as the marquee "how it works" moment; carries the canonical
+          id="how-it-works" that the header nav + hero "See how it works" button
+          resolve to. Self-contained client component (own scoped CSS + engine);
+          the old 3-step setup block below keeps a distinct id="setup". */}
+      <HowItWorksDemo />
+
       {/* What it does + how it works — the former "Features" and "How it works"
           sections merged into ONE lean block (2026-07-04 trim). Top half: the
           value — a compact privacy band folded in from the cut Privacy section,
@@ -643,9 +652,10 @@ export default function LandingPage() {
           </div>
 
           {/* How it works — 3-step setup folded into this section so setup is
-              told once. Keeps id="how-it-works" so the header nav anchor still
-              resolves. Divider marks the value→setup shift within the block. */}
-          <div id="how-it-works" className="mt-16 pt-12 border-t border-slate-200 scroll-mt-24">
+              told once. id="setup" (the canonical id="how-it-works" now lives on
+              the auto-playing demo under the hero, where the nav anchor points).
+              Divider marks the value→setup shift within the block. */}
+          <div id="setup" className="mt-16 pt-12 border-t border-slate-200 scroll-mt-24">
             <div className="max-w-2xl mb-10">
               <p className="text-sm font-semibold text-blue-600 tracking-wide uppercase">
                 How it works
@@ -810,45 +820,129 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Footer */}
+      {/* Footer — restructured into columns (2026-09-02) to add a dedicated
+          "Blog" section. Blog links to /guides, the DB-backed article index
+          that lists EVERY published article and revalidates on publish, so new
+          articles surface here automatically with no footer edits (data-driven
+          single source of truth — nothing per-article is hardcoded). */}
       <footer className="border-t border-slate-200 bg-slate-50/60">
-        <div className="max-w-6xl mx-auto px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Image
-              src="/brand/computercaller-icon-transparent.png"
-              alt=""
-              width={396}
-              height={317}
-              className="h-7 w-auto"
-            />
-            <span className="text-sm text-slate-600">
-              © {new Date().getFullYear()} ComputerCaller
-            </span>
+        <div className="max-w-6xl mx-auto px-6 py-12">
+          <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
+            {/* Brand */}
+            <div className="col-span-2 sm:col-span-1">
+              <div className="flex items-center gap-2">
+                <Image
+                  src="/brand/computercaller-icon-transparent.png"
+                  alt=""
+                  width={396}
+                  height={317}
+                  className="h-7 w-auto"
+                />
+                <span className="font-semibold text-slate-900">ComputerCaller</span>
+              </div>
+              <p className="mt-3 text-sm text-slate-500 leading-relaxed max-w-xs">
+                Make phone calls and send texts from your computer — using your
+                own number and carrier.
+              </p>
+            </div>
+
+            {/* Product */}
+            <nav aria-labelledby="footer-product">
+              <h2
+                id="footer-product"
+                className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+              >
+                Product
+              </h2>
+              <ul className="mt-3 space-y-2 text-sm text-slate-600">
+                <li>
+                  <a href="#features" className="hover:text-slate-900 transition-colors">
+                    Features
+                  </a>
+                </li>
+                <li>
+                  <a href="#how-it-works" className="hover:text-slate-900 transition-colors">
+                    How it works
+                  </a>
+                </li>
+                <li>
+                  <a href="#faqs" className="hover:text-slate-900 transition-colors">
+                    FAQ
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="https://play.google.com/store/apps/details?id=com.dnkdialer.companion&hl=en"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="hover:text-slate-900 transition-colors"
+                  >
+                    Get it on Google Play
+                  </a>
+                </li>
+              </ul>
+            </nav>
+
+            {/* Blog — links to every article via the /guides index */}
+            <nav aria-labelledby="footer-blog">
+              <h2
+                id="footer-blog"
+                className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+              >
+                Blog
+              </h2>
+              <ul className="mt-3 space-y-2 text-sm text-slate-600">
+                <li>
+                  <Link href="/guides" className="hover:text-slate-900 transition-colors">
+                    All articles
+                  </Link>
+                </li>
+                <li>
+                  <Link href="/guides" className="hover:text-slate-900 transition-colors">
+                    Guides &amp; how-tos
+                  </Link>
+                </li>
+                <li>
+                  <Link href="/guides" className="hover:text-slate-900 transition-colors">
+                    Comparisons
+                  </Link>
+                </li>
+              </ul>
+            </nav>
+
+            {/* Company / legal */}
+            <nav aria-labelledby="footer-company">
+              <h2
+                id="footer-company"
+                className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+              >
+                Company
+              </h2>
+              <ul className="mt-3 space-y-2 text-sm text-slate-600">
+                <li>
+                  <Link href="/privacy" className="hover:text-slate-900 transition-colors">
+                    Privacy
+                  </Link>
+                </li>
+                <li>
+                  <Link href="/terms" className="hover:text-slate-900 transition-colors">
+                    Terms
+                  </Link>
+                </li>
+                <li>
+                  <a
+                    href="mailto:support@computercaller.com"
+                    className="hover:text-slate-900 transition-colors"
+                  >
+                    Support
+                  </a>
+                </li>
+              </ul>
+            </nav>
           </div>
-          <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 sm:gap-5 text-sm text-slate-500">
-            <a
-              href="https://play.google.com/store/apps/details?id=com.dnkdialer.companion&hl=en"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-slate-900 transition-colors"
-            >
-              Get it on Google Play
-            </a>
-            <Link href="/guides" className="hover:text-slate-900 transition-colors">
-              Guides
-            </Link>
-            <Link href="/privacy" className="hover:text-slate-900 transition-colors">
-              Privacy
-            </Link>
-            <Link href="/terms" className="hover:text-slate-900 transition-colors">
-              Terms
-            </Link>
-            <a
-              href="mailto:support@computercaller.com"
-              className="hover:text-slate-900 transition-colors"
-            >
-              support@computercaller.com
-            </a>
+
+          <div className="mt-10 pt-6 border-t border-slate-200 text-sm text-slate-500">
+            © {new Date().getFullYear()} ComputerCaller
           </div>
         </div>
       </footer>
