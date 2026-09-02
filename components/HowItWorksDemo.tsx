@@ -44,6 +44,9 @@ const DEMO_CSS = `/* ===================== U1 · Unified auto-play dashboard dem
 
 /* ---- Stage: frame + caption ---- */
 .u1-stage{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.72fr);gap:34px;align-items:center}
+/* Wrapper is transparent to the desktop grid; on mobile it becomes the clip box
+   for the JS-scaled frame (see the max-width:900px block + initDemo/fitFrame). */
+.u1-frame-scale{display:contents}
 
 /* Browser frame */
 .u1-frame{position:relative;border-radius:var(--radius);background:var(--card);box-shadow:var(--shadow);border:1px solid var(--line);overflow:hidden}
@@ -217,12 +220,18 @@ const DEMO_CSS = `/* ===================== U1 · Unified auto-play dashboard dem
 .u1-static{display:none}
 
 /* ============ Fluid mobile & tablet (max-width:900px) ============
-   Below the desktop grid, the whole demo scales proportionally instead of
-   jumping at fixed breakpoints. Section chrome (headings, caption, rail,
-   paddings) scales with the viewport via clamp()+vw; everything INSIDE the
-   browser frame scales with the frame itself via container-query units (cqw),
-   so the mockup stays correctly proportioned on any phone or tablet — small
-   phone, large phone, or tablet — and simply grows smoothly between them.
+   The previous attempt re-tuned every overlay inside the frame with
+   container-query units. That fought a losing battle: the frame is a fixed
+   desktop dashboard screenshot with overlays positioned against its desktop
+   coordinates, so re-sizing each overlay individually left the cards oversized
+   relative to the shrunken dashboard — the "zoomed" look Dennis reported.
+
+   New approach: render the ENTIRE frame at its real desktop proportions and
+   scale it down as ONE unit via transform: scale() (the ratio + the wrapper's
+   compensating height are computed in JS — see initDemo/fitFrame). The
+   dashboard and every overlay keep their exact desktop composition, just
+   smaller — a faithful miniature, never a zoomed fragment. Only section chrome
+   (headings, caption, rail, paddings) scales fluidly with the viewport.
    Desktop (>=901px) is untouched. */
 @media (max-width:900px){
   .u1-wrap{padding:clamp(38px,7vw,56px) clamp(14px,4.5vw,18px) clamp(46px,9vw,64px)}
@@ -236,75 +245,10 @@ const DEMO_CSS = `/* ===================== U1 · Unified auto-play dashboard dem
   .u1-cap h3{font-size:clamp(19px,5vw,25px)}
   .u1-cap p{font-size:clamp(13.5px,3.6vw,15px)}
 
-  /* Frame: fluid width, centered, and a query container for its contents */
-  .u1-frame{order:1;width:100%;max-width:clamp(288px,90vw,600px);margin-inline:auto;container-type:inline-size}
-
-  /* --- everything below scales with the frame width (cqw) --- */
-  .u1-tip{max-width:52cqw;padding:2.6cqw 3cqw}
-  .u1-tip .th{font-size:clamp(11px,3.7cqw,14px);gap:2cqw}
-  .u1-tip .th .chk{width:clamp(15px,5cqw,19px);height:clamp(15px,5cqw,19px)}
-  .u1-tip p{display:none}
-
-  /* Action pane centered with the dense dashboard column kept at the left */
-  .u1-pane{left:22%;right:3%;top:8%;bottom:2%;padding:2%}
-
-  /* Call card */
-  .u1-call{max-width:none;padding:clamp(10px,3.4cqw,20px) clamp(10px,3.2cqw,18px)}
-  .u1-call .dir{font-size:clamp(8.5px,2.9cqw,11.5px);padding:clamp(3px,1cqw,5px) clamp(7px,2.4cqw,11px)}
-  .u1-call .av{width:clamp(38px,12cqw,66px);height:clamp(38px,12cqw,66px);font-size:clamp(15px,4.6cqw,23px);margin-top:clamp(6px,2cqw,16px)}
-  .u1-call .nm{font-size:clamp(14px,4.4cqw,18px);margin-top:clamp(5px,1.8cqw,12px)}
-  .u1-call .no{font-size:clamp(10px,3.1cqw,12.5px)}
-  .u1-call .tmr{font-size:clamp(11px,3.4cqw,13.5px);margin-top:clamp(4px,1.6cqw,9px)}
-  .u1-call .ctrls{margin-top:clamp(10px,3.2cqw,20px);gap:clamp(9px,3cqw,14px)}
-  .u1-cbtn{width:clamp(34px,10.6cqw,46px);height:clamp(34px,10.6cqw,46px)}
-  .u1-cbtn svg{width:clamp(15px,4.2cqw,19px);height:clamp(15px,4.2cqw,19px)}
-
-  /* Dial + call button (moved onto the visible left column) */
-  .u1-layer[data-scene="dial"] .u1-dial{left:9.7% !important;width:auto !important;max-width:50% !important;font-size:clamp(10px,3.3cqw,12.5px)}
-  .u1-callbtn{left:9.7% !important;width:30% !important;top:19.5% !important;font-size:clamp(9px,3cqw,11px)}
-
-  /* Contact search results + incoming message row */
-  .u1-results{left:26% !important;width:48% !important}
-  .u1-res b{font-size:clamp(10.5px,3.3cqw,12.5px)}
-  .u1-res small{font-size:clamp(9px,2.8cqw,10.5px)}
-  .u1-res .r-av{width:clamp(22px,7cqw,26px);height:clamp(22px,7cqw,26px);font-size:clamp(9px,3cqw,11px)}
-  .u1-msgrow{left:20% !important;width:44% !important;padding:clamp(7px,2.6cqw,9px) clamp(8px,2.8cqw,10px)}
-  .u1-msgrow b{font-size:clamp(10px,3cqw,11.5px)}
-  .u1-msgrow .mr-msg{font-size:clamp(9px,2.9cqw,10.5px)}
-  .u1-msgrow .mr-av{width:clamp(18px,6cqw,22px);height:clamp(18px,6cqw,22px);font-size:clamp(8px,2.7cqw,10px)}
-
-  /* Message thread */
-  .u1-th-av{width:clamp(26px,8.4cqw,34px);height:clamp(26px,8.4cqw,34px);font-size:clamp(10px,3.4cqw,13px)}
-  .u1-th-top b{font-size:clamp(11.5px,3.7cqw,14px)}
-  .u1-th-top small{font-size:clamp(9px,2.9cqw,11px)}
-  .u1-bub{font-size:clamp(11px,3.5cqw,13.5px)}
-  .u1-chip{font-size:clamp(10px,3.2cqw,12px);padding:clamp(4px,1.6cqw,6px) clamp(8px,3cqw,12px)}
-  .u1-cinput{font-size:clamp(11px,3.5cqw,13px);min-height:clamp(28px,9cqw,34px)}
-  .u1-send{width:clamp(28px,9cqw,34px);height:clamp(28px,9cqw,34px)}
-  .u1-send svg{width:clamp(13px,4.2cqw,16px);height:clamp(13px,4.2cqw,16px)}
-
-  /* Pairing phone (scene 1) — sized to fit the short, wide frame without
-     clipping the CTA, and made a nested container so its own UI scales with it */
-  .u1-phone{width:clamp(112px,33cqw,220px);max-width:none}
-  .u1-phone-shell{padding:clamp(4px,1.8cqw,7px)}
-  .u1-phone-screen{container-type:inline-size}
-  .u1-phone-status{padding:clamp(5px,4cqw,9px) clamp(10px,7cqw,16px) 3px;font-size:clamp(8px,4.8cqw,10px)}
-  .u1-phone-body{padding:clamp(6px,6cqw,12px)}
-  .u1-req{padding:clamp(8px,7cqw,15px) clamp(9px,6cqw,13px)}
-  .u1-req .rq-ic{width:clamp(26px,20cqw,42px);height:clamp(26px,20cqw,42px);margin-bottom:clamp(5px,4cqw,9px)}
-  .u1-req .rq-ic svg{width:clamp(14px,10.5cqw,22px);height:clamp(14px,10.5cqw,22px)}
-  .u1-req h5,.u1-pdone h5{font-size:clamp(10.5px,6.4cqw,14px)}
-  .u1-req .rq-sub{font-size:clamp(8.5px,5cqw,10.5px);margin-top:clamp(3px,2.4cqw,5px)}
-  .u1-req .rq-dev{font-size:clamp(8px,4.6cqw,10px);margin-top:clamp(6px,4cqw,9px);padding:clamp(3px,1.9cqw,4px) clamp(6px,4.3cqw,9px)}
-  .u1-req-actions{margin-top:clamp(8px,5.7cqw,12px);gap:clamp(5px,3.8cqw,8px)}
-  .u1-pbtn{padding:clamp(6px,4.3cqw,9px);font-size:clamp(9px,5.7cqw,12px)}
-  .u1-pdone{gap:clamp(7px,5cqw,11px);padding:clamp(6px,4cqw,8px)}
-  .u1-pdone .pd-ic{width:clamp(40px,26cqw,56px);height:clamp(40px,26cqw,56px)}
-  .u1-pdone .pd-ic svg{width:clamp(20px,13cqw,28px);height:clamp(20px,13cqw,28px)}
-  .u1-pdone p{font-size:clamp(9px,5.2cqw,11px)}
-
-  /* Ribbon parked in the dead sidebar corner so it never covers a card */
-  .u1-ribbon{top:8px;left:8px;right:auto;bottom:auto;font-size:clamp(9px,2.9cqw,11px);padding:5px 9px}
+  /* Clip box for the uniformly scaled frame. Its height is set by JS to the
+     scaled frame height so the layout reserves exactly the right space. */
+  .u1-frame-scale{display:block;order:1;width:100%;overflow:hidden}
+  .u1-frame{transform-origin:top left;will-change:transform;backface-visibility:hidden}
 
   /* Step rail + controls */
   .u1-steps{gap:clamp(6px,2vw,8px);margin-top:clamp(24px,5vw,38px)}
@@ -337,8 +281,9 @@ const DEMO_HTML = `
         </div>
       </div>
 
-      <!-- FRAME -->
-      <div class="u1-frame">
+      <!-- FRAME (rendered at desktop proportions; scaled to fit as one unit on mobile) -->
+      <div class="u1-frame-scale" id="u1FrameScale">
+      <div class="u1-frame" id="u1Frame">
         <div class="u1-bar">
           <span class="u1-tl r"></span><span class="u1-tl y"></span><span class="u1-tl g"></span>
           <span class="u1-url"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>computercaller.com/app</span>
@@ -423,6 +368,7 @@ const DEMO_HTML = `
           
         </div>
       </div>
+      </div>
     </div>
 
     <!-- STEP RAIL -->
@@ -489,6 +435,47 @@ function initDemo(root: HTMLElement): () => void {
   screen.querySelectorAll('.u1-layer').forEach((l) => {
     layers[(l as HTMLElement).dataset.scene as string] = l as HTMLElement;
   });
+
+  /* ---- Mobile "fit as one unit" scaling ----
+     Below 900px the frame is rendered at a fixed desktop design width and the
+     whole thing is shrunk with transform: scale() so the dashboard + every
+     overlay keep their exact desktop proportions (no per-element re-tuning).
+     The wrapper's height is set to the scaled height so layout reserves the
+     right space and nothing overlaps the caption/rail. Desktop clears all
+     inline styles and the CSS grid takes over untouched. */
+  const stageEl = q('#u1Stage');
+  const frameScale = q('#u1FrameScale');
+  const frameEl = q('#u1Frame');
+  const DESIGN_W = 680;
+  const mqMobile = window.matchMedia('(max-width:900px)');
+  let ro: ResizeObserver | null = null;
+  function fitFrame() {
+    if (!frameScale || !frameEl) return;
+    if (!mqMobile.matches) {
+      frameEl.style.transform = '';
+      frameEl.style.width = '';
+      frameEl.style.marginLeft = '';
+      frameScale.style.height = '';
+      return;
+    }
+    const avail = frameScale.clientWidth;
+    if (!avail) return;
+    const s = Math.min(avail / DESIGN_W, 1);
+    frameEl.style.width = DESIGN_W + 'px';
+    frameEl.style.transform = 'scale(' + s + ')';
+    frameEl.style.marginLeft = Math.max(0, (avail - DESIGN_W * s) / 2) + 'px';
+    // offsetHeight is the natural (unscaled) height at width=DESIGN_W.
+    frameScale.style.height = frameEl.offsetHeight * s + 'px';
+  }
+  if (typeof ResizeObserver !== 'undefined' && stageEl) {
+    ro = new ResizeObserver(() => fitFrame());
+    ro.observe(stageEl);
+  }
+  window.addEventListener('resize', fitFrame, opt);
+  mqMobile.addEventListener('change', fitFrame, opt);
+  fitFrame();
+  requestAnimationFrame(fitFrame);
+  window.setTimeout(fitFrame, 300);
 
   const SVG = {
     end: '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>',
@@ -939,6 +926,7 @@ function initDemo(root: HTMLElement): () => void {
   return () => {
     clearTimers();
     if (autoTimer) clearTimeout(autoTimer);
+    if (ro) ro.disconnect();
     ac.abort();
     stepsEl.innerHTML = '';
     sl.innerHTML = '';
