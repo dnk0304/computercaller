@@ -17,6 +17,12 @@ import {
   Minus,
   Lock,
   ShieldCheck,
+  MessagesSquare,
+  RefreshCw,
+  Users,
+  LayoutTemplate,
+  Filter,
+  Check,
 } from 'lucide-react';
 import WaitlistCTA from '@/components/WaitlistCTA';
 import {
@@ -711,6 +717,86 @@ export default function LandingPage() {
               )}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* What's new in the Android app — highlights the newest companion
+          release's capabilities as icon + green-check cards (2026-09-02). Sits
+          right after the "What it does" features block (near the app/features
+          area) as its own maintainable, data-driven section. Soft slate-50→white
+          band keeps the surface alternation clean between the white features
+          block above and the slate-50 FAQ below.
+          HONESTY (brand rule): the RCS line says CC SHOWS/MIRRORS your RCS
+          messages — it never claims CC sends RCS (CC sends SMS). */}
+      <section className="border-t border-slate-200 bg-gradient-to-b from-slate-50 to-white scroll-mt-24">
+        <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
+          <div className="max-w-2xl mb-10">
+            <p className="inline-flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-green-700">
+              <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              Latest Android release
+            </p>
+            <h2 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight text-slate-900">
+              What&apos;s new in the Android app
+            </h2>
+            <p className="mt-4 text-slate-600 text-lg leading-relaxed">
+              The newest ComputerCaller companion update brings even more of your
+              phone to your computer. Here&apos;s what just landed.
+            </p>
+          </div>
+
+          <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[
+              {
+                icon: MessagesSquare,
+                title: 'See your RCS messages',
+                desc: 'Your RCS chats are mirrored to your desktop so you can read them right alongside your SMS — one thread view for everything.',
+              },
+              {
+                icon: RefreshCw,
+                title: 'Instant SMS & call sync',
+                desc: 'New texts and call-log entries show up on your computer the moment they happen — no manual refresh, no waiting.',
+              },
+              {
+                icon: Bell,
+                title: 'Live notifications',
+                desc: 'App notifications from your phone mirror to your desktop in real time, so a ping on your phone is a ping on your screen.',
+              },
+              {
+                icon: Users,
+                title: 'Contacts access',
+                desc: 'Your synced contacts are right there — start typing a name and call or text them in a single step.',
+              },
+              {
+                icon: LayoutTemplate,
+                title: 'Message templates & quick replies',
+                desc: 'Save the replies you send all the time and fire one off in a single click when time is tight.',
+              },
+              {
+                icon: Filter,
+                title: 'Filter out calls and messages',
+                desc: 'Cut the noise — filter unwanted calls and messages so only what actually matters reaches you.',
+              },
+            ].map(({ icon: Icon, title, desc }) => (
+              <li
+                key={title}
+                className="group relative p-5 pr-12 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+              >
+                {/* Green "included in this release" check — decorative marker;
+                    the feature is conveyed by the heading text, so hide from AT. */}
+                <span
+                  aria-hidden="true"
+                  className="absolute top-4 right-4 inline-flex h-6 w-6 items-center justify-center rounded-full bg-green-100"
+                >
+                  <Check className="h-4 w-4 text-green-600" strokeWidth={3} />
+                </span>
+                <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 border border-blue-100">
+                  <Icon className="h-5 w-5 text-blue-600" aria-hidden="true" />
+                </div>
+                <h3 className="font-semibold text-slate-900">{title}</h3>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">{desc}</p>
+              </li>
+            ))}
+          </ul>
         </div>
       </section>
 
