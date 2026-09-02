@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import Image from 'next/image';
-import Script from 'next/script';
 import { useRef, useState } from 'react';
 import {
   MessageSquare,
@@ -36,6 +35,7 @@ import { SignupModal } from '@/components/SignupModal';
 import { PricingModal } from '@/components/PricingModal';
 import { WAITLIST_MODE } from '@/lib/waitlistMode';
 import HowItWorksDemo from '@/components/HowItWorksDemo';
+import FeatureVoteWidget from '@/components/FeatureVoteWidget';
 
 /**
  * Landing page — SEO + content rewrite (dispatch 2026-05-25, revised 2026-05-25
@@ -48,8 +48,10 @@ import HowItWorksDemo from '@/components/HowItWorksDemo';
  *   into the Use Cases, How It Works, and FAQ sections — no awkward keyword
  *   stuffing, every phrase fits the reader voice.
  * - JSON-LD structured data (SoftwareApplication + Organization + FAQPage) is
- *   injected via next/script using strategy="afterInteractive" so it ships in
- *   the rendered HTML and Google can read it during the first crawl.
+ *   rendered as a plain inline <script type="application/ld+json"> so it ships
+ *   in the raw server-rendered HTML on first fetch — crawlers that don't run JS
+ *   still read it (previously it went through next/script afterInteractive,
+ *   which only injected it client-side after hydration).
  * - Hero (2026-07-04, Dennis direction): the product render (connect-B, art-
  *   directed desktop/mobile crop) runs full-bleed as an IMMERSIVE TOP
  *   BACKGROUND; the H1 + mechanism subhead + CTAs + proof strip sit over it in
@@ -309,13 +311,15 @@ export default function LandingPage() {
 
   return (
     <div className="min-h-screen bg-white text-slate-900">
-      {/* Structured data — afterInteractive so the tag lands in HEAD post-hydration
-          but BEFORE Google's crawler revisits. Inline script body is the JSON-LD
-          payload — Next's Script handles the type attribute and de-duplication. */}
-      <Script
-        id="ld-json-computercaller"
+      {/* Structured data — rendered as a plain inline <script> so it ships in the
+          RAW server-rendered HTML on first fetch (a client component still SSRs
+          its markup in the app router). Previously injected via next/script
+          strategy="afterInteractive", which only added the tag client-side after
+          hydration — crawlers that don't execute JS never saw it. type is
+          application/ld+json so the browser never runs it; it's pure data. */}
+      <script
         type="application/ld+json"
-        strategy="afterInteractive"
+        // eslint-disable-next-line react/no-danger
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
 
@@ -726,8 +730,10 @@ export default function LandingPage() {
           area) as its own maintainable, data-driven section. Soft slate-50→white
           band keeps the surface alternation clean between the white features
           block above and the slate-50 FAQ below.
-          HONESTY (brand rule): the RCS line says CC SHOWS/MIRRORS your RCS
-          messages — it never claims CC sends RCS (CC sends SMS). */}
+          HONESTY (brand rule): the RCS line says CC RECEIVES your RCS messages
+          and lets you REPLY to existing RCS threads (those replies go as RCS via
+          the phone). It never claims CC can START/COMPOSE a new RCS message or
+          "send RCS" generally — new outbound messages CC composes are SMS. */}
       <section className="border-t border-slate-200 bg-gradient-to-b from-slate-50 to-white scroll-mt-24">
         <div className="max-w-6xl mx-auto px-6 py-20 sm:py-24">
           <div className="max-w-2xl mb-10">
@@ -748,8 +754,8 @@ export default function LandingPage() {
             {[
               {
                 icon: MessagesSquare,
-                title: 'See your RCS messages',
-                desc: 'Your RCS chats are mirrored to your desktop so you can read them right alongside your SMS — one thread view for everything.',
+                title: 'Incoming RCS & RCS replies',
+                desc: 'See your RCS messages on your desktop and reply right there — replies to an RCS chat send as RCS straight from your number, alongside your SMS in one thread view.',
               },
               {
                 icon: RefreshCw,
@@ -799,6 +805,15 @@ export default function LandingPage() {
           </ul>
         </div>
       </section>
+
+      {/* Vote on what we build next — anonymous, cookie-based feature voting.
+          Sits directly ADJACENT to (right after) the "What's new in the Android
+          app" section per Dennis: "what we shipped" flows straight into "what's
+          next, you pick." White surface continues the band above; the FAQ below
+          is slate-50, so the alternation stays clean. Data + toggle/optimistic
+          logic live in the client component; it fetches /api/feature-votes
+          (Forge's forge/feature-voting) on mount. */}
+      <FeatureVoteWidget />
 
       {/* Pricing lives in a header-triggered pop-up now (<PricingModal>, Dennis
           2026-07-04) — the standalone section was removed from the body. The
