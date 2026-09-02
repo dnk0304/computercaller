@@ -577,3 +577,59 @@ model UsageCounter {
   @@unique([userId, dayKey])
   @@index([userId])
 }
+
+// FeatureSuggestion / FeatureVote (2026-09-02, dispatch forge/feature-voting).
+// Public "vote on what we build next" widget for the CC homepage. Anonymous,
+// no-auth upvoting: a visitor upvotes suggested features; the UI (Pixel) shows
+// counts + which ones this visitor has voted for.
+//
+// FULLY ADDITIVE: two brand-new tables + indexes. No ALTER/DROP, no change to
+// any existing table, so it is safe to `prisma migrate deploy` on live prod
+// and reversible by: DROP TABLE "FeatureVote"; DROP TABLE "FeatureSuggestion";
+// Ken runs the migration on Coolify — do NOT run it from a worktree.
+//
+// `status` is a plain String (repo convention — see UsageCounter/PartnerApiKey;
+// the project deliberately avoids Postgres enums so status vocabulary can grow
+// without a type migration). Allowed values, server-owned:
+//   'proposed'    — default; suggested, not committed.
+//   'planned'     — on the roadmap.
+//   'in_progress' — actively being built.
+//   'shipped'     — done.
+//
+// voteCount is DENORMALISED onto FeatureSuggestion and kept consistent with the
+// FeatureVote rows inside the same transaction as every vote/unvote (the widget
+// reads counts on every homepage load, so a stored counter avoids a GROUP BY
+// per render). FeatureVote remains the source of truth; the counter is a cache.
+model FeatureSuggestion {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  slug        String   @unique
+  status      String   @default("proposed")
+  sortOrder   Int      @default(0)
+  voteCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  votes       FeatureVote[]
+
+  @@index([status])
+  @@index([sortOrder])
+}
+
+// One row per (suggestion, voter). `voterKey` is a hash of (client IP + a
+// first-party anon cookie token) — see app/api/feature-votes/route.ts. The
+// composite @@unique enforces one vote per voter per suggestion at the DB
+// level, so a double-submit can never create two rows (the toggle path relies
+// on this). Voting is TOGGLE: a second vote for the same (suggestion, voter)
+// deletes the row (unvote) rather than erroring or stacking.
+model FeatureVote {
+  id           String            @id @default(cuid())
+  suggestionId String
+  suggestion   FeatureSuggestion @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
+  voterKey     String
+  createdAt    DateTime          @default(now())
+
+  @@unique([suggestionId, voterKey])
+  @@index([suggestionId])
+  @@index([voterKey])
+}
