@@ -1,0 +1,12 @@
+<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="cc" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#35c977"/>
+      <stop offset="0.55" stop-color="#22a89a"/>
+      <stop offset="1" stop-color="#1e8fb2"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#cc)"/>
+  <!-- Bold phone handset — reads at 16px -->
+  <path d="M11.2 8.6c-1 .8-1.5 2-1.3 3.3.5 3.9 2.5 7.5 5.3 10.3 2.8 2.8 6.4 4.8 10.3 5.3 1.3.2 2.5-.3 3.3-1.3l1.6-2.1c.6-.8.4-2-.4-2.6l-3.5-2.5c-.7-.5-1.7-.4-2.3.3l-1.3 1.4c-2.2-1.1-4-2.9-5.1-5.1l1.4-1.3c.7-.6.8-1.6.3-2.3l-2.5-3.5c-.6-.8-1.8-1-2.6-.4z" fill="#ffffff" transform="translate(3.1 3.4) scale(0.72)"/>
+</svg>

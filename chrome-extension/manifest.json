@@ -4,9 +4,21 @@
   "version": "1.0.0",
   "description": "Make and receive phone calls and text messages from your browser. Your phone does the calling; your computer does the typing.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6TDmxyXFrimDlVCcaCKwylqhU6Y4WS/7rhZb1BiPJ5FG2GJ1FRNpCsQ0rrU/+6JqULbx3ASJTeIBMmOgP0U4xt5xDcuYE49N8nopO/z0/peeafBi28umQdlgJf+VSYsilQGDxLp6sgHjWefKCI93DB6qUYTeyZfMks8/S+zUjEPv3+VXjh+pIKliBpQco/E1pKDhBc8C3SpVwPPbGeIftVKpBEr98G55E0K8qSNsdmeSqp7xR0OssNqXvnEuZU+FD+Bav9HdZKK/cdqaP7fK7rRm1ql5rv/W2SDAY6MIacSoyCltFcLeY3LD5wujGTgIdrJ0RPimThn2yVQ7c17wEQIDAQAB",
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "ComputerCaller"
+    "default_title": "ComputerCaller",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
   },
   "background": {
     "service_worker": "background.js"
