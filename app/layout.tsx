@@ -75,7 +75,7 @@ export const metadata: Metadata = {
       "Make phone calls from your computer — any number, your own caller ID, through your existing phone and carrier. 7-day free trial, then $5/month.",
     images: [
       {
-        url: "/brand/computercaller-hero-banner-v2-cropped.png",
+        url: "/brand/computercaller-hero-banner-v2-cropped.png?v=2",
         width: 1436,
         height: 530,
         alt: "ComputerCaller — make phone calls from your computer",
@@ -88,7 +88,7 @@ export const metadata: Metadata = {
     title: "Call & Text From Your Computer — Using Your Own Number",
     description:
       "Make phone calls from your computer — any number, your own caller ID, through your existing phone and carrier. 7-day free trial, then $5/month.",
-    images: ["/brand/computercaller-hero-banner-v2-cropped.png"],
+    images: ["/brand/computercaller-hero-banner-v2-cropped.png?v=2"],
   },
   robots: {
     index: true,
