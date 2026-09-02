@@ -2775,6 +2775,29 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
             Decline
           </button>
         </div>
+        {/* Send SMS on the incoming-call Quick Dial view (restored 2026-09-02,
+            Pixel). The 2026-09-01 ringing de-dup early-return dropped the
+            side-action row, which removed the ability to text the caller
+            without answering/declining first. Re-added here as a full-width
+            secondary action, wired to the same onSendSms compose flow used by
+            the active-call card. Disabled only when the caller number is
+            withheld (no target to text). */}
+        <button
+          type="button"
+          onClick={handleSendSms}
+          disabled={!canSendSms}
+          className={clsx(
+            'mt-2 w-full flex items-center justify-center gap-2 px-2 py-2 rounded-xl font-semibold text-xs shadow-sm transition-colors',
+            canSendSms
+              ? 'bg-blue-600 hover:bg-blue-700 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white'
+              : 'bg-slate-100 text-slate-400 cursor-not-allowed',
+          )}
+          aria-label={canSendSms ? `Send SMS to ${displayName}` : 'Send SMS (unavailable)'}
+          title={canSendSms ? undefined : 'Caller number not available.'}
+        >
+          <MessageSquare className="w-4 h-4" aria-hidden="true" />
+          Send SMS
+        </button>
       </div>
     );
   }
