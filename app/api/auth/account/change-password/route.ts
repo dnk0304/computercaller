@@ -41,6 +41,7 @@ import {
   idleCookieSetOptions,
   IDLE_COOKIE_NAME,
   getJwtSecret,
+  authCookieSetOptions,
 } from '@/lib/auth';
 import { MIN_PASSWORD, MAX_PASSWORD_BYTES } from '@/lib/passwordPolicy';
 
@@ -154,13 +155,7 @@ export async function POST(req: NextRequest) {
       ver: bumped.sessionVersion,
     });
     const response = NextResponse.json({ ok: true });
-    response.cookies.set('auth_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 2592000,
-      path: '/',
-    });
+    response.cookies.set('auth_token', token, authCookieSetOptions());
     response.cookies.set(
       IDLE_COOKIE_NAME,
       signIdleToken(user.id, getJwtSecret()),

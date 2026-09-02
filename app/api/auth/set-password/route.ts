@@ -47,6 +47,7 @@ import {
   idleCookieSetOptions,
   IDLE_COOKIE_NAME,
   getJwtSecret,
+  authCookieSetOptions,
 } from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 import { lookupPasswordSetToken, consumePasswordSetToken } from '@/lib/passwordSetToken';
@@ -225,13 +226,7 @@ export async function POST(req: NextRequest) {
     // Cookie options byte-identical to /api/auth/login — maxAge LOCKSTEP with
     // signAccessToken's '30d'. phoneToken deliberately never travels here (it is
     // the APK relay bearer; the browser gets a ticket from /api/auth/relay-ticket).
-    response.cookies.set('auth_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 2592000,
-      path: '/',
-    });
+    response.cookies.set('auth_token', token, authCookieSetOptions());
     response.cookies.set(
       IDLE_COOKIE_NAME,
       signIdleToken(consumed.userId, getJwtSecret()),

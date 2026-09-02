@@ -57,7 +57,7 @@ export interface JwtPayload {
    * before this dispatch — treated as 'access' for backward compat with live
    * 24h cookies.
    */
-  purpose?: 'access' | 'verify-email' | 'reset-password' | 'relay-ticket';
+  purpose?: 'access' | 'verify-email' | 'reset-password' | 'relay-ticket' | 'ext-session';
 }
 
 export function signAccessToken(payload: JwtPayload): string {
@@ -174,14 +174,18 @@ export { IDLE_COOKIE_NAME } from '@/lib/idleTimeout';
 export function idleCookieSetOptions(): {
   httpOnly: true;
   secure: boolean;
-  sameSite: 'lax';
+  sameSite: 'none' | 'lax';
   maxAge: number;
   path: '/';
 } {
+  // SameSite mirrors auth_token (see authCookieSetOptions): the extension iframe
+  // is a third-party context and the browser relay-ticket mint enforces the idle
+  // cookie, so idle_token must also ride cross-site in prod. Dev stays Lax.
+  const isProd = process.env.NODE_ENV === 'production';
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
     maxAge: IDLE_COOKIE_MAX_AGE_S,
     path: '/',
   };
@@ -191,7 +195,7 @@ export function idleCookieSetOptions(): {
 export function idleCookieClearOptions(): {
   httpOnly: true;
   secure: boolean;
-  sameSite: 'lax';
+  sameSite: 'none' | 'lax';
   maxAge: 0;
   path: '/';
 } {
@@ -350,12 +354,92 @@ export function isWaitlistMode(): boolean {
   return !(raw !== undefined && OFF_TOKENS.has(raw));
 }
 
+/**
+ * Canonical Set-Cookie options for the `auth_token` session cookie
+ * (2026-09-02, forge/chrome-extension-p1). Centralised so every mint site
+ * (login, google/callback, set-password ×2, change-password) stays in lockstep.
+ *
+ * SameSite change — WHY: the Chrome extension renders Phone Mode as an iframe of
+ * https://computercaller.com/extension hosted inside a `chrome-extension://` page.
+ * That iframe is a THIRD-PARTY (cross-site) context, so a `SameSite=Lax` cookie
+ * is NOT sent with its requests and usePhoneBridge's cookie-gated relay-ticket
+ * mint 401s. `SameSite=None; Secure` is required for the cookie to ride into the
+ * iframe. This does NOT weaken CSRF: every mutating route is independently gated
+ * by `requireSameOrigin` (see the relay-ticket route header) — the app's CSRF
+ * defense has never depended on SameSite. SECURITY REVIEW GATE: this is an
+ * app-wide cookie-attribute change; Ken/Security must sign off before deploy.
+ *
+ * Dev preserves `SameSite=Lax`: `SameSite=None` REQUIRES `Secure`, and a
+ * localhost HTTP dev server cannot set Secure — Chrome would drop a
+ * `None`-without-`Secure` cookie and break local login. So dev stays Lax
+ * (extension dev testing uses the token-handoff path instead of the cookie).
+ */
+export function authCookieSetOptions(maxAgeSeconds = 2592000): {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: 'none' | 'lax';
+  maxAge: number;
+  path: '/';
+} {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    maxAge: maxAgeSeconds,
+    path: '/',
+  };
+}
+
 export function signEmailToken(userId: string): string {
   return jwt.sign({ userId, purpose: 'verify-email' }, getJwtSecret(), { expiresIn: '24h' });
 }
 
 export function signResetToken(userId: string): string {
   return jwt.sign({ userId, purpose: 'reset-password' }, getJwtSecret(), { expiresIn: '1h' });
+}
+
+/**
+ * Chrome-extension durable session token (2026-09-02, forge/chrome-extension-p1).
+ *
+ * The MV3 background service worker cannot present the httpOnly `auth_token`
+ * cookie the way the same-origin browser does (no CSRF same-origin header, and
+ * third-party-cookie deprecation makes cookie-in-fetch fragile). Instead the
+ * extension performs a ONE-TIME `chrome.identity.launchWebAuthFlow` handoff
+ * (GET /api/auth/extension/handoff) which — once the user has a valid FIRST-party
+ * session — mints this `ext-session` JWT and hands it to the extension. The SW
+ * then trades it for a normal 30 s relay-ticket at
+ * /api/auth/relay-ticket/extension (Bearer), so the relay itself needs ZERO new
+ * token type — it still only ever sees `purpose: 'relay-ticket'`.
+ *
+ * `ver` (sessionVersion) is stamped so this token is revoked by the SAME
+ * "signed-in-elsewhere" kill switch that governs the web session: the exchange
+ * endpoint re-checks `ver` against User.sessionVersion. 30-day TTL matches the
+ * web session so the extension and the tab expire together. Signed with the
+ * shared JWT_SECRET / HS256 like every other CC token.
+ */
+export function signExtensionSessionToken(userId: string, ver: number): string {
+  return jwt.sign(
+    { userId, ver, purpose: 'ext-session' },
+    getJwtSecret(),
+    { algorithm: 'HS256', expiresIn: '30d' },
+  );
+}
+
+/**
+ * Verify an `ext-session` token's SIGNATURE + purpose only (stateless). The
+ * caller MUST additionally re-check `ver` against User.sessionVersion to honor
+ * the single-session kill switch — mirrors how validateSessionToken layers the
+ * DB check on top of verifyAccessToken. Returns the claims or null.
+ */
+export function verifyExtensionSessionToken(token: string): JwtPayload | null {
+  try {
+    const claims = jwt.verify(token, getJwtSecret(), JWT_VERIFY_OPTS) as JwtPayload;
+    if ((claims.purpose ?? null) !== 'ext-session') return null;
+    return claims;
+  } catch {
+    return null;
+  }
 }
 
 /**
