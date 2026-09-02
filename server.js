@@ -468,7 +468,11 @@ function startRelay(httpServer) {
     let browsers = 0;
     for (const ws of room.lobby) {
       if (ws.role === 'phone') phones++;
-      else if (ws.role === 'browser') browsers++;
+      // forge/chrome-extension-p1: passive listeners (extension SW) are invisible
+      // to the pairing UX — they are not an interactive browser peer, so they must
+      // not inflate the browserCount the phone sees nor the "browser present"
+      // signals that drive Connect-button copy.
+      else if (ws.role === 'browser' && !ws.listener) browsers++;
     }
     return { phones, browsers };
   }
@@ -723,7 +727,11 @@ function startRelay(httpServer) {
     const survivorBrowser = browserWs;   // non-null ⇒ browser survived, phone is returning
     for (const s of room.lobby) {
       if (s.role === 'phone' && !phoneWs && s.readyState === WebSocket.OPEN) phoneWs = s;
-      else if (s.role === 'browser' && !browserWs && s.readyState === WebSocket.OPEN) browserWs = s;
+      // forge/chrome-extension-p1: NEVER auto-promote a passive listener (the
+      // extension SW) into the active browser slot — it is receive-only and must
+      // not become the pair, or it would occupy active.browser and block the real
+      // popup/tab from pairing. Only true interactive browsers are eligible here.
+      else if (s.role === 'browser' && !s.listener && !browserWs && s.readyState === WebSocket.OPEN) browserWs = s;
     }
     // Counterpart not back yet (or both dropped and only one returned) —
     // keep the claim armed and fall through to the normal lobby flow.
@@ -918,6 +926,25 @@ function startRelay(httpServer) {
    * active pair. Returns true if the frame was forwarded, false otherwise
    * (caller logs the drop).
    */
+  /**
+   * Fan a phone→browser data frame out to every passive listener in the room
+   * (2026-09-02, forge/chrome-extension-p1). Listeners (extension SWs) are NOT
+   * the active browser, so forwardDataPlane never reaches them; this is their
+   * only delivery path. Called for EVERY phone-originated data frame regardless
+   * of active-pair state, so a listener still receives CALL_INCOMING /
+   * SMS_RECEIVED / PHONE_NOTIFICATION when the popup (the active browser) is
+   * closed or the pair is in a resume gap. Broadcasting to the SAME-user room is
+   * not a leak — the listener authenticated into this exact room (phoneToken).
+   */
+  function broadcastToListeners(room, msg) {
+    if (!room || !room.lobby) return;
+    for (const s of room.lobby) {
+      if (s.role === 'browser' && s.listener && s.readyState === WebSocket.OPEN) {
+        safeSend(s, msg);
+      }
+    }
+  }
+
   function forwardDataPlane(room, fromWs, msg) {
     if (fromWs === room.active.browser && room.active.phone) {
       logNotifFrame(room.token, 'browser→phone (active)', msg);
@@ -1219,7 +1246,15 @@ function startRelay(httpServer) {
     // Query wins if both present (deterministic; ticketHeader is here for
     // future native clients that prefer headers).
     const ticket = ticketQuery || ticketHeader;
-    return { pathname, legacyToken, ticket };
+    // Chrome-extension passive listener (2026-09-02, forge/chrome-extension-p1).
+    // `?role=listener` marks a RECEIVE-ONLY browser peer — the extension's
+    // background service worker's WS. It authenticates like any browser
+    // (relay-ticket) but is deliberately kept OUT of pairing, the active pair,
+    // and the single-active-session (SESSION_SUPERSEDED) index, and it only ever
+    // receives phone→browser frames. See the browser-path role assignment below.
+    const rawRole = parsed.query?.role;
+    const isListener = (typeof rawRole === 'string' && rawRole.trim().toLowerCase() === 'listener');
+    return { pathname, legacyToken, ticket, isListener };
   }
 
   /**
@@ -1293,7 +1328,7 @@ function startRelay(httpServer) {
   }
 
   wss.on('connection', async (ws, req) => {
-    const { pathname, legacyToken, ticket } = parseConnection(req);
+    const { pathname, legacyToken, ticket, isListener } = parseConnection(req);
 
     // Auth gate. Both paths produce a (userId, phoneToken) pair — the
     // phoneToken serves as the relay room key in either case so legacy
@@ -1385,7 +1420,14 @@ function startRelay(httpServer) {
     // F-A: only browser sessions (relay-ticket) are subject to the
     // single-active-session kick. Phone sockets (legacy-token /
     // legacy-token-bearer) are NEVER indexed and NEVER kicked.
-    if (authVia === 'relay-ticket') {
+    //
+    // forge/chrome-extension-p1 (2026-09-02): a `?role=listener` peer (the
+    // extension SW) is ALSO never indexed. Indexing is what SESSION_SUPERSEDED
+    // walks (userIdToWebSockets) — a listener is a SECOND browser-side socket
+    // for the same user and must neither be kicked by, nor trigger, the
+    // single-active-web-session kill switch. It is passive; the user's real web
+    // session (popup/tab) remains the one true indexed session.
+    if (authVia === 'relay-ticket' && !isListener) {
       indexWebSocket(userId, ws);
     }
     console.log(`[Relay] Connection authed user=${userId} via ${authVia} room=${redactToken(token)}`);
@@ -1521,6 +1563,17 @@ function startRelay(httpServer) {
           return;
         }
 
+        // forge/chrome-extension-p1: mirror EVERY phone-originated data frame to
+        // passive listeners (extension SWs) BEFORE the active-pair gate, so the
+        // background SW fires notifications for incoming calls/SMS even when the
+        // popup is closed or the pair is momentarily unformed. Listeners are
+        // receive-only and same-user, so this neither mutates room state nor
+        // leaks across tenants. Control frames from the phone (LEAVE_ACTIVE, etc.)
+        // already returned above; only data frames reach here.
+        if (ws.phoneToken === room.token) {
+          broadcastToListeners(room, msg);
+        }
+
         // Data plane — only allowed when this socket is the active phone.
         if (ws === room.active.phone) {
           try {
@@ -1641,9 +1694,17 @@ function startRelay(httpServer) {
 
     // ---- BROWSER PATH -------------------------------------------------------
     ws.role = 'browser';
+    // forge/chrome-extension-p1: mark passive listeners. A listener sits in the
+    // lobby forever, is never promoted to room.active.browser, never sends
+    // control/data frames (see the receive-only short-circuit in its message
+    // handler), and receives phone→browser data frames via broadcastToListeners.
+    ws.listener = !!isListener;
     // F-C: see phone-path note. Same counter semantics on the browser side.
     ws.missedPongs = 0;
     room.lobby.add(ws);
+    if (ws.listener) {
+      console.log(`[Relay][${redactToken(token)}] Listener (extension SW) joined lobby — receive-only`);
+    }
 
     const counts = countLobby(room);
     const alreadyActive = !!(room.active.browser || room.active.phone);
@@ -1676,6 +1737,13 @@ function startRelay(httpServer) {
       // await and runs exactly as before (synchronously to its `return`); the
       // ws 'message' listener ignores the returned promise.
       const msg = data.toString();
+      // forge/chrome-extension-p1: listeners are strictly receive-only. Drop any
+      // frame they send (they should send none) BEFORE it can reach pairing,
+      // LEAVE_ACTIVE, or the data plane — a listener must never mutate room
+      // state. missedPongs was already reset above, so its liveness still counts.
+      if (ws.listener) {
+        return;
+      }
       rlog(`[Relay][${redactToken(token)}] Browser ->`, msg.substring(0, 80));
 
       // Control plane — pairing kickoff.

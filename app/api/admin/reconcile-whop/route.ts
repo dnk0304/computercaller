@@ -19,13 +19,16 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { validateSessionToken } from '@/lib/auth';
+import { validateSessionToken, requireSameOrigin } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { isAdminUser } from '@/lib/entitlement';
 import { reconcileWhopSubscriptions } from '@/lib/whop-reconcile';
 
 export async function POST(req: NextRequest) {
   try {
+    const csrf = requireSameOrigin(req);
+    if (!csrf.ok) return NextResponse.json({ error: 'CSRF check failed' }, { status: 403 });
+
     const token = req.cookies.get('auth_token')?.value;
     if (!token) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });

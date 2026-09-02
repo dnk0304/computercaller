@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ComputerCaller</title>
+  <style>
+    /* ── CC brand tokens (mirror the app's green→blue mark) ───────────── */
+    :root {
+      --cc-bg: #0f172a;          /* slate-900 */
+      --cc-surface: #111c33;
+      --cc-text: #e2e8f0;        /* slate-200 */
+      --cc-muted: #94a3b8;       /* slate-400 */
+      --cc-faint: #64748b;       /* slate-500 */
+      --cc-grad: linear-gradient(135deg, #35c977 0%, #22a89a 55%, #1e8fb2 100%);
+      --cc-ring: rgba(53, 201, 119, 0.45);
+    }
+    html, body { margin: 0; padding: 0; }
+    body {
+      width: 380px; height: 600px; overflow: hidden;
+      background: var(--cc-bg);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    #cc-frame { width: 100%; height: 600px; border: 0; display: block; background: #f8fafc; }
+
+    /* Pop-out control — glassy chip, top-right of the popup. */
+    #cc-topbar { position: absolute; top: 8px; right: 8px; z-index: 5; }
+    #cc-popout-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.01em;
+      padding: 5px 9px; border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 8px; background: rgba(15,23,42,0.55);
+      color: #fff; cursor: pointer; backdrop-filter: blur(6px);
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    #cc-popout-btn:hover { background: rgba(30,143,178,0.65); border-color: rgba(255,255,255,0.28); }
+    #cc-popout-btn:focus-visible { outline: 2px solid var(--cc-ring); outline-offset: 2px; }
+
+    /* ── Sign-in gate ─────────────────────────────────────────────────── */
+    #cc-signin {
+      display: none; position: absolute; inset: 0; z-index: 10;
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 0; text-align: center; padding: 32px 28px; box-sizing: border-box;
+      color: var(--cc-text);
+      background:
+        radial-gradient(120% 80% at 50% 0%, rgba(53,201,119,0.14) 0%, rgba(30,143,178,0.10) 38%, transparent 70%),
+        var(--cc-bg);
+    }
+    #cc-signin .cc-mark {
+      width: 72px; height: 72px; border-radius: 20px;
+      background-image: var(--cc-grad);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 12px 30px -10px rgba(30,143,178,0.6), inset 0 1px 0 rgba(255,255,255,0.18);
+      margin-bottom: 22px;
+    }
+    #cc-signin .cc-mark img { width: 72px; height: 72px; display: block; border-radius: 20px; }
+    #cc-signin h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 8px; }
+    #cc-signin p { font-size: 13px; line-height: 1.5; color: var(--cc-muted); margin: 0; max-width: 260px; }
+    #cc-signin-btn {
+      margin-top: 26px; padding: 12px 22px; border: 0; border-radius: 10px;
+      background-image: var(--cc-grad); color: #fff;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      box-shadow: 0 8px 20px -8px rgba(30,143,178,0.7);
+      transition: transform 0.12s ease, box-shadow 0.15s ease, filter 0.15s ease;
+    }
+    #cc-signin-btn:hover { filter: brightness(1.06); box-shadow: 0 10px 26px -8px rgba(30,143,178,0.85); }
+    #cc-signin-btn:active { transform: translateY(1px); }
+    #cc-signin-btn:focus-visible { outline: 2px solid var(--cc-ring); outline-offset: 3px; }
+    #cc-signin-msg { font-size: 12px; color: var(--cc-faint); min-height: 16px; margin-top: 14px; }
+    #cc-signin .cc-foot { position: absolute; bottom: 20px; left: 0; right: 0; font-size: 11px; color: var(--cc-faint); }
+    @media (prefers-reduced-motion: reduce) {
+      #cc-popout-btn, #cc-signin-btn { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="cc-topbar">
+    <button id="cc-popout-btn" title="Open in a separate window">
+      Pop out
+      <span aria-hidden="true">⇱</span>
+    </button>
+  </div>
+  <iframe id="cc-frame" allow="notifications"></iframe>
+  <div id="cc-signin">
+    <div class="cc-mark"><img src="icon128.png" alt="" /></div>
+    <h1>ComputerCaller</h1>
+    <p>Sign in to make and receive calls and texts from your browser — your phone does the calling.</p>
+    <button id="cc-signin-btn">Sign in</button>
+    <div id="cc-signin-msg"></div>
+    <div class="cc-foot">Your phone stays in control · calls run on your device</div>
+  </div>
+  <script src="config.js"></script>
+  <script src="shell.js"></script>
+</body>
+</html>

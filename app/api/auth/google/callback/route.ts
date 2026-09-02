@@ -33,6 +33,7 @@ import {
   idleCookieSetOptions,
   IDLE_COOKIE_NAME,
   getJwtSecret,
+  authCookieSetOptions,
 } from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 import {
@@ -210,13 +211,7 @@ export async function GET(req: NextRequest) {
     const redirectUrl = new URL(next, APP_URL);
     const response = NextResponse.redirect(redirectUrl);
 
-    response.cookies.set('auth_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 2592000, // 30 days — LOCKSTEP with signAccessToken '30d' + /api/auth/login (2026-06-09)
-      path: '/',
-    });
+    response.cookies.set('auth_token', token, authCookieSetOptions());
 
     // Idle-timeout cookie (2026-07-27, forge/web-idle-timeout) — mint alongside
     // auth_token exactly as /api/auth/login does, so the Google web path starts

@@ -97,6 +97,41 @@ const nextConfig: NextConfig = {
         headers: SECURITY_HEADERS,
       },
       {
+        // Chrome extension (2026-09-02, forge/chrome-extension-p1). The MV3
+        // extension iframes https://computercaller.com/extension inside a
+        // chrome-extension:// page. The global policy (X-Frame-Options:SAMEORIGIN
+        // + frame-ancestors 'self') forbids that. This entry sits AFTER the
+        // global block, so for the Content-Security-Policy key it REPLACES the
+        // global CSP on /extension only (same last-wins semantics the
+        // /auth/set-password Referrer-Policy override relies on). It re-states the
+        // full policy verbatim EXCEPT frame-ancestors, which is pinned to our
+        // extension's stable ID (see lib/extension.ts CC_EXTENSION_ID — keep in
+        // sync). Per the CSP spec, when a valid frame-ancestors directive is
+        // present the browser IGNORES the still-served X-Frame-Options header, so
+        // no separate XFO override is needed. Scoped to /extension ONLY — the
+        // site-wide anti-framing posture is unchanged everywhere else.
+        source: '/extension',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: [
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+              "style-src 'self' 'unsafe-inline'",
+              "img-src 'self' data: blob: https:",
+              "media-src 'self' data: blob:",
+              "font-src 'self' data:",
+              "connect-src 'self' wss://computercaller.com https://api.cloudflare.com",
+              "frame-src 'self' https://whop.com",
+              'frame-ancestors chrome-extension://helkcjjlidcceiifjccolmppanfmcjjg',
+              "form-action 'self' https://accounts.google.com",
+              "base-uri 'self'",
+              "object-src 'none'",
+            ].join('; '),
+          },
+        ],
+      },
+      {
         // audit round 1, Mi2: /auth/set-password carries a live single-use
         // reset token in its query string. The global policy is
         // strict-origin-when-cross-origin, which still sends the ORIGIN on

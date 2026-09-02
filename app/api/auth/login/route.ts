@@ -9,6 +9,7 @@ import {
   idleCookieSetOptions,
   IDLE_COOKIE_NAME,
   getJwtSecret,
+  authCookieSetOptions,
 } from '@/lib/auth';
 import { getClientIp } from '@/lib/ip';
 
@@ -194,13 +195,7 @@ export async function POST(req: NextRequest) {
       subscription: user.subscription,
     });
 
-    response.cookies.set('auth_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 2592000, // 30 days — LOCKSTEP with signAccessToken expiresIn '30d' (2026-06-09)
-      path: '/',
-    });
+    response.cookies.set('auth_token', token, authCookieSetOptions());
 
     // Idle-timeout cookie (2026-07-27, forge/web-idle-timeout). The sliding 4h
     // window starts now; POST /api/auth/heartbeat re-mints it on activity. This
