@@ -4631,7 +4631,7 @@ const MAX_TOASTS = 3;
 /**
  * Modern phone-style notification floaters (task 6). Watches the live
  * notification list; when a genuinely NEW notification arrives (id not seen
- * before this mount) it slides a toast card in from the right, bottom-up
+ * before this mount) it slides a toast card in from the left, top-down
  * stacked, max 3, auto-dismissing after ~5s. Click opens the history panel.
  *
  * No toast library (AppShell keeps none intentionally) — this is a small
@@ -4705,7 +4705,7 @@ const NotificationToasts: React.FC<NotificationToastsProps> = ({ notifications, 
 
   return createPortal(
     <div
-      className="fixed bottom-4 right-4 z-[70] flex flex-col-reverse gap-2 w-[320px] max-w-[calc(100vw-2rem)] pointer-events-none"
+      className="fixed top-[72px] left-4 z-[70] flex flex-col gap-2 w-[320px] max-w-[calc(100vw-2rem)] pointer-events-none"
       role="region"
       aria-label="New notifications"
     >
@@ -4761,7 +4761,7 @@ const NotificationToasts: React.FC<NotificationToastsProps> = ({ notifications, 
       <style>{`
         .cc-toast { animation: cc-toast-in 260ms cubic-bezier(0.16,1,0.3,1); }
         @keyframes cc-toast-in {
-          from { opacity: 0; transform: translateX(24px) scale(0.98); }
+          from { opacity: 0; transform: translateX(-24px) scale(0.98); }
           to   { opacity: 1; transform: translateX(0) scale(1); }
         }
         @media (prefers-reduced-motion: reduce) {
