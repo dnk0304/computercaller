@@ -735,7 +735,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // Both run over the already-synced call log — no backend. Filter narrows by
   // the call-type field that already drives the row icon/missed badge; search
   // matches the number (digit-insensitive) or the contact name.
-  type CallFilter = 'all' | 'missed' | 'incoming' | 'outgoing';
+  // A missed or rejected call IS an incoming call that wasn't answered, so the
+  // filter treats Incoming as the parent group: `incoming` matches every
+  // inbound call (answered + missed + rejected), while `missed` / `rejected`
+  // narrow to those inbound sub-types. Outgoing stays separate.
+  type CallFilter = 'all' | 'incoming' | 'missed' | 'rejected' | 'outgoing';
   const [callFilter, setCallFilter] = useState<CallFilter>('all');
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -744,7 +748,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
   const filteredCallLogs = useMemo(() => {
     let rows = deferredCallLogs;
-    if (callFilter !== 'all') {
+    if (callFilter === 'incoming') {
+      // Parent group: any inbound call — answered, missed, or rejected.
+      rows = rows.filter(
+        (log) => log.type === 'incoming' || log.type === 'missed' || log.type === 'rejected'
+      );
+    } else if (callFilter !== 'all') {
       rows = rows.filter((log) => log.type === callFilter);
     }
     const q = debouncedCallSearch.trim().toLowerCase();
@@ -1601,10 +1610,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                     className="absolute right-0 top-full mt-1 z-50 w-40 rounded-xl border border-slate-200 bg-white shadow-lg py-1"
                   >
                     {([
-                      { key: 'all', label: 'All calls', Icon: Clock, color: 'text-slate-500' },
-                      { key: 'missed', label: 'Missed', Icon: PhoneMissed, color: 'text-rose-600' },
-                      { key: 'incoming', label: 'Incoming', Icon: ArrowDownLeft, color: 'text-emerald-600' },
-                      { key: 'outgoing', label: 'Outgoing', Icon: ArrowUpRight, color: 'text-blue-600' },
+                      // `indent` marks Incoming's sub-types (Missed / Rejected),
+                      // which are just inbound calls that weren't answered.
+                      { key: 'all', label: 'All calls', Icon: Clock, color: 'text-slate-500', indent: false },
+                      { key: 'incoming', label: 'Incoming', Icon: ArrowDownLeft, color: 'text-emerald-600', indent: false },
+                      { key: 'missed', label: 'Missed', Icon: PhoneMissed, color: 'text-rose-600', indent: true },
+                      { key: 'rejected', label: 'Rejected', Icon: PhoneOff, color: 'text-red-600', indent: true },
+                      { key: 'outgoing', label: 'Outgoing', Icon: ArrowUpRight, color: 'text-blue-600', indent: false },
                     ] as const).map((opt) => (
                       <button
                         key={opt.key}
@@ -1612,7 +1624,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                         role="menuitemradio"
                         aria-checked={callFilter === opt.key}
                         onClick={() => { setCallFilter(opt.key); setFilterMenuOpen(false); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50"
+                        className={clsx(
+                          'w-full flex items-center gap-2 py-1.5 text-[12px] text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50',
+                          // Sub-types sit under Incoming: extra left padding + a
+                          // guide rail so the parent/child grouping reads clearly.
+                          opt.indent ? 'pl-7 pr-3 border-l-2 border-slate-100 ml-3' : 'px-3'
+                        )}
                       >
                         <opt.Icon className={clsx('w-3.5 h-3.5', opt.color)} aria-hidden="true" />
                         <span className="flex-1 text-left">{opt.label}</span>
