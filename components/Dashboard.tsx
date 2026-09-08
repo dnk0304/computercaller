@@ -75,6 +75,8 @@ import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { PermissionHint } from '@/components/PermissionHint';
 import { useTemplates } from '@/hooks/useTemplates';
+import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
+import { DEFAULT_QUICK_REPLIES, type CallSurfaceQuickReply } from '@/lib/callSurfaceQuickReplies';
 import type { TemplateDTO } from '@/lib/templates';
 import { resolveAudioMime, base64ToBytes, audioFileExtension } from '@/lib/audioMime';
 import {
@@ -1472,6 +1474,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                 setNewMsgRecipient(target);
                 setNewMsgBody('');
               }}
+              // Quick replies (2026-09-08): send the canned body straight
+              // through the bridge. No composer, and — unlike the floating
+              // popup's reply-and-hangup chips — the call is left ringing so
+              // the user can still answer after texting.
+              onQuickReply={(target, body) => {
+                // Same free-tier gate as every other outbound message; guard()
+                // surfaces the upsell itself and we report the block back so
+                // the card suppresses its confirmation.
+                if (!guard('message')) return false;
+                sendSms(target, body);
+                return true;
+              }}
               // Dispatch #9 (2026-05-22): explicit DTMF dialpad trigger.
               // Only enabled while the call is ACTIVE — sending tones during
               // ringing/dialing is a no-op at best and confusing at worst.
@@ -2678,6 +2692,13 @@ interface ActiveCallCardProps {
   // caller's number pre-filled. Stays on the Dashboard tab so the user
   // doesn't lose sight of the Active Call card while composing.
   onSendSms: (target: string) => void;
+  // One-tap canned SMS to the caller, sent immediately — no compose step.
+  // Distinct from onSendSms (which opens the composer) and from the
+  // reply-and-hangup chips on the floating call popup: this one only texts,
+  // it never ends the call. Parent owns the bridge call and the free-tier
+  // guard; returns true only when the message was actually dispatched, so the
+  // card never shows a "Sent" confirmation for a blocked send.
+  onQuickReply: (target: string, body: string) => boolean;
   // Dispatch #9 (2026-05-22): explicit DTMF dialpad. The trigger lives on
   // this card (next to Send SMS) because the call card is the contextual
   // anchor for in-call actions. Parent owns modal visibility — see
@@ -2700,6 +2721,7 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
   onAnswer,
   onEnd,
   onSendSms,
+  onQuickReply,
   canSendDtmf,
   onOpenDialpad,
   audioSource,
@@ -2719,6 +2741,41 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
   const handleSendSms = () => {
     if (!canSendSms) return;
     onSendSms(smsTarget);
+  };
+
+  // Quick replies on the incoming-call card (2026-09-08, Pixel). One tap sends
+  // a canned SMS to the caller straight away — no composer, no hangup. It sits
+  // under "Send SMS" rather than beside Answer/Decline so the two call actions
+  // stay the loudest thing in this narrow column, and it starts collapsed so
+  // the card doesn't grow until the user asks for it.
+  const { quickReplies } = useQuickReplyTemplates();
+  const quickReplyChips: ReadonlyArray<CallSurfaceQuickReply> =
+    quickReplies.length > 0
+      ? quickReplies.map((qr) => ({ id: qr.id, name: qr.label ?? qr.body, body: qr.body }))
+      : DEFAULT_QUICK_REPLIES;
+  const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
+  // Last body sent, shown as an inline confirmation. Inline rather than a
+  // floating toast because the Dashboard has no imperative toast API (its
+  // toasts are notification-feed driven) and because the confirmation belongs
+  // next to the caller it was sent to. Cleared when the card leaves ringing.
+  const [sentBody, setSentBody] = useState<string | null>(null);
+  const sentTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
+  }, []);
+  const handleQuickReply = (body: string) => {
+    if (!canSendSms) return;
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    const dispatched = onQuickReply(smsTarget, trimmed);
+    setQuickRepliesOpen(false);
+    if (!dispatched) return;
+    setSentBody(trimmed);
+    if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
+    sentTimerRef.current = window.setTimeout(() => {
+      setSentBody(null);
+      sentTimerRef.current = null;
+    }, 2600);
   };
 
   // Re-read time only via tickKey re-renders; avoids spurious renders elsewhere.
@@ -2815,6 +2872,64 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
           <MessageSquare className="w-4 h-4" aria-hidden="true" />
           Send SMS
         </button>
+
+        {/* Quick replies — collapsed toggle + a wrapping chip row. Secondary
+            styling (white / slate border) so it reads as the quieter sibling
+            of the blue Send SMS button above it. Disabled on the same
+            condition: no caller number means nowhere to text. */}
+        <button
+          type="button"
+          onClick={() => setQuickRepliesOpen((prev) => !prev)}
+          disabled={!canSendSms}
+          aria-expanded={quickRepliesOpen}
+          aria-controls="quick-dial-quick-replies"
+          className={clsx(
+            'mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-xl border font-semibold text-xs transition-colors',
+            canSendSms
+              ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white'
+              : 'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed',
+          )}
+          aria-label={canSendSms ? 'Quick replies' : 'Quick replies (unavailable)'}
+          title={canSendSms ? undefined : 'Caller number not available.'}
+        >
+          <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
+          Quick replies
+        </button>
+
+        {quickRepliesOpen && canSendSms && (
+          <div id="quick-dial-quick-replies" className="mt-2 flex flex-wrap gap-1.5">
+            {quickReplyChips.map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => handleQuickReply(chip.body)}
+                className="max-w-full truncate px-2 py-1 rounded-lg border border-slate-200 bg-white text-[11px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+                aria-label={`Send quick reply: ${chip.body}`}
+                title={chip.body}
+              >
+                {chip.name}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Confirmation. role="status" so a screen reader announces the send
+            without stealing focus from Answer / Decline. */}
+        <p
+          role="status"
+          aria-live="polite"
+          className={clsx(
+            'mt-2 flex items-center gap-1 text-[11px] font-medium text-emerald-700',
+            !sentBody && 'sr-only',
+          )}
+        >
+          {sentBody && (
+            <>
+              <Check className="w-3 h-3 flex-none" aria-hidden="true" />
+              <span className="truncate">Sent: {sentBody}</span>
+            </>
+          )}
+        </p>
       </div>
     );
   }

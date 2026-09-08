@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Phone, PhoneOff, Maximize2, Minimize2, MessageSquare, Send, Check, ChevronLeft } from 'lucide-react';
 import { usePhone } from '@/hooks';
 import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
+import { DEFAULT_QUICK_REPLIES, type CallSurfaceQuickReply } from '@/lib/callSurfaceQuickReplies';
 
 // Item B (2026-06-03, Pixel) — incoming-call quick-reply UI.
 //
@@ -38,22 +39,9 @@ import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
 
 const SENT_NOTICE_MS = 1400;
 
-interface QuickReply {
-  /** Stable key. User rows carry the QuickReplyTemplate id; defaults use a
-   *  synthetic `default-N` so every chip keys by a stable, unique id. */
-  id: string;
-  /** Short label shown on the chip. */
-  name: string;
-  /** SMS body sent when tapped. For hardcoded defaults, label === body. */
-  body: string;
-}
-
-const DEFAULT_QUICK_REPLIES: ReadonlyArray<QuickReply> = [
-  { id: 'default-0', name: "Can't talk right now", body: "Can't talk right now" },
-  { id: 'default-1', name: "I'll call you back",   body: "I'll call you back" },
-  { id: 'default-2', name: 'On my way',            body: 'On my way' },
-  { id: 'default-3', name: 'Call you later',       body: 'Call you later' },
-];
+// Chip shape + the fallback set now live in @/lib/callSurfaceQuickReplies
+// so every call surface shares one definition.
+type QuickReply = CallSurfaceQuickReply;
 
 export const CallModal = () => {
   const { currentCall, waitingCall, answerCall, endCall, declineWithMessage } = usePhone();

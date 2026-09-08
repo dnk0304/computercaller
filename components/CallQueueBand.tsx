@@ -14,6 +14,7 @@ import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
 import type { CallInfo, CallState } from '@/hooks/phoneTypes';
 import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
+import { DEFAULT_QUICK_REPLIES, type CallSurfaceQuickReply } from '@/lib/callSurfaceQuickReplies';
 
 /**
  * CallQueueBand — horizontal incoming-call queue strip.
@@ -86,13 +87,7 @@ const SENT_NOTICE_MS = 1400;
 // Default quick-reply chips shown ONLY when the user has zero saved entries.
 // Same set + same "user list takes over entirely once they have ≥1" rule as
 // the GlobalDialer call surface — no mixing.
-interface BandQuickReply { id: string; name: string; body: string }
-const DEFAULT_QUICK_REPLIES: ReadonlyArray<BandQuickReply> = [
-  { id: 'default-0', name: "Can't talk right now", body: "Can't talk right now" },
-  { id: 'default-1', name: "I'll call you back",   body: "I'll call you back" },
-  { id: 'default-2', name: 'On my way',            body: 'On my way' },
-  { id: 'default-3', name: 'Call you later',       body: 'Call you later' },
-];
+type BandQuickReply = CallSurfaceQuickReply;
 
 // Status-dot color + label for a call state. Replaces the old text badge —
 // at 29px there is no room for badge copy, so the dot color carries state

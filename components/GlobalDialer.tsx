@@ -22,6 +22,7 @@ import { clsx } from 'clsx';
 import { usePhone, useDialerOpen } from '@/hooks';
 import type { CallLogEntry, SmsMessage, CallInfo } from '@/hooks/phoneTypes';
 import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
+import { DEFAULT_QUICK_REPLIES, type CallSurfaceQuickReply } from '@/lib/callSurfaceQuickReplies';
 
 // Dispatch CC-quickreply-templates-mgmt-v2 PART C (2026-06-03, Pixel) — the
 // incoming-call quick-reply Reply affordance lives on the LIVE call surface
@@ -43,13 +44,6 @@ const SENT_NOTICE_MS = 1400;
 // Default quick-reply chips shown ONLY when the user has zero saved entries
 // in the QuickReplyTemplate store. Once they have ≥1 their list takes over
 // entirely — no mixing.
-interface CallSurfaceQuickReply { id: string; name: string; body: string }
-const DEFAULT_QUICK_REPLIES: ReadonlyArray<CallSurfaceQuickReply> = [
-  { id: 'default-0', name: "Can't talk right now", body: "Can't talk right now" },
-  { id: 'default-1', name: "I'll call you back",   body: "I'll call you back" },
-  { id: 'default-2', name: 'On my way',            body: 'On my way' },
-  { id: 'default-3', name: 'Call you later',       body: 'Call you later' },
-];
 
 type Tab = 'calls' | 'texts';
 
