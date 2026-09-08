@@ -309,8 +309,20 @@ android {
         // cosmetic downgrade below what's live). applicationId stays
         // com.dnkdialer.companion — the July-3 com.computercaller.app rename
         // never shipped; this AAB must match the live package to update it.
-        versionCode = 50
-        versionName = "1.0.27"
+        // v53 (1.0.29) — web→phone notification dismissal sync. New
+        // NOTIFICATION_DISMISS command: clearing a mirrored notification in the
+        // browser now cancels the real one on the handset via
+        // DnkNotificationListenerService.dismissByKey. Completes the loop that
+        // already ran phone→web through NOTIFICATION_REMOVED.
+        // versionCode jumps 50→53 (NOT 51): apk-releases/ holds
+        // computercaller-v52.aab (versionName 1.0.28, the google-signin-restore
+        // line on fix/android-v52-google-signin-restore), so 51 and 52 are
+        // consumed and 53 is the next collision-free integer. versionName
+        // follows 1.0.28 → 1.0.29 for the same reason — 1.0.28 would collide.
+        // NOTE this build descends from the 1.0.27 (v50) code line, not from
+        // the divergent v52 branch; it carries no v52-only changes.
+        versionCode = 53
+        versionName = "1.0.29"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
