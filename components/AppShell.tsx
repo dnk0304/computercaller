@@ -4,6 +4,7 @@ import React from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
+import { PcAudioRoute } from '@/components/PcAudioRoute';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
 import { TierBadge } from '@/components/TierBadge';
@@ -208,6 +209,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 remaining calls/messages today. Renders null for every paid
                 (unlimited) tier, so the header collapses cleanly for them. */}
             <UsageMeter variant="pill" />
+            {/* PC-audio route (Pixel, CP2, 2026-09-08) — the confirmed
+                Bluetooth call-audio link between the phone and this PC.
+                Lives here, outside any call, because connecting the route is
+                a setup step: the user needs to be able to establish and
+                verify it BEFORE a call arrives, not discover mid-call that
+                the link never came up. Same component (and therefore the same
+                four states and the same copy) renders in Settings and inside
+                the in-call Audio Source toggle. */}
+            <PcAudioRoute variant="header" />
             <PhoneStatusButton />
             {/* Sync — consolidated dropdown (dispatch #34 item 9, 2026-05-26).
                 Replaces the prior pair of separate Quick + Full buttons that

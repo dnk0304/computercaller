@@ -37,6 +37,9 @@ import React, {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { usePhone, useNotifications, getNotificationIcon, useDashboardTab, useDebouncedValue, useLayoutPrefs } from '@/hooks';
+import { useAudioSourceDefault } from '@/hooks/audioSourcePreference';
+import type { AudioSource } from '@/hooks/audioSourcePreference';
+import { PcAudioRoute } from '@/components/PcAudioRoute';
 import type { ModuleId } from '@/lib/layoutPrefs';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import type { Contact, SmsMessage } from '@/hooks';
@@ -471,11 +474,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   const btHeadsetConnected = phoneAny.btHeadsetConnected ?? false;
   const btHeadsetDeviceName = phoneAny.btHeadsetDeviceName ?? null;
 
-  // Local mirror of the user's active audio source so re-renders are O(1)
-  // (no localStorage read per render). Initialised from the persisted default
-  // on mount; updates on every onChange both flip the local state AND
-  // forward the new value to the phone via setAudioSource.
-  const [audioSource, setAudioSourceLocal] = useState<AudioSource>(() => readAudioSourceDefault());
+  // Shared default audio destination. NOT local state — the header control and
+  // the Settings picker write the same value, and a private copy here is how
+  // the three surfaces would drift apart.
+  const [audioSource, setAudioSourceDefault] = useAudioSourceDefault();
 
   // Auto-revert PC mode to Phone when the BT-HFP link drops mid-call (or
   // between calls). Without this, the user could pick up the next call with
@@ -486,22 +488,36 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   useEffect(() => {
     if (!btHeadsetConnected && audioSource === 'pc') {
       const fallback: AudioSource = 'phone';
-      setAudioSourceLocal(fallback);
-      writeAudioSourceDefault(fallback);
+      setAudioSourceDefault(fallback);
       phoneAny.setAudioSource?.(fallback);
     }
-  }, [btHeadsetConnected, audioSource, phoneAny]);
+  }, [btHeadsetConnected, audioSource, phoneAny, setAudioSourceDefault]);
 
   const handleChangeAudioSource = useCallback((next: AudioSource) => {
-    setAudioSourceLocal(next);
-    writeAudioSourceDefault(next);
+    // Persist + notify every other surface (the setter fans out), THEN forward
+    // the live route change to the phone. Only this callback talks to the
+    // bridge — the Settings picker sets the default without commanding a
+    // route change, because there may not be a call to re-route.
+    setAudioSourceDefault(next);
     phoneAny.setAudioSource?.(next);
-    // Notify any AudioSourcePill instances on the same page so their read-only
-    // mirror updates immediately (storage event only fires cross-tab).
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('dnkdialer:audio-source-changed'));
+  }, [phoneAny, setAudioSourceDefault]);
+
+  // Apply the saved default when a call actually starts (CP2, 2026-09-08).
+  // Before this, SET_AUDIO_SOURCE was only ever sent when the user TOUCHED the
+  // toggle, so a saved 'pc' default silently did nothing on the first call of
+  // a session — the setting looked honoured in the UI and wasn't on the wire.
+  // Keyed on callId so it fires once per call, not on every re-render or
+  // ringing→active transition.
+  const appliedSourceForCallRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!currentCall) {
+      appliedSourceForCallRef.current = null;
+      return;
     }
-  }, [phoneAny]);
+    if (appliedSourceForCallRef.current === currentCall.callId) return;
+    appliedSourceForCallRef.current = currentCall.callId;
+    phoneAny.setAudioSource?.(audioSource);
+  }, [currentCall, audioSource, phoneAny]);
 
   // Defensive cast for sendDtmf — the bridge exposes this on the return
   // surface but the hook's exported TS shape may not have been regenerated
@@ -2443,77 +2459,15 @@ const PhoneLinkLayout: React.FC<PhoneLinkLayoutProps> = ({
 // PhoneService.kt v24 accepts the new values AND retains the legacy
 // 'earpiece'|'speaker'|'bluetooth' as aliases for old-browser → new-APK.
 
-type AudioSource = 'phone' | 'pc';
-const AUDIO_SOURCE_KEY = 'dnkdialer_audio_source_default';
-const AUDIO_SOURCE_DEFAULT: AudioSource = 'phone';
-
-function readAudioSourceDefault(): AudioSource {
-  if (typeof window === 'undefined') return AUDIO_SOURCE_DEFAULT;
-  try {
-    const v = window.localStorage.getItem(AUDIO_SOURCE_KEY);
-    if (v === 'phone' || v === 'pc') return v;
-    // Legacy migration (FORGE-2, 2026-05-26). The prior 3-mode shape used
-    // 'earpiece'|'speaker'|'bluetooth'. Map them to the new 2-button shape:
-    //   'earpiece' | 'speaker' → 'phone' (speaker mode killed, user re-picks)
-    //   'bluetooth'            → 'pc'    (same routing, renamed)
-    // Don't re-write to storage here — the next user toggle will persist the
-    // new shape, and accepting BOTH shapes on read keeps multi-tab sessions
-    // sane during the migration window.
-    if (v === 'earpiece' || v === 'speaker') return 'phone';
-    if (v === 'bluetooth') return 'pc';
-  } catch {
-    // localStorage can throw in private-browsing / sandboxed iframes.
-  }
-  return AUDIO_SOURCE_DEFAULT;
-}
-
-function writeAudioSourceDefault(v: AudioSource): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(AUDIO_SOURCE_KEY, v);
-  } catch {
-    // Silent — same rationale as the read path.
-  }
-}
-
-const AUDIO_SOURCE_LABEL: Record<AudioSource, string> = {
-  phone: 'Phone',
-  pc: 'PC',
-};
-
-// Read-only pill for the Quick Dial header — shows the current default at a
-// glance without exposing a mid-call route change here. Re-reads on mount,
-// on the cross-tab `storage` event, and on the same-tab custom event that
-// AudioSourceToggle dispatches after every write.
-const AudioSourcePill: React.FC = () => {
-  const [current, setCurrent] = useState<AudioSource>(() => readAudioSourceDefault());
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const sync = () => setCurrent(readAudioSourceDefault());
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === AUDIO_SOURCE_KEY) sync();
-    };
-    window.addEventListener('storage', onStorage);
-    window.addEventListener('dnkdialer:audio-source-changed', sync);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('dnkdialer:audio-source-changed', sync);
-    };
-  }, []);
-
-  const Icon = current === 'pc' ? Volume2 : Phone;
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-600 text-[10px] font-semibold px-2 py-0.5"
-      title="Change in Settings → Audio"
-      aria-label={`Default audio source: ${AUDIO_SOURCE_LABEL[current]}`}
-    >
-      <Icon className="w-3 h-3" aria-hidden="true" />
-      Audio: {AUDIO_SOURCE_LABEL[current]}
-    </span>
-  );
-};
+// Source of truth for the default now lives in hooks/audioSourcePreference.ts
+// (CP2, 2026-09-08) so the header control, the Settings picker and this toggle
+// all read and write ONE value. The legacy-shape migration and the
+// `dnkdialer_call_mode` retirement moved there with it.
+//
+// AudioSourcePill lived here until CP2. It was a read-only mirror of the
+// default that was never mounted, and it pointed users at Settings for a card
+// that did nothing. The header PcAudioRoute control replaces it with something
+// that both reports the real route and can act on it.
 
 interface AudioSourceToggleProps {
   value: AudioSource;
@@ -2636,11 +2590,11 @@ const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
       {/* PC mode helper text — visible whenever the PC pill is the active mode
           (shows the connected device name) OR whenever PC mode is gated
           (single-line hint pointing the user at the setup guide). */}
-      {isPc && btHeadsetConnected && (
-        <p className="mt-1.5 text-[10px] text-slate-500">
-          Routing through {btHeadsetDeviceName || 'your PC'}
-        </p>
-      )}
+      {/* Live route status — the SAME component the header and Settings render,
+          so the in-call card can never claim a PC route that isn't up. Replaces
+          the old "Routing through {device}" line, which was derived from HFP
+          PAIRING and stayed cheerful through a failed SCO negotiation. */}
+      {isPc && btHeadsetConnected && <PcAudioRoute variant="inline" className="mt-1.5" />}
       {!btHeadsetConnected && !isPc && (
         <button
           type="button"
@@ -3027,9 +2981,10 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
       {/* 2-mode audio source toggle. Lives between the Answer/Mute/End row
           and the side-action row so it's contextually anchored to the
           in-call surface (where audio routing decisions actually matter).
-          Mounted only during an active or dialing call — pre-call routing
-          decisions are made via the Quick Dial header's read-only pill
-          (AudioSourcePill) + Settings, not here. */}
+          Mounted only during an active or dialing call — this is the LIVE
+          override. The pre-call default is set in the app header's PC-audio
+          control and in Settings → Call Audio Mode; all three read the same
+          value via useAudioSourceDefault. */}
       {(call.state === 'active' || call.state === 'dialing' || call.state === 'ringing') && (
         <div className="mt-3">
           <AudioSourceToggle

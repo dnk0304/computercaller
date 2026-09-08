@@ -12,13 +12,17 @@ import { Templates } from '@/components/Templates';
 import { Dashboard } from '@/components/Dashboard';
 import { PermissionHint } from '@/components/PermissionHint';
 import { usePhone, useDashboardTab } from '@/hooks';
+import { useAudioSourceDefault } from '@/hooks/audioSourcePreference';
+import type { AudioSource } from '@/hooks/audioSourcePreference';
+import { PcAudioRoute } from '@/components/PcAudioRoute';
 import { useFreeTier } from '@/hooks/freeTierContext';
-import { User, Bell, LogOut, Phone, MessageSquare, Search, Volume2, Smartphone, Monitor, Info, RefreshCw, ArrowDownLeft, ArrowUpRight, PhoneMissed, PhoneOff, PhoneIncoming, Clock, ChevronRight } from 'lucide-react';
+import { User, Bell, LogOut, Phone, MessageSquare, Search, Volume2, Smartphone, Monitor, RefreshCw, ArrowDownLeft, ArrowUpRight, PhoneMissed, PhoneOff, PhoneIncoming, Clock, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
 
-// Call mode type
-type CallMode = 'phone' | 'pc';
-const CALL_MODE_KEY = 'dnkdialer_call_mode';
+// Call audio mode lives in hooks/audioSourcePreference.ts (CP2, 2026-09-08).
+// The old `dnkdialer_call_mode` key this page used to write is retired — it
+// was never read by anything that routed audio. It is migrated into the shared
+// key and deleted on first read; see migrateLegacyKeys there.
 // Default audio output for new calls — earpiece (false) or speakerphone (true).
 // Persisted so the user's preference survives reloads.
 const SPEAKER_KEY = 'dnkdialer_call_speaker';
@@ -119,10 +123,13 @@ export default function Home() {
   // them here instead of useState keeps this page in sync when the user
   // clicks Sidebar from /app/settings and routes back.
   const { activeTab, setActiveTab, selectedMessageNumber, setSelectedMessageNumber } = useDashboardTab();
-  const [callMode, setCallMode] = useState<CallMode>('phone');
+  // Shared with the header PC-audio control and the in-call Audio Source
+  // toggle. This card sets the DEFAULT; it does not command a route change,
+  // because there is usually no call in progress from Settings.
+  const [callMode, setCallMode] = useAudioSourceDefault();
   // Default speakerphone preference applied to every outbound call.
   // false → earpiece (default), true → loudspeaker. Hydrated from localStorage
-  // in the same effect that loads callMode.
+  // in the settings-load effect below.
   const [callSpeaker, setCallSpeaker] = useState<boolean>(false);
   const phone = usePhone();
   const { guard } = useFreeTier();
@@ -165,10 +172,8 @@ export default function Home() {
 
   // Load settings from localStorage on mount
   useEffect(() => {
-    const savedMode = localStorage.getItem(CALL_MODE_KEY) as CallMode;
-    if (savedMode === 'phone' || savedMode === 'pc') {
-      setCallMode(savedMode);
-    }
+    // callMode is no longer loaded here — useAudioSourceDefault subscribes to
+    // the shared store directly, so it is already correct on first render.
     const savedSpeaker = localStorage.getItem(SPEAKER_KEY);
     if (savedSpeaker !== null) setCallSpeaker(savedSpeaker === 'true');
     const savedNotifCalls = localStorage.getItem('dnkdialer_notif_calls');
@@ -177,11 +182,9 @@ export default function Home() {
     if (savedNotifMessages !== null) setNotifMessages(savedNotifMessages === 'true');
   }, []);
 
-  // Save call mode to localStorage when changed
-  const handleCallModeChange = (mode: CallMode) => {
-    setCallMode(mode);
-    localStorage.setItem(CALL_MODE_KEY, mode);
-  };
+  // Persist the default and fan the change out to every other surface. The
+  // shared setter owns storage; this page never writes the key itself.
+  const handleCallModeChange = (mode: AudioSource) => setCallMode(mode);
 
   // Helper to trigger a sync with a self-clearing spinner. We don't try to
   // sync the spinner to data arrival — that fights React 19's purity rules and
@@ -562,7 +565,8 @@ export default function Home() {
                   Call Audio Mode
                 </h3>
                 <p className="text-sm text-slate-500 mb-4">
-                  Choose where call audio is routed when making or receiving calls.
+                  Where call audio goes by default. You can still switch during
+                  a call.
                 </p>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -641,15 +645,18 @@ export default function Home() {
                   </button>
                 </div>
 
-                {/* PC Audio notice */}
-                {callMode === 'pc' && (
-                  <div className="mt-4 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                    <Info className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                    <p className="text-xs text-amber-700">
-                      PC Audio mode requires WebRTC support in the Android app. This feature may not be available yet.
-                    </p>
-                  </div>
-                )}
+                {/* Live Bluetooth route (CP2, 2026-09-08). The same component
+                    the header renders, so this card and the header can never
+                    report different states. Replaces the old amber "may not be
+                    available yet" notice, which was stale — the route works,
+                    and its real status is now measurable. */}
+                <div className="mt-4">
+                  <PcAudioRoute variant="inline" />
+                  <p className="mt-1.5 text-[11px] text-slate-500">
+                    PC audio rides the Bluetooth link between your phone and this
+                    computer. Connect it here to check it before a call comes in.
+                  </p>
+                </div>
 
                 {/* Default Answer Mode — earpiece vs. speakerphone for new outbound calls.
                     Persisted to localStorage on each change so the choice survives reloads. */}
