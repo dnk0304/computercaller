@@ -321,8 +321,14 @@ android {
         // follows 1.0.28 → 1.0.29 for the same reason — 1.0.28 would collide.
         // NOTE this build descends from the 1.0.27 (v50) code line, not from
         // the divergent v52 branch; it carries no v52-only changes.
-        versionCode = 53
-        versionName = "1.0.29"
+        // v54 (1.0.30) — v53 + the ONE missing cd1ee98 delta. v53 shipped
+        // without cd1ee98's SignInActivity error-handling hunk (the v52 branch
+        // was never merged): a non-NoCredentialException GetCredentialException
+        // now logs e.type + class + message and shows signin_error_generic
+        // instead of masquerading as "no Google account". v54 is therefore a
+        // strict superset of v52 + v53; nothing else changed from v53.
+        versionCode = 54
+        versionName = "1.0.30"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client

@@ -150,9 +150,18 @@ class SignInActivity : AppCompatActivity() {
                         // can't offer one).
                         is NoCredentialException ->
                             showError(getString(R.string.signin_error_google_unavailable))
+                        // Any other GetCredentialException is NOT "no account" —
+                        // it's a Credential Manager / Play Services / config
+                        // failure (e.g. classes stripped by R8, no network, GMS
+                        // out of date, wrong serverClientId). Surface a distinct
+                        // message and log e.type + class so it's diagnosable
+                        // instead of masquerading as "add a Google account".
                         else -> {
-                            android.util.Log.w(TAG, "Google credential error: ${e.javaClass.simpleName}")
-                            showError(getString(R.string.signin_error_google_unavailable))
+                            android.util.Log.w(
+                                TAG,
+                                "Google credential error: type=${e.type} class=${e.javaClass.simpleName} msg=${e.message}"
+                            )
+                            showError(getString(R.string.signin_error_generic))
                         }
                     }
                 }
