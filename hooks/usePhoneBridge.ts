@@ -722,6 +722,15 @@ export function usePhoneBridge() {
   // disconnect so stale notifications don't linger across phone sessions.
   const [phoneNotifications, setPhoneNotifications] = useState<PhoneNotification[]>([]);
 
+  // Render-stable mirror of phoneNotifications. clearNotification /
+  // clearAllNotifications need to read the CURRENT list (to recover each
+  // notificationKey before dropping the row) without taking phoneNotifications
+  // as a useCallback dep — that would hand consumers a new function identity on
+  // every notification and defeat their memoization. Reading it here also keeps
+  // the WS send OUT of the setState updater, which must stay side-effect free.
+  const phoneNotificationsRef = useRef<PhoneNotification[]>([]);
+  useEffect(() => { phoneNotificationsRef.current = phoneNotifications; }, [phoneNotifications]);
+
   // Notification event buffer — flushed to React state every 200ms to batch
   // re-renders instead of re-rendering on every WebSocket notification event.
   const notifPendingRef = useRef<Array<
@@ -3663,17 +3672,44 @@ export function usePhoneBridge() {
     ));
   }, []);
 
-  const clearNotification = useCallback((notifId: string) => {
-    setPhoneNotifications(prev => prev.filter(n => n.id !== notifId));
+  // Ask the phone to cancel a real notification by its sbn.key. Fire-and-forget;
+  // a closed WS drops the command silently (see clearNotification's note).
+  const sendNotificationDismiss = useCallback((notificationKey: string) => {
+    if (!notificationKey) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(`NOTIFICATION_DISMISS:${JSON.stringify({ notificationKey })}`);
   }, []);
+
+  // Dismiss a single mirrored notification. Removes it locally AND asks the
+  // phone to cancel the real notification (NOTIFICATION_DISMISS), so the two
+  // stay in sync in BOTH directions — phone→web already worked via
+  // NOTIFICATION_REMOVED. Android's cancel echoes NOTIFICATION_REMOVED back;
+  // by then the row is already gone locally, so the echo is a harmless no-op
+  // (that IS the idempotency story — no suppression bookkeeping needed).
+  //
+  // Closed/offline WS: drop the command. The notification list is reset on
+  // disconnect by design, so there is nothing to queue for.
+  const clearNotification = useCallback((notifId: string) => {
+    const target = phoneNotificationsRef.current.find(n => n.id === notifId);
+    if (target?.notificationKey) sendNotificationDismiss(target.notificationKey);
+    setPhoneNotifications(prev => prev.filter(n => n.id !== notifId));
+  }, [sendNotificationDismiss]);
 
   const markAllNotificationsRead = useCallback(() => {
     setPhoneNotifications(prev => prev.map(n => ({ ...n, read: true })));
   }, []);
 
+  // Clear the whole mirrored list and cancel each one on the phone. One
+  // NOTIFICATION_DISMISS per notification that carries a key — the list is
+  // capped at 50, so this is bounded. Same echo/idempotency story as
+  // clearNotification: the NOTIFICATION_REMOVED frames Android sends back land
+  // on an already-empty list and no-op.
   const clearAllNotifications = useCallback(() => {
+    for (const n of phoneNotificationsRef.current) {
+      if (n.notificationKey) sendNotificationDismiss(n.notificationKey);
+    }
     setPhoneNotifications([]);
-  }, []);
+  }, [sendNotificationDismiss]);
 
   /**
    * Request the full media payload (image / audio / video) for a previously-

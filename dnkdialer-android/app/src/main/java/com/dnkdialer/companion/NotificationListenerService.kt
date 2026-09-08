@@ -24,6 +24,36 @@ class DnkNotificationListenerService : NotificationListenerService() {
         private var instance: DnkNotificationListenerService? = null
         fun getInstance(): DnkNotificationListenerService? = instance
 
+        /**
+         * Cancel a real notification on the handset by its sbn.key — the
+         * phone-side half of web→phone dismissal sync (NOTIFICATION_DISMISS).
+         *
+         * Returns false (and logs) when the listener is not connected, when the
+         * key is blank, or when the platform throws — a stale key from the web
+         * mirror is entirely expected and must never crash the service. The
+         * cancel, when it lands, fires onNotificationRemoved, which echoes a
+         * NOTIFICATION_REMOVED frame back to the web. The web has already
+         * dropped that row, so the echo is a harmless no-op.
+         */
+        fun dismissByKey(notificationKey: String): Boolean {
+            if (notificationKey.isBlank()) {
+                android.util.Log.w("NotifListener", "dismissByKey: blank key")
+                return false
+            }
+            val svc = instance
+            if (svc == null) {
+                android.util.Log.w("NotifListener", "dismissByKey: listener not connected")
+                return false
+            }
+            return try {
+                svc.cancelNotification(notificationKey)
+                true
+            } catch (e: Exception) {
+                android.util.Log.e("NotifListener", "dismissByKey failed: ${e.message}", e)
+                false
+            }
+        }
+
         // Categories we forward to the web client. Anything outside this set
         // is dropped unless the package is in ALWAYS_ALLOW_PACKAGES — keeps
         // the notification strip focused on communication and silences the

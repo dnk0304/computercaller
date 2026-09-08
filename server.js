@@ -201,6 +201,11 @@ function logNotifLifecycle(token, direction, msg) {
         `[Notif][${redactToken(token)}] REPLY_ATTEMPT key=${shortHash(p.notificationKey || '')} ` +
         `replyKeySet=${!!p.replyKey} textLen=${(p.text || '').length}`,
       );
+    } else if (msg.startsWith('NOTIFICATION_DISMISS:')) {
+      // Web→phone dismissal. Key hashed, same as everywhere else — it can
+      // embed a phone number. No other field exists on this frame.
+      const p = JSON.parse(msg.slice('NOTIFICATION_DISMISS:'.length));
+      console.log(`[Notif][${redactToken(token)}] DISMISS_REQUEST key=${shortHash(p.notificationKey || '')}`);
     } else if (msg.startsWith('NOTIFICATION_REPLY_SENT:')) {
       const p = JSON.parse(msg.slice('NOTIFICATION_REPLY_SENT:'.length));
       console.log(`[Notif][${redactToken(token)}] REPLY_CONFIRMED key=${shortHash(p.notificationKey || '')}`);

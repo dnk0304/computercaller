@@ -3681,6 +3681,18 @@ class PhoneService : Service() {
                     android.util.Log.d("PhoneService", "NOTIFICATION_REPLY to key: $notificationKey")
                     sendNotificationReply(notificationKey, replyKey, text, viaClient)
                 }
+                "NOTIFICATION_DISMISS" -> {
+                    // Web dismissed a mirrored notification — cancel the real
+                    // one here. Fire-and-forget: no ack frame. The cancel fires
+                    // onNotificationRemoved, which already sends
+                    // NOTIFICATION_REMOVED back to the web (a no-op there,
+                    // since the row is gone). Unknown/stale key or a
+                    // disconnected listener is logged and dropped.
+                    val notificationKey = payload?.get("notificationKey") as? String ?: return
+                    val ok = com.dnkdialer.companion.DnkNotificationListenerService
+                        .dismissByKey(notificationKey)
+                    android.util.Log.d("PhoneService", "NOTIFICATION_DISMISS key=$notificationKey ok=$ok")
+                }
                 "BROWSER_STATUS" -> {
                     // Relay tells us how many browser/web clients are currently
                     // paired with this phone session. Gson decodes JSON numbers

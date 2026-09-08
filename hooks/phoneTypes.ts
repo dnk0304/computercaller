@@ -180,7 +180,18 @@ export type PhoneCommandType =
   // new APKs. Caller is responsible for gating the 'pc' value on
   // btHeadsetConnected — the phone tries the route regardless and silently
   // no-ops if SCO can't come up.
-  | 'SET_AUDIO_SOURCE';
+  | 'SET_AUDIO_SOURCE'
+  // Web → phone notification dismissal (2026-09-08). Payload:
+  // { notificationKey }. Completes the sync loop that previously only ran
+  // phone → web via NOTIFICATION_REMOVED: clearing a mirrored notification in
+  // the browser now cancels the real notification on the handset via the
+  // NotificationListenerService. Android's cancel fires onNotificationRemoved,
+  // which echoes NOTIFICATION_REMOVED back to the web — by then the row is
+  // already gone locally, so the echo is a no-op. That echo IS the
+  // idempotency guarantee; there is deliberately no suppression bookkeeping.
+  // Fire-and-forget: no ack frame, and an unknown/stale key is logged and
+  // dropped on the phone.
+  | 'NOTIFICATION_DISMISS';
 
 // Call states.
 //   idle    — no call (legacy sentinel; a call in `calls[]` is never 'idle')
