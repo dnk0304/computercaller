@@ -93,6 +93,22 @@ export type PhoneEventType =
   // AudioSourceToggle and auto-reverts an active 'pc' routing back to
   // 'phone' on disconnect.
   | 'BT_HEADSET_STATUS'
+  // CP2 PC-audio route CONFIRMATION (2026-09-08). The answer to a
+  // browser-sent AUDIO_CONNECT probe, and — crucially — an UNSOLICITED push
+  // when a confirmed route later drops. Distinct from BT_HEADSET_STATUS,
+  // which only reports HFP *pairing*: a paired PC whose SCO link never comes
+  // up produced a green pill and silent audio before this frame existed.
+  //
+  //   payload: { probeId?, state, device?, transport?, reason?, ts }
+  //
+  // A frame WITH `probeId` answers that specific probe and MUST be dropped
+  // by the client if it does not match the in-flight probe (stale-probe
+  // race: a retry can outrun a slow answer to the previous attempt). A frame
+  // WITHOUT `probeId` is unsolicited and always applies.
+  //
+  // Optional keys are OMITTED by the phone when their value would be null;
+  // the client normalises a missing key to null.
+  | 'AUDIO_STATUS'
   // Lobby / Connect+Accept control plane (dispatch #32, 2026-05-25). All
   // pairing handshake events arrive over this channel; see lib/lobbyState.ts
   // for the state machine.
@@ -191,7 +207,59 @@ export type PhoneCommandType =
   // idempotency guarantee; there is deliberately no suppression bookkeeping.
   // Fire-and-forget: no ack frame, and an unknown/stale key is logged and
   // dropped on the phone.
-  | 'NOTIFICATION_DISMISS';
+  | 'NOTIFICATION_DISMISS'
+  // CP2 PC-audio route CONFIRMATION (2026-09-08). Unlike the fire-and-forget
+  // SET_AUDIO_SOURCE:{source:'pc'} — which is RETAINED unchanged — this
+  // command is acknowledged: the phone answers AUDIO_STATUS 'connecting'
+  // then 'connected' | 'failed'.
+  //   payload: { target: 'pc', probeId: string /* uuid */, ts: number }
+  | 'AUDIO_CONNECT'
+  // Tear the confirmed PC-audio route down. The phone answers with
+  // AUDIO_STATUS { state: 'idle' } — deliberately NOT 'failed', because a
+  // user-initiated disconnect is not an error and must not surface as one.
+  //   payload: {}
+  | 'AUDIO_DISCONNECT';
+
+/**
+ * Machine-readable cause of a PC-audio route failure (CP2, 2026-09-08).
+ *
+ *   bt_off             Bluetooth adapter is off / absent. Actionable.
+ *   not_paired         BT is on but no HFP/SCO-capable device is available.
+ *   sco_denied         The phone armed the link and the 6 s SCO negotiation
+ *                      never completed. Phone-side timeout.
+ *   permission_missing BLUETOOTH_CONNECT not granted on the handset.
+ *   route_lost         A CONFIRMED route dropped afterwards (unsolicited).
+ *   timeout            CLIENT-side only — the browser's own 8 s window
+ *                      elapsed with no AUDIO_STATUS at all, i.e. the phone
+ *                      never answered (frame lost, app killed). Never
+ *                      appears on the wire.
+ */
+export type AudioRouteFailureReason =
+  | 'bt_off'
+  | 'not_paired'
+  | 'sco_denied'
+  | 'permission_missing'
+  | 'route_lost'
+  | 'timeout';
+
+/**
+ * Browser-side view of the confirmed PC-audio route (CP2, 2026-09-08).
+ *
+ * 'idle' is both the initial state and the resting state after an explicit
+ * disconnect or a phone disconnect. It is NOT an error state — UI must not
+ * render a failure affordance for it.
+ */
+export interface AudioRouteStatus {
+  state: 'idle' | 'connecting' | 'connected' | 'failed';
+  /** Routed device name once known ('connected'), else null. */
+  device: string | null;
+  /** 'SCO' for classic HFP, 'BLE' for LE-Audio. Null until connected. */
+  transport: 'SCO' | 'BLE' | null;
+  /** Populated only when state === 'failed'. */
+  reason: AudioRouteFailureReason | null;
+  /** uuid of the probe this status belongs to; null for idle/unsolicited. */
+  probeId: string | null;
+}
 
 // Call states.
 //   idle    — no call (legacy sentinel; a call in `calls[]` is never 'idle')

@@ -9,7 +9,9 @@ import type {
   CallState,
   SmsMessage,
   CallLogEntry,
-  LimitReachedInfo
+  LimitReachedInfo,
+  AudioRouteStatus,
+  AudioRouteFailureReason
 } from './phoneTypes';
 import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
 import { isPlaceholderAddress, evictHealedPlaceholders } from '@/lib/messagePlaceholders';
@@ -716,6 +718,42 @@ export function usePhoneBridge() {
   // grant it falls back to "Bluetooth device". Empty string means no device.
   const [btHeadsetConnected, setBtHeadsetConnected] = useState<boolean>(false);
   const [btHeadsetDeviceName, setBtHeadsetDeviceName] = useState<string | null>(null);
+
+  // CP2 PC-audio route CONFIRMATION (2026-09-08).
+  //
+  // btHeadsetConnected above answers "is a PC paired over HFP" — it does NOT
+  // answer "is call audio actually flowing to it". The SCO link is negotiated
+  // asynchronously and can silently never come up, which is exactly the
+  // failure this state exists to make visible.
+  //
+  // Orthogonal to setAudioSource(): SET_AUDIO_SOURCE stays fire-and-forget
+  // and is untouched. connectPcAudio() is the acknowledged path.
+  const [audioRouteStatus, setAudioRouteStatus] = useState<AudioRouteStatus>({
+    state: 'idle',
+    device: null,
+    transport: null,
+    reason: null,
+    probeId: null,
+  });
+
+  // probeId of the probe we are currently willing to accept answers for.
+  // A ref, not state: the inbound-frame handler must read the CURRENT value
+  // without being re-created (and thus re-subscribing) on every probe.
+  const audioProbeIdRef = useRef<string | null>(null);
+  const audioProbeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One auto-retry per user-initiated connect. Reset when the probe slot is
+  // released (terminal status, disconnect, or phone teardown).
+  const audioProbeRetriedRef = useRef<boolean>(false);
+  // Late-bound self-reference so the client-timeout callback can fire the
+  // retry without the useCallback depending on itself.
+  const startAudioProbeRef = useRef<((isRetry: boolean) => void) | null>(null);
+
+  const clearAudioProbeTimer = useCallback(() => {
+    if (audioProbeTimerRef.current) {
+      clearTimeout(audioProbeTimerRef.current);
+      audioProbeTimerRef.current = null;
+    }
+  }, []);
 
   // Phone notifications mirrored from Android's NotificationListenerService.
   // Newest first, capped at 50, deduped by notificationKey. Reset on phone
@@ -2556,6 +2594,82 @@ export function usePhoneBridge() {
         break;
       }
 
+      case 'AUDIO_STATUS': {
+        // CP2 (2026-09-08). Answer to an AUDIO_CONNECT probe, or an
+        // unsolicited push when a confirmed route drops.
+        const {
+          probeId,
+          state: rawState,
+          device,
+          transport,
+          reason,
+        } = payload as {
+          probeId?: string;
+          state?: string;
+          device?: string;
+          transport?: string;
+          reason?: string;
+        };
+
+        // STALE-PROBE RACE: the auto-retry issues a new probeId while the
+        // previous attempt may still be in flight on the phone. A late
+        // answer to the OLD probe must not overwrite the new one's state.
+        // Frames with NO probeId are unsolicited and always apply.
+        if (
+          typeof probeId === 'string' &&
+          probeId.length > 0 &&
+          probeId !== audioProbeIdRef.current
+        ) {
+          console.log('[PhoneBridge] AUDIO_STATUS ignored (stale probe ' + probeId + ')');
+          break;
+        }
+
+        const VALID_STATES = ['idle', 'connecting', 'connected', 'failed'] as const;
+        const VALID_REASONS: AudioRouteFailureReason[] = [
+          'bt_off',
+          'not_paired',
+          'sco_denied',
+          'permission_missing',
+          'route_lost',
+          'timeout',
+        ];
+        // Never trust the wire: an unrecognised state is treated as a
+        // failure rather than silently leaving the UI mid-connect.
+        const state = (VALID_STATES as readonly string[]).includes(rawState ?? '')
+          ? (rawState as AudioRouteStatus['state'])
+          : 'failed';
+
+        const next: AudioRouteStatus = {
+          state,
+          device: typeof device === 'string' && device.length > 0 ? device : null,
+          transport: transport === 'SCO' || transport === 'BLE' ? transport : null,
+          reason:
+            state === 'failed' &&
+            typeof reason === 'string' &&
+            VALID_REASONS.includes(reason as AudioRouteFailureReason)
+              ? (reason as AudioRouteFailureReason)
+              : null,
+          probeId: typeof probeId === 'string' && probeId.length > 0 ? probeId : null,
+        };
+
+        if (state !== 'connecting') {
+          // Terminal for this probe — disarm the client watchdog and release
+          // the slot so the next connect starts with a fresh retry budget.
+          clearAudioProbeTimer();
+          audioProbeIdRef.current = null;
+          audioProbeRetriedRef.current = false;
+        }
+
+        setAudioRouteStatus(next);
+        console.log(
+          '[PhoneBridge] AUDIO_STATUS state=' + next.state +
+          ' device=' + (next.device ?? '-') +
+          ' transport=' + (next.transport ?? '-') +
+          ' reason=' + (next.reason ?? '-')
+        );
+        break;
+      }
+
       case 'BT_HEADSET_STATUS': {
         // 2-mode BT audio routing (2026-05-25). Phone push whenever the BT-HFP
         // profile state changes (paired/unpaired the PC, BT toggled off, etc).
@@ -2576,7 +2690,10 @@ export function usePhoneBridge() {
     // `connect` callback stable and prevents the auto-relay-connect effect
     // (line ~1958) from running its cleanup (which sends DISCONNECT_PHONE
     // to the relay). See the loop write-up in the isPhoneStaleRef block.
-  }, [startCallTimer, stopCallTimer]);
+    // clearAudioProbeTimer (CP2) is a useCallback with an EMPTY dep array —
+    // stable for the lifetime of the hook — so listing it here does not
+    // re-create handleMessage and does not reopen the loop described above.
+  }, [startCallTimer, stopCallTimer, clearAudioProbeTimer]);
 
   // Mint a fresh 30s relay-ticket. Stable callback — used by both the
   // initial mount effect and the reconnect scheduler. Returns the new
@@ -2929,6 +3046,12 @@ export function usePhoneBridge() {
     // pair will repopulate it.
     setBtHeadsetConnected(false);
     setBtHeadsetDeviceName(null);
+    // CP2: a route cannot survive the phone leaving. Drop to idle and
+    // release the probe slot so a reconnect starts clean.
+    clearAudioProbeTimer();
+    audioProbeIdRef.current = null;
+    audioProbeRetriedRef.current = false;
+    setAudioRouteStatus({ state: 'idle', device: null, transport: null, reason: null, probeId: null });
     if (pairingTimerRef.current) {
       clearTimeout(pairingTimerRef.current);
       pairingTimerRef.current = null;
@@ -2946,7 +3069,7 @@ export function usePhoneBridge() {
       callStatusTimeoutRef.current = null;
     }
     console.log('[PhoneBridge] leaveActive — back in lobby');
-  }, [lobbyState, clearAllCalls]);
+  }, [lobbyState, clearAllCalls, clearAudioProbeTimer]);
 
   const makeCall = useCallback((number: string, speaker: boolean = false): boolean => {
     // Check if WebSocket is connected before making call
@@ -3027,6 +3150,88 @@ export function usePhoneBridge() {
   const setAudioSource = useCallback((source: 'phone' | 'pc') => {
     sendCommand('SET_AUDIO_SOURCE', { source });
   }, [sendCommand]);
+
+  // ---------------------------------------------------------------------
+  // CP2 PC-audio route CONFIRMATION (2026-09-08).
+  //
+  // setAudioSource('pc') above is fire-and-forget and stays that way. These
+  // two functions are the ACKNOWLEDGED path: the phone answers
+  // AUDIO_STATUS 'connecting' -> 'connected' | 'failed{reason}', and pushes
+  // an unsolicited 'failed{route_lost}' if a confirmed route later drops.
+  //
+  // Two independent watchdogs, deliberately:
+  //   - phone-side  6 s  — the SCO negotiation itself did not complete.
+  //                        Reports reason 'sco_denied'.
+  //   - client-side 8 s  — no AUDIO_STATUS arrived AT ALL (frame lost, app
+  //                        killed, relay hiccup). Reports 'timeout'.
+  // The client window is the longer one so a phone that IS answering always
+  // wins the race and we never report 'timeout' over a real diagnosis.
+  // ---------------------------------------------------------------------
+
+  const startAudioProbe = useCallback((isRetry: boolean) => {
+    const probeId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : 'probe-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+
+    clearAudioProbeTimer();
+    audioProbeIdRef.current = probeId;
+    if (!isRetry) audioProbeRetriedRef.current = false;
+
+    setAudioRouteStatus({
+      state: 'connecting',
+      device: null,
+      transport: null,
+      reason: null,
+      probeId,
+    });
+    sendCommand('AUDIO_CONNECT', { target: 'pc', probeId, ts: Date.now() });
+
+    audioProbeTimerRef.current = setTimeout(() => {
+      audioProbeTimerRef.current = null;
+      // Superseded by a newer probe or already answered — nothing to do.
+      if (audioProbeIdRef.current !== probeId) return;
+
+      if (!audioProbeRetriedRef.current) {
+        // ONE silent auto-retry with a FRESH probeId. A late answer to this
+        // dead probe is dropped by the stale-probe guard in the handler.
+        audioProbeRetriedRef.current = true;
+        console.warn('[PhoneBridge] AUDIO_CONNECT probe ' + probeId + ' timed out — retrying once');
+        startAudioProbeRef.current?.(true);
+        return;
+      }
+
+      // Retry exhausted. Stay 'failed' for a MANUAL retry — we do not loop.
+      audioProbeIdRef.current = null;
+      audioProbeRetriedRef.current = false;
+      console.warn('[PhoneBridge] AUDIO_CONNECT probe ' + probeId + ' timed out after retry — giving up');
+      setAudioRouteStatus({
+        state: 'failed',
+        device: null,
+        transport: null,
+        reason: 'timeout',
+        probeId,
+      });
+    }, 8000);
+  }, [sendCommand, clearAudioProbeTimer]);
+
+  useEffect(() => {
+    startAudioProbeRef.current = startAudioProbe;
+  }, [startAudioProbe]);
+
+  /** Route call audio to the paired PC and CONFIRM it actually landed. */
+  const connectPcAudio = useCallback(() => {
+    startAudioProbe(false);
+  }, [startAudioProbe]);
+
+  /** User-initiated teardown. Resets to 'idle' — not an error state. */
+  const disconnectPcAudio = useCallback(() => {
+    clearAudioProbeTimer();
+    audioProbeIdRef.current = null;
+    audioProbeRetriedRef.current = false;
+    sendCommand('AUDIO_DISCONNECT', {});
+    setAudioRouteStatus({ state: 'idle', device: null, transport: null, reason: null, probeId: null });
+  }, [sendCommand, clearAudioProbeTimer]);
 
   // Sync preview (2026-05-26). Re-requests SYNC_ESTIMATE for a specific
   // time window and/or category subset. Used by SyncSetupPanel when the
@@ -4151,6 +4356,10 @@ export function usePhoneBridge() {
     // 2-mode BT audio routing (2026-05-25): new unified surface. See
     // setAudioSource declaration above for the rationale.
     setAudioSource,
+    // CP2 PC-audio confirmation (2026-09-08)
+    audioRouteStatus,
+    connectPcAudio,
+    disconnectPcAudio,
     btHeadsetConnected,
     btHeadsetDeviceName,
     sendDtmf,

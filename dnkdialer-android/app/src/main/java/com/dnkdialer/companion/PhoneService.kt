@@ -728,6 +728,13 @@ class PhoneService : Service() {
      */
     private fun applyAudioSource(source: String) {
         currentCallSpeaker = (source == "speaker")
+        // CP2: remember the route so a failed PC-audio probe can roll back
+        // to it mid-call instead of dropping to MODE_NORMAL. Only record
+        // values we actually apply — the `else` branch below is a no-op.
+        if (source == "phone" || source == "earpiece" || source == "speaker" ||
+            source == "pc" || source == "bluetooth") {
+            lastAudioSource = source
+        }
         when (source) {
             "phone", "earpiece" -> {
                 applyBluetoothSco(false)
@@ -886,6 +893,326 @@ class PhoneService : Service() {
             isViaClient
         )
         android.util.Log.d("PhoneService", "BT_HEADSET_STATUS broadcast: connected=$btHeadsetConnected deviceName=$btHeadsetDeviceName")
+    }
+
+    // -----------------------------------------------------------------------
+    // CP2 — "PC audio" ROUTE CONFIRMATION probe (2026-09-08).
+    //
+    // Background: SET_AUDIO_SOURCE:{source:"pc"} is fire-and-forget. The
+    // browser flips its toggle optimistically and the user has no idea
+    // whether the SCO link ever came up — applyBluetoothSco() kicks off an
+    // ASYNC negotiation (500-1500 ms) and nothing listened for the result.
+    // BT_HEADSET_STATUS is NOT that answer: it reports HFP *pairing*, not
+    // whether call audio is actually flowing over the link.
+    //
+    // Wire protocol (additive; BT_HEADSET_STATUS is untouched):
+    //   browser -> phone  AUDIO_CONNECT    { target:"pc", probeId, ts }
+    //   browser -> phone  AUDIO_DISCONNECT {}
+    //   phone -> browser  AUDIO_STATUS     { probeId?, state, device?,
+    //                                        transport?, reason?, ts }
+    //     state:     connecting | connected | failed | idle
+    //     transport: SCO | BLE
+    //     reason:    bt_off | not_paired | sco_denied | permission_missing
+    //                | route_lost
+    //
+    // A frame carrying `probeId` answers THAT probe; a frame WITHOUT one is
+    // an unsolicited push (route dropped under us, or an idle ack) and the
+    // browser always applies it. Keys whose value is null are OMITTED from
+    // the payload — the browser normalises a missing key to null.
+    // -----------------------------------------------------------------------
+
+    /** Receiver for AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED. Held so
+     *  onDestroy can unregister it (leaks a binder ref otherwise). */
+    private var scoStateReceiver: android.content.BroadcastReceiver? = null
+
+    private val audioProbeHandler = Handler(Looper.getMainLooper())
+
+    /** probeId of the in-flight AUDIO_CONNECT, or null when idle. Any SCO
+     *  broadcast that arrives while this is null is treated as unsolicited. */
+    private var audioProbeId: String? = null
+
+    private var audioProbeTimeoutRunnable: Runnable? = null
+
+    /** True only between a CONFIRMED SCO_AUDIO_STATE_CONNECTED and the
+     *  matching teardown. Gates the route_lost push so a DISCONNECTED
+     *  broadcast for a route that never came up cannot double-report the
+     *  failure the timeout already reported. */
+    private var audioRouteConfirmed: Boolean = false
+
+    /** Last source applied through [applyAudioSource]. The rollback target
+     *  for MID-CALL SAFETY — see [teardownAudioRoute]. */
+    private var lastAudioSource: String = "phone"
+
+    /** SCO negotiation ceiling. The BT stack takes 500-1500 ms on healthy
+     *  hardware; 6 s covers a slow OEM stack without stranding the user.
+     *  The browser arms its own longer (8 s) client-side timeout so a
+     *  dropped AUDIO_STATUS frame cannot hang the UI either. */
+    private val audioProbeTimeoutMs: Long = 6_000L
+
+    /**
+     * Is the telephony stack currently on a call? Drives MID-CALL SAFETY:
+     * we must never force MODE_NORMAL while a real call is up, because that
+     * silences audio the user is actively listening to.
+     *
+     * Returns false on SecurityException (READ_PHONE_STATE not granted) —
+     * the conservative answer is "no call", which only costs us a mode reset
+     * on a device that would not have had call audio to protect anyway.
+     */
+    private fun isTelephonyCallActive(): Boolean {
+        return try {
+            val tm = getSystemService(Context.TELEPHONY_SERVICE)
+                as? android.telephony.TelephonyManager
+            @Suppress("DEPRECATION")
+            val state = tm?.callState ?: android.telephony.TelephonyManager.CALL_STATE_IDLE
+            state != android.telephony.TelephonyManager.CALL_STATE_IDLE
+        } catch (e: Exception) {
+            android.util.Log.d("PhoneService", "isTelephonyCallActive: ${e.message}")
+            false
+        }
+    }
+
+    /** Emit an AUDIO_STATUS frame. Null-valued optional keys are omitted. */
+    private fun emitAudioStatus(
+        state: String,
+        probeId: String?,
+        device: String?,
+        transport: String?,
+        reason: String?
+    ) {
+        val payload = mutableMapOf<String, Any>(
+            "state" to state,
+            "ts" to System.currentTimeMillis()
+        )
+        probeId?.let { payload["probeId"] = it }
+        device?.let { payload["device"] = it }
+        transport?.let { payload["transport"] = it }
+        reason?.let { payload["reason"] = it }
+        sendResponse("AUDIO_STATUS", payload, client?.isOpen == true)
+        android.util.Log.d(
+            "PhoneService",
+            "AUDIO_STATUS: state=$state probeId=$probeId device=$device transport=$transport reason=$reason"
+        )
+    }
+
+    /** Human-readable name of the device call audio is actually routed to. */
+    private fun resolveRoutedDeviceName(): String? {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                val name = am.communicationDevice?.productName?.toString()
+                if (!name.isNullOrBlank()) return name
+            }
+        } catch (e: Exception) {
+            android.util.Log.d("PhoneService", "resolveRoutedDeviceName: ${e.message}")
+        }
+        // Pre-API-31, or the platform gave us nothing — fall back to the HFP
+        // device name we already track for BT_HEADSET_STATUS.
+        return btHeadsetDeviceName
+    }
+
+    /** "BLE" for LE-Audio headsets, "SCO" for classic HFP. */
+    private fun resolveRoutedTransport(): String {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                if (am.communicationDevice?.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET) {
+                    return "BLE"
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.d("PhoneService", "resolveRoutedTransport: ${e.message}")
+        }
+        return "SCO"
+    }
+
+    private fun cancelAudioProbeTimer() {
+        audioProbeTimeoutRunnable?.let { audioProbeHandler.removeCallbacks(it) }
+        audioProbeTimeoutRunnable = null
+    }
+
+    /**
+     * Drop the SCO routing.
+     *
+     * MID-CALL SAFETY (brief section 6): if a telephony call is ACTIVE, the
+     * user is listening to audio right now. Slamming the AudioManager to
+     * MODE_NORMAL would kill that audio in order to report the failure of a
+     * route they never got. So when [rollback] is set and a call is live we
+     * RE-APPLY the previous audio source instead. MODE_NORMAL is only ever
+     * restored when no call is active.
+     */
+    private fun teardownAudioRoute(rollback: Boolean) {
+        audioRouteConfirmed = false
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            try {
+                @Suppress("DEPRECATION")
+                am.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                run { am.isBluetoothScoOn = false }
+            } catch (e: Exception) {
+                // Some OEMs throw if SCO was never started.
+                android.util.Log.d("PhoneService", "teardownAudioRoute stopBluetoothSco: ${e.message}")
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                am.clearCommunicationDevice()
+            }
+
+            if (isTelephonyCallActive()) {
+                if (rollback) {
+                    // Never roll back INTO the route we just tore down.
+                    val prior = if (lastAudioSource == "pc" || lastAudioSource == "bluetooth") {
+                        "phone"
+                    } else {
+                        lastAudioSource
+                    }
+                    android.util.Log.d("PhoneService", "teardownAudioRoute: call active — rolling back to '$prior'")
+                    applyAudioSource(prior)
+                }
+                // else: leave the stack alone; the live call still owns it.
+            } else {
+                am.mode = android.media.AudioManager.MODE_NORMAL
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "teardownAudioRoute failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Handle browser -> phone AUDIO_CONNECT.
+     *
+     * Pre-checks fail FAST and specifically: a user whose Bluetooth is off
+     * needs a different instruction than one who never paired their PC, and
+     * both differ from "the stack refused the link". We do not start a probe
+     * we already know cannot succeed.
+     */
+    private fun handleAudioConnect(probeId: String?) {
+        cancelAudioProbeTimer()
+        audioProbeId = probeId
+        audioRouteConfirmed = false
+
+        // (a) runtime permission — API 31+ needs BLUETOOTH_CONNECT for both
+        //     the device enumeration and the name lookup.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            audioProbeId = null
+            emitAudioStatus("failed", probeId, null, null, "permission_missing")
+            return
+        }
+
+        // (b) adapter present AND switched on.
+        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE)
+            as? android.bluetooth.BluetoothManager)?.adapter
+        if (adapter == null || !adapter.isEnabled) {
+            audioProbeId = null
+            emitAudioStatus("failed", probeId, null, null, "bt_off")
+            return
+        }
+
+        // (c) something to route TO — either a live HFP link (btHeadsetConnected,
+        //     maintained by the existing BT observer) or an SCO/BLE entry in
+        //     availableCommunicationDevices. Pre-API-31 only the former exists.
+        var hasScoDevice = false
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                hasScoDevice = am.availableCommunicationDevices.any {
+                    it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.d("PhoneService", "handleAudioConnect device scan: ${e.message}")
+        }
+        if (!btHeadsetConnected && !hasScoDevice) {
+            audioProbeId = null
+            emitAudioStatus("failed", probeId, null, null, "not_paired")
+            return
+        }
+
+        emitAudioStatus("connecting", probeId, btHeadsetDeviceName, null, null)
+        applyBluetoothSco(true)
+
+        val runnable = Runnable {
+            // Guard: a later probe (or a success) may have superseded us.
+            if (audioProbeId != probeId || audioRouteConfirmed) return@Runnable
+            audioProbeId = null
+            android.util.Log.w("PhoneService", "AUDIO_CONNECT probe $probeId timed out after ${audioProbeTimeoutMs}ms")
+            emitAudioStatus("failed", probeId, null, null, "sco_denied")
+            teardownAudioRoute(rollback = true)
+        }
+        audioProbeTimeoutRunnable = runnable
+        audioProbeHandler.postDelayed(runnable, audioProbeTimeoutMs)
+    }
+
+    /** Handle browser -> phone AUDIO_DISCONNECT (user-initiated). */
+    private fun handleAudioDisconnect() {
+        cancelAudioProbeTimer()
+        audioProbeId = null
+        teardownAudioRoute(rollback = true)
+        // "idle", not "failed" — the user asked for this; it is not an error.
+        emitAudioStatus("idle", null, null, null, null)
+    }
+
+    /**
+     * Register the SCO state receiver — the piece that was missing entirely
+     * before CP2. This broadcast is the ONLY authoritative signal that call
+     * audio is really on the Bluetooth link.
+     */
+    private fun registerScoStateObserver() {
+        try {
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
+                    if (intent?.action != android.media.AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED) return
+                    val state = intent.getIntExtra(
+                        android.media.AudioManager.EXTRA_SCO_AUDIO_STATE,
+                        android.media.AudioManager.SCO_AUDIO_STATE_ERROR
+                    )
+                    android.util.Log.d("PhoneService", "SCO_AUDIO_STATE_UPDATED: state=$state probeId=$audioProbeId confirmed=$audioRouteConfirmed")
+
+                    when (state) {
+                        android.media.AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
+                            val probe = audioProbeId
+                            cancelAudioProbeTimer()
+                            audioProbeId = null
+                            audioRouteConfirmed = true
+                            emitAudioStatus(
+                                "connected",
+                                probe,
+                                resolveRoutedDeviceName(),
+                                resolveRoutedTransport(),
+                                null
+                            )
+                        }
+                        android.media.AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                            // Only a CONFIRMED route can be "lost". A
+                            // DISCONNECTED for a link that never came up is
+                            // already covered by the probe timeout — reporting
+                            // both would double-fire the browser handler.
+                            if (audioRouteConfirmed) {
+                                audioRouteConfirmed = false
+                                emitAudioStatus("failed", null, null, null, "route_lost")
+                                teardownAudioRoute(rollback = true)
+                            }
+                        }
+                    }
+                }
+            }
+            val filter = android.content.IntentFilter(
+                android.media.AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED
+            )
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(receiver, filter)
+            }
+            scoStateReceiver = receiver
+            android.util.Log.d("PhoneService", "SCO audio state observer registered")
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "registerScoStateObserver failed: ${e.message}", e)
+        }
     }
 
     /**
@@ -1757,6 +2084,10 @@ class PhoneService : Service() {
         // BT-PC mode on devices without BT hardware or without the
         // BLUETOOTH_CONNECT runtime grant.
         registerBluetoothHeadsetObserver()
+
+        // CP2 (2026-09-08): SCO link-state receiver. This is what turns the
+        // fire-and-forget "PC audio" toggle into a confirmed route.
+        registerScoStateObserver()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -3420,6 +3751,23 @@ class PhoneService : Service() {
                     applyAudioSource(source)
                     android.util.Log.d("PhoneService", "SET_AUDIO_SOURCE applied: source=$source")
                 }
+                "AUDIO_CONNECT" -> {
+                    // CP2 (2026-09-08). Confirmed PC-audio routing. Unlike
+                    // SET_AUDIO_SOURCE this ACKs: connecting -> connected |
+                    // failed{reason}. `target` is accepted for forward-compat
+                    // but only "pc" is meaningful today.
+                    val target = (payload?.get("target") as? String) ?: "pc"
+                    val probeId = payload?.get("probeId") as? String
+                    if (target != "pc") {
+                        android.util.Log.w("PhoneService", "AUDIO_CONNECT: unsupported target '$target'")
+                        emitAudioStatus("failed", probeId, null, null, "not_paired")
+                    } else {
+                        handleAudioConnect(probeId)
+                    }
+                }
+                "AUDIO_DISCONNECT" -> {
+                    handleAudioDisconnect()
+                }
                 "GET_BT_HEADSET_STATUS" -> {
                     // Browser asks for an immediate snapshot — typically on
                     // pair-active to populate the toggle's enabled/disabled
@@ -4125,6 +4473,16 @@ class PhoneService : Service() {
         // profile proxy + unregister the connection-state-changed receiver.
         // Skipping either leaks a binder reference through the BT stack
         // until the next service restart.
+        // CP2: SCO state receiver + any armed probe timer.
+        cancelAudioProbeTimer()
+        audioProbeId = null
+        try {
+            scoStateReceiver?.let { unregisterReceiver(it) }
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "scoStateReceiver was not registered: ${e.message}")
+        }
+        scoStateReceiver = null
+
         try {
             bluetoothHeadsetReceiver?.let { unregisterReceiver(it) }
         } catch (e: Exception) {

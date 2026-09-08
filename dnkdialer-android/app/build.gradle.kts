@@ -327,8 +327,11 @@ android {
         // now logs e.type + class + message and shows signin_error_generic
         // instead of masquerading as "no Google account". v54 is therefore a
         // strict superset of v52 + v53; nothing else changed from v53.
-        versionCode = 54
-        versionName = "1.0.30"
+        // CP2 PC-audio confirmation (2026-09-08): adds the
+        // AUDIO_CONNECT / AUDIO_STATUS / AUDIO_DISCONNECT protocol and the
+        // ACTION_SCO_AUDIO_STATE_UPDATED receiver. No google-signin changes.
+        versionCode = 55
+        versionName = "1.0.31"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
