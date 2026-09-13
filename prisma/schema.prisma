@@ -141,6 +141,34 @@ model User {
   // onDelete: Cascade so deleting a user removes their counters. Additive
   // virtual relation field (no column on User) → `prisma db push` clean.
   usageCounters       UsageCounter[]
+  // freeTierGrandfathered (2026-09-13, dispatch forge/cardfirst-revert).
+  // Boolean @default(false) → additive migration, zero data loss, every
+  // existing row valid the instant it is added.
+  //
+  // THE CARD-FIRST SWITCH's carve-out. On 2026-09-13 the no-card free tier was
+  // retired: with FREE_TIER=off a logged-in user with NO Subscription row is
+  // DENIED (state 'needs_subscription') and bounced to /subscribe for a card.
+  // The ~13 accounts that already existed signed up under an advertised free
+  // offer, so `scripts/backfill-free-tier-grandfather.js` sets this column true
+  // on every such row BEFORE the flip. They keep the free tier permanently;
+  // card-first applies to new signups only.
+  //
+  // WHY A COLUMN AND NOT A createdAt CUTOFF: a date compare depends on an env
+  // value and the clock, is invisible in the row, and silently re-includes
+  // anyone whose createdAt is edited or backfilled. A boolean stamped once is
+  // auditable per row and cannot drift.
+  //
+  // WHY NOT A SYNTHETIC Subscription ROW: entitlement rule (4) would admit them,
+  // but they would appear in the admin dashboard and every revenue report as
+  // 'active' paying customers. This must not pollute the payer cohort.
+  //
+  // ENTITLEMENT READS IT, but ONLY inside rule (3) (no-subscription) and ONLY
+  // while FREE_TIER is off. It can never change the decision for a user who has
+  // a Subscription row, nor for any privileged admit (admin / allowlist /
+  // free-access), which are all evaluated strictly earlier. Any call site that
+  // evaluates entitlement for a possibly-unsubscribed user MUST select it —
+  // omitting it reads as false and locks a grandfathered user out.
+  freeTierGrandfathered Boolean              @default(false)
 
   @@index([whopUserId])
   // Set-password / reset tokens are looked up BY TOKEN HASH (see

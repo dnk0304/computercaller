@@ -25,6 +25,10 @@ async function resolveTemplateLimit(
     select: {
       isAdmin: true,
       email: true,
+      // freeTierGrandfathered (2026-09-13, forge/cardfirst-revert) — REQUIRED
+      // on every entitlement path that can see an unsubscribed user: with
+      // FREE_TIER=off, omitting it denies a grandfathered free-tier account.
+      freeTierGrandfathered: true,
       subscription: {
         // planId (2026-07-27) + grandfathered (2026-08-17) are BOTH required on
         // this tier-enforcing path: planId resolves the tier, grandfathered
@@ -49,6 +53,7 @@ async function resolveTemplateLimit(
   const ent = evaluateEntitlement({
     isAdmin: user.isAdmin,
     email: user.email,
+    freeTierGrandfathered: user.freeTierGrandfathered,
     subscription: user.subscription,
   });
   return { limit: effectiveTemplateLimit(ent), upgrade: ent.upgrade };

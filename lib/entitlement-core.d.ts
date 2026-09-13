@@ -16,6 +16,13 @@ export type EntitlementState =
   | 'trial_expired'
   | 'expired'
   | 'free_tier'
+  /**
+   * FREE_TIER=off + no subscription row + not grandfathered (2026-09-13,
+   * dispatch forge/cardfirst-revert). DENIED — the card-first entry point.
+   * proxy.ts redirects these users to /subscribe. Deliberately NOT in
+   * INDETERMINATE_ENTITLEMENT_REASONS: it is a real verdict, not a blip.
+   */
+  | 'needs_subscription'
   | 'none'
   | 'error';
 
@@ -80,6 +87,19 @@ export interface EntitlementInput {
    * admin/allowlist. Omitting it preserves the exact prior decision.
    */
   freeAccess?: boolean;
+  /**
+   * Does this user keep the retired no-card free tier? (2026-09-13, dispatch
+   * forge/cardfirst-revert — the `User.freeTierGrandfathered` column.)
+   *
+   * Read ONLY inside rule (3) (no subscription row) and ONLY while FREE_TIER
+   * is off. Optional, defaulting to false = NOT grandfathered, matching the
+   * `subscription.grandfathered` convention (absent ⇒ the new-world row).
+   *
+   * REQUIRED on any path that evaluates a possibly-unsubscribed user: with
+   * FREE_TIER=off, omitting it denies a grandfathered account. Every call site
+   * in this repo selects it; `evaluateUserEntitlement` selects it for you.
+   */
+  freeTierGrandfathered?: boolean;
   subscription: EntitlementSubscriptionInput | null;
 }
 

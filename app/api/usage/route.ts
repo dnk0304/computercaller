@@ -53,6 +53,10 @@ export async function GET(req: NextRequest) {
       select: {
         isAdmin: true,
         email: true,
+        // freeTierGrandfathered (2026-09-13, forge/cardfirst-revert) — REQUIRED
+        // on every entitlement path that can see an unsubscribed user: with
+        // FREE_TIER=off, omitting it denies a grandfathered free-tier account.
+        freeTierGrandfathered: true,
         subscription: {
           // planId + grandfathered required so the resolved caps match exactly
           // what the relay meters against (a Plus/Pro payer is unlimited, and a
@@ -75,6 +79,7 @@ export async function GET(req: NextRequest) {
     const ent = evaluateEntitlement({
       isAdmin: user.isAdmin,
       email: user.email,
+      freeTierGrandfathered: user.freeTierGrandfathered,
       freeAccess,
       subscription: user.subscription,
     });

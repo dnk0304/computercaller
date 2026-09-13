@@ -44,6 +44,12 @@ function toLockedState(state: EntitlementState): SubscribeLockedState {
       return 'expired';
     case 'none':
       return 'none';
+    // needs_subscription (2026-09-13, forge/cardfirst-revert): a brand-new
+    // card-first signup who has never had a subscription. 'none' is the
+    // correct existing SubscribeLocked state for "never subscribed" — the
+    // pre-trial copy itself is Pixel's wave, not a new prop.
+    case 'needs_subscription':
+      return 'none';
     default:
       return 'none';
   }
@@ -69,6 +75,11 @@ export default async function SubscribePage() {
     select: {
       isAdmin: true,
       email: true,
+      // freeTierGrandfathered (2026-09-13, forge/cardfirst-revert) — REQUIRED.
+      // A grandfathered free-tier user is still ENTITLED with FREE_TIER=off;
+      // omitting this column would show them the lock screen instead of
+      // bouncing them back to /app.
+      freeTierGrandfathered: true,
       subscription: {
         select: {
           status: true,
@@ -88,6 +99,7 @@ export default async function SubscribePage() {
   const ent = evaluateEntitlement({
     isAdmin: user.isAdmin,
     email: user.email,
+    freeTierGrandfathered: user.freeTierGrandfathered,
     subscription: user.subscription
       ? {
           status: user.subscription.status,

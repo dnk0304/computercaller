@@ -78,6 +78,12 @@ export async function GET(req: NextRequest) {
         emailVerified: true,
         authProvider: true,
         isAdmin: true,
+        // freeTierGrandfathered (2026-09-13, forge/cardfirst-revert). The admin
+        // feed must resolve entitlement EXACTLY as the gates do; without this the
+        // panel would show the ~13 grandfathered free-tier accounts as denied
+        // 'needs_subscription' while they are in fact still using the app — a
+        // failed read masquerading as a verdict, the badge-truth bug class.
+        freeTierGrandfathered: true,
         createdAt: true,
         lastActiveAt: true,
         signupIp: true,
@@ -167,6 +173,7 @@ export async function GET(req: NextRequest) {
           isAdmin: u.isAdmin,
           email: u.email,
           freeAccess,
+          freeTierGrandfathered: u.freeTierGrandfathered,
           subscription: u.subscription
             ? {
                 status: u.subscription.status,

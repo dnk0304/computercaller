@@ -1,0 +1,20 @@
+-- Card-first revert (2026-09-13, dispatch forge/cardfirst-revert).
+--
+-- ADDITIVE ONLY. Adds one NOT NULL boolean with a DEFAULT, which Postgres
+-- applies to every existing row without a table rewrite and without touching
+-- any existing value. Nothing is dropped, renamed, or altered.
+--
+-- Column semantics + the reason it is a column rather than a createdAt cutoff:
+-- see the comment on User.freeTierGrandfathered in prisma/schema.prisma.
+--
+-- ROLLBACK (never destructive to user data):
+--   ALTER TABLE "User" DROP COLUMN "freeTierGrandfathered";
+-- The runtime rollback is cheaper still: unset FREE_TIER (or set it to `on`)
+-- and the column stops being read at all.
+--
+-- The BACKFILL is deliberately NOT in this migration. It is a separate,
+-- re-runnable, dry-run-first script (scripts/backfill-free-tier-grandfather.js)
+-- so the set of grandfathered accounts is reviewed and counted by a human
+-- before it is written, and so a redeploy can never silently re-grandfather a
+-- population that signed up after the flip.
+ALTER TABLE "User" ADD COLUMN "freeTierGrandfathered" BOOLEAN NOT NULL DEFAULT false;
