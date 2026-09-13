@@ -2,10 +2,16 @@
 
 > Ken-authored deck for Phase 9 of the deploy. The Whop product page at
 > https://whop.com/computercaller/computercaller-82/ is the page that
-> converts trial users into €7.99/month paying customers. It needs to
+> converts trial users into $5/month paying customers. It needs to
 > feel like a continuation of computercaller.com, not a different app.
 
-Last updated: 2026-05-24 (Ken dispatch #14).
+Last updated: 2026-09-13 (card-first pricing sync).
+
+**Pricing source of truth:** `lib/pricing-core.js` (`TRIAL_DAYS = 7`) and
+`lib/tiers-core.js:98-99` (`plus` = $5/mo `plan_CGlYdJJr3Btlu` — PROMOTED;
+`pro` = $7/mo `plan_IvKRyvHtl4Q8w` — HIDDEN, never advertised). Card-first:
+a payment method IS required to start the trial. Never write "no credit
+card required" or a 14-day/€7.99 figure anywhere Whop-facing.
 
 ---
 
@@ -45,9 +51,10 @@ WHAT YOUR SUBSCRIPTION INCLUDES
 • Use it from any computer
 • Priority email support
 
-14-DAY FREE TRIAL
-Start free, no credit card required. After the trial: €7.99 per month.
-Cancel any time from your Whop account.
+7-DAY FREE TRIAL
+Start your 7-day free trial. A card is required to start — you are not
+charged until the trial ends. After the trial: $5 per month. Cancel any
+time from your Whop account.
 
 WORKS WITH
 Android 8.0 or newer + any modern web browser (Chrome, Firefox, Safari,
@@ -79,17 +86,18 @@ brand asset per surface — that's how the visual identity drifts.
 
 | Field | Value |
 |---|---|
-| Price | €7.99 / month |
+| Price | $5 / month (promoted plan `plan_CGlYdJJr3Btlu`) |
 | Billing cycle | Monthly |
-| Trial length | 14 days |
-| Trial requires credit card | No |
-| Currency | EUR (primary). Whop auto-converts to local on display. |
+| Trial length | 7 days |
+| Trial requires credit card | **Yes** (card-first) |
+| Currency | USD (primary). Whop auto-converts to local on display. |
 | Tax handling | Whop handles VAT — leave on default. |
 
-The 14-day trial matches the in-app trial set in `app/api/auth/register/route.ts`
-(line 28, `14 * 24 * 60 * 60 * 1000`). If you change one, change the
-other — they MUST stay in sync or users see a different trial length on
-the product page vs. inside the product.
+The 7-day trial must match `TRIAL_DAYS` in `lib/pricing-core.js` — the
+single in-app source of truth every UI surface reads. If you change one,
+change the other, or users see a different trial length on the product
+page vs. inside the product. The $7 `pro` plan is HIDDEN: it is an in-app
+upgrade target only and must NOT appear on the Whop product page.
 
 ---
 
@@ -113,7 +121,7 @@ verified" — that proves signature verification passed end-to-end.
 ## Refund policy (paste into Whop refund settings)
 
 ```
-14-day money-back guarantee on your first month. Email
+14-day money-back guarantee on your first charge. Email
 support@computercaller.com with your account email and we will refund
 the most recent payment, no questions asked.
 
@@ -149,7 +157,8 @@ the end of your paid period.
 
 ## File references
 
-- Trial-length source: `app/api/auth/register/route.ts:24`
+- Trial-length source: `lib/pricing-core.js` (`TRIAL_DAYS`)
+- Plan ids + prices: `lib/tiers-core.js:98-99`
 - Webhook handler: `app/api/webhooks/whop/route.ts` (HMAC verified)
 - Public checkout URL env: `NEXT_PUBLIC_WHOP_CHECKOUT_URL` (set in Coolify)
 - Brand source: `public/brand/computercaller-banner-allBlack.png`
