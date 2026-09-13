@@ -125,14 +125,16 @@ const faqs = [
     a: "No. ComputerCaller simply connects your phone to your computer. Your messages, contacts, call logs, and call audio never get stored on our servers. Everything stays on your phone — we only carry the live connection while you're actively using it.",
   },
   {
-    q: 'Can I call from my computer for free?',
+    q: WAITLIST_MODE
+      ? 'Can I call from my computer for free?'
+      : 'Do I need a credit card to start?',
     // Waitlist mode: no price reaches the visible FAQ OR the JSON-LD, which is
     // built from this same array. Flag off → the single-plan answer below, whose
     // price is INTERPOLATED from lib/pricing (PROMOTED_PRICE) so this answer
     // cannot drift from the pricing modal the way a hardcoded "$5/month" did.
     a: WAITLIST_MODE
       ? 'Sign up on the waitlist and get a 30-day free trial when we launch. There is no usage-based fee on top — your call minutes come from your existing carrier plan.'
-      : `Your first ${TRIAL_DAYS} days are free, then it's ${PROMOTED_PRICE} per month — cancel anytime. There is no usage-based fee on top: your call minutes come from your existing carrier plan, so a call from your computer costs the same as a call from your phone.`,
+      : `Yes. You add a card up front, then your first ${TRIAL_DAYS} days are free — cancel anytime before day ${TRIAL_DAYS} and you're not charged. After that it's ${PROMOTED_PRICE} per month. There is no usage-based fee on top: your call minutes come from your existing carrier plan, so a call from your computer costs the same as a call from your phone.`,
   },
   {
     q: 'Can I call any phone number from my computer?',
@@ -162,7 +164,7 @@ export default function LandingPage() {
   // ref per item — a small parallel Map is simpler and runs only on click.
   const [openFaqs, setOpenFaqs] = useState<Record<number, boolean>>({});
 
-  // Sign-up modal (dispatch 2026-07-04). The "Try for free" CTAs stay real
+  // Sign-up modal (dispatch 2026-07-04). The "Start free trial" CTAs stay real
   // anchors to /auth/register (shareable, middle/cmd-click and no-JS still
   // navigate); a plain left-click is intercepted to open this modal instead.
   // We stash the triggering element so focus can be restored to it on close.
@@ -391,7 +393,7 @@ export default function LandingPage() {
                   onClick={handleSignupCtaClick}
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                 >
-                  Try for free
+                  Start free trial
                   <ArrowRight className="w-3.5 h-3.5" />
                 </a>
               </>
@@ -501,7 +503,7 @@ export default function LandingPage() {
                 onClick={handleSignupCtaClick}
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
-                Try for free
+                Start free trial
                 <ArrowRight className="w-4 h-4" />
               </a>
               <a
@@ -715,7 +717,7 @@ export default function LandingPage() {
                   onClick={handleSignupCtaClick}
                   className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                 >
-                  Try for free
+                  Start free trial
                   <ArrowRight className="w-4 h-4" />
                 </a>
               )}
@@ -913,7 +915,7 @@ export default function LandingPage() {
                 onClick={handleSignupCtaClick}
                 className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors text-base shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
               >
-                Try for free
+                Start free trial
                 <ArrowRight className="w-4 h-4" />
               </a>
             </div>
@@ -1048,7 +1050,7 @@ export default function LandingPage() {
         </div>
       </footer>
 
-      {/* On-page sign-up modal — opened by any "Try for free" CTA (left-click
+      {/* On-page sign-up modal — opened by any "Start free trial" CTA (left-click
           only; modified/middle clicks fall through to /auth/register). Renders
           null while closed, so it's inert in WAITLIST_MODE (no CTA opens it). */}
       <SignupModal

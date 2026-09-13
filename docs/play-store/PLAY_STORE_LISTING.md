@@ -38,8 +38,9 @@ Last updated: 2026-05-24 (Ken dispatch #14).
 
 ### Monetization note for the "Free or paid" choice
 
-The app on Play is free to install. The companion web service has a 14-day
-trial and then €7.99/month, billed via Whop (NOT Google Play Billing).
+The app on Play is free to install. The companion web service has a 7-day
+trial (card required up front) and then $5/month, billed via Whop (NOT Google
+Play Billing).
 Because billing happens off-Google, declare **Free** — you do NOT need to
 enable in-app purchases or Google Play Billing.
 
@@ -93,8 +94,8 @@ PRIVATE BY DESIGN
 
 PRICING
 
-14-day free trial. No credit card required to start.
-After the trial: €7.99 per month. Cancel any time.
+7-day free trial. A card is required to start — cancel any time before day 7
+and you're not charged. After the trial: $5 per month.
 
 REQUIREMENTS
 
@@ -225,7 +226,7 @@ on login or membership status?"
 Answer: **Yes.** Provide test credentials:
 
 - URL: `https://computercaller.com`
-- Username: `playstore-reviewer@computercaller.com` (create this BEFORE
+- Username: `reviewer@computercaller.com` (create this BEFORE
   submitting — manual sign-up, mark `emailVerified=true` directly in DB)
 - Password: `(pick a long random; paste here once created)`
 - Notes for reviewer: "After login, click 'Download Android app (.apk)'

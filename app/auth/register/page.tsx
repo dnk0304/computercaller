@@ -22,6 +22,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { AuthBackdrop } from '@/components/AuthBackdrop';
 import { MIN_PASSWORD } from '@/lib/passwordPolicy';
+import { TRIAL_DAYS } from '@/lib/pricing';
 
 function GoogleGlyph({ className = 'w-5 h-5' }: { className?: string }) {
   return (
@@ -142,7 +143,10 @@ export default function RegisterPage() {
           ) : (
             <>
               <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">Create your account</h1>
-              <p className="mt-1.5 text-slate-500 text-sm">Start free — no card required.</p>
+              <p className="mt-1.5 text-slate-500 text-sm">
+                Start your {TRIAL_DAYS}-day free trial. A card is required to start — cancel anytime
+                before day {TRIAL_DAYS} and you’re not charged.
+              </p>
 
               <a
                 href="/api/auth/google/start"

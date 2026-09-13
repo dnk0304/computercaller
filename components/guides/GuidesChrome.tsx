@@ -34,7 +34,7 @@ export function GuidesHeader() {
             href="/auth/register"
             className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
           >
-            Try for free
+            Start free trial
             <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
           </Link>
         </nav>
@@ -101,7 +101,7 @@ export function GuideCta() {
           href="/auth/register"
           className="inline-flex items-center justify-center gap-1.5 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-colors shadow-sm shadow-blue-600/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
         >
-          Try for free
+          Start free trial
           <ArrowRight className="w-4 h-4" aria-hidden="true" />
         </Link>
         <Link

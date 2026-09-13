@@ -2,10 +2,10 @@
 
 /**
  * SignupModal — on-page account creation dialog opened by the landing page's
- * "Try for free" CTAs (dispatch 2026-07-04; Google-only rework 2026-07-06).
+ * "Start free trial" CTAs (dispatch 2026-07-04; Google-only rework 2026-07-06).
  *
  * Why this exists:
- *   Dennis wanted the landing "Try for free" CTAs to open a sign-up modal on
+ *   Dennis wanted the landing "Start free trial" CTAs to open a sign-up modal on
  *   the current page instead of navigating to /auth/register. The CTAs stay
  *   real anchors to /auth/register (progressive enhancement — middle/cmd-click
  *   and no-JS still navigate); JS intercepts a plain left-click and opens this.

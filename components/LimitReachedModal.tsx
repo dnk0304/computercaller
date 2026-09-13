@@ -167,14 +167,14 @@ export function LimitReachedModal({
           tabIndex={-1}
           className="pr-8 text-2xl font-semibold tracking-tight text-slate-900 focus:outline-none"
         >
-          You’ve reached your daily free limit
+          You’ve reached your daily limit
         </h2>
 
         <div id={bodyId} className="mt-3 space-y-3 text-slate-600">
           <p>
             {isCall
-              ? 'Your free plan includes a limited number of calls each day, and you’ve used them all.'
-              : 'Your free plan includes a limited number of messages each day, and you’ve used them all.'}
+              ? 'Your plan includes a limited number of calls each day, and you’ve used them all.'
+              : 'Your plan includes a limited number of messages each day, and you’ve used them all.'}
             {typeof limit === 'number' && limit > 0 && (
               <>
                 {' '}
