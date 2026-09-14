@@ -1504,7 +1504,7 @@ function startRelay(httpServer) {
         // exceptions up to the connection and tears it down; we don't want
         // a bad single message to evict a healthy peer.
         const msg = data.toString();
-        rlog(`[Relay][${redactToken(token)}] Phone ->`, msg.substring(0, 80));
+        rlog(`[Relay][${redactToken(token)}] Phone ->`, msg.substring(0, 400));
 
         // DEVICE_INFO is special — capture deviceName so a subsequent
         // PAIRING_ACTIVE can include it. Phones send DEVICE_INFO inside
@@ -1749,7 +1749,7 @@ function startRelay(httpServer) {
       if (ws.listener) {
         return;
       }
-      rlog(`[Relay][${redactToken(token)}] Browser ->`, msg.substring(0, 80));
+      rlog(`[Relay][${redactToken(token)}] Browser ->`, msg.substring(0, 400));
 
       // Control plane — pairing kickoff.
       if (msg.startsWith('BROWSER_REQUEST_PAIRING:')) {
