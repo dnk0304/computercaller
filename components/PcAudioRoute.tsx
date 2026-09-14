@@ -5,6 +5,12 @@ import clsx from 'clsx';
 import { Loader2, Monitor, X } from 'lucide-react';
 import { usePhone } from '@/hooks';
 import type { AudioRouteStatus } from '@/hooks/phoneTypes';
+import {
+  readAudioSourceDefault,
+  useAudioSourceDefault,
+  writeAudioSourceDefault,
+} from '@/hooks/audioSourcePreference';
+import type { AudioSource } from '@/hooks/audioSourcePreference';
 
 /**
  * The one renderer for "is call audio actually on the Bluetooth link to this PC?"
@@ -70,6 +76,89 @@ export function usePcAudioRoute(): PcAudioBridge {
     connect: bridge.connectPcAudio ?? (() => {}),
     disconnect: bridge.disconnectPcAudio ?? (() => {}),
   };
+}
+
+/**
+ * CP3-A (2026-09-14). Picking a call-audio destination is ONE action, not two.
+ *
+ * Before CP3-A, choosing "PC Audio" in Settings wrote localStorage and nothing
+ * else; establishing the route needed a second, separate click on the header
+ * Connect button. Two controls, one intent — users reasonably read the picker
+ * as "use my PC now" and got silence.
+ *
+ * `usePcAudioSelection` is the single place that couples the two: it writes the
+ * shared default AND drives the same `connectPcAudio()` / `disconnectPcAudio()`
+ * probe the header button uses. It is NOT wired into the in-call path — the
+ * call-start forward in Dashboard.tsx still owns SET_AUDIO_SOURCE and is
+ * untouched.
+ */
+export interface PcAudioSelection {
+  /** The shared default destination (localStorage-backed, cross-surface). */
+  source: AudioSource;
+  /** Live route state, for rendering. */
+  status: AudioRouteStatus;
+  bridgeConnected: boolean;
+  /** Persist the choice and act on it in the same gesture. */
+  select: (next: AudioSource) => void;
+}
+
+export function usePcAudioSelection(): PcAudioSelection {
+  const { status, bridgeConnected, connect, disconnect } = usePcAudioRoute();
+  const [source, setSource] = useAudioSourceDefault();
+
+  // `status` and `bridgeConnected` are read through a ref inside `select` so the
+  // callback identity stays stable across every route-state change — a picker
+  // button should not re-render on each AUDIO_STATUS frame.
+  // Written in an effect, not during render: React 19 treats render-phase ref
+  // mutation as impure. A click can only happen after commit, so the ref is
+  // never stale by the time `select` reads it.
+  const liveRef = React.useRef({ status, bridgeConnected });
+  React.useEffect(() => {
+    liveRef.current = { status, bridgeConnected };
+  }, [status, bridgeConnected]);
+
+  const select = React.useCallback(
+    (next: AudioSource) => {
+      setSource(next);
+      const { status: s, bridgeConnected: online } = liveRef.current;
+      // No phone on the other end: the preference is still recorded, but a
+      // probe could only ever time out, so we don't fire one. Same rule the
+      // Connect button follows (`disabled = !bridgeConnected`).
+      if (!online) return;
+      if (next === 'pc') {
+        // Already up or already negotiating — a second probe would supersede
+        // the first and restart the watchdogs for nothing.
+        if (s.state === 'connected' || s.state === 'connecting') return;
+        connect();
+      } else if (s.state === 'connected' || s.state === 'connecting') {
+        // Choosing Phone tears the PC route down, so the header can never read
+        // "connected" while the default says phone.
+        disconnect();
+      }
+    },
+    [setSource, connect, disconnect]
+  );
+
+  return { source, status, bridgeConnected, select };
+}
+
+/**
+ * A probe the user confirmed is evidence the PC route works, so it promotes
+ * itself to the default — the "connect once, it sticks" behaviour.
+ *
+ * Fires at most once per probeId, and only when the default is not already
+ * 'pc', so the second mounted copy of this control (header + Settings inline)
+ * is a no-op rather than a duplicate write.
+ */
+function usePromoteConfirmedRouteToDefault(status: AudioRouteStatus): void {
+  const promotedProbeRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (status.state !== 'connected') return;
+    const probeId = status.probeId ?? 'unkeyed';
+    if (promotedProbeRef.current === probeId) return;
+    promotedProbeRef.current = probeId;
+    if (readAudioSourceDefault() !== 'pc') writeAudioSourceDefault('pc');
+  }, [status.state, status.probeId]);
 }
 
 /** Plain-text description of the current route, for tooltips, aria-labels and
@@ -146,6 +235,16 @@ export interface PcAudioRouteProps {
  */
 export const PcAudioRoute: React.FC<PcAudioRouteProps> = ({ variant = 'header', className }) => {
   const { status, bridgeConnected, connect, disconnect } = usePcAudioRoute();
+  usePromoteConfirmedRouteToDefault(status);
+
+  // An explicit teardown is an explicit "not on my PC" — it hands the default
+  // back to the phone so the picker and the route agree. (The promotion above
+  // is the mirror image: a confirmed probe claims the default.)
+  const handleDisconnect = React.useCallback(() => {
+    writeAudioSourceDefault('phone');
+    disconnect();
+  }, [disconnect]);
+
   const tone = toneFor(status, bridgeConnected);
   const label = describeAudioRoute(status, bridgeConnected);
   const isHeader = variant === 'header';
@@ -218,7 +317,7 @@ export const PcAudioRoute: React.FC<PcAudioRouteProps> = ({ variant = 'header', 
       {showDisconnect && (
         <button
           type="button"
-          onClick={disconnect}
+          onClick={handleDisconnect}
           aria-label="Disconnect PC audio"
           title="Disconnect PC audio"
           className={clsx(

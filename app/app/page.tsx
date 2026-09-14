@@ -12,9 +12,8 @@ import { Templates } from '@/components/Templates';
 import { Dashboard } from '@/components/Dashboard';
 import { PermissionHint } from '@/components/PermissionHint';
 import { usePhone, useDashboardTab } from '@/hooks';
-import { useAudioSourceDefault } from '@/hooks/audioSourcePreference';
 import type { AudioSource } from '@/hooks/audioSourcePreference';
-import { PcAudioRoute } from '@/components/PcAudioRoute';
+import { PcAudioRoute, usePcAudioSelection } from '@/components/PcAudioRoute';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import { User, Bell, LogOut, Phone, MessageSquare, Search, Volume2, Smartphone, Monitor, RefreshCw, ArrowDownLeft, ArrowUpRight, PhoneMissed, PhoneOff, PhoneIncoming, Clock, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -126,7 +125,10 @@ export default function Home() {
   // Shared with the header PC-audio control and the in-call Audio Source
   // toggle. This card sets the DEFAULT; it does not command a route change,
   // because there is usually no call in progress from Settings.
-  const [callMode, setCallMode] = useAudioSourceDefault();
+  // CP3-A: the picker both persists the choice and drives the real route.
+  // `usePcAudioSelection` owns that coupling (components/PcAudioRoute.tsx) so
+  // the Settings card and the header Connect button can never diverge.
+  const { source: callMode, select: selectCallMode } = usePcAudioSelection();
   // Default speakerphone preference applied to every outbound call.
   // false → earpiece (default), true → loudspeaker. Hydrated from localStorage
   // in the settings-load effect below.
@@ -172,7 +174,7 @@ export default function Home() {
 
   // Load settings from localStorage on mount
   useEffect(() => {
-    // callMode is no longer loaded here — useAudioSourceDefault subscribes to
+    // callMode is no longer loaded here — usePcAudioSelection subscribes to
     // the shared store directly, so it is already correct on first render.
     const savedSpeaker = localStorage.getItem(SPEAKER_KEY);
     if (savedSpeaker !== null) setCallSpeaker(savedSpeaker === 'true');
@@ -182,9 +184,11 @@ export default function Home() {
     if (savedNotifMessages !== null) setNotifMessages(savedNotifMessages === 'true');
   }, []);
 
-  // Persist the default and fan the change out to every other surface. The
-  // shared setter owns storage; this page never writes the key itself.
-  const handleCallModeChange = (mode: AudioSource) => setCallMode(mode);
+  // Persist the default, fan the change out to every other surface, AND act on
+  // it: picking PC Audio fires the same AUDIO_CONNECT probe as the header
+  // Connect button; picking Phone tears a live PC route down. The hook owns
+  // both halves; this page never writes the key or talks to the bridge itself.
+  const handleCallModeChange = (mode: AudioSource) => selectCallMode(mode);
 
   // Helper to trigger a sync with a self-clearing spinner. We don't try to
   // sync the spinner to data arrival — that fights React 19's purity rules and
@@ -653,8 +657,9 @@ export default function Home() {
                 <div className="mt-4">
                   <PcAudioRoute variant="inline" />
                   <p className="mt-1.5 text-[11px] text-slate-500">
-                    PC audio rides the Bluetooth link between your phone and this
-                    computer. Connect it here to check it before a call comes in.
+                    Choosing PC Audio starts the Bluetooth link to your phone right
+                    away — the line above shows whether it landed. Your phone and this
+                    computer must already be paired.
                   </p>
                 </div>
 
