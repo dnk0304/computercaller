@@ -391,6 +391,27 @@ export function authCookieSetOptions(maxAgeSeconds = 2592000): {
   };
 }
 
+/**
+ * Same attributes as authCookieSetOptions with maxAge:0, to actively DELETE the
+ * auth_token cookie (2026-09-14, forge/ext-login-gate).
+ *
+ * Why this exists: in prod the cookie is SameSite=None; Secure so it can ride
+ * into the extension's third-party iframe. A clearing Set-Cookie that omits
+ * those attributes is a *cross-site* cookie write when the logout POST comes
+ * from the chrome-extension:// origin, and the browser drops it — the session
+ * would survive "Sign out". The clear path must mirror the set path exactly,
+ * the same way idleCookieClearOptions mirrors idleCookieSetOptions.
+ */
+export function authCookieClearOptions(): {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: 'none' | 'lax';
+  maxAge: 0;
+  path: '/';
+} {
+  return { ...authCookieSetOptions(), maxAge: 0 };
+}
+
 export function signEmailToken(userId: string): string {
   return jwt.sign({ userId, purpose: 'verify-email' }, getJwtSecret(), { expiresIn: '24h' });
 }

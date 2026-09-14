@@ -22,6 +22,37 @@
     /* This IS the popped-out window — no pop-out button, the frame fills it. */
     #cc-frame { width: 100%; height: 100vh; border: 0; display: block; background: #f8fafc; }
 
+    #cc-topbar {
+      position: absolute; top: 8px; left: 8px; right: 8px; z-index: 5;
+      display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+      min-width: 0;
+    }
+
+    /* ── Account chip — who is signed in + Sign out. The iframed /extension
+         surface (PhoneModeShell) carries no account chrome of its own, so this
+         is the ONLY sign-out affordance in the extension. Provisional styling;
+         placement is Pixel/Vinci's call in the follow-up pass. ───────────── */
+    #cc-account {
+      display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.01em;
+      padding: 4px 6px 4px 9px; border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 8px; background: rgba(15,23,42,0.55);
+      color: #fff; backdrop-filter: blur(6px);
+    }
+    #cc-account-email {
+      max-width: 96px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; font-weight: 500; color: #cbd5e1;
+    }
+    #cc-signout-btn {
+      flex-shrink: 0; border: 0; border-radius: 6px; cursor: pointer;
+      padding: 3px 7px; font-size: 11px; font-weight: 600; color: #fff;
+      background: rgba(255,255,255,0.10);
+      transition: background 0.15s ease;
+    }
+    #cc-signout-btn:hover { background: rgba(239,68,68,0.55); }
+    #cc-signout-btn:disabled { opacity: 0.5; cursor: default; }
+    #cc-signout-btn:focus-visible { outline: 2px solid var(--cc-ring); outline-offset: 2px; }
+
     /* ── Sign-in gate (identical treatment to the popup) ──────────────── */
     #cc-signin {
       display: none; position: absolute; inset: 0; z-index: 10;
@@ -58,11 +89,18 @@
   </style>
 </head>
 <body>
+  <div id="cc-topbar">
+    <div id="cc-account" hidden>
+      <span aria-hidden="true">●</span>
+      <span id="cc-account-email"></span>
+      <button id="cc-signout-btn" type="button" title="Sign out of ComputerCaller">Sign out</button>
+    </div>
+  </div>
   <iframe id="cc-frame" allow="notifications"></iframe>
   <div id="cc-signin">
     <div class="cc-mark"><img src="icon128.png" alt="" /></div>
     <h1>ComputerCaller</h1>
-    <p>Sign in to make and receive calls and texts from your browser — your phone does the calling.</p>
+    <p id="cc-signin-body">Sign in to make and receive calls and texts from your browser — your phone does the calling.</p>
     <button id="cc-signin-btn">Sign in</button>
     <div id="cc-signin-msg"></div>
     <div class="cc-foot">Your phone stays in control · calls run on your device</div>

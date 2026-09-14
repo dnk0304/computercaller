@@ -20,6 +20,10 @@ const CC = {
   TICKET_URL: 'https://computercaller.com/api/auth/relay-ticket/extension',
   // Session probe used by the popup to decide whether to show "Sign in".
   ME_URL: 'https://computercaller.com/api/auth/me',
+  // Sign-out: clears the auth_token + idle_token cookies. The extension's
+  // account chip POSTs here (credentials:'include') and additionally removes
+  // the durable ext-session token from chrome.storage.local.
+  LOGOUT_URL: 'https://computercaller.com/api/auth/logout',
   // chrome.storage.local key holding the durable ext-session JWT.
   TOKEN_KEY: 'ext_token',
 };
