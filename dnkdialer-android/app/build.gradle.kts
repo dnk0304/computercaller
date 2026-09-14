@@ -330,8 +330,21 @@ android {
         // CP2 PC-audio confirmation (2026-09-08): adds the
         // AUDIO_CONNECT / AUDIO_STATUS / AUDIO_DISCONNECT protocol and the
         // ACTION_SCO_AUDIO_STATE_UPDATED receiver. No google-signin changes.
-        versionCode = 55
-        versionName = "1.0.31"
+        // v56 (1.0.32) — CP3-C/D, Android side of "PC audio click should
+        // establish the BT link". C: PC SELECTION. The SCO route was pinned to
+        // availableCommunicationDevices.firstOrNull{...}, so earbuds could win
+        // over the PC; replaced by an explicit ladder (persisted prior success
+        // -> cross-check against the live HFP link -> classic SCO before LE ->
+        // arbitrary), with the chosen device + selectionBasis reported on
+        // AUDIO_STATUS. D: declares MODIFY_AUDIO_SETTINGS (undeclared through
+        // v55 — its absence surfaced as a generic 6 s sco_denied on enforcing
+        // OEMs) and adds the SCO_AUDIO_STATE_ERROR arm to the SCO receiver so
+        // an explicit stack refusal reports sco_error immediately instead of
+        // falling through to the 6 s timeout. Scope B (initiating the HFP
+        // profile itself) is NOT implemented — see CP3-B-FEASIBILITY.md; no
+        // public API exists for it on API 31-36.
+        versionCode = 56
+        versionName = "1.0.32"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client

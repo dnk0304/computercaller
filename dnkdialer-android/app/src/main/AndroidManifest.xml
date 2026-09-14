@@ -56,6 +56,17 @@
         android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 
+    <!--
+      MODIFY_AUDIO_SETTINGS (normal permission, install-time grant, all SDKs).
+      Required by AudioManager.setMode / startBluetoothSco / stopBluetoothSco /
+      setBluetoothScoOn / setCommunicationDevice — every call in
+      PhoneService.applyBluetoothSco(). Its absence was silent on the OEMs we
+      had tested on (the calls no-op'd rather than throwing) and surfaced only
+      as a generic 6 s `sco_denied` probe timeout on enforcing OEMs. Declared
+      in v56 (CP3-D).
+    -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+
     <!-- Foreground service permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>

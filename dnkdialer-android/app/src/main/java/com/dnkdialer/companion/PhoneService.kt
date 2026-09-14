@@ -23,6 +23,53 @@ import java.net.NetworkInterface
 class PhoneService : Service() {
 
     companion object {
+        /**
+         * CP3-C. Pure ranking behind [selectPcCommunicationDevice] — kept
+         * framework-free (AudioDeviceInfo is final and unconstructable in a JVM
+         * test) so the ladder itself is unit-testable. Returns the index of the
+         * winning candidate plus the basis label, or null for an empty list.
+         *
+         * [hfpNames] must already be trimmed + lowercased; [persisted] is
+         * normalised here. Ladder rationale is documented on
+         * [selectPcCommunicationDevice].
+         */
+        @JvmStatic
+        internal fun pickPcCandidate(
+            candidates: List<PcCandidate>,
+            persisted: String?,
+            hfpNames: List<String>
+        ): Pair<Int, String>? {
+            if (candidates.isEmpty()) return null
+            fun norm(s: String) = s.trim().lowercase()
+
+            // 1. Persisted choice — a device a previous probe really carried
+            //    audio to beats every heuristic below it.
+            val want = persisted?.let { norm(it) }?.takeIf { it.isNotEmpty() }
+            if (want != null) {
+                val i = candidates.indexOfFirst { norm(it.name) == want }
+                if (i >= 0) return i to "persisted"
+            }
+
+            // 2. Cross-check the audio layer against the Bluetooth layer;
+            //    classic SCO wins ties among HFP matches.
+            if (hfpNames.isNotEmpty()) {
+                val matches = candidates.indices.filter {
+                    norm(candidates[it].name).isNotEmpty() && norm(candidates[it].name) in hfpNames
+                }
+                val i = matches.firstOrNull { candidates[it].isSco } ?: matches.firstOrNull()
+                if (i != null) return i to "hfp_match"
+            }
+
+            // 3. Classic SCO before LE — a Windows PC speaks classic HFP/SCO,
+            //    LE Audio earbuds land on TYPE_BLE_HEADSET, so this breaks the
+            //    common PC-vs-earbuds tie the right way.
+            val sco = candidates.indexOfFirst { it.isSco }
+            if (sco >= 0) return sco to "sco_first"
+
+            // 4. Last resort — something is better than nothing.
+            return 0 to "ble_first"
+        }
+
         const val ACTION_START = "com.dnkdialer.companion.START_SERVICE"
         const val ACTION_STOP = "com.dnkdialer.companion.STOP_SERVICE"
         /**
@@ -534,6 +581,31 @@ class PhoneService : Service() {
     private var btHeadsetConnected: Boolean = false
     private var btHeadsetDeviceName: String? = null
 
+    /** MAC of the HFP-connected device backing [btHeadsetDeviceName]. Tracked
+     *  from v56 (CP3-C) purely so we can PERSIST a stable identity for "the
+     *  PC"; AudioDeviceInfo has no public address accessor, so the actual
+     *  SCO-device match is by productName (see [selectPcCommunicationDevice]). */
+    private var btHeadsetDeviceAddress: String? = null
+
+    // -- CP3-C: "which Bluetooth device is the PC?" -------------------------
+    //
+    // Before v56 the SCO route was pinned to
+    //   availableCommunicationDevices.firstOrNull { SCO || BLE_HEADSET }
+    // which is an arbitrary pick: if earbuds and the PC are both available,
+    // the earbuds can win and the user's call audio silently goes to their
+    // ears instead of their desk. v56 replaces that with an explicit ladder
+    // (persisted choice -> cross-checked against the live HFP link -> classic
+    // SCO before LE -> arbitrary), and REPORTS which device it picked.
+
+    private val pcAudioPrefsName = "cp3_pc_audio"
+    private val pcAudioPrefKeyName = "pc_device_name"
+    private val pcAudioPrefKeyAddress = "pc_device_address"
+
+    /** How [selectPcCommunicationDevice] arrived at its pick — surfaced on the
+     *  wire so the browser (and a bug report) can tell a confident match from
+     *  a blind fallback. */
+    private var lastPcSelectionBasis: String? = null
+
     /**
      * Layered speakerphone toggle. On Android 12+ (API 31), the legacy
      * `AudioManager.isSpeakerphoneOn` is deprecated and on many OEM builds
@@ -666,13 +738,12 @@ class PhoneService : Service() {
                 //    sidesteps that. Best-effort — failure leaves the legacy
                 //    path doing the work.
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    val scoDevice = audioManager.availableCommunicationDevices.firstOrNull {
-                        it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                        it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
-                    }
+                    // CP3-C: pick the PC deliberately, not whichever BT device
+                    // the platform happened to list first.
+                    val scoDevice = selectPcCommunicationDevice(audioManager)
                     if (scoDevice != null) {
                         val ok = audioManager.setCommunicationDevice(scoDevice)
-                        android.util.Log.d("PhoneService", "applyBluetoothSco modern (on): setCommunicationDevice=$ok type=${scoDevice.type}")
+                        android.util.Log.d("PhoneService", "applyBluetoothSco modern (on): setCommunicationDevice=$ok device=${scoDevice.productName} type=${scoDevice.type} basis=$lastPcSelectionBasis")
                     } else {
                         android.util.Log.w("PhoneService", "applyBluetoothSco modern: no SCO/BLE communication device available — falling back to legacy startBluetoothSco only")
                     }
@@ -872,9 +943,14 @@ class PhoneService : Service() {
             }
         } else null
 
+        val newAddress: String? = if (connected && device != null) {
+            try { device.address } catch (sec: SecurityException) { null }
+        } else null
+
         val changed = (connected != btHeadsetConnected) || (newName != btHeadsetDeviceName)
         btHeadsetConnected = connected
         btHeadsetDeviceName = newName
+        btHeadsetDeviceAddress = newAddress
         if (changed) {
             broadcastBtHeadsetStatus()
         }
@@ -987,12 +1063,130 @@ class PhoneService : Service() {
         device?.let { payload["device"] = it }
         transport?.let { payload["transport"] = it }
         reason?.let { payload["reason"] = it }
+        // CP3-C (additive — old browsers ignore unknown keys): how the routed
+        // device was chosen. "persisted" / "hfp_match" are confident picks;
+        // "sco_first" / "ble_first" mean we could not identify the PC and fell
+        // back, which is exactly the case a user reporting "wrong device" hits.
+        lastPcSelectionBasis?.let { payload["selectionBasis"] = it }
         sendResponse("AUDIO_STATUS", payload, client?.isOpen == true)
         android.util.Log.d(
             "PhoneService",
             "AUDIO_STATUS: state=$state probeId=$probeId device=$device transport=$transport reason=$reason"
         )
     }
+
+    // -----------------------------------------------------------------------
+    // CP3-C — PC selection.
+    // -----------------------------------------------------------------------
+
+    /** Names of every device currently holding a live HFP link, lowercased and
+     *  trimmed for matching. Empty on pre-31, on SecurityException, or when the
+     *  profile proxy has not bound yet. */
+    private fun connectedHfpNames(): List<String> {
+        return try {
+            bluetoothHeadset?.connectedDevices
+                ?.mapNotNull { d -> try { d.name } catch (sec: SecurityException) { null } }
+                ?.map { it.trim().lowercase() }
+                ?.filter { it.isNotEmpty() }
+                ?: emptyList()
+        } catch (e: Exception) {
+            android.util.Log.d("PhoneService", "connectedHfpNames: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** The PC device name the user last successfully routed to, if any. */
+    private fun persistedPcName(): String? =
+        try {
+            getSharedPreferences(pcAudioPrefsName, Context.MODE_PRIVATE)
+                .getString(pcAudioPrefKeyName, null)
+                ?.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            android.util.Log.d("PhoneService", "persistedPcName: ${e.message}"); null
+        }
+
+    /**
+     * Remember the device a route CONFIRMED to, so the next probe can prefer it
+     * over whatever else happens to be available. Stored by name (the only key
+     * AudioDeviceInfo exposes publicly) plus the HFP MAC we were tracking at the
+     * time, which is stable across renames and useful in a bug report.
+     *
+     * Only ever called from the SCO_AUDIO_STATE_CONNECTED arm — i.e. we persist
+     * a device that DEMONSTRABLY carried call audio, never a guess.
+     */
+    private fun persistPcDevice(name: String?) {
+        val clean = name?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        try {
+            getSharedPreferences(pcAudioPrefsName, Context.MODE_PRIVATE)
+                .edit()
+                .putString(pcAudioPrefKeyName, clean)
+                .putString(pcAudioPrefKeyAddress, btHeadsetDeviceAddress ?: "")
+                .apply()
+            android.util.Log.d("PhoneService", "persistPcDevice: name=$clean addr=$btHeadsetDeviceAddress")
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneService", "persistPcDevice failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Pick the communication device that is most likely to be THE PC.
+     *
+     * Ladder, highest confidence first — [lastPcSelectionBasis] records which
+     * rung fired so the browser can show "matched your saved PC" vs "guessed":
+     *
+     *   1. `persisted`  — productName equals the device a previous probe
+     *                     actually carried audio to. The user's own history is
+     *                     the strongest signal we have.
+     *   2. `hfp_match`  — productName equals a device holding a live HFP link.
+     *                     Cross-checks the audio layer against the Bluetooth
+     *                     layer instead of trusting the audio list alone.
+     *   3. `sco_first`  — any classic-SCO device. A Windows PC speaks classic
+     *                     HFP/SCO; LE Audio earbuds land on TYPE_BLE_HEADSET,
+     *                     so preferring SCO breaks the common tie the right way.
+     *   4. `ble_first`  — an LE headset, only if nothing classic exists.
+     *
+     * Returns null when there is nothing routable at all (caller reports
+     * `not_paired`). API 31+ only — pre-31 has no communication-device API and
+     * the legacy startBluetoothSco() path does the routing unaided.
+     */
+    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.S)
+    private fun selectPcCommunicationDevice(
+        am: android.media.AudioManager
+    ): android.media.AudioDeviceInfo? {
+        val candidates = try {
+            am.availableCommunicationDevices.filter {
+                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+            }
+        } catch (e: Exception) {
+            android.util.Log.d("PhoneService", "selectPcCommunicationDevice enumerate: ${e.message}")
+            emptyList()
+        }
+        if (candidates.isEmpty()) {
+            lastPcSelectionBasis = null
+            return null
+        }
+
+        // The ranking itself is pure — see [pickPcCandidate] — so it can be
+        // unit-tested without an Android framework (AudioDeviceInfo is final
+        // and unconstructable in a JVM test).
+        val shapes = candidates.map { d ->
+            PcCandidate(
+                name = d.productName?.toString() ?: "",
+                isSco = d.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            )
+        }
+        val pick = pickPcCandidate(shapes, persistedPcName(), connectedHfpNames())
+        if (pick == null) {
+            lastPcSelectionBasis = null
+            return null
+        }
+        lastPcSelectionBasis = pick.second
+        return candidates[pick.first]
+    }
+
+    /** Framework-free shape of an [android.media.AudioDeviceInfo] candidate. */
+    internal data class PcCandidate(val name: String, val isSco: Boolean)
 
     /** Human-readable name of the device call audio is actually routed to. */
     private fun resolveRoutedDeviceName(): String? {
@@ -1114,13 +1308,17 @@ class PhoneService : Service() {
         //     maintained by the existing BT observer) or an SCO/BLE entry in
         //     availableCommunicationDevices. Pre-API-31 only the former exists.
         var hasScoDevice = false
+        // CP3-C: resolve the SAME device applyBluetoothSco() will pin, so the
+        // "connecting" frame names the device we are actually about to use
+        // rather than whatever the HFP observer last saw.
+        var chosenName: String? = null
+        lastPcSelectionBasis = null
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                 val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-                hasScoDevice = am.availableCommunicationDevices.any {
-                    it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
-                }
+                val chosen = selectPcCommunicationDevice(am)
+                hasScoDevice = chosen != null
+                chosenName = chosen?.productName?.toString()?.takeIf { it.isNotBlank() }
             }
         } catch (e: Exception) {
             android.util.Log.d("PhoneService", "handleAudioConnect device scan: ${e.message}")
@@ -1131,7 +1329,11 @@ class PhoneService : Service() {
             return
         }
 
-        emitAudioStatus("connecting", probeId, btHeadsetDeviceName, null, null)
+        android.util.Log.d(
+            "PhoneService",
+            "handleAudioConnect probe=$probeId chosen=$chosenName basis=$lastPcSelectionBasis hfp=$btHeadsetDeviceName"
+        )
+        emitAudioStatus("connecting", probeId, chosenName ?: btHeadsetDeviceName, null, null)
         applyBluetoothSco(true)
 
         val runnable = Runnable {
@@ -1177,10 +1379,15 @@ class PhoneService : Service() {
                             cancelAudioProbeTimer()
                             audioProbeId = null
                             audioRouteConfirmed = true
+                            // CP3-C: this device DEMONSTRABLY carried call
+                            // audio — remember it so the next probe prefers it
+                            // over any other BT device that happens to be up.
+                            val routed = resolveRoutedDeviceName()
+                            persistPcDevice(routed)
                             emitAudioStatus(
                                 "connected",
                                 probe,
-                                resolveRoutedDeviceName(),
+                                routed,
                                 resolveRoutedTransport(),
                                 null
                             )
@@ -1194,6 +1401,54 @@ class PhoneService : Service() {
                                 audioRouteConfirmed = false
                                 emitAudioStatus("failed", null, null, null, "route_lost")
                                 teardownAudioRoute(rollback = true)
+                            }
+                        }
+                        android.media.AudioManager.SCO_AUDIO_STATE_ERROR -> {
+                            // CP3-D. The BT stack explicitly refused / aborted
+                            // the SCO link. Before v56 this arm did not exist,
+                            // so an ERROR fell through to the 6 s probe timeout
+                            // and was misreported as `sco_denied` — a generic
+                            // "we heard nothing" — six seconds late. Report it
+                            // immediately with its own reason so the browser can
+                            // distinguish "the stack said no" from "the stack
+                            // said nothing".
+                            //
+                            // CAVEAT (AOSP AudioManager.java, SCO_AUDIO_STATE_ERROR
+                            // = -1): the platform documents this as "there was an
+                            // error trying to obtain the state" — a state-UNKNOWN
+                            // sentinel, not "the link failed". It is also the
+                            // value you read back from the STICKY broadcast before
+                            // any SCO activity, and it is our own getIntExtra
+                            // default for a malformed intent.
+                            //
+                            // Hence the guard: we act ONLY when we ourselves have
+                            // a probe in flight or a confirmed route. The sticky
+                            // replay at registerScoStateObserver() time lands with
+                            // audioProbeId == null and is ignored.
+                            //
+                            // The genuine failure mode — CONNECTING with no
+                            // CONNECTED — does not raise ERROR at all and is still
+                            // covered by the 6 s probe timeout, which this arm
+                            // deliberately does not replace.
+                            val probe = audioProbeId
+                            if (probe != null || audioRouteConfirmed) {
+                                cancelAudioProbeTimer()
+                                audioProbeId = null
+                                val wasConfirmed = audioRouteConfirmed
+                                audioRouteConfirmed = false
+                                emitAudioStatus(
+                                    "failed",
+                                    probe,
+                                    null,
+                                    null,
+                                    if (wasConfirmed) "sco_error_midroute" else "sco_error"
+                                )
+                                teardownAudioRoute(rollback = true)
+                            } else {
+                                android.util.Log.d(
+                                    "PhoneService",
+                                    "SCO_AUDIO_STATE_ERROR ignored — no probe in flight and no confirmed route"
+                                )
                             }
                         }
                     }
