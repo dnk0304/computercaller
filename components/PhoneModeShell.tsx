@@ -51,6 +51,9 @@ import {
 import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
 import { UsageMeter } from '@/components/UsageMeter';
+import { Dialpad } from '@/components/Dialpad';
+import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterBar';
+import { useCallLogFilter } from '@/hooks/useCallLogFilter';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import {
   usePhone,
@@ -139,32 +142,80 @@ interface PhoneModeTemplatesProps {
 
 const PhoneModeTemplates = React.memo(function PhoneModeTemplates({ onInsert }: PhoneModeTemplatesProps) {
   const { templates } = useTemplates();
+  const stripRef = useRef<HTMLDivElement>(null);
+  // Which edges are actually overflowing. Drives the fade masks — a fade on a
+  // non-overflowing edge is a lie that says "there's more" when there isn't.
+  const [edges, setEdges] = useState({ left: false, right: false });
+
+  const syncEdges = useCallback(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setEdges({ left: el.scrollLeft > 1, right: el.scrollLeft < max - 1 });
+  }, []);
+
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    syncEdges();
+    // Templates can be added from the manager while this is mounted, and the
+    // panel itself resizes (popup → pop-out), so watch the box, not just scroll.
+    const ro = new ResizeObserver(syncEdges);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [syncEdges, templates.length]);
 
   // Empty state — render nothing. Match Dashboard's `return null` behaviour
   // so users who haven't created any templates don't see an empty band.
   if (templates.length === 0) return null;
 
   return (
-    <div
-      role="toolbar"
-      aria-label="Insert template"
-      className="flex flex-shrink-0 items-center gap-1.5 overflow-x-auto border-t border-slate-200/60 bg-slate-50/80 px-2 py-1.5 backdrop-blur-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-    >
-      <FileText className="h-3 w-3 flex-shrink-0 text-slate-400" aria-hidden="true" />
-      {templates.map((t) => (
-        <button
-          key={t.id}
-          type="button"
-          onClick={() => onInsert(t.body)}
-          // Chip target — 28px tall meets visual rhythm with the compose
-          // textarea while staying scannable. Full template name shown
-          // truncated; tooltip carries the full body for power users.
-          className="inline-flex max-w-[140px] flex-shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-          title={t.body}
-        >
-          <span className="truncate">{t.name}</span>
-        </button>
-      ))}
+    // AC-2 (Dennis: "on messages i cannot scroll the templates"). The strip is
+    // a real horizontal scroller with fade masks on whichever edge overflows.
+    // `relative` wraps the scroller so the masks can sit over it without
+    // joining the scroll content; the strip stays flex-shrink-0 so it can never
+    // push the composer below the fold — that pinning is half of the AC.
+    <div className="relative flex-shrink-0 border-t border-slate-200/60 bg-slate-50/80">
+      <div
+        ref={stripRef}
+        onScroll={syncEdges}
+        role="toolbar"
+        aria-label="Insert template"
+        // tabIndex on the scroll container: a keyboard user who is not tabbing
+        // chip-by-chip can still arrow the strip. Without it this is a
+        // mouse-only scroller, which the AC explicitly rules out.
+        tabIndex={0}
+        className="flex items-center gap-1.5 overflow-x-auto px-2 py-1.5 [scrollbar-width:none] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500/40 [&::-webkit-scrollbar]:hidden [scroll-snap-type:x_proximity]"
+      >
+        <FileText className="h-3 w-3 flex-shrink-0 text-slate-400" aria-hidden="true" />
+        {templates.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onInsert(t.body)}
+            // Tab-focusing a chip that is scrolled out of view must bring it
+            // into view — the browser does this for free because the chip is a
+            // real focusable child of the scroller (not an aria-only widget).
+            className="inline-flex max-w-[140px] flex-shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-sm transition-colors [scroll-snap-align:start] hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            title={t.body}
+          >
+            <span className="truncate">{t.name}</span>
+          </button>
+        ))}
+      </div>
+      {/* Fade masks — pointer-events-none so they never eat a chip click. */}
+      {edges.left && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-slate-50 to-transparent"
+        />
+      )}
+      {edges.right && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 right-0 w-7 bg-gradient-to-l from-slate-50 to-transparent"
+        />
+      )}
     </div>
   );
 });
@@ -427,6 +478,152 @@ function DialerView() {
   );
 }
 
+// ---------- ExtDialerView (extension surface) -------------------------------
+//
+// Dennis, AC-3: "the Dial view should show the same quick-dial pad as the web
+// app's quick dial, not the big keypad." So this view renders the SHARED
+// <Dialpad isCompact /> — the web app's own component, one prop — instead of
+// the bespoke 12-key pad DialerView above hand-rolled. No second dialpad, no
+// restyle of the variant /app renders (nothing in /app passes isCompact).
+//
+// AC-4: <Dialpad onSendMessage> hands the display value to Texts compose,
+// pre-addressed. AC-5: the Recent list below is filtered by the SAME hook the
+// dashboard's Recent Calls card uses — see hooks/useCallLogFilter.ts.
+//
+// Layout is a three-island flex column, deliberately with no fixed heights:
+// pad (shrink-0) → filter bar (shrink-0) → Recent (flex-1, min-h-0, the only
+// scroller). That is what lets the identical tree render at 400×600 in the
+// popup and at 800×620 in the pop-out — and, later, in a full-height side
+// panel (dispatch C) without a rewrite.
+
+function ExtDialerView() {
+  const { makeCall, callLogs } = usePhone();
+  const { guard } = useFreeTier();
+  const { push } = usePhoneMode();
+  const filter = useCallLogFilter(callLogs);
+
+  // Newest-first, deduped by number — the "redial" model, same as DialerView.
+  // Dedupe runs AFTER filtering so a search for a missed call doesn't get
+  // swallowed by a later answered call to the same number.
+  const recent = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { id: string; number: string; name?: string; date: number; type: string }[] = [];
+    for (const log of filter.filteredCallLogs) {
+      if (seen.has(log.number)) continue;
+      seen.add(log.number);
+      out.push({ id: log.id, number: log.number, name: log.name, date: log.date, type: log.type });
+      if (out.length >= 30) break;
+    }
+    return out;
+  }, [filter.filteredCallLogs]);
+
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const hasAnyLogs = callLogs.length > 0;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex-shrink-0">
+        <Dialpad
+          isCompact
+          onSendMessage={(number) => push({ kind: 'compose', to: number })}
+        />
+      </div>
+
+      {/* AC-5 — search + filter, on the Dial tab's inline Recent list. Only
+          shown once there is a call log to narrow; a filter bar over an empty
+          list is furniture. */}
+      {hasAnyLogs && (
+        <div className="flex min-h-0 flex-1 flex-col border-t border-slate-200">
+          <CallLogFilterBar filter={filter} idPrefix="cc-dial" />
+          {/* min-h-0 is load-bearing: a flex child defaults to min-height:auto
+              and will grow past its parent rather than scroll, which is what
+              pushed content off-screen before. */}
+          <ul className="min-h-0 flex-1 overflow-y-auto">
+            {recent.length === 0 ? (
+              <li><CallLogEmptyState onClear={filter.clear} /></li>
+            ) : (
+              recent.map((r, i) => (
+                <li
+                  key={r.id}
+                  className={clsx(
+                    'flex items-center border-b border-slate-100 transition-colors hover:bg-slate-50',
+                    // Flat zebra rows rather than nested cards — far denser,
+                    // and inside a 400px panel a card-per-row reads as clutter.
+                    i % 2 === 1 && 'bg-slate-50/70',
+                  )}
+                >
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => {
+                      if (window.getSelection()?.toString()) return;
+                      if (guard('call')) makeCall(r.number);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        if (guard('call')) makeCall(r.number);
+                      }
+                    }}
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left focus:outline-none focus-visible:bg-slate-100"
+                    aria-label={`Call ${r.name || r.number}`}
+                  >
+                    <div className={clsx('flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-semibold', avatarColor(r.name || r.number))}>
+                      {(r.name || r.number).charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className="truncate text-[12.5px] font-semibold text-slate-800 select-text cursor-text"
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
+                        {r.name || r.number}
+                      </p>
+                      {/* Direction is a glyph in the meta line, not a coloured
+                          badge — one colour object per row. Missed reads red
+                          because it is the only state the user must not miss. */}
+                      <p className={clsx(
+                        'truncate text-[10.5px]',
+                        r.type === 'missed' || r.type === 'rejected' ? 'text-red-600' : 'text-slate-500',
+                      )}>
+                        {r.type === 'outgoing' ? '↗' : '↙'} {callTypeWord(r.type)} · {formatRelative(r.date, now)}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => push({ kind: 'compose', to: r.number })}
+                    aria-label={`Send a message to ${r.name || r.number}`}
+                    title={`Send a message to ${r.name || r.number}`}
+                    className="mr-1.5 inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Direction word for the row meta line. Matches the dashboard's vocabulary. */
+function callTypeWord(type: string): string {
+  switch (type) {
+    case 'incoming': return 'Incoming';
+    case 'outgoing': return 'Outgoing';
+    case 'missed': return 'Missed';
+    case 'rejected': return 'Rejected';
+    default: return 'Call';
+  }
+}
+
 // ---------- TextsView (thread list) ----------------------------------------
 
 interface ThreadRow {
@@ -589,7 +786,12 @@ function ThreadView({ threadId }: ThreadViewProps) {
   }, [threadMessages.length]);
 
   return (
-    <div className="flex h-full flex-col">
+    // min-h-0 on the column + on the message scroller below is the actual fix
+    // for AC-2's second half. A flex child's default min-height:auto lets the
+    // bubble list grow to its content instead of scrolling, which shoves the
+    // template strip and composer past the bottom edge. It is a no-op whenever
+    // the content already fits, so /app's Phone Mode is visually untouched.
+    <div className="flex h-full min-h-0 flex-col">
       {/* Back-arrow header replaces the tab bar inside a thread (per State C
           mockup). h-10 to match PhoneModeHeader's dispatch-#34 shrink.
           Dispatch #34 item 2: dropped `sticky top-12 z-20` — the prior sticky
@@ -626,7 +828,7 @@ function ThreadView({ threadId }: ThreadViewProps) {
       {/* Messages scroll region. Bubbles aligned left/right by sent type;
           tight 70% max-width so a long incoming bubble can't crash into
           the right gutter. */}
-      <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
         {threadMessages.map((m) => {
           const isSent = m.type === 'sent';
           return (
@@ -752,12 +954,26 @@ function ThreadCompose({ onSend }: ThreadComposeProps) {
 
 // ---------- ComposeView (new message — recipient + body) -------------------
 
-function ComposeView() {
+interface ComposeViewProps {
+  /** AC-4 — pre-addressed recipient handed over from the Dial view. */
+  initialTo?: string;
+}
+
+function ComposeView({ initialTo }: ComposeViewProps) {
   const { sendSms } = usePhone();
   const { guard } = useFreeTier();
   const { pop, push } = usePhoneMode();
-  const [recipient, setRecipient] = useState('');
+  const [recipient, setRecipient] = useState(initialTo ?? '');
   const [text, setText] = useState('');
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  // AC-4: "lands in Texts with that recipient pre-filled". The recipient is
+  // already known, so the only thing left to do is type — put the caret in the
+  // body, not in the To field. Runs once on mount; the view is keyed by the
+  // stack entry so re-entering with a different number remounts it.
+  useEffect(() => {
+    if (initialTo) bodyRef.current?.focus();
+  }, [initialTo]);
 
   const canSend = recipient.length >= 3 && text.trim().length > 0;
 
@@ -821,6 +1037,7 @@ function ComposeView() {
         <label className="sr-only" htmlFor="phone-mode-compose-body">Message body</label>
         <textarea
           id="phone-mode-compose-body"
+          ref={bodyRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="Type a message…"
@@ -1042,8 +1259,26 @@ const TOAST_AUTO_HIDE_MS = 4000;
 
 // ---------- Top-level shell -------------------------------------------------
 
-export function PhoneModeShell() {
+export interface PhoneModeShellProps {
+  /**
+   * Which surface is rendering this shell.
+   *
+   *   'app'       (default) — the dashboard's Phone Mode. Unchanged by B2.
+   *   'extension' — the hosted /extension route the Chrome extension iframes.
+   *                 Adds the `cc-ext` class, which is the ONLY hook the 0.8×
+   *                 density pass in app/extension/extension.css keys off. That
+   *                 scoping is what makes "/app visual diff = 0" true by
+   *                 construction rather than by inspection (decision D2/D4).
+   *                 It also swaps the bespoke keypad for the shared
+   *                 <Dialpad isCompact /> (AC-3) and its call log for the
+   *                 searchable/filterable one (AC-5).
+   */
+  surface?: 'app' | 'extension';
+}
+
+export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
   const { current, setTab } = usePhoneMode();
+  const isExt = surface === 'extension';
   const { phoneNotifications } = useNotifications();
   const unreadCount = phoneNotifications.filter(n => !n.read).length;
 
@@ -1122,7 +1357,7 @@ export function PhoneModeShell() {
 
   const renderView = (v: PhoneModeView): React.ReactNode => {
     switch (v.kind) {
-      case 'dialer': return <DialerView />;
+      case 'dialer': return isExt ? <ExtDialerView /> : <DialerView />;
       case 'texts': return <TextsView />;
       case 'bell': return <BellView />;
       case 'thread':
@@ -1130,7 +1365,10 @@ export function PhoneModeShell() {
         // (risk #6). This keyed wrapper is load-bearing — removing it
         // re-introduces the draft-leak bug across thread switches.
         return <ThreadView key={v.threadId} threadId={v.threadId} />;
-      case 'compose': return <ComposeView />;
+      case 'compose':
+        // Keyed on the recipient for the same reason: arriving from Dial with
+        // a new number must not inherit the previous draft's To field.
+        return <ComposeView key={v.to ?? '__blank__'} initialTo={v.to} />;
     }
   };
 
@@ -1140,8 +1378,8 @@ export function PhoneModeShell() {
     // to fit the visible viewport when the OS keyboard takes screen real
     // estate — sticky compose stays anchored to the bottom of the visible
     // area rather than disappearing behind the keyboard.
-    <div className="phone-mode-shell flex flex-col bg-slate-50 font-sans">
-      <PhoneModeHeader />
+    <div className={clsx('phone-mode-shell flex flex-col bg-slate-50 font-sans', isExt && 'cc-ext')}>
+      <PhoneModeHeader surface={surface} />
       {activeTab && (
         <TabBar
           active={activeTab}
@@ -1150,9 +1388,13 @@ export function PhoneModeShell() {
         />
       )}
       {/* Free-tier usage strip (Pixel, forge/free-tier-p1, 2026-08-28) — thin
-          bar under the tab bar. Self-hides for unlimited (paid) tiers. */}
+          bar under the tab bar. Self-hides for unlimited (paid) tiers.
+          Pilot's rule holds on the extension: this may surface a neutral
+          remaining-count status line, never a price or an upgrade CTA. */}
       {activeTab && <UsageMeter variant="strip" />}
-      <div className="flex-1 overflow-hidden">
+      {/* min-h-0 so the active view actually scrolls inside this box instead of
+          stretching the column — the same class of bug as AC-2's. */}
+      <div className="min-h-0 flex-1 overflow-hidden">
         {renderView(current)}
       </div>
       {toastNotif && (

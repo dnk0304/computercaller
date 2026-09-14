@@ -1,28 +1,36 @@
 /**
  * ComputerCaller extension shell script — shared by popup.html + popout.html
  * (2026-09-02, forge/chrome-extension-p1; account affordance + explicit error
- * state added 2026-09-14, forge/ext-login-gate).
+ * state added 2026-09-14, forge/ext-login-gate; chrome moved into the hosted
+ * header 2026-09-14, pixel/ext-redesign / dispatch PIXEL-B2).
  *
  * Responsibilities (all thin plumbing; the real UI is the /extension iframe):
  *   1. Presence: open a `cc-presence` port so the background SW suppresses
  *      duplicate chrome.notifications while a popup / pop-out is open.
  *   2. Auth gate: probe /api/auth/me. THREE outcomes, never two:
- *        200 → authed  → hide overlay, load iframe, render the account chip.
+ *        200 → authed  → hide overlay, load iframe, hand the email to the app.
  *        401 → anon    → show the sign-in overlay.
  *        throw / 5xx   → error → show the SAME overlay in "retry" mode with the
- *                        real message. Previously a thrown fetch was swallowed
- *                        by a bare `catch` and rendered as "signed out", which
- *                        made a network failure indistinguishable from a real
- *                        logged-out state — undiagnosable in the field.
- *   3. Account affordance: who is signed in + a Sign out that clears BOTH
- *      credentials — the ext-session token in chrome.storage.local AND the
- *      auth_token / idle_token cookies (POST /api/auth/logout) — then drops the
- *      iframe and returns to the sign-in overlay. The iframed /extension surface
- *      (PhoneModeShell) deliberately carries no account chrome, so without this
- *      a signed-in user had NO sign-in/sign-out control anywhere in the
- *      extension. Placement here is the shell's own chrome and is provisional
- *      pending the Pixel/Vinci pass.
- *   4. Pop-out button (popup only): ask the SW to open the detached window.
+ *                        real message. A thrown fetch used to be swallowed by a
+ *                        bare catch and rendered as "signed out", which made a
+ *                        network failure indistinguishable from a real logged-out
+ *                        state — undiagnosable in the field.
+ *   3. Account + pop-out: the BUTTONS moved into the hosted app's header
+ *      (PhoneModeHeader surface="extension"). The HANDLERS stayed right here.
+ *      Before B2 the shell painted its own glass chips absolutely positioned
+ *      ON TOP of the iframe — two headers fighting over the same 40px, which
+ *      is a large part of why the popup read as a cropped web page. Now the
+ *      shell owns no chrome at all while signed in, and the app asks it to act
+ *      over postMessage. signOut() below is Forge's, unchanged and un-forked:
+ *      there is still exactly one sign-out implementation in the extension.
+ *
+ * postMessage contract with app/../lib/extensionBridge.ts:
+ *   app  → shell : { source:'cc-ext', type:'ready' | 'open-popout' | 'sign-out' }
+ *   shell → app  : { source:'cc-ext', type:'shell-hello', email, canPopout }
+ * Inbound is accepted ONLY from our own iframe's contentWindow AND only from
+ * the webapp origin — a message from any other frame or origin is dropped
+ * before it can reach a handler. That check is what keeps `sign-out` (and the
+ * window-spawning `open-popout`) from being a cross-origin trigger.
  */
 
 // 1) Presence signal — the disconnect fires automatically when this page unloads.
@@ -30,43 +38,53 @@ try { chrome.runtime.connect({ name: 'cc-presence' }); } catch (_) {}
 
 const frame = document.getElementById('cc-frame');
 const overlay = document.getElementById('cc-signin');
+const shellHeader = document.getElementById('cc-shell-header');
 const signinBtn = document.getElementById('cc-signin-btn');
 const signinMsg = document.getElementById('cc-signin-msg');
 const signinBody = document.getElementById('cc-signin-body');
-const popoutBtn = document.getElementById('cc-popout-btn');
-const account = document.getElementById('cc-account');
-const accountEmail = document.getElementById('cc-account-email');
-const signoutBtn = document.getElementById('cc-signout-btn');
+
+const NS = 'cc-ext';
+/** popup.html can spawn the detached window; popout.html IS it. */
+const CAN_POPOUT = !document.body.classList.contains('cc-is-popout')
+  && location.pathname.endsWith('popup.html');
 
 const COPY_SIGNIN =
-  'Sign in to make and receive calls and texts from your browser — your phone does the calling.';
+  'Sign in and your phone does the calling — you do the typing.';
 const COPY_ERROR =
   "Couldn't reach ComputerCaller. Check your connection, then try again.";
 
 /** overlay: null = hidden, 'anon' = sign-in gate, 'error' = retry state. */
 let overlayState = null;
+/** Last known signed-in email, replayed to the iframe on its `ready`. */
+let currentEmail = null;
 
 function showOverlay(state, message) {
   overlayState = state;
   if (!overlay) return;
   overlay.style.display = state ? 'flex' : 'none';
+  // The shell's minimal header exists ONLY in the signed-out state. While
+  // signed in, the hosted app's header is the one and only header.
+  if (shellHeader) shellHeader.style.display = state ? 'flex' : 'none';
   if (!state) return;
   if (signinBody) signinBody.textContent = state === 'error' ? COPY_ERROR : COPY_SIGNIN;
   if (signinBtn) signinBtn.textContent = state === 'error' ? 'Try again' : 'Sign in';
   if (signinMsg) signinMsg.textContent = message || '';
+  if (signinBtn) signinBtn.focus();
 }
 
-function renderAccount(email) {
-  if (!account) return;
-  if (email) {
-    if (accountEmail) {
-      accountEmail.textContent = email;
-      accountEmail.title = `Signed in as ${email}`;
-    }
-    account.hidden = false;
-  } else {
-    account.hidden = true;
-  }
+/**
+ * Tell the hosted app who is signed in and whether a pop-out is possible, so
+ * it can render the account menu and the ⤢ button. Safe to call repeatedly;
+ * the app treats it as idempotent state, not an event.
+ */
+function sendHello() {
+  if (!frame || !frame.contentWindow) return;
+  try {
+    frame.contentWindow.postMessage(
+      { source: NS, type: 'shell-hello', email: currentEmail, canPopout: CAN_POPOUT },
+      self.CC.WEBAPP_ORIGIN,
+    );
+  } catch (_) {}
 }
 
 /**
@@ -89,7 +107,7 @@ async function probeSession() {
     email = (body && body.user && body.user.email) || null;
   } catch (_) {
     // A 200 with an unreadable body still means authenticated; we just have no
-    // email to show in the chip.
+    // email to show in the menu.
   }
   return { state: 'authed', email };
 }
@@ -119,16 +137,22 @@ async function runHandoff() {
     try { await chrome.runtime.sendMessage({ type: 'auth-updated' }); } catch (_) {}
     showOverlay(null);
     loadFrame();
-    // Re-probe so the account chip shows who just signed in.
+    // Re-probe so the account menu shows who just signed in.
     const s = await probeSession();
-    renderAccount(s.state === 'authed' ? s.email : null);
+    currentEmail = s.state === 'authed' ? s.email : null;
+    sendHello();
   } catch (e) {
     if (signinMsg) signinMsg.textContent = 'Sign-in was cancelled. Try again.';
   }
 }
 
+/**
+ * Forge's sign-out, unchanged. Clears BOTH credentials — the ext-session token
+ * in chrome.storage.local AND the auth_token / idle_token cookies — then drops
+ * the iframe and returns to the sign-in overlay. Triggered from the app's
+ * account menu now, but still the only implementation.
+ */
 async function signOut() {
-  if (signoutBtn) signoutBtn.disabled = true;
   // Cookie credential (auth_token + idle_token). The extension page origin is
   // explicitly allowed by the logout route's CSRF gate; credentials:'include'
   // is required because the cookie is SameSite=None in prod.
@@ -144,25 +168,55 @@ async function signOut() {
   } catch (_) {}
   try { await chrome.runtime.sendMessage({ type: 'signed-out' }); } catch (_) {}
   clearFrame();
-  renderAccount(null);
+  currentEmail = null;
   showOverlay('anon');
-  if (signoutBtn) signoutBtn.disabled = false;
 }
+
+async function openPopout() {
+  // Unchanged SW contract: {type:'open-popout'}. The trigger moved; the
+  // message did not.
+  try { await chrome.runtime.sendMessage({ type: 'open-popout' }); } catch (_) {}
+  window.close();
+}
+
+// ---- Inbound from the hosted app -------------------------------------------
+window.addEventListener('message', (event) => {
+  // Two independent gates. Origin alone is not enough (any frame we host could
+  // claim it); source alone is not enough (a navigated iframe keeps its
+  // contentWindow identity). Both together mean: our frame, our app.
+  if (!frame || event.source !== frame.contentWindow) return;
+  if (event.origin !== self.CC.WEBAPP_ORIGIN) return;
+  const data = event.data;
+  if (!data || data.source !== NS) return;
+
+  if (data.type === 'ready') {
+    sendHello();
+  } else if (data.type === 'open-popout') {
+    if (CAN_POPOUT) openPopout();
+  } else if (data.type === 'sign-out') {
+    signOut();
+  }
+});
 
 async function init() {
   const session = await probeSession();
   if (session.state === 'authed') {
+    currentEmail = session.email;
     showOverlay(null);
-    renderAccount(session.email);
     loadFrame();
+    // The iframe may not have loaded yet; it announces `ready` when it has, and
+    // this covers the case where it loaded before we got here.
+    sendHello();
   } else if (session.state === 'anon') {
-    renderAccount(null);
+    currentEmail = null;
     showOverlay('anon');
   } else {
-    renderAccount(null);
+    currentEmail = null;
     showOverlay('error', session.message);
   }
 }
+
+if (frame) frame.addEventListener('load', sendHello);
 
 if (signinBtn) {
   signinBtn.addEventListener('click', () => {
@@ -170,13 +224,6 @@ if (signinBtn) {
     // handoff in the signed-out state.
     if (overlayState === 'error') { init(); return; }
     runHandoff();
-  });
-}
-if (signoutBtn) signoutBtn.addEventListener('click', signOut);
-if (popoutBtn) {
-  popoutBtn.addEventListener('click', async () => {
-    try { await chrome.runtime.sendMessage({ type: 'open-popout' }); } catch (_) {}
-    window.close();
   });
 }
 

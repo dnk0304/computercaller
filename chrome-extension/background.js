@@ -212,8 +212,13 @@ function openPopout() {
   chrome.windows.create({
     url: chrome.runtime.getURL('popout.html'),
     type: 'popup',
-    width: 400,
-    height: 640,
+    // 800 × 620 (was 400 × 640), dispatch PIXEL-B2 / AC-1. The detached window
+    // is NOT a taller popup: it is free of Chrome's 600px popup ceiling, so the
+    // extra width is what stops the header device pill and the call-log filter
+    // strip from competing for the same row. 620 keeps it comfortably inside a
+    // 768px-tall laptop screen once the OS titlebar is counted.
+    width: 800,
+    height: 620,
     focused: true,
   });
 }

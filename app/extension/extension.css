@@ -1,0 +1,153 @@
+/* ===========================================================================
+   extension.css — the 0.8× density pass + surface tokens for the Chrome
+   extension, dispatch PIXEL-B2 (Dennis AC-1, Vinci ART-DIRECTION §3).
+
+   EVERY rule in this file is scoped under `.cc-ext`, which only
+   PhoneModeShell surface="extension" ever sets. That scoping is the whole
+   contract: decision D4 makes "/app visual diff = 0" a hard gate, and the
+   cheapest way to guarantee it is to make the dashboard literally unable to
+   match any selector here.
+
+   Why real token values and not `zoom` / `transform: scale(.8)`:
+   AC-1 forbids it, and rightly. A transform scales the rasterised result —
+   text goes soft, 1px hairlines land on half-pixels, and hit targets shrink
+   with the paint so a "44px" button becomes a 35px one while still claiming
+   44 to the accessibility tree. Below, type and spacing are set to honest
+   values and hit targets are held at their floors on purpose.
+   =========================================================================== */
+
+.cc-ext {
+  /* ---- surfaces (light) ---- */
+  --cc-page: #fafafa;
+  --cc-card: #ffffff;
+  --cc-zebra: #f5f5f5;
+  --cc-field: #f2f2f2;
+  --cc-hair: #e5e5e5;
+  --cc-ink: #171717;
+  --cc-sec: #525252;
+  --cc-mut: #737373;
+  --cc-chip-bd: #d4d4d4;
+
+  /* ---- brand (identical in both themes) ---- */
+  --cc-grad: linear-gradient(135deg, #35c977 0%, #22a89a 55%, #1e8fb2 100%);
+  --cc-ring: rgba(53, 201, 119, 0.45);
+
+  /* ---- radius ladder — locked; no other values on this surface ---- */
+  --r-pill: 999px;
+  --r-chip: 10px;
+  --r-btn: 10px;
+  --r-card: 16px;
+  --r-panel: 20px;
+
+  background: var(--cc-page);
+  color: var(--cc-ink);
+  /* system-ui, deliberately: a webfont round-trip is not worth it in a popup
+     that must paint in the time it takes a toolbar menu to open. */
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ---------------------------------------------------------------------------
+   Dark. Both halves of the extension read the SAME source (prefers-color-
+   scheme) so the shell's body colour and the hosted app's page colour can
+   never disagree — a light app inside a dark shell rings the panel in black,
+   which is the seam that made the popup read as a cropped web page.
+   --------------------------------------------------------------------------- */
+@media (prefers-color-scheme: dark) {
+  .cc-ext {
+    --cc-page: #0b0b0d;
+    --cc-card: #18181b;
+    --cc-zebra: #141417;
+    --cc-field: #1f1f23;
+    --cc-hair: #27272a;
+    --cc-ink: #fafafa;
+    --cc-sec: #a3a3a3;
+    --cc-mut: #8a8a8a;
+    --cc-chip-bd: #3f3f46;
+  }
+}
+
+/* ===========================================================================
+   0.8× DENSITY
+   Dennis: "the current look at 80% zoom is the new default". Header 48→40,
+   rows 56→46, tabs 34→26, body text 14→12.5.
+   =========================================================================== */
+
+/* ---- Header: one 40px row that must never wrap (AC-1) ---- */
+.cc-ext .cc-ext-header { height: 40px; }
+/* Belt and braces on the AC-1 pass condition: nothing in the header row is
+   allowed to wrap, whatever a future edit puts in it. */
+.cc-ext .cc-ext-header,
+.cc-ext .cc-ext-header * { white-space: nowrap; }
+
+/* ---- Tabs: 26px instead of 44px. This is the one place the density pass
+       genuinely lowers a hit target, and it is defensible ONLY because this
+       surface is mouse-and-keyboard exclusively — a Chrome popup cannot be
+       touched. 26px still clears the 24×24 WCAG 2.2 AA target-size minimum,
+       and each tab is a third of the panel wide (~130px), so the target is
+       130×26, not 26×26. ---- */
+.cc-ext [role="tablist"] { height: 26px; top: 40px; }
+.cc-ext [role="tablist"] [role="tab"] { font-size: 11.5px; gap: 5px; }
+.cc-ext [role="tablist"] [role="tab"] svg { width: 13px; height: 13px; }
+
+/* ---- Body type ---- */
+.cc-ext { font-size: 12.5px; }
+/* Inputs stay ≥12px: below that Chrome renders them fuzzy at fractional
+   device pixel ratios, and there is no zoom-to-fit rescue on a popup. */
+.cc-ext input,
+.cc-ext textarea { font-size: 12.5px; }
+
+/* ---- Rows: 46px ---- */
+.cc-ext li > [role="button"] { min-height: 38px; }
+
+/* ---- The shared compact Dialpad, held to the spec's 48px keys / 10px-16px
+       gaps. Scoped here rather than edited into Dialpad.tsx so the component
+       stays the web app's, with the extension only tuning its own copy. ---- */
+.cc-ext .cc-dialpad-actions { padding-inline: 4px; }
+
+/* ===========================================================================
+   Geometry that must hold in BOTH the 400×600 popup and the 800×620 pop-out.
+
+   No fixed heights and no absolute positioning keyed to 600px — dispatch C
+   ports this same tree into a full-height side panel, and anything pinned to
+   600 would have to be unpicked there.
+   =========================================================================== */
+.cc-ext.phone-mode-shell {
+  height: 100%;
+  min-height: 0;
+  /* The visualViewport keyboard dance is a mobile concern. There is no OS
+     keyboard over a desktop popup, and inheriting 100dvh here makes the shell
+     taller than the iframe that contains it. */
+  max-height: 100%;
+}
+
+/* Wider than a popup → the pop-out. Give the dial pad and the list room to
+   breathe rather than stretching a 400px layout across 800px. */
+@media (min-width: 620px) {
+  .cc-ext .cc-filterbar { padding-inline: 12px; }
+}
+
+/* ===========================================================================
+   Motion. 120ms for hover/press, 160ms for panel and tab changes — and all of
+   it off under prefers-reduced-motion, which on this surface means "no
+   transitions", not "shorter transitions".
+   =========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .cc-ext *,
+  .cc-ext *::before,
+  .cc-ext *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ===========================================================================
+   Focus. The popup is a keyboard-and-mouse surface with no touch fallback, so
+   a visible focus ring is not a nicety — it is the only way to operate this
+   thing without a pointer. Never remove it; only restyle it.
+   =========================================================================== */
+.cc-ext :focus-visible {
+  outline: 2px solid var(--cc-ring);
+  outline-offset: 1px;
+}

@@ -1,16 +1,39 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Phone, Delete, Video, Mic, MoreVertical } from 'lucide-react';
+import { Phone, Delete, Video, MessageSquare } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
 import { useFreeTier } from '@/hooks/freeTierContext';
 
 interface DialpadProps {
+  /**
+   * Compact variant — 48px keys, 64px display. This is the variant the
+   * extension surface renders (dispatch PIXEL-B2 / AC-3: "the same quick-dial
+   * pad as the web app's quick dial, not the big keypad"). No /app caller
+   * passes it today, so the compact branch is the extension's to shape; the
+   * NON-compact branch below is /app's and must not be touched.
+   */
   isCompact?: boolean;
+  /**
+   * When supplied, the compact action row gains a secondary "Send message"
+   * button beside Call, which hands the current display value to the caller
+   * (dispatch PIXEL-B2 / AC-4). The caller is expected to route into the Texts
+   * compose flow pre-addressed to that number — this component deliberately
+   * does NOT open a second, parallel compose UI of its own.
+   *
+   * Additive and optional: omit it and the render is byte-identical to before.
+   */
+  onSendMessage?: (number: string) => void;
+  /**
+   * Steal focus on mount. Default true preserves the existing /app behaviour.
+   * The extension turns it off inside the pop-out's two-pane layout, where
+   * grabbing focus on mount scrolls the list rail.
+   */
+  autoFocus?: boolean;
 }
 
-export const Dialpad = ({ isCompact = false }: DialpadProps) => {
+export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: DialpadProps) => {
   const { makeCall } = usePhone();
   const { guard } = useFreeTier();
   // Guarded dial — free-tier daily cap opens the block modal instead of dialing.
@@ -20,8 +43,8 @@ export const Dialpad = ({ isCompact = false }: DialpadProps) => {
 
   // Auto-focus input on mount
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (autoFocus) inputRef.current?.focus();
+  }, [autoFocus]);
 
   const handlePress = (digit: string) => {
     if (number.length < 15) {
@@ -133,37 +156,79 @@ export const Dialpad = ({ isCompact = false }: DialpadProps) => {
         ))}
       </div>
 
-      {/* Controls */}
-      <div className={clsx(
-        "flex items-center transition-all",
-        isCompact ? "gap-4" : "gap-8"
-      )}>
-        {!isCompact && (
+      {/* ── Controls ──────────────────────────────────────────────────────
+          Two separate rows, because the two variants answer different
+          questions. The NON-compact row (untouched, /app's) is a classic
+          three-up phone control cluster. The compact row (extension) follows
+          Vinci ART-DIRECTION §4.3: one filled primary, one outline secondary,
+          one quiet icon — because at 400px two filled buttons side by side
+          means neither reads as primary. */}
+      {isCompact ? (
+        <div className="cc-dialpad-actions flex w-full items-center gap-2 px-1">
+          <button
+            type="button"
+            onClick={() => number && dial(number)}
+            disabled={!number}
+            aria-label="Call"
+            title={number ? `Call ${number}` : 'Enter a number first'}
+            className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-full text-[13px] font-semibold text-white transition-all enabled:bg-gradient-to-br enabled:from-[#35c977] enabled:via-[#22a89a] enabled:to-[#1e8fb2] enabled:hover:brightness-105 enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45 focus-visible:ring-offset-1"
+          >
+            <Phone className="h-4 w-4 fill-current" aria-hidden="true" />
+            Call
+          </button>
+
+          {/* AC-4 — Send message. Hands the display value up; the shell routes
+              into Texts compose pre-addressed. Rendered only when a handler
+              exists, so /app's (non-compact) render is unaffected either way. */}
+          {onSendMessage && (
+            <button
+              type="button"
+              onClick={() => number && onSendMessage(number)}
+              disabled={!number}
+              aria-label="Send a message to this number"
+              title={number ? `Send a message to ${number}` : 'Enter a number first'}
+              className="flex h-9 w-11 flex-shrink-0 items-center justify-center rounded-full border transition-colors enabled:border-slate-300 enabled:bg-white enabled:text-slate-800 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45"
+            >
+              <MessageSquare className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+
+          {/* Backspace is hidden (not just disabled) on an empty display —
+              there is nothing to delete, and the slot is worth more as
+              breathing room at this width. */}
+          <button
+            type="button"
+            onClick={handleDelete}
+            aria-label="Delete last digit"
+            className={clsx(
+              'flex h-[30px] w-[30px] flex-shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40',
+              !number && 'invisible',
+            )}
+          >
+            <Delete className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center transition-all gap-8">
           <button className="w-14 h-14 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-all">
             <Video className="w-6 h-6" />
           </button>
-        )}
 
-        <button 
-          onClick={() => number && dial(number)}
-          className={clsx(
-            "rounded-full bg-green-500 hover:bg-green-600 shadow-lg shadow-green-200 active:scale-95 transition-all flex items-center justify-center text-white",
-            isCompact ? "w-14 h-14" : "w-20 h-20"
-          )}
-        >
-          <Phone className={clsx("fill-current", isCompact ? "w-6 h-6" : "w-8 h-8")} />
-        </button>
+          <button
+            onClick={() => number && dial(number)}
+            className="rounded-full bg-green-500 hover:bg-green-600 shadow-lg shadow-green-200 active:scale-95 transition-all flex items-center justify-center text-white w-20 h-20"
+          >
+            <Phone className="fill-current w-8 h-8" />
+          </button>
 
-        <button 
-          onClick={handleDelete}
-          className={clsx(
-            "rounded-full flex items-center justify-center text-slate-400 hover:text-rose-500 hover:bg-rose-50 transition-all",
-            isCompact ? "w-10 h-10" : "w-14 h-14"
-          )}
-        >
-          <Delete className={clsx(isCompact ? "w-5 h-5" : "w-6 h-6")} />
-        </button>
-      </div>
+          <button
+            onClick={handleDelete}
+            className="rounded-full flex items-center justify-center text-slate-400 hover:text-rose-500 hover:bg-rose-50 transition-all w-14 h-14"
+          >
+            <Delete className="w-6 h-6" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

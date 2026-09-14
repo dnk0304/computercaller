@@ -76,7 +76,11 @@ export type PhoneModeView =
   | { kind: 'texts' }
   | { kind: 'bell' }
   | { kind: 'thread'; threadId: string }
-  | { kind: 'compose' };
+  // `to` pre-addresses the composer (dispatch PIXEL-B2 / AC-4: the Dial view's
+  // Send-message action lands in Texts with that recipient already filled and
+  // focus in the body, rather than opening a second parallel compose UI).
+  // Optional — `push({ kind: 'compose' })` still means "blank new message".
+  | { kind: 'compose'; to?: string };
 
 interface PhoneModeContextValue {
   /** Whether Phone Mode is currently rendered. */

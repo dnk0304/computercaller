@@ -1,0 +1,158 @@
+/* ===========================================================================
+   shell.css — styling for BOTH popup.html and popout.html.
+   Dispatch PIXEL-B2, 2026-09-14. Was duplicated inline in the two files; a
+   shared sheet is the only way they can't drift, and they drifted already.
+
+   The shell is deliberately almost invisible. Its whole job is: be the right
+   size, be the right colour behind the iframe, and show a sign-in screen when
+   there is no session. All the product chrome — header, device pill, pop-out
+   button, account menu — now lives in the hosted /extension route, which is
+   why there is no longer anything floating on top of the iframe.
+   =========================================================================== */
+
+:root {
+  color-scheme: light dark;
+
+  /* These MUST equal the hosted app's outermost surface (app/extension/
+     extension.css --cc-page). If they don't, a hairline of shell background
+     rings the iframe and the popup reads as a cropped web page in a box.
+     Before B2 this was #0f172a navy behind an #f8fafc app — the seam was
+     half the reason the old popup looked wrong. */
+  --cc-page: #fafafa;
+  --cc-card: #ffffff;
+  --cc-hair: #e5e5e5;
+  --cc-ink: #171717;
+  --cc-sec: #525252;
+  --cc-mut: #737373;
+
+  --cc-grad: linear-gradient(135deg, #35c977 0%, #22a89a 55%, #1e8fb2 100%);
+  --cc-ring: rgba(53, 201, 119, 0.45);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cc-page: #0b0b0d;
+    --cc-card: #18181b;
+    --cc-hair: #27272a;
+    --cc-ink: #fafafa;
+    --cc-sec: #a3a3a3;
+    --cc-mut: #8a8a8a;
+  }
+}
+
+html, body { margin: 0; padding: 0; height: 100%; }
+
+body {
+  overflow: hidden;
+  background: var(--cc-page);
+  color: var(--cc-ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 12.5px;
+}
+
+/* Chrome paints the popup's outer window frame and we cannot round it. So we
+   do NOT try: no border-radius on body, no fake corner overlays (which only
+   ever produce four grey triangles on a non-white browser theme). The
+   corner-panel read comes from INSET surfaces — cards at 16px, pills at
+   999px — inside the app. */
+#cc-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* Matching the app's page colour means the pre-paint flash is the app's
+     own background, not a white or navy rectangle. */
+  background: var(--cc-page);
+}
+
+/* ===========================================================================
+   Signed-out / error state.
+   Full-panel, NOT a floating card over a dimmed iframe: there is nothing
+   behind it worth hinting at, and a modal over an empty frame just reads as
+   a mistake. The iframe carries no src in this state.
+   =========================================================================== */
+
+#cc-signin {
+  display: none;              /* shell.js flips to flex */
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 28px 24px 52px;
+  box-sizing: border-box;
+  background: var(--cc-page);
+}
+
+/* Signed-out header — mark + name only. No device pill: there is no device. */
+#cc-shell-header {
+  display: none;              /* shell.js shows it alongside the overlay */
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 11;
+  height: 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--cc-hair);
+  background: var(--cc-card);
+}
+#cc-shell-header .cc-mark-sm {
+  width: 18px; height: 18px; border-radius: 6px;
+  background-image: var(--cc-grad);
+  flex-shrink: 0;
+}
+#cc-shell-header .cc-wordmark {
+  font-size: 12.5px; font-weight: 700; letter-spacing: -0.01em; color: var(--cc-ink);
+}
+
+#cc-signin .cc-mark {
+  width: 52px; height: 52px; border-radius: 16px;
+  background-image: var(--cc-grad);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 18px;
+  flex-shrink: 0;
+}
+#cc-signin .cc-mark img { width: 52px; height: 52px; display: block; border-radius: 16px; }
+
+#cc-signin h1 {
+  font-size: 17px; font-weight: 700; letter-spacing: -0.01em;
+  margin: 0 0 6px; color: var(--cc-ink); max-width: 260px;
+}
+#cc-signin p {
+  font-size: 12.5px; line-height: 1.45; color: var(--cc-sec);
+  margin: 0; max-width: 268px;
+}
+
+#cc-signin-btn {
+  margin-top: 20px;
+  width: 100%; max-width: 268px; height: 36px;
+  border: 0; border-radius: 999px;
+  background-image: var(--cc-grad);
+  color: #fff; font-size: 13px; font-weight: 650; cursor: pointer;
+  transition: filter 0.12s ease-out, transform 0.12s ease-out;
+}
+#cc-signin-btn:hover { filter: brightness(1.06); }
+#cc-signin-btn:active { transform: translateY(1px); }
+#cc-signin-btn:focus-visible { outline: 2px solid var(--cc-ring); outline-offset: 2px; }
+
+#cc-signin-hint { margin-top: 10px; font-size: 11px; color: var(--cc-mut); }
+#cc-signin-msg  { margin-top: 8px; font-size: 11px; color: var(--cc-mut); min-height: 14px; }
+
+/* Footer hairline strip — the trust line. It is the last thing on the screen
+   on purpose: it answers the question the user is actually asking before they
+   hand over an account ("where do my calls go?"). */
+#cc-signin .cc-foot {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--cc-hair);
+  font-size: 11px; color: var(--cc-mut);
+  box-sizing: border-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #cc-signin-btn { transition: none; }
+}

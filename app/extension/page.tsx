@@ -16,5 +16,9 @@
 import { PhoneModeShell } from '@/components/PhoneModeShell';
 
 export default function ExtensionPage() {
-  return <PhoneModeShell />;
+  // surface="extension" (dispatch PIXEL-B2) selects the 0.8×-density branch:
+  // the `cc-ext` scope class, the compact device pill, the shared
+  // <Dialpad isCompact /> quick-dial, and the searchable call log. The default
+  // ('app') branch is what the dashboard renders and is untouched by B2.
+  return <PhoneModeShell surface="extension" />;
 }

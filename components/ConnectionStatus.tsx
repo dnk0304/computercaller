@@ -26,7 +26,22 @@ import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
  *
  * State machine spec lives in lib/lobbyState.ts.
  */
-export const ConnectionStatus = () => {
+interface ConnectionStatusProps {
+  /**
+   * 'default' — the full multi-line pill the dashboard header uses. Unchanged.
+   * 'compact' — a single 24px row for the extension header (dispatch PIXEL-B2 /
+   *   AC-1). Dennis: the device chip wrapped to three lines and overflowed at
+   *   100% zoom. The compact variant is capped at 210px, truncates the device
+   *   name with an ellipsis and NEVER wraps; Disconnect collapses from a
+   *   full-size button to a 16px ✕ inside the pill.
+   *
+   * Passing nothing keeps /app byte-identical — that is deliberate, and is why
+   * this is a variant rather than a restyle.
+   */
+  variant?: 'default' | 'compact';
+}
+
+export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps = {}) => {
   const phone = usePhone();
 
   // Defensive destructuring — Forge owns hooks/usePhoneBridge.ts and is
@@ -105,6 +120,26 @@ export const ConnectionStatus = () => {
       </div>
     ) : null;
 
+  // ---------- Compact branch (extension header) ----------
+  // One row, one pill, one glance. The DOT alone must carry the state — that
+  // is the "legible without reading" test, and it is why the dot colour and
+  // the word are independent signals rather than the word being the only one.
+  if (variant === 'compact') {
+    return (
+      <>
+        {notificationBanner}
+        <CompactDevicePill
+          state={state}
+          phoneName={phoneName}
+          phonePresent={!!phonePresentInLobby}
+          reasonText={lastBrowserRequest?.reasonText}
+          onDisconnect={() => leaveActive?.()}
+          onConnect={() => requestPairing?.()}
+        />
+      </>
+    );
+  }
+
   // ---------- Render branches ----------
   return (
     <>
@@ -142,6 +177,117 @@ export const ConnectionStatus = () => {
 // ~30 LOC and only used here; pulling them out would lose context, not gain
 // reuse.
 // ============================================================================
+
+/**
+ * CompactDevicePill — the extension header's whole status surface, in ONE 24px
+ * row (Vinci ART-DIRECTION §4.1, Dennis AC-1).
+ *
+ * Contract this exists to satisfy:
+ *   - max-width 210px, min-width 0, `truncate` on the name, `whitespace-nowrap`
+ *     everywhere. A 30-character device name shortens; it never wraps and never
+ *     pushes the row wider. That is the actual AC-1 pass condition.
+ *   - The dot is the primary signal and is never the ONLY signal: every state
+ *     also carries a word, and the word is in the accessible name.
+ *   - Disconnect is a 16px ✕ INSIDE the pill, not a sibling button that
+ *     competes with the pop-out control for the same 20px of header.
+ *
+ * States → dot / word / trailing:
+ *   active     ● emerald   "Ready"              ✕ Disconnect
+ *   requesting ● amber †   "Connecting"         —            († pulse, motion-safe)
+ *   lobby      ● slate     "Waiting for phone"  Connect (text button, if present)
+ *   declined / timeout / rejected  ● red  short reason  —
+ */
+function CompactDevicePill({
+  state,
+  phoneName,
+  phonePresent,
+  reasonText,
+  onDisconnect,
+  onConnect,
+}: {
+  state: LobbyState;
+  phoneName: string | null;
+  phonePresent: boolean;
+  reasonText: string | undefined;
+  onDisconnect: () => void;
+  onConnect: () => void;
+}) {
+  const active = state === 'active';
+  const connecting = state === 'requesting';
+  const failed = state === 'declined' || state === 'timeout' || state === 'rejected';
+
+  const dotClass = active
+    ? 'bg-emerald-500'
+    : connecting
+      ? 'bg-amber-500 motion-safe:animate-pulse'
+      : failed
+        ? 'bg-red-500'
+        : 'bg-slate-400';
+
+  const word = active
+    ? 'Ready'
+    : connecting
+      ? 'Connecting'
+      : state === 'declined'
+        ? 'Declined'
+        : state === 'timeout'
+          ? 'No answer'
+          : state === 'rejected'
+            ? 'Blocked'
+            : 'Waiting for phone';
+
+  const wordClass = active
+    ? 'text-emerald-700'
+    : connecting
+      ? 'text-amber-700'
+      : failed
+        ? 'text-red-700'
+        : 'text-slate-500';
+
+  // The name only earns its slot when there IS a device. In every other state
+  // the word is the whole message and the name would be a placeholder lie.
+  const name = active ? (phoneName || 'Phone') : null;
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      title={failed ? reasonText : undefined}
+      className="inline-flex h-6 min-w-0 max-w-[210px] items-center gap-1.5 whitespace-nowrap rounded-full bg-slate-100 pl-2 pr-1 text-[11.5px] font-medium"
+    >
+      <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${dotClass}`} aria-hidden="true" />
+      {name && (
+        <span className="min-w-0 truncate font-semibold text-slate-800" title={name}>
+          {name}
+        </span>
+      )}
+      <span className={`flex-shrink-0 ${wordClass}`}>{word}</span>
+
+      {active ? (
+        <button
+          type="button"
+          onClick={onDisconnect}
+          aria-label={`Disconnect from ${name}`}
+          title="Disconnect this browser from the phone"
+          className="ml-0.5 inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-red-100 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60"
+        >
+          <X className="h-2.5 w-2.5" aria-hidden="true" />
+        </button>
+      ) : phonePresent && state === 'lobby' ? (
+        <button
+          type="button"
+          onClick={onConnect}
+          className="ml-0.5 flex-shrink-0 rounded-full px-1.5 text-[11px] font-semibold text-teal-700 transition-colors hover:bg-teal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+          title="Ask the phone to pair with this browser"
+        >
+          Connect
+        </button>
+      ) : (
+        <span className="w-0.5 flex-shrink-0" aria-hidden="true" />
+      )}
+    </div>
+  );
+}
 
 /**
  * Shared pill shell. Keeps the surrounding chrome (rounded glass card with

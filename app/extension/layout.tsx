@@ -21,6 +21,7 @@
  * extension, mirroring app/app/layout.tsx.
  */
 
+import './extension.css';
 import { DashboardTabProvider, PhoneModeProvider } from '@/hooks';
 import { UpgradeModalProvider } from '@/hooks/upgradeModalContext';
 import { FreeTierProvider } from '@/hooks/freeTierContext';
@@ -36,10 +37,17 @@ export default function ExtensionLayout({
       <DashboardTabProvider>
         <UpgradeModalProvider>
           <FreeTierProvider>
+            {/* 100% (not 100vh): the shell is sized by the extension window
+                that iframes it. 100vh made the column taller than its own
+                frame in the pop-out, which is what pushed the composer and
+                the Recent list below the fold. minHeight:0 lets the flex
+                children actually scroll instead of growing (AC-2's root
+                cause, same class of bug in three places). */}
             <div
               style={{
                 width: '100%',
-                height: '100vh',
+                height: '100%',
+                minHeight: 0,
                 overflow: 'hidden',
                 display: 'flex',
                 flexDirection: 'column',

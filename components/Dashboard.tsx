@@ -43,6 +43,7 @@ import type { ModuleId } from '@/lib/layoutPrefs';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import type { Contact, SmsMessage } from '@/hooks';
 import type { CallLogEntry } from '@/hooks/phoneTypes';
+import { useCallLogFilter } from '@/hooks/useCallLogFilter';
 import {
   Phone,
   PhoneCall,
@@ -756,38 +757,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // filter treats Incoming as the parent group: `incoming` matches every
   // inbound call (answered + missed + rejected), while `missed` / `rejected`
   // narrow to those inbound sub-types. Outgoing stays separate.
-  type CallFilter = 'all' | 'incoming' | 'missed' | 'rejected' | 'outgoing';
-  const [callFilter, setCallFilter] = useState<CallFilter>('all');
-  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  // 2026-09-14 (PIXEL-B2 / AC-5): the filter+search state and predicate that
+  // used to live inline here moved VERBATIM into hooks/useCallLogFilter.ts so
+  // the extension surface can reuse the exact same semantics. Behaviour,
+  // debounce timing and variable names are unchanged — this is a lift, not a
+  // rewrite, and the JSX below is untouched.
+  const {
+    callFilter, setCallFilter,
+    filterMenuOpen, setFilterMenuOpen,
+    callSearch, setCallSearch,
+    filteredCallLogs,
+    isCallListFiltered,
+  } = useCallLogFilter(callLogs);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [callSearch, setCallSearch] = useState('');
-  const debouncedCallSearch = useDebouncedValue(callSearch, 150);
-
-  const filteredCallLogs = useMemo(() => {
-    let rows = deferredCallLogs;
-    if (callFilter === 'incoming') {
-      // Parent group: any inbound call — answered, missed, or rejected.
-      rows = rows.filter(
-        (log) => log.type === 'incoming' || log.type === 'missed' || log.type === 'rejected'
-      );
-    } else if (callFilter !== 'all') {
-      rows = rows.filter((log) => log.type === callFilter);
-    }
-    const q = debouncedCallSearch.trim().toLowerCase();
-    if (q) {
-      const qDigits = q.replace(/\D/g, '');
-      rows = rows.filter((log) => {
-        const name = (log.name || '').toLowerCase();
-        const number = (log.number || '').toLowerCase();
-        if (name.includes(q) || number.includes(q)) return true;
-        if (qDigits) return number.replace(/\D/g, '').includes(qDigits);
-        return false;
-      });
-    }
-    return rows;
-  }, [deferredCallLogs, callFilter, debouncedCallSearch]);
-
-  const isCallListFiltered = callFilter !== 'all' || debouncedCallSearch.trim().length > 0;
 
   const recentCalls = useMemo(
     () => filteredCallLogs.slice(0, callLogDisplayCount),
