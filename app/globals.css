@@ -1,4 +1,10 @@
 @import "tailwindcss";
+/* Chrome-extension surface only — every rule inside is scoped to `.cc-ext`
+   (or `:has(.cc-ext)`), which nothing outside app/extension renders. Imported
+   here rather than from app/extension/layout.tsx because a route-level CSS
+   import under Turbopack emitted a <link> to a chunk it never wrote. See the
+   header comment in that file. */
+@import "./extension/extension.css";
 
 @theme {
   --font-sans: var(--font-geist-sans);

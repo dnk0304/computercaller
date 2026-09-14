@@ -16,6 +16,29 @@
    values and hit targets are held at their floors on purpose.
    =========================================================================== */
 
+/* This sheet is pulled in by app/globals.css, NOT by a layout-level import.
+   Route-level CSS imported from app/extension/layout.tsx built correctly and
+   was then linked by the server HTML as a chunk Turbopack never wrote — the
+   stylesheet 500'd and the whole density + dark pass silently did nothing.
+   Living in globals.css sidesteps that entirely, at the cost of ~4KB on other
+   routes; every rule below is scoped so it still cannot reach /app.
+
+   html/body need an explicit height or the shell's height:100% resolves
+   against auto and the panel stops short of the window, leaving a strip of
+   bare body colour under it. `:has(.cc-ext)` is what keeps THESE rules —
+   the only ones not naturally scoped by a class — on the extension surface:
+   no other route renders a .cc-ext element. Chrome-only selector, and this
+   surface is Chrome-only by definition. */
+html:has(.cc-ext), body:has(.cc-ext) {
+  height: 100%;
+  margin: 0;
+  background: #fafafa;
+  overscroll-behavior: none;
+}
+@media (prefers-color-scheme: dark) {
+  html:has(.cc-ext), body:has(.cc-ext) { background: #0b0b0d; }
+}
+
 .cc-ext {
   /* ---- surfaces (light) ---- */
   --cc-page: #fafafa;
@@ -67,6 +90,134 @@
 }
 
 /* ===========================================================================
+   DARK REMAP
+   ---------------------------------------------------------------------------
+   The components in this tree are shared with the dashboard and paint with
+   hard-coded light Tailwind utilities (bg-white, text-slate-800, …). The
+   dashboard has no dark mode, so adding `dark:` variants inside those shared
+   components would change /app for every user whose OS is set to dark — a D4
+   violation. Instead the extension remaps the utilities it actually renders,
+   here, under its own scope.
+
+   `.cc-ext .bg-white` is class+class, so it outranks Tailwind's single-class
+   `.bg-white` on specificity alone — no !important needed, and the override
+   cannot escape the extension surface.
+
+   Deliberately NOT remapped: the brand gradient, and the state colours
+   (emerald / amber / red / teal). Those carry meaning, they are legible on
+   both grounds, and flipping them would break the one-colour-object-per-row
+   rule the whole palette is built on.
+   =========================================================================== */
+@media (prefers-color-scheme: dark) {
+  /* ---- surfaces ---- */
+  .cc-ext .bg-white,
+  .cc-ext .bg-white\/95,
+  .cc-ext .bg-white\/85,
+  .cc-ext .bg-white\/50 { background-color: var(--cc-card); }
+
+  .cc-ext .bg-slate-50,
+  .cc-ext .bg-slate-50\/70,
+  .cc-ext .bg-slate-50\/80 { background-color: var(--cc-zebra); }
+
+  .cc-ext .bg-slate-100 { background-color: var(--cc-field); }
+  .cc-ext .bg-slate-200 { background-color: #2e2e33; }
+
+  /* The shell's own ground. bg-slate-50 on the root would otherwise be
+     remapped to --cc-zebra and sit a shade off the page colour. */
+  .cc-ext.bg-slate-50 { background-color: var(--cc-page); }
+
+  /* ---- text ---- */
+  .cc-ext .text-slate-900,
+  .cc-ext .text-slate-800 { color: var(--cc-ink); }
+  .cc-ext .text-slate-700,
+  .cc-ext .text-slate-600 { color: var(--cc-sec); }
+  .cc-ext .text-slate-500,
+  .cc-ext .text-slate-400 { color: var(--cc-mut); }
+  .cc-ext .text-slate-300 { color: #5a5a62; }
+
+  /* ---- hairlines ---- */
+  .cc-ext .border-slate-100,
+  .cc-ext .border-slate-200,
+  .cc-ext .border-slate-200\/60,
+  .cc-ext .border-slate-300 { border-color: var(--cc-hair); }
+  .cc-ext .divide-slate-100 > * + * { border-color: var(--cc-hair); }
+
+  /* ---- fields ---- */
+  .cc-ext input,
+  .cc-ext textarea { color: var(--cc-ink); }
+  .cc-ext input::placeholder,
+  .cc-ext textarea::placeholder { color: var(--cc-mut); }
+
+  /* ---- hover states that assume a light ground ---- */
+  .cc-ext .hover\:bg-slate-50:hover,
+  .cc-ext .hover\:bg-slate-100:hover { background-color: var(--cc-field); }
+  .cc-ext .hover\:bg-slate-200:hover { background-color: #33333a; }
+
+  /* ---- menus / popovers: lift off the page, and drop the light-ground
+         shadow which is invisible on near-black anyway ---- */
+  .cc-ext .cc-menu {
+    background-color: var(--cc-card);
+    border-color: var(--cc-hair);
+    box-shadow: 0 10px 28px -8px rgba(0, 0, 0, 0.6);
+  }
+
+  /* ---- the template strip's fade masks must fade to the DARK ground, or
+         they read as two grey smears over the chips ---- */
+  .cc-ext .from-slate-50 { --tw-gradient-from: var(--cc-zebra); }
+  .cc-ext .to-slate-50 { --tw-gradient-to: var(--cc-zebra); }
+
+  /* ---- tonal chips whose light tints go muddy on a dark ground ---- */
+  .cc-ext .bg-teal-50 { background-color: rgba(45, 212, 191, 0.14); }
+  .cc-ext .text-teal-800,
+  .cc-ext .text-teal-700 { color: #2dd4bf; }
+  .cc-ext .border-teal-400 { border-color: #2dd4bf; }
+  .cc-ext .text-emerald-700 { color: #34d399; }
+  .cc-ext .text-amber-700 { color: #fbbf24; }
+  .cc-ext .text-red-600,
+  .cc-ext .text-red-700 { color: #f87171; }
+  .cc-ext .hover\:bg-red-50:hover { background-color: rgba(248, 113, 113, 0.14); }
+  .cc-ext .hover\:bg-rose-50:hover { background-color: rgba(251, 113, 133, 0.14); }
+  .cc-ext .hover\:bg-teal-50:hover { background-color: rgba(45, 212, 191, 0.14); }
+  .cc-ext .hover\:bg-emerald-50:hover { background-color: rgba(52, 211, 153, 0.14); }
+  .cc-ext .hover\:bg-red-100:hover { background-color: rgba(248, 113, 113, 0.2); }
+
+  /* ---- avatar palette: the *-100 grounds are near-white. Keep the hue,
+         drop the luminance, lift the text so the initial stays legible. ---- */
+  .cc-ext [class*="bg-pink-100"],
+  .cc-ext [class*="bg-blue-100"],
+  .cc-ext [class*="bg-purple-100"],
+  .cc-ext [class*="bg-orange-100"],
+  .cc-ext [class*="bg-emerald-100"],
+  .cc-ext [class*="bg-cyan-100"],
+  .cc-ext [class*="bg-rose-100"],
+  .cc-ext [class*="bg-amber-100"] {
+    background-color: var(--cc-field);
+    color: var(--cc-ink);
+  }
+
+  /* ---- disabled states. Tailwind compiles these as `.disabled\:bg-slate-100`,
+         a DIFFERENT selector from `.bg-slate-100`, so the remap above misses
+         them — and a disabled button left at slate-100 paints near-white on a
+         near-black panel, making the one control the user cannot press the
+         brightest object on screen. ---- */
+  /* Targeted semantically rather than by shadowing Tailwind's escaped variant
+     class names (`.disabled\:bg-slate-100:disabled`). Those proved unreliable
+     to override through the @import — the text rules landed and the
+     background rules did not — and a selector that silently half-applies is
+     worse than no selector. The action row is a named element; use it. */
+  .cc-ext .cc-dialpad-actions button:disabled {
+    background-color: var(--cc-field);
+    color: var(--cc-mut);
+    border-color: var(--cc-hair);
+  }
+  .cc-ext .cc-dialpad-actions button:enabled[aria-label^="Send"] {
+    background-color: var(--cc-card);
+    border-color: var(--cc-chip-bd);
+    color: var(--cc-ink);
+  }
+}
+
+/* ===========================================================================
    0.8× DENSITY
    Dennis: "the current look at 80% zoom is the new default". Header 48→40,
    rows 56→46, tabs 34→26, body text 14→12.5.
@@ -111,6 +262,11 @@
    ports this same tree into a full-height side panel, and anything pinned to
    600 would have to be unpicked there.
    =========================================================================== */
+/* Two classes, so this outranks Tailwind's single-class `.bg-slate-50` on the
+   same element — otherwise the shell root paints slate-50 (#f8fafc) instead of
+   the panel ground (#fafafa) and hairlines a seam against the shell behind it. */
+.cc-ext.bg-slate-50 { background-color: var(--cc-page); }
+
 .cc-ext.phone-mode-shell {
   height: 100%;
   min-height: 0;

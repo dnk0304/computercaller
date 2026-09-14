@@ -534,6 +534,17 @@ function ExtDialerView() {
         />
       </div>
 
+      {/* No call history yet — one muted line rather than a filter bar over an
+          empty list, which is furniture, or a bare void, which reads as a
+          rendering failure. */}
+      {!hasAnyLogs && (
+        <div className="flex min-h-0 flex-1 items-start justify-center border-t border-slate-200 px-6 pt-5">
+          <p className="text-center text-[11.5px] leading-relaxed text-slate-500">
+            Calls you make and receive will show up here.
+          </p>
+        </div>
+      )}
+
       {/* AC-5 — search + filter, on the Dial tab's inline Recent list. Only
           shown once there is a call log to narrow; a filter bar over an empty
           list is furniture. */}
