@@ -4,7 +4,6 @@ import React from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
-import { PcAudioRoute } from '@/components/PcAudioRoute';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
 import { TierBadge } from '@/components/TierBadge';
@@ -209,15 +208,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 remaining calls/messages today. Renders null for every paid
                 (unlimited) tier, so the header collapses cleanly for them. */}
             <UsageMeter variant="pill" />
-            {/* PC-audio route (Pixel, CP2, 2026-09-08) — the confirmed
-                Bluetooth call-audio link between the phone and this PC.
-                Lives here, outside any call, because connecting the route is
-                a setup step: the user needs to be able to establish and
-                verify it BEFORE a call arrives, not discover mid-call that
-                the link never came up. Same component (and therefore the same
-                four states and the same copy) renders in Settings and inside
-                the in-call Audio Source toggle. */}
-            <PcAudioRoute variant="header" />
+            {/* PC-audio route control removed from the header (Pixel,
+                2026-09-14). PC call audio needs the PC to expose a Bluetooth
+                hands-free (HFP/AG) profile, which only a minority of PC/BT
+                stacks do. Promoting it here made a niche, often-unavailable
+                option look like a primary control. It now lives only in
+                Settings → Call Audio Mode for people who go looking. */}
             <PhoneStatusButton />
             {/* Sync — consolidated dropdown (dispatch #34 item 9, 2026-05-26).
                 Replaces the prior pair of separate Quick + Full buttons that
