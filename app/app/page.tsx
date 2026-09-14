@@ -568,9 +568,13 @@ export default function Home() {
                   <Volume2 className="w-5 h-5 text-blue-500" />
                   Call Audio Mode
                 </h3>
-                <p className="text-sm text-slate-500 mb-4">
+                <p className="text-sm text-slate-500 mb-1.5">
                   Where call audio goes by default. You can still switch during
                   a call.
+                </p>
+                <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                  PC Audio requires your PC to be paired as a hands-free (call
+                  audio) device. Most people should leave this on Phone.
                 </p>
 
                 <div className="grid grid-cols-2 gap-3">

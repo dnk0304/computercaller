@@ -39,7 +39,6 @@ import { createPortal } from 'react-dom';
 import { usePhone, useNotifications, getNotificationIcon, useDashboardTab, useDebouncedValue, useLayoutPrefs } from '@/hooks';
 import { useAudioSourceDefault } from '@/hooks/audioSourcePreference';
 import type { AudioSource } from '@/hooks/audioSourcePreference';
-import { PcAudioRoute } from '@/components/PcAudioRoute';
 import type { ModuleId } from '@/lib/layoutPrefs';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import type { Contact, SmsMessage } from '@/hooks';
@@ -2590,11 +2589,10 @@ const AudioSourceToggle: React.FC<AudioSourceToggleProps> = ({
       {/* PC mode helper text — visible whenever the PC pill is the active mode
           (shows the connected device name) OR whenever PC mode is gated
           (single-line hint pointing the user at the setup guide). */}
-      {/* Live route status — the SAME component the header and Settings render,
-          so the in-call card can never claim a PC route that isn't up. Replaces
-          the old "Routing through {device}" line, which was derived from HFP
-          PAIRING and stayed cheerful through a failed SCO negotiation. */}
-      {isPc && btHeadsetConnected && <PcAudioRoute variant="inline" className="mt-1.5" />}
+      {/* Live route status removed here (Pixel, 2026-09-14) — PC call audio is
+          now surfaced only in Settings → Call Audio Mode, where the status pill
+          and failure reason live. The pill above still reflects the saved
+          default; call-start still forwards SET_AUDIO_SOURCE unchanged. */}
       {!btHeadsetConnected && !isPc && (
         <button
           type="button"
@@ -2982,9 +2980,9 @@ const ActiveCallCard: React.FC<ActiveCallCardProps> = ({
           and the side-action row so it's contextually anchored to the
           in-call surface (where audio routing decisions actually matter).
           Mounted only during an active or dialing call — this is the LIVE
-          override. The pre-call default is set in the app header's PC-audio
-          control and in Settings → Call Audio Mode; all three read the same
-          value via useAudioSourceDefault. */}
+          override. The pre-call default is set in Settings → Call Audio Mode
+          (the only place PC audio is surfaced); both read the same value via
+          useAudioSourceDefault. */}
       {(call.state === 'active' || call.state === 'dialing' || call.state === 'ringing') && (
         <div className="mt-3">
           <AudioSourceToggle
