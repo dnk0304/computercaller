@@ -40,3 +40,10 @@ notifications even when the popup is closed.
 
 Note: local dev over `http://localhost` cannot use `SameSite=None` cookies — test
 the iframe against the deployed HTTPS origin, or rely on the token-handoff path.
+
+## Icon sources
+
+The SVG masters for the extension marks live in `design/extension-marks/` (outside this
+folder on purpose). Chrome refuses to load an unpacked extension that contains any file or
+directory whose name starts with `_`, and nothing here may be `_`-prefixed. Run
+`bash tools/check-extension.sh` to verify.
