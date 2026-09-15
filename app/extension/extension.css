@@ -296,8 +296,13 @@ html:has(.cc-ext), body:has(.cc-ext) {
      row preview      text-xs    12px   vs Dial 10.5px   (+1.5)
      Alerts heading   text-sm    14px   vs Dial 12.5px   (+1.5)
      empty state      text-sm    14px   vs Dial 11.5px   (+2.5)
-     Texts search     text-base  16px   vs Dial 11.5px   (+4.5)
-     thread avatar    h-10 w-10  40px   vs Dial 28px     (+12)
+     Texts avatar     h-10 w-10  40px   vs Dial 28px     (+12)
+     Alerts avatar    h-9 w-9    36px   vs Dial 28px     (+8)
+
+   Texts' search field was NOT part of it: `.cc-ext input` already pins every
+   input to 12.5px, so `text-base` on that one element never reached the DOM.
+   Measured, not assumed — see scripts/ext-recent-history-fonts-proof.mjs,
+   which prints computed px per tab per width on both sides of the change.
 
    Fixed HERE rather than in the TSX because PhoneModeShell is shared: on
    /app Phone Mode (a real phone at real viewport width) 14px is the correct
