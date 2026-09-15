@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  "Continue with Google". Google branding fixes the white surface, the #747775
+  hairline and the label colour in BOTH themes: it is the one control on the
+  phone that does not follow our token set, and the mockup calls that out.
+  Only the corner radius is ours, so it sits in the same family as the rest.
+-->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#1F1F1F1A">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/google_btn_surface" />
+            <stroke android:width="1dp" android:color="@color/google_btn_stroke" />
+            <corners android:radius="@dimen/cc_radius_pill" />
+        </shape>
+    </item>
+</ripple>

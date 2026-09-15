@@ -377,4 +377,81 @@
 
     <!-- v56 — Home presence line while the computer has a call running. -->
     <string name="status_call_in_progress">Connected — call in progress</string>
+
+    <!-- ================= v56 UI copy (Pixel, step 2) =================
+         Written from android-mockups/DIRECTION-android-v56.md and the
+         approved frames. Voice: plain English, active, no jargon, no
+         pricing or plan language anywhere (Play policy). -->
+
+    <!-- App bar -->
+    <string name="cd_brand_mark">ComputerCaller</string>
+    <string name="cd_open_settings">Settings</string>
+    <string name="cd_back">Back</string>
+
+    <!-- Home hero card - waiting state -->
+    <string name="home_hero_waiting_title">Ready and listening</string>
+    <string name="home_hero_waiting_body">Open computercaller.com on your computer — this phone will appear there automatically.</string>
+
+    <!-- Home hero card - connected state. The title is the computer\'s name
+         when the relay gave us one; this is the fallback when it did not. -->
+    <string name="home_hero_connected_title">Your computer</string>
+    <string name="home_hero_connected_body">Calls and messages are mirroring to your computer. You can put the phone down.</string>
+    <string name="home_hero_call_body">A call is running through this phone. Audio stays on the phone; your computer mirrors the controls.</string>
+
+    <!-- Home hero card - offline / out of lobby -->
+    <string name="home_hero_offline_title">Not connected</string>
+    <string name="home_hero_offline_body">This phone has left the lobby, so computers can\'t find it. Rejoin when you want to use it again.</string>
+
+    <!-- Device line at the foot of the hero card -->
+    <string name="home_device_line">This phone · %1$s</string>
+    <string name="home_bridge_active">Bridge active</string>
+    <string name="home_bridge_inactive">Bridge off</string>
+
+    <!-- Home hero card - connection request -->
+    <string name="presence_connection_request">Connection request</string>
+    <string name="pair_request_avatar">PC</string>
+    <string name="pair_request_caution">Only accept if this is your computer.</string>
+    <string name="pair_request_default_name">A computer wants to connect</string>
+
+    <!-- Notification-blocked band -->
+    <string name="band_notifications_off">Notifications are off — you won\'t see call alerts.</string>
+    <string name="action_turn_on">Turn on</string>
+
+    <!-- Row groups -->
+    <string name="row_messages_title">Messages</string>
+    <string name="row_messages_sub">Synced from this phone</string>
+    <string name="row_calls_title">Call log</string>
+    <string name="row_calls_sub">Synced from this phone</string>
+    <string name="row_permissions_title">Permissions</string>
+    <string name="row_permissions_all">All granted</string>
+    <string name="row_permissions_some">%1$d still needed</string>
+    <string name="row_stay_disconnected_title">Stay disconnected</string>
+    <string name="row_stay_disconnected_sub">Don\'t reconnect on restart</string>
+
+    <!-- Home footer -->
+    <string name="home_footer">Calls run on this device · nothing is routed through us.</string>
+
+    <!-- Settings rows -->
+    <string name="settings_account_signed_in">Signed in</string>
+    <string name="settings_account_unknown">Signed in on this phone</string>
+    <string name="settings_signout_sub">Clears this phone\'s login</string>
+    <string name="settings_permissions_sub">Review what this app can reach</string>
+    <string name="settings_notifications_sub">Alert style, sounds and channels</string>
+    <string name="settings_hard_reset_sub">Wipes app data and re-runs setup</string>
+    <string name="settings_footer">ComputerCaller %1$s · Calls run on this device</string>
+
+    <!-- Sign-in -->
+    <string name="signin_wordmark">COMPUTER CALLER</string>
+    <string name="signin_hero_title">Call and text from your computer</string>
+    <string name="signin_hero_body">Sign in with the same account you use on computercaller.com.</string>
+    <string name="signin_or">or</string>
+    <string name="signin_footer_short">Calls run on your device · nothing is routed through us.</string>
+
+    <!-- Notification copy (mockup frame 3). The ongoing notification is the
+         surface Dennis actually reads, so it says what the bridge is doing
+         rather than that a service exists. -->
+    <string name="notif_ongoing_waiting">Bridge active · waiting for your computer</string>
+    <string name="notif_ongoing_connected">Connected · mirroring to your computer</string>
+    <string name="notif_request_body">%1$s wants to connect to this phone.</string>
+    <string name="notif_request_big">%1$s wants to connect to this phone. Accept only if you started this from your own computer.</string>
 </resources>

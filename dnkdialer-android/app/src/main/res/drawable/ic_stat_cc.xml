@@ -1,28 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  v56 — status-bar (small) notification icon for ComputerCaller.
+  v56 - status-bar (small) notification icon.
 
-  Android renders the SMALL notification icon as an alpha mask: every
-  non-transparent pixel is repainted with the system's own tint. A
-  gradient or multi-colour asset therefore collapses into a solid blob,
-  which is why the brand mark's rounded-square plate is NOT used here.
+  Android renders the SMALL notification icon as an ALPHA MASK: every
+  non-transparent pixel is repainted with the system tint, so a gradient or a
+  multi-colour asset collapses into a solid blob. The brand mark's gradient
+  plate is therefore not usable here; what carries over is its silhouette.
 
-  This is the alpha-only silhouette of the handset from
-  design/extension-marks/mark-mini.svg, re-centred in a 24dp canvas.
-  PLACEHOLDER — Pixel may refine the stroke weights in v56 step 2;
-  the resource NAME is the contract and must not change.
+  This is the handset glyph from the mark's own call bubble
+  (public/brand/computercaller-lockup.svg, the disc at translate(56,52)) -
+  the same shape the web app and the extension show - re-authored on a clean
+  24dp canvas instead of the 32dp canvas with a negative-translate nudge that
+  the step-1 placeholder used. Solid white, single closed path, no strokes and
+  no sub-24 detail, so it survives the alpha mask at status-bar size.
+
+  Optical sizing: the glyph's bounding box is scaled to fill ~19 of the 24dp
+  canvas and centred on (12,12), which is the Material status-bar convention -
+  the placeholder sat low and left of centre and read as clipped next to the
+  system icons.
+
+  The resource NAME is the contract (PhoneService references it from both
+  notification builders); do not rename it.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="32"
-    android:viewportHeight="32"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
     android:tint="#FFFFFFFF">
     <group
-        android:translateX="-4.25"
-        android:translateY="-2.05">
+        android:pivotX="9.95"
+        android:pivotY="10.55"
+        android:scaleX="1.62"
+        android:scaleY="1.62"
+        android:translateX="2.05"
+        android:translateY="1.45">
         <path
             android:fillColor="#FFFFFFFF"
-            android:pathData="M11.2,8.6c-1,0.8 -1.5,2 -1.3,3.3c0.5,3.9 2.5,7.5 5.3,10.3c2.8,2.8 6.4,4.8 10.3,5.3c1.3,0.2 2.5,-0.3 3.3,-1.3l1.6,-2.1c0.6,-0.8 0.4,-2 -0.4,-2.6l-3.5,-2.5c-0.7,-0.5 -1.7,-0.4 -2.3,0.3l-1.3,1.4c-2.2,-1.1 -4,-2.9 -5.1,-5.1l1.4,-1.3c0.7,-0.6 0.8,-1.6 0.3,-2.3l-2.5,-3.5c-0.6,-0.8 -1.8,-1 -2.6,-0.4z" />
+            android:pathData="M4.4,5.1c-0.5,0.4 -0.8,1 -0.7,1.7c0.3,2.2 1.4,4.3 3,5.9c1.6,1.6 3.7,2.7 5.9,3c0.7,0.1 1.3,-0.2 1.7,-0.7l0.9,-1.2c0.3,-0.5 0.2,-1.1 -0.2,-1.4l-2,-1.4c-0.4,-0.3 -0.9,-0.2 -1.2,0.1l-0.7,0.8c-1.2,-0.6 -2.2,-1.6 -2.8,-2.8l0.8,-0.7c0.3,-0.3 0.4,-0.8 0.1,-1.2l-1.4,-2c-0.3,-0.4 -0.9,-0.5 -1.4,-0.2z" />
     </group>
 </vector>

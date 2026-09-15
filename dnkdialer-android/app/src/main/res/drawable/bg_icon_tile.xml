@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 30dp leading tile inside a row. Recessed, 9dp radius. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/surface_inset" />
+    <corners android:radius="@dimen/cc_radius_tile" />
+</shape>
