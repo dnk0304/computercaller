@@ -846,6 +846,15 @@ class MainActivity : AppCompatActivity() {
                 // relay no longer populates, so the UI never reached it
                 // even after a successful Accept. Now it's wired to the
                 // PAIRING_ACTIVE/PAIRING_TERMINATED lifecycle directly.
+                // v56 (replaces the dropped in-call screen, decision 5) —
+                // while the paired computer has a call running, the presence
+                // line says so instead of the generic connected copy.
+                // PhoneService already knows the phone's call state; we read
+                // it through the SAME bound-service channel as isPairActive,
+                // on the same 2 s tick, so the two can never disagree.
+                status.contains("Connected to relay") && pairActive &&
+                    phoneService?.getIsCallInProgress() == true ->
+                    getString(R.string.status_call_in_progress) to ConnState.LIVE
                 status.contains("Connected to relay") && pairActive ->
                     getString(R.string.status_clients_connected_one) to ConnState.LIVE
                 // Relay open + no active pair → LOBBY. Phone is sitting
