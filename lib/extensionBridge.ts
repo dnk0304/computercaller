@@ -36,6 +36,19 @@ import { useEffect, useState } from 'react';
 export const WEBAPP_DASHBOARD_URL = '/app';
 export const WEBAPP_SETTINGS_URL = '/app/settings';
 
+/**
+ * Where "Manage at computercaller.com" goes for a lapsed account (dispatch
+ * PIXEL-D). Today that is the settings page, which is where the subscription
+ * block already lives — but it is named for its PURPOSE, not its current
+ * address, so the day billing gets its own route this moves in one place
+ * instead of being confused with the menu's "Settings" row.
+ *
+ * Deliberately a plain app URL and NOT a checkout link: the extension states
+ * the account's status and points at the web app. No price, no Whop, no
+ * upgrade CTA ever ships on this surface.
+ */
+export const WEBAPP_ACCOUNT_URL = '/app/settings';
+
 /** Namespace on every frame we send or accept, so we never act on a stray message. */
 const NS = 'cc-ext';
 

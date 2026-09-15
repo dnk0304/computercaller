@@ -115,13 +115,22 @@ function shortDate(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  // Fixed en-GB + UTC: this string is produced client-side but must not shift
-  // under the viewer's locale in a 186px menu, and a date-only boundary has no
-  // business being re-interpreted into another timezone.
-  return d.toLocaleDateString('en-GB', {
+  // Locale short date (dispatch PIXEL-D: "user locale short date"). `undefined`
+  // means the viewer's own locale, so a Norwegian user reads "28. sep." rather
+  // than a British string — this line sits under their own email address and
+  // should not look imported.
+  //
+  // Forge's original pinned en-GB to keep the width predictable in a 186px
+  // menu; the year is dropped instead, which buys back more width than the
+  // locale pin ever did and reads better besides — a renewal 11 months out
+  // does not need a year, and the trial ones are days away.
+  //
+  // timeZone:'UTC' is KEPT, deliberately and for a different reason: these are
+  // date-only boundaries from the server, and re-interpreting one into the
+  // viewer's zone is how a trial that ends on the 28th renders as the 27th.
+  return d.toLocaleDateString(undefined, {
     day: 'numeric',
     month: 'short',
-    year: 'numeric',
     timeZone: 'UTC',
   });
 }
@@ -145,12 +154,16 @@ export function deriveAccountState(entitlement: Entitlement | null): AccountStat
     const when = shortDate(endsAt);
     const days =
       typeof trialDaysLeft === 'number' && trialDaysLeft >= 0 ? trialDaysLeft : null;
-    const label =
-      days !== null
-        ? `Trial · ${days} ${days === 1 ? 'day' : 'days'} left${when ? ` (until ${when})` : ''}`
-        : when
-          ? `Trial until ${when}`
-          : 'Trial';
+    // Copy per dispatch PIXEL-D: the END DATE leads, not the countdown. A date
+    // is a thing you can act on ("book it in"); "5 days left" is a number the
+    // user has to convert into one, and it silently goes stale if the menu is
+    // left open. `days` is still the fallback for a server that knows the
+    // count but not the boundary.
+    const label = when
+      ? `Trial · ends ${when}`
+      : days !== null
+        ? `Trial · ${days} ${days === 1 ? 'day' : 'days'} left`
+        : 'Trial';
     return { kind: 'trial', label, endsAt, renewsAt: null };
   }
 
@@ -159,7 +172,14 @@ export function deriveAccountState(entitlement: Entitlement | null): AccountStat
     // such; an ordinary free_tier user is ALLOWED and lands in the full app, so
     // it is an active-free state, not a dead end.
     if (grandfathered) {
-      return { kind: 'grandfathered', label: 'Grandfathered plan', endsAt: null, renewsAt: null };
+      // "Early member", not "grandfathered": the user is being told something
+      // good about their account, and only we know what the internal word means.
+      return {
+        kind: 'grandfathered',
+        label: 'Free plan · early member',
+        endsAt: null,
+        renewsAt: null,
+      };
     }
     return { kind: 'active', label: 'Free plan', endsAt: null, renewsAt: null };
   }
@@ -169,7 +189,7 @@ export function deriveAccountState(entitlement: Entitlement | null): AccountStat
     const when = shortDate(renewsAt);
     return {
       kind: 'active',
-      label: when ? `Subscription active · renews ${when}` : 'Subscription active',
+      label: when ? `Subscribed · renews ${when}` : 'Subscribed',
       endsAt: null,
       renewsAt,
     };
@@ -179,9 +199,16 @@ export function deriveAccountState(entitlement: Entitlement | null): AccountStat
   // 'needs_subscription'. Deliberately NOT keyed on `allowed` alone — a future
   // allowed:false state should land here by default rather than silently
   // rendering as something reassuring.
+  //
+  // The label is the STATEMENT only. The way out ("Manage at
+  // computercaller.com") is rendered as a real link by PhoneModeHeader rather
+  // than baked into this string: a destination the user is meant to visit has
+  // to be clickable, and a URL sitting inert inside a muted sentence is the
+  // kind of thing people right-click, copy and paste into a new tab by hand.
+  // Still no price, no "Upgrade", no Whop — Pilot constraint holds.
   return {
     kind: 'needs_subscription',
-    label: 'No active subscription — manage your account at computercaller.com',
+    label: 'No active subscription',
     endsAt: null,
     renewsAt: null,
   };

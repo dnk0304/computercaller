@@ -40,6 +40,7 @@ import {
   useExtensionShell,
   requestPopout,
   requestSignOut,
+  WEBAPP_ACCOUNT_URL,
   WEBAPP_DASHBOARD_URL,
   WEBAPP_SETTINGS_URL,
 } from '@/lib/extensionBridge';
@@ -177,10 +178,16 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
   }, [open]);
 
   useEffect(() => {
-    if (open) menuRef.current?.querySelector<HTMLAnchorElement | HTMLButtonElement>('a,button')?.focus();
+    // `[role="menuitem"]`, not `a,button`: the account-state block above the
+    // first action can now contain a link ("Manage at computercaller.com"),
+    // and a bare `a,button` query would hand it the initial focus — so opening
+    // the menu would land on a description in one billing state and on "Open
+    // dashboard" in the other four. Menu items are the things a menu focuses.
+    if (open) menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
   }, [open]);
 
   const initial = (email || '?').charAt(0).toUpperCase();
+  const needsAttention = accountState?.kind === 'needs_subscription';
 
   return (
     <div className="relative flex-shrink-0">
@@ -192,9 +199,22 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
         aria-expanded={open}
         aria-label={email ? `Account menu for ${email}` : 'Account menu'}
         title={email || 'Account'}
-        className="flex h-[22px] w-[22px] items-center justify-center rounded-full bg-gradient-to-br from-[#35c977] via-[#22a89a] to-[#1e8fb2] text-[10px] font-bold text-white transition-transform hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1"
+        className="relative flex h-[22px] w-[22px] items-center justify-center rounded-full bg-gradient-to-br from-[#35c977] via-[#22a89a] to-[#1e8fb2] text-[10px] font-bold text-white transition-transform hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1"
       >
         {initial}
+        {/* 6px status dot — rendered ONLY for needs_subscription.
+            The dispatch offers "teal for trial/active, grey for
+            needs_subscription". Teal is dropped on purpose: there is already a
+            teal presence dot ~200px to the left in this same 40px row meaning
+            "phone connected", and a second permanent teal dot meaning "billing
+            is fine" teaches the user that green dots mean nothing in
+            particular. ART-DIRECTION trait 3 — colour is reserved for state —
+            only pays off if the mark appears when there is state to report.
+            So: one dot, one meaning, visible exactly when something needs the
+            user's attention. aria-hidden because the menu says it in words. */}
+        {needsAttention && (
+          <span className="cc-account-dot" aria-hidden="true" />
+        )}
       </button>
 
       {open && (
@@ -217,12 +237,29 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
                 neutral way out already exists one row below ("Open dashboard",
                 which opens computercaller.com/app in a real tab). */}
             {accountState && (
-              <p
+              <div
                 data-cc-account-state={accountState.kind}
                 className="px-2 pb-1.5 text-[11px] leading-snug text-slate-400"
               >
                 {accountState.label}
-              </p>
+                {/* The one state with a way out gets a real link, not a URL
+                    embedded in the sentence above it. Neutral wording and a
+                    plain new tab — it points at the account page, it does not
+                    sell a plan, and there is no price on either side of it. */}
+                {accountState.kind === 'needs_subscription' && (
+                  <>
+                    <br />
+                    <a
+                      href={WEBAPP_ACCOUNT_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="cc-account-manage"
+                    >
+                      Manage at computercaller.com
+                    </a>
+                  </>
+                )}
+              </div>
             )}
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <MenuLink href={WEBAPP_DASHBOARD_URL} icon={<LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" />}>

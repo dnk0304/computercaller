@@ -71,8 +71,22 @@ const COPY_SIGNIN =
 const COPY_ERROR =
   "Couldn't reach ComputerCaller. Check your connection, then try again.";
 
+/**
+ * How long the boot skeleton stands in for the signed-out gate before the
+ * static "Sign in" fallback takes over (dispatch PIXEL-D).
+ *
+ * The number is a floor on patience, not a guess at load time: below ~600ms a
+ * skeleton flashes and is worse than nothing, and past ~1.5s a user with a
+ * blocked or offline frame is being made to wait for a button that was
+ * available the whole time. 1100ms covers a warm /extension/login round-trip
+ * and still hands over a real control quickly when the frame never arrives.
+ */
+const BOOT_SKELETON_MS = 1100;
+
 /** overlay: null = hidden, 'anon' = sign-in gate, 'error' = retry state. */
 let overlayState = null;
+/** Pending BOOT_SKELETON_MS timer, so leaving 'anon' can cancel it. */
+let bootTimer = null;
 /** Last known signed-in email, replayed to the iframe on its `ready`. */
 let currentEmail = null;
 
@@ -88,8 +102,11 @@ function showOverlay(state, message) {
   if (signinBtn) signinBtn.textContent = state === 'error' ? 'Try again' : 'Sign in';
   if (signinMsg) signinMsg.textContent = message || '';
   if (state === 'anon') {
-    // The real sign-in. Until it answers `login-ready` the static block above
-    // stays on screen, so a framing/network failure is never a blank panel.
+    // Skeleton first, fallback second, real form third — see shell.css. The
+    // fallback is NOT skipped, only deferred: if the frame never reports ready
+    // the timer below reveals it, so a framing/network failure still lands on
+    // a visible button rather than a blank panel.
+    beginBoot();
     loadLoginFrame();
   } else {
     // 'error' is "we never reached the server" — framing a page from that same
@@ -97,6 +114,29 @@ function showOverlay(state, message) {
     unloadLoginFrame();
     if (signinBtn) signinBtn.focus();
   }
+}
+
+/**
+ * Show the boot skeleton and arm its handover to the static fallback.
+ * Idempotent: re-arming restarts the clock, which is what a retry wants.
+ */
+function beginBoot() {
+  if (!overlay) return;
+  clearTimeout(bootTimer);
+  overlay.classList.add('cc-booting');
+  bootTimer = setTimeout(endBoot, BOOT_SKELETON_MS);
+}
+
+/**
+ * Retire the skeleton. Called from three places on purpose — the timer, the
+ * `login-ready` message, and every exit from the 'anon' state — because a
+ * skeleton still animating over a signed-in surface is the exact failure this
+ * whole layer is supposed to prevent.
+ */
+function endBoot() {
+  clearTimeout(bootTimer);
+  bootTimer = null;
+  if (overlay) overlay.classList.remove('cc-booting');
 }
 
 /** Point the gate iframe at /extension/login. Idempotent. */
@@ -112,6 +152,7 @@ function loadLoginFrame() {
  * rather than inherit a stale `login-ready`.
  */
 function unloadLoginFrame() {
+  endBoot();
   if (overlay) overlay.classList.remove('cc-has-login');
   if (loginFrame) loginFrame.removeAttribute('src');
 }
@@ -277,7 +318,8 @@ window.addEventListener('message', (event) => {
   // or the window-spawning `open-popout`.
   if (fromLogin) {
     if (data.type === 'login-ready') {
-      // The embedded form rendered — retire the static block.
+      // The embedded form rendered — retire the skeleton and the static block.
+      endBoot();
       if (overlay) overlay.classList.add('cc-has-login');
       if (signinMsg) signinMsg.textContent = '';
     } else if (data.type === 'signed-in') {
@@ -326,6 +368,7 @@ if (signinBtn) {
     if (overlayState === 'error') { init(); return; }
     if (signinMsg) signinMsg.textContent = 'Loading sign-in…';
     if (loginFrame) loginFrame.removeAttribute('src');
+    beginBoot();
     loadLoginFrame();
   });
 }
