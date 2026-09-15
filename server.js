@@ -597,6 +597,33 @@ function startRelay(httpServer) {
         identity: room.pairIdentity ?? null,
       };
       const survivor = phoneOpen ? phone : (browserOpen ? browser : null);
+      // Dock fix (2026-09-15, forge/dock-reconnect-sw-badge).
+      //
+      // tryAutoResume ran at lobby-JOIN time and NOWHERE else, so it could
+      // only ever see a counterpart that arrived AFTER the drop. The side
+      // panel dock is the opposite order: shell.js opens the panel FIRST
+      // (its iframe joins the lobby while the pop-out is still sitting in
+      // room.active.browser, so the claim is not armed yet and the joiner
+      // just gets LOBBY_STATUS) and only THEN asks the worker to close the
+      // pop-out window — which arms the claim here with no join left to
+      // re-trigger the resume. The pair stayed broken until the user
+      // reconnected by hand. That is the "it drops the connection and I have
+      // to sync again" Dennis reported.
+      //
+      // Re-checking at ARM time closes that ordering. The join-time call is
+      // kept and still covers the reverse order (old socket dies first, new
+      // surface joins after), so both orderings now resume.
+      //
+      // Deliberately gated on droppedRole === 'browser'. Every browser in a
+      // room is the same user's own surface, so handing the pair from one to
+      // another IS the dock. A dropped PHONE must not be able to hand the
+      // pair to a different handset that merely happened to be waiting in the
+      // lobby — that still requires the phone itself to rejoin, which is the
+      // only thing that proves it is the same device coming back.
+      if (droppedRole === 'browser' && tryAutoResume(room)) {
+        console.log(`[Relay][${redactToken(room.token)}] socket_closed: browser handed off to a surface already waiting in the lobby (dock) — resumed with no re-sync`);
+        return;
+      }
       if (survivor) {
         // Non-destructive hold. The web hook treats this as "phone briefly
         // away" — it does NOT flip isConnected / wipe caches; its existing 30s
@@ -1713,7 +1740,12 @@ function startRelay(httpServer) {
 
     const counts = countLobby(room);
     const alreadyActive = !!(room.active.browser || room.active.phone);
-    console.log(`[Relay][${redactToken(token)}] Browser joined lobby (phones=${counts.phones}, active=${alreadyActive})`);
+    // `claim` tells the dock story in one line: a browser joining with NO
+    // armed claim while a pair is already active is the first half of a dock
+    // (panel opens before the pop-out closes); the resume for it now happens
+    // at arm time in terminateActivePair, not here.
+    const joinClaim = room.resumable ? `armed(droppedRole=${room.resumable.droppedRole})` : 'none';
+    console.log(`[Relay][${redactToken(token)}] Browser joined lobby (phones=${counts.phones}, active=${alreadyActive}, listener=${ws.listener}, claim=${joinClaim})`);
 
     // Issue 3: a browser returning within the resume window (its WS layer
     // auto-reconnects) re-links silently. Attempted BEFORE LOBBY_STATUS —
