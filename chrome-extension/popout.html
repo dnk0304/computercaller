@@ -29,6 +29,26 @@
        than 400px of white. -->
   <div id="cc-signin" role="dialog" aria-labelledby="cc-signin-title" aria-modal="true">
     <iframe id="cc-login-frame" title="Sign in to ComputerCaller"></iframe>
+    <!-- Boot skeleton (dispatch PIXEL-D). The FIRST face of the signed-out
+         gate, for the ~300-900ms the framed login takes to paint. Without it
+         the user sees the fallback's "Sign in" button, reaches for it, and it
+         is replaced mid-reach by a form — a button that moves under the cursor
+         is worse than a wait. The shapes below mirror the real form's geometry
+         so the handover does not jump the layout.
+         shell.js retires this after CC_BOOT_MS whether or not the frame
+         answered, so a CSP refusal or an offline profile still lands on the
+         fallback's real "Try again" button rather than shimmering forever. -->
+    <div id="cc-signin-skeleton" aria-hidden="true">
+      <div class="cc-sk cc-sk-title"></div>
+      <div class="cc-sk cc-sk-google"></div>
+      <div class="cc-sk cc-sk-rule"></div>
+      <div class="cc-sk cc-sk-label"></div>
+      <div class="cc-sk cc-sk-field"></div>
+      <div class="cc-sk cc-sk-label cc-sk-label-2"></div>
+      <div class="cc-sk cc-sk-field"></div>
+      <div class="cc-sk cc-sk-submit"></div>
+      <div class="cc-sk cc-sk-links"></div>
+    </div>
     <div id="cc-signin-fallback">
       <div class="cc-mark"><img src="icon128.png" alt="" /></div>
       <h1 id="cc-signin-title">Call and text from your browser</h1>

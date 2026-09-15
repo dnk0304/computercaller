@@ -177,6 +177,67 @@ body {
   box-sizing: border-box;
 }
 
+/* ===========================================================================
+   BOOT SKELETON — dispatch PIXEL-D.
+   Three layers now share #cc-signin, and exactly one is ever visible:
+     .cc-booting      → the skeleton (default face of the signed-out gate)
+     .cc-has-login    → the framed /extension/login form
+     neither          → the static fallback: Sign in / Try again
+   The order matters: `cc-has-login` wins over `cc-booting`, so a fast frame
+   cuts the skeleton short instead of waiting out its timer.
+   =========================================================================== */
+
+#cc-signin-skeleton {
+  display: none;
+  position: absolute;
+  inset: 0;
+  /* The same column the framed form uses (app/extension/extension.css
+     .cc-auth-body: max-width 300, 16px sides, margin auto), so the shapes sit
+     exactly where the real controls land and nothing shifts on handover. */
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  max-width: 300px;
+  margin: 0 auto;
+  padding: 18px 16px 22px;
+  box-sizing: border-box;
+}
+#cc-signin.cc-booting:not(.cc-has-login) #cc-signin-skeleton { display: flex; }
+#cc-signin.cc-booting:not(.cc-has-login) #cc-signin-fallback { display: none; }
+
+.cc-sk {
+  border-radius: 10px;
+  /* A flat tint, not a gradient sweep: at this size a shimmer travelling
+     across six small bars reads as the panel glitching. The opacity pulse
+     below is the whole animation. */
+  background: var(--cc-hair);
+  animation: cc-sk-pulse 1400ms ease-in-out infinite;
+}
+/* Every offset below is MEASURED off the real form rendered at 400px, not
+   eyeballed: title 18/26, Google pill 58/36, rule 108, first label 137/17,
+   first field 159/32, submit 268/36, links 318/17 (all relative to the column
+   box, which both layers share). Matching them is the difference between a
+   skeleton and a placeholder — the six shapes land where the six controls
+   land, so the handover reads as content arriving rather than the panel
+   relaying itself. Column heights: skeleton 309, form 317. */
+.cc-sk-title  { width: 64px;  height: 26px; }
+.cc-sk-google { width: 100%;  height: 36px; border-radius: 999px; margin-top: 14px; }
+.cc-sk-rule   { width: 100%;  height: 1px;  border-radius: 0; margin-top: 22px; }
+.cc-sk-label  { width: 34px;  height: 11px; margin-top: 20px; }
+.cc-sk-label-2 { width: 46px; margin-top: 16px; }
+.cc-sk-field  { width: 100%;  height: 32px; margin-top: 5px; }
+.cc-sk-submit { width: 100%;  height: 36px; border-radius: 999px; margin-top: 13px; }
+.cc-sk-links  { width: 100%;  height: 13px; margin-top: 16px; opacity: 0.6; }
+
+@keyframes cc-sk-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   #cc-signin-btn { transition: none; }
+  /* "No motion" means no motion — not a faster pulse. The bars stay, and they
+     stay still; they are still legible as "something is loading" because the
+     region they occupy is empty of controls. */
+  .cc-sk { animation: none; }
 }

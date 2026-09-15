@@ -55,16 +55,38 @@ export default function ExtensionLoginPage() {
   }, []);
 
   return (
-    <div className="min-h-screen w-full bg-slate-50 px-4 py-5">
+    // `cc-ext` is doing real work here, not decorating: it is the scope every
+    // rule in app/extension/extension.css hangs off, so adding it hands this
+    // route the surface token set, the 0.8× density pass, the dark remap and
+    // the focus-ring style in one class. Without it the framed form painted
+    // slate-50 + blue-600 inside a #0b0b0d popup — a different product in a
+    // black box, which is exactly the seam ART-DIRECTION §5 exists to close.
+    <div className="cc-ext cc-auth">
       <Suspense
         fallback={
-          <div className="w-full max-w-md text-center text-slate-500 text-sm">
-            Loading…
+          // Matches the real form's column and vertical centring so the
+          // handover from fallback to form does not jump the layout.
+          <div className="cc-auth-shell" aria-busy="true">
+            <div className="cc-auth-body">
+              <p className="cc-auth-note" role="status">
+                Loading…
+              </p>
+            </div>
           </div>
         }
       >
         <LoginForm variant="extension" />
       </Suspense>
+
+      {/* The trust strip from ART-DIRECTION §4.8, moved down here from the
+          shell's static block. That block is display:none the moment this
+          frame reports `login-ready`, so without this line the one sentence
+          answering "where do my calls actually go?" would disappear at the
+          exact moment the user is looking at a password field. It belongs to
+          the surface, not the form, which is why it is not inside LoginForm. */}
+      <footer className="cc-auth-foot">
+        Calls run on your device · nothing is routed through us
+      </footer>
     </div>
   );
 }

@@ -307,3 +307,271 @@ html:has(.cc-ext), body:has(.cc-ext) {
   outline: 2px solid var(--cc-ring);
   outline-offset: 1px;
 }
+
+/* ===========================================================================
+   EMBEDDED SIGN-IN — /extension/login, framed by the popup's #cc-login-frame.
+   Dispatch PIXEL-D, Vinci ART-DIRECTION §4.8 "Signed out" (artboard 1).
+
+   WHY A CLASS BLOCK AND NOT TAILWIND IN THE COMPONENT
+   components/auth/LoginForm.tsx is ONE component serving two surfaces. The web
+   variant's class strings are a hard "do not touch" — /app visual diff = 0 — so
+   the extension variant swaps in these semantic hooks instead of layering
+   `dark:` / `ext:` variants onto shared strings. The web branch therefore
+   cannot be broken by anything in this file: it never emits these class names.
+
+   The page root carries `.cc-ext .cc-auth`, so this whole block inherits the
+   token set AND the dark remap above for free. That is the entire reason the
+   framed form agrees with the shell around it in both themes — before this it
+   was slate-50 + blue-600, i.e. a different product in a black box.
+   =========================================================================== */
+
+.cc-ext.cc-auth {
+  min-height: 100%;
+  /* NOT a fixed 600px column. Dispatch C rehomes this same route into a
+     full-height side panel; anything keyed to the popup's ceiling would have
+     to be unpicked there. The footer is pushed down by flex, not by a height. */
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* Two elements, because LoginForm emits two: an outer wrapper and an inner
+   "card". Rather than branch the component's STRUCTURE per variant (the way
+   drift starts), the extension keeps the same two boxes and simply gives them
+   different jobs — outer = the growing region, inner = the centred column. */
+.cc-ext .cc-auth-shell {
+  flex: 1 1 auto;
+  display: flex;
+  width: 100%;
+  min-height: 0;
+}
+
+/* Capped so the 800px pop-out doesn't stretch a 400px layout across the whole
+   window — at that width the form centres instead of spanning. */
+.cc-ext .cc-auth-body {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 300px;
+  /* `margin:auto` on a flex child centres on BOTH axes — vertically in the
+     600px popup, and still vertically in a 1000px side panel. No height math. */
+  margin: auto;
+  padding: 18px 16px 22px;
+  box-sizing: border-box;
+}
+
+/* NO CARD. The web variant wraps the form in bg-white + border + rounded-2xl +
+   shadow-sm. Inside a 400px iframe, inside a popup, that is a card in a card in
+   a box, and ART-DIRECTION trait 2 is explicit: "inside a 400px panel a drop
+   shadow reads as dirt". The form sits directly on --cc-page. */
+
+.cc-ext .cc-auth-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--cc-ink);
+  margin: 0 0 14px;
+}
+
+/* ---- Google — outline pill. Secondary weight: it is an alternative route to
+       the same place, not a second primary. Two filled buttons in one column
+       and neither reads as the main one. ---- */
+.cc-ext .cc-auth-google {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--cc-chip-bd);
+  border-radius: var(--r-pill);
+  background: var(--cc-card);
+  color: var(--cc-ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease-out, border-color 0.12s ease-out;
+}
+.cc-ext .cc-auth-google:hover { background: var(--cc-field); }
+.cc-ext .cc-auth-google svg { width: 15px; height: 15px; flex-shrink: 0; }
+
+/* ---- "or" rule. Sentence case, not the tracked-out caps the web variant
+       uses: at 10px in a 268px column, caps + letter-spacing is noise. ---- */
+.cc-ext .cc-auth-or {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0;
+  font-size: 10.5px;
+  color: var(--cc-mut);
+}
+.cc-ext .cc-auth-or::before,
+.cc-ext .cc-auth-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--cc-hair);
+}
+
+/* ---- Fields — 32px per §3. ---- */
+.cc-ext .cc-auth-form { display: flex; flex-direction: column; gap: 10px; }
+
+.cc-ext .cc-auth-label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--cc-sec);
+  margin-bottom: 4px;
+}
+
+.cc-ext .cc-auth-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--cc-chip-bd);
+  border-radius: var(--r-btn);
+  background: var(--cc-card);
+  color: var(--cc-ink);
+  /* 12.5px is the surface floor: below it Chrome renders inputs fuzzy at
+     fractional device pixel ratios, and a popup has no zoom-to-fit rescue. */
+  font-size: 12.5px;
+  font-family: inherit;
+  transition: border-color 0.12s ease-out;
+}
+.cc-ext .cc-auth-input::placeholder { color: var(--cc-mut); }
+.cc-ext .cc-auth-input:hover { border-color: var(--cc-mut); }
+.cc-ext .cc-auth-input:focus {
+  outline: 2px solid var(--cc-ring);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+/* ---- Primary — the ONLY gradient on the screen, matching the shell's mark
+       40px above it. The web variant's blue-600 is a different brand from the
+       wordmark the user is looking at, which is the same mismatch §4.1 flags
+       on the header mark. ---- */
+.cc-ext .cc-auth-submit {
+  width: 100%;
+  height: 36px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background-image: var(--cc-grad);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  font-family: inherit;
+  cursor: pointer;
+  transition: filter 0.12s ease-out, transform 0.12s ease-out;
+}
+.cc-ext .cc-auth-submit:hover:not(:disabled) { filter: brightness(1.06); }
+.cc-ext .cc-auth-submit:active:not(:disabled) { transform: translateY(1px); }
+.cc-ext .cc-auth-submit:disabled {
+  /* Flattened, not just faded: a 60%-opacity gradient still reads as the
+     primary action and invites the second click we are trying to prevent. */
+  background-image: none;
+  background-color: var(--cc-field);
+  color: var(--cc-mut);
+  cursor: not-allowed;
+}
+
+/* ---- Notices. Tonal, hairline, no shadow — same rule as every other surface
+       in this panel. Error is the one place red is allowed here. ---- */
+.cc-ext .cc-auth-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--cc-hair);
+  border-radius: var(--r-btn);
+  background: var(--cc-field);
+  color: var(--cc-sec);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.cc-ext .cc-auth-note svg { flex-shrink: 0; }
+.cc-ext .cc-auth-note-error {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+  color: #b91c1c;
+}
+.cc-ext .cc-auth-note-ok {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.08);
+  color: #047857;
+}
+@media (prefers-color-scheme: dark) {
+  .cc-ext .cc-auth-note-error { color: #f87171; }
+  .cc-ext .cc-auth-note-ok { color: #34d399; }
+}
+
+/* ---- Foot links. space-between rather than a middle-dot separator: two
+       links do not need a glyph between them to be read as two links. ---- */
+.cc-ext .cc-auth-links {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  font-size: 11.5px;
+}
+.cc-ext .cc-auth-link {
+  color: var(--cc-sec);
+  text-decoration: none;
+  transition: color 0.12s ease-out;
+}
+.cc-ext .cc-auth-link:hover { color: var(--cc-ink); text-decoration: underline; }
+
+/* ---- Trust strip. Lifted from the shell's static block (§4.8) because that
+       block is hidden the moment this frame reports ready — without it here,
+       the line Dennis's users actually want before handing over an account
+       would simply vanish at the exact moment they see a password field. ---- */
+.cc-ext .cc-auth-foot {
+  flex-shrink: 0;
+  padding: 9px 16px;
+  border-top: 1px solid var(--cc-hair);
+  font-size: 10.5px;
+  color: var(--cc-mut);
+  text-align: center;
+}
+
+/* ===========================================================================
+   ACCOUNT STATE — the avatar dot + the account menu's "way out" link.
+   Dispatch PIXEL-D scope 3. Both are extension-only by construction: the
+   AccountMenu they live in is rendered by PhoneModeHeader's `extension`
+   branch, which /app never reaches.
+   =========================================================================== */
+
+/* 6px dot, bottom-right of the 22px avatar. Ringed in the header's own card
+   colour so it reads as a separate object sitting ON the avatar rather than a
+   speck of noise inside the gradient — and so it survives both themes without
+   a second colour. Grey, not red: a lapsed subscription is a thing to deal
+   with, not an error, and the extension does not nag. */
+.cc-ext .cc-account-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: #a1a1aa;                 /* --cc-off */
+  box-shadow: 0 0 0 1.5px var(--cc-card);
+}
+
+/* The link under "No active subscription". Underlined at rest, because at
+   11px in a muted colour a colour shift alone is not a reliable affordance —
+   and WCAG 1.4.1 says a link inside a block of text cannot be signalled by
+   colour only. */
+.cc-ext .cc-account-manage {
+  display: inline-block;
+  margin-top: 2px;
+  color: var(--cc-sec);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.12s ease-out;
+}
+.cc-ext .cc-account-manage:hover { color: var(--cc-ink); }
