@@ -5,10 +5,11 @@
  *
  * TWO SURFACES, ONE COMPONENT (dispatch PIXEL-B2, 2026-09-14):
  *
- *   surface="app"       (default) — the dashboard's Phone Mode header. Every
- *                       pixel of this branch is unchanged from before B2:
- *                       brand dot, Beta pill, full ConnectionStatus, Expand.
- *                       /app visual diff = 0 is a hard gate on this dispatch.
+ *   surface="app"       (default) — the dashboard's Phone Mode header: brand
+ *                       mark, Beta pill, full ConnectionStatus, Expand. Frozen
+ *                       apart from the mark, which became the official <CcMark>
+ *                       in dispatch G (2026-09-15) so the dashboard, the
+ *                       extension and the site finally show one logo.
  *
  *   surface="extension" — the Chrome extension's hosted /extension route.
  *                       One 40px row at 0.8× density:
@@ -62,7 +63,10 @@ export function PhoneModeHeader({ surface = 'app' }: PhoneModeHeaderProps) {
 }
 
 // ---------------------------------------------------------------------------
-// /app — UNCHANGED. Do not restyle; D4 gate.
+// /app — FROZEN except for the brand mark. The D4 gate still stands on every
+// other pixel of this branch (spacing, wordmark, Beta pill, ConnectionStatus,
+// header height, Expand). Dispatch G (Dennis, 2026-09-15) authorised exactly
+// one substitution here: the mark. Do not restyle anything else.
 // ---------------------------------------------------------------------------
 
 function AppHeader() {
@@ -76,11 +80,13 @@ function AppHeader() {
       className="sticky top-0 z-30 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/85 px-2.5 backdrop-blur-sm"
       role="banner"
     >
-      <span
-        aria-hidden="true"
-        className="h-5 w-5 flex-shrink-0 rounded-md bg-gradient-to-br from-blue-500 to-indigo-600 shadow-sm"
-        title="ComputerCaller"
-      />
+      {/* The official CC mark (2026-09-15, dispatch G). This was the old
+          blue→indigo gradient tile — a blank swatch standing in for a logo,
+          and a different brand from the one the extension surface and the
+          marketing site already show. Same 20px box the tile occupied, same
+          aria-hidden treatment: ConnectionStatus beside it carries the words,
+          so a screen reader repeating "ComputerCaller" here is noise. */}
+      <CcMark size={20} variant="mini" className="flex-shrink-0" />
 
       {/* Beta tag — Phone Mode is still in beta. Removed on the EXTENSION
           surface only (AC-6); the dashboard keeps it until Ken says otherwise. */}
