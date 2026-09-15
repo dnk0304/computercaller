@@ -2174,6 +2174,14 @@ function startRelay(httpServer) {
       // sock.onmessage, which is exactly the activity Chrome 116+ documents as
       // extending an extension service worker's life.
       //
+      // RE-MEASURED WITH THIS FIX IN PLACE (360s window, same debugger-free
+      // protocol, ping left unchanged so HB is the only variable):
+      //   1 boot id (was 2)  -  the worker was NEVER evicted
+      //   0.00s socket-less  (was 33.83s)
+      //   pushes at +90s / +210s / +330s ALL delivered; +210s is the one the
+      //   baseline lost. 24 HB sends on the socket at a clean ~15.0s cadence.
+      // Ping alone is insufficient; ping + HB is sufficient.
+      //
       // Scoped to listeners because they are the only sockets owned by a
       // worker Chrome evicts — /app's socket lives in a page. Piggy-backed on
       // this existing 15s loop rather than a new timer: 15s < the 30s idle
