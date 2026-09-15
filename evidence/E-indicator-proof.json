@@ -1,0 +1,82 @@
+[
+  {
+    "name": "shipped state machine is reachable in worker scope",
+    "pass": true,
+    "detail": "{\"handleFrame\":\"function\",\"refreshIndicator\":\"function\",\"notePhonePresence\":\"function\"}"
+  },
+  {
+    "name": "signed-out ⇒ no indicator",
+    "pass": true,
+    "detail": "ComputerCaller"
+  },
+  {
+    "name": "signed in + socket down ⇒ grey",
+    "pass": true,
+    "detail": "ComputerCaller — reconnecting…"
+  },
+  {
+    "name": "relay socket open but NO phone ⇒ still grey, never green",
+    "pass": true,
+    "detail": "ComputerCaller — reconnecting…"
+  },
+  {
+    "name": "LOBBY_STATUS{phonePresent:true} ⇒ GREEN",
+    "pass": true,
+    "detail": "ComputerCaller — phone connected"
+  },
+  {
+    "name": "PHONE_ABSENT ⇒ back to grey",
+    "pass": true,
+    "detail": "ComputerCaller — reconnecting…"
+  },
+  {
+    "name": "PHONE_PRESENT ⇒ GREEN again",
+    "pass": true,
+    "detail": "ComputerCaller — phone connected"
+  },
+  {
+    "name": "paired phone (alreadyActive, lobby empty) ⇒ GREEN",
+    "pass": true,
+    "detail": "ComputerCaller — phone connected"
+  },
+  {
+    "name": "any phone→browser data frame repairs presence (tryAutoResume gap)",
+    "pass": true,
+    "detail": "ComputerCaller — phone connected"
+  },
+  {
+    "name": "counters increment while every surface is closed",
+    "pass": true,
+    "detail": "{\"alerts\":1,\"missedCalls\":1,\"newSms\":2}"
+  },
+  {
+    "name": "an OPEN surface suppresses counting (it is the read receipt)",
+    "pass": true,
+    "detail": "{\"alerts\":1,\"missedCalls\":1,\"newSms\":2}"
+  },
+  {
+    "name": "SMS notification carries a thread deep link",
+    "pass": true,
+    "detail": "[\"cc-sms:1789467892091\",\"#tab=texts&thread=thread-42\"]"
+  },
+  {
+    "name": "alert notification deep-links to the alerts tab",
+    "pass": true,
+    "detail": "{\"cc-notif:1789467892091\":\"#tab=alerts\",\"cc-notif:1789467892092\":\"#tab=alerts\",\"cc-sms:1789467892091\":\"#tab=texts&thread=thread-42\"}"
+  },
+  {
+    "name": "a deep link is consumed exactly once",
+    "pass": true,
+    "detail": "{\"a\":\"#tab=alerts\",\"b\":\"\"}"
+  },
+  {
+    "name": "sign-out clears the dot and the counters",
+    "pass": true,
+    "detail": "{\"title\":\"ComputerCaller\",\"unread\":{\"alerts\":0,\"missedCalls\":0,\"newSms\":0},\"page\":\"signed-out\"}"
+  },
+  {
+    "name": "dock always answers Pixel-C with {ok, surface}",
+    "pass": true,
+    "detail": "{\"ok\":false,\"surface\":\"none\",\"error\":\"sidePanel: `sidePanel.open()` may only be called in response to a user gesture. | openPopup: Extension does not have a popup on the active tab.\"}"
+  }
+]

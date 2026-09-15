@@ -1,0 +1,87 @@
+[
+  {
+    "name": "service worker registered",
+    "pass": true,
+    "detail": "helkcjjlidcceiifjccolmppanfmcjjg"
+  },
+  {
+    "name": "action.default_popup removed",
+    "pass": true,
+    "detail": "{\"default_icon\":{\"16\":\"icon16.png\",\"32\":\"icon32.png\",\"48\":\"icon48.png\",\"128\":\"icon128.png\"},\"default_title\":\"ComputerCaller\"}"
+  },
+  {
+    "name": "side_panel.default_path = sidepanel.html",
+    "pass": true,
+    "detail": ""
+  },
+  {
+    "name": "sidePanel permission present",
+    "pass": true,
+    "detail": ""
+  },
+  {
+    "name": "sidePanel.setPanelBehavior accepted",
+    "pass": true,
+    "detail": "{\"ok\":true,\"opts\":{\"enabled\":true,\"path\":\"sidepanel.html\"}}"
+  },
+  {
+    "name": "OffscreenCanvas composes a green dot at the expected centre",
+    "pass": true,
+    "detail": "{\"r\":28,\"g\":163,\"rr\":22,\"b\":74,\"a\":255}"
+  },
+  {
+    "name": "signed-out ⇒ neutral title (no dot claimed)",
+    "pass": true,
+    "detail": "ComputerCaller"
+  },
+  {
+    "name": "storage.session carries the unread shape",
+    "pass": true,
+    "detail": "{\"alerts\":1,\"missedCalls\":0,\"newSms\":2}"
+  },
+  {
+    "name": "tab-viewed zeroes exactly one counter (and leaves the others)",
+    "pass": true,
+    "detail": "{\"ok\":true,\"unread\":{\"missedCalls\":0,\"newSms\":0,\"alerts\":1}}"
+  },
+  {
+    "name": "unread-get exposes counts to a surface",
+    "pass": true,
+    "detail": "{\"ok\":true,\"unread\":{\"missedCalls\":0,\"newSms\":0,\"alerts\":1}}"
+  },
+  {
+    "name": "popup.html loads shell.js with no page error",
+    "pass": true,
+    "detail": "{\"surface\":\"popup\",\"hasFrame\":true,\"hasGate\":true,\"errs\":[]}"
+  },
+  {
+    "name": "popout.html loads shell.js with no page error",
+    "pass": true,
+    "detail": "{\"surface\":\"popout\",\"hasFrame\":true,\"hasGate\":true,\"errs\":[]}"
+  },
+  {
+    "name": "sidepanel.html loads shell.js with no page error",
+    "pass": true,
+    "detail": "{\"surface\":\"sidepanel\",\"hasFrame\":true,\"hasGate\":true,\"errs\":[]}"
+  },
+  {
+    "name": "presence port pushes unread on connect",
+    "pass": true,
+    "detail": "[{\"type\":\"unread\",\"unread\":{\"missedCalls\":0,\"newSms\":0,\"alerts\":1}}]"
+  },
+  {
+    "name": "presence suppression wiring reachable",
+    "pass": true,
+    "detail": ""
+  },
+  {
+    "name": "cc-keepalive alarm armed at 30s",
+    "pass": true,
+    "detail": "[{\"name\":\"cc-keepalive\",\"periodInMinutes\":0.5,\"scheduledTime\":1789467820394.001}]"
+  },
+  {
+    "name": "no uncaught worker errors",
+    "pass": true,
+    "detail": ""
+  }
+]
