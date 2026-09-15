@@ -75,7 +75,16 @@ body {
 #cc-signin {
   display: none;              /* shell.js flips to block */
   position: absolute;
-  inset: 0;
+  /* Starts BELOW the 40px signed-out header, not under it. The two are shown
+     and hidden by the same flag in showOverlay(), so "the header is there" is
+     always true while this box is visible — which is why this can be a static
+     inset rather than a class the JS has to keep in sync.
+     Before this the header was an opaque bar floating on top of the login
+     iframe at z-index 11: the framed form's own top 40px (and, in a short
+     window, its first field) rendered underneath it. Fixed here rather than by
+     padding the framed page, because the overlap is the shell's geometry and
+     the framed route should not have to know the shell has a header. */
+  inset: 40px 0 0 0;
   z-index: 10;
   background: var(--cc-page);
 }
@@ -125,9 +134,16 @@ body {
   border-bottom: 1px solid var(--cc-hair);
   background: var(--cc-card);
 }
+/* The OFFICIAL mark (design/extension-marks/mark-mini.svg, copied in as
+   mark-mini.svg), not a blank tile of the brand gradient — which is what this
+   was until 2026-09-15, and what the hosted header was drawing too. Three
+   surfaces claimed to show the logo and none of them did.
+   mini, not the full mark: at 18px the full mark's monitor, phone, call arc
+   and handset badge collapse into green mush. The SVG carries its own rounded
+   tile, so no border-radius and no gradient here. */
 #cc-shell-header .cc-mark-sm {
-  width: 18px; height: 18px; border-radius: 6px;
-  background-image: var(--cc-grad);
+  width: 18px; height: 18px;
+  background: url("mark-mini.svg") center / 18px 18px no-repeat;
   flex-shrink: 0;
 }
 #cc-shell-header .cc-wordmark {

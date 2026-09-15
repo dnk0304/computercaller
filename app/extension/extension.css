@@ -247,6 +247,39 @@ html:has(.cc-ext), body:has(.cc-ext) {
 .cc-ext input,
 .cc-ext textarea { font-size: 12.5px; }
 
+/* ---------------------------------------------------------------------------
+   SHORT PANEL. A side panel inherits the browser window's height, and a window
+   can be short — dragged down, a small laptop, a second display in portrait
+   next to a video call. Measured at 400×420 the compact dial pad's Call button
+   sat outside the view's overflow:hidden and was not reachable by any means.
+
+   The fix is ONE scroller, not a smaller pad. Squashing a keypad to fit trades
+   a scroll for a mis-tap. Above the threshold the Recent list stays the only
+   scrolling region (the three-island column B2 built); below it the whole
+   column scrolls as one and the inner list stops scrolling independently,
+   because two nested scrollbars in a 400px box is its own bug.
+
+   520px, not 600: it has to clear the header (40) + tab bar (44) + the usage
+   strip + the pad's own ~360px before the pad is genuinely the thing that does
+   not fit. Above that height nothing about the existing layout changes. */
+@media (max-height: 520px) {
+  .cc-ext .cc-dial-column { overflow-y: auto; }
+  .cc-ext .cc-dial-column > * { flex-shrink: 0; }
+  .cc-ext .cc-dial-column ul { overflow-y: visible; }
+}
+
+/* ---- Tab badges. On the dashboard the count hangs 8px past the icon's right
+       edge and there is room for it. Here the row is 0.8× and a three-tab bar
+       in a 400px panel gives each label ~30px of clear space, so the same
+       offset puts the pill through the first letter of "Texts" — which is
+       exactly the kind of collision AC-1 was raised about. Pulled back to 4px:
+       it still reads as attached to the icon (it overlaps it), and it stops
+       2px short of the label at every supported width. ---- */
+.cc-ext .cc-tab-badge {
+  right: -4px;
+  top: -7px;
+}
+
 /* ---- Rows: 46px ---- */
 .cc-ext li > [role="button"] { min-height: 38px; }
 
@@ -276,10 +309,53 @@ html:has(.cc-ext), body:has(.cc-ext) {
   max-height: 100%;
 }
 
-/* Wider than a popup → the pop-out. Give the dial pad and the list room to
-   breathe rather than stretching a 400px layout across 800px. */
+/* ---------------------------------------------------------------------------
+   WIDE: a dragged-open side panel, and the 800px pop-out.
+
+   THE TWO-PANE RAIL IS DELIBERATELY NOT BUILT (dispatch PIXEL-C, Ken's
+   carried-forward B2 ruling: "if it doesn't earn its place, say so and drop
+   it"). Vinci drew a list-plus-detail rail for an 800px pop-out. The side
+   panel is now the default surface and it is a NARROW one — Chrome opens it at
+   400px and a user who drags it wider is buying a longer thread, not a second
+   column. Building the rail would mean a second navigation model (push/pop vs.
+   select-in-place) living behind a width query, so every view, the back arrow
+   and the deep-link handler would need two correct behaviours, on the surface
+   Dennis uses least. That is real complexity bought for one window size.
+
+   What wide widths actually need is the opposite of a second column: a first
+   one that stops growing. A 700px-wide dial pad with 120px gaps between keys
+   is not "roomy", it is a 400px layout stretched — the exact failure B2 was
+   called in to fix, reappearing on a different axis. So the column caps and
+   centres, and the ground shows through either side.
+
+   Capping the SHELL (not its contents) is what keeps the sticky header and tab
+   bar aligned to the column instead of spanning a width their contents have
+   abandoned. --cc-page-wide is a touch darker than --cc-page so the gutters
+   read as the surface behind a panel rather than as a rendering mistake. */
 @media (min-width: 620px) {
   .cc-ext .cc-filterbar { padding-inline: 12px; }
+
+  .cc-ext.phone-mode-shell {
+    /* width:100% is LOAD-BEARING, not belt-and-braces. The shell's parent is a
+       flex column, so the shell is a flex item whose horizontal size normally
+       comes from align-items:stretch — and an auto margin on the cross axis
+       CANCELS that stretch. max-width + margin-inline:auto alone therefore
+       produced a shrink-to-fit column: measured 295px inside a 760px panel,
+       a dial pad marooned in two 230px gutters. Giving it an explicit width
+       means the auto margins have a real box to centre. */
+    width: 100%;
+    max-width: 560px;
+    margin-inline: auto;
+    border-inline: 1px solid var(--cc-hair);
+  }
+
+  /* Only inside this query. Below the cap there are no gutters, and a ground
+     that did not match the shell exactly would ring the iframe with a hairline
+     of the wrong grey — the B2 seam, reappearing. */
+  html:has(.cc-ext), body:has(.cc-ext) { background: #f0f0f0; }
+}
+@media (min-width: 620px) and (prefers-color-scheme: dark) {
+  html:has(.cc-ext), body:has(.cc-ext) { background: #050507; }
 }
 
 /* ===========================================================================

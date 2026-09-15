@@ -33,12 +33,14 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings } from 'lucide-react';
+import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings, PanelRight } from 'lucide-react';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
+import { CcMark } from '@/components/CcMark';
 import { usePhoneMode } from '@/hooks';
 import {
   useExtensionShell,
   requestPopout,
+  requestDock,
   requestSignOut,
   WEBAPP_ACCOUNT_URL,
   WEBAPP_DASHBOARD_URL,
@@ -115,12 +117,12 @@ function ExtensionHeader() {
       className="cc-ext-header sticky top-0 z-30 flex h-10 flex-shrink-0 items-center gap-1.5 border-b border-slate-200 bg-white px-2"
       role="banner"
     >
-      {/* CC mark — the green→blue gradient, matching the extension shell's
-          sign-in mark. aria-hidden: the wordmark beside it is the readable name. */}
-      <span
-        aria-hidden="true"
-        className="h-[18px] w-[18px] flex-shrink-0 rounded-[6px] bg-gradient-to-br from-[#35c977] via-[#22a89a] to-[#1e8fb2]"
-      />
+      {/* The official CC mark (design/extension-marks/mark-mini.svg via
+          <CcMark>). This was a BLANK green→blue tile until 2026-09-15 — the
+          brand gradient with none of the brand in it, which is what Dennis
+          meant by "implement our official logo inside of the extension".
+          aria-hidden by default: the wordmark beside it is the readable name. */}
+      <CcMark size={18} variant="mini" className="flex-shrink-0" />
       {/* Wordmark hides below 340px so the device pill always wins the space
           fight — the pill carries state, the wordmark carries nothing the user
           doesn't already know (they clicked our toolbar icon to get here). */}
@@ -133,6 +135,10 @@ function ExtensionHeader() {
         <ConnectionStatus variant="compact" />
       </div>
 
+      {/* ⤢ and ⇲ are mutually exclusive by construction: canPopout is every
+          surface EXCEPT the pop-out, canDock is only the pop-out. So the same
+          26px slot always holds exactly one "move me" control and the row's
+          width budget (AC-1) is unchanged by adding the second verb. */}
       {shell.canPopout && (
         <button
           type="button"
@@ -145,8 +151,57 @@ function ExtensionHeader() {
         </button>
       )}
 
+      {shell.canDock && <DockButton refused={shell.lastDock?.ok === false} />}
+
       <AccountMenu email={shell.email} canSignOut={shell.inExtension} />
     </header>
+  );
+}
+
+/**
+ * ⇲ "Dock to side panel" — the inverse of ⤢, and the answer to Dennis's
+ * "there is no button again for me to reconnect it to the extension browser
+ * window" (2026-09-15, 09:20).
+ *
+ * THE onClick IS `requestDock` ITSELF. Not an arrow function that awaits
+ * something first, not a setState followed by an effect. chrome.sidePanel.open()
+ * is gesture-gated and shell.js has to still be inside THIS click's task when
+ * it calls; anything that defers the postMessage spends the gesture. Forge-E
+ * measured both halves of this (scripts/ext-dock-gesture-proof.mjs) — see the
+ * note on requestDock() in lib/extensionBridge.ts before changing this line.
+ *
+ * On success this component ceases to exist along with the window it is in, so
+ * there is no success state to render. `refused` is the only outcome the UI
+ * ever sees, and it is a real one: some Chrome builds refuse the panel from a
+ * detached window, and a button that silently does nothing is worse than one
+ * that says what to do instead.
+ */
+function DockButton({ refused }: { refused: boolean }) {
+  return (
+    <div className="relative flex-shrink-0">
+      <button
+        type="button"
+        onClick={requestDock}
+        className="inline-flex h-[26px] w-[26px] items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+        aria-label="Dock to side panel"
+        title="Dock to side panel"
+      >
+        <PanelRight className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+      {refused && (
+        // Absolutely positioned on purpose: a hint that pushed the tab bar
+        // down would move the three tabs under the user's cursor at the exact
+        // moment they are reaching for one. It floats, and it stays until the
+        // window closes — there is nothing to dismiss because the instruction
+        // is still true.
+        <p
+          role="status"
+          className="cc-dock-hint absolute right-0 top-full z-50 mt-1 w-[190px] rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-slate-600 shadow-[0_10px_28px_-8px_rgba(0,0,0,0.28)]"
+        >
+          Click the ComputerCaller toolbar icon to open the side panel.
+        </p>
+      )}
+    </div>
   );
 }
 

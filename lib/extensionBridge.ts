@@ -159,6 +159,57 @@ export function requestGoogleSignIn(): void {
 export type ExtensionTab = 'dial' | 'texts' | 'alerts';
 
 /**
+ * A notification deep link, as the extension delivers it.
+ *
+ * background.js opens the surface at `#tab=texts&thread=<id>` (or `#tab=alerts`)
+ * and shell.js appends that hash verbatim to the hosted route's URL — the
+ * extension never parses it, so this module is the only place the vocabulary is
+ * known. The tab names are the APP's (`dialer` / `texts` / `bell`), translated
+ * here from the notification's, so nothing downstream has to hold both.
+ */
+export interface ExtensionDeepLink {
+  tab: 'dialer' | 'texts' | 'bell' | null;
+  thread: string | null;
+}
+
+/**
+ * Read the deep link without consuming it. Safe to call during render: it reads
+ * `location.hash` and nothing else, returns null on the server, and returns null
+ * rather than an empty object when there is no link to follow.
+ *
+ * Two callers need this at two different moments — the shell, to navigate, and
+ * the badge hook, to know that the tab showing on the FIRST render is not yet
+ * the tab the user asked for — which is why reading and clearing are separate.
+ */
+export function readDeepLink(): ExtensionDeepLink | null {
+  if (typeof window === 'undefined') return null;
+  const hash = window.location.hash;
+  if (!hash || hash.length < 2) return null;
+  const params = new URLSearchParams(hash.slice(1));
+  const raw = params.get('tab');
+  const tab =
+    raw === 'texts' ? 'texts' : raw === 'alerts' ? 'bell' : raw === 'dial' ? 'dialer' : null;
+  const thread = params.get('thread');
+  if (!tab && !thread) return null;
+  return { tab, thread };
+}
+
+/**
+ * Strip the hash once it has been acted on. A link that survived would
+ * re-assert itself on the next history operation and yank the user back to a
+ * thread they had already navigated away from.
+ */
+export function clearDeepLink(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  } catch {
+    // A refused replaceState is not worth breaking navigation over; the callers
+    // act on the link exactly once regardless.
+  }
+}
+
+/**
  * Unread while every extension surface was closed, counted by the background
  * service worker and kept in chrome.storage.session. Zeroed per tab by
  * {@link notifyTabViewed}, and wholly reset on sign-out and on browser restart.

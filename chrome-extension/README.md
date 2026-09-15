@@ -70,7 +70,15 @@ user gesture.
 - Extension ID: `helkcjjlidcceiifjccolmppanfmcjjg` (pinned via the manifest `key`).
 - `key.pem` is the **private** half — git-ignored, never commit it. Ken/Pilot use
   it to package the `.crx`/Web-Store build so dev and prod share one ID.
-- `icon*.png` are **placeholders** (git-ignored). Pixel supplies finals (brief 2).
+- `icon*.png` are the **CC-branded finals** (Pixel, `88eab94`), tracked in git and
+  rendered from `design/extension-marks/mark-full.svg`. The line that called them
+  placeholders was stale from brief 2 and is corrected here (PIXEL-C, 2026-09-15).
+  Regenerate from the SVG master if they ever need to change — do not hand-edit
+  the PNGs.
+- `mark-mini.svg` is `design/extension-marks/mark-mini.svg`, copied in so the
+  shell's signed-out header can show the real mark instead of a blank gradient
+  tile. The 18px cut, because the full mark's five objects turn to mush at that
+  size. The hosted surfaces use the same artwork via `components/CcMark.tsx`.
 
 ## Load unpacked (dev)
 

@@ -54,6 +54,8 @@ import { UsageMeter } from '@/components/UsageMeter';
 import { Dialpad } from '@/components/Dialpad';
 import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterBar';
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
+import { useExtensionTabBadges } from '@/hooks/useExtensionTabBadges';
+import { readDeepLink, clearDeepLink } from '@/lib/extensionBridge';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import {
   usePhone,
@@ -225,10 +227,33 @@ const PhoneModeTemplates = React.memo(function PhoneModeTemplates({ onInsert }: 
 interface TabBarProps {
   active: 'dialer' | 'texts' | 'bell';
   unreadCount: number;
+  /**
+   * Missed calls / incoming SMS since each tab was last viewed. Always 0 on
+   * /app — the dashboard passes nothing and gets the defaults, so its tab bar
+   * renders byte-identically to before (dispatch PIXEL-C, /app diff = 0).
+   */
+  dialCount?: number;
+  textsCount?: number;
   onSelect: (tab: 'dialer' | 'texts' | 'bell') => void;
 }
 
-const TabBar = React.memo(function TabBar({ active, unreadCount, onSelect }: TabBarProps) {
+/**
+ * A badge is a glance, not a figure. Past nine the exact number stops changing
+ * what the user does about it, and a three-digit pill stops fitting beside a
+ * 16px icon.
+ */
+function badgeLabel(n: number): string | null {
+  if (n <= 0) return null;
+  return n > 9 ? '9+' : String(n);
+}
+
+const TabBar = React.memo(function TabBar({
+  active,
+  unreadCount,
+  dialCount = 0,
+  textsCount = 0,
+  onSelect,
+}: TabBarProps) {
   // role="tablist" + aria-selected on each tab makes the bar a real WAI-ARIA
   // tabset. Tab order is determined by source order; arrow keys are not yet
   // wired (low priority — single-row tabset with three items, taps dominate
@@ -247,19 +272,24 @@ const TabBar = React.memo(function TabBar({ active, unreadCount, onSelect }: Tab
         onClick={() => onSelect('dialer')}
         icon={<Phone className="h-4 w-4" aria-hidden="true" />}
         label="Dial"
+        badge={badgeLabel(dialCount)}
+        badgeLabel={dialCount === 1 ? '1 missed call' : `${dialCount} missed calls`}
       />
       <TabButton
         active={active === 'texts'}
         onClick={() => onSelect('texts')}
         icon={<MessageSquare className="h-4 w-4" aria-hidden="true" />}
         label="Texts"
+        badge={badgeLabel(textsCount)}
+        badgeLabel={textsCount === 1 ? '1 new message' : `${textsCount} new messages`}
       />
       <TabButton
         active={active === 'bell'}
         onClick={() => onSelect('bell')}
         icon={<Bell className="h-4 w-4" aria-hidden="true" />}
         label="Alerts"
-        badge={unreadCount > 0 ? (unreadCount > 9 ? '9+' : String(unreadCount)) : null}
+        badge={badgeLabel(unreadCount)}
+        badgeLabel={unreadCount === 1 ? '1 unread alert' : `${unreadCount} unread alerts`}
       />
     </div>
   );
@@ -271,9 +301,15 @@ interface TabButtonProps {
   icon: React.ReactNode;
   label: string;
   badge?: string | null;
+  /**
+   * What the badge MEANS, spelled out for assistive tech. "9+" beside a bell
+   * is legible to an eye and meaningless to a screen reader, which reads it as
+   * the string "9+" appended to "Alerts".
+   */
+  badgeLabel?: string;
 }
 
-function TabButton({ active, onClick, icon, label, badge }: TabButtonProps) {
+function TabButton({ active, onClick, icon, label, badge, badgeLabel }: TabButtonProps) {
   return (
     <button
       type="button"
@@ -293,12 +329,21 @@ function TabButton({ active, onClick, icon, label, badge }: TabButtonProps) {
       <span className="relative">
         {icon}
         {badge && (
-          <span className="absolute -right-2 -top-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold text-white">
+          <span
+            aria-hidden="true"
+            // cc-tab-badge is a positioning hook, not a style: the extension's
+            // 0.8× row is narrow enough that a badge hung 8px off the icon's
+            // right edge clips the first letter of the label beside it, and
+            // app/extension/extension.css re-anchors it there. The class emits
+            // nothing on /app, so the dashboard's Alerts badge is untouched.
+            className="cc-tab-badge absolute -right-2 -top-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold text-white"
+          >
             {badge}
           </span>
         )}
       </span>
       <span>{label}</span>
+      {badge && badgeLabel && <span className="sr-only">, {badgeLabel}</span>}
     </button>
   );
 }
@@ -526,7 +571,14 @@ function ExtDialerView() {
   const hasAnyLogs = callLogs.length > 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    // cc-dial-column: the hook app/extension/extension.css uses to turn this
+    // three-island column into a single scroller when the panel is too short
+    // for the pad. The pad island is shrink-0 by design — squashing a keypad
+    // is worse than scrolling to it — so on a short browser window the Call
+    // button fell outside this box's overflow:hidden and was simply gone. A
+    // side panel is as tall as the window and the window can be any height;
+    // nothing here may assume 600px (dispatch PIXEL-C, item 4).
+    <div className="cc-dial-column flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex-shrink-0">
         <Dialpad
           isCompact
@@ -1288,10 +1340,33 @@ export interface PhoneModeShellProps {
 }
 
 export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
-  const { current, setTab } = usePhoneMode();
+  const { current, setTab, push } = usePhoneMode();
   const isExt = surface === 'extension';
   const { phoneNotifications } = useNotifications();
   const unreadCount = phoneNotifications.filter(n => !n.read).length;
+
+  // ---------- Deep links from extension notifications ----------------------
+  // background.js opens the surface at #tab=texts&thread=<id> (or #tab=alerts)
+  // and shell.js passes the hash straight through to this route's URL. Clicking
+  // "new message from X" has to land ON that message; landing on Dial and
+  // making the user find it is the notification failing at its one job.
+  //
+  // Read ONCE, on mount, and then cleared from the URL. A hash that survived
+  // would re-assert itself on every re-render that touched location, yanking
+  // the user back to a thread they had already navigated away from. The
+  // extension never parses this vocabulary — the app owns it, so a new tab or
+  // param needs no extension change.
+  useEffect(() => {
+    if (!isExt) return;
+    const link = readDeepLink();
+    if (!link) return;
+    clearDeepLink();
+    if (link.tab) setTab(link.tab);
+    // Thread last: setTab replaces the stack and push lands on top of it, so
+    // the back arrow inside the thread returns to the Texts list rather than to
+    // whatever the surface happened to be showing before the notification.
+    if (link.thread) push({ kind: 'thread', threadId: link.thread });
+  }, [isExt, setTab, push]);
 
   // ---------- Toast: surface freshest unread notification briefly ----------
   // Strategy: watch the newest notification's id; when it changes AND we're
@@ -1366,6 +1441,10 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
       ? current.kind
       : null;
 
+  // Dial / Texts unread. Returns zeros unless `enabled`, so the dashboard's
+  // tab bar receives 0 and 0 and renders exactly as it did before.
+  const tabBadges = useExtensionTabBadges({ enabled: isExt, activeTab });
+
   const renderView = (v: PhoneModeView): React.ReactNode => {
     switch (v.kind) {
       case 'dialer': return isExt ? <ExtDialerView /> : <DialerView />;
@@ -1395,6 +1474,8 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
         <TabBar
           active={activeTab}
           unreadCount={unreadCount}
+          dialCount={tabBadges.dial}
+          textsCount={tabBadges.texts}
           onSelect={setTab}
         />
       )}
