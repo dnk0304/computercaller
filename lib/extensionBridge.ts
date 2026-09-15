@@ -39,7 +39,18 @@ export const WEBAPP_SETTINGS_URL = '/app/settings';
 /** Namespace on every frame we send or accept, so we never act on a stray message. */
 const NS = 'cc-ext';
 
-type OutboundType = 'ready' | 'open-popout' | 'sign-out';
+type OutboundType =
+  | 'ready'
+  | 'open-popout'
+  | 'sign-out'
+  // Embedded sign-in (2026-09-15, forge/ext-embedded-login). Posted by
+  // /extension/login from inside the shell's #cc-login-frame, NOT by the phone
+  // surface. The shell tells the two frames apart by contentWindow identity and
+  // refuses these verbs from the app frame (and `sign-out` from the login
+  // frame), so neither can drive the other's half of the flow.
+  | 'login-ready'
+  | 'signed-in'
+  | 'google-sign-in';
 
 function postToShell(type: OutboundType): void {
   if (typeof window === 'undefined' || window.parent === window) return;
@@ -59,6 +70,36 @@ export function requestPopout(): void {
 /** Sign out — re-triggers shell.js's signOut(); we own no auth state here. */
 export function requestSignOut(): void {
   postToShell('sign-out');
+}
+
+/**
+ * /extension/login mounted successfully. The shell keeps its own static
+ * sign-in block on screen until this lands, so a blank frame (CSP refusal,
+ * offline, 500) degrades to a visible "Try again" instead of white space.
+ */
+export function notifyLoginReady(): void {
+  postToShell('login-ready');
+}
+
+/**
+ * The password login POST succeeded and the auth_token cookie now exists in
+ * this profile. The shell swaps this frame for the app surface and asks the
+ * background service worker to mint its ext-session token FROM THAT COOKIE —
+ * no auth window, so nothing is waiting in a document Chrome can destroy.
+ * Carries no credential: it is a verb, not data.
+ */
+export function notifySignedIn(): void {
+  postToShell('signed-in');
+}
+
+/**
+ * Ask the shell (→ the background service worker) to run the Google flow.
+ * accounts.google.com sends X-Frame-Options: DENY, so Google's consent screen
+ * can never render in this frame; the SW owns that window. The popup may well
+ * be destroyed when the window opens — by design, nothing here is awaiting it.
+ */
+export function requestGoogleSignIn(): void {
+  postToShell('google-sign-in');
 }
 
 export interface ExtensionShellState {

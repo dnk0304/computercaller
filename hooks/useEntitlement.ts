@@ -46,7 +46,13 @@ export type EntitlementLifecycle =
   | 'allowlisted'
   // 'free_access' (2026-07-30): comped via the DB-backed allowlist → Pro tier.
   // Billing/upgrade prompts are suppressed for this state (they're not paying).
-  | 'free_access';
+  | 'free_access'
+  // Added 2026-09-15 to close a pre-existing gap: the SERVER enum
+  // (lib/entitlement-core.d.ts EntitlementState) has always been able to return
+  // these two, and this union silently could not name them. Nothing changed on
+  // the wire — the type just stopped lying about it.
+  | 'free_tier'
+  | 'needs_subscription';
 
 /** The full entitlement payload the UI consumes (extended 2026-08-17). */
 export interface Entitlement {
@@ -65,6 +71,120 @@ export interface Entitlement {
    */
   upgrade: UpgradePath;
   usage: { templates: number; quickReplies: number };
+  /**
+   * ISO boundary dates (2026-09-15, additive — optional so a client built
+   * against a server that predates them still typechecks).
+   */
+  trialEndsAt?: string | null;
+  currentPeriodEnd?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Account state — the SINGLE derived value the extension's account menu renders
+// (2026-09-15, dispatch forge/ext-embedded-login). Dennis: the extension should
+// "identify the current trial/subscription state of the account".
+//
+// Derivation lives here, next to the contract it reads, rather than in the
+// header component: the mapping from nine server states to five user-facing
+// ones is a decision, and a decision that gets re-made per component is a
+// decision that will eventually be made two different ways.
+//
+// PILOT CONSTRAINT, enforced in the copy below and in PhoneModeHeader: the
+// extension NEVER sells. No price, no Whop checkout, no "Upgrade" CTA — even
+// for `needs_subscription`, which is plain text pointing at the web app.
+// ---------------------------------------------------------------------------
+
+export type AccountStateKind =
+  | 'needs_subscription'
+  | 'trial'
+  | 'active'
+  | 'grandfathered'
+  | 'full_access';
+
+export interface AccountState {
+  kind: AccountStateKind;
+  /** One short line, ready to render. Never contains a price or a CTA. */
+  label: string;
+  /** ISO trial end — non-null only for kind 'trial' (and only if the server knows it). */
+  endsAt: string | null;
+  /** ISO renewal date — non-null only for kind 'active' on a real subscription. */
+  renewsAt: string | null;
+}
+
+function shortDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  // Fixed en-GB + UTC: this string is produced client-side but must not shift
+  // under the viewer's locale in a 186px menu, and a date-only boundary has no
+  // business being re-interpreted into another timezone.
+  return d.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+/**
+ * Map a server entitlement onto the five account states. Returns null when
+ * there is nothing to say yet (still loading, or unauthenticated).
+ */
+export function deriveAccountState(entitlement: Entitlement | null): AccountState | null {
+  if (!entitlement) return null;
+  const { state, grandfathered, trialDaysLeft } = entitlement;
+
+  // Privileged admits first — they outrank every billing consideration, and a
+  // grandfathered/allowed check below must never claim one of them.
+  if (state === 'admin' || state === 'allowlisted' || state === 'free_access') {
+    return { kind: 'full_access', label: 'Full access', endsAt: null, renewsAt: null };
+  }
+
+  if (state === 'trialing') {
+    const endsAt = entitlement.trialEndsAt ?? null;
+    const when = shortDate(endsAt);
+    const days =
+      typeof trialDaysLeft === 'number' && trialDaysLeft >= 0 ? trialDaysLeft : null;
+    const label =
+      days !== null
+        ? `Trial · ${days} ${days === 1 ? 'day' : 'days'} left${when ? ` (until ${when})` : ''}`
+        : when
+          ? `Trial until ${when}`
+          : 'Trial';
+    return { kind: 'trial', label, endsAt, renewsAt: null };
+  }
+
+  if (state === 'free_tier') {
+    // A grandfathered pre-launch row keeps its frozen caps and is called out as
+    // such; an ordinary free_tier user is ALLOWED and lands in the full app, so
+    // it is an active-free state, not a dead end.
+    if (grandfathered) {
+      return { kind: 'grandfathered', label: 'Grandfathered plan', endsAt: null, renewsAt: null };
+    }
+    return { kind: 'active', label: 'Free plan', endsAt: null, renewsAt: null };
+  }
+
+  if (state === 'active') {
+    const renewsAt = entitlement.currentPeriodEnd ?? null;
+    const when = shortDate(renewsAt);
+    return {
+      kind: 'active',
+      label: when ? `Subscription active · renews ${when}` : 'Subscription active',
+      endsAt: null,
+      renewsAt,
+    };
+  }
+
+  // Everything left is a denial: 'none', 'trial_expired', 'expired',
+  // 'needs_subscription'. Deliberately NOT keyed on `allowed` alone — a future
+  // allowed:false state should land here by default rather than silently
+  // rendering as something reassuring.
+  return {
+    kind: 'needs_subscription',
+    label: 'No active subscription — manage your account at computercaller.com',
+    endsAt: null,
+    renewsAt: null,
+  };
 }
 
 export interface UseEntitlementResult {

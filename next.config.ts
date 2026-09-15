@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+// Pinned extension origin — ONE source of truth with lib/extension.ts, so the
+// CSP allow-list can never drift from the ID the manifest `key` produces.
+import { CC_EXTENSION_ORIGIN } from "./lib/extension";
 
 // Bundle B (2026-05-28) — security headers applied to every response. Closes
 // audit finding H1 (no headers). Layout follows OWASP secure-headers guidance
@@ -40,6 +43,31 @@ const SECURITY_HEADERS = [
       "connect-src 'self' wss://computercaller.com https://api.cloudflare.com",
       "frame-src 'self' https://whop.com",
       "frame-ancestors 'self'",
+      "form-action 'self' https://accounts.google.com",
+      "base-uri 'self'",
+      "object-src 'none'",
+    ].join('; '),
+  },
+];
+
+// The /extension subtree's CSP — identical to SECURITY_HEADERS' policy except
+// `frame-ancestors`, which is pinned to the extension's stable ID rather than
+// 'self'. Hoisted to a constant on 2026-09-15 so /extension and
+// /extension/:path* cannot drift apart: two hand-copied policies is how one of
+// them quietly loses a directive.
+const EXTENSION_FRAME_HEADERS = [
+  {
+    key: 'Content-Security-Policy',
+    value: [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "media-src 'self' data: blob:",
+      "font-src 'self' data:",
+      "connect-src 'self' wss://computercaller.com https://api.cloudflare.com",
+      "frame-src 'self' https://whop.com",
+      `frame-ancestors ${CC_EXTENSION_ORIGIN}`,
       "form-action 'self' https://accounts.google.com",
       "base-uri 'self'",
       "object-src 'none'",
@@ -108,28 +136,23 @@ const nextConfig: NextConfig = {
         // extension's stable ID (see lib/extension.ts CC_EXTENSION_ID — keep in
         // sync). Per the CSP spec, when a valid frame-ancestors directive is
         // present the browser IGNORES the still-served X-Frame-Options header, so
-        // no separate XFO override is needed. Scoped to /extension ONLY — the
-        // site-wide anti-framing posture is unchanged everywhere else.
+        // no separate XFO override is needed.
+        //
+        // 2026-09-15 (forge/ext-embedded-login): WIDENED from the single
+        // `/extension` path to the whole `/extension/*` subtree, because the
+        // embedded sign-in lives at /extension/login and is framed by the same
+        // popup. `:path*` matches zero-or-more segments, so this one entry
+        // covers /extension itself too — but /extension is listed separately
+        // above it anyway rather than relying on that, since a silently
+        // unmatched CSP here is an un-framable popup with no error message.
+        // Still exactly ONE pinned extension origin, never a wildcard, and the
+        // site-wide anti-framing posture everywhere else is unchanged.
         source: '/extension',
-        headers: [
-          {
-            key: 'Content-Security-Policy',
-            value: [
-              "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
-              "style-src 'self' 'unsafe-inline'",
-              "img-src 'self' data: blob: https:",
-              "media-src 'self' data: blob:",
-              "font-src 'self' data:",
-              "connect-src 'self' wss://computercaller.com https://api.cloudflare.com",
-              "frame-src 'self' https://whop.com",
-              'frame-ancestors chrome-extension://helkcjjlidcceiifjccolmppanfmcjjg',
-              "form-action 'self' https://accounts.google.com",
-              "base-uri 'self'",
-              "object-src 'none'",
-            ].join('; '),
-          },
-        ],
+        headers: EXTENSION_FRAME_HEADERS,
+      },
+      {
+        source: '/extension/:path*',
+        headers: EXTENSION_FRAME_HEADERS,
       },
       {
         // audit round 1, Mi2: /auth/set-password carries a live single-use

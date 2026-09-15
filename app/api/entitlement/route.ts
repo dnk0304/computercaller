@@ -17,6 +17,8 @@ import { evaluateEntitlement, isFreeAccessEmail } from '@/lib/entitlement';
 //                       // now lands in the FULL app (free tier), not /subscribe.
 //                       // Daily call/message usage is served by GET /api/usage.
 //   trialDaysLeft: number | null,
+//   trialEndsAt: string | null,        // ADDED 2026-09-15, ISO — additive only
+//   currentPeriodEnd: string | null,   // ADDED 2026-09-15, ISO — additive only
 //   grandfathered: boolean,           // ADDED — true = pre-launch row, frozen caps
 //   limits: { templates, quickReplies, syncRangeMax, contactSync },
 //   upgrade: { reason, cta, targetTier },  // ADDED — Pixel's prompt signal
@@ -95,6 +97,18 @@ export async function GET(req: NextRequest) {
       allowed: ent.allowed,
       trialDaysLeft: ent.trialDaysLeft,
       grandfathered: ent.grandfathered,
+      // ADDITIVE (2026-09-15, forge/ext-embedded-login). The extension's
+      // account menu must name the actual boundary date — "Trial · 3 days left"
+      // is useless on the day it says 0. Straight off the subscription row that
+      // is already selected above; no extra query, no new endpoint, and the
+      // FROZEN keys above are untouched. null whenever there is no row or the
+      // column is unset.
+      trialEndsAt: user.subscription?.trialEndsAt
+        ? user.subscription.trialEndsAt.toISOString()
+        : null,
+      currentPeriodEnd: user.subscription?.currentPeriodEnd
+        ? user.subscription.currentPeriodEnd.toISOString()
+        : null,
       limits: {
         templates: ent.limits.templates,
         quickReplies: ent.limits.quickReplies,

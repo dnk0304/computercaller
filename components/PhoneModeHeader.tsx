@@ -43,6 +43,11 @@ import {
   WEBAPP_DASHBOARD_URL,
   WEBAPP_SETTINGS_URL,
 } from '@/lib/extensionBridge';
+// deriveAccountState is imported ONLY for the extension branch below. The
+// 'app' branch of this file is untouched by dispatch D and renders
+// byte-identically — the dashboard's Phone Mode header never mounts
+// AccountMenu at all.
+import { useEntitlement, deriveAccountState } from '@/hooks/useEntitlement';
 
 export interface PhoneModeHeaderProps {
   surface?: 'app' | 'extension';
@@ -151,6 +156,14 @@ function ExtensionHeader() {
  */
 function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: boolean }) {
   const [open, setOpen] = useState(false);
+  // Trial / subscription state (2026-09-15, dispatch forge/ext-embedded-login).
+  // Dennis asked the extension to "identify the current trial/subscription
+  // state of the account". Read from the SAME GET /api/entitlement the web app
+  // uses — no new endpoint, no second tier-resolution — and mapped by the one
+  // shared deriveAccountState(). 401 resolves to null inside the hook, so a
+  // signed-out render is silent rather than an error line.
+  const { entitlement } = useEntitlement();
+  const accountState = deriveAccountState(entitlement);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -198,6 +211,19 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
             <p className="truncate px-2 py-1.5 text-[11px] text-slate-500" title={email || undefined}>
               {email || 'Signed in'}
             </p>
+            {/* Account state — PLAIN TEXT, deliberately. Pilot constraint: the
+                extension shows no price, no checkout and no upgrade CTA, so
+                even `needs_subscription` is a sentence, not a button. The
+                neutral way out already exists one row below ("Open dashboard",
+                which opens computercaller.com/app in a real tab). */}
+            {accountState && (
+              <p
+                data-cc-account-state={accountState.kind}
+                className="px-2 pb-1.5 text-[11px] leading-snug text-slate-400"
+              >
+                {accountState.label}
+              </p>
+            )}
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <MenuLink href={WEBAPP_DASHBOARD_URL} icon={<LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" />}>
               Open dashboard
