@@ -266,7 +266,14 @@ object PermissionChecker {
         //     app remains usable — the PC-audio toggle just stays disabled
         //     with a helper telling the user to grant Nearby devices in
         //     Settings if they want to use it.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        // v56 — hidden while PC_AUDIO_UI_ENABLED is false (Dennis 13:39:
+        // "we can also remove the bluetooth toggle in the settings as we
+        // dont need that for now"). The AUDIO_CONNECT / AUDIO_STATUS
+        // protocol and applyBluetoothSco() are UNCHANGED and still work
+        // when the web offers PC audio — only the phone-side permission
+        // affordance is gone. Flip the flag to bring the row back.
+        if (FeatureFlags.PC_AUDIO_UI_ENABLED &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             items += statusItem(
                 context,
                 id = "bluetooth_connect",
@@ -489,7 +496,12 @@ object PermissionChecker {
         //     user hasn't granted Nearby devices and "Speak through PC"
         //     would otherwise stay greyed out with no explanation. Soft
         //     classification — earpiece/speaker modes still work.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        // v56 — see the statusItem twin above. Gated off with the same
+        // flag, which ALSO stops a missing BLUETOOTH_CONNECT grant from
+        // counting as a Kind.RUNTIME miss and blocking the app behind the
+        // Grant All pane for a feature the phone no longer surfaces.
+        if (FeatureFlags.PC_AUDIO_UI_ENABLED &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             !isGranted(context, Manifest.permission.BLUETOOTH_CONNECT)
         ) {
             missing += MissingPermission(
