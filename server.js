@@ -2155,6 +2155,37 @@ function startRelay(httpServer) {
       }
       ws.missedPongs += 1;
       try { ws.ping(); } catch (e) { /* ignore */ }
+      // ── MV3 listener heartbeat (dispatch FORGE-J addendum A, 2026-09-15) ──
+      //
+      // MEASURED, not assumed. With cc_debug tracing and NO debugger attached
+      // (Playwright's CDP attach suppresses MV3 eviction, which is why the
+      // earlier ext-sw-lifetime-proof harness returned a false negative), the
+      // extension's listener worker was evicted TWICE in a 5.5-minute window:
+      // boot s61juy died after ~150s, boot fi8wxv replaced it ~64s later. A
+      // relay frame pushed into that gap was lost silently — the socket was
+      // gone, no ws-close row was ever written (the worker died before its own
+      // onclose could run), and frameBuffer does not help because it serves
+      // active pairs only, never listeners.
+      //
+      // The 15s ws.ping() above did NOT prevent it. A protocol-level ping is
+      // answered by the browser's WS stack below the JS layer — it fires no
+      // event in the worker, so it is not extension activity and does not
+      // reset MV3's idle timer. THIS frame is a real text message: it fires
+      // sock.onmessage, which is exactly the activity Chrome 116+ documents as
+      // extending an extension service worker's life.
+      //
+      // Scoped to listeners because they are the only sockets owned by a
+      // worker Chrome evicts — /app's socket lives in a page. Piggy-backed on
+      // this existing 15s loop rather than a new timer: 15s < the 30s idle
+      // window with a full tick of margin, and it costs one extra frame per
+      // listener per tick and nothing else.
+      //
+      // The SW answers nothing. A reply would prove liveness to US, but the
+      // problem is keeping the worker ALIVE, and it is the INBOUND frame that
+      // does that — an ack would be pure wire noise.
+      if (ws.role === 'browser' && ws.listener) {
+        try { safeSend(ws, `HB:${JSON.stringify({})}`); } catch (e) { /* ignore */ }
+      }
     }
   }, 15000);
 

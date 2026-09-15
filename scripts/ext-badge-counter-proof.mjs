@@ -68,10 +68,32 @@ try {
     paintBadge({ missedCalls: 0, newSms: 0, alerts: 0 });
   });
   const badge = () => sw.evaluate(() => chrome.action.getBadgeText({}));
+  // Drain the serialize() mutex the counters and the badge share.
+  //
+  // This used to be a flat 400ms sleep and it was FLAKY — roughly one run in
+  // three, the first multi-frame feed read back {newSms:1} out of four frames
+  // and failed, while a LATER assertion in the same run read the full count,
+  // which is self-contradictory and the tell that the harness was racing its
+  // subject rather than measuring it. bumpUnread queues each frame behind an
+  // async chrome.storage read-modify-write; under a burst the queue can still
+  // be draining at 400ms on a loaded machine.
+  //
+  // Now it waits for QUIESCENCE: poll the counters until the sum is stable
+  // across two consecutive reads, then let the badge repaint settle. Bounded
+  // so a genuine hang fails the run instead of spinning forever.
   const feed = (frames) => sw.evaluate(async (fs_) => {
     for (const f of fs_) handleFrame(f);
-    // Drain the serialize() mutex the counters and the badge share.
-    await new Promise((r) => setTimeout(r, 400));
+    const sum = (u) => (u.missedCalls || 0) + (u.newSms || 0) + (u.alerts || 0);
+    let prev = -1;
+    let stable = 0;
+    for (let i = 0; i < 60 && stable < 2; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const now = sum(await readUnread());
+      stable = now === prev ? stable + 1 : 0;
+      prev = now;
+    }
+    // The counters have settled; give the badge write that follows them a tick.
+    await new Promise((r) => setTimeout(r, 150));
   }, frames);
 
   const SMS = (id) => 'SMS_RECEIVED:' + JSON.stringify({ id, address: '+4711111111', body: 'hi', date: Date.now() });
@@ -217,6 +239,28 @@ try {
   await feed(['SMS_RECEIVED:' + JSON.stringify({ message: { id: 107, from: '+47', body: 'x', type: 'sent' } })]);
   b = await badge();
   check('wrapped {message:{type:"sent"}} also suppressed', b === '' && (await notifCount()) === 0, b);
+
+  // ---- 10. Addendum A: the MV3 keepalive HB must be inert -----------------
+  //
+  // The relay pushes HB to listener sockets every 15s so the worker receives a
+  // real message (a protocol ws ping fires no JS event and does not reset MV3's
+  // idle timer — measured: the worker was evicted twice in 5.5 min despite
+  // those pings, and a frame pushed into the gap was lost).
+  //
+  // Arriving is its whole job, so it must do NOTHING else. The trap it has to
+  // clear is background.js' `if (type !== 'PING' && type !== 'PONG')
+  // notePhonePresence(true)` catch-all: an HB falling through that would turn
+  // the green dot on for a room with no phone in it — the precise lie the
+  // wsOpen/phonePresent split exists to prevent.
+  await reset();
+  await armNotifSpy();
+  await sw.evaluate(() => { phonePresent = false; lastIndicator = null; });
+  await feed(['HB:{}', 'HB:{}', 'HB:{}']);
+  b = await badge();
+  const hbState = await sw.evaluate(() => ({ phonePresent, unreadSum: null }));
+  check('HB does not notify', (await notifCount()) === 0, await notifCount());
+  check('HB does not bump the badge', b === '', b);
+  check('HB does NOT claim a phone is present', hbState.phonePresent === false, hbState);
 } finally {
   await ctx.close();
   fs.rmSync(userDataDir, { recursive: true, force: true });

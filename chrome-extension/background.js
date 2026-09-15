@@ -679,6 +679,20 @@ function handleFrame(msg) {
   // as proof of a live phone and leave the green dot on through the teardown —
   // the dot would go stale for the whole reconnect window.
   if (type === 'ROOM_RESET') { notePhonePresence(false); return; }
+  // MV3 keepalive heartbeat (dispatch FORGE-J addendum A, 2026-09-15). The
+  // relay pushes HB to LISTENER sockets every 15s purely so this worker
+  // receives a real message: a protocol-level ws ping is answered below the JS
+  // layer and fires no event, so it does not reset MV3's 30s idle timer —
+  // measured, the worker was evicted twice in 5.5 minutes despite those pings,
+  // and a frame pushed into the gap was lost silently.
+  //
+  // Handled HERE, above the catch-all, and answered with NOTHING. Two reasons:
+  // an HB is not evidence of a phone (the catch-all below would turn the green
+  // dot on for a room with no phone in it, which is the exact lie the
+  // wsOpen/phonePresent split exists to prevent), and merely ARRIVING is the
+  // whole job — the inbound message is what keeps the worker alive, so a reply
+  // would be pure wire noise.
+  if (type === 'HB') return;
   // Catch-all for the tryAutoResume gap documented above.
   if (type !== 'PING' && type !== 'PONG') notePhonePresence(true);
 
