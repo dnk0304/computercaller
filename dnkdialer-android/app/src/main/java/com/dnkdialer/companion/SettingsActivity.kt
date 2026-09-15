@@ -5,8 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
-import android.widget.Button
 import android.widget.TextView
+import com.google.android.material.materialswitch.MaterialSwitch
 import androidx.appcompat.app.AppCompatActivity
 
 /**
@@ -35,8 +35,18 @@ import androidx.appcompat.app.AppCompatActivity
  */
 class SettingsActivity : AppCompatActivity() {
 
-    private lateinit var lobbyToggleButton: Button
-    private lateinit var enableNotificationsButton: Button
+    /**
+     * v56 step 2 — the lobby control is a switch now, not a button whose
+     * label flipped between "Disconnect from Lobby" and "Rejoin Lobby". A
+     * control that renames itself makes the user read it before every tap;
+     * a switch shows the state and the tap is unambiguous. Same flag, same
+     * broadcast, same handler.
+     */
+    private lateinit var lobbyToggle: MaterialSwitch
+    private lateinit var enableNotificationsButton: View
+
+    /** Guards [lobbyToggle] so a repaint from the flag can't be read as a tap. */
+    private var suppressLobbyToggleCallback = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,61 +63,79 @@ class SettingsActivity : AppCompatActivity() {
         setContentView(R.layout.activity_settings)
         InsetsUtils.applySystemBarInsets(findViewById(R.id.settingsContent))
 
+        // Edge-to-edge, matching Home: the surface fills behind the system
+        // bars and the scroll content is padded to clear them.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        InsetsUtils.applySystemBarInsets(findViewById(R.id.settingsContent))
+
+        findViewById<View>(R.id.settingsBackButton).setOnClickListener {
+            onBackPressedDispatcher.onBackPressed()
+        }
+
+        // ---- ACCOUNT ----------------------------------------------------
+        // The account email is never stored on the phone - only the relay
+        // token and the device name are - so this row names the DEVICE and
+        // says it is signed in, rather than printing an address we would have
+        // to guess at. Sign out is directly under it, which is what the row
+        // is really for.
+        val accountName = TokenStore.getDeviceName(this)?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.settings_account_unknown)
+        findViewById<TextView>(R.id.settingsAccountEmail).text = accountName
+        findViewById<TextView>(R.id.settingsAccountAvatar).text =
+            accountName.trim().take(1).uppercase()
+
+        findViewById<View>(R.id.settingsSignOutButton).setOnClickListener {
+            // No binding held here, so no teardown lambda is needed.
+            AccountActions.confirmSignOut(this)
+        }
+
         // ---- CONNECTION -------------------------------------------------
-        lobbyToggleButton = findViewById(R.id.settingsLobbyToggleButton)
-        lobbyToggleButton.setOnClickListener {
-            val rejoin = TokenStore.isUserStayedDisconnected(this)
-            val action = if (rejoin) {
-                LobbyActionReceiver.ACTION_REJOIN_LOBBY
-            } else {
+        lobbyToggle = findViewById(R.id.settingsLobbyToggleButton)
+        lobbyToggle.setOnCheckedChangeListener { _, checked ->
+            if (suppressLobbyToggleCallback) return@setOnCheckedChangeListener
+            // Checked == "stay disconnected", so checking it LEAVES the lobby.
+            val action = if (checked) {
                 LobbyActionReceiver.ACTION_DISCONNECT_LOBBY
+            } else {
+                LobbyActionReceiver.ACTION_REJOIN_LOBBY
             }
             android.util.Log.d("SettingsActivity", "lobby toggle -> $action")
             sendBroadcast(Intent(action).apply { setPackage(packageName) })
             // Optimistic repaint. PhoneService flips the persistent flag on
             // the broadcast; refreshing again in onResume reconciles if the
             // service was dead and the broadcast went nowhere.
-            lobbyToggleButton.postDelayed({ refreshLobbyToggleLabel() }, 250)
+            lobbyToggle.postDelayed({ refreshLobbyToggleLabel() }, 250)
         }
 
-        // ---- SYNCED DATA ------------------------------------------------
-        findViewById<Button>(R.id.settingsViewMessagesButton).setOnClickListener {
+        // ---- ON THIS PHONE ----------------------------------------------
+        findViewById<View>(R.id.settingsViewMessagesButton).setOnClickListener {
             startActivity(
                 Intent(this, SyncedDataActivity::class.java).putExtra("tab", "messages")
             )
         }
-        findViewById<Button>(R.id.settingsViewCallsButton).setOnClickListener {
+        findViewById<View>(R.id.settingsViewCallsButton).setOnClickListener {
             startActivity(
                 Intent(this, SyncedDataActivity::class.java).putExtra("tab", "calls")
             )
         }
-
-        // ---- PERMISSIONS ------------------------------------------------
-        findViewById<Button>(R.id.settingsPermissionsButton).setOnClickListener {
+        findViewById<View>(R.id.settingsPermissionsButton).setOnClickListener {
             AccountActions.openAppDetails(this)
         }
         enableNotificationsButton = findViewById(R.id.settingsEnableNotificationsButton)
         enableNotificationsButton.setOnClickListener {
             AccountActions.openNotificationSettings(this)
         }
-        findViewById<Button>(R.id.settingsNotificationSettingsButton).setOnClickListener {
+        findViewById<View>(R.id.settingsNotificationSettingsButton).setOnClickListener {
             AccountActions.openNotificationSettings(this)
         }
 
-        // ---- ACCOUNT ----------------------------------------------------
-        findViewById<Button>(R.id.settingsSignOutButton).setOnClickListener {
-            // No binding held here, so no teardown lambda is needed.
-            AccountActions.confirmSignOut(this)
-        }
-
         // ---- TROUBLESHOOTING --------------------------------------------
-        findViewById<Button>(R.id.settingsHardResetButton).setOnClickListener {
+        findViewById<View>(R.id.settingsHardResetButton).setOnClickListener {
             AccountActions.confirmHardReset(this)
         }
 
-        // Keep the subtitle resolvable for Pixel's restyle pass even though
-        // nothing binds it dynamically.
-        findViewById<TextView>(R.id.settingsHardResetSubtitle)
+        findViewById<TextView>(R.id.settingsFooter).text =
+            getString(R.string.settings_footer, BuildConfig.VERSION_NAME)
     }
 
     override fun onResume() {
@@ -122,11 +150,12 @@ class SettingsActivity : AppCompatActivity() {
      * never disagree about which way the toggle points.
      */
     private fun refreshLobbyToggleLabel() {
-        if (!::lobbyToggleButton.isInitialized) return
-        lobbyToggleButton.text = if (TokenStore.isUserStayedDisconnected(this)) {
-            getString(R.string.action_rejoin_lobby)
-        } else {
-            getString(R.string.action_disconnect_lobby)
+        if (!::lobbyToggle.isInitialized) return
+        val stayedOut = TokenStore.isUserStayedDisconnected(this)
+        if (lobbyToggle.isChecked != stayedOut) {
+            suppressLobbyToggleCallback = true
+            lobbyToggle.isChecked = stayedOut
+            suppressLobbyToggleCallback = false
         }
     }
 

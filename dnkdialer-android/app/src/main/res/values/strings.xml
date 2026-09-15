@@ -432,8 +432,8 @@
     <string name="home_footer">Calls run on this device · nothing is routed through us.</string>
 
     <!-- Settings rows -->
-    <string name="settings_account_signed_in">Signed in</string>
-    <string name="settings_account_unknown">Signed in on this phone</string>
+    <string name="settings_account_signed_in">Signed in on this phone</string>
+    <string name="settings_account_unknown">This phone</string>
     <string name="settings_signout_sub">Clears this phone\'s login</string>
     <string name="settings_permissions_sub">Review what this app can reach</string>
     <string name="settings_notifications_sub">Alert style, sounds and channels</string>
