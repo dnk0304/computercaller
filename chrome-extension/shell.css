@@ -73,17 +73,42 @@ body {
    =========================================================================== */
 
 #cc-signin {
-  display: none;              /* shell.js flips to flex */
+  display: none;              /* shell.js flips to block */
   position: absolute;
   inset: 0;
   z-index: 10;
+  background: var(--cc-page);
+}
+
+/* The embedded sign-in itself: an iframe of computercaller.com/extension/login
+   (2026-09-15, forge/ext-embedded-login). Hidden until that page posts
+   `login-ready`, at which point shell.js adds .cc-has-login and the static
+   block below steps aside. Two layers in one box, never both visible. */
+#cc-login-frame {
+  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--cc-page);
+}
+#cc-signin.cc-has-login #cc-login-frame { display: block; }
+#cc-signin.cc-has-login #cc-signin-fallback { display: none; }
+
+/* The static block that used to BE the overlay — now the loading / error /
+   no-frame state. Same centring the overlay itself used to own, moved down one
+   level so the iframe can sit beside it instead of inside a flex column. */
+#cc-signin-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
   padding: 28px 24px 52px;
   box-sizing: border-box;
-  background: var(--cc-page);
 }
 
 /* Signed-out header — mark + name only. No device pill: there is no device. */
@@ -139,7 +164,6 @@ body {
 #cc-signin-btn:active { transform: translateY(1px); }
 #cc-signin-btn:focus-visible { outline: 2px solid var(--cc-ring); outline-offset: 2px; }
 
-#cc-signin-hint { margin-top: 10px; font-size: 11px; color: var(--cc-mut); }
 #cc-signin-msg  { margin-top: 8px; font-size: 11px; color: var(--cc-mut); min-height: 14px; }
 
 /* Footer hairline strip — the trust line. It is the last thing on the screen

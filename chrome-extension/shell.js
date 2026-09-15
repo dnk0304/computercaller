@@ -24,13 +24,30 @@
  *      over postMessage. signOut() below is Forge's, unchanged and un-forked:
  *      there is still exactly one sign-out implementation in the extension.
  *
+ *   4. Embedded sign-in (2026-09-15, forge/ext-embedded-login). THE POPUP NEVER
+ *      AWAITS A WINDOW. It used to: runHandoff() awaited
+ *      chrome.identity.launchWebAuthFlow({interactive:true}) right here in the
+ *      popup document. With a session already present that resolves with no
+ *      window and it worked — which is why it looked fine in testing. With NO
+ *      session Chrome must SHOW the auth window, the toolbar popup loses focus,
+ *      Chrome destroys this document, and the await plus everything after it
+ *      (store token → notify SW → load iframe) stops existing. The user could
+ *      complete the login and the extension stayed signed out. That is Dennis's
+ *      "I had to do it through the webapp".
+ *      Now: the signed-out gate FRAMES computercaller.com/extension/login, the
+ *      password path never opens a window at all, and the one flow that still
+ *      needs a window (Google) is run by the background service worker, which
+ *      Chrome does not kill when the popup closes.
+ *
  * postMessage contract with app/../lib/extensionBridge.ts:
- *   app  → shell : { source:'cc-ext', type:'ready' | 'open-popout' | 'sign-out' }
- *   shell → app  : { source:'cc-ext', type:'shell-hello', email, canPopout }
- * Inbound is accepted ONLY from our own iframe's contentWindow AND only from
- * the webapp origin — a message from any other frame or origin is dropped
- * before it can reach a handler. That check is what keeps `sign-out` (and the
- * window-spawning `open-popout`) from being a cross-origin trigger.
+ *   app   → shell : { source:'cc-ext', type:'ready' | 'open-popout' | 'sign-out' }
+ *   login → shell : { source:'cc-ext', type:'login-ready' | 'signed-in' | 'google-sign-in' }
+ *   shell → app   : { source:'cc-ext', type:'shell-hello', email, canPopout }
+ * Inbound is accepted ONLY from one of our OWN two iframes' contentWindow AND
+ * only from the webapp origin — a message from any other frame or origin is
+ * dropped before it can reach a handler. The two frames are then held to
+ * DISJOINT verb sets: the app frame cannot fake a sign-in and the login frame
+ * cannot trigger `sign-out` or the window-spawning `open-popout`.
  */
 
 // 1) Presence signal — the disconnect fires automatically when this page unloads.
@@ -42,6 +59,7 @@ const shellHeader = document.getElementById('cc-shell-header');
 const signinBtn = document.getElementById('cc-signin-btn');
 const signinMsg = document.getElementById('cc-signin-msg');
 const signinBody = document.getElementById('cc-signin-body');
+const loginFrame = document.getElementById('cc-login-frame');
 
 const NS = 'cc-ext';
 /** popup.html can spawn the detached window; popout.html IS it. */
@@ -61,15 +79,41 @@ let currentEmail = null;
 function showOverlay(state, message) {
   overlayState = state;
   if (!overlay) return;
-  overlay.style.display = state ? 'flex' : 'none';
+  overlay.style.display = state ? 'block' : 'none';
   // The shell's minimal header exists ONLY in the signed-out state. While
   // signed in, the hosted app's header is the one and only header.
   if (shellHeader) shellHeader.style.display = state ? 'flex' : 'none';
-  if (!state) return;
+  if (!state) { unloadLoginFrame(); return; }
   if (signinBody) signinBody.textContent = state === 'error' ? COPY_ERROR : COPY_SIGNIN;
   if (signinBtn) signinBtn.textContent = state === 'error' ? 'Try again' : 'Sign in';
   if (signinMsg) signinMsg.textContent = message || '';
-  if (signinBtn) signinBtn.focus();
+  if (state === 'anon') {
+    // The real sign-in. Until it answers `login-ready` the static block above
+    // stays on screen, so a framing/network failure is never a blank panel.
+    loadLoginFrame();
+  } else {
+    // 'error' is "we never reached the server" — framing a page from that same
+    // unreachable server would only stack a second failure on top of it.
+    unloadLoginFrame();
+    if (signinBtn) signinBtn.focus();
+  }
+}
+
+/** Point the gate iframe at /extension/login. Idempotent. */
+function loadLoginFrame() {
+  if (!loginFrame) return;
+  if (loginFrame.src !== self.CC.LOGIN_URL) loginFrame.src = self.CC.LOGIN_URL;
+}
+
+/**
+ * Drop the login frame and fall back to the static block. Called whenever the
+ * overlay leaves the 'anon' state — a signed-in surface must not keep a live
+ * login page parked behind it, and a re-shown gate must re-announce itself
+ * rather than inherit a stale `login-ready`.
+ */
+function unloadLoginFrame() {
+  if (overlay) overlay.classList.remove('cc-has-login');
+  if (loginFrame) loginFrame.removeAttribute('src');
 }
 
 /**
@@ -120,30 +164,67 @@ function clearFrame() {
   if (frame) frame.removeAttribute('src');
 }
 
-async function runHandoff() {
-  if (signinMsg) signinMsg.textContent = 'Opening sign-in…';
+/**
+ * The embedded login just set the auth_token cookie. Two things follow, in this
+ * order and for two different consumers:
+ *
+ *   1. The SERVICE WORKER mints its durable ext-session token from that cookie
+ *      (POST /api/auth/extension/token — no window, nothing to destroy) and
+ *      reconnects its listener socket. We ask for it and we wait, but we do NOT
+ *      make the UI depend on it: the SW retries on its own keepalive alarm, and
+ *      the app surface below only needs the cookie.
+ *   2. THIS document swaps the gate for the app surface and re-probes so the
+ *      account menu knows who signed in — no reopening the popup, which is
+ *      requirement (2) of the dispatch.
+ */
+async function completeSignIn() {
+  if (signinMsg) signinMsg.textContent = 'Finishing sign-in…';
+  let minted = false;
   try {
-    const redirect = await chrome.identity.launchWebAuthFlow({
-      url: self.CC.HANDOFF_URL,
-      interactive: true,
-    });
-    // redirect = https://<extid>.chromiumapp.org/#ext_token=<jwt>
-    const hash = (redirect && redirect.split('#')[1]) || '';
-    const params = new URLSearchParams(hash);
-    const token = params.get('ext_token');
-    if (!token) throw new Error('no token returned');
-    await new Promise((r) => chrome.storage.local.set({ [self.CC.TOKEN_KEY]: token }, r));
-    // Tell the SW to (re)connect its listener WS with the fresh token.
-    try { await chrome.runtime.sendMessage({ type: 'auth-updated' }); } catch (_) {}
-    showOverlay(null);
-    loadFrame();
-    // Re-probe so the account menu shows who just signed in.
-    const s = await probeSession();
-    currentEmail = s.state === 'authed' ? s.email : null;
-    sendHello();
-  } catch (e) {
-    if (signinMsg) signinMsg.textContent = 'Sign-in was cancelled. Try again.';
+    const res = await chrome.runtime.sendMessage({ type: 'sign-in-complete' });
+    minted = !!(res && res.ok);
+  } catch (_) {
+    // The SW was asleep or the channel closed. Non-fatal — see (1) above.
   }
+  showOverlay(null);
+  loadFrame();
+  const s = await probeSession();
+  currentEmail = s.state === 'authed' ? s.email : null;
+  sendHello();
+  if (!minted) {
+    // Surfaced nowhere in the UI on purpose (the app is usable), but a field
+    // report with the console open should say which half fell over.
+    console.warn('[CC] signed in, but the ext-session token was not minted yet');
+  }
+}
+
+/**
+ * Google. The popup will almost certainly be destroyed the moment the auth
+ * window appears — that is FINE and is the whole point of D1: the flow lives in
+ * the service worker, so nothing is lost when this document dies. If we do
+ * survive (the pop-out window does), finish the same way the password path
+ * does.
+ */
+async function startGoogleSignIn() {
+  if (signinMsg) signinMsg.textContent = 'Opening Google sign-in…';
+  let ok = false;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'google-sign-in' });
+    ok = !!(res && res.ok);
+  } catch (_) {
+    // Document torn down, or the SW went away. The SW's flow continues either
+    // way; reopening the popup picks up the finished session.
+    return;
+  }
+  if (!ok) {
+    if (signinMsg) signinMsg.textContent = 'Google sign-in was cancelled. Try again.';
+    return;
+  }
+  showOverlay(null);
+  loadFrame();
+  const s = await probeSession();
+  currentEmail = s.state === 'authed' ? s.email : null;
+  sendHello();
 }
 
 /**
@@ -183,11 +264,29 @@ async function openPopout() {
 window.addEventListener('message', (event) => {
   // Two independent gates. Origin alone is not enough (any frame we host could
   // claim it); source alone is not enough (a navigated iframe keeps its
-  // contentWindow identity). Both together mean: our frame, our app.
-  if (!frame || event.source !== frame.contentWindow) return;
+  // contentWindow identity). Both together mean: one of OUR frames, our app.
   if (event.origin !== self.CC.WEBAPP_ORIGIN) return;
+  const fromApp = !!frame && event.source === frame.contentWindow;
+  const fromLogin = !!loginFrame && event.source === loginFrame.contentWindow;
+  if (!fromApp && !fromLogin) return;
   const data = event.data;
   if (!data || data.source !== NS) return;
+
+  // DISJOINT verb sets per frame. The app surface can never claim a sign-in it
+  // did not perform, and the signed-out login page can never reach `sign-out`
+  // or the window-spawning `open-popout`.
+  if (fromLogin) {
+    if (data.type === 'login-ready') {
+      // The embedded form rendered — retire the static block.
+      if (overlay) overlay.classList.add('cc-has-login');
+      if (signinMsg) signinMsg.textContent = '';
+    } else if (data.type === 'signed-in') {
+      completeSignIn();
+    } else if (data.type === 'google-sign-in') {
+      startGoogleSignIn();
+    }
+    return;
+  }
 
   if (data.type === 'ready') {
     sendHello();
@@ -220,10 +319,14 @@ if (frame) frame.addEventListener('load', sendHello);
 
 if (signinBtn) {
   signinBtn.addEventListener('click', () => {
-    // Same button, two jobs: retry the probe in the error state, run the
-    // handoff in the signed-out state.
+    // Same button, two jobs — neither of which opens a window any more:
+    // retry the session probe in the error state, retry the embedded login in
+    // the signed-out state (this button is only reachable while the login
+    // frame has NOT reported ready, i.e. it failed to load).
     if (overlayState === 'error') { init(); return; }
-    runHandoff();
+    if (signinMsg) signinMsg.textContent = 'Loading sign-in…';
+    if (loginFrame) loginFrame.removeAttribute('src');
+    loadLoginFrame();
   });
 }
 

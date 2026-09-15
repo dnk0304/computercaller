@@ -39,6 +39,79 @@ function getToken() {
 function clearToken() {
   return new Promise((resolve) => chrome.storage.local.remove(self.CC.TOKEN_KEY, resolve));
 }
+function storeToken(token) {
+  return new Promise((resolve) =>
+    chrome.storage.local.set({ [self.CC.TOKEN_KEY]: token }, resolve),
+  );
+}
+
+// ── Sign-in (2026-09-15, forge/ext-embedded-login) ────────────────────────
+// BOTH sign-in paths now terminate HERE, in the service worker, and never in
+// the popup document. A toolbar popup is destroyed the instant it loses focus,
+// which is exactly what happens when an auth window opens — so anything the
+// popup was awaiting (store the token, notify the SW, load the app) simply
+// stopped existing mid-flight. That was the bug: sign-in only ever completed
+// for users who already had a session on the web app. The SW has no such
+// lifetime problem.
+
+/**
+ * Password path. The embedded login (/extension/login, framed by the popup)
+ * has already set the auth_token cookie same-origin, so the durable
+ * ext-session token is a plain cookie-authed POST — no window anywhere.
+ * credentials:'include' works from here because the extension holds
+ * host_permissions for https://computercaller.com/*, which makes this a
+ * privileged fetch rather than a third-party one.
+ */
+async function mintTokenFromCookie() {
+  try {
+    const res = await fetch(self.CC.EXT_TOKEN_URL, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!res.ok) {
+      console.warn('[CC-SW] ext-token mint failed:', res.status);
+      return false;
+    }
+    const body = await res.json();
+    if (!body || !body.ext_token) return false;
+    await storeToken(body.ext_token);
+    reconnectAttempts = 0;
+    connect();
+    return true;
+  } catch (e) {
+    console.warn('[CC-SW] ext-token mint error', e);
+    return false;
+  }
+}
+
+/**
+ * Google path. accounts.google.com sends X-Frame-Options: DENY, so its consent
+ * screen cannot be embedded — this one genuinely needs a window, and the window
+ * is opened from the SW so the popup's death is irrelevant. The flow returns
+ * through the handoff route, which mints the same ext-session token and 302s to
+ * the chromiumapp.org URL Chrome intercepts.
+ */
+async function runGoogleSignIn() {
+  try {
+    const redirect = await chrome.identity.launchWebAuthFlow({
+      url: self.CC.GOOGLE_SIGNIN_URL,
+      interactive: true,
+    });
+    // redirect = https://<extid>.chromiumapp.org/#ext_token=<jwt>
+    const hash = (redirect && redirect.split('#')[1]) || '';
+    const token = new URLSearchParams(hash).get('ext_token');
+    if (!token) return false;
+    await storeToken(token);
+    reconnectAttempts = 0;
+    connect();
+    return true;
+  } catch (e) {
+    // User closed the window / cancelled. Not an error worth shouting about.
+    return false;
+  }
+}
 
 // ── Relay-ticket exchange (durable ext-session JWT → 30s relay ticket) ───────
 async function mintTicket(token) {
@@ -248,6 +321,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     reconnectAttempts = 0;
     connect();
     sendResponse?.({ ok: true });
+  } else if (message?.type === 'sign-in-complete') {
+    // Embedded (password) sign-in finished in the popup's login frame.
+    // `return true` below keeps the channel open for this async reply.
+    mintTokenFromCookie().then((ok) => sendResponse?.({ ok }));
+  } else if (message?.type === 'google-sign-in') {
+    // The popup that sent this will very likely be destroyed when the auth
+    // window opens; sendResponse then goes nowhere, which is harmless. The
+    // flow itself completes here regardless.
+    runGoogleSignIn().then((ok) => sendResponse?.({ ok }));
   } else if (message?.type === 'open-popout') {
     openPopout();
     sendResponse?.({ ok: true });

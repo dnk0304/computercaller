@@ -14,8 +14,25 @@ const CC = {
   // Relay WebSocket. `role=listener` marks this as the receive-only SW peer that
   // the relay keeps out of pairing + the single-session kill switch.
   RELAY_BASE: 'wss://computercaller.com/relay',
-  // One-time sign-in handoff (launchWebAuthFlow target).
+  // The EMBEDDED sign-in framed by the popup / pop-out while signed out
+  // (2026-09-15, forge/ext-embedded-login). Same origin as EXTENSION_URL, so
+  // the shell's single origin check covers both frames.
+  LOGIN_URL: 'https://computercaller.com/extension/login',
+  // Cookie → ext-session token, with NO auth window. Called by the BACKGROUND
+  // SERVICE WORKER (credentials:'include') once the embedded login has set the
+  // auth_token cookie. This is the password path's whole token exchange.
+  EXT_TOKEN_URL: 'https://computercaller.com/api/auth/extension/token',
+  // One-time sign-in handoff (launchWebAuthFlow target). STILL USED — the
+  // Google path needs a real window (accounts.google.com refuses framing), and
+  // that window is opened by the SERVICE WORKER, never by the popup document:
+  // a popup loses focus the instant the window appears and Chrome destroys it
+  // mid-await, which is the bug this dispatch exists to kill.
   HANDOFF_URL: 'https://computercaller.com/api/auth/extension/handoff',
+  // Google sign-in entry point for the SW's launchWebAuthFlow. `next` returns
+  // the flow to the handoff route, which mints the ext-session token and 302s
+  // to the chromiumapp.org redirect Chrome intercepts.
+  GOOGLE_SIGNIN_URL:
+    'https://computercaller.com/api/auth/google/start?next=%2Fapi%2Fauth%2Fextension%2Fhandoff',
   // SW relay-ticket exchange (Bearer ext-session token → 30s relay ticket).
   TICKET_URL: 'https://computercaller.com/api/auth/relay-ticket/extension',
   // Session probe used by the popup to decide whether to show "Sign in".

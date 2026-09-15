@@ -21,14 +21,22 @@
 
   <iframe id="cc-frame" title="ComputerCaller" allow="notifications"></iframe>
 
+  <!-- Signed-out gate (2026-09-15, forge/ext-embedded-login). TWO layers:
+       #cc-login-frame is computercaller.com/extension/login embedded right
+       here — the real sign-in, no tab, no auth window. #cc-signin-fallback is
+       what you see until that frame says `login-ready`, and what you fall back
+       to if it never does (CSP refusal, offline, 500): a visible button rather
+       than 400px of white. -->
   <div id="cc-signin" role="dialog" aria-labelledby="cc-signin-title" aria-modal="true">
-    <div class="cc-mark"><img src="icon128.png" alt="" /></div>
-    <h1 id="cc-signin-title">Call and text from your browser</h1>
-    <p id="cc-signin-body">Sign in and your phone does the calling — you do the typing.</p>
-    <button id="cc-signin-btn" type="button">Sign in</button>
-    <div id="cc-signin-hint">Opens a secure tab · takes 5 seconds</div>
-    <div id="cc-signin-msg" role="status" aria-live="polite"></div>
-    <div class="cc-foot">Calls run on your device · nothing is routed through us</div>
+    <iframe id="cc-login-frame" title="Sign in to ComputerCaller"></iframe>
+    <div id="cc-signin-fallback">
+      <div class="cc-mark"><img src="icon128.png" alt="" /></div>
+      <h1 id="cc-signin-title">Call and text from your browser</h1>
+      <p id="cc-signin-body">Sign in and your phone does the calling — you do the typing.</p>
+      <button id="cc-signin-btn" type="button">Sign in</button>
+      <div id="cc-signin-msg" role="status" aria-live="polite"></div>
+      <div class="cc-foot">Calls run on your device · nothing is routed through us</div>
+    </div>
   </div>
 
   <script src="config.js"></script>
