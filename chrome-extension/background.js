@@ -35,6 +35,12 @@ let wsOpen = false;
 let phonePresent = false;
 let signedIn = false;           // a durable ext_token exists
 let lastIndicator = null;       // last state pushed to chrome.action (dedupe)
+/**
+ * Set by applyIndicator ONLY on builds where composing the icon failed, so the
+ * connection state has nowhere to live but the badge. null on every normal
+ * build — the green dot is on the icon and the badge is free for the count.
+ */
+let badgeChipColor = null;
 
 const MIN_OPEN_DWELL_MS = 10_000;   // reset backoff only after a stable connection
 const MAX_BACKOFF_MS = 30_000;
@@ -53,6 +59,8 @@ const NOTIF_LINK_KEY = 'cc_notif_links';
 
 const GREEN = '#16a34a';
 const GREY = '#9ca3af';
+/** Unread-count chip. Red because it is the one thing asking to be acted on. */
+const BADGE_RED = '#dc2626';
 
 // ── Token ──────────────────────────────────────────────────────────────────
 function getToken() {
@@ -148,24 +156,72 @@ async function applyIndicator(state) {
   try {
     const imageData = await composeIcon(color);
     await chrome.action.setIcon({ imageData });
-    // Composed successfully — make sure no fallback badge is left behind from a
-    // previous run on a build that lacked OffscreenCanvas.
-    try { chrome.action.setBadgeText({ text: '' }); } catch (_) {}
+    // Composed successfully — the dot is on the icon, so the badge is not
+    // needed for connection state. Release it (this also clears any chip left
+    // behind by a previous run on a build that lacked OffscreenCanvas) and
+    // repaint, which puts the unread count back if one is waiting.
+    badgeChipColor = null;
+    repaintBadge();
     return;
   } catch (e) {
     console.warn('[CC-SW] icon compose failed, falling back to badge', e);
   }
   // Fallback: a coloured chip. A single space, not a bullet — Chrome renders
   // badge glyphs small and off-centre, whereas a chip of pure colour is exactly
-  // the signal we want and survives every locale and font.
+  // the signal we want and survives every locale and font. Handed to
+  // paintBadge rather than written here, so it cannot fight the unread count
+  // over the one badge the two of them share.
+  badgeChipColor = color;
+  repaintBadge();
+}
+
+/**
+ * The ONE place chrome.action's badge is written.
+ *
+ * Two things want it and they must not race each other:
+ *   - the unread count (missed calls + new texts + alerts), which is the only
+ *     way a number reaches a user whose surfaces are all closed — Dennis:
+ *     "i wont get a notifications counter on the pinned extension icon when i
+ *     have closed the side panel";
+ *   - applyIndicator's colour chip, which exists only as a fallback for the
+ *     handful of Chromium builds without OffscreenCanvas (see composeIcon).
+ *
+ * The number wins whenever there is one. It carries strictly more information,
+ * and on every build where the icon composes, connection state is already
+ * being shown by the green dot on the icon itself — which this never touches.
+ *
+ * No presence check here, deliberately. Counters only ever grow while every
+ * surface is closed (see bumpUnread) and a surface zeroes its tab the moment
+ * the user looks at it, so the stored total is ALREADY exactly "waiting for
+ * you since you last looked". Re-deriving that from presenceCount would also
+ * be wrong: presenceCount is module state and resets to 0 every time MV3
+ * respawns the worker, whereas the counters live in storage.session and do not.
+ *
+ * The badge sits in the icon's bottom-right corner, which is where the green
+ * dot is drawn too, so a non-zero count covers the dot. That is the right
+ * trade while the count is non-zero — it is the thing asking to be acted on —
+ * and the dot reappears as soon as the user opens the panel and reads the tab.
+ */
+function paintBadge(unread) {
+  const total = (unread?.missedCalls || 0) + (unread?.newSms || 0) + (unread?.alerts || 0);
   try {
-    if (!color) {
-      chrome.action.setBadgeText({ text: '' });
-    } else {
-      chrome.action.setBadgeBackgroundColor({ color });
+    if (total > 0) {
+      chrome.action.setBadgeBackgroundColor({ color: BADGE_RED });
+      // Chrome truncates a badge to roughly four characters at this font size;
+      // "99+" is the largest honest thing that always fits.
+      chrome.action.setBadgeText({ text: total > 99 ? '99+' : String(total) });
+    } else if (badgeChipColor) {
+      chrome.action.setBadgeBackgroundColor({ color: badgeChipColor });
       chrome.action.setBadgeText({ text: ' ' });
+    } else {
+      chrome.action.setBadgeText({ text: '' });
     }
-  } catch (_) {}
+  } catch (_) { /* badge writes are cosmetic — never let one throw upward */ }
+}
+
+/** Repaint from storage. Used on worker boot, where nothing is in memory yet. */
+function repaintBadge() {
+  return readUnread().then(paintBadge).catch(() => {});
 }
 
 /** Recompute from the two facts + auth. Call after ANY of them changes. */
@@ -284,6 +340,7 @@ function bumpUnread(key) {
     await new Promise((r) => {
       try { chrome.storage.session.set({ [UNREAD_KEY]: next }, r); } catch (_) { r(); }
     });
+    paintBadge(next);
     broadcastUnread(next);
   });
 }
@@ -304,6 +361,7 @@ function clearUnread(tab) {
     await new Promise((r) => {
       try { chrome.storage.session.set({ [UNREAD_KEY]: next }, r); } catch (_) { r(); }
     });
+    paintBadge(next);
     broadcastUnread(next);
     return next;
   });
@@ -887,6 +945,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     phonePresent = false;
     refreshIndicator();
     try { chrome.storage.session.set({ [UNREAD_KEY]: { ...UNREAD_ZERO } }); } catch (_) {}
+    // Signing out clears the counts, so it must clear the number on the icon
+    // too — a stale "3" on a signed-out extension is a lie about someone's
+    // messages.
+    paintBadge(UNREAD_ZERO);
     sendResponse?.({ ok: true });
   }
   return true;
@@ -912,4 +974,9 @@ chrome.runtime.onInstalled.addListener(() => { installPanelBehavior(); connect()
 initTrace();
 installPanelBehavior();
 refreshAuthAndIndicator();
+// Re-assert the count from storage on every worker boot. chrome.action state
+// does outlive the worker, so this is usually a no-op — but it is the only
+// thing that recovers the badge if a write was lost to a worker torn down
+// mid-`serialize`, and it costs one storage.session read per respawn.
+repaintBadge();
 connect();
