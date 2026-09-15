@@ -74,11 +74,13 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         // ---- ACCOUNT ----------------------------------------------------
-        // The account email is never stored on the phone - only the relay
-        // token and the device name are - so this row names the DEVICE and
-        // says it is signed in, rather than printing an address we would have
-        // to guess at. Sign out is directly under it, which is what the row
-        // is really for.
+        // TokenStore's "device name" is whatever the backend returned with
+        // the phone token, which in practice is the signed-in account's email
+        // — so this row usually shows the address the mockup shows. It is not
+        // guaranteed to be one, though, so nothing here assumes an email: the
+        // avatar takes the first character whatever it is, the label ellipsizes
+        // in the middle so a long address keeps both ends readable, and the
+        // fallback names the phone rather than inventing an identity.
         val accountName = TokenStore.getDeviceName(this)?.takeIf { it.isNotBlank() }
             ?: getString(R.string.settings_account_unknown)
         findViewById<TextView>(R.id.settingsAccountEmail).text = accountName

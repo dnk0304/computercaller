@@ -460,9 +460,13 @@
 
     <!-- Notification copy (mockup frame 3). The ongoing notification is the
          surface Dennis actually reads, so it says what the bridge is doing
-         rather than that a service exists. -->
-    <string name="notif_ongoing_waiting">Bridge active · waiting for your computer</string>
-    <string name="notif_ongoing_connected">Connected · mirroring to your computer</string>
+         rather than that a service exists. It is the notification TITLE and
+         there is no body line, because Android already prints the app name in
+         the shade header - which is also why these are short: a collapsed
+         notification gives the title one line, and the mockup's longer
+         "Bridge active - waiting for your computer" truncated there. -->
+    <string name="notif_ongoing_waiting">Waiting for your computer</string>
+    <string name="notif_ongoing_connected">Connected to your computer</string>
     <string name="notif_request_body">%1$s wants to connect to this phone.</string>
     <string name="notif_request_big">%1$s wants to connect to this phone. Accept only if you started this from your own computer.</string>
 </resources>

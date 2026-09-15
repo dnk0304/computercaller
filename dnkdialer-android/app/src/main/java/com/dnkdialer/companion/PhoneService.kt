@@ -2566,8 +2566,11 @@ class PhoneService : Service() {
         )
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("ComputerCaller")
-            .setContentText(text)
+            // v56 - the state is the TITLE, and there is no second line.
+            // Android already prints "ComputerCaller" in the shade header, so
+            // repeating it as the title cost a line and said nothing; the
+            // mockup's ongoing card is one line of state for that reason.
+            .setContentTitle(text)
             .setSmallIcon(R.drawable.ic_stat_cc)
             // Round 7 — tint the notification chrome with the brand accent so
             // the OS row reads as part of the app. (Folded into updateNotification
