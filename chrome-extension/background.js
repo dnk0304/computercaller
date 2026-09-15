@@ -554,6 +554,18 @@ async function connect() {
       connecting = false;
       if (wasCurrent) { wsOpen = false; phonePresent = false; refreshIndicator(); }
       if (openedAt && dwell >= MIN_OPEN_DWELL_MS) reconnectAttempts = 0; // stable → reset
+      // Reset lobby (dispatch FORGE-J, 2026-09-15). 4010 `room_reset` is the
+      // relay deliberately emptying this user's room, so the listener must come
+      // straight back with NO backoff penalty — the MIN_OPEN_DWELL_MS rule
+      // above is the wrong guard here: a reset that lands moments after a
+      // reconnect would otherwise leave reconnectAttempts elevated and park the
+      // SW's listener for up to MAX_BACKOFF_MS, silently losing every frame in
+      // the gap. The server asked for this close; there is nothing to back off
+      // from, and unlike the /app socket the SW has no user watching it
+      // reconnect.
+      if (ev && (ev.code === 4010 || ev.reason === 'room_reset')) {
+        reconnectAttempts = 0;
+      }
       openedAt = 0;
       scheduleReconnect();
     };
@@ -624,6 +636,31 @@ function notePhonePresence(present) {
   refreshIndicator();
 }
 
+/**
+ * Is this SMS_RECEIVED payload an OUTGOING message? (Addendum B, 2026-09-15.)
+ *
+ * The APK sends the row FLAT — {id, from, body, time, type:'sent'|'inbox'} —
+ * which is the shape that matters in production. We also read `message.type`
+ * and a `direction` field because the web layer's normalizePayload wraps the
+ * row under `message`, and older/other producers have used `direction`; a
+ * notification suppressor that only knows ONE of the three spellings is a
+ * suppressor that silently stops working the next time a producer changes.
+ *
+ * DEFAULT IS INCOMING. An unrecognised or absent marker must notify: missing a
+ * real incoming text is a product failure, whereas one stray notification for
+ * an outgoing one is the bug we are fixing — an annoyance. Fail toward the
+ * cheaper mistake.
+ */
+function isOutgoingSms(data) {
+  if (!data || typeof data !== 'object') return false;
+  const row = (data.message && typeof data.message === 'object') ? data.message : data;
+  const type = typeof row.type === 'string' ? row.type.toLowerCase() : '';
+  if (type === 'sent' || type === 'outbox' || type === 'outgoing' || type === 'queued') return true;
+  const dir = typeof row.direction === 'string' ? row.direction.toLowerCase() : '';
+  if (dir === 'sent' || dir === 'out' || dir === 'outgoing') return true;
+  return false;
+}
+
 function handleFrame(msg) {
   if (!msg) return;
   const { type, data } = splitFrame(msg);
@@ -636,6 +673,26 @@ function handleFrame(msg) {
   }
   if (type === 'PHONE_PRESENT') { notePhonePresence(true); return; }
   if (type === 'PHONE_ABSENT') { notePhonePresence(false); return; }
+  // Reset lobby (dispatch FORGE-J, 2026-09-15). The relay is about to close
+  // every socket in this room, phone included. Handled HERE, above the
+  // catch-all below, because that catch-all would otherwise read a ROOM_RESET
+  // as proof of a live phone and leave the green dot on through the teardown —
+  // the dot would go stale for the whole reconnect window.
+  if (type === 'ROOM_RESET') { notePhonePresence(false); return; }
+  // MV3 keepalive heartbeat (dispatch FORGE-J addendum A, 2026-09-15). The
+  // relay pushes HB to LISTENER sockets every 15s purely so this worker
+  // receives a real message: a protocol-level ws ping is answered below the JS
+  // layer and fires no event, so it does not reset MV3's 30s idle timer —
+  // measured, the worker was evicted twice in 5.5 minutes despite those pings,
+  // and a frame pushed into the gap was lost silently.
+  //
+  // Handled HERE, above the catch-all, and answered with NOTHING. Two reasons:
+  // an HB is not evidence of a phone (the catch-all below would turn the green
+  // dot on for a room with no phone in it, which is the exact lie the
+  // wsOpen/phonePresent split exists to prevent), and merely ARRIVING is the
+  // whole job — the inbound message is what keeps the worker alive, so a reply
+  // would be pure wire noise.
+  if (type === 'HB') return;
   // Catch-all for the tryAutoResume gap documented above.
   if (type !== 'PING' && type !== 'PONG') notePhonePresence(true);
 
@@ -663,6 +720,26 @@ function handleFrame(msg) {
       return;
     }
     case 'SMS_RECEIVED': {
+      // Addendum B (Dennis 2026-09-15): "i also got a pop-up notification when
+      // sent an sms out. I only want on incoming, not outgoing."
+      //
+      // SMS_RECEIVED is a misnomer on the wire: it is the APK's frame for a
+      // single SMS ROW, in EITHER direction. Three phone-side producers push
+      // sent rows through it —
+      //   PhoneService.kt:2667  RCS/Google-Messages mirror, which detects a
+      //                         "You: …" notification and tags type="sent";
+      //   PhoneService.kt:2927  the new-message ContentObserver push, which
+      //                         maps MESSAGE_TYPE_SENT → "sent";
+      //   PhoneService.kt:2999  the MMS/backfill push, same mapping.
+      // So every SMS the user sends from the phone (and every echo of one sent
+      // from the browser, once the provider row lands) arrived here and both
+      // raised a notification AND bumped the unread badge.
+      //
+      // The direction check has to come BEFORE bumpUnread, not just before the
+      // notifications.create: the badge is a count of things needing attention
+      // and your own outbox needs none. Suppressing only the popup would leave
+      // the badge lying, which is the same bug wearing a different hat.
+      if (isOutgoingSms(data)) return;
       bumpUnread('newSms');
       if (presenceCount > 0) return;
       const who = pick(data, ['name', 'contactName']) ||

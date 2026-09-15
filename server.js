@@ -37,6 +37,17 @@ const { evaluateUserEntitlement } = require('./lib/entitlement-core.js');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
 const { syncSinceFloorMsFromLimits } = require('./lib/tiers-core.js');
 
+// Dispatch FORGE-J (2026-09-15) — "Reset lobby". The primitive that empties one
+// room and drops every socket in it lives in lib/roomReset-core.js so BOTH entry
+// points (the RESET_ROOM WS frame below and the POST /api/relay/reset Route
+// Handler) run the exact same code, and so tests/reset-room.test.mjs can import
+// the real thing instead of hand-mirroring it the way the older relay tests do.
+// Kept on ONE line: eslint-disable-NEXT-LINE covers exactly one line, so a
+// multi-line destructure leaves the require() itself un-suppressed and adds an
+// error to the baseline (and an "unused directive" warning on top).
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
+const { resetRoom: resetRoomCore, createResetRateLimiter } = require('./lib/roomReset-core.js');
+
 // Bundle A (2026-05-28) — Phase 4 security review fix (H7).
 // Every server.js log site that previously included the raw phoneToken (and
 // every site that includes any user-supplied token, including the new
@@ -419,6 +430,87 @@ function startRelay(httpServer) {
   // Single-process global handle for the Route Handlers.
   // eslint-disable-next-line no-undef
   globalThis.__supersedeWebSessions = supersedeWebSessions;
+
+  // ── Reset lobby (dispatch FORGE-J, 2026-09-15) ──────────────────────────────
+  //
+  // Per-user 1-per-5s limiter shared by BOTH entry points (WS frame and HTTP
+  // route). Keying on userId rather than on the room token is deliberate: the
+  // room is deleted by the reset itself, so a token-keyed limiter would forget
+  // the previous reset the instant it succeeded and the limit would never bind.
+  const resetRateLimiter = createResetRateLimiter();
+  // Bound the limiter Map. 10 min matches the other janitors in this file and is
+  // 120x the 5s window, so a sweep can never evict a live entry.
+  const resetLimiterSweep = setInterval(() => resetRateLimiter.sweep(), 10 * 60 * 1000);
+  if (typeof resetLimiterSweep.unref === 'function') resetLimiterSweep.unref();
+
+  /**
+   * Empty the room for `token` and drop every socket in it. The ONE place both
+   * the RESET_ROOM frame and POST /api/relay/reset funnel through.
+   *
+   * @returns {{closed:number,phones:number,browsers:number,listeners:number}|null}
+   *          null when there is no room for that token (already empty — which
+   *          is a SUCCESS for the caller, not an error: the postcondition
+   *          "this room is empty" already holds).
+   */
+  function doResetRoom(token, origin) {
+    const room = rooms.get(token);
+    if (!room) {
+      console.log(`[Relay][${redactToken(token)}] resetRoom(${origin}): no room — already empty`);
+      return null;
+    }
+    return resetRoomCore(
+      room,
+      {
+        safeSend,
+        // ws.close() is wrapped because a close on an already-CLOSING socket
+        // throws in some ws versions; roomReset-core also try/catches per
+        // socket, so a thrower can never abort the rest of the teardown.
+        closeSocket: (ws, code, reason) => { try { ws.close(code, reason); } catch (_) {} },
+        rooms,
+        log: (m) => console.log(`[Relay][${redactToken(token)}] ${m}`),
+      },
+      origin,
+    );
+  }
+
+  /**
+   * Single-process global handle for POST /api/relay/reset. Same documented
+   * pattern as __supersedeWebSessions above: the Next.js Route Handlers run in
+   * THIS Node process, so they can call straight in — no IPC, no message bus.
+   *
+   * Takes a userId (what a session cookie proves) and resolves it to the room
+   * key (phoneToken) here, so the route never has to touch the relay's keying
+   * scheme. Rate-limited on the same limiter as the frame path, so a user
+   * cannot get 2x the budget by alternating transports.
+   *
+   * @param {string} userId
+   * @returns {Promise<{closed:number,rateLimited?:boolean,retryAfterMs?:number}|null>}
+   */
+  async function resetRelayRoomForUser(userId) {
+    const gate = resetRateLimiter.check(userId);
+    if (!gate.allowed) {
+      return { closed: 0, rateLimited: true, retryAfterMs: gate.retryAfterMs };
+    }
+    let user;
+    try {
+      user = await db.user.findUnique({
+        where: { id: userId },
+        select: { phoneToken: true },
+      });
+    } catch (e) {
+      console.error(`[Relay] resetRelayRoomForUser: DB lookup failed for ${userId}: ${e.message}`);
+      throw e;
+    }
+    if (!user || !user.phoneToken) return null;
+    const result = doResetRoom(user.phoneToken, 'http');
+    // A missing room is not a failure — the caller asked for "empty", and empty
+    // is what it is. Report zero closed rather than null so the route can always
+    // answer 200.
+    return result || { closed: 0, phones: 0, browsers: 0, listeners: 0 };
+  }
+
+  // eslint-disable-next-line no-undef
+  globalThis.__resetRelayRoom = resetRelayRoomForUser;
 
   function getRoom(token) {
     let room = rooms.get(token);
@@ -1806,6 +1898,39 @@ function startRelay(httpServer) {
         }
         return;
       }
+      // Control plane — "Reset lobby" (dispatch FORGE-J, 2026-09-15).
+      //
+      // Unlike LEAVE_ACTIVE this is NOT gated on `ws === room.active.browser`.
+      // That gate is exactly why Disconnect cannot rescue a wedged room: the
+      // states a user reaches for Reset from — a phantom phone in the lobby, a
+      // pendingPairing that will not resolve, a browser that never got promoted
+      // — are precisely the states where this socket is NOT the active browser.
+      // The authorisation that matters already happened at the WS upgrade: this
+      // socket authenticated into THIS room (its phoneToken IS the room key), so
+      // it can only ever reset its own user's room. Listeners are excluded by
+      // the receive-only short-circuit far above (`if (ws.listener) return`)
+      // before any frame reaches here — a passive extension SW must never
+      // mutate room state, and least of all destroy it.
+      if (msg.startsWith('RESET_ROOM:')) {
+        try {
+          const gate = resetRateLimiter.check(ws.userId);
+          if (!gate.allowed) {
+            console.log(`[Relay][${redactToken(token)}] RESET_ROOM rate-limited (retry in ${gate.retryAfterMs}ms)`);
+            safeSend(ws, `RESET_ROOM_ACK:${JSON.stringify({ ok: false, reason: 'rate_limited', retryAfterMs: gate.retryAfterMs })}`);
+            return;
+          }
+          // ACK BEFORE the teardown: doResetRoom closes this very socket, so an
+          // ack queued afterwards would be written to a CLOSING socket and
+          // dropped. The client treats ack-then-close and close-alone
+          // identically (both route to "reconnect"), but the ack is what lets it
+          // distinguish a served reset from a network failure.
+          safeSend(ws, `RESET_ROOM_ACK:${JSON.stringify({ ok: true })}`);
+          doResetRoom(token, 'frame');
+        } catch (e) {
+          console.error(`[Relay][${redactToken(token)}] RESET_ROOM handler crashed: ${e.message}`);
+        }
+        return;
+      }
 
       // Tier gate (2026-07-27) — enforce contact-sync + sync-range on the
       // browser→phone sync frames BEFORE they are forwarded to the phone. This
@@ -2030,6 +2155,37 @@ function startRelay(httpServer) {
       }
       ws.missedPongs += 1;
       try { ws.ping(); } catch (e) { /* ignore */ }
+      // ── MV3 listener heartbeat (dispatch FORGE-J addendum A, 2026-09-15) ──
+      //
+      // MEASURED, not assumed. With cc_debug tracing and NO debugger attached
+      // (Playwright's CDP attach suppresses MV3 eviction, which is why the
+      // earlier ext-sw-lifetime-proof harness returned a false negative), the
+      // extension's listener worker was evicted TWICE in a 5.5-minute window:
+      // boot s61juy died after ~150s, boot fi8wxv replaced it ~64s later. A
+      // relay frame pushed into that gap was lost silently — the socket was
+      // gone, no ws-close row was ever written (the worker died before its own
+      // onclose could run), and frameBuffer does not help because it serves
+      // active pairs only, never listeners.
+      //
+      // The 15s ws.ping() above did NOT prevent it. A protocol-level ping is
+      // answered by the browser's WS stack below the JS layer — it fires no
+      // event in the worker, so it is not extension activity and does not
+      // reset MV3's idle timer. THIS frame is a real text message: it fires
+      // sock.onmessage, which is exactly the activity Chrome 116+ documents as
+      // extending an extension service worker's life.
+      //
+      // Scoped to listeners because they are the only sockets owned by a
+      // worker Chrome evicts — /app's socket lives in a page. Piggy-backed on
+      // this existing 15s loop rather than a new timer: 15s < the 30s idle
+      // window with a full tick of margin, and it costs one extra frame per
+      // listener per tick and nothing else.
+      //
+      // The SW answers nothing. A reply would prove liveness to US, but the
+      // problem is keeping the worker ALIVE, and it is the INBOUND frame that
+      // does that — an ack would be pure wire noise.
+      if (ws.role === 'browser' && ws.listener) {
+        try { safeSend(ws, `HB:${JSON.stringify({})}`); } catch (e) { /* ignore */ }
+      }
     }
   }, 15000);
 
