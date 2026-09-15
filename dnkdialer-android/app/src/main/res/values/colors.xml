@@ -20,49 +20,40 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 
-    <!-- =================================================== -->
-    <!-- ComputerCaller — Round 7 (sleek-tech)               -->
-    <!--                                                     -->
-    <!-- Direction: modern fintech / AI tools / pro tools    -->
-    <!-- (Linear, Vercel, Revolut, Claude.ai). Dark base by  -->
-    <!-- default. Pure near-black. Electric blue accent.     -->
-    <!-- Emerald LIVE dot retained — semantically correct.   -->
-    <!--                                                     -->
-    <!-- Departures from Round 6 (warm-terracotta):          -->
-    <!--   - Warm near-black (#0A0A0B) → pure near-black     -->
-    <!--     (#050507). Slight cool bias on raised surfaces  -->
-    <!--     so layered chrome reads as "screen" not "paper" -->
-    <!--   - Warm orange #E8763A → electric blue #0A84FF     -->
-    <!--     (Apple system blue). Used on CTAs, URL bar,     -->
-    <!--     wordmark stroke. Cyan secondary for hover/glow. -->
-    <!--   - Text: warm off-white #F4F1EA → neutral cool     -->
-    <!--     #F5F7FA. Less "paper", more "OLED".             -->
-    <!--   - Hairlines on white@8-15% instead of warm grays. -->
-    <!-- =================================================== -->
+    <!-- ===================================================
+         v56 palette. The light values are DIRECTION-android-v56.md; the dark
+         twins live in values-night/colors.xml under the SAME names, so a
+         token reference in a layout or drawable needs no qualifier logic.
 
-    <!-- Surface scale — pure near-black with subtle cool elevation. -->
-    <color name="surface_base">#FAFAFA</color>          <!-- app background, the void -->
-    <color name="surface_raised">#FFFFFF</color>        <!-- subtle elevation (cards) -->
-    <color name="surface_inset">#F2F2F2</color>         <!-- recessed (url block, fields) -->
-    <color name="surface_border">#E5E5E5</color>      <!-- 10% white hairline -->
-    <color name="surface_border_strong">#D4D4D4</color> <!-- 15% white — focused/active -->
+         The Round 7 "sleek-tech" commentary that used to sit here described
+         a dark-only, electric-blue (#0A84FF) palette that no longer exists:
+         as of v56 the app follows the system theme and the accent tokens
+         resolve to the brand ramp. The accent_blue / accent_warm names are
+         kept as aliases so un-migrated references stay on-palette.
+         =================================================== -->
+    <!-- Surface scale: page / card / field / hairline. Light values here,
+         dark twins in values-night under the same names. -->
+    <color name="surface_base">#FAFAFA</color>          <!-- page -->
+    <color name="surface_raised">#FFFFFF</color>        <!-- cards; separation is surface + hairline, never elevation -->
+    <color name="surface_inset">#F2F2F2</color>         <!-- recessed: fields, icon tiles, notice bands -->
+    <color name="surface_border">#E5E5E5</color>        <!-- hairline -->
+    <color name="surface_border_strong">#D4D4D4</color> <!-- outline buttons, switch track ring -->
     <color name="surface_qr">#FFFFFF</color>            <!-- pure white QR plate; max contrast for scanners -->
 
-    <!-- Text scale — cool neutral grays. -->
-    <color name="text_primary">#171717</color>          <!-- near-white, slight cool -->
-    <color name="text_secondary">#525252</color>        <!-- mid-cool gray -->
-    <color name="text_tertiary">#737373</color>         <!-- dim cool gray -->
-    <color name="text_label">#737373</color>            <!-- eyebrow / label -->
+    <!-- Text scale. -->
+    <color name="text_primary">#171717</color>          <!-- ink -->
+    <color name="text_secondary">#525252</color>        <!-- body, presence line -->
+    <color name="text_tertiary">#737373</color>         <!-- row subtitles, footers, caps labels -->
+    <color name="text_label">#737373</color>            <!-- alias of tertiary, kept for old refs -->
 
-    <!-- Accent — electric blue. Apple system blue (#0A84FF) is the
-         de-facto "modern tech" primary in 2025. Used SPARINGLY:
-         primary CTA gradient, URL-block left bar, wordmark stroke,
-         focused field border. Cyan is the gradient companion for
-         depth on the primary CTA. -->
-    <color name="accent_blue">#1E8FB2</color>           <!-- electric blue, primary -->
+    <!-- Accent. As of v56 these resolve to stops on the brand ramp rather
+         than the old electric blue, so any reference that has not migrated to
+         cc_brand_* still lands on-palette. Used sparingly: focused field
+         border, the one link-weight action in a notice band. -->
+    <color name="accent_blue">#1E8FB2</color>           <!-- the brand ramp's terminal stop -->
     <color name="accent_blue_pressed">#17708C</color>   <!-- darker pressed state -->
     <color name="accent_blue_dim">#A8D6E4</color>       <!-- muted / disabled -->
-    <color name="accent_cyan">#22A89A</color>           <!-- gradient companion, glow -->
+    <color name="accent_cyan">#22A89A</color>           <!-- the ramp's midpoint -->
 
     <!-- Google Sign-in branding (light variant) — fixed per Google's
          guidelines, NOT part of the app palette. Do not retint. -->

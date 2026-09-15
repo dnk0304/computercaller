@@ -2172,7 +2172,7 @@ class PhoneService : Service() {
         // stay identical apart from the body text.
         startForeground(
             NOTIFICATION_ID,
-            buildForegroundNotification("Phone bridge is active")
+            buildForegroundNotification(getString(R.string.notif_ongoing_waiting))
         )
 
         // Dispatch #29 — Phase 4 finish. startServer() (the LAN
@@ -2360,11 +2360,10 @@ class PhoneService : Service() {
         // connect" — concise + same string in both surfaces so users
         // recognise the same wording in the shade and the dialog.
         val notification = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
-            .setContentTitle("Connection request")
-            .setContentText("$address wants to connect")
+            .setContentTitle(getString(R.string.pair_request_notification_title))
+            .setContentText(getString(R.string.notif_request_body, address))
             .setStyle(NotificationCompat.BigTextStyle().bigText(
-                "$address is trying to connect to your phone. " +
-                "Approve only if you started this connection."
+                getString(R.string.notif_request_big, address)
             ))
             .setSmallIcon(R.drawable.ic_stat_cc)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -3184,7 +3183,12 @@ class PhoneService : Service() {
                 isClientConnected = connected
                 lastClientAddress = if (connected) "relay" else null
                 android.util.Log.d("PhoneService", if (connected) "Connected to relay!" else "Disconnected from relay")
-                updateNotification(if (connected) "Connected to PC via relay" else "Phone bridge is active")
+                updateNotification(
+                    getString(
+                        if (connected) R.string.notif_ongoing_connected
+                        else R.string.notif_ongoing_waiting
+                    )
+                )
                 // onOpen → OPEN. onClose → only flip to IDLE if we
                 // weren't already pushed to FAILED by the error callback
                 // (close fires AFTER error for non-normal closures).
@@ -3211,7 +3215,7 @@ class PhoneService : Service() {
                     isPairActive = false
                     // Foreground notification back to "Waiting" — the
                     // user is no longer connected to a browser.
-                    updateNotification(getString(R.string.status_waiting_for_web))
+                    updateNotification(getString(R.string.notif_ongoing_waiting))
                     // Unexpected disconnect (the user didn't tap Sign Out
                     // or anything that would have called disconnectRelay()
                     // — that path clears clientRelayUrl). Schedule the
@@ -3736,7 +3740,7 @@ class PhoneService : Service() {
                     // the foreground notification text — the pair is
                     // over but we're still available for the next one.
                     isPairActive = false
-                    updateNotification(getString(R.string.status_waiting_for_web))
+                    updateNotification(getString(R.string.notif_ongoing_waiting))
                     // Drop any pending request notifications for this
                     // session — defensive; usually nothing is pending
                     // by the time TERMINATED arrives.

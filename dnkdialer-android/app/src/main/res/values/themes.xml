@@ -34,5 +34,9 @@
 
         <!-- Light surface → dark status-bar icons. Inverted in values-night. -->
         <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
+        <!-- v56: the nav bar is the same page surface as the status bar, so
+             its icon polarity has to match too. Without this the gesture pill
+             is light-on-light in day mode on API 27+. -->
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
     </style>
 </resources>
