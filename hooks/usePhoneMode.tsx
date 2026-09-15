@@ -75,16 +75,24 @@ export const SUPPRESS_CLEAR_ABOVE_PX = 1000;
 // the threshold. 1200 (not 1194) leaves a small margin over the measured floor.
 export const SIDEBAR_AUTO_COLLAPSE_BELOW_PX = 1200;
 
+/** The three root tabs. A stacked view always belongs to one of them. */
+export type PhoneModeTab = 'dialer' | 'texts' | 'bell';
+
 export type PhoneModeView =
   | { kind: 'dialer' }
   | { kind: 'texts' }
   | { kind: 'bell' }
-  | { kind: 'thread'; threadId: string }
+  // `from` is the tab the user was standing on when this view was pushed.
+  // Back from a stacked view returns THERE, not to wherever the stack root
+  // happens to be (Dennis 2026-09-15: "If I clicked new message from the dial
+  // tab, then I should get sent back to dial tab"). Optional so older call
+  // sites that have no meaningful origin still compile and fall back to pop().
+  | { kind: 'thread'; threadId: string; from?: PhoneModeTab }
   // `to` pre-addresses the composer (dispatch PIXEL-B2 / AC-4: the Dial view's
   // Send-message action lands in Texts with that recipient already filled and
   // focus in the body, rather than opening a second parallel compose UI).
   // Optional — `push({ kind: 'compose' })` still means "blank new message".
-  | { kind: 'compose'; to?: string };
+  | { kind: 'compose'; to?: string; from?: PhoneModeTab };
 
 interface PhoneModeContextValue {
   /** Whether Phone Mode is currently rendered. */
@@ -105,8 +113,15 @@ interface PhoneModeContextValue {
   push: (view: PhoneModeView) => void;
   /** Pop one level (e.g. thread back arrow). No-op if stack depth ≤ 1. */
   pop: () => void;
+  /**
+   * Swap the TOP of the stack for another view, at the same depth and without
+   * adding a history entry. This is how "send an SMS" leaves the composer:
+   * the compose entry becomes the thread entry, so the composer is no longer
+   * behind the user and back lands on the tab they came from.
+   */
+  replace: (view: PhoneModeView) => void;
   /** Replace the entire stack (e.g. tab-bar switch). */
-  setTab: (kind: 'dialer' | 'texts' | 'bell') => void;
+  setTab: (kind: PhoneModeTab) => void;
   /** User clicked Expand — leave Phone Mode and suppress auto-collapse. */
   expandManually: () => void;
   /** User clicked the entry button — enter Phone Mode and pin to dialer. */
@@ -234,30 +249,51 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
   }, [phoneMode, setSuppressed]);
 
   // ---------- popstate guard (risk #4) --------------------------------------
-  // When stack depth > 1, intercept browser-back to pop our internal stack
-  // instead of letting Next.js navigate away. We push a sentinel state entry
-  // on every push, so the FIRST back tap consumes the sentinel + pops the
-  // stack; subsequent native-back works as usual.
+  // Every `push` adds exactly ONE sentinel history entry, and every way OUT of
+  // a stacked view consumes exactly as many as it unwinds. Keeping those two
+  // depths equal is the whole trick: the previous implementation re-pushed a
+  // sentinel on every back, so history grew one entry per back-tap and a tab
+  // switch left orphaned entries behind — which is what made back feel like it
+  // needed pressing twice once a compose had been in the stack.
+  //
+  //   push()             depth +1, history +1
+  //   pop()              depth -1, history.go(-1)
+  //   setTab()/reset     depth -> 0, history.go(-depth)
+  //   replace()          depth unchanged, history unchanged
+  //   browser back       depth -1, stack -1 (the event already moved history)
+  const sentinelDepthRef = React.useRef(0);
+  // Back-steps WE asked for. popstate fires for those too, and it must not be
+  // read as the user navigating — that double-pop is the "two backs" bug.
+  const selfPopsRef = React.useRef(0);
+  // Stack depth readable from the popstate listener without re-subscribing it
+  // on every push (the listener is registered once per phoneMode flip).
+  const stackRef = React.useRef(stack);
+  useEffect(() => { stackRef.current = stack; }, [stack]);
+
+  const unwindHistory = useCallback((steps: number) => {
+    if (steps <= 0) return;
+    selfPopsRef.current += steps;
+    try {
+      window.history.go(-steps);
+    } catch {
+      // Sandboxed iframes can refuse history navigation — the in-app stack is
+      // already correct, so this only costs a stale entry, never a wrong view.
+      selfPopsRef.current = Math.max(0, selfPopsRef.current - steps);
+    }
+  }, []);
+
   useEffect(() => {
     if (!phoneMode) return;
-    const onPopState = (e: PopStateEvent) => {
-      // If the state we just popped TO is one of our sentinels, the user
-      // just hit back while inside a stacked view — swallow it and pop our
-      // stack instead. Note: the event itself fires AFTER the URL/state
-      // changed, so we re-push to keep history aligned with our stack depth.
-      const isFromSentinel = e.state && (e.state as { __phoneModeSentinel?: string }).__phoneModeSentinel === HISTORY_SENTINEL;
-      // Only interfere when we still have a stack to pop. If the stack
-      // already drained to its root, let the native back proceed.
-      setStack(prev => {
-        if (prev.length <= 1) return prev;
-        return prev.slice(0, -1);
-      });
-      // Re-push a sentinel so the NEXT in-app push lines up with another
-      // history entry rather than leaving us short. Only do this when we
-      // popped from a sentinel; otherwise the user really did go elsewhere.
-      if (isFromSentinel) {
-        window.history.pushState({ __phoneModeSentinel: HISTORY_SENTINEL }, '');
+    const onPopState = () => {
+      // One of ours (pop / setTab unwinding). Already accounted for.
+      if (selfPopsRef.current > 0) {
+        selfPopsRef.current -= 1;
+        return;
       }
+      if (sentinelDepthRef.current > 0) sentinelDepthRef.current -= 1;
+      // Nothing left to pop → the user really did leave; let it through.
+      if (stackRef.current.length <= 1) return;
+      setStack(prev => (prev.length <= 1 ? prev : prev.slice(0, -1)));
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -269,23 +305,38 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
     // Push a sentinel history entry so browser-back pops the stack first.
     try {
       window.history.pushState({ __phoneModeSentinel: HISTORY_SENTINEL }, '');
+      sentinelDepthRef.current += 1;
     } catch {
       // history may throw under tight sandbox iframes — non-fatal for the UX.
     }
   }, []);
 
   const pop = useCallback(() => {
-    setStack(prev => (prev.length <= 1 ? prev : prev.slice(0, -1)));
-    // We don't call history.back() here because the back-arrow path is
-    // independent of browser-back. Calling it would race with the popstate
-    // handler and double-pop. Sentinel cleanup happens on the NEXT resize
-    // or route change naturally.
+    let moved = false;
+    setStack(prev => {
+      if (prev.length <= 1) return prev;
+      moved = true;
+      return prev.slice(0, -1);
+    });
+    if (moved && sentinelDepthRef.current > 0) {
+      sentinelDepthRef.current -= 1;
+      unwindHistory(1);
+    }
+  }, [unwindHistory]);
+
+  // Same depth, no history entry: the entry the user is looking at becomes a
+  // different entry. After a send, the composer must not be reachable by back.
+  const replace = useCallback((view: PhoneModeView) => {
+    setStack(prev => (prev.length === 0 ? [view] : [...prev.slice(0, -1), view]));
   }, []);
 
-  const setTab = useCallback((kind: 'dialer' | 'texts' | 'bell') => {
+  const setTab = useCallback((kind: PhoneModeTab) => {
     // Tabs reset the stack to a single view — tabs are siblings, not children.
     setStack([{ kind }]);
-  }, []);
+    const depth = sentinelDepthRef.current;
+    sentinelDepthRef.current = 0;
+    unwindHistory(depth);
+  }, [unwindHistory]);
 
   // ---------- Manual entry / exit ------------------------------------------
   const expandManually = useCallback(() => {
@@ -294,7 +345,10 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
     // stack so re-entering later opens cleanly on the dialer.
     setOverride('expand');
     setStack([{ kind: 'dialer' }]);
-  }, []);
+    const depth = sentinelDepthRef.current;
+    sentinelDepthRef.current = 0;
+    unwindHistory(depth);
+  }, [unwindHistory]);
 
   const enterManually = useCallback(() => {
     // User opted in → force Phone Mode on regardless of width. The auto rule
@@ -303,7 +357,10 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
     // doesn't auto-clear 'enter' — wide-screen Phone Mode is intentional).
     setOverride('enter');
     setStack([{ kind: 'dialer' }]);
-  }, []);
+    const depth = sentinelDepthRef.current;
+    sentinelDepthRef.current = 0;
+    unwindHistory(depth);
+  }, [unwindHistory]);
 
   // Open a true narrow popup window. window.open is wrapped in a thin
   // try/catch — some sandbox-iframe contexts throw on .open access entirely.
@@ -361,12 +418,13 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
       current,
       push,
       pop,
+      replace,
       setTab,
       expandManually,
       enterManually,
       openInPopup,
     }),
-    [phoneMode, forceSidebarCollapsed, stack, current, push, pop, setTab, expandManually, enterManually, openInPopup],
+    [phoneMode, forceSidebarCollapsed, stack, current, push, pop, replace, setTab, expandManually, enterManually, openInPopup],
   );
 
   return <PhoneModeContext.Provider value={value}>{children}</PhoneModeContext.Provider>;
@@ -387,6 +445,7 @@ export function usePhoneMode(): PhoneModeContextValue {
       current: { kind: 'dialer' },
       push: () => {},
       pop: () => {},
+      replace: () => {},
       setTab: () => {},
       expandManually: () => {},
       enterManually: () => {},
