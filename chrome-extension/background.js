@@ -207,6 +207,62 @@ function serialize(fn) {
   return run;
 }
 
+// ── Self-timestamping trace (off by default) ────────────────────────────────
+/**
+ * forge/dock-reconnect-sw-badge (2026-09-15). "How long does the listener
+ * socket actually live once the panel is closed?" cannot be answered with a
+ * debugger attached: Playwright (and an open DevTools pane) auto-attaches a
+ * CDP session to the worker, and an attached debugger is exactly what stops
+ * Chrome evicting an MV3 worker. scripts/ext-sw-lifetime-proof.mjs measured
+ * its own instrument for that reason and says so in its header.
+ *
+ * So the worker timestamps ITSELF. Every boot, alarm, socket open and socket
+ * close (with the close code, which is what distinguishes an eviction from a
+ * network drop) is appended to a bounded ring in chrome.storage.local, which
+ * survives the worker being torn down. Read it back from any extension PAGE —
+ * whose DevTools never touches the worker:
+ *
+ *   chrome.storage.local.set({ cc_debug: true })     // arm, then close the panel
+ *   chrome.storage.local.get('cc_trace', console.log) // 10 minutes later
+ *
+ * Gaps between consecutive `boot` rows ARE the worker's death/respawn timeline.
+ *
+ * Cost when disabled (the shipped default): one boolean read at boot and one
+ * `if` per event. Nothing is written, so no disk traffic and no quota use.
+ */
+const TRACE_KEY = 'cc_trace';
+const TRACE_FLAG = 'cc_debug';
+const TRACE_MAX = 400;
+let traceOn = false;
+/** Distinguishes "the worker never died" from "it died and respawned quietly". */
+const BOOT_ID = Math.random().toString(36).slice(2, 8);
+
+function trace(event, detail) {
+  if (!traceOn) return;
+  // Same promise-chain mutex as the counters: these are read-modify-writes
+  // across an await, and a burst of close/open events would otherwise lose
+  // rows to last-write-wins — the precise failure the counters already hit.
+  serialize(async () => {
+    try {
+      const o = await new Promise((r) => chrome.storage.local.get(TRACE_KEY, r));
+      const rows = (o && o[TRACE_KEY]) || [];
+      rows.push({ t: Date.now(), boot: BOOT_ID, e: event, ...(detail || {}) });
+      while (rows.length > TRACE_MAX) rows.shift();
+      await new Promise((r) => chrome.storage.local.set({ [TRACE_KEY]: rows }, r));
+    } catch (_) { /* tracing must never break the worker */ }
+  });
+}
+
+/** Read the flag once per worker lifetime, then emit this boot's first row. */
+function initTrace() {
+  try {
+    chrome.storage.local.get(TRACE_FLAG, (o) => {
+      traceOn = !!(o && o[TRACE_FLAG]);
+      trace('boot', { presenceCount });
+    });
+  } catch (_) {}
+}
+
 function readUnread() {
   return new Promise((resolve) => {
     try {
@@ -412,6 +468,7 @@ async function connect() {
       openedAt = Date.now();
       connecting = false;
       wsOpen = true;
+      trace('ws-open', { attempts: reconnectAttempts });
       // phonePresent stays whatever LOBBY_STATUS tells us next. We do NOT
       // optimistically assume a phone: a relay socket with no phone behind it
       // is precisely the state a green dot must not claim.
@@ -426,8 +483,12 @@ async function connect() {
       try { handleFrame(typeof ev.data === 'string' ? ev.data : ''); }
       catch (e) { console.warn('[CC-SW] frame handler error', e); }
     };
-    sock.onclose = () => {
+    sock.onclose = (ev) => {
       const dwell = Date.now() - openedAt;
+      // The close CODE is the discriminator the measurement needs: 1001/1006
+      // with no close frame is the worker (or the network) going away under
+      // us, whereas 1000 is a deliberate close.
+      trace('ws-close', { code: ev?.code ?? null, reason: ev?.reason || '', dwellMs: openedAt ? dwell : null });
       // Capture BEFORE nulling: a stale socket closing behind a live
       // replacement must not turn the indicator grey while we are connected.
       const wasCurrent = ws === sock;
@@ -661,6 +722,7 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'cc-presence') return;
   presenceCount += 1;
   presencePorts.add(port);
+  trace('presence-open', { presenceCount });
   // Hand the newcomer the current counts immediately. A surface that opens
   // while three texts are waiting must render their badge on its first paint,
   // not on the next inbound frame.
@@ -676,6 +738,7 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => {
     presencePorts.delete(port);
     presenceCount = Math.max(0, presenceCount - 1);
+    trace('presence-close', { presenceCount });
   });
 });
 
@@ -832,7 +895,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ── Keepalive / reconnect backstop ───────────────────────────────────────────
 chrome.alarms.create('cc-keepalive', { periodInMinutes: 0.5 }); // 30s (chrome min)
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === 'cc-keepalive') connect(); // no-op if already open
+  if (a.name !== 'cc-keepalive') return;
+  // An alarm row whose `boot` id differs from the row before it is a worker
+  // that was evicted and respawned by this very alarm — the gap between them
+  // is how long the listener socket was down.
+  trace('alarm', { wsOpen, connecting });
+  connect(); // no-op if already open
 });
 
 chrome.runtime.onStartup.addListener(() => { installPanelBehavior(); connect(); });
@@ -841,6 +909,7 @@ chrome.runtime.onInstalled.addListener(() => { installPanelBehavior(); connect()
 // Kick a connection on SW wake, and paint the indicator from whatever the
 // token says before the socket has had time to answer — otherwise a signed-in
 // user sees the signed-out icon for the first second of every SW respawn.
+initTrace();
 installPanelBehavior();
 refreshAuthAndIndicator();
 connect();
