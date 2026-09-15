@@ -344,7 +344,14 @@ html:has(.cc-ext), body:has(.cc-ext) {
        a dial pad marooned in two 230px gutters. Giving it an explicit width
        means the auto margins have a real box to centre. */
     width: 100%;
-    max-width: 560px;
+    /* 644px = 560 x 1.15. Dennis, 2026-09-15: "can we make the docked side
+       panel 15% less narrow?" Chrome owns the panel's actual width (user
+       drag, no extension API can set it), so the only width we control is
+       this self-imposed column cap — and it was the thing stopping a
+       dragged-wide panel from using the room. Raised by his 15%. Below
+       620px nothing caps: the column already fills the panel edge to edge,
+       which is why a 400px panel looks the same before and after. */
+    max-width: 644px;
     margin-inline: auto;
     border-inline: 1px solid var(--cc-hair);
   }
