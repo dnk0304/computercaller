@@ -482,8 +482,11 @@ function DialerView() {
             onClick={() => digits && push({ kind: 'thread', threadId: digits, from: 'dialer' })}
             disabled={!digits}
             className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-blue-50 hover:text-blue-600 active:scale-95 disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            aria-label="Send a message"
-            title="Send a message"
+            // Same accessible name as the extension pad's pill — the two pads
+            // are the same control at two densities, and a screen-reader user
+            // moving between surfaces should not meet two names for it.
+            aria-label="Send a message to this number"
+            title={digits ? `Send a message to ${digits}` : 'Enter a number first'}
           >
             <MessageSquare className="h-4 w-4" aria-hidden="true" />
           </button>
