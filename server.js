@@ -270,6 +270,41 @@ const PAIRING_TTL_MS = 30_000;
 // not widen this surface; it only lengthens the same token-scoped hold.
 const RESUME_WINDOW_MS = 180_000;
 
+// Panel-close hold (FORGE-L, 2026-09-15). Dennis: "i would like the phone
+// pairing to be kept for the same amount of time like in the official webapp.
+// Not just 3 minutes."
+//
+// The web app stays paired for as long as its TAB is open, because that tab
+// holds the interactive browser socket. In the Chrome extension the
+// interactive socket lives inside the side-panel iframe, so closing the panel
+// kills it and the pair had only RESUME_WINDOW_MS (180 s) to live. But the
+// extension ALSO keeps a `?role=listener` socket owned by the MV3 service
+// worker, and that worker is the extension's equivalent of the web app's open
+// tab: it is what still receives calls/SMS while the panel is shut. Since
+// FORGE-J the relay pushes a 15 s HB text frame to every listener, which keeps
+// that worker alive and makes its presence a trustworthy liveness signal.
+//
+// So: while the dropped side is the BROWSER and a live listener is still in
+// the room, the keepalive tick RENEWS the resume claim instead of letting it
+// lapse — the pair is held for as long as the extension is there, exactly like
+// the web tab. Only when the listener has been ABSENT continuously for
+// LISTENER_HOLD_GRACE_MS does the claim fall back to normal expiry and the
+// pair is released to the lobby.
+//
+// Why 10 minutes and not zero: an MV3 worker can still be evicted and replaced
+// (measured under FORGE-J: a 33.8 s socket-less gap between boots, and up to
+// ~64 s before a replacement worker connected). The grace must comfortably
+// exceed the worst observed eviction gap so a routine worker respawn never
+// costs the user their pairing, while a genuinely closed browser still drops
+// within a bounded, human-sensible time.
+//
+// Deliberately NOT applied when the PHONE is the dropped side — a missing
+// handset is a real absence and keeps the existing 180 s behaviour. And it
+// changes nothing about explicit teardown: LEAVE_ACTIVE, RESET_ROOM, sign-out
+// and phone-initiated leaves all run the non-soft-hold path, which clears the
+// claim outright.
+const LISTENER_HOLD_GRACE_MS = 10 * 60_000;
+
 // Fix 2 (2026-07-16): hard cap on the per-room replay buffer. While a resume
 // claim is armed (a socket blip, up to RESUME_WINDOW_MS), phone data-plane
 // frames that would otherwise drop from the lobby are buffered and replayed on
@@ -682,11 +717,43 @@ function startRelay(httpServer) {
       // is the survivor — keep it in active; drop only the closed slot.
       const droppedRole = !phoneOpen ? 'phone' : 'browser';
       room.active = { browser: browserOpen ? browser : null, phone: phoneOpen ? phone : null };
+      // FORGE-L — panel-close hold. Two ways this claim earns the extended,
+      // listener-gated lifetime described at LISTENER_HOLD_GRACE_MS:
+      //
+      //   1. The BROWSER is the side that just went away while the extension's
+      //      MV3 listener worker is still connected. That is the side-panel
+      //      close: the user's extension is still there, so the pair should
+      //      survive exactly as the web app's does with its tab open.
+      //
+      //   2. STICKY — a prior claim was already holding. Measured on the v55
+      //      APK (PhoneService.kt:3134-3152): ANY phone socket drop (doze,
+      //      Wi-Fi/cell handoff, java-websocket's 15 s ping timeout at :3184)
+      //      clears isPairActive and redials the LOBBY only 5 s later
+      //      (:3249-3255 — "a dropped active pair stays dropped"). Over a hold
+      //      measured in minutes that is likely, not theoretical. It re-enters
+      //      terminateActivePair with droppedRole='phone', and without this
+      //      stickiness the panel hold would be silently downgraded to the
+      //      plain 180 s window by the phone's own blip. The returning phone
+      //      waits in the lobby and tryAutoResume re-forms the pair — sending
+      //      it a fresh PAIRING_ACTIVE, which the APK accepts idempotently
+      //      (PhoneService.kt:3657-3670, no already-paired guard).
+      //
+      // Note this only ever LENGTHENS how long a claim may be resumed. It does
+      // not change WHO may resume it: tryAutoResume still requires a live
+      // phone and a live interactive browser in the same token-scoped room.
+      const panelHold =
+        (droppedRole === 'browser' && hasLiveListener(room)) ||
+        (!!room.resumable && room.resumable.panelHold === true);
       room.resumable = {
         droppedRole,
+        panelHold,
         droppedAt: Date.now(),
         expiresAt: Date.now() + RESUME_WINDOW_MS,
         identity: room.pairIdentity ?? null,
+        // FORGE-L: set by the keepalive tick the first time no live listener is
+        // seen while this claim is browser-dropped. null = a listener is (or
+        // was last seen) present. See LISTENER_HOLD_GRACE_MS.
+        listenerGoneAt: null,
       };
       const survivor = phoneOpen ? phone : (browserOpen ? browser : null);
       // Dock fix (2026-09-15, forge/dock-reconnect-sw-badge).
@@ -729,7 +796,11 @@ function startRelay(httpServer) {
       // (1006, no close frame) or a deliberate leave (1000/1001).
       const droppedWs = droppedRole === 'phone' ? phone : browser;
       const dc = droppedWs ? `code=${droppedWs.closeCode ?? '?'} reason="${droppedWs.closeReason ?? '?'}"` : 'code=? reason=?';
-      console.log(`[Relay][${redactToken(room.token)}] socket_closed: soft-hold survivor (droppedRole=${droppedRole}, ${dc}), resume window armed (${RESUME_WINDOW_MS}ms)`);
+      // FORGE-L: panelHold is in this line deliberately — it is the single
+      // field that says whether this pair will survive past 180 s, and it is
+      // what a cc_debug trace of a panel close needs to show.
+      const hold = panelHold ? `, panelHold=YES (renewed each tick while a listener is present; grace ${LISTENER_HOLD_GRACE_MS}ms)` : '';
+      console.log(`[Relay][${redactToken(room.token)}] socket_closed: soft-hold survivor (droppedRole=${droppedRole}, ${dc}), resume window armed (${RESUME_WINDOW_MS}ms)${hold}`);
       return;
     }
 
@@ -755,6 +826,9 @@ function startRelay(httpServer) {
         droppedRole,
         droppedAt: Date.now(),
         expiresAt: Date.now() + RESUME_WINDOW_MS,
+        listenerGoneAt: null, // FORGE-L — see LISTENER_HOLD_GRACE_MS.
+        // LEGACY_RESUME_TEARDOWN path only (no soft-hold, so no panel hold).
+        panelHold: false,
         // Identity stash captured at pair formation (handleAcceptPairing /
         // tryAutoResume): { ua, ip, deviceLabel, deviceName }. Needed to
         // rebuild the original PAIRING_ACTIVE payloads — the rejoining
@@ -849,6 +923,20 @@ function startRelay(httpServer) {
     let browserWs = room.active.browser && room.active.browser.readyState === WebSocket.OPEN ? room.active.browser : null;
     const survivorPhone = phoneWs;       // non-null ⇒ phone survived, browser is returning
     const survivorBrowser = browserWs;   // non-null ⇒ browser survived, phone is returning
+    // FORGE-L: when more than one of the user's own handsets is waiting in the
+    // lobby, prefer the one that was actually in this pair. Previously the
+    // first phone found won; over a panel hold (minutes, not seconds) the odds
+    // of a second device being present are higher, so match on the deviceName
+    // stashed at pair formation. Purely a preference — if nothing matches we
+    // fall through to the historical first-found behaviour, so this can never
+    // block a legitimate resume (e.g. a rejoined phone whose DEVICE_INFO has
+    // not landed yet).
+    const wantDeviceName = claim.identity ? claim.identity.deviceName : null;
+    if (!phoneWs && wantDeviceName) {
+      for (const s of room.lobby) {
+        if (s.role === 'phone' && s.readyState === WebSocket.OPEN && s.deviceName === wantDeviceName) { phoneWs = s; break; }
+      }
+    }
     for (const s of room.lobby) {
       if (s.role === 'phone' && !phoneWs && s.readyState === WebSocket.OPEN) phoneWs = s;
       // forge/chrome-extension-p1: NEVER auto-promote a passive listener (the
@@ -887,7 +975,16 @@ function startRelay(httpServer) {
     // (stale) — the browser's own dedup (notification-key / message-id) absorbs
     // any overlap with its quick-sync. Then clear the buffer.
     if (room.frameBuffer && room.frameBuffer.length) {
-      const cutoff = Date.now() - RESUME_WINDOW_MS;
+      // FORGE-L: the cutoff must track the claim's ACTUAL lifetime, not the
+      // fixed 180 s window. Under a panel hold a claim legitimately lives for
+      // minutes, and a flat now-RESUME_WINDOW_MS cutoff would silently discard
+      // every frame buffered more than 3 minutes ago — exactly the SMS the
+      // feature exists to preserve. Every entry in frameBuffer already belongs
+      // to the current claim (the buffer is reset when a claim is armed at
+      // :808 and when one expires at :906), so replaying from droppedAt is
+      // sound, and FRAME_BUFFER_MAX still bounds it. Non-held claims keep the
+      // historical cutoff exactly.
+      const cutoff = claim.panelHold ? claim.droppedAt : Date.now() - RESUME_WINDOW_MS;
       let replayed = 0;
       for (const entry of room.frameBuffer) {
         if (entry.at < cutoff) continue;
@@ -1060,6 +1157,22 @@ function startRelay(httpServer) {
    * closed or the pair is in a resume gap. Broadcasting to the SAME-user room is
    * not a leak — the listener authenticated into this exact room (phoneToken).
    */
+  /**
+   * True when at least one passive listener (an extension MV3 service worker
+   * on `?role=listener`) is currently connected to this room with an OPEN
+   * socket. FORGE-L uses this as the "the user's extension is still there"
+   * signal that holds a pairing across a side-panel close — see
+   * LISTENER_HOLD_GRACE_MS. Listeners only ever live in room.lobby (they are
+   * never promoted into room.active — see tryAutoResume).
+   */
+  function hasLiveListener(room) {
+    if (!room || !room.lobby) return false;
+    for (const s of room.lobby) {
+      if (s.role === 'browser' && s.listener && s.readyState === WebSocket.OPEN) return true;
+    }
+    return false;
+  }
+
   function broadcastToListeners(room, msg) {
     if (!room || !room.lobby) return;
     for (const s of room.lobby) {
@@ -2125,7 +2238,45 @@ function startRelay(httpServer) {
     // returns to the lobby instead of being held forever against a ghost.
     rooms.forEach((room) => {
       const claim = room.resumable;
-      if (!claim || Date.now() <= claim.expiresAt) return;
+      if (!claim) return;
+      // ── FORGE-L: panel-close hold ─────────────────────────────────────────
+      // Renew a held claim on every tick so the pair survives a closed side
+      // panel for as long as the extension itself is there — the extension's
+      // equivalent of the web app keeping its tab open. Renewal (rather than a
+      // second, parallel deadline) is deliberate: every other reader of a claim
+      // already tests `expiresAt` (tryAutoResume, the lobby-frame buffer,
+      // maybeReapRoom), so they all inherit the hold with no change. The 15 s
+      // tick renews a 180 s window, a 12x margin.
+      if (claim.panelHold) {
+        const now = Date.now();
+        if (hasLiveListener(room)) {
+          if (claim.listenerGoneAt !== null) {
+            console.log(`[Relay][${redactToken(room.token)}] panel hold: listener back after ${now - claim.listenerGoneAt}ms — pairing kept`);
+            claim.listenerGoneAt = null;
+          }
+          claim.expiresAt = now + RESUME_WINDOW_MS;
+          return;
+        }
+        // No listener right now. An MV3 worker is routinely evicted and
+        // replaced (FORGE-J measured a 33.8 s socket-less gap, ~64 s to the
+        // replacement's connect), so absence is only meaningful once it has
+        // lasted LISTENER_HOLD_GRACE_MS continuously.
+        if (claim.listenerGoneAt === null) {
+          claim.listenerGoneAt = now;
+          console.log(`[Relay][${redactToken(room.token)}] panel hold: no listener — grace started (${LISTENER_HOLD_GRACE_MS}ms)`);
+        }
+        if (now - claim.listenerGoneAt <= LISTENER_HOLD_GRACE_MS) {
+          claim.expiresAt = now + RESUME_WINDOW_MS;
+          return;
+        }
+        // Grace burned — the extension is genuinely gone (browser closed,
+        // extension disabled, machine asleep). Drop the hold and let the
+        // ordinary expiry below release the pair on this same tick.
+        console.log(`[Relay][${redactToken(room.token)}] panel hold: listener absent > ${LISTENER_HOLD_GRACE_MS}ms — releasing pairing`);
+        claim.panelHold = false;
+        claim.expiresAt = now;
+      }
+      if (Date.now() <= claim.expiresAt) return;
       const onlyOneActive =
         (!!room.active.browser) !== (!!room.active.phone); // exactly one side held
       if (onlyOneActive) {
