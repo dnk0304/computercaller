@@ -117,6 +117,30 @@ class MainActivity : AppCompatActivity() {
     // flight — don't let the user spam reconnects).
     private lateinit var reconnectButton: Button
 
+    // ==================== v56 Home surface ====================
+    // The hero card has two faces that swap in place (see the header comment
+    // in res/layout/activity_main.xml): the presence/state face, and the
+    // connection-request face. Both are hoisted here so the 2s polling tick
+    // and the pairing broadcasts can repaint without re-finding views.
+    private lateinit var heroDefaultFace: View
+    private lateinit var heroRequestFace: View
+    private lateinit var heroTitle: TextView
+    private lateinit var heroBody: TextView
+    private lateinit var deviceDot: View
+    private lateinit var deviceLabel: TextView
+    private lateinit var bridgeState: TextView
+    private lateinit var requestName: TextView
+    private lateinit var requestMeta: TextView
+    private lateinit var requestAvatar: TextView
+    private lateinit var notifBand: View
+    private lateinit var permissionsSub: TextView
+
+    // The stay-disconnected switch. Guarded by [suppressStaySwitchCallback]
+    // whenever WE set isChecked from the flag, so a programmatic repaint can
+    // never be mistaken for a user tap and bounce the lobby.
+    private lateinit var staySwitch: com.google.android.material.materialswitch.MaterialSwitch
+    private var suppressStaySwitchCallback = false
+
     // Dispatch #34 (v20) — Disconnect button (terminates the active
     // pair without signing out). Hoisted to a field so updateStatus()
     // and handleRelayPhaseChanged() can flip visibility based on the
@@ -259,18 +283,18 @@ class MainActivity : AppCompatActivity() {
      *
      * PhoneService broadcasts ACTION_PAIRING_REQUEST_IN_FOREGROUND every
      * time a PAIRING_REQUEST frame arrives over the relay. When the
-     * Activity is foregrounded we surface a synchronous AlertDialog so
-     * the user can act without diving into the notification shade.
-     * The notification still posts in parallel — both Accept/Decline
-     * paths dispatch the same internal broadcast that
-     * [ConnectionRequestReceiver] consumes, so the decision converges
-     * in [PhoneService.handleConnectionDecision].
+     * Activity is foregrounded we surface the request so the user can act
+     * without diving into the notification shade. The notification still
+     * posts in parallel — both Accept/Decline paths dispatch the same
+     * internal broadcast that [ConnectionRequestReceiver] consumes, so the
+     * decision converges in [PhoneService.handleConnectionDecision].
      *
-     * Field-tracked so a PAIRING_CANCELLED (relay tells us the browser
-     * walked away) can dismiss a still-visible dialog, and so onPause
-     * can dismiss it cleanly without leaking a window token.
+     * v56 — this used to be an AlertDialog. It is now the hero card's second
+     * face (see res/layout/activity_main.xml), so there is no window to leak
+     * and no modal covering the presence line that explains the rest of the
+     * screen. The AlertDialog field went with it; [pairingRequestDialogId]
+     * alone tracks what is on screen.
      */
-    private var pairingRequestDialog: AlertDialog? = null
 
     /**
      * Pairing-id currently shown in [pairingRequestDialog]. Used so
@@ -279,6 +303,16 @@ class MainActivity : AppCompatActivity() {
      * concurrent request handled by a different code path could race).
      */
     private var pairingRequestDialogId: String? = null
+
+    /**
+     * v56 — the name of the computer we are currently paired with, so the
+     * connected hero card can say WHICH computer instead of "Connected".
+     * Captured from the pairing request the user accepted (the relay's
+     * friendly browser identity) and cleared when the pair ends. Null means
+     * we only know that something is paired, and the card falls back to
+     * "Your computer".
+     */
+    private var pairedComputerName: String? = null
 
     /**
      * Broadcast receiver for the in-foreground pairing surfacing.
@@ -438,6 +472,72 @@ class MainActivity : AppCompatActivity() {
         connectionTargetText = findViewById(R.id.connectionTargetText)
         connectionErrorText = findViewById(R.id.connectionErrorText)
 
+        // ---- v56 hero card ------------------------------------------------
+        heroDefaultFace = findViewById(R.id.homeHeroDefault)
+        heroRequestFace = findViewById(R.id.homeHeroRequest)
+        heroTitle = findViewById(R.id.homeHeroTitle)
+        heroBody = findViewById(R.id.relayHelpText)
+        deviceDot = findViewById(R.id.homeDeviceDot)
+        deviceLabel = findViewById(R.id.homeDeviceLabel)
+        bridgeState = findViewById(R.id.homeBridgeState)
+        requestName = findViewById(R.id.homeRequestName)
+        requestMeta = findViewById(R.id.homeRequestMeta)
+        requestAvatar = findViewById(R.id.homeRequestAvatar)
+        notifBand = findViewById(R.id.homeNotifBand)
+        permissionsSub = findViewById(R.id.homePermissionsSub)
+
+        // "This phone - <model>". Build.MODEL is what the relay shows the
+        // browser, so the two surfaces name the same device the same way.
+        deviceLabel.text = getString(R.string.home_device_line, deviceDisplayName())
+
+        // Accept / Decline on the hero card dispatch the SAME broadcast the
+        // notification action buttons use, so an in-app decision and a shade
+        // decision converge in PhoneService.handleConnectionDecision. There is
+        // no second code path to keep in sync.
+        findViewById<View>(R.id.pairAcceptButton).setOnClickListener {
+            val id = pairingRequestDialogId ?: return@setOnClickListener
+            hidePairingRequest()
+            dispatchPairingDecision(id, accept = true)
+        }
+        findViewById<View>(R.id.pairDeclineButton).setOnClickListener {
+            val id = pairingRequestDialogId ?: return@setOnClickListener
+            hidePairingRequest()
+            dispatchPairingDecision(id, accept = false)
+        }
+
+        // ---- v56 row groups ------------------------------------------------
+        // The synced viewers and the permission screen are one tap from Home,
+        // which is what the Play restricted-permission review needs to see.
+        findViewById<View>(R.id.homeMessagesRow).setOnClickListener {
+            startActivity(Intent(this, SyncedDataActivity::class.java).putExtra("tab", "messages"))
+        }
+        findViewById<View>(R.id.homeCallsRow).setOnClickListener {
+            startActivity(Intent(this, SyncedDataActivity::class.java).putExtra("tab", "calls"))
+        }
+        findViewById<View>(R.id.homePermissionsRow).setOnClickListener {
+            AccountActions.openAppDetails(this)
+        }
+        findViewById<View>(R.id.homeNotifTurnOnButton).setOnClickListener {
+            AccountActions.openNotificationSettings(this)
+        }
+
+        // ---- v56 stay-disconnected switch ----------------------------------
+        // Same flag, same broadcast, same handler as the Rejoin button below
+        // and as the ongoing notification's DISCONNECT action. Three surfaces,
+        // one source of truth: TokenStore.isUserStayedDisconnected.
+        staySwitch = findViewById(R.id.homeStaySwitch)
+        staySwitch.setOnCheckedChangeListener { _, checked ->
+            if (suppressStaySwitchCallback) return@setOnCheckedChangeListener
+            val action = if (checked) {
+                LobbyActionReceiver.ACTION_DISCONNECT_LOBBY
+            } else {
+                LobbyActionReceiver.ACTION_REJOIN_LOBBY
+            }
+            android.util.Log.d("MainActivity", "stay-disconnected switch -> $action")
+            sendBroadcast(Intent(action).apply { setPackage(packageName) })
+            staySwitch.postDelayed({ refreshLobbyToggleLabel() }, 250)
+        }
+
         // Initial visual: idle. Real state arrives once the service binds.
         setStatusVisual(ConnState.IDLE)
 
@@ -473,13 +573,12 @@ class MainActivity : AppCompatActivity() {
                 android.util.Log.w("MainActivity", "lobbyToggleButton: service not bound yet — ignoring tap")
                 return@setOnClickListener
             }
-            if (TokenStore.isUserStayedDisconnected(this)) {
-                android.util.Log.d("MainActivity", "Rejoin Lobby tapped")
-                service.userRejoinLobby()
-            } else {
-                android.util.Log.d("MainActivity", "Disconnect from Lobby tapped")
-                service.userDisconnectFromLobby()
-            }
+            // v56 — this button is Rejoin only. It is visible exactly when
+            // the phone is out of the lobby, so there is no second meaning to
+            // flip into: leaving the lobby is the switch below it, the
+            // Settings switch, and the ongoing notification's DISCONNECT.
+            android.util.Log.d("MainActivity", "Rejoin Lobby tapped")
+            service.userRejoinLobby()
             // Repaint immediately so the user gets feedback without
             // waiting for the 2s polling tick. updateStatus() will
             // reconcile on its next cycle either way.
@@ -527,7 +626,9 @@ class MainActivity : AppCompatActivity() {
         //   5. finish() so the activity stack ends with SignIn as root.
         // v56 — Sign Out moved to SettingsActivity; Home now has a single
         // Settings entry point instead of the old button stack.
-        val settingsButton: Button = findViewById(R.id.settingsButton)
+        // v56 — the Settings entry point is now the app-bar gear (an
+        // ImageButton), so this is bound as a View rather than a Button.
+        val settingsButton: View = findViewById(R.id.settingsButton)
         settingsButton.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -612,16 +713,41 @@ class MainActivity : AppCompatActivity() {
     }
     
     /**
-     * v56 — the "Enable notifications" call-to-action moved to
-     * SettingsActivity (which re-checks on every resume). Home keeps the
-     * log line so the blocked state is still visible in a bug report.
+     * v56 — notifications blocked at OS level is the one problem a user of
+     * this app cannot afford to miss: with them off, an incoming call from
+     * the computer simply never announces itself. So Home shows a notice band
+     * about it, with the fix in the band. The full notification settings row
+     * lives in SettingsActivity; this is only the blocked-state warning.
+     *
+     * Re-run from onResume via [refreshPermissionSummary] so the band
+     * disappears the moment the user comes back having granted it.
      */
     private fun checkNotificationStatus() {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        android.util.Log.d(
-            "MainActivity",
-            "Notifications enabled at system level: ${notificationManager.areNotificationsEnabled()}"
-        )
+        val enabled = notificationManager.areNotificationsEnabled()
+        android.util.Log.d("MainActivity", "Notifications enabled at system level: $enabled")
+        if (::notifBand.isInitialized) {
+            notifBand.visibility = if (enabled) View.GONE else View.VISIBLE
+        }
+    }
+
+    /**
+     * Keep the Permissions row's subtitle honest: "All granted", or how many
+     * are still outstanding. A row that always claims everything is fine is
+     * worse than no row, because it is the row users check when calls stop
+     * arriving. Counts RUNTIME grants only — the SPECIAL entries are
+     * re-flagged by some OEMs after backgrounding even when nothing changed,
+     * and surfacing that churn here would cry wolf.
+     */
+    private fun refreshPermissionSummary() {
+        if (!::permissionsSub.isInitialized) return
+        val missing = PermissionChecker.checkAll(this)
+            .count { it.kind == PermissionChecker.Kind.RUNTIME }
+        permissionsSub.text = if (missing == 0) {
+            getString(R.string.row_permissions_all)
+        } else {
+            getString(R.string.row_permissions_some, missing)
+        }
     }
     
     /**
@@ -795,6 +921,8 @@ class MainActivity : AppCompatActivity() {
             if (::disconnectPairButton.isInitialized) {
                 disconnectPairButton.visibility = View.GONE
             }
+            pairedComputerName = null
+            paintHero(ConnState.IDLE, pairActive = false, callInProgress = false)
             return
         }
 
@@ -869,6 +997,8 @@ class MainActivity : AppCompatActivity() {
             }
             statusText.text = text
             setStatusVisual(conn)
+            if (!pairActive) pairedComputerName = null
+            paintHero(conn, pairActive, phoneService?.getIsCallInProgress() == true)
 
             reconnectButton.visibility = View.GONE
             // Dispatch #34 — Disconnect button is visible iff there's an
@@ -888,6 +1018,8 @@ class MainActivity : AppCompatActivity() {
             }
             statusText.text = getString(R.string.status_service_not_running)
             setStatusVisual(ConnState.IDLE)
+            pairedComputerName = null
+            paintHero(ConnState.IDLE, pairActive = false, callInProgress = false)
             android.util.Log.d("MainActivity", "Status updated: Service not running")
         }
     }
@@ -907,11 +1039,81 @@ class MainActivity : AppCompatActivity() {
     private fun refreshLobbyToggleLabel() {
         if (!::lobbyToggleButton.isInitialized) return
         val disconnected = TokenStore.isUserStayedDisconnected(this)
-        lobbyToggleButton.text = if (disconnected) {
-            getString(R.string.action_rejoin_lobby)
-        } else {
-            getString(R.string.action_disconnect_lobby)
+
+        // v56 + Dennis's hard requirement: whenever this phone is NOT in the
+        // lobby, rejoining is one obvious tap from Home. The button is that
+        // tap and it is only ever a Rejoin — the "leave the lobby" direction
+        // now lives on the switch below it, on the Settings switch, and on
+        // the ongoing notification's DISCONNECT action. A single control that
+        // changed its own meaning under the user's thumb was the v55 problem.
+        lobbyToggleButton.text = getString(R.string.action_rejoin_lobby)
+        lobbyToggleButton.visibility = if (disconnected) View.VISIBLE else View.GONE
+
+        // Repaint the switch from the flag without re-firing its listener.
+        if (::staySwitch.isInitialized && staySwitch.isChecked != disconnected) {
+            suppressStaySwitchCallback = true
+            staySwitch.isChecked = disconnected
+            suppressStaySwitchCallback = false
         }
+    }
+
+    /**
+     * v56 — Home's hero card copy.
+     *
+     * The presence LINE (dot + `statusText`) is painted by updateStatus() and
+     * setStatusVisual(); this paints the TITLE and BODY under it, so the card
+     * answers "what is happening" at a glance and "what do I do about it" on
+     * the second read. One place, so the two halves cannot contradict.
+     */
+    private fun paintHero(state: ConnState, pairActive: Boolean, callInProgress: Boolean) {
+        if (!::heroTitle.isInitialized) return
+
+        val stayedOut = TokenStore.isUserStayedDisconnected(this)
+        when {
+            stayedOut -> {
+                heroTitle.setText(R.string.home_hero_offline_title)
+                heroBody.setText(R.string.home_hero_offline_body)
+            }
+            pairActive && callInProgress -> {
+                heroTitle.text = pairedComputerName ?: getString(R.string.home_hero_connected_title)
+                heroBody.setText(R.string.home_hero_call_body)
+            }
+            pairActive -> {
+                heroTitle.text = pairedComputerName ?: getString(R.string.home_hero_connected_title)
+                heroBody.setText(R.string.home_hero_connected_body)
+            }
+            state == ConnState.WAITING -> {
+                heroTitle.setText(R.string.home_hero_waiting_title)
+                heroBody.setText(R.string.home_hero_waiting_body)
+            }
+            else -> {
+                heroTitle.setText(R.string.home_hero_offline_title)
+                heroBody.setText(R.string.home_hero_waiting_body)
+            }
+        }
+
+        // The device line's own dot is about the BRIDGE, not the pair: green
+        // while the relay socket is up, idle grey when it is not.
+        val bridgeUp = !stayedOut && (state == ConnState.LIVE || state == ConnState.WAITING)
+        deviceDot.backgroundTintList = ColorStateList.valueOf(
+            ContextCompat.getColor(this, if (bridgeUp) R.color.dot_live else R.color.dot_idle)
+        )
+        bridgeState.setText(
+            if (bridgeUp) R.string.home_bridge_active else R.string.home_bridge_inactive
+        )
+    }
+
+    /**
+     * "This phone - Pixel 8". Build.MODEL alone reads as a part number on
+     * some OEMs, so the manufacturer is prefixed unless the model already
+     * starts with it (Samsung's "SM-…" does not, Google's "Pixel 8" does).
+     */
+    private fun deviceDisplayName(): String {
+        val model = Build.MODEL?.trim().orEmpty()
+        val maker = Build.MANUFACTURER?.trim().orEmpty()
+        if (model.isEmpty()) return maker.ifEmpty { getString(R.string.synced_unknown) }
+        if (maker.isEmpty() || model.startsWith(maker, ignoreCase = true)) return model
+        return "${maker.replaceFirstChar { it.uppercase() }} $model"
     }
 
     /**
@@ -1252,6 +1454,14 @@ class MainActivity : AppCompatActivity() {
         // posts) — the dialog is the additional in-foreground affordance
         // so the user doesn't have to dive into the shade.
         registerPairingForegroundReceiver()
+
+        // v56 — re-check the two things the user can change while they are
+        // away from this screen: whether notifications are blocked at OS
+        // level, and how many runtime permissions are outstanding. Both are
+        // no-ops until the main pane is inflated, so this is safe on the
+        // permissions-pane path too.
+        checkNotificationStatus()
+        refreshPermissionSummary()
 
         // v56 notification-tap fix - belt and braces. Whatever brought us
         // to the foreground (launcher icon, notification body tap, recents),
@@ -1819,15 +2029,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        // v18 — unregister the pairing-foreground receiver and dismiss
-        // any visible AlertDialog so a paused Activity can't leak a
-        // window token (BadTokenException on the next show). The
-        // notification path is still live — if the user backgrounds
-        // mid-prompt they get the heads-up + shade entry as usual.
+        // v18 — unregister the pairing-foreground receiver. The notification
+        // path stays live, so a user who backgrounds mid-prompt still gets
+        // the heads-up and the shade entry as usual.
+        //
+        // v56 — the request is a view inside the hero card now, not a window,
+        // so there is nothing here that can leak a token or throw
+        // BadTokenException. The card is deliberately LEFT on its request
+        // face across a pause: the request is still pending on the relay, and
+        // a user who glances away should find it where they left it.
         unregisterPairingForegroundReceiver()
-        pairingRequestDialog?.dismiss()
-        pairingRequestDialog = null
-        pairingRequestDialogId = null
     }
 
     /**
@@ -1886,42 +2097,80 @@ class MainActivity : AppCompatActivity() {
             android.util.Log.d("MainActivity", "showPairingRequestDialog: activity gone, skipping")
             return
         }
-        if (pairingRequestDialogId == pairingId && pairingRequestDialog?.isShowing == true) {
+        if (pairingRequestDialogId == pairingId &&
+            ::heroRequestFace.isInitialized && heroRequestFace.visibility == View.VISIBLE) {
             android.util.Log.d("MainActivity", "showPairingRequestDialog: already showing for $pairingId")
             return
         }
-        pairingRequestDialog?.dismiss()
-
-        val message = getString(R.string.pair_request_body_template, identity)
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(R.string.pair_request_title)
-            .setMessage(message)
-            .setPositiveButton(R.string.pair_accept) { d, _ ->
-                d.dismiss()
-                dispatchPairingDecision(pairingId, accept = true)
-            }
-            .setNegativeButton(R.string.pair_decline) { d, _ ->
-                d.dismiss()
-                dispatchPairingDecision(pairingId, accept = false)
-            }
-            // Cancelable=false so a stray back-tap mid-prompt doesn't
-            // leave the relay hanging. User MUST choose. The 30s
-            // auto-decline timer in PhoneService is the safety net if
-            // they ignore it entirely.
-            .setCancelable(false)
-            .create()
-        pairingRequestDialog = dialog
-        pairingRequestDialogId = pairingId
-        dialog.setOnDismissListener {
-            // Clear refs once the dialog leaves the screen. The decision
-            // dispatcher above runs BEFORE this listener fires.
-            if (pairingRequestDialog === dialog) {
-                pairingRequestDialog = null
-                pairingRequestDialogId = null
-            }
+        if (!::heroRequestFace.isInitialized) {
+            android.util.Log.d("MainActivity", "showPairingRequestDialog: hero not inflated yet, skipping")
+            return
         }
-        dialog.show()
-        android.util.Log.d("MainActivity", "Pairing dialog shown for $pairingId")
+
+        // v56 — the request now swaps the HERO CARD's contents instead of
+        // raising a modal (DIRECTION frame 3, note 1): same frame, same
+        // position, so the user never loses context and the request does not
+        // cover the presence line that explains the rest of the screen.
+        //
+        // What we give up by dropping the AlertDialog is setCancelable(false),
+        // i.e. forcing a choice. That was never real security — the shade
+        // notification has always been dismissible and the 30s auto-decline
+        // in PhoneService is the actual safety net, which still applies.
+        pairingRequestDialogId = pairingId
+        pairedComputerName = identity.takeIf { it.isNotBlank() }
+
+        // `identity` is the relay's composed browser label, typically
+        // "DESKTOP-4K2 · Chrome on Windows". Split on the separator so the
+        // device name can be the hero and the rest the supporting line; if it
+        // does not split, the whole string is the name and the meta is hidden
+        // rather than padded with a placeholder.
+        val parts = identity.split(" · ", " - ", limit = 2).map { it.trim() }
+        requestName.text = parts.firstOrNull()?.takeIf { it.isNotEmpty() }
+            ?: getString(R.string.pair_request_default_name)
+        val meta = parts.getOrNull(1)?.takeIf { it.isNotEmpty() }
+        requestMeta.text = meta.orEmpty()
+        requestMeta.visibility = if (meta == null) View.GONE else View.VISIBLE
+        requestAvatar.text = initialsFor(requestName.text?.toString())
+
+        heroDefaultFace.visibility = View.GONE
+        heroRequestFace.visibility = View.VISIBLE
+
+        // TalkBack: move focus to the request and announce it, because the
+        // card changed underneath the user rather than a new window opening.
+        heroRequestFace.announceForAccessibility(
+            getString(R.string.pair_request_body_template, requestName.text)
+        )
+        heroRequestFace.sendAccessibilityEvent(
+            android.view.accessibility.AccessibilityEvent.TYPE_VIEW_FOCUSED
+        )
+        android.util.Log.d("MainActivity", "Pairing request surfaced in hero card for $pairingId")
+    }
+
+    /**
+     * Put the hero card back on its default face. Called when the user
+     * decides, when the relay cancels, and when the request times out.
+     */
+    private fun hidePairingRequest() {
+        if (!::heroRequestFace.isInitialized) return
+        heroRequestFace.visibility = View.GONE
+        heroDefaultFace.visibility = View.VISIBLE
+        pairingRequestDialogId = null
+    }
+
+    /**
+     * Up to two letters for the request avatar. "DESKTOP-4K2" reads as "DE",
+     * "Dennis PC" as "DP". Falls back to the mark's own "PC" when the name is
+     * unusable, which is also what the mockup shows.
+     */
+    private fun initialsFor(name: String?): String {
+        val words = name.orEmpty()
+            .split(' ', '-', '_', '.')
+            .filter { it.isNotBlank() && it.first().isLetterOrDigit() }
+        return when {
+            words.size >= 2 -> "${words[0].first()}${words[1].first()}".uppercase()
+            words.size == 1 -> words[0].take(2).uppercase()
+            else -> getString(R.string.pair_request_avatar)
+        }
     }
 
     /**
@@ -1943,16 +2192,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Dismiss the in-foreground AlertDialog when PAIRING_CANCELLED
-     * arrives for the visible request. No-op if the visible id doesn't
-     * match (defensive — concurrent requests should not happen).
+     * Put the hero card back on its default face when PAIRING_CANCELLED
+     * arrives for the request currently on screen. No-op if the visible id
+     * doesn't match (defensive — concurrent requests should not happen).
      */
     private fun dismissPairingDialogIfMatching(pairingId: String) {
         if (pairingRequestDialogId == pairingId) {
-            android.util.Log.d("MainActivity", "Dismissing pairing dialog for cancelled $pairingId")
-            pairingRequestDialog?.dismiss()
-            pairingRequestDialog = null
-            pairingRequestDialogId = null
+            android.util.Log.d("MainActivity", "Clearing pairing request card for cancelled $pairingId")
+            pairedComputerName = null
+            hidePairingRequest()
         }
     }
 
@@ -2033,10 +2281,8 @@ class MainActivity : AppCompatActivity() {
         // holds a strong ref to statusDotRing).
         statusPulseAnimator?.cancel()
         statusPulseAnimator = null
-        // v18 — drop any stray pairing-dialog refs and the receiver
+        // v18 — drop any stray pairing-request state and the receiver
         // registration (onPause should have done this already; defensive).
-        pairingRequestDialog?.dismiss()
-        pairingRequestDialog = null
         pairingRequestDialogId = null
         unregisterPairingForegroundReceiver()
         if (serviceBound) {

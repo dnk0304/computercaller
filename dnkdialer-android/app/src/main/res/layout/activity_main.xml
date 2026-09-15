@@ -1,39 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Activity: Main / control screen — Round 8 (full-SaaS — dispatch #29 Phase 4 finish).
+  Home - v56 (Pixel, step 2 of the v56 Android pass).
 
-  Major shift vs Round 7: the phone is no longer a WS server. It connects
-  outbound to wss://computercaller.com/relay/phone?token=… so the browser
-  finds it via the multi-tenant SaaS relay. No more LAN IP. No more QR
-  code. The webapp connects via the same relay using the auth-cookie
-  derived token (no manual address entry on either side).
+  Built to android-mockups/DIRECTION-android-v56.md frames 1/2 (waiting),
+  3 (connection request) and 4 (connected). The four Reflecto traits drive
+  every choice here:
 
-  As a result the layout is dramatically simpler:
-    1. Wordmark + gradient underline (unchanged from R7)
-    2. Status row (dot + ring + short label) — bound to RelayPhase
-       (IDLE / CONNECTING / OPEN / FAILED) and browser-presence count
-       via MainActivity.handleRelayPhaseChanged + updateStatus.
-    3. Diagnostic lines (CONNECTING / FAILED phases only — masked
-       target URL + actionable error copy).
-    4. "Enable notifications" button (only shown if system-notifications
-       are blocked at OS level for the app).
-    5. Sign-out (clears the stored phoneToken, drops the user back at
-       SignInActivity).
-    6. Hard Reset escape hatch (wipes app data — recovery for the
-       Samsung One UI "silently revoked permissions in background" bug
-       class). Reads as a quiet ghost action below a hairline divider.
+    1. ONE presence line - a dot plus plain English, above one hero card,
+       never a badge cluster. `statusText` is that line, and MainActivity
+       already owns its copy including "Connected - call in progress".
+    2. Separation by SURFACE, not shadow. Every card is cardElevation=0 with
+       a 1dp hairline. There is no elevation anywhere in this file.
+    3. Colour is reserved for STATE. The UI is greyscale; the brand ramp
+       appears on exactly three things app-wide - the mark, the avatar, and
+       the single primary action per screen. On Home that action is Accept
+       (while a request is up) or Rejoin lobby (while the phone is out of the
+       lobby). Those two states are mutually exclusive, so only one gradient
+       is ever on screen at once.
+    4. Flat row-groups under caps labels, replacing v55's stack of five
+       look-alike buttons.
 
-  REMOVED (dispatch #29):
-    - ipText  (LAN ws://X:8765 URL display — no LAN listener now)
-    - qrCodeImage  (LAN QR for browser scan — webapp uses cookie token)
-    - copyIpButton  (copy LAN URL — no URL to copy)
-    - label_address + label_scan  (section labels for those blocks)
-    - reconnectButton  (was already permanently GONE since dispatch #9)
+  THE HERO CARD HAS TWO FACES, NOT TWO SCREENS. `homeHeroDefault` (presence,
+  state, device line) and `homeHeroRequest` (the Decline/Accept prompt) swap
+  inside the same frame at the same position, so an incoming request never
+  costs the user their context. That is mockup note 1 on frame 3, and it is
+  why the request is not a dialog.
 
-  Kept the disconnectButton view-id but repurposed as Sign Out (different
-  string, same id so the existing Kotlin findViewById still resolves).
-  See MainActivity disconnect button handler — rewritten to do the
-  Sign Out flow (clear TokenStore + launch SignInActivity + finish()).
+  ID CONTRACT: every id MainActivity bound in v55 is still here -
+  mainContentContainer, statusText, statusDot, statusDotRing, stepNumber,
+  reconnectButton, connectionTargetText, connectionErrorText, relayHelpText,
+  colorOsHint*, lobbyToggleButton, disconnectPairButton, settingsButton.
+  Two changed role: `relayHelpText` is now the hero card's body copy (same
+  job - say what the app is doing right now - moved inside the card), and
+  `settingsButton` is now the app-bar gear, so MainActivity's cast widened
+  from Button to View.
+
+  ACCESSIBILITY: every row is one focusable target of at least 56dp carrying
+  a single contentDescription, so TalkBack reads it as one node rather than
+  four. Decorative glyphs are importantForAccessibility="no". The gear has
+  48dp of touch around its 36dp circle.
 -->
 <ScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -50,288 +55,668 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="@dimen/space_24"
-        android:paddingEnd="@dimen/space_24"
-        android:paddingTop="@dimen/space_32"
+        android:paddingStart="@dimen/cc_page_padding"
+        android:paddingEnd="@dimen/cc_page_padding"
         android:paddingBottom="@dimen/space_32">
 
-        <!-- ============ 1. Wordmark + gradient underline ============ -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textSize="@dimen/text_wordmark"
-            android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-black"
-            android:letterSpacing="-0.035"
-            android:lineSpacingMultiplier="0.95"
-            android:includeFontPadding="false" />
-
-        <View
-            android:layout_width="@dimen/wordmark_underline_width"
-            android:layout_height="@dimen/wordmark_underline_height"
-            android:background="@drawable/bg_accent_underline"
-            android:layout_marginTop="@dimen/space_8"
-            android:layout_marginBottom="@dimen/space_24" />
-
-        <!-- ============ 2. Status row ============ -->
+        <!-- ==================== APP BAR ====================
+             The lockup, then one icon button. The mark is the same asset the
+             sign-in screen shows at 112dp, so the phone opens on the same
+             recognition moment as the web app and the extension. -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="@dimen/cc_appbar_height"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
-            <FrameLayout
-                android:layout_width="@dimen/dot_ring_size"
-                android:layout_height="@dimen/dot_ring_size"
-                android:layout_marginEnd="@dimen/space_12">
-
-                <View
-                    android:id="@+id/statusDotRing"
-                    android:layout_width="@dimen/dot_ring_size"
-                    android:layout_height="@dimen/dot_ring_size"
-                    android:layout_gravity="center"
-                    android:background="@drawable/status_dot_ring"
-                    android:alpha="0"
-                    android:importantForAccessibility="no" />
-
-                <View
-                    android:id="@+id/statusDot"
-                    android:layout_width="@dimen/dot_size"
-                    android:layout_height="@dimen/dot_size"
-                    android:layout_gravity="center"
-                    android:background="@drawable/status_dot"
-                    android:contentDescription="@string/cd_status_dot" />
-            </FrameLayout>
+            <ImageView
+                android:layout_width="@dimen/cc_mark_size"
+                android:layout_height="@dimen/cc_mark_size"
+                android:src="@drawable/ic_cc_mark"
+                android:importantForAccessibility="no" />
 
             <TextView
-                android:id="@+id/statusText"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="@string/status_starting"
-                android:textSize="@dimen/text_status"
+                android:layout_marginStart="@dimen/space_10"
+                android:text="@string/app_name"
+                android:textSize="@dimen/cc_text_appbar"
                 android:textColor="@color/text_primary"
                 android:fontFamily="sans-serif-medium"
-                android:letterSpacing="-0.015" />
+                android:textStyle="bold"
+                android:letterSpacing="-0.014"
+                android:includeFontPadding="false" />
 
-            <!-- Back-compat — setStatusVisual() still references this id. -->
-            <TextView
-                android:id="@+id/stepNumber"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/step_01"
-                android:visibility="gone" />
+            <ImageButton
+                android:id="@+id/settingsButton"
+                android:layout_width="@dimen/cc_touch_min"
+                android:layout_height="@dimen/cc_touch_min"
+                android:padding="12dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_cc_settings"
+                android:background="@drawable/bg_gear_button"
+                android:contentDescription="@string/cd_open_settings" />
         </LinearLayout>
 
-        <!-- ============ 3. Diagnostic lines ============ -->
-        <TextView
-            android:id="@+id/connectionTargetText"
+        <!-- ==================== HERO STATE CARD ==================== -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/homeHeroCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="@dimen/text_caption"
-            android:textColor="@color/text_secondary"
-            android:fontFamily="monospace"
-            android:fontFeatureSettings="tnum"
-            android:textIsSelectable="true"
-            android:singleLine="false"
-            android:breakStrategy="balanced"
-            android:hyphenationFrequency="none"
-            android:lineSpacingMultiplier="1.3"
-            android:layout_marginTop="@dimen/space_8"
-            android:visibility="gone"
-            tools:text="Target: wss://computercaller.com/relay/phone?token=abc12345…"
-            tools:visibility="visible" />
-
-        <TextView
-            android:id="@+id/connectionErrorText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="@dimen/text_caption"
-            android:textColor="@color/dot_failed"
-            android:fontFamily="sans-serif"
-            android:textIsSelectable="true"
-            android:singleLine="false"
-            android:breakStrategy="balanced"
-            android:hyphenationFrequency="none"
-            android:lineSpacingMultiplier="1.3"
             android:layout_marginTop="@dimen/space_4"
+            app:cardCornerRadius="@dimen/cc_radius_hero"
+            app:cardElevation="0dp"
+            app:cardBackgroundColor="@color/surface_raised"
+            app:strokeWidth="1dp"
+            app:strokeColor="@color/surface_border">
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <!-- ===== FACE A: presence and state ===== -->
+                <LinearLayout
+                    android:id="@+id/homeHeroDefault"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingTop="@dimen/cc_hero_padding"
+                    android:paddingBottom="@dimen/cc_hero_padding">
+
+                    <!-- Trait 1: the one presence line. -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="@dimen/cc_hero_padding"
+                        android:paddingEnd="@dimen/cc_hero_padding">
+
+                        <FrameLayout
+                            android:layout_width="18dp"
+                            android:layout_height="18dp"
+                            android:layout_marginEnd="@dimen/space_8">
+
+                            <!-- Breathing halo while waiting or connecting,
+                                 steady while live, hidden otherwise. Owned by
+                                 MainActivity.setStatusVisual - this motion
+                                 answers a state change, it is not decoration,
+                                 and it is the only looping animation left. -->
+                            <View
+                                android:id="@+id/statusDotRing"
+                                android:layout_width="18dp"
+                                android:layout_height="18dp"
+                                android:layout_gravity="center"
+                                android:background="@drawable/status_dot_ring"
+                                android:alpha="0"
+                                android:importantForAccessibility="no" />
+
+                            <View
+                                android:id="@+id/statusDot"
+                                android:layout_width="@dimen/cc_presence_dot"
+                                android:layout_height="@dimen/cc_presence_dot"
+                                android:layout_gravity="center"
+                                android:background="@drawable/bg_presence_dot"
+                                android:importantForAccessibility="no" />
+                        </FrameLayout>
+
+                        <TextView
+                            android:id="@+id/statusText"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/status_starting"
+                            android:textSize="@dimen/cc_text_presence"
+                            android:textColor="@color/text_secondary"
+                            android:fontFamily="sans-serif-medium"
+                            android:includeFontPadding="false"
+                            tools:text="Waiting for your computer" />
+
+                        <!-- Back-compat: setStatusVisual() still writes this. -->
+                        <TextView
+                            android:id="@+id/stepNumber"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/step_01"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/homeHeroTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_12"
+                        android:paddingStart="@dimen/cc_hero_padding"
+                        android:paddingEnd="@dimen/cc_hero_padding"
+                        android:text="@string/home_hero_waiting_title"
+                        android:textSize="@dimen/cc_text_hero"
+                        android:textColor="@color/text_primary"
+                        android:fontFamily="sans-serif"
+                        android:textStyle="bold"
+                        android:letterSpacing="-0.019"
+                        android:lineSpacingMultiplier="1.25"
+                        tools:text="Ready and listening" />
+
+                    <TextView
+                        android:id="@+id/relayHelpText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_6"
+                        android:paddingStart="@dimen/cc_hero_padding"
+                        android:paddingEnd="@dimen/cc_hero_padding"
+                        android:text="@string/home_hero_waiting_body"
+                        android:textSize="@dimen/cc_text_sub"
+                        android:textColor="@color/text_secondary"
+                        android:lineSpacingMultiplier="1.5" />
+
+                    <!-- Relay diagnostics. Only the CONNECTING and FAILED
+                         phases reveal these, and they sit under the body so a
+                         failure explains itself in place, not in a toast. -->
+                    <TextView
+                        android:id="@+id/connectionTargetText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_8"
+                        android:paddingStart="@dimen/cc_hero_padding"
+                        android:paddingEnd="@dimen/cc_hero_padding"
+                        android:textSize="@dimen/cc_text_meta"
+                        android:textColor="@color/text_tertiary"
+                        android:fontFamily="monospace"
+                        android:fontFeatureSettings="tnum"
+                        android:textIsSelectable="true"
+                        android:breakStrategy="balanced"
+                        android:hyphenationFrequency="none"
+                        android:lineSpacingMultiplier="1.3"
+                        android:visibility="gone"
+                        tools:text="Target: wss://computercaller.com/relay/phone?token=abc12345" />
+
+                    <TextView
+                        android:id="@+id/connectionErrorText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_4"
+                        android:paddingStart="@dimen/cc_hero_padding"
+                        android:paddingEnd="@dimen/cc_hero_padding"
+                        android:textSize="@dimen/cc_text_meta"
+                        android:textColor="@color/dot_failed"
+                        android:textIsSelectable="true"
+                        android:breakStrategy="balanced"
+                        android:hyphenationFrequency="none"
+                        android:lineSpacingMultiplier="1.3"
+                        android:visibility="gone"
+                        tools:text="Couldn't reach the relay. Check your internet." />
+
+                    <!-- Hairline, full-bleed to the card edges. -->
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginTop="@dimen/cc_hero_padding"
+                        android:background="@drawable/bg_hairline"
+                        android:importantForAccessibility="no" />
+
+                    <!-- The device line: which phone this is and whether the
+                         bridge is up. Answers "is it working?" before the
+                         user reads anything above it. -->
+                    <LinearLayout
+                        android:id="@+id/homeDeviceRow"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="44dp"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingTop="@dimen/space_14"
+                        android:paddingStart="@dimen/cc_hero_padding"
+                        android:paddingEnd="@dimen/cc_hero_padding">
+
+                        <View
+                            android:id="@+id/homeDeviceDot"
+                            android:layout_width="@dimen/cc_presence_dot"
+                            android:layout_height="@dimen/cc_presence_dot"
+                            android:layout_marginEnd="@dimen/space_10"
+                            android:background="@drawable/bg_presence_dot"
+                            android:backgroundTint="@color/dot_live"
+                            android:importantForAccessibility="no" />
+
+                        <TextView
+                            android:id="@+id/homeDeviceLabel"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:textSize="@dimen/cc_text_sub"
+                            android:textColor="@color/text_primary"
+                            tools:text="This phone - OPPO CPH2791" />
+
+                        <TextView
+                            android:id="@+id/homeBridgeState"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/space_8"
+                            android:text="@string/home_bridge_active"
+                            android:textSize="@dimen/cc_text_meta"
+                            android:textColor="@color/text_tertiary" />
+                    </LinearLayout>
+
+                    <!-- Disconnect this session. Lives inside the card it acts
+                         on, at secondary weight - mockup note 2 on frame 4.
+                         Shown only while a pair is actually active;
+                         MainActivity gates it on getIsPairActive(). -->
+                    <androidx.appcompat.widget.AppCompatButton
+                        android:id="@+id/disconnectPairButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="@dimen/cc_pill_height_small"
+                        android:layout_marginTop="@dimen/space_14"
+                        android:layout_marginStart="@dimen/cc_hero_padding"
+                        android:layout_marginEnd="@dimen/cc_hero_padding"
+                        android:text="@string/action_disconnect_pair"
+                        android:textSize="@dimen/cc_text_sub"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_primary"
+                        android:fontFamily="sans-serif-medium"
+                        android:background="@drawable/bg_pill_outline"
+                        android:stateListAnimator="@null"
+                        android:visibility="gone"
+                        tools:visibility="visible" />
+                </LinearLayout>
+
+                <!-- ===== FACE B: connection request =====
+                     Same frame, same position. Decline and Accept are equal
+                     width; Accept is the only filled control on the screen. -->
+                <LinearLayout
+                    android:id="@+id/homeHeroRequest"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center_horizontal"
+                    android:paddingTop="26dp"
+                    android:paddingBottom="26dp"
+                    android:paddingStart="@dimen/cc_hero_padding"
+                    android:paddingEnd="@dimen/cc_hero_padding"
+                    android:visibility="gone"
+                    tools:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <View
+                            android:layout_width="@dimen/cc_presence_dot"
+                            android:layout_height="@dimen/cc_presence_dot"
+                            android:layout_marginEnd="@dimen/space_8"
+                            android:background="@drawable/bg_presence_dot"
+                            android:backgroundTint="@color/dot_waiting"
+                            android:importantForAccessibility="no" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/presence_connection_request"
+                            android:textSize="@dimen/cc_text_presence"
+                            android:textColor="@color/text_secondary"
+                            android:fontFamily="sans-serif-medium" />
+                    </LinearLayout>
+
+                    <!-- Second of the three gradient surfaces. -->
+                    <TextView
+                        android:id="@+id/homeRequestAvatar"
+                        android:layout_width="@dimen/cc_avatar_hero"
+                        android:layout_height="@dimen/cc_avatar_hero"
+                        android:layout_marginTop="18dp"
+                        android:layout_marginBottom="14dp"
+                        android:background="@drawable/bg_avatar_brand"
+                        android:gravity="center"
+                        android:text="@string/pair_request_avatar"
+                        android:textSize="22sp"
+                        android:textColor="#FFFFFFFF"
+                        android:fontFamily="sans-serif-medium"
+                        android:textStyle="bold"
+                        android:letterSpacing="0.02"
+                        android:importantForAccessibility="no" />
+
+                    <TextView
+                        android:id="@+id/homeRequestName"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="@string/pair_request_default_name"
+                        android:textSize="@dimen/cc_text_hero"
+                        android:textColor="@color/text_primary"
+                        android:textStyle="bold"
+                        android:letterSpacing="-0.019"
+                        tools:text="DESKTOP-4K2" />
+
+                    <!-- Who is asking, spelled out. Security legibility beats
+                         brevity here - mockup note 3 on frame 3. -->
+                    <TextView
+                        android:id="@+id/homeRequestMeta"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="5dp"
+                        android:gravity="center"
+                        android:textSize="@dimen/cc_text_sub"
+                        android:textColor="@color/text_secondary"
+                        android:lineSpacingMultiplier="1.5"
+                        android:visibility="gone"
+                        tools:visibility="visible"
+                        tools:text="Chrome on Windows" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:orientation="horizontal">
+
+                        <androidx.appcompat.widget.AppCompatButton
+                            android:id="@+id/pairDeclineButton"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="@dimen/cc_pill_height"
+                            android:layout_marginEnd="5dp"
+                            android:text="@string/pair_decline"
+                            android:textSize="@dimen/cc_text_button"
+                            android:textAllCaps="false"
+                            android:textColor="@color/text_primary"
+                            android:fontFamily="sans-serif-medium"
+                            android:background="@drawable/bg_pill_outline"
+                            android:stateListAnimator="@null" />
+
+                        <androidx.appcompat.widget.AppCompatButton
+                            android:id="@+id/pairAcceptButton"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="@dimen/cc_pill_height"
+                            android:layout_marginStart="5dp"
+                            android:text="@string/pair_accept"
+                            android:textSize="@dimen/cc_text_button"
+                            android:textAllCaps="false"
+                            android:textColor="#FFFFFFFF"
+                            android:fontFamily="sans-serif-medium"
+                            android:background="@drawable/bg_pill_brand"
+                            android:stateListAnimator="@null" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center"
+                        android:text="@string/pair_request_caution"
+                        android:textSize="@dimen/cc_text_foot"
+                        android:textColor="@color/text_tertiary" />
+                </LinearLayout>
+            </FrameLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- ==================== REJOIN ====================
+             Dennis's hard requirement for v56: whenever this phone is NOT in
+             the lobby, getting back in is one obvious tap from Home. This is
+             that tap. It is hidden whenever the phone IS in the lobby, which
+             is what lets it safely be the screen's one gradient action - it
+             and Accept can never be on screen together. -->
+        <Button
+            android:id="@+id/lobbyToggleButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/cc_pill_height"
+            android:layout_marginTop="14dp"
+            android:text="@string/action_rejoin_lobby"
+            android:textSize="@dimen/cc_text_button"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFFFF"
+            android:fontFamily="sans-serif-medium"
+            android:background="@drawable/bg_pill_brand"
+            android:stateListAnimator="@null"
             android:visibility="gone"
-            tools:text="Couldn't reach the relay. Check your internet."
             tools:visibility="visible" />
 
-        <!-- One-line helper copy below the status — explains what the
-             app is doing in plain English while the user is just sitting
-             on this screen. Replaces the LAN-IP value as the user's
-             reassurance that the bridge is alive. -->
-        <TextView
-            android:id="@+id/relayHelpText"
+        <!-- Permanently hidden since dispatch #9. The id is retained because
+             MainActivity still binds and force-hides it. -->
+        <Button
+            android:id="@+id/reconnectButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/cc_pill_height"
+            android:text="@string/action_reconnect"
+            android:visibility="gone" />
+
+        <!-- ==================== NOTICE BANDS ====================
+             Notifications blocked at OS level. An empty-handed warning is
+             useless, so the band carries the fix beside the problem. -->
+        <LinearLayout
+            android:id="@+id/homeNotifBand"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/relay_help_text"
-            android:textSize="@dimen/text_body"
-            android:textColor="@color/text_secondary"
-            android:lineSpacingMultiplier="1.35"
-            android:layout_marginTop="@dimen/space_16" />
+            android:layout_marginTop="14dp"
+            android:minHeight="@dimen/cc_touch_min"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@drawable/bg_band"
+            android:paddingStart="15dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:visibility="gone"
+            tools:visibility="visible">
 
-        <!-- ColorOS/OxygenOS background hint (v45, 2026-07-07). Oppo /
-             OnePlus / Realme have their own app-killer + auto-launch gate
-             that the standard battery exemption does NOT cover, so the
-             bridge dies in the background even with the exemption granted.
-             Shown only on those manufacturers, dismissible (flag persisted
-             in SharedPreferences). GONE by default; MainActivity flips it. -->
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_marginEnd="@dimen/space_10"
+                android:src="@drawable/ic_cc_warning"
+                android:importantForAccessibility="no" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/band_notifications_off"
+                android:textSize="@dimen/cc_text_presence"
+                android:textColor="@color/text_secondary"
+                android:lineSpacingMultiplier="1.4" />
+
+            <androidx.appcompat.widget.AppCompatButton
+                android:id="@+id/homeNotifTurnOnButton"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/cc_touch_min"
+                android:minWidth="0dp"
+                android:paddingStart="@dimen/space_12"
+                android:paddingEnd="@dimen/space_12"
+                android:text="@string/action_turn_on"
+                android:textSize="@dimen/cc_text_presence"
+                android:textAllCaps="false"
+                android:textColor="@color/accent_blue"
+                android:fontFamily="sans-serif-medium"
+                android:background="@drawable/bg_button_ghost"
+                android:stateListAnimator="@null" />
+        </LinearLayout>
+
+        <!-- ColorOS / OxygenOS background-kill hint (v45), restyled into the
+             same notice band so it stops reading as a second hero card. -->
         <LinearLayout
             android:id="@+id/colorOsHintContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
             android:orientation="vertical"
-            android:visibility="gone"
-            android:layout_marginTop="@dimen/space_16">
-
-            <TextView
-                android:id="@+id/colorOsHintText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/coloros_hint_text"
-                android:textSize="@dimen/text_body"
-                android:textColor="@color/text_secondary"
-                android:lineSpacingMultiplier="1.35" />
+            android:background="@drawable/bg_band"
+            android:padding="15dp"
+            android:visibility="gone">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="@dimen/space_12">
+                android:orientation="horizontal">
+
+                <ImageView
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_marginEnd="@dimen/space_10"
+                    android:src="@drawable/ic_cc_warning"
+                    android:importantForAccessibility="no" />
+
+                <TextView
+                    android:id="@+id/colorOsHintText"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/coloros_hint_text"
+                    android:textSize="@dimen/cc_text_presence"
+                    android:textColor="@color/text_secondary"
+                    android:lineSpacingMultiplier="1.4" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_10"
+                android:orientation="horizontal">
 
                 <Button
                     android:id="@+id/colorOsHintSettingsButton"
                     android:layout_width="0dp"
                     android:layout_weight="1"
-                    android:layout_height="@dimen/button_height"
+                    android:layout_height="@dimen/cc_pill_height_small"
                     android:text="@string/coloros_hint_open_settings"
-                    android:textSize="@dimen/text_body"
+                    android:textSize="@dimen/cc_text_sub"
                     android:textAllCaps="false"
                     android:textColor="@color/text_primary"
                     android:fontFamily="sans-serif-medium"
-                    android:letterSpacing="0.02"
-                    android:background="@drawable/bg_button_primary"
+                    android:background="@drawable/bg_pill_outline"
                     android:stateListAnimator="@null" />
 
                 <Button
                     android:id="@+id/colorOsHintDismissButton"
                     android:layout_width="wrap_content"
-                    android:layout_height="@dimen/button_height"
+                    android:layout_height="@dimen/cc_pill_height_small"
+                    android:layout_marginStart="@dimen/space_10"
                     android:text="@string/coloros_hint_dismiss"
-                    android:textSize="@dimen/text_body"
+                    android:textSize="@dimen/cc_text_sub"
                     android:textAllCaps="false"
                     android:textColor="@color/text_secondary"
-                    android:fontFamily="sans-serif-medium"
-                    android:letterSpacing="0.02"
-                    android:background="@android:color/transparent"
-                    android:stateListAnimator="@null"
-                    android:layout_marginStart="@dimen/space_12" />
+                    android:background="@drawable/bg_button_ghost"
+                    android:stateListAnimator="@null" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- ============ 4. Action stack ============ -->
-        <!-- reconnectButton kept hidden for back-compat with the Kotlin
-             field declaration (initializeMainPane findViewById still
-             resolves it). Permanently GONE — see dispatch #9. -->
-        <Button
-            android:id="@+id/reconnectButton"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/button_height"
-            android:text="@string/action_reconnect"
-            android:textSize="@dimen/text_body"
-            android:textAllCaps="false"
-            android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium"
-            android:letterSpacing="0.02"
-            android:background="@drawable/bg_button_primary"
-            android:stateListAnimator="@null"
-            android:visibility="gone"
-            android:layout_marginTop="@dimen/space_24" />
+        <!-- ==================== ON THIS PHONE ====================
+             Trait 4. These three were three of v55's five identical buttons;
+             as a row-group they are scannable and they say what they hold. -->
+        <TextView
+            style="@style/CcSectionLabel"
+            android:text="@string/settings_section_synced_data"
+            tools:text="ON THIS PHONE" />
 
-        <!-- Disconnect-from-lobby — dispatch v25 / 2026-05-26.
-             Sits ABOVE the Disconnect (active pair) button. Always visible
-             when the user is signed in (not gated on pair-active state).
-             Tapping flips between two modes via MainActivity.lobbyToggleButton:
-               - "Disconnect from Lobby" when connected → calls
-                 PhoneService.userDisconnectFromLobby(): closes WS clean,
-                 cancels reconnect timers, sets TokenStore stay-disconnected
-                 flag so the service won't auto-dial on app/OS restart.
-               - "Rejoin Lobby" when disconnected → calls
-                 PhoneService.userRejoinLobby(): clears the flag and
-                 reconnects to the relay using the still-saved phoneToken.
-             Sign Out wipes the flag implicitly via TokenStore.clear() so
-             a fresh sign-in starts in the connected/auto-dial state.
-             Same styling as disconnectPairButton — small height, tertiary
-             text, ghost background — so it reads as a quieter control
-             than the big primary actions. -->
-        <Button
-            android:id="@+id/lobbyToggleButton"
+        <com.google.android.material.card.MaterialCardView style="@style/CcRowGroup">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/homeMessagesRow"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/row_messages_title">
+
+                    <ImageView style="@style/CcRowTile" android:src="@drawable/ic_cc_message" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/row_messages_title" />
+                        <TextView style="@style/CcRowSub" android:text="@string/row_messages_sub" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+
+                <View style="@style/CcRowHairline" />
+
+                <LinearLayout
+                    android:id="@+id/homeCallsRow"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/row_calls_title">
+
+                    <ImageView style="@style/CcRowTile" android:src="@drawable/ic_cc_calllog" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/row_calls_title" />
+                        <TextView style="@style/CcRowSub" android:text="@string/row_calls_sub" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+
+                <View style="@style/CcRowHairline" />
+
+                <LinearLayout
+                    android:id="@+id/homePermissionsRow"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/row_permissions_title">
+
+                    <ImageView style="@style/CcRowTile" android:src="@drawable/ic_cc_check" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/row_permissions_title" />
+                        <TextView
+                            android:id="@+id/homePermissionsSub"
+                            style="@style/CcRowSub"
+                            android:text="@string/row_permissions_all" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- ==================== CONNECTION ==================== -->
+        <TextView
+            style="@style/CcSectionLabel"
+            android:text="@string/settings_section_connection"
+            tools:text="CONNECTION" />
+
+        <com.google.android.material.card.MaterialCardView style="@style/CcRowGroup">
+
+            <LinearLayout
+                android:id="@+id/homeStayRow"
+                style="@style/CcRow"
+                android:background="@null"
+                android:clickable="false"
+                android:focusable="false">
+
+                <LinearLayout style="@style/CcRowText">
+                    <TextView style="@style/CcRowTitle" android:text="@string/row_stay_disconnected_title" />
+                    <TextView style="@style/CcRowSub" android:text="@string/row_stay_disconnected_sub" />
+                </LinearLayout>
+
+                <!-- The switch IS the persistent stay-disconnected flag.
+                     Turning it on leaves the lobby now and keeps this phone
+                     out of it across restarts; turning it off rejoins. It and
+                     the Rejoin button above are two views of one flag, never
+                     two sources of truth: both go through the same
+                     LobbyActionReceiver broadcast that the ongoing
+                     notification's DISCONNECT action uses. -->
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/homeStaySwitch"
+                    android:layout_width="wrap_content"
+                    android:layout_height="@dimen/cc_touch_min"
+                    android:layout_marginStart="@dimen/space_12"
+                    android:minWidth="0dp"
+                    android:minHeight="@dimen/cc_touch_min"
+                    android:text=""
+                    android:contentDescription="@string/row_stay_disconnected_title"
+                    app:thumbTint="@color/cc_switch_thumb"
+                    app:trackTint="@color/cc_switch_track"
+                    app:trackDecorationTint="@color/cc_switch_track_decoration" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <TextView
             android:layout_width="match_parent"
-            android:layout_height="@dimen/button_height_small"
-            android:text="@string/action_disconnect_lobby"
-            android:textSize="@dimen/text_body"
-            android:textAllCaps="false"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:gravity="center"
+            android:text="@string/home_footer"
+            android:textSize="@dimen/cc_text_foot"
             android:textColor="@color/text_tertiary"
-            android:fontFamily="sans-serif"
-            android:letterSpacing="0.02"
-            android:background="@drawable/bg_button_ghost"
-            android:stateListAnimator="@null"
-            android:layout_marginTop="@dimen/space_24" />
-
-        <!-- Disconnect (active pair) — dispatch #34 / v20.
-             Sits ABOVE Sign Out in the action stack. Sign Out clears the
-             saved login on the phone; Disconnect terminates the current
-             ACTIVE pair without signing out. Phone stays signed in,
-             returns to lobby state, browser flips back to "Phone in
-             lobby — ready to pair". Visible only when a pair is active
-             (PhoneService.getIsPairActive() == true); MainActivity hides
-             this in lobby/idle/connecting/failed states via updateStatus
-             + handleRelayPhaseChanged so the only time the user sees
-             this affordance is when there's actually something to
-             disconnect FROM.
-             Styled subtly (smaller height + tertiary text color) so it
-             reads as a finer "drop this session" action than Sign Out
-             which is the bigger "leave entirely" affordance below it. -->
-        <Button
-            android:id="@+id/disconnectPairButton"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/button_height_small"
-            android:text="@string/action_disconnect_pair"
-            android:textSize="@dimen/text_body"
-            android:textAllCaps="false"
-            android:textColor="@color/text_tertiary"
-            android:fontFamily="sans-serif"
-            android:letterSpacing="0.02"
-            android:background="@drawable/bg_button_ghost"
-            android:stateListAnimator="@null"
-            android:visibility="gone"
-            android:layout_marginTop="@dimen/space_24"
-            tools:visibility="visible" />
-
-        <!-- ============ 5. Settings ============ -->
-        <!-- v56 — everything that used to sit below this point (synced
-             viewers, Sign Out, Enable notifications, Hard Reset) moved to
-             SettingsActivity. Home is presence + the primary connection
-             action; this row is the only way down into the rest.
-             UNSTYLED placeholder — Pixel restyles in v56 step 2. -->
-        <Button
-            android:id="@+id/settingsButton"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/button_height_small"
-            android:text="@string/settings_title"
-            android:textSize="@dimen/text_body"
-            android:textAllCaps="false"
-            android:textColor="@color/text_secondary"
-            android:fontFamily="sans-serif"
-            android:letterSpacing="0.02"
-            android:background="@drawable/bg_button_ghost"
-            android:stateListAnimator="@null"
-            android:layout_marginTop="@dimen/space_24"
-            android:layout_marginBottom="@dimen/space_32" />
-
+            android:lineSpacingMultiplier="1.5" />
     </LinearLayout>
 </ScrollView>

@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v56 shared widget styles (Pixel, step 2).
+
+  DIRECTION-android-v56.md trait 4 is "flat row-groups under caps labels".
+  A row-group is the same seven views every time, so it is defined once here
+  rather than copy-pasted across Home and Settings - which also means the row
+  height, the hairline and the caps label can only ever be changed in one
+  place, and the two screens cannot drift apart.
+
+  These are plain widget styles, not a theme overlay: they carry geometry and
+  type only. Every colour is a token from values/colors.xml whose dark twin
+  lives in values-night/colors.xml, so nothing here needs a night override.
+-->
+<resources>
+
+    <!-- Caps section label. 10.5sp / 700 / .09em, per the direction's type
+         block. Note this is the ONE place all-caps is used: it is a
+         structural marker for a group, not decoration on a heading. -->
+    <style name="CcSectionLabel">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">20dp</item>
+        <item name="android:layout_marginBottom">8dp</item>
+        <item name="android:layout_marginStart">2dp</item>
+        <item name="android:textSize">@dimen/cc_text_section_label</item>
+        <item name="android:textColor">@color/text_tertiary</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.09</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <!-- The group shell. cardElevation is 0 on purpose: separation comes from
+         the surface change plus a 1dp hairline (trait 2). MaterialCardView is
+         used rather than a plain background so row ripples clip to the 16dp
+         corners instead of squaring off the top and bottom rows. -->
+    <style name="CcRowGroup">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="cardCornerRadius">@dimen/cc_radius_group</item>
+        <item name="cardElevation">0dp</item>
+        <item name="cardBackgroundColor">@color/surface_raised</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="strokeColor">@color/surface_border</item>
+    </style>
+
+    <!-- One row. 56dp minimum, which is also the whole touch target: the
+         30dp tile and the chevron inside it are decorative, so TalkBack gets
+         a single node per row instead of four. -->
+    <style name="CcRow">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">@dimen/cc_row_height</item>
+        <item name="android:orientation">horizontal</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">8dp</item>
+        <item name="android:background">?android:attr/selectableItemBackground</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <style name="CcRowTile">
+        <item name="android:layout_width">@dimen/cc_tile_size</item>
+        <item name="android:layout_height">@dimen/cc_tile_size</item>
+        <item name="android:layout_marginEnd">12dp</item>
+        <item name="android:background">@drawable/bg_icon_tile</item>
+        <item name="android:padding">6dp</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="android:importantForAccessibility">no</item>
+    </style>
+
+    <style name="CcRowText">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:orientation">vertical</item>
+    </style>
+
+    <style name="CcRowTitle">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">@dimen/cc_text_row_title</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+
+    <style name="CcRowSub">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">2dp</item>
+        <item name="android:textSize">@dimen/cc_text_meta</item>
+        <item name="android:textColor">@color/text_tertiary</item>
+    </style>
+
+    <!-- Trailing chevron. Decorative: the row itself carries the label. -->
+    <style name="CcRowChevron">
+        <item name="android:layout_width">16dp</item>
+        <item name="android:layout_height">16dp</item>
+        <item name="android:layout_marginStart">12dp</item>
+        <item name="android:src">@drawable/ic_cc_chevron</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="android:importantForAccessibility">no</item>
+    </style>
+
+    <!-- Between rows only, never above the first or below the last: the
+         group's own border closes the ends. -->
+    <style name="CcRowHairline">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">1dp</item>
+        <item name="android:background">@drawable/bg_hairline</item>
+        <item name="android:importantForAccessibility">no</item>
+    </style>
+
+    <!-- Destructive row title. The one red in the row system. -->
+    <style name="CcRowTitle.Danger">
+        <item name="android:textColor">@color/dot_failed</item>
+    </style>
+</resources>

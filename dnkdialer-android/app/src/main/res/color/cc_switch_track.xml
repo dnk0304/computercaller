@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v56 switch colours.
+
+  The mockup paints the ON track with the brand GRADIENT, but DIRECTION trait
+  3 reserves the ramp for exactly three things - the mark, the avatar, and the
+  single primary action per screen - and a switch is none of them. The ON
+  track therefore takes the ramp's terminal stop as a solid instead.
+
+  That choice is also the accessible one: a white thumb on #22a89a (the ramp's
+  midpoint) is about 2.8:1, under the 3:1 WCAG 2.2 minimum for a non-text
+  control. The terminal stop #1e8fb2 clears it at about 3.5:1.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false" android:color="@color/surface_inset" />
+    <item android:state_checked="true" android:color="@color/cc_brand_end" />
+    <item android:color="@color/surface_inset" />
+</selector>
