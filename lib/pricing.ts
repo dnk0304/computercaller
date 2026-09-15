@@ -179,6 +179,28 @@ export const INCLUDED_ON_EVERY_PLAN: readonly string[] = [
   'Phone contacts — names instead of numbers',
 ];
 
+/**
+ * The single "Included when subscribed" list shown on the landing pricing modal
+ * (dispatch pricing-modal-single-list, 2026-09-15). Dennis: stop framing the
+ * modal as trial-vs-paid — just say what a subscriber gets. Order is Dennis's.
+ *
+ * The three countable lines are DERIVED from TIER_LIMITS[PROMOTED_TIER], the
+ * same fields STOREFRONT_MATRIX restates, so reconcileStorefrontWithLimits()
+ * still guards them: change a cap in tiers-core and this list follows.
+ */
+export const SUBSCRIBED_INCLUDES: readonly string[] = [
+  `Message templates (${TIER_LIMITS[PROMOTED_TIER].templates})`,
+  `Quick reply messages (${TIER_LIMITS[PROMOTED_TIER].quickReplies})`,
+  'Instant sync',
+  'Incoming / outgoing calls',
+  'Incoming / outgoing messages',
+  'App notifications',
+  'Notifications replying to messenger apps',
+  `Message history ${syncWords(TIER_LIMITS[PROMOTED_TIER].syncRangeMax)}`,
+  `Call history ${syncWords(TIER_LIMITS[PROMOTED_TIER].syncRangeMax)}`,
+  'Contacts sync',
+];
+
 // ───────────────────────────────────────────────────────────────────────────
 // In-app upgrade prompt (the ONLY surface that ever names $7).
 

@@ -61,6 +61,8 @@ ok('1. the no-JS fallback href carries the plan', /href=\{`\/auth\/register\?pla
 ok('1. exactly one register CTA on the page (single plan)',
   (modal.match(/\/auth\/register\?plan=/g) || []).length === 1);
 
+ok('1. the single-list section survives the CTA wiring', /SUBSCRIBED_INCLUDES/.test(modal));
+
 // ── STEP 2: the page stores it and hands it to signup ───────────────────────
 const page = read('app/page.tsx');
 ok('2. handleTierSelect accepts a tier', /function handleTierSelect\(tierId:\s*PlanTierId\)/.test(page));
