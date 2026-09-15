@@ -18,6 +18,39 @@ import { CC_EXTENSION_ORIGIN } from "./lib/extension";
 //     Google sign-in form-action are the third-party origins we authorise.
 //     `unsafe-inline` on script-src is the Next.js hydration cost — closing
 //     this requires nonces on every inline boot script and is deferred.
+//   - Microsoft Clarity (2026-09-15): the inline bootstrap in app/layout.tsx
+//     was allowed by `unsafe-inline`, but the external tag it injects was not,
+//     so the tag never executed in production. TWO script hosts are required,
+//     not one: `https://www.clarity.ms` serves /tag/<id>, and that loader in
+//     turn injects `https://scripts.clarity.ms/<version>/clarity.js` — allowing
+//     only the first moves the block one hop instead of closing it. connect-src
+//     needs `https://*.clarity.ms` because the configured upload endpoint
+//     (https://u.clarity.ms/collect) redirects to a regional collector, and a
+//     CSP-checked redirect target must be in the allowlist too. img-src is
+//     already `https:`, which covers the c.clarity.ms/c.gif MUID sync.
+//     Verified 2026-09-15: neither the loader nor clarity.js 0.8.69 contains
+//     eval/new Function — no `unsafe-eval` is needed, and if that ever changes
+//     we drop Clarity, not the rule.
+//
+// ONE builder for both header sets — `frame-ancestors` is the ONLY directive
+// that differs between the site-wide policy and the /extension subtree's.
+// Deriving both from here makes drift structurally impossible.
+const buildCsp = (frameAncestors: string) =>
+  [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://www.clarity.ms https://scripts.clarity.ms",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' wss://computercaller.com https://api.cloudflare.com https://*.clarity.ms",
+    "frame-src 'self' https://whop.com",
+    `frame-ancestors ${frameAncestors}`,
+    "form-action 'self' https://accounts.google.com",
+    "base-uri 'self'",
+    "object-src 'none'",
+  ].join('; ');
+
 const SECURITY_HEADERS = [
   {
     key: 'Strict-Transport-Security',
@@ -33,20 +66,7 @@ const SECURITY_HEADERS = [
   {
     key: 'Content-Security-Policy',
     // Single-line value — header values cannot contain literal newlines.
-    value: [
-      "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https:",
-      "media-src 'self' data: blob:",
-      "font-src 'self' data:",
-      "connect-src 'self' wss://computercaller.com https://api.cloudflare.com",
-      "frame-src 'self' https://whop.com",
-      "frame-ancestors 'self'",
-      "form-action 'self' https://accounts.google.com",
-      "base-uri 'self'",
-      "object-src 'none'",
-    ].join('; '),
+    value: buildCsp("'self'"),
   },
 ];
 
@@ -58,20 +78,7 @@ const SECURITY_HEADERS = [
 const EXTENSION_FRAME_HEADERS = [
   {
     key: 'Content-Security-Policy',
-    value: [
-      "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https:",
-      "media-src 'self' data: blob:",
-      "font-src 'self' data:",
-      "connect-src 'self' wss://computercaller.com https://api.cloudflare.com",
-      "frame-src 'self' https://whop.com",
-      `frame-ancestors ${CC_EXTENSION_ORIGIN}`,
-      "form-action 'self' https://accounts.google.com",
-      "base-uri 'self'",
-      "object-src 'none'",
-    ].join('; '),
+    value: buildCsp(CC_EXTENSION_ORIGIN),
   },
 ];
 
