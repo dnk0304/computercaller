@@ -226,6 +226,35 @@ try {
     // Copy affordance (2026-07-27) must survive.
     const selectable = await rowBtn.locator('p.select-text').count();
     check('click-drag-to-copy affordance survives', selectable > 0);
+
+    // ---- addendum #6: the tab strip is pinned on EVERY view --------------
+    // Dennis 2026-09-15: "if I click to send an SMS, the header with dial,
+    // text and alerts disappears now."
+    const strip = page.getByRole('tablist');
+    check('tab strip visible on Dial', await strip.isVisible());
+
+    await page.getByRole('tab', { name: /Texts/ }).click();
+    await page.waitForTimeout(400);
+    await page.getByRole('button', { name: /New message/ }).click();
+    await page.waitForTimeout(600);
+    check('tab strip visible while composing an SMS', await strip.isVisible());
+    check('Texts tab stays selected while composing',
+      (await page.getByRole('tab', { name: /Texts/ }).getAttribute('aria-selected')) === 'true');
+    await page.screenshot({ path: path.join(OUT, 'compose-tabstrip-400.png') });
+
+    // …and from inside an open thread.
+    await page.getByRole('tab', { name: /Texts/ }).click();
+    await page.waitForTimeout(400);
+    await page.locator('li button[aria-label^="Open thread"]').first().click();
+    await page.waitForTimeout(600);
+    check('tab strip visible inside an open thread', await strip.isVisible());
+    await page.screenshot({ path: path.join(OUT, 'thread-tabstrip-400.png') });
+
+    // Tapping a tab from inside the stack must actually leave it.
+    await page.getByRole('tab', { name: /Dial/ }).click();
+    await page.waitForTimeout(500);
+    check('a tab tap from inside the stack returns to that tab',
+      (await page.locator('.cc-dial-column').count()) > 0);
     await page.close();
   }
 } finally {

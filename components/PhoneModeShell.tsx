@@ -1552,12 +1552,31 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
     };
   }, []);
 
-  // Which top-level tab is active? Tab bar visible in dialer/texts/bell,
-  // hidden in thread/compose (those show their own back-arrow header).
-  const activeTab: 'dialer' | 'texts' | 'bell' | null =
+  // Which top-level tab is active?
+  //
+  // Dennis 2026-09-15: "the dial, text, alerts in the header in the extension
+  // should be locked to the top always. If I click to send an SMS, then the
+  // header with dial/text/alerts disappears now." It did: this used to return
+  // null for any pushed view, and the strip was rendered only when it was
+  // non-null, so composing dropped the user's only route back to Dial or
+  // Alerts — they had to find the back arrow first.
+  //
+  // Stacked views now report the tab they BELONG to rather than nothing. A
+  // thread and a compose are both message screens, so both highlight Texts —
+  // including a compose pushed from a Dial row, because the screen the user is
+  // looking at is a message composer and tapping Texts should land on the
+  // message list. Deriving it from the stack ROOT instead would light Dial
+  // while the user types an SMS, which is worse than the bug.
+  const activeTab: 'dialer' | 'texts' | 'bell' =
     current.kind === 'dialer' || current.kind === 'texts' || current.kind === 'bell'
       ? current.kind
-      : null;
+      : 'texts';
+
+  // Root views are the three tabs themselves. Only used to keep the free-tier
+  // usage strip off the two tightest screens (thread, compose) — the tab strip
+  // above is unconditional now, the usage strip is not.
+  const isRootView =
+    current.kind === 'dialer' || current.kind === 'texts' || current.kind === 'bell';
 
   // Dial / Texts unread. Returns zeros unless `enabled`, so the dashboard's
   // tab bar receives 0 and 0 and renders exactly as it did before.
@@ -1618,7 +1637,12 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           ringing, and the tab strip plus usage strip stand down because
           neither is actionable while a decision is pending. A CONNECTED call
           does not hide them: see `callTakesBody` above. */}
-      {activeTab && !callTakesBody && (
+      {/* UNCONDITIONAL except during a takeover. The strip is the surface's
+          primary navigation; a view that hides it strands the user inside a
+          stack whose only exit is a back arrow they have to find. Only the
+          unanswered-ring / call-queue takeover still stands it down, because
+          a pending accept/decline is the one decision that outranks it. */}
+      {!callTakesBody && (
         <TabBar
           active={activeTab}
           unreadCount={isExt ? tabBadges.alerts : unreadCount}
@@ -1631,7 +1655,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           bar under the tab bar. Self-hides for unlimited (paid) tiers.
           Pilot's rule holds on the extension: this may surface a neutral
           remaining-count status line, never a price or an upgrade CTA. */}
-      {activeTab && !callTakesBody && <UsageMeter variant="strip" />}
+      {isRootView && !callTakesBody && <UsageMeter variant="strip" />}
       {/* min-h-0 so the active view actually scrolls inside this box instead of
           stretching the column — the same class of bug as AC-2's. */}
       <div className="min-h-0 flex-1 overflow-hidden">
