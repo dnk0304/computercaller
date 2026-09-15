@@ -265,6 +265,8 @@
     <!-- to the existing userDisconnectFromLobby/userRejoinLobby methods.     -->
     <string name="notif_action_disconnect">Disconnect</string>
     <string name="notif_action_reconnect">Reconnect</string>
+    <!-- v56 — ongoing-notification body-tap action, per DIRECTION-android-v56.md -->
+    <string name="notif_action_open">Open</string>
 
     <!-- Relay-status surface — replaces the LAN-IP / QR plate after     -->
     <!-- Phase 4 lands. The Kotlin side feeds these into the status row. -->

@@ -2370,6 +2370,13 @@ class PhoneService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            // v56 - NO setColor here. DIRECTION asks for a brand-green
+            // ACCEPT, but Android's notification colour is a single
+            // notification-wide value: tinting it would paint DECLINE green
+            // too, which is worse than stock. The platform exposes no
+            // per-action tint, so both actions stay in the system default
+            // rather than fake a green that also stains the destructive
+            // choice.
             .setAutoCancel(false)  // don't dismiss on tap — user must Accept or Decline
             .setOngoing(false)
             .setContentIntent(tapPending)
@@ -2605,6 +2612,17 @@ class PhoneService : Service() {
                 disconnectPending
             )
         }
+
+        // v56 (DIRECTION-android-v56.md) - the ongoing notification carries
+        // DISCONNECT / RECONNECT *and* OPEN. OPEN deliberately reuses the
+        // content intent above rather than minting a second one: the body
+        // tap and the button must land on exactly the same Activity, and a
+        // second PendingIntent on request code 0 would overwrite the first.
+        builder.addAction(
+            android.R.drawable.ic_menu_view,
+            getString(R.string.notif_action_open),
+            pendingIntent
+        )
 
         return builder.build()
     }
