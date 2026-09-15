@@ -37,6 +37,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Phone,
+  PhoneCall,
   MessageSquare,
   Bell,
   ArrowLeft,
@@ -44,7 +45,6 @@ import {
   Plus,
   Search,
   X,
-  RotateCw,
   Delete,
   FileText,
 } from 'lucide-react';
@@ -54,6 +54,7 @@ import { UsageMeter } from '@/components/UsageMeter';
 import { Dialpad } from '@/components/Dialpad';
 import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterBar';
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
+import { CallHistoryEntries, useCallHistoryEntries } from '@/components/CallHistoryEntries';
 import { useExtensionTabBadges } from '@/hooks/useExtensionTabBadges';
 import { PhoneModeCallBanner, PhoneModeCallSurface, usePhoneModeCallSurface } from '@/components/PhoneModeCallSurface';
 import { readDeepLink, clearDeepLink } from '@/lib/extensionBridge';
@@ -352,9 +353,26 @@ function TabButton({ active, onClick, icon, label, badge, badgeLabel }: TabButto
 // ---------- DialerView ------------------------------------------------------
 
 function DialerView() {
-  const { makeCall, callLogs } = usePhone();
+  const phone = usePhone();
+  const { makeCall, callLogs } = phone;
   const { guard } = useFreeTier();
   const [digits, setDigits] = useState<string>('');
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const simList = (((phone as any).simList ?? []) as { id: number; name: string }[]);
+
+  // Same per-number history the dashboard's Recent Calls column opens — see
+  // ExtDialerView for the id-vs-number rationale.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [historyNumber, setHistoryNumber] = useState<string | null>(null);
+  const historyEntries = useCallHistoryEntries(callLogs, historyNumber);
+  const toggleHistory = useCallback((id: string, number: string) => {
+    setExpandedId((prev) => {
+      const next = prev === id ? null : id;
+      setHistoryNumber(next ? number : null);
+      return next;
+    });
+  }, []);
 
   // Newest 15 unique numbers, deduped — surface the "redial" affordance.
   // Pulling logs (not contacts) so the entry reflects the actual conversation
@@ -478,45 +496,77 @@ function DialerView() {
             Recent
           </p>
           <ul className="flex-1 divide-y divide-slate-100 overflow-y-auto pb-2">
-            {recent.map((r) => (
-              <li key={r.id} className="flex items-center pr-1.5 transition-colors hover:bg-slate-50">
+            {recent.map((r) => {
+              const isOpen = expandedId === r.id;
+              const label = r.name || r.number;
+              return (
+              <React.Fragment key={r.id}>
+              <li className={clsx('flex items-center pr-1 transition-colors hover:bg-slate-50', isOpen && 'bg-slate-100/70')}>
                 {/* Row is a role=button div (not a <button>) so the number
                     text inside stays selectable — text can't be highlighted
                     inside a native <button>. A tap that leaves an active text
-                    selection is treated as a select, not a call, so the user
-                    can click-drag the number and copy it. */}
+                    selection is treated as a select, not an open, so the user
+                    can click-drag the number and copy it.
+                    Tapping opens this number's call history (Dennis
+                    2026-09-15) — dialling moved to the button on the right,
+                    so a mis-tap while reading the list no longer places a
+                    call. */}
                 <div
                   role="button"
                   tabIndex={0}
+                  aria-expanded={isOpen}
                   onClick={() => {
                     if (window.getSelection()?.toString()) return;
-                    if (guard('call')) makeCall(r.number);
+                    toggleHistory(r.id, r.number);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      if (guard('call')) makeCall(r.number);
+                      toggleHistory(r.id, r.number);
                     }
                   }}
                   className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 px-3 py-2 text-left focus:outline-none focus-visible:bg-slate-50"
-                  aria-label={`Call ${r.name || r.number}`}
+                  aria-label={`View call history for ${label}`}
+                  title={`View call history for ${label}`}
                 >
-                  <div className={clsx('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold', avatarColor(r.name || r.number))}>
-                    {(r.name || r.number).charAt(0).toUpperCase()}
+                  <div className={clsx('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold', avatarColor(label))}>
+                    {label.charAt(0).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1">
                     <p
                       className="truncate text-xs font-medium text-slate-800 select-text cursor-text"
                       onMouseDown={(e) => e.stopPropagation()}
                     >
-                      {r.name || r.number}
+                      {label}
                     </p>
                     <p className="truncate text-[11px] text-slate-500">{formatRelative(r.date, now)}</p>
                   </div>
-                  <RotateCw className="h-3.5 w-3.5 flex-shrink-0 text-slate-300" aria-hidden="true" />
                 </div>
+                {/* Dial. 40px square — this is a touch surface on /app Phone
+                    Mode, so it gets the real box rather than a bled target. */}
+                <button
+                  type="button"
+                  onClick={() => { if (guard('call')) makeCall(r.number); }}
+                  aria-label={`Call ${label}`}
+                  title={`Call ${label}`}
+                  className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-emerald-600 transition-colors hover:bg-emerald-50 hover:text-emerald-700 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+                >
+                  <PhoneCall className="h-4 w-4" aria-hidden="true" />
+                </button>
               </li>
-            ))}
+              {isOpen && (
+                <li className="bg-slate-50/60">
+                  <CallHistoryEntries
+                    entries={historyEntries}
+                    simList={simList}
+                    now={now}
+                    formatDate={formatRelative}
+                  />
+                </li>
+              )}
+              </React.Fragment>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -543,10 +593,33 @@ function DialerView() {
 // panel (dispatch C) without a rewrite.
 
 function ExtDialerView() {
-  const { makeCall, callLogs } = usePhone();
+  const phone = usePhone();
+  const { makeCall, callLogs } = phone;
   const { guard } = useFreeTier();
   const { push } = usePhoneMode();
   const filter = useCallLogFilter(callLogs);
+
+  // Bridge SIM list — the accordion only tags rows on multi-SIM phones, and
+  // the field is not on the PhoneState type yet (same cast Dashboard uses).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const simList = (((phone as any).simList ?? []) as { id: number; name: string }[]);
+
+  // Per-number history, opened by tapping a row (Dennis 2026-09-15: "it should
+  // bring up the history exactly like it is in the quick dial in dashboard").
+  // Keyed on the log id, not the number: a number can legitimately appear in
+  // the list more than once and an expansion under every match is noise. The
+  // number drives the entries lookup; the id decides which row expands.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [historyNumber, setHistoryNumber] = useState<string | null>(null);
+  const historyEntries = useCallHistoryEntries(callLogs, historyNumber);
+
+  const toggleHistory = useCallback((id: string, number: string) => {
+    setExpandedId((prev) => {
+      const next = prev === id ? null : id;
+      setHistoryNumber(next ? number : null);
+      return next;
+    });
+  }, []);
 
   // Newest-first, deduped by number — the "redial" model, same as DialerView.
   // Dedupe runs AFTER filtering so a search for a missed call doesn't get
@@ -611,41 +684,47 @@ function ExtDialerView() {
             {recent.length === 0 ? (
               <li><CallLogEmptyState onClear={filter.clear} /></li>
             ) : (
-              recent.map((r, i) => (
+              recent.map((r, i) => {
+                const isOpen = expandedId === r.id;
+                const label = r.name || r.number;
+                return (
+                <React.Fragment key={r.id}>
                 <li
-                  key={r.id}
                   className={clsx(
                     'flex items-center border-b border-slate-100 transition-colors hover:bg-slate-50',
                     // Flat zebra rows rather than nested cards — far denser,
                     // and inside a 400px panel a card-per-row reads as clutter.
                     i % 2 === 1 && 'bg-slate-50/70',
+                    isOpen && 'bg-slate-100/80',
                   )}
                 >
                   <div
                     role="button"
                     tabIndex={0}
+                    aria-expanded={isOpen}
                     onClick={() => {
                       if (window.getSelection()?.toString()) return;
-                      if (guard('call')) makeCall(r.number);
+                      toggleHistory(r.id, r.number);
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        if (guard('call')) makeCall(r.number);
+                        toggleHistory(r.id, r.number);
                       }
                     }}
                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left focus:outline-none focus-visible:bg-slate-100"
-                    aria-label={`Call ${r.name || r.number}`}
+                    aria-label={`View call history for ${label}`}
+                    title={`View call history for ${label}`}
                   >
-                    <div className={clsx('flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-semibold', avatarColor(r.name || r.number))}>
-                      {(r.name || r.number).charAt(0).toUpperCase()}
+                    <div className={clsx('flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-semibold', avatarColor(label))}>
+                      {label.charAt(0).toUpperCase()}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p
                         className="truncate text-[12.5px] font-semibold text-slate-800 select-text cursor-text"
                         onMouseDown={(e) => e.stopPropagation()}
                       >
-                        {r.name || r.number}
+                        {label}
                       </p>
                       {/* Direction is a glyph in the meta line, not a coloured
                           badge — one colour object per row. Missed reads red
@@ -658,17 +737,48 @@ function ExtDialerView() {
                       </p>
                     </div>
                   </div>
+                  {/* Row actions. Both are 28px squares with an `after`
+                      pseudo-element bleeding the hit target out to 40px —
+                      the row is 38px tall by design (extension.css 0.8x
+                      density) and a 40px BOX would have to grow it, but a
+                      40px TARGET costs nothing. */}
                   <button
                     type="button"
                     onClick={() => push({ kind: 'compose', to: r.number })}
-                    aria-label={`Send a message to ${r.name || r.number}`}
-                    title={`Send a message to ${r.name || r.number}`}
-                    className="mr-1.5 inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+                    aria-label={`Send a message to ${label}`}
+                    title={`Send a message to ${label}`}
+                    className="relative inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
                   >
                     <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
                   </button>
+                  {/* Dial button (Dennis 2026-09-15). Now that the row body
+                      opens history, this is the ONLY way to start a call from
+                      the list — so it is the emerald one, and it is last,
+                      nearest the panel edge the thumb reaches first. */}
+                  <button
+                    type="button"
+                    onClick={() => { if (guard('call')) makeCall(r.number); }}
+                    aria-label={`Call ${label}`}
+                    title={`Call ${label}`}
+                    className="relative mr-1.5 ml-0.5 inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-emerald-600 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+                  >
+                    <PhoneCall className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
                 </li>
-              ))
+                {isOpen && (
+                  <li className="border-b border-slate-100 bg-slate-50/60">
+                    <CallHistoryEntries
+                      dense
+                      entries={historyEntries}
+                      simList={simList}
+                      now={now}
+                      formatDate={formatRelative}
+                    />
+                  </li>
+                )}
+                </React.Fragment>
+                );
+              })
             )}
           </ul>
         </div>
