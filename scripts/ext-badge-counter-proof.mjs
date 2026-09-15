@@ -143,6 +143,80 @@ try {
   });
   b = await badge();
   check('250 unread ⇒ "99+"', b === '99+', b);
+
+  // ---- 9. Addendum B: an OUTGOING sms must not notify and must not count ---
+  //
+  // Dennis 2026-09-15: "i also got a pop-up notification when sent an sms out.
+  // I only want on incoming, not outgoing."
+  //
+  // SMS_RECEIVED is the frame for a single SMS ROW in EITHER direction — the
+  // APK tags it type:"sent" for outgoing (PhoneService.kt:2667 RCS mirror,
+  // :2927 ContentObserver push, :2999 MMS/backfill). The payload here uses the
+  // REAL wire shape {id, from, body, time, type} rather than the test-local
+  // {address, date} one above, because the direction field is the whole point.
+  //
+  // Both halves are asserted. A fix that suppressed only the popup would leave
+  // the badge counting your own outbox, which is the same bug in a quieter
+  // costume — so the notification count is captured too, by wrapping
+  // chrome.notifications.create rather than by trusting the counter.
+  const SMS_DIR = (id, type) => 'SMS_RECEIVED:' + JSON.stringify({
+    id, from: '+4733333333', body: 'hello', time: Date.now(), type,
+  });
+
+  const armNotifSpy = () => sw.evaluate(() => {
+    self.__notifSpy = 0;
+    if (!self.__notifOrig) self.__notifOrig = chrome.notifications.create;
+    chrome.notifications.create = function (...args) {
+      self.__notifSpy += 1;
+      return self.__notifOrig.apply(chrome.notifications, args);
+    };
+  });
+  const notifCount = () => sw.evaluate(() => self.__notifSpy);
+
+  // 9a. outgoing, every surface closed — the exact condition Dennis hit.
+  await reset();
+  await sw.evaluate(() => { presenceCount = 0; });
+  await armNotifSpy();
+  await feed([SMS_DIR(101, 'sent')]);
+  b = await badge();
+  check('outgoing SMS (type:"sent") ⇒ badge NOT bumped', b === '', b);
+  check('outgoing SMS (type:"sent") ⇒ NO notification', (await notifCount()) === 0, await notifCount());
+
+  // 9b. the control arm. If this does not fire, 9a proves nothing — a
+  // suppressor that suppresses everything passes 9a trivially.
+  await reset();
+  await armNotifSpy();
+  await feed([SMS_DIR(102, 'inbox')]);
+  b = await badge();
+  check('incoming SMS (type:"inbox") ⇒ badge bumped to "1"', b === '1', b);
+  check('incoming SMS (type:"inbox") ⇒ notification raised', (await notifCount()) === 1, await notifCount());
+
+  // 9c. a row with no direction marker at all must still notify. Defaulting to
+  // "outgoing" would silently swallow real texts from any producer that omits
+  // the field — fail toward the cheaper mistake.
+  await reset();
+  await armNotifSpy();
+  await feed([SMS(7)]);
+  b = await badge();
+  check('SMS with NO type field still counts (defaults to incoming)', b === '1', b);
+  check('SMS with NO type field still notifies', (await notifCount()) === 1, await notifCount());
+
+  // 9d. mixed burst: only the incoming half survives.
+  await reset();
+  await armNotifSpy();
+  await feed([SMS_DIR(103, 'sent'), SMS_DIR(104, 'inbox'), SMS_DIR(105, 'sent'), SMS_DIR(106, 'inbox')]);
+  b = await badge();
+  check('2 outgoing + 2 incoming ⇒ badge "2", not "4"', b === '2', b);
+  check('2 outgoing + 2 incoming ⇒ exactly 2 notifications', (await notifCount()) === 2, await notifCount());
+
+  // 9e. the wrapped shape the web layer's normalizePayload produces
+  // ({message:{...}}) must be read the same way — one spelling of the marker
+  // getting through is how a suppressor quietly stops working.
+  await reset();
+  await armNotifSpy();
+  await feed(['SMS_RECEIVED:' + JSON.stringify({ message: { id: 107, from: '+47', body: 'x', type: 'sent' } })]);
+  b = await badge();
+  check('wrapped {message:{type:"sent"}} also suppressed', b === '' && (await notifCount()) === 0, b);
 } finally {
   await ctx.close();
   fs.rmSync(userDataDir, { recursive: true, force: true });
