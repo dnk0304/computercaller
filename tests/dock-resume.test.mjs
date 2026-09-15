@@ -210,8 +210,10 @@ const isActive = (room, phone, browser) => room.active.phone === phone && room.a
   // The real phone coming back still resumes — via the join-time path, which
   // is what the arm-time guard deliberately leaves to the phone itself.
   //
-  // NOTE (pre-existing, unchanged by this fix, deliberately not asserted here):
-  // the join-time tryAutoResume takes the FIRST open phone it finds in the
+  // NOTE (pre-existing, unchanged by THIS fix, deliberately not asserted here.
+  // Since FORGE-L, server.js prefers the claim identity deviceName instead —
+  // tests/pairing-persist.test.mjs case (h) asserts that):
+  // the join-time tryAutoResume took the FIRST open phone it found in the
   // lobby, which is not necessarily the one that just rejoined. With the idle
   // handset above still present it would win the slot. That is server.js
   // behaviour as shipped since Issue 3 and every device in a room belongs to
