@@ -55,7 +55,7 @@ import { Dialpad } from '@/components/Dialpad';
 import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterBar';
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
 import { useExtensionTabBadges } from '@/hooks/useExtensionTabBadges';
-import { ExtensionCallSurface, useExtensionCallSurface } from '@/components/ExtensionCallSurface';
+import { PhoneModeCallBanner, PhoneModeCallSurface, usePhoneModeCallSurface } from '@/components/PhoneModeCallSurface';
 import { readDeepLink, clearDeepLink } from '@/lib/extensionBridge';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import {
@@ -1446,15 +1446,24 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
   // tab bar receives 0 and 0 and renders exactly as it did before.
   const tabBadges = useExtensionTabBadges({ enabled: isExt, activeTab, alertsUnread: unreadCount });
 
-  // ---------- In-call surface (extension only) -----------------------------
-  // PIXEL-F: a call dialled from the extension used to leave no trace on
-  // screen — no card, no timer, no way to hang up — because the only in-call
-  // UI in the product lives inside GlobalDialer's floating panel, which the
-  // extension never opens. This hook is the extension's own consumer of
-  // `currentCall`; `enabled: isExt` pins `visible` to false on /app, so the
-  // dashboard's Phone Mode keeps rendering exactly what it did before and
-  // keeps getting its call UI from GlobalDialer.
-  const extCall = useExtensionCallSurface({ enabled: isExt });
+  // ---------- In-call surface (both Phone Mode surfaces) -------------------
+  // PIXEL-F/PIXEL-H: a call dialled from a Phone Mode shell used to leave no
+  // trace on screen — no card, no timer, no way to hang up — because the only
+  // in-call UI in the product lives inside GlobalDialer's floating panel,
+  // which neither shell ever opens. This hook is Phone Mode's own consumer of
+  // `currentCall`, and it is surface-agnostic on purpose: the extension and
+  // /app had the identical bug, so they get the identical fix rather than two
+  // implementations that can drift on call semantics.
+  //
+  // The desktop dashboard is untouched: PhoneModeShell only mounts while
+  // `usePhoneMode().phoneMode` is true, so at desktop width this hook never
+  // runs and GlobalDialer keeps owning the call UI exactly as before.
+  const phoneCall = usePhoneModeCallSurface();
+  // A connected call is a BANNER, never a blanked screen (Dennis 2026-09-15):
+  // "being in a call disables checking texts, call history, alerts... it should
+  // function the same way it does inside of the dashboard in the quick dial."
+  // Only an unanswered incoming call (and the multi-call queue) takes the body.
+  const callTakesBody = phoneCall.mode === 'takeover';
 
   const renderView = (v: PhoneModeView): React.ReactNode => {
     switch (v.kind) {
@@ -1481,12 +1490,18 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
     // area rather than disappearing behind the keyboard.
     <div className={clsx('phone-mode-shell flex flex-col bg-slate-50 font-sans', isExt && 'cc-ext')}>
       <PhoneModeHeader surface={surface} />
-      {/* A live call is a full-body takeover (ART-DIRECTION §4.6/§4.7): the
-          header stays — the user must still see WHICH device is on the call —
-          and the tab strip plus the usage strip stand down, because neither is
-          actionable while the phone is ringing. `extCall.visible` is false on
-          /app by construction, so both conditions below are unchanged there. */}
-      {activeTab && !extCall.visible && (
+      {/* The live-call strip sits directly under the header and above the tab
+          strip — the dashboard's quick-dial panel equivalent, in a shape a
+          390px column can afford. It is chrome, so it is OUTSIDE the
+          `min-h-0 flex-1` body box below: the active view keeps its own
+          scroll and simply gets shorter by the height of the strip. */}
+      {phoneCall.mode === 'banner' && <PhoneModeCallBanner {...phoneCall.surfaceProps} />}
+      {/* An unanswered incoming call (and the 2+ call queue) still takes the
+          whole body — the header stays, so the user sees WHICH device is
+          ringing, and the tab strip plus usage strip stand down because
+          neither is actionable while a decision is pending. A CONNECTED call
+          does not hide them: see `callTakesBody` above. */}
+      {activeTab && !callTakesBody && (
         <TabBar
           active={activeTab}
           unreadCount={isExt ? tabBadges.alerts : unreadCount}
@@ -1499,11 +1514,11 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           bar under the tab bar. Self-hides for unlimited (paid) tiers.
           Pilot's rule holds on the extension: this may surface a neutral
           remaining-count status line, never a price or an upgrade CTA. */}
-      {activeTab && !extCall.visible && <UsageMeter variant="strip" />}
+      {activeTab && !callTakesBody && <UsageMeter variant="strip" />}
       {/* min-h-0 so the active view actually scrolls inside this box instead of
           stretching the column — the same class of bug as AC-2's. */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        {extCall.visible ? <ExtensionCallSurface {...extCall.surfaceProps} /> : renderView(current)}
+        {callTakesBody ? <PhoneModeCallSurface {...phoneCall.surfaceProps} /> : renderView(current)}
       </div>
       {toastNotif && (
         <NotificationToast

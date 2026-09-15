@@ -63,7 +63,12 @@ const DIAL_DIGITS: ReadonlyArray<string> = [
 // Used by the drag handler to keep the panel pinned correctly to the right edge.
 const PANEL_WIDTH_PX = 208;
 
-function formatDuration(seconds: number = 0): string {
+/**
+ * mm:ss for a live call. Exported because PhoneModeCallBanner shows the same
+ * timer in the same call — a second local copy is how two surfaces start
+ * disagreeing about what 90 seconds looks like.
+ */
+export function formatDuration(seconds: number = 0): string {
   if (!seconds || seconds < 0) return '00:00';
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);

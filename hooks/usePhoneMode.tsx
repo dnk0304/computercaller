@@ -38,6 +38,10 @@ import React, {
   type ReactNode,
 } from 'react';
 
+// Direct module import, not via hooks/index — going through the barrel would
+// make this file and dialerContext mutually reachable through index.ts.
+import { useDialerOpen } from './dialerContext';
+
 // Viewport thresholds. AUTO_COLLAPSE is the "should we be in Phone Mode?"
 // boundary. We DON'T auto-flip at every tiny intermediate viewport; once the
 // user expanded manually below the threshold, the suppression flag holds them
@@ -210,6 +214,24 @@ export function PhoneModeProvider({ children }: { children: ReactNode }) {
     // flips, not when the stack is mutated mid-session (push/pop/setTab).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phoneMode]);
+
+  // ---------- Publish Phone Mode to the floating dialer (PIXEL-H) ----------
+  // While a Phone Mode shell is on screen, the shell owns the in-call UI
+  // (banner while connected, full body while ringing), so GlobalDialer's
+  // floating panel must not exist: two surfaces wired to the same `endCall`
+  // in a ~390px viewport, with the panel auto-opening over the call UI on
+  // every incoming call. GlobalDialerMount
+  // sits outside this provider and cannot read `phoneMode`, so we push it into
+  // DialerOpenProvider (root layout) — see `setSuppressed`'s doc comment for
+  // why that is a publication channel and not a second source of truth.
+  //
+  // The cleanup returns the flag to false on unmount, so leaving /app (or the
+  // extension) for a route with no PhoneModeProvider restores the panel.
+  const { setSuppressed } = useDialerOpen();
+  useEffect(() => {
+    setSuppressed(phoneMode);
+    return () => setSuppressed(false);
+  }, [phoneMode, setSuppressed]);
 
   // ---------- popstate guard (risk #4) --------------------------------------
   // When stack depth > 1, intercept browser-back to pop our internal stack

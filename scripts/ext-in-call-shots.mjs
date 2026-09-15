@@ -116,8 +116,13 @@ async function shot(page, name) {
   return fs.statSync(file).size;
 }
 
+// Two shapes, one call (Dennis 2026-09-15): an unanswered INCOMING call takes
+// the body; a CONNECTED call is a compact banner and the app stays usable.
 const surfaceVisible = (page) =>
-  page.locator('[data-ext-call-surface]').count().then((n) => n > 0);
+  page.locator('[data-call-surface]').count().then((n) => n > 0);
+const bannerVisible = (page) =>
+  page.locator('[data-call-banner]').count().then((n) => n > 0);
+const bannerText = (page) => page.locator('[data-call-banner]').innerText();
 
 try {
   // ---- AC-1  outgoing: dial → dialing card → active + ticking timer → End --
@@ -128,19 +133,29 @@ try {
     await page.evaluate((f) => window.__ccSend(f),
       frame('CALL_ADD', { callId: 'c1', number: '+4791234567', isIncoming: false, state: 'dialing' }));
     await page.waitForTimeout(600);
-    check('dialing card appears on an OUTGOING call (the reported bug)', await surfaceVisible(page));
-    check('card says Dialing', (await page.locator('[data-ext-call-surface]').innerText()).toLowerCase().includes('dialing'));
-    check('tab strip stands down during the call',
-      (await page.getByRole('tab').count()) === 0);
+    check('dialing banner appears on an OUTGOING call (the reported bug)', await bannerVisible(page));
+    check('banner says Dialing', (await bannerText(page)).toLowerCase().includes('dialing'));
+    check('connected call does NOT take the body', !(await surfaceVisible(page)));
+    check('tab strip STAYS usable during the call (Dennis 2026-09-15)',
+      (await page.getByRole('tab').count()) > 0);
     await shot(page, 'F-01-outgoing-dialing-400x600');
 
     await page.evaluate((f) => window.__ccSend(f),
       frame('CALL_UPDATE', { callId: 'c1', state: 'active' }));
     await page.waitForTimeout(2400);
-    const txt = await page.locator('[data-ext-call-surface]').innerText();
-    check('active card shows In call', txt.toLowerCase().includes('in call'));
-    check('duration timer is ticking', /00:0[1-9]/.test(txt), txt.replace(/\n/g, ' | '));
+    const txt = await bannerText(page);
+    check('duration timer is ticking in the banner', /00:0[1-9]/.test(txt), txt.replace(/\n/g, ' | '));
     await shot(page, 'F-02-outgoing-active-400x600');
+
+    // The whole point of the banner: the app keeps working mid-call.
+    await page.getByRole('tab', { name: /texts/i }).click();
+    await page.waitForTimeout(800);
+    check('can switch to Texts while the call is live', await bannerVisible(page));
+    check('Texts tab is the selected view under the live-call banner',
+      (await page.getByRole('tab', { name: /texts/i }).getAttribute('aria-selected')) === 'true');
+    await shot(page, 'F-02b-texts-during-call-400x600');
+    await page.getByRole('tab', { name: /dial/i }).click();
+    await page.waitForTimeout(400);
 
     // End from the extension — the half Dennis could not do at all.
     await page.getByRole('button', { name: 'End call' }).click();
@@ -149,6 +164,7 @@ try {
     check('End button emits END_CALL on the wire', /END_CALL/.test(sentEnd), sentEnd.slice(0, 120));
     await page.evaluate((f) => window.__ccSend(f), frame('CALL_ENDED', { callId: 'c1', number: '+4791234567' }));
     await page.waitForTimeout(700);
+    check('banner is gone after the call ends', !(await bannerVisible(page)));
     check('surface is gone after the call ends', !(await surfaceVisible(page)));
     check('tab strip is back', (await page.getByRole('tab').count()) > 0);
     await shot(page, 'F-03-after-end-back-to-dial-400x600');
@@ -198,7 +214,7 @@ try {
     await page.evaluate((f) => window.__ccSend(f),
       frame('CALL_ADD', { callId: 'g1', number: '+4791234567', isIncoming: false, state: 'active' }));
     await page.waitForTimeout(1400);
-    check(`call surface holds at ${w}x${h} (${theme})`, await surfaceVisible(page));
+    check(`call banner holds at ${w}x${h} (${theme})`, await bannerVisible(page));
     // A surface taller than its own frame is the AC-2-class bug this guards.
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
     check(`no horizontal overflow at ${w}x${h}`, !overflow);
