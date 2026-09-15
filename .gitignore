@@ -89,3 +89,10 @@ dnkdialer-android/app/build/outputs/
 prisma/dev.db
 prisma/dev.db-journal
 prisma/migrations/20260522093753_init/
+
+# Proof-harness output. Screenshots and JSON from scripts/ext-*.mjs are
+# EVIDENCE for a dispatch, not source: they are large, they are regenerated
+# every run, and they belong in the project ledger where Ken reads them.
+# Committing them put nine binaries in the repo root (2026-09-15) — the
+# harnesses now write straight to the ledger instead.
+/evidence/
