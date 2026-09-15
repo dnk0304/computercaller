@@ -56,9 +56,17 @@ export interface Watermarks {
 export interface TabBadgeCounts {
   dial: number;
   texts: number;
+  /**
+   * Alerts unread. Unlike dial/texts this has a REAL read flag on every
+   * notification, so there is no watermark for it — the caller passes its own
+   * count in as `alertsUnread` and this hook only max()es it with the service
+   * worker's, exactly as the other two tabs do (PIXEL-F item b, 2026-09-15).
+   * Before that fix Alerts ignored the worker entirely, so a notification that
+   * arrived while every surface was shut showed no badge until the bridge had
+   * caught up.
+   */
+  alerts: number;
 }
-
-const NO_BADGES: TabBadgeCounts = { dial: 0, texts: 0 };
 
 /**
  * The server snapshot, by identity. Rendered on the server there is no
@@ -155,9 +163,16 @@ export interface UseExtensionTabBadgesOptions {
   enabled: boolean;
   /** The tab currently on screen, or null inside a thread / compose view. */
   activeTab: 'dialer' | 'texts' | 'bell' | null;
+  /**
+   * The caller's own unread-alerts count (notifications with `read === false`).
+   * Returned untouched when `enabled` is false, which is what keeps /app's tab
+   * bar byte-identical: the dashboard passes the same number it always did and
+   * gets the same number back.
+   */
+  alertsUnread: number;
 }
 
-export function useExtensionTabBadges({ enabled, activeTab }: UseExtensionTabBadgesOptions): TabBadgeCounts {
+export function useExtensionTabBadges({ enabled, activeTab, alertsUnread }: UseExtensionTabBadgesOptions): TabBadgeCounts {
   const { callLogs, messages } = usePhone();
   const shell = useExtensionShell();
 
@@ -180,6 +195,11 @@ export function useExtensionTabBadges({ enabled, activeTab }: UseExtensionTabBad
 
   const viewedTab: keyof Watermarks | null =
     activeTab === 'dialer' ? 'dial' : activeTab === 'texts' ? 'texts' : null;
+
+  // Alerts needs no watermark (real read flags) but DOES need the receipt, or
+  // the service worker's `unread.alerts` never falls back to zero and the badge
+  // sticks after the user has read everything.
+  const viewingAlerts = activeTab === 'bell';
 
   // Depending on only the ACTIVE tab's newest timestamp is deliberate. Taking
   // both would re-run this (and re-post `tab-viewed`) every time an SMS arrived
@@ -215,6 +235,13 @@ export function useExtensionTabBadges({ enabled, activeTab }: UseExtensionTabBad
   // the extension shell. Both belong in an effect, and neither is component
   // state — which is why nothing in this hook calls setState.
   useEffect(() => {
+    if (!enabled || !viewingAlerts) return;
+    if (pendingDeepLinkTab.current && pendingDeepLinkTab.current !== activeTab) return;
+    pendingDeepLinkTab.current = null;
+    notifyTabViewed('alerts');
+  }, [enabled, viewingAlerts, activeTab]);
+
+  useEffect(() => {
     if (!enabled || !viewedTab) return;
     if (pendingDeepLinkTab.current && pendingDeepLinkTab.current !== activeTab) return;
     pendingDeepLinkTab.current = null;
@@ -226,7 +253,9 @@ export function useExtensionTabBadges({ enabled, activeTab }: UseExtensionTabBad
   }, [enabled, viewedTab, newestForViewed, user, activeTab]);
 
   return useMemo<TabBadgeCounts>(() => {
-    if (!enabled || marks === SERVER_MARKS) return NO_BADGES;
+    // Not enabled (/app) or pre-hydration: hand back the caller's own alerts
+    // count unchanged and no dial/texts badges at all.
+    if (!enabled || marks === SERVER_MARKS) return { dial: 0, texts: 0, alerts: alertsUnread };
 
     const sinceDial = callLogs.reduce(
       (n, c) => (c.type === 'missed' && c.date > marks.dial ? n + 1 : n),
@@ -242,6 +271,10 @@ export function useExtensionTabBadges({ enabled, activeTab }: UseExtensionTabBad
       // waiting on the watermark write, so the badge never flashes on arrival.
       dial: activeTab === 'dialer' ? 0 : Math.max(sinceDial, shell.unread.missedCalls),
       texts: activeTab === 'texts' ? 0 : Math.max(sinceTexts, shell.unread.newSms),
+      alerts: activeTab === 'bell' ? 0 : Math.max(alertsUnread, shell.unread.alerts),
     };
-  }, [enabled, marks, callLogs, messages, activeTab, shell.unread.missedCalls, shell.unread.newSms]);
+  }, [
+    enabled, marks, callLogs, messages, activeTab, alertsUnread,
+    shell.unread.missedCalls, shell.unread.newSms, shell.unread.alerts,
+  ]);
 }

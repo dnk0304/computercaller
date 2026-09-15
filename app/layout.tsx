@@ -11,7 +11,7 @@ import { PhoneProvider, DialerOpenProvider } from '@/hooks';
 // IN-FLOW bar mounted by AppShell directly above the /app header, so it
 // pushes the chrome down instead of overlaying the page. Marketing pages
 // never had sync state to show, so nothing is lost outside /app/*.
-import { GlobalDialer } from '@/components/GlobalDialer';
+import { GlobalDialerMount } from '@/components/GlobalDialerMount';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -129,7 +129,7 @@ export default function RootLayout({
         <PhoneProvider>
           <DialerOpenProvider>
             {children}
-            <GlobalDialer />
+            <GlobalDialerMount />
           </DialerOpenProvider>
         </PhoneProvider>
         {/* Microsoft Clarity — visitor/behavior analytics (2026-08-31). Public

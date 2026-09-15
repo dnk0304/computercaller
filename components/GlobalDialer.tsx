@@ -536,7 +536,7 @@ function MiniTab({ active, dimmed, onClick, icon, label }: MiniTabProps) {
 }
 
 // ----- Call session: ringing / dialing / active -----
-interface CallSessionViewProps {
+export interface CallSessionViewProps {
   state: 'ringing' | 'dialing' | 'active';
   number: string;
   name?: string;
@@ -554,7 +554,7 @@ interface CallSessionViewProps {
   sentNotice: string | null;
 }
 
-function CallSessionView({
+export function CallSessionView({
   state,
   number,
   name,
@@ -888,7 +888,7 @@ function CallSessionView({
 // FOREGROUND call; as it clears, the next call steps up. The background-card
 // button is labelled honestly ("Hang up current call") so we never imply we can
 // drop a specific background line.
-interface CallQueueProps {
+export interface CallQueueProps {
   calls: CallInfo[];
   foregroundCallId: string | null;
   foregroundDuration: number;
@@ -898,7 +898,7 @@ interface CallQueueProps {
   onSendSms: (to: string, body: string) => void;
 }
 
-function CallQueue({
+export function CallQueue({
   calls,
   foregroundCallId,
   foregroundDuration,
