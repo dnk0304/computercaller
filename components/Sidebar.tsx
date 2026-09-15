@@ -1,12 +1,13 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Phone, MessageSquare, LayoutTemplate, Settings, User, FileText, Clock, ChevronLeft, ChevronRight, ShieldCheck } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhoneMode } from '@/hooks';
+import { CcMark } from '@/components/CcMark';
+import { CcLockup } from '@/components/CcLockup';
 
 const SIDEBAR_KEY = 'dnkdialer_sidebar_collapsed';
 
@@ -63,23 +64,18 @@ export const Sidebar = ({ activeTab, setActiveTab, isAdmin = false }: SidebarPro
         collapsed ? 'justify-center' : 'gap-3 justify-between'
       )}>
         <div className="flex items-center gap-2 min-w-0">
-          {/* Brand logo — transparent-bg icon (monitor + smartphone + handset).
-              Swapped from a gradient-square + Phone glyph dispatch #20 to
-              match the public surfaces (header, footer, auth). The icon
-              carries no wordmark; we keep the "ComputerCaller" text beside
-              it at full width and let only the icon show when collapsed. */}
-          <Image
-            src="/brand/computercaller-icon-transparent.png"
-            alt="ComputerCaller"
-            width={396}
-            height={317}
-            priority
-            className="h-10 w-auto flex-shrink-0"
-          />
-          {!collapsed && (
-            <h1 className="text-base font-semibold tracking-tight text-slate-900 truncate">
-              ComputerCaller
-            </h1>
+          {/* Brand lockup — the official one, mark with the wordmark beneath
+              (dispatch J, 2026-09-15). What stood here was the mark-only PNG
+              plus "ComputerCaller" set in the app's UI face at font-semibold:
+              a wordmark the brand does not have. The real one is ALL CAPS,
+              extra-bold and two-tone, and it now renders as vector, so the
+              sidebar no longer waits on a 396×317 raster to show its own name.
+              Collapsed (w-16) there is no room for a 141px lockup, so the mark
+              stands alone and carries the accessible name itself. */}
+          {collapsed ? (
+            <CcMark size={36} variant="full" title="ComputerCaller" className="flex-shrink-0" />
+          ) : (
+            <CcLockup size={32} mark="full" className="flex-shrink-0" />
           )}
         </div>
         {!collapsed && (
