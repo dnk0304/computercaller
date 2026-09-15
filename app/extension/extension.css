@@ -280,8 +280,62 @@ html:has(.cc-ext), body:has(.cc-ext) {
   top: -7px;
 }
 
+/* ---- Type parity: Texts / Alerts vs Dial ----------------------------------
+
+   Dennis, 2026-09-15: "is the font size in the texts/alerts window the same
+   size like the ones in the dial window? They seem bigger in texts/alerts."
+
+   They were. `.cc-ext { font-size: 12.5px }` above only moves INHERITED type.
+   Every Tailwind size class is an absolute rem value and sails straight past
+   it. The Dial view escaped that because its rows were hand-tuned to explicit
+   px (text-[12.5px] / text-[10.5px]); Texts, Thread, Compose and Alerts were
+   written against the stock scale and render at the /app sizes. Measured
+   delta at 400px panel width:
+
+     row title        text-sm    14px   vs Dial 12.5px   (+1.5)
+     row preview      text-xs    12px   vs Dial 10.5px   (+1.5)
+     Alerts heading   text-sm    14px   vs Dial 12.5px   (+1.5)
+     empty state      text-sm    14px   vs Dial 11.5px   (+2.5)
+     Texts search     text-base  16px   vs Dial 11.5px   (+4.5)
+     thread avatar    h-10 w-10  40px   vs Dial 28px     (+12)
+
+   Fixed HERE rather than in the TSX because PhoneModeShell is shared: on
+   /app Phone Mode (a real phone at real viewport width) 14px is the correct
+   size and 12.5px would be a regression. `.cc-msg-view` is the marker the
+   four message views put on their root; this block is the only thing that
+   reads it, and it emits nothing outside `.cc-ext`.
+
+   Three classes deep, so it outranks Tailwind's single-class rules without
+   !important. Inputs land on 12.5px, never below the 12px floor the body-type
+   block above sets out. */
+.cc-ext .cc-msg-view .text-sm,
+.cc-ext .cc-msg-view .text-base { font-size: 12.5px; line-height: 1.35; }
+.cc-ext .cc-msg-view .text-xs { font-size: 11px; line-height: 1.4; }
+.cc-ext .cc-msg-view .text-\[11px\] { font-size: 10.5px; }
+/* Avatars — the one non-type token in this block. A 40px circle beside 12.5px
+   type is the single loudest thing on the Texts tab and it is the reason the
+   whole view read "bigger" before the sizes were even compared. Dial's row
+   avatar is 28px; these match it.
+
+   The div/img type selectors are load-bearing, not decoration: the same
+   h-9 w-9 token is on the back arrow, the call action and the send button in
+   these views, and shrinking a CONTROL to 28px would trade a font complaint
+   for a hit-target regression. Avatars are divs and imgs; every control here
+   is a <button>. */
+.cc-ext .cc-msg-view div.h-10.w-10,
+.cc-ext .cc-msg-view div.h-9.w-9,
+.cc-ext .cc-msg-view img.h-9.w-9 { height: 28px; width: 28px; }
+
 /* ---- Rows: 46px ---- */
-.cc-ext li > [role="button"] { min-height: 38px; }
+/* `li > button` joins the selector for the message views: Texts' thread rows
+   are native buttons, not role=button divs, so they were the one list in the
+   surface the density floor never reached. Same 38px, same reason. */
+.cc-ext li > [role="button"],
+.cc-ext .cc-msg-view li > button { min-height: 38px; }
+/* And the matching ceiling on their vertical padding — a 12px block pad under
+   12.5px type is an /app-phone rhythm, and it is the other half of why Texts
+   read taller than Dial once the sizes matched. */
+.cc-ext .cc-msg-view li > button.py-3 { padding-block: 7px; }
 
 /* ---- The shared compact Dialpad, held to the spec's 48px keys / 10px-16px
        gaps. Scoped here rather than edited into Dialpad.tsx so the component

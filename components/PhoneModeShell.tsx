@@ -555,8 +555,9 @@ function DialerView() {
                 </button>
               </li>
               {isOpen && (
-                <li className="bg-slate-50/60">
+                <li className="bg-slate-50/60 pl-4">
                   <CallHistoryEntries
+                    className="border-l-2 border-slate-200 pl-2"
                     entries={historyEntries}
                     simList={simList}
                     now={now}
@@ -766,9 +767,15 @@ function ExtDialerView() {
                   </button>
                 </li>
                 {isOpen && (
-                  <li className="border-b border-slate-100 bg-slate-50/60">
+                  // Indented and rule-marked so the history reads as
+                  // BELONGING to the row above it. Flat zebra rows and a flat
+                  // accordion at the same indent are indistinguishable at
+                  // 400px; the left accent plus the avatar-width inset is what
+                  // makes the grouping legible without a card.
+                  <li className="border-b border-slate-100 bg-slate-50/60 pl-3">
                     <CallHistoryEntries
                       dense
+                      className="border-l-2 border-slate-200 pl-2"
                       entries={historyEntries}
                       simList={simList}
                       now={now}
@@ -862,7 +869,7 @@ function TextsView() {
   }, []);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="cc-msg-view flex h-full flex-col">
       {/* Sub-header: title + "+ New" button. A flex-shrink-0 normal-flow
           block pinned at the top of the column (matches DialerView) — NOT
           sticky. Sticky here resolved against the viewport (no scrolling
@@ -965,7 +972,7 @@ function ThreadView({ threadId }: ThreadViewProps) {
     // bubble list grow to its content instead of scrolling, which shoves the
     // template strip and composer past the bottom edge. It is a no-op whenever
     // the content already fits, so /app's Phone Mode is visually untouched.
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="cc-msg-view flex h-full min-h-0 flex-col">
       {/* Back-arrow header replaces the tab bar inside a thread (per State C
           mockup). h-10 to match PhoneModeHeader's dispatch-#34 shrink.
           Dispatch #34 item 2: dropped `sticky top-12 z-20` — the prior sticky
@@ -1170,7 +1177,7 @@ function ComposeView({ initialTo }: ComposeViewProps) {
   }, []);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="cc-msg-view flex h-full flex-col">
       {/* Dispatch #34 item 2: header was `sticky top-12 z-20` which made it
           sit on top of the To-field at mount (z-20 over z-auto), visually
           clipping the input on a 320px viewport. ComposeView is a single-
@@ -1258,7 +1265,7 @@ function BellView() {
   const [replyText, setReplyText] = useState('');
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="cc-msg-view flex h-full flex-col">
       {/* Sub-header: flex-shrink-0 normal-flow block pinned at the top of the
           column (matches DialerView) — NOT sticky. The prior sticky top-24
           resolved against the viewport and rendered on top of the list. */}
