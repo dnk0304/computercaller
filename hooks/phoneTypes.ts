@@ -150,6 +150,20 @@ export type PhoneEventType =
   // — the auto-reconnect backoff handles it.
   //   payload: {}
   | 'SERVER_RESTART'
+  // "Reset lobby" (dispatch FORGE-J, 2026-09-15). Two frames, one action.
+  //
+  // RESET_ROOM_ACK is the relay's answer to the browser's RESET_ROOM:{} — sent
+  // to the REQUESTER only, and sent BEFORE the teardown, because the teardown
+  // closes the very socket it would be written to.
+  //   payload: { ok: true } | { ok: false, reason: 'rate_limited', retryAfterMs: number }
+  | 'RESET_ROOM_ACK'
+  // ROOM_RESET is broadcast to EVERY socket in the room (phone, browsers,
+  // listeners) immediately before each is closed — browsers and listeners with
+  // code 4010 'room_reset', the phone with 1000 so the APK redials silently
+  // rather than entering RelayPhase.FAILED. It exists so a surface that did not
+  // initiate the reset can tell a deliberate teardown from a network fault.
+  //   payload: { reason: 'room_reset' }
+  | 'ROOM_RESET'
   // Free-tier daily cap breach (dispatch forge/free-tier-p1, 2026-08-28). The
   // relay drops the OUTBOUND call/message frame that would exceed the free
   // tier's daily cap and sends this back instead. It is NOT a close/kick — the

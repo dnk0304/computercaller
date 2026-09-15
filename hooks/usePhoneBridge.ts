@@ -835,6 +835,13 @@ export function usePhoneBridge() {
   // clients after a server restart.
   const RECONNECT_BASE_MS = 500;
   const RECONNECT_CAP_MS = 30_000;
+  // Dispatch FORGE-J (2026-09-15) — the relay's "Reset lobby" close code for
+  // BROWSER-side sockets. Deliberately not 4001 (terminal, kicked card) and not
+  // 1000 (which our own onclose classifies as a user-initiated close and would
+  // therefore NOT reconnect from — the phone gets 1000 instead, because the APK
+  // reads it the opposite way: clean close, silent 5 s redial, no error UI).
+  // Kept in sync with RESET_CLOSE_CODE_BROWSER in lib/roomReset-core.js.
+  const RESET_CLOSE_CODE = 4010;
   // callTimerRef removed — duration is computed locally in display components
 
   // Dispatch #28 (2026-05-24) — Bundle A (2026-05-28). What this ref stores
@@ -1277,6 +1284,32 @@ export function usePhoneBridge() {
         // takes over. Log so the dev console reflects what happened.
         console.log('[PhoneBridge] SERVER_RESTART frame — graceful drain, reconnect imminent');
         setBridgeStatus('reconnecting');
+        break;
+      }
+
+      // ---------- Reset lobby (dispatch FORGE-J, 2026-09-15) ----------
+      case 'RESET_ROOM_ACK': {
+        // The relay served (or refused) our RESET_ROOM frame. On ok:true the
+        // close 4010 is already on the wire behind this frame and the onclose
+        // handler does the reconnect — nothing to do here but log, so that a
+        // reset that DID reach the relay is distinguishable in the console from
+        // one that vanished into a wedged socket.
+        const ok = (payload as { ok?: boolean } | undefined)?.ok;
+        if (ok === false) {
+          const reason = (payload as { reason?: string }).reason;
+          console.warn(`[PhoneBridge] RESET_ROOM refused: ${reason}`);
+        } else {
+          console.log('[PhoneBridge] RESET_ROOM acked — close 4010 imminent');
+        }
+        break;
+      }
+      case 'ROOM_RESET': {
+        // Broadcast to EVERY socket in the room just before the close, so a
+        // surface that did not initiate the reset (another tab, the extension
+        // SW) knows the teardown was deliberate rather than a network fault.
+        console.log('[PhoneBridge] ROOM_RESET — relay is emptying this room');
+        setLobbyState('lobby');
+        setPhonePresentInLobby(false);
         break;
       }
 
@@ -2901,6 +2934,32 @@ export function usePhoneBridge() {
           return;
         }
 
+        // RESET classification (dispatch FORGE-J, 2026-09-15): close 4010
+        // `room_reset` is the relay telling us it deliberately emptied this
+        // user's room — either because THIS browser asked (resetRoom) or
+        // because another surface of the same account did.
+        //
+        // It is a RETRY, but a privileged one: the backoff is reset to base
+        // FIRST. Falling through to the generic branch below would reconnect on
+        // whatever delay the previous failures had already escalated to (up to
+        // 30 s), which is the exact opposite of what the user pressed the button
+        // for — they hit Reset because things were wedged, i.e. precisely when
+        // the backoff is elevated. The server asked for this close, so there is
+        // nothing to back off from.
+        //
+        // The phone is coming back on its own fixed 5 s redial (APK v18,
+        // PhoneService.scheduleLobbyReconnect), so by the time our ~500 ms
+        // reconnect has landed in the lobby the phone is a few seconds behind —
+        // the user sees "Waiting for phone…" briefly, then Connect.
+        if (code === RESET_CLOSE_CODE || reason === 'room_reset') {
+          console.log('[PhoneBridge] Close 4010 (room_reset) — reconnecting immediately, backoff not penalised.');
+          reconnectDelayRef.current = RECONNECT_BASE_MS;
+          setLobbyState('lobby');
+          setLastBrowserRequest(null);
+          scheduleReconnect(connectImpl);
+          return;
+        }
+
         // RETRY classification: every other close (1006, 1011, 1012, blips,
         // missed pongs) falls here. Schedule a reconnect attempt with
         // bounded backoff + jitter. Ticket is freshly minted inside the
@@ -3070,6 +3129,124 @@ export function usePhoneBridge() {
     }
     console.log('[PhoneBridge] leaveActive — back in lobby');
   }, [lobbyState, clearAllCalls, clearAudioProbeTimer]);
+
+  // resetRoom — "Reset lobby" (dispatch FORGE-J, 2026-09-15).
+  //
+  // Dennis: "totally emptying lobby so phone can re-join and u can connect
+  // again." This is the escape hatch for the states Disconnect cannot reach,
+  // because Disconnect (LEAVE_ACTIVE → terminateActivePair) only moves both
+  // peers back to the lobby ON THE SAME SOCKETS. A phantom phone whose socket
+  // died without a FIN still sits in the relay's lobby Set reporting
+  // phonePresent:true, so Connect keeps offering itself and keeps timing out.
+  // Reset drops the sockets and deletes the room; both sides then reconnect
+  // into a virgin one.
+  //
+  // TWO TRANSPORTS, because the socket we would normally ask over is the very
+  // thing that may be broken:
+  //   1. the RESET_ROOM frame when the socket is OPEN — no round-trip, and the
+  //      relay can ack;
+  //   2. POST /api/relay/reset otherwise, or when the frame produced no close
+  //      within RESET_CONFIRM_MS. A socket wedged half-open accepts send()
+  //      silently and delivers nothing, so "send succeeded" proves nothing and
+  //      the watchdog is the only honest confirmation.
+  // The relay rate-limits both on ONE per-user limiter, so the fallback cannot
+  // be double-charged; a 429 on the fallback simply means the frame did land.
+  const RESET_CONFIRM_MS = 2_500;
+  const resetInFlightRef = useRef(false);
+  const resetWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const resetRoom = useCallback(async () => {
+    if (resetInFlightRef.current) {
+      console.log('[PhoneBridge] resetRoom — already in flight, ignoring');
+      return;
+    }
+    resetInFlightRef.current = true;
+    // Clear the watchdog on every exit path below via this helper so an early
+    // return cannot leave a timer armed that force-closes a healthy socket.
+    const finish = () => {
+      resetInFlightRef.current = false;
+      if (resetWatchdogRef.current) {
+        clearTimeout(resetWatchdogRef.current);
+        resetWatchdogRef.current = null;
+      }
+    };
+
+    // Local state goes clean immediately — the user pressed a button and the UI
+    // must answer now, not after a round-trip. The 4010 close handler will land
+    // on top of this and set the same thing again; both are idempotent.
+    setLobbyState('lobby');
+    setLastBrowserRequest(null);
+    setIsConnected(false);
+    setPhoneName(null);
+    setPhonePresentInLobby(false);
+    setConnectionError(null);
+    clearAllCalls();
+
+    const ws = wsRef.current;
+    const sentFrame = ws?.readyState === WebSocket.OPEN;
+    if (sentFrame) {
+      try {
+        ws!.send(`RESET_ROOM:${JSON.stringify({})}`);
+        console.log('[PhoneBridge] resetRoom — RESET_ROOM frame sent, awaiting close 4010');
+      } catch (e) {
+        console.warn('[PhoneBridge] resetRoom frame send failed:', e);
+      }
+    }
+
+    // The HTTP fallback. Called immediately when there is no usable socket, and
+    // from the watchdog when the frame produced no close.
+    const httpReset = async (why: string) => {
+      console.log(`[PhoneBridge] resetRoom — HTTP fallback (${why})`);
+      try {
+        const res = await fetch('/api/relay/reset', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        if (res.status === 429) {
+          // The frame path already served this reset. Not an error.
+          console.log('[PhoneBridge] resetRoom — 429, the frame path already reset the room');
+        } else if (!res.ok) {
+          console.warn(`[PhoneBridge] /api/relay/reset returned ${res.status}`);
+        }
+      } catch (e) {
+        console.warn('[PhoneBridge] /api/relay/reset failed:', e);
+      }
+      // Whether or not the server answered, force this socket down locally so
+      // the reconnect path runs. NOT userInitiatedCloseRef — that flag is the
+      // permanent "do not reconnect" marker used by disconnect/sign-out, and
+      // setting it here would leave the user offline, which is the exact
+      // opposite of Reset. Code 4010 makes our own onclose take the privileged
+      // no-backoff-penalty branch above.
+      const live = wsRef.current;
+      if (live && live.readyState !== WebSocket.CLOSED) {
+        try { live.close(RESET_CLOSE_CODE, 'room_reset'); } catch (_) {}
+      } else if (!live || live.readyState === WebSocket.CLOSED) {
+        // Nothing left to close and therefore no onclose to fire — drive the
+        // reconnect ourselves or the user sits in a dead lobby forever.
+        reconnectDelayRef.current = RECONNECT_BASE_MS;
+        scheduleReconnect(connect);
+      }
+      finish();
+    };
+
+    if (!sentFrame) {
+      await httpReset('no open socket');
+      return;
+    }
+
+    resetWatchdogRef.current = setTimeout(() => {
+      resetWatchdogRef.current = null;
+      // Still OPEN this long after a reset the relay would have closed
+      // instantly ⇒ the frame never arrived. Wedged socket: take transport 2.
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        void httpReset('no close after frame — socket wedged');
+      } else {
+        finish();
+      }
+    }, RESET_CONFIRM_MS);
+  }, [clearAllCalls, scheduleReconnect, connect]);
 
   const makeCall = useCallback((number: string, speaker: boolean = false): boolean => {
     // Check if WebSocket is connected before making call
@@ -4348,6 +4525,12 @@ export function usePhoneBridge() {
     // Actions
     requestPairing,
     leaveActive,
+    // Dispatch FORGE-J (2026-09-15). The bigger hammer next to leaveActive:
+    // empties the WHOLE relay room (both sockets dropped, resumable /
+    // frameBuffer / pendingPairing cleared, room reaped) so a wedged phantom
+    // phone cannot survive into the next session. The phone redials itself in
+    // ~5 s; this browser reconnects in ~500 ms.
+    resetRoom,
     // `disconnect` is preserved as a backward-compat alias for ConnectionStatus /
     // ProfileMenu.handleSignOut. New code should call leaveActive() directly.
     disconnect,

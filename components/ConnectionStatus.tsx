@@ -57,6 +57,8 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
     lastBrowserRequest,
     requestPairing,
     leaveActive,
+    // Dispatch FORGE-J (2026-09-15) — "Reset lobby".
+    resetRoom,
     // Existing fields kept for the notification-permission banner
     isConnected,
     phoneName,
@@ -76,6 +78,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
     } | null;
     requestPairing?: () => void;
     leaveActive?: () => void;
+    resetRoom?: () => void | Promise<void>;
     notificationPermissionGranted?: boolean | null;
     requestNotificationAccess?: () => void;
   };
@@ -83,6 +86,29 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
   // Default to 'lobby' if the hook hasn't shipped the field yet — render the
   // most conservative branch (waiting / Connect-disabled) instead of crashing.
   const state: LobbyState = lobbyState ?? 'lobby';
+
+  // ---------- Reset lobby (dispatch FORGE-J, 2026-09-15) ----------
+  // Confirmed because it is genuinely destructive to the CURRENT session: it
+  // drops the phone's socket too, and the phone is ~5 s away from coming back.
+  // A user who meant "Disconnect" and hit this instead should get the chance to
+  // say no. window.confirm rather than a modal is deliberate — this control
+  // also renders inside the extension's 24px header where a modal has nowhere
+  // to go, and the one-liner IS the whole message.
+  const handleReset = () => {
+    if (!resetRoom) return;
+    const ok =
+      typeof window === 'undefined' ||
+      window.confirm(
+        'Kicks your phone and this computer off; the phone re-joins by itself in a few seconds.',
+      );
+    if (!ok) return;
+    void resetRoom();
+  };
+  // The hook ships resetRoom unconditionally, so this is always live. The
+  // `if (!resetRoom) return` inside handleReset is the belt-and-braces for a
+  // stale hook build; it is not a rendering condition (TS correctly points out
+  // a function-valued field is always truthy).
+  const onReset = handleReset;
 
   // ---------- Notification-access banner ----------
   // Render-time gate: only show when (a) connected, (b) phone has explicitly
@@ -135,6 +161,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
           reasonText={lastBrowserRequest?.reasonText}
           onDisconnect={() => leaveActive?.()}
           onConnect={() => requestPairing?.()}
+          onReset={onReset}
         />
       </>
     );
@@ -145,7 +172,11 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
     <>
       {notificationBanner}
       {state === 'active' ? (
-        <ActivePill phoneName={phoneName} onDisconnect={() => leaveActive?.()} />
+        <ActivePill
+          phoneName={phoneName}
+          onDisconnect={() => leaveActive?.()}
+          onReset={onReset}
+        />
       ) : state === 'requesting' ? (
         <RequestingPill
           expiresAt={lastBrowserRequest?.expiresAt ?? null}
@@ -166,6 +197,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
         <LobbyPill
           phonePresent={!!phonePresentInLobby}
           onConnect={() => requestPairing?.()}
+          onReset={onReset}
         />
       )}
     </>
@@ -204,6 +236,7 @@ function CompactDevicePill({
   reasonText,
   onDisconnect,
   onConnect,
+  onReset,
 }: {
   state: LobbyState;
   phoneName: string | null;
@@ -211,6 +244,7 @@ function CompactDevicePill({
   reasonText: string | undefined;
   onDisconnect: () => void;
   onConnect: () => void;
+  onReset?: () => void;
 }) {
   const active = state === 'active';
   const connecting = state === 'requesting';
@@ -285,6 +319,10 @@ function CompactDevicePill({
       ) : (
         <span className="w-0.5 flex-shrink-0" aria-hidden="true" />
       )}
+      {/* Icon-only in compact — the pill is capped at 210px and AC-1 says it
+          never wraps and never grows, so the word cannot come with it. The
+          title + aria-label carry the meaning instead. */}
+      {onReset && <ResetLobbyButton onReset={onReset} compact />}
     </div>
   );
 }
@@ -331,9 +369,11 @@ function PillShell({
 function LobbyPill({
   phonePresent,
   onConnect,
+  onReset,
 }: {
   phonePresent: boolean;
   onConnect: () => void;
+  onReset?: () => void;
 }) {
   return (
     <PillShell tone="slate">
@@ -375,6 +415,11 @@ function LobbyPill({
         <Plug className="w-3.5 h-3.5" aria-hidden="true" />
         Connect
       </button>
+      {/* This is the state Reset exists for: a phone the relay still lists in
+          the lobby but which is gone, so Connect offers itself and then times
+          out forever. Disconnect is not even rendered here — there is no active
+          pair to leave — which is exactly why Reset must be. */}
+      {onReset && <ResetLobbyButton onReset={onReset} />}
     </PillShell>
   );
 }
@@ -455,9 +500,11 @@ function RequestingPill({
 function ActivePill({
   phoneName,
   onDisconnect,
+  onReset,
 }: {
   phoneName: string | null;
   onDisconnect: () => void;
+  onReset?: () => void;
 }) {
   return (
     <div className="flex items-center gap-4 px-5 py-2 bg-white/50 backdrop-blur-md rounded-2xl border border-slate-200/60 shadow-sm">
@@ -492,7 +539,53 @@ function ActivePill({
         <XCircle className="w-3.5 h-3.5" aria-hidden="true" />
         Disconnect
       </button>
+      {/* Reset lobby sits NEXT TO Disconnect, deliberately quieter than it:
+          same row so it is findable when Disconnect did not work, but
+          text-only and dimmer so it never reads as the primary action. */}
+      {onReset && <ResetLobbyButton onReset={onReset} />}
     </div>
+  );
+}
+
+/**
+ * ResetLobbyButton — "Reset lobby" (dispatch FORGE-J, 2026-09-15).
+ *
+ * The escape hatch for the states Disconnect cannot reach. Disconnect
+ * (LEAVE_ACTIVE) only moves both peers back into the lobby on the SAME sockets,
+ * so a phantom phone — one whose socket died without a FIN and which the relay
+ * has not reaped yet — survives it and keeps the room advertising a phone that
+ * will never answer Connect. Reset drops every socket and deletes the room.
+ *
+ * Rendered in every state, not just 'active': the states a user actually needs
+ * this from are 'lobby' (a phantom phone) and 'requesting'/'timeout' (a Connect
+ * that will never resolve), where there is no active pair to disconnect from.
+ *
+ * Visual weight is intentionally below Disconnect's — a bare text button. This
+ * is the "nothing else worked" control; making it as loud as Disconnect would
+ * get it pressed by mistake, and it costs the user a ~5 s phone reconnect.
+ */
+function ResetLobbyButton({
+  onReset,
+  compact = false,
+}: {
+  onReset: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onReset}
+      title="Empty the lobby completely — drops your phone and this computer; the phone re-joins by itself in a few seconds."
+      className={
+        compact
+          ? 'ml-0.5 inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-amber-100 hover:text-amber-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60'
+          : 'flex flex-shrink-0 items-center gap-1.5 px-2 py-1.5 text-slate-400 hover:text-amber-700 text-xs font-medium rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 focus-visible:ring-offset-1'
+      }
+      aria-label="Reset lobby"
+    >
+      <RotateCw className={compact ? 'h-2.5 w-2.5' : 'w-3.5 h-3.5'} aria-hidden="true" />
+      {!compact && 'Reset lobby'}
+    </button>
   );
 }
 
