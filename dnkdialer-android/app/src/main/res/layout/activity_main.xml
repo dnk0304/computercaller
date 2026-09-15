@@ -233,42 +233,6 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- ============ 3b. On-device synced-data viewers ============ -->
-        <!-- Play verifiability fix (v40, 2026-06-21). These two buttons open
-             SyncedDataActivity, the in-app view of the SMS + call log this
-             app syncs. They work on the phone ALONE (no desktop, no active
-             pairing) so a Play reviewer can SEE the restricted-permission
-             feature (READ_SMS / READ_CALL_LOG) being exercised on one device.
-             Placed high in the stack — above the quieter account actions — so
-             they're the obvious thing to tap. -->
-        <Button
-            android:id="@+id/viewMessagesButton"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/button_height"
-            android:text="@string/synced_entry_messages"
-            android:textSize="@dimen/text_body"
-            android:textAllCaps="false"
-            android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium"
-            android:letterSpacing="0.02"
-            android:background="@drawable/bg_button_primary"
-            android:stateListAnimator="@null"
-            android:layout_marginTop="@dimen/space_24" />
-
-        <Button
-            android:id="@+id/viewCallsButton"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/button_height"
-            android:text="@string/synced_entry_calls"
-            android:textSize="@dimen/text_body"
-            android:textAllCaps="false"
-            android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium"
-            android:letterSpacing="0.02"
-            android:background="@drawable/bg_button_primary"
-            android:stateListAnimator="@null"
-            android:layout_marginTop="@dimen/space_12" />
-
         <!-- ============ 4. Action stack ============ -->
         <!-- reconnectButton kept hidden for back-compat with the Kotlin
              field declaration (initializeMainPane findViewById still
@@ -348,15 +312,17 @@
             android:layout_marginTop="@dimen/space_24"
             tools:visibility="visible" />
 
-        <!-- Sign Out — repurposed from the old disconnectButton id.
-             MainActivity rebinds the click handler to clear TokenStore
-             + relaunch SignInActivity. Same id keeps the existing
-             findViewById call site unchanged. -->
+        <!-- ============ 5. Settings ============ -->
+        <!-- v56 — everything that used to sit below this point (synced
+             viewers, Sign Out, Enable notifications, Hard Reset) moved to
+             SettingsActivity. Home is presence + the primary connection
+             action; this row is the only way down into the rest.
+             UNSTYLED placeholder — Pixel restyles in v56 step 2. -->
         <Button
-            android:id="@+id/disconnectButton"
+            android:id="@+id/settingsButton"
             android:layout_width="match_parent"
             android:layout_height="@dimen/button_height_small"
-            android:text="@string/action_sign_out"
+            android:text="@string/settings_title"
             android:textSize="@dimen/text_body"
             android:textAllCaps="false"
             android:textColor="@color/text_secondary"
@@ -364,57 +330,8 @@
             android:letterSpacing="0.02"
             android:background="@drawable/bg_button_ghost"
             android:stateListAnimator="@null"
-            android:layout_marginTop="@dimen/space_12" />
-
-        <Button
-            android:id="@+id/enable_notifications_button"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/button_height_small"
-            android:text="@string/action_enable_notifications"
-            android:textSize="@dimen/text_body"
-            android:textAllCaps="false"
-            android:textColor="@color/accent_blue"
-            android:fontFamily="sans-serif-medium"
-            android:letterSpacing="0.02"
-            android:background="@drawable/bg_button_warning"
-            android:stateListAnimator="@null"
-            android:visibility="gone"
-            android:layout_marginTop="@dimen/space_12" />
-
-        <!-- ============ 5. Hard Reset (low-priority escape hatch) ============ -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/stroke_hairline"
-            android:background="@color/surface_border"
-            android:layout_marginTop="@dimen/space_32" />
-
-        <Button
-            android:id="@+id/hardResetButton"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/button_height_small"
-            android:text="@string/action_hard_reset"
-            android:textSize="@dimen/text_body"
-            android:textAllCaps="false"
-            android:textColor="@color/text_tertiary"
-            android:fontFamily="sans-serif-medium"
-            android:letterSpacing="0.02"
-            android:background="@drawable/bg_button_ghost"
-            android:stateListAnimator="@null"
-            android:layout_marginTop="@dimen/space_16" />
-
-        <TextView
-            android:id="@+id/hardResetSubtitle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/action_hard_reset_subtitle"
-            android:textSize="@dimen/text_caption"
-            android:textColor="@color/text_tertiary"
-            android:fontFamily="sans-serif"
-            android:lineSpacingMultiplier="1.3"
-            android:gravity="center_horizontal"
-            android:paddingStart="@dimen/space_16"
-            android:paddingEnd="@dimen/space_16"
-            android:layout_marginTop="@dimen/space_6" />
+            android:layout_marginTop="@dimen/space_24"
+            android:layout_marginBottom="@dimen/space_32" />
 
     </LinearLayout>
 </ScrollView>

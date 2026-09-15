@@ -359,4 +359,20 @@
     <string name="synced_call_duration">Duration %1$s</string>
     <string name="synced_image_message">[Image message]</string>
     <string name="synced_unknown">Unknown</string>
+
+    <!-- ================= v56 — Settings screen ================= -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_section_account">ACCOUNT</string>
+    <string name="settings_section_connection">CONNECTION</string>
+    <string name="settings_section_synced_data">SYNCED DATA</string>
+    <string name="settings_section_permissions">PERMISSIONS</string>
+    <string name="settings_section_troubleshooting">TROUBLESHOOTING</string>
+    <string name="settings_open_permissions">App permissions</string>
+    <string name="settings_open_permissions_subtitle">Review what ComputerCaller can access on this phone.</string>
+    <string name="settings_open_notifications">Notification settings</string>
+    <string name="settings_lobby_subtitle">Leaving the lobby keeps you signed in but stops computers from finding this phone.</string>
+    <string name="settings_back">Back</string>
+
+    <!-- v56 — Home presence line while the computer has a call running. -->
+    <string name="status_call_in_progress">Connected — call in progress</string>
 </resources>

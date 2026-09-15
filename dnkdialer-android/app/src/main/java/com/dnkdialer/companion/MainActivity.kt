@@ -77,7 +77,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusDot: View
     private lateinit var statusDotRing: View
     private lateinit var stepNumber: TextView
-    private lateinit var enableNotificationsButton: Button
     // Dispatch #29 — Phase 4 finish. LAN-IP / QR plate stripped from
     // activity_main.xml; the corresponding ipText + qrCodeImage fields
     // are gone. The phone now only connects outbound to the SaaS relay
@@ -433,7 +432,6 @@ class MainActivity : AppCompatActivity() {
         statusDot = findViewById(R.id.statusDot)
         statusDotRing = findViewById(R.id.statusDotRing)
         stepNumber = findViewById(R.id.stepNumber)
-        enableNotificationsButton = findViewById(R.id.enable_notifications_button)
         reconnectButton = findViewById(R.id.reconnectButton)
 
         // Diagnostic surface for relay-dial attempts that hang or fail.
@@ -452,10 +450,6 @@ class MainActivity : AppCompatActivity() {
         reconnectButton.visibility = View.GONE
         reconnectButton.isEnabled = false
 
-        // Enable Notifications button - opens system settings
-        enableNotificationsButton.setOnClickListener {
-            openNotificationSettings()
-        }
 
         // Dispatch #34 (v20) — Disconnect (active pair only) button.
         // Sits above Sign Out. Tapping ends the current pair without
@@ -531,9 +525,11 @@ class MainActivity : AppCompatActivity() {
         //   4. Launches SignInActivity with CLEAR_TASK so back-button
         //      can't return to the main pane in a half-signed-out state.
         //   5. finish() so the activity stack ends with SignIn as root.
-        val disconnectButton: Button = findViewById(R.id.disconnectButton)
-        disconnectButton.setOnClickListener {
-            showSignOutConfirmation()
+        // v56 — Sign Out moved to SettingsActivity; Home now has a single
+        // Settings entry point instead of the old button stack.
+        val settingsButton: Button = findViewById(R.id.settingsButton)
+        settingsButton.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
         }
         
         // Hard Reset button — manual escape hatch for the "Samsung
@@ -543,10 +539,7 @@ class MainActivity : AppCompatActivity() {
         // Grant All pane with a clean slate. Gated behind a confirmation
         // dialog with a destructive-style action button (red text) so an
         // accidental tap doesn't nuke the user's setup.
-        val hardResetButton: Button = findViewById(R.id.hardResetButton)
-        hardResetButton.setOnClickListener {
-            showHardResetConfirmation()
-        }
+        // v56 — Hard Reset moved to SettingsActivity (see AccountActions).
 
         // Play verifiability fix (v40, 2026-06-21) — open the on-device view
         // of the synced SMS / call log. SyncedDataActivity reads the device's
@@ -554,14 +547,10 @@ class MainActivity : AppCompatActivity() {
         // with NO desktop pairing required, so the restricted-permission
         // feature is demonstrable on one phone. Each button deep-links to its
         // tab; the activity handles its own runtime-permission grant flow.
-        val viewMessagesButton: Button = findViewById(R.id.viewMessagesButton)
-        viewMessagesButton.setOnClickListener {
-            startActivity(Intent(this, SyncedDataActivity::class.java).putExtra("tab", "messages"))
-        }
-        val viewCallsButton: Button = findViewById(R.id.viewCallsButton)
-        viewCallsButton.setOnClickListener {
-            startActivity(Intent(this, SyncedDataActivity::class.java).putExtra("tab", "calls"))
-        }
+        // v56 — the synced Messages / Call history entry points moved to
+        // SettingsActivity. They are still one tap from Home (Settings row)
+        // and still work with no desktop pairing, which is what the Play
+        // restricted-permission review needs to see.
 
         // Check and show notification status
         checkNotificationStatus()
@@ -622,34 +611,17 @@ class MainActivity : AppCompatActivity() {
         ActivityCompat.requestPermissions(this, allPermissions, REQ_INITIAL_PERMISSIONS)
     }
     
-    private fun openNotificationSettings() {
-        try {
-            val intent = Intent()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                intent.action = android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS
-                intent.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
-            } else {
-                intent.action = android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
-                intent.data = android.net.Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Failed to open notification settings", e)
-            statusText.text = getString(R.string.action_enable_notifications)
-        }
-    }
-    
+    /**
+     * v56 — the "Enable notifications" call-to-action moved to
+     * SettingsActivity (which re-checks on every resume). Home keeps the
+     * log line so the blocked state is still visible in a bug report.
+     */
     private fun checkNotificationStatus() {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val areNotificationsEnabled = notificationManager.areNotificationsEnabled()
-        
-        if (!areNotificationsEnabled) {
-            android.util.Log.d("MainActivity", "Notifications are blocked at system level")
-            enableNotificationsButton.visibility = android.view.View.VISIBLE
-        } else {
-            android.util.Log.d("MainActivity", "Notifications are enabled")
-            enableNotificationsButton.visibility = android.view.View.GONE
-        }
+        android.util.Log.d(
+            "MainActivity",
+            "Notifications enabled at system level: ${notificationManager.areNotificationsEnabled()}"
+        )
     }
     
     /**
@@ -1834,195 +1806,6 @@ class MainActivity : AppCompatActivity() {
                 }, 320)
             }
             .start()
-    }
-
-    /**
-     * Dispatch #29 — Sign Out confirmation.
-     *
-     * Replaces the dispatch #6/#9/#23 "Disconnect and refresh" button
-     * since there's no LAN listener left to refresh. Sign Out is what
-     * the user actually wants when they're done with a session.
-     *
-     * Two-step confirmation (Cancel / Sign out) so an accidental tap
-     * doesn't drop the bridge mid-call.
-     */
-    private fun showSignOutConfirmation() {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.signout_dialog_title)
-            .setMessage(R.string.signout_dialog_message)
-            .setNegativeButton(R.string.signout_dialog_cancel) { d, _ -> d.dismiss() }
-            .setPositiveButton(R.string.signout_dialog_confirm) { d, _ ->
-                d.dismiss()
-                performSignOut()
-            }
-            .setCancelable(true)
-            .show()
-    }
-
-    /**
-     * Dispatch #29 — Sign Out implementation.
-     *
-     * Steps:
-     *   1. Stop the foreground service (ACTION_STOP → onDestroy → relay
-     *      WebSocket close 1000 → the browser side sees the phone
-     *      disconnect cleanly).
-     *   2. Unbind locally so we don't leak the ServiceConnection.
-     *   3. Clear the stored phoneToken so the next launch lands on the
-     *      Sign In screen (MainActivity.onCreate's TokenStore.hasToken
-     *      gate kicks).
-     *   4. Launch SignInActivity with FLAG_ACTIVITY_NEW_TASK +
-     *      FLAG_ACTIVITY_CLEAR_TASK so the back button from the new
-     *      SignIn screen can't return to this half-signed-out activity.
-     *   5. finish() — defensive; the CLEAR_TASK above already kills
-     *      this instance, but we want to make damn sure we don't
-     *      linger.
-     */
-    private fun performSignOut() {
-        android.util.Log.d("MainActivity", "Sign out confirmed")
-        Toast.makeText(this, R.string.action_sign_out, Toast.LENGTH_SHORT).show()
-
-        // 1+2. Stop + unbind service.
-        try {
-            val stopIntent = Intent(this, PhoneService::class.java).apply {
-                action = PhoneService.ACTION_STOP
-            }
-            stopService(stopIntent)
-        } catch (e: Exception) {
-            android.util.Log.w("MainActivity", "stopService threw during sign-out: ${e.message}")
-        }
-        try {
-            if (serviceBound) {
-                unbindService(serviceConnection)
-                serviceBound = false
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("MainActivity", "unbindService threw during sign-out: ${e.message}")
-        }
-        phoneService = null
-        stopStatusUpdates()
-
-        // 3. Wipe the stored phoneToken.
-        try {
-            TokenStore.clear(this)
-            android.util.Log.d("MainActivity", "TokenStore cleared")
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "TokenStore.clear threw — proceeding to SignIn anyway", e)
-        }
-
-        // 4+5. Hand off to SignInActivity and finish.
-        val signInIntent = Intent(this, SignInActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        }
-        startActivity(signInIntent)
-        finish()
-    }
-
-    /**
-     * Hard Reset confirmation dialog. Shown before any destructive
-     * action so accidental taps don't nuke the user's setup. The
-     * positive action ("Reset") is restyled red after the dialog
-     * shows — AlertDialog doesn't expose a "destructive" style via
-     * the builder API, but tinting the positive button text post-show
-     * gives the same visual signal.
-     */
-    private fun showHardResetConfirmation() {
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(R.string.hard_reset_dialog_title)
-            .setMessage(R.string.hard_reset_dialog_message)
-            .setNegativeButton(R.string.hard_reset_dialog_cancel) { d, _ -> d.dismiss() }
-            .setPositiveButton(R.string.hard_reset_dialog_confirm) { d, _ ->
-                d.dismiss()
-                performHardReset()
-            }
-            .setCancelable(true)
-            .create()
-
-        dialog.setOnShowListener {
-            // Tint the positive button red to signal destructive action.
-            // Cancel stays in the default secondary color so the user's
-            // eye lands on it first — the safer choice.
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(
-                ContextCompat.getColor(this, R.color.dot_failed)
-            )
-        }
-        dialog.show()
-    }
-
-    /**
-     * Hard Reset implementation. Uses ActivityManager.clearApplicationUserData()
-     * — the OS-level equivalent of Settings → Apps → ComputerCaller →
-     * Storage → Clear data. On success:
-     *   - All app SharedPreferences, databases, cache, files are wiped.
-     *   - On Android 13+ the OS revokes runtime permissions back to their
-     *     default-denied state (matching what a fresh install looks like),
-     *     so the user re-enters the Grant All flow on next launch.
-     *   - The process is force-killed by the OS as part of the call; the
-     *     OS will restart the launcher activity on next user tap.
-     *
-     * We stop our foreground service first so it can't outlive the clear
-     * and re-bind to a half-wiped state. The call itself returns true
-     * on success; if it returns false (rare — usually means the app is
-     * being debugged or is the device-owner) we surface a toast pointing
-     * the user at the manual Settings path.
-     */
-    private fun performHardReset() {
-        android.util.Log.w("MainActivity", "Hard Reset confirmed — clearing user data")
-        Toast.makeText(this, R.string.action_hard_reset, Toast.LENGTH_SHORT).show()
-
-        // Tear down the service cleanly before the wipe. The OS will kill
-        // the process anyway, but doing it explicitly means a foreground
-        // notification doesn't linger for the half-second between Toast
-        // and process-kill.
-        try {
-            if (serviceBound) {
-                unbindService(serviceConnection)
-                serviceBound = false
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("MainActivity", "unbindService failed during Hard Reset: ${e.message}")
-        }
-        try {
-            val stopIntent = Intent(this, PhoneService::class.java).apply {
-                action = PhoneService.ACTION_STOP
-            }
-            stopService(stopIntent)
-        } catch (e: Exception) {
-            android.util.Log.w("MainActivity", "stopService failed during Hard Reset: ${e.message}")
-        }
-        phoneService = null
-        stopStatusUpdates()
-
-        // Fire the wipe. The OS kills our process partway through this
-        // call, so any code after the `if` block here is best-effort and
-        // may not execute. If clearApplicationUserData() returns false,
-        // we're still alive — show the manual-recovery toast.
-        val ok = try {
-            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            am.clearApplicationUserData()
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "clearApplicationUserData threw", e)
-            false
-        }
-
-        if (!ok) {
-            Toast.makeText(this, R.string.hard_reset_failed, Toast.LENGTH_LONG).show()
-            // Last-resort fallback — open app-details Settings so the
-            // user can clear data manually.
-            try {
-                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.fromParts("package", packageName, null)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(intent)
-            } catch (e: Exception) {
-                android.util.Log.e("MainActivity", "Couldn't open app-details after Hard Reset failure", e)
-            }
-        }
-        // No `finish()` / `startActivity()` here on the success path —
-        // clearApplicationUserData() kills our process. On next launch
-        // the OS reads the (now empty) permission state, MainActivity.
-        // onCreate runs PermissionChecker.checkAll(), finds everything
-        // missing, and routes the user into the Grant All pane.
     }
 
     override fun onPause() {
