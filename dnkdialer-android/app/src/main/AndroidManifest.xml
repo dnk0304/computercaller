@@ -103,8 +103,16 @@
         -->
 
 
+        <!--
+          v56 - launchMode=singleTop so the connection-request notification's
+          content intent (FLAG_ACTIVITY_CLEAR_TOP) is delivered to the LIVE
+          instance via onNewIntent instead of destroying + recreating it.
+          Without it, CLEAR_TOP on a standard-mode activity recreates the
+          Activity and the in-flight pairing dialog state is lost.
+        -->
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTop"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -131,6 +139,19 @@
         -->
         <activity
             android:name=".SyncedDataActivity"
+            android:exported="false" />
+
+        <!--
+          v56 - dedicated Settings screen. Everything that used to live at
+          the bottom of Home (sign out, permissions, notification access,
+          synced viewers, lobby toggle, hard reset) moved here so Home is
+          just presence + the primary action. Not exported; launched via
+          explicit Intent from MainActivity only.
+        -->
+        <activity
+            android:name=".SettingsActivity"
+            android:label="@string/settings_title"
+            android:parentActivityName=".MainActivity"
             android:exported="false" />
 
         <receiver

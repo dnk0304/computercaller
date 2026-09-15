@@ -334,6 +334,11 @@ class MainActivity : AppCompatActivity() {
 
             updateStatus()
             startStatusUpdates()
+            // v56 notification-tap fix - the bind can land AFTER onResume
+            // (binding is async), so re-surface here too. Idempotent:
+            // showPairingRequestDialog no-ops when the same id is already
+            // on screen.
+            resurfacePendingPairings()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -389,6 +394,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         initializeMainPane()
+
+        // v56 notification-tap fix - cold start through the connection-request
+        // notification. The service is not bound yet at this point, so this
+        // records/validates nothing on its own; onServiceConnected ->
+        // resurfacePendingPairings() is what actually raises the dialog. The
+        // call is kept here so the intent extras are consumed exactly once
+        // and a rotation cannot replay them.
+        handlePairingIntent(intent)
     }
 
     /**
@@ -1258,6 +1271,14 @@ class MainActivity : AppCompatActivity() {
         // posts) — the dialog is the additional in-foreground affordance
         // so the user doesn't have to dive into the shade.
         registerPairingForegroundReceiver()
+
+        // v56 notification-tap fix - belt and braces. Whatever brought us
+        // to the foreground (launcher icon, notification body tap, recents),
+        // ask PhoneService for pairing requests that are STILL pending and
+        // raise the dialog for them. Covers the window between the arrival
+        // broadcast (which fires when we may not be listening) and the
+        // 30 s auto-decline.
+        resurfacePendingPairings()
 
         // Samsung One UI auto-revoke defense — re-check on EVERY resume.
         // This catches two cases:
@@ -2141,6 +2162,75 @@ class MainActivity : AppCompatActivity() {
             pairingRequestDialog = null
             pairingRequestDialogId = null
         }
+    }
+
+    /**
+     * v56 notification-tap fix - MainActivity is launchMode=singleTop, so
+     * the connection-request notification's content intent
+     * (FLAG_ACTIVITY_CLEAR_TOP on a live instance) is delivered here
+     * rather than re-creating the Activity.
+     *
+     * setIntent() so a later rotation replays the CURRENT intent, not the
+     * pairing one (which would re-raise a dialog for a resolved request).
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePairingIntent(intent)
+    }
+
+    /**
+     * Raise the Accept/Decline dialog for a pairing id carried on a
+     * launch intent, but ONLY if PhoneService still has that request
+     * pending. A stale intent (user tapped, walked away, the request
+     * auto-declined, then they returned via recents) must not resurrect
+     * a prompt for a pairing that no longer exists.
+     *
+     * Security note: the extras are trusted only because the intent can
+     * only be constructed by our own immutable PendingIntent - and the
+     * pending-check against PhoneService means even a forged extra can
+     * at worst re-show a dialog for a request the service itself is
+     * already tracking.
+     */
+    private fun handlePairingIntent(intent: Intent?) {
+        val pairingId = intent?.getStringExtra(PhoneService.EXTRA_PAIRING_ID) ?: return
+        if (pairingId.isBlank()) return
+        // Consume it so a config change / re-delivery doesn't replay.
+        intent.removeExtra(PhoneService.EXTRA_PAIRING_ID)
+        val identity = intent.getStringExtra(PhoneService.EXTRA_PAIRING_IDENTITY).orEmpty()
+        intent.removeExtra(PhoneService.EXTRA_PAIRING_IDENTITY)
+
+        val service = phoneService
+        if (service == null) {
+            // Not bound yet (cold start through the notification). Stash it;
+            // onServiceConnected -> resurfacePendingPairings() will pick the
+            // request up from the service's own pending map, which is the
+            // authoritative source anyway.
+            android.util.Log.d("MainActivity", "handlePairingIntent: service not bound yet for $pairingId - deferring to resurface")
+            return
+        }
+        val pending = service.getPendingPairings()
+        if (!pending.containsKey(pairingId)) {
+            android.util.Log.d("MainActivity", "handlePairingIntent: $pairingId no longer pending - ignoring")
+            return
+        }
+        showPairingRequestDialog(pairingId, pending[pairingId]?.takeIf { it.isNotBlank() } ?: identity)
+    }
+
+    /**
+     * Ask the bound PhoneService for every still-pending pairing request
+     * and show the dialog for the first one. (The relay does not issue
+     * concurrent requests to one phone; if it ever does, the remaining
+     * ones stay in the shade with their own Accept/Decline actions.)
+     */
+    private fun resurfacePendingPairings() {
+        val service = phoneService ?: return
+        if (isFinishing || isDestroyed) return
+        val pending = service.getPendingPairings()
+        if (pending.isEmpty()) return
+        val (pairingId, identity) = pending.entries.first()
+        android.util.Log.d("MainActivity", "resurfacePendingPairings: re-showing dialog for $pairingId")
+        showPairingRequestDialog(pairingId, identity)
     }
 
     override fun onDestroy() {
