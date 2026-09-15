@@ -350,6 +350,11 @@ export function LoginForm({ variant = 'web' }: { variant?: LoginFormVariant }) {
             </label>
             <input
               id="login-email"
+              // name= matters to Chrome's password manager: the form parser
+              // uses it (with autocomplete=) to label the username/password
+              // pair and to key the saved credential. Harmless everywhere
+              // else — this form is controlled and never read off the DOM.
+              name="email"
               type="email"
               autoComplete="email"
               required
@@ -365,6 +370,7 @@ export function LoginForm({ variant = 'web' }: { variant?: LoginFormVariant }) {
             </label>
             <input
               id="login-password"
+              name="password"
               type="password"
               autoComplete="current-password"
               required

@@ -319,6 +319,47 @@ async function startGoogleSignIn() {
 }
 
 /**
+ * Password path, WINDOWED — the saved-password escape hatch
+ * (2026-09-15, forge/ext-login-autofill).
+ *
+ * Chrome's password manager is keyed off the WebContents' PRIMARY MAIN FRAME
+ * URL, and `chrome-extension://` is excluded from it, so inside
+ * #cc-login-frame there is no saved-password dropdown however the form is
+ * marked up (see runPasswordSignIn() in background.js for the Chromium
+ * references). Address autofill is a different subsystem and is NOT excluded,
+ * which is why the email field fills and the password field does not — the bug
+ * as Dennis reported it.
+ *
+ * So: hand the job to a real window owned by the SERVICE WORKER, whose main
+ * frame IS https://computercaller.com. We do not await it from here on the
+ * docked surfaces — a toolbar popup is destroyed the moment the window takes
+ * focus and the await would never resume. The SW finishes the flow on its own
+ * (it polls the cookie-authed mint), so reopening the popup lands signed in.
+ * The pop-out window survives, so there we do wait and swap in place.
+ */
+async function startPasswordWindowSignIn() {
+  const btn = pwEscapeBtn;
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Opening sign-in window…'; }
+  let ok = false;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'password-sign-in' });
+    ok = !!(res && res.ok);
+  } catch (_) {
+    // This document was torn down (popup lost focus to the new window) or the
+    // SW went away mid-flight. The SW's flow continues either way.
+    return;
+  }
+  if (btn) { btn.disabled = false; btn.textContent = label; }
+  if (!ok) return;          // Cancelled or timed out; the inline form is still there.
+  showOverlay(null);
+  loadFrame();
+  const s = await probeSession();
+  currentEmail = s.state === 'authed' ? s.email : null;
+  sendHello();
+}
+
+/**
  * Forge's sign-out, unchanged. Clears BOTH credentials — the ext-session token
  * in chrome.storage.local AND the auth_token / idle_token cookies — then drops
  * the iframe and returns to the sign-in overlay. Triggered from the app's
@@ -469,6 +510,8 @@ window.addEventListener('message', (event) => {
       completeSignIn();
     } else if (data.type === 'google-sign-in') {
       startGoogleSignIn();
+    } else if (data.type === 'password-window') {
+      startPasswordWindowSignIn();
     }
     return;
   }
@@ -521,5 +564,33 @@ if (signinBtn) {
     loadLoginFrame();
   });
 }
+
+/**
+ * The saved-password affordance. Built HERE rather than in the three HTML
+ * surfaces on purpose: it belongs to the gate's behaviour, all three carry the
+ * same #cc-signin, and keeping it out of the markup keeps this dispatch off
+ * files other seats are editing. CSS shows it only with .cc-has-login — i.e.
+ * only while the inline form is actually up, never over the fallback or the
+ * boot skeleton, where it would be a second competing button.
+ *
+ * The inline form stays exactly as it is: people who type their password are
+ * unaffected, and this is the one extra click for people whose password lives
+ * in Chrome.
+ */
+const pwEscapeBtn = (() => {
+  if (!overlay) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'cc-pw-escape';
+  const hint = document.createElement('span');
+  hint.textContent = 'Password saved in Chrome?';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = 'cc-pw-escape-btn';
+  btn.textContent = 'Use a saved password';
+  btn.addEventListener('click', startPasswordWindowSignIn);
+  wrap.append(hint, btn);
+  overlay.appendChild(wrap);
+  return btn;
+})();
 
 init();

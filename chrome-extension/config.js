@@ -18,6 +18,20 @@ const CC = {
   // (2026-09-15, forge/ext-embedded-login). Same origin as EXTENSION_URL, so
   // the shell's single origin check covers both frames.
   LOGIN_URL: 'https://computercaller.com/extension/login',
+  // The SAME route, opened as a TOP-LEVEL window by the service worker
+  // (2026-09-15, forge/ext-login-autofill). Chrome's password manager is keyed
+  // off the PRIMARY MAIN FRAME's URL, and `chrome-extension://` is explicitly
+  // excluded from it (chrome_password_manager_client.cc: CanShowBubbleOnURL
+  // rejects `extensions::kExtensionScheme`, and IsFillingEnabled runs
+  // IsPasswordManagementEnabledForCurrentPage on the last-committed URL of the
+  // WebContents, which for the popup / side panel IS the extension page). So
+  // inside #cc-login-frame there is no saved-password dropdown and no save
+  // prompt — no matter what the form markup says. Here the main frame is
+  // https://computercaller.com, so the manager runs normally.
+  //
+  // `?return=panel` is a marker for the page, not a redirect: the window has
+  // nowhere to navigate. The SW watches for the cookie and closes the window.
+  LOGIN_WINDOW_URL: 'https://computercaller.com/extension/login?return=panel',
   // Cookie → ext-session token, with NO auth window. Called by the BACKGROUND
   // SERVICE WORKER (credentials:'include') once the embedded login has set the
   // auth_token cookie. This is the password path's whole token exchange.

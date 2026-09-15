@@ -486,6 +486,88 @@ async function runGoogleSignIn() {
   }
 }
 
+/**
+ * Password path, WINDOWED (2026-09-15, forge/ext-login-autofill).
+ *
+ * WHY: Chrome's password manager never runs inside #cc-login-frame. Its
+ * enablement and its UI both key off the WebContents' PRIMARY MAIN FRAME URL,
+ * which for the toolbar popup / side panel is `chrome-extension://<id>/…` — a
+ * scheme chrome_password_manager_client.cc explicitly excludes
+ * (`scheme != extensions::kExtensionScheme` in CanShowBubbleOnURL;
+ * IsFillingEnabled → IsPasswordManagementEnabledForCurrentPage on the
+ * last-committed URL). ADDRESS autofill still fills the email field, which is
+ * why the bug reads as "email is filled, the password dropdown never appears".
+ * No form markup can change this, so the escape hatch is a real window whose
+ * main frame is https://computercaller.com.
+ *
+ * The window is owned by THIS worker, never by the popup document: a toolbar
+ * popup is destroyed the moment it loses focus, and an `await` spanning the
+ * window would never resume. Same rule, same reason, as runGoogleSignIn().
+ *
+ * We do not need the page to talk back. The login POST sets the auth_token
+ * cookie in this profile, and the SW's mint is cookie-authed, so polling the
+ * mint IS the completion signal — no externally_connectable, no new
+ * permissions, and it works even if the user finishes in a tab we lost track
+ * of. chrome.runtime.getPlatformInfo() on each tick is an extension-API call
+ * purely to reset the worker's 30s idle timer; a bare setInterval does not.
+ */
+const PW_WINDOW_POLL_MS = 2500;
+const PW_WINDOW_MAX_POLLS = 120; // 5 minutes, then we stop nagging the server.
+
+async function runPasswordSignIn() {
+  let win = null;
+  try {
+    win = await chrome.windows.create({
+      url: self.CC.LOGIN_WINDOW_URL,
+      type: 'popup',
+      width: 460,
+      height: 700,
+      focused: true,
+    });
+  } catch (e) {
+    console.warn('[CC-SW] password window failed to open', e);
+    return false;
+  }
+  const winId = win && win.id;
+  if (typeof winId !== 'number') return false;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let polls = 0;
+
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      try { chrome.windows.onRemoved.removeListener(onRemoved); } catch (_) {}
+      resolve(ok);
+    };
+
+    // The user closed the window themselves. They may well have signed in
+    // first (Chrome closes nothing on submit), so mint once more before
+    // calling it a cancel.
+    const onRemoved = (id) => {
+      if (id !== winId) return;
+      mintTokenFromCookie().then(finish, () => finish(false));
+    };
+    chrome.windows.onRemoved.addListener(onRemoved);
+
+    const timer = setInterval(async () => {
+      if (settled) return;
+      try { await chrome.runtime.getPlatformInfo(); } catch (_) {}
+      if ((polls += 1) > PW_WINDOW_MAX_POLLS) { finish(false); return; }
+      let ok = false;
+      try { ok = await mintTokenFromCookie(); } catch (_) { ok = false; }
+      if (!ok) return;
+      finish(true);
+      // Signed in — take the window away. The surface that asked for it swaps
+      // itself; a toolbar popup that died on blur picks the session up on its
+      // next open.
+      try { await chrome.windows.remove(winId); } catch (_) {}
+    }, PW_WINDOW_POLL_MS);
+  });
+}
+
 // ── Relay-ticket exchange (durable ext-session JWT → 30s relay ticket) ───────
 async function mintTicket(token) {
   const res = await fetch(self.CC.TICKET_URL, {
@@ -1007,6 +1089,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Embedded (password) sign-in finished in the popup's login frame.
     // `return true` below keeps the channel open for this async reply.
     mintTokenFromCookie().then((ok) => sendResponse?.({ ok }));
+  } else if (message?.type === 'password-sign-in') {
+    // Same shape as 'google-sign-in': the sender may be destroyed when the
+    // window appears, sendResponse then goes nowhere, and the flow completes
+    // here regardless. See runPasswordSignIn() for why a window is needed.
+    runPasswordSignIn().then((ok) => sendResponse?.({ ok }));
   } else if (message?.type === 'google-sign-in') {
     // The popup that sent this will very likely be destroyed when the auth
     // window opens; sendResponse then goes nowhere, which is harmless. The

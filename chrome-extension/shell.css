@@ -263,3 +263,45 @@ body {
      region they occupy is empty of controls. */
   .cc-sk { animation: none; }
 }
+
+/* ===========================================================================
+   SAVED-PASSWORD ESCAPE HATCH — forge/ext-login-autofill, 2026-09-15.
+
+   Chrome will not offer a saved password inside #cc-login-frame: its password
+   manager keys enablement AND its UI off the primary main frame's URL, and the
+   chrome-extension:// scheme is explicitly excluded from both. Address autofill
+   is a separate subsystem and still fills the email, which is exactly why the
+   form looks half-working. The only fix is a window whose main frame is the
+   site, so the gate carries this one line out to it.
+
+   Shown ONLY with .cc-has-login: over the fallback or the boot skeleton it
+   would be a second button competing with "Sign in". The element itself is
+   created by shell.js, so none of the three surfaces' HTML has to carry it.
+   =========================================================================== */
+.cc-pw-escape {
+  display: none;
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  z-index: 1;                 /* above the login iframe, below the header */
+  padding: 8px 16px;
+  border-top: 1px solid var(--cc-hair);
+  background: var(--cc-page);
+  font-size: 11px;
+  color: var(--cc-mut);
+  text-align: center;
+  box-sizing: border-box;
+}
+#cc-signin.cc-has-login .cc-pw-escape { display: block; }
+
+.cc-pw-escape button {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--cc-ink);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.cc-pw-escape button:disabled { cursor: default; text-decoration: none; opacity: .7; }
+.cc-pw-escape button:focus-visible { outline: 2px solid var(--cc-ink); outline-offset: 2px; }
