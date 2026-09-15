@@ -37,6 +37,7 @@ import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { CcLockup } from '@/components/CcLockup';
 import { Check } from 'lucide-react';
 import { AuthSplash } from '@/components/AuthSplash';
 import { sanitiseNext } from '@/lib/google';
@@ -249,6 +250,17 @@ export function LoginForm({ variant = 'web' }: { variant?: LoginFormVariant }) {
       )}
 
       <div className={c.card}>
+        {/* Extension surface: the lockup leads the card, because the framed
+            login has no page around it to say what it belongs to — it is a
+            400px form inside a browser popup, and the only other place its
+            name appears is a 27px strip in the shell's title bar above the
+            frame. INSIDE the card, not above it: .cc-auth-shell is a flex ROW
+            whose one child centres itself with margin:auto, so a sibling there
+            becomes a second column and shoves the form off-centre.
+            dispatch J. */}
+        {isExtension && (
+          <CcLockup size={34} mark="full" className="mb-4 self-center" />
+        )}
         {/* The heading carries the whole page for AT, so it stays an <h1> on
             both surfaces — only its size and its words change. In the popup the
             shell already paints "ComputerCaller" 40px above this frame, so

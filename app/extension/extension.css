@@ -35,9 +35,8 @@ html:has(.cc-ext), body:has(.cc-ext) {
   background: #fafafa;
   overscroll-behavior: none;
 }
-@media (prefers-color-scheme: dark) {
-  html:has(.cc-ext), body:has(.cc-ext) { background: #0b0b0d; }
-}
+html[data-cc-theme=dark]:has(.cc-ext),
+html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 .cc-ext {
   /* ---- surfaces (light) ---- */
@@ -75,18 +74,43 @@ html:has(.cc-ext), body:has(.cc-ext) {
    never disagree — a light app inside a dark shell rings the panel in black,
    which is the seam that made the popup read as a cropped web page.
    --------------------------------------------------------------------------- */
-@media (prefers-color-scheme: dark) {
-  .cc-ext {
-    --cc-page: #0b0b0d;
-    --cc-card: #18181b;
-    --cc-zebra: #141417;
-    --cc-field: #1f1f23;
-    --cc-hair: #27272a;
-    --cc-ink: #fafafa;
-    --cc-sec: #a3a3a3;
-    --cc-mut: #8a8a8a;
-    --cc-chip-bd: #3f3f46;
-  }
+/* ---------------------------------------------------------------------------
+   THE DARK GATE — `:where([data-cc-theme=dark])` (dispatch J addendum,
+   Dennis 2026-09-15: "when clicking on the avatar username and the dropdown
+   menu comes, there should be a quick toggle for light/dark mode there as
+   well").
+   Every rule below used to live inside `@media (prefers-color-scheme: dark)`,
+   i.e. the OS decided and the user could not. They are now gated on an
+   attribute that app/extension/layout.tsx stamps on <html> before first paint,
+   resolved from the stored per-account choice and falling back to
+   matchMedia('(prefers-color-scheme: dark)') — so "System" behaves exactly as
+   the media query did, and Light/Dark override it.
+   Wrapped in :where() so the gate contributes ZERO specificity: every rule
+   below keeps the exact weight it had inside the media block, and nothing
+   downstream had to be re-balanced.
+   The attribute is on <html> rather than on .cc-ext because it has to be set
+   by a blocking script before the React tree exists — the .cc-ext element is
+   rendered by the server, which cannot know the preference, so gating on it
+   would flash a white panel at every dark-mode user on every open.
+   --------------------------------------------------------------------------- */
+:where([data-cc-theme=dark]) .cc-ext {
+  --cc-page: #0b0b0d;
+  --cc-card: #18181b;
+  --cc-zebra: #141417;
+  --cc-field: #1f1f23;
+  --cc-hair: #27272a;
+  --cc-ink: #fafafa;
+  --cc-sec: #a3a3a3;
+  --cc-mut: #8a8a8a;
+  --cc-chip-bd: #3f3f46;
+
+  /* Brand wordmark ink. <CcLockup tone="auto"> reads these, which is how the
+     lockup in the header follows the theme toggle. The navy half of the
+     official two-tone wordmark is 1.4:1 on --cc-card, so it lifts to the same
+     near-white as body ink; the blue half lifts just enough to keep the split
+     readable and stay recognisably the brand blue. Both clear 4.5:1. */
+  --cc-wordmark-1: #fafafa;
+  --cc-wordmark-2: #5fb0e8;
 }
 
 /* ===========================================================================
@@ -108,113 +132,111 @@ html:has(.cc-ext), body:has(.cc-ext) {
    both grounds, and flipping them would break the one-colour-object-per-row
    rule the whole palette is built on.
    =========================================================================== */
-@media (prefers-color-scheme: dark) {
-  /* ---- surfaces ---- */
-  .cc-ext .bg-white,
-  .cc-ext .bg-white\/95,
-  .cc-ext .bg-white\/85,
-  .cc-ext .bg-white\/50 { background-color: var(--cc-card); }
+/* ---- surfaces ---- */
+:where([data-cc-theme=dark]) .cc-ext .bg-white,
+:where([data-cc-theme=dark]) .cc-ext .bg-white\/95,
+:where([data-cc-theme=dark]) .cc-ext .bg-white\/85,
+:where([data-cc-theme=dark]) .cc-ext .bg-white\/50 { background-color: var(--cc-card); }
 
-  .cc-ext .bg-slate-50,
-  .cc-ext .bg-slate-50\/70,
-  .cc-ext .bg-slate-50\/80 { background-color: var(--cc-zebra); }
+:where([data-cc-theme=dark]) .cc-ext .bg-slate-50,
+:where([data-cc-theme=dark]) .cc-ext .bg-slate-50\/70,
+:where([data-cc-theme=dark]) .cc-ext .bg-slate-50\/80 { background-color: var(--cc-zebra); }
 
-  .cc-ext .bg-slate-100 { background-color: var(--cc-field); }
-  .cc-ext .bg-slate-200 { background-color: #2e2e33; }
+:where([data-cc-theme=dark]) .cc-ext .bg-slate-100 { background-color: var(--cc-field); }
+:where([data-cc-theme=dark]) .cc-ext .bg-slate-200 { background-color: #2e2e33; }
 
-  /* The shell's own ground. bg-slate-50 on the root would otherwise be
-     remapped to --cc-zebra and sit a shade off the page colour. */
-  .cc-ext.bg-slate-50 { background-color: var(--cc-page); }
+/* The shell's own ground. bg-slate-50 on the root would otherwise be
+   remapped to --cc-zebra and sit a shade off the page colour. */
+:where([data-cc-theme=dark]) .cc-ext.bg-slate-50 { background-color: var(--cc-page); }
 
-  /* ---- text ---- */
-  .cc-ext .text-slate-900,
-  .cc-ext .text-slate-800 { color: var(--cc-ink); }
-  .cc-ext .text-slate-700,
-  .cc-ext .text-slate-600 { color: var(--cc-sec); }
-  .cc-ext .text-slate-500,
-  .cc-ext .text-slate-400 { color: var(--cc-mut); }
-  .cc-ext .text-slate-300 { color: #5a5a62; }
+/* ---- text ---- */
+:where([data-cc-theme=dark]) .cc-ext .text-slate-900,
+:where([data-cc-theme=dark]) .cc-ext .text-slate-800 { color: var(--cc-ink); }
+:where([data-cc-theme=dark]) .cc-ext .text-slate-700,
+:where([data-cc-theme=dark]) .cc-ext .text-slate-600 { color: var(--cc-sec); }
+:where([data-cc-theme=dark]) .cc-ext .text-slate-500,
+:where([data-cc-theme=dark]) .cc-ext .text-slate-400 { color: var(--cc-mut); }
+:where([data-cc-theme=dark]) .cc-ext .text-slate-300 { color: #5a5a62; }
 
-  /* ---- hairlines ---- */
-  .cc-ext .border-slate-100,
-  .cc-ext .border-slate-200,
-  .cc-ext .border-slate-200\/60,
-  .cc-ext .border-slate-300 { border-color: var(--cc-hair); }
-  .cc-ext .divide-slate-100 > * + * { border-color: var(--cc-hair); }
+/* ---- hairlines ---- */
+:where([data-cc-theme=dark]) .cc-ext .border-slate-100,
+:where([data-cc-theme=dark]) .cc-ext .border-slate-200,
+:where([data-cc-theme=dark]) .cc-ext .border-slate-200\/60,
+:where([data-cc-theme=dark]) .cc-ext .border-slate-300 { border-color: var(--cc-hair); }
+:where([data-cc-theme=dark]) .cc-ext .divide-slate-100 > * + * { border-color: var(--cc-hair); }
 
-  /* ---- fields ---- */
-  .cc-ext input,
-  .cc-ext textarea { color: var(--cc-ink); }
-  .cc-ext input::placeholder,
-  .cc-ext textarea::placeholder { color: var(--cc-mut); }
+/* ---- fields ---- */
+:where([data-cc-theme=dark]) .cc-ext input,
+:where([data-cc-theme=dark]) .cc-ext textarea { color: var(--cc-ink); }
+:where([data-cc-theme=dark]) .cc-ext input::placeholder,
+:where([data-cc-theme=dark]) .cc-ext textarea::placeholder { color: var(--cc-mut); }
 
-  /* ---- hover states that assume a light ground ---- */
-  .cc-ext .hover\:bg-slate-50:hover,
-  .cc-ext .hover\:bg-slate-100:hover { background-color: var(--cc-field); }
-  .cc-ext .hover\:bg-slate-200:hover { background-color: #33333a; }
+/* ---- hover states that assume a light ground ---- */
+:where([data-cc-theme=dark]) .cc-ext .hover\:bg-slate-50:hover,
+:where([data-cc-theme=dark]) .cc-ext .hover\:bg-slate-100:hover { background-color: var(--cc-field); }
+:where([data-cc-theme=dark]) .cc-ext .hover\:bg-slate-200:hover { background-color: #33333a; }
 
-  /* ---- menus / popovers: lift off the page, and drop the light-ground
-         shadow which is invisible on near-black anyway ---- */
-  .cc-ext .cc-menu {
-    background-color: var(--cc-card);
-    border-color: var(--cc-hair);
-    box-shadow: 0 10px 28px -8px rgba(0, 0, 0, 0.6);
-  }
+/* ---- menus / popovers: lift off the page, and drop the light-ground
+       shadow which is invisible on near-black anyway ---- */
+:where([data-cc-theme=dark]) .cc-ext .cc-menu {
+  background-color: var(--cc-card);
+  border-color: var(--cc-hair);
+  box-shadow: 0 10px 28px -8px rgba(0, 0, 0, 0.6);
+}
 
-  /* ---- the template strip's fade masks must fade to the DARK ground, or
-         they read as two grey smears over the chips ---- */
-  .cc-ext .from-slate-50 { --tw-gradient-from: var(--cc-zebra); }
-  .cc-ext .to-slate-50 { --tw-gradient-to: var(--cc-zebra); }
+/* ---- the template strip's fade masks must fade to the DARK ground, or
+       they read as two grey smears over the chips ---- */
+:where([data-cc-theme=dark]) .cc-ext .from-slate-50 { --tw-gradient-from: var(--cc-zebra); }
+:where([data-cc-theme=dark]) .cc-ext .to-slate-50 { --tw-gradient-to: var(--cc-zebra); }
 
-  /* ---- tonal chips whose light tints go muddy on a dark ground ---- */
-  .cc-ext .bg-teal-50 { background-color: rgba(45, 212, 191, 0.14); }
-  .cc-ext .text-teal-800,
-  .cc-ext .text-teal-700 { color: #2dd4bf; }
-  .cc-ext .border-teal-400 { border-color: #2dd4bf; }
-  .cc-ext .text-emerald-700 { color: #34d399; }
-  .cc-ext .text-amber-700 { color: #fbbf24; }
-  .cc-ext .text-red-600,
-  .cc-ext .text-red-700 { color: #f87171; }
-  .cc-ext .hover\:bg-red-50:hover { background-color: rgba(248, 113, 113, 0.14); }
-  .cc-ext .hover\:bg-rose-50:hover { background-color: rgba(251, 113, 133, 0.14); }
-  .cc-ext .hover\:bg-teal-50:hover { background-color: rgba(45, 212, 191, 0.14); }
-  .cc-ext .hover\:bg-emerald-50:hover { background-color: rgba(52, 211, 153, 0.14); }
-  .cc-ext .hover\:bg-red-100:hover { background-color: rgba(248, 113, 113, 0.2); }
+/* ---- tonal chips whose light tints go muddy on a dark ground ---- */
+:where([data-cc-theme=dark]) .cc-ext .bg-teal-50 { background-color: rgba(45, 212, 191, 0.14); }
+:where([data-cc-theme=dark]) .cc-ext .text-teal-800,
+:where([data-cc-theme=dark]) .cc-ext .text-teal-700 { color: #2dd4bf; }
+:where([data-cc-theme=dark]) .cc-ext .border-teal-400 { border-color: #2dd4bf; }
+:where([data-cc-theme=dark]) .cc-ext .text-emerald-700 { color: #34d399; }
+:where([data-cc-theme=dark]) .cc-ext .text-amber-700 { color: #fbbf24; }
+:where([data-cc-theme=dark]) .cc-ext .text-red-600,
+:where([data-cc-theme=dark]) .cc-ext .text-red-700 { color: #f87171; }
+:where([data-cc-theme=dark]) .cc-ext .hover\:bg-red-50:hover { background-color: rgba(248, 113, 113, 0.14); }
+:where([data-cc-theme=dark]) .cc-ext .hover\:bg-rose-50:hover { background-color: rgba(251, 113, 133, 0.14); }
+:where([data-cc-theme=dark]) .cc-ext .hover\:bg-teal-50:hover { background-color: rgba(45, 212, 191, 0.14); }
+:where([data-cc-theme=dark]) .cc-ext .hover\:bg-emerald-50:hover { background-color: rgba(52, 211, 153, 0.14); }
+:where([data-cc-theme=dark]) .cc-ext .hover\:bg-red-100:hover { background-color: rgba(248, 113, 113, 0.2); }
 
-  /* ---- avatar palette: the *-100 grounds are near-white. Keep the hue,
-         drop the luminance, lift the text so the initial stays legible. ---- */
-  .cc-ext [class*="bg-pink-100"],
-  .cc-ext [class*="bg-blue-100"],
-  .cc-ext [class*="bg-purple-100"],
-  .cc-ext [class*="bg-orange-100"],
-  .cc-ext [class*="bg-emerald-100"],
-  .cc-ext [class*="bg-cyan-100"],
-  .cc-ext [class*="bg-rose-100"],
-  .cc-ext [class*="bg-amber-100"] {
-    background-color: var(--cc-field);
-    color: var(--cc-ink);
-  }
+/* ---- avatar palette: the *-100 grounds are near-white. Keep the hue,
+       drop the luminance, lift the text so the initial stays legible. ---- */
+:where([data-cc-theme=dark]) .cc-ext [class*="bg-pink-100"],
+:where([data-cc-theme=dark]) .cc-ext [class*="bg-blue-100"],
+:where([data-cc-theme=dark]) .cc-ext [class*="bg-purple-100"],
+:where([data-cc-theme=dark]) .cc-ext [class*="bg-orange-100"],
+:where([data-cc-theme=dark]) .cc-ext [class*="bg-emerald-100"],
+:where([data-cc-theme=dark]) .cc-ext [class*="bg-cyan-100"],
+:where([data-cc-theme=dark]) .cc-ext [class*="bg-rose-100"],
+:where([data-cc-theme=dark]) .cc-ext [class*="bg-amber-100"] {
+  background-color: var(--cc-field);
+  color: var(--cc-ink);
+}
 
-  /* ---- disabled states. Tailwind compiles these as `.disabled\:bg-slate-100`,
-         a DIFFERENT selector from `.bg-slate-100`, so the remap above misses
-         them — and a disabled button left at slate-100 paints near-white on a
-         near-black panel, making the one control the user cannot press the
-         brightest object on screen. ---- */
-  /* Targeted semantically rather than by shadowing Tailwind's escaped variant
-     class names (`.disabled\:bg-slate-100:disabled`). Those proved unreliable
-     to override through the @import — the text rules landed and the
-     background rules did not — and a selector that silently half-applies is
-     worse than no selector. The action row is a named element; use it. */
-  .cc-ext .cc-dialpad-actions button:disabled {
-    background-color: var(--cc-field);
-    color: var(--cc-mut);
-    border-color: var(--cc-hair);
-  }
-  .cc-ext .cc-dialpad-actions button:enabled[aria-label^="Send"] {
-    background-color: var(--cc-card);
-    border-color: var(--cc-chip-bd);
-    color: var(--cc-ink);
-  }
+/* ---- disabled states. Tailwind compiles these as `.disabled\:bg-slate-100`,
+       a DIFFERENT selector from `.bg-slate-100`, so the remap above misses
+       them — and a disabled button left at slate-100 paints near-white on a
+       near-black panel, making the one control the user cannot press the
+       brightest object on screen. ---- */
+/* Targeted semantically rather than by shadowing Tailwind's escaped variant
+   class names (`.disabled\:bg-slate-100:disabled`). Those proved unreliable
+   to override through the @import — the text rules landed and the
+   background rules did not — and a selector that silently half-applies is
+   worse than no selector. The action row is a named element; use it. */
+:where([data-cc-theme=dark]) .cc-ext .cc-dialpad-actions button:disabled {
+  background-color: var(--cc-field);
+  color: var(--cc-mut);
+  border-color: var(--cc-hair);
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-dialpad-actions button:enabled[aria-label^="Send"] {
+  background-color: var(--cc-card);
+  border-color: var(--cc-chip-bd);
+  color: var(--cc-ink);
 }
 
 /* ===========================================================================
@@ -420,8 +442,8 @@ html:has(.cc-ext), body:has(.cc-ext) {
      of the wrong grey — the B2 seam, reappearing. */
   html:has(.cc-ext), body:has(.cc-ext) { background: #f0f0f0; }
 }
-@media (min-width: 620px) and (prefers-color-scheme: dark) {
-  html:has(.cc-ext), body:has(.cc-ext) { background: #050507; }
+@media (min-width: 620px) {
+  :where([data-cc-theme=dark]) html:has(.cc-ext), :where([data-cc-theme=dark]) body:has(.cc-ext) { background: #050507; }
 }
 
 /* ===========================================================================
@@ -646,10 +668,8 @@ html:has(.cc-ext), body:has(.cc-ext) {
   background: rgba(16, 185, 129, 0.08);
   color: #047857;
 }
-@media (prefers-color-scheme: dark) {
-  .cc-ext .cc-auth-note-error { color: #f87171; }
-  .cc-ext .cc-auth-note-ok { color: #34d399; }
-}
+:where([data-cc-theme=dark]) .cc-ext .cc-auth-note-error { color: #f87171; }
+:where([data-cc-theme=dark]) .cc-ext .cc-auth-note-ok { color: #34d399; }
 
 /* ---- Foot links. space-between rather than a middle-dot separator: two
        links do not need a glyph between them to be read as two links. ---- */

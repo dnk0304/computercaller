@@ -20,8 +20,14 @@
        the fix for the old glass chip that floated on top of the iframe and
        collided with the app's own header row. -->
   <div id="cc-shell-header">
-    <span class="cc-mark-sm" aria-hidden="true"></span>
-    <span class="cc-wordmark">ComputerCaller</span>
+    <!-- The official lockup (dispatch J, 2026-09-15): the mark with the
+         wordmark beneath it, as one SVG. It replaces the mark + a <span> of
+         "ComputerCaller" set in the shell's UI face, which was never the
+         brand's wordmark. lockup.svg is shipped INSIDE the extension because
+         MV3's default img-src 'self' blocks computercaller.com; it carries its
+         own prefers-color-scheme block because a background-image SVG is a
+         separate document this sheet cannot style. -->
+    <span class="cc-lockup" role="img" aria-label="ComputerCaller"></span>
   </div>
 
   <iframe id="cc-frame" title="ComputerCaller" allow="notifications"></iframe>
@@ -44,6 +50,7 @@
          answered, so a CSP refusal or an offline profile still lands on the
          fallback's real "Try again" button rather than shimmering forever. -->
     <div id="cc-signin-skeleton" aria-hidden="true">
+      <div class="cc-sk cc-sk-lockup"></div>
       <div class="cc-sk cc-sk-title"></div>
       <div class="cc-sk cc-sk-google"></div>
       <div class="cc-sk cc-sk-rule"></div>
@@ -55,7 +62,7 @@
       <div class="cc-sk cc-sk-links"></div>
     </div>
     <div id="cc-signin-fallback">
-      <div class="cc-mark"><img src="icon128.png" alt="" /></div>
+      <div class="cc-lockup-hero" role="img" aria-label="ComputerCaller"></div>
       <h1 id="cc-signin-title">Call and text from your browser</h1>
       <p id="cc-signin-body">Sign in and your phone does the calling — you do the typing.</p>
       <button id="cc-signin-btn" type="button">Sign in</button>

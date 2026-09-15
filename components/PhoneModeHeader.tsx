@@ -34,9 +34,10 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings, PanelRight } from 'lucide-react';
+import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings, PanelRight, Monitor, Sun, Moon } from 'lucide-react';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { CcMark } from '@/components/CcMark';
+import { CcLockup } from '@/components/CcLockup';
 import { usePhoneMode } from '@/hooks';
 import {
   useExtensionShell,
@@ -52,6 +53,14 @@ import {
 // byte-identically — the dashboard's Phone Mode header never mounts
 // AccountMenu at all.
 import { useEntitlement, deriveAccountState } from '@/hooks/useEntitlement';
+import {
+  CC_THEMES,
+  applyTheme,
+  readStoredTheme,
+  resolveTheme,
+  writeStoredTheme,
+  type CcTheme,
+} from '@/lib/extensionTheme';
 
 export interface PhoneModeHeaderProps {
   surface?: 'app' | 'extension';
@@ -80,13 +89,18 @@ function AppHeader() {
       className="sticky top-0 z-30 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/85 px-2.5 backdrop-blur-sm"
       role="banner"
     >
-      {/* The official CC mark (2026-09-15, dispatch G). This was the old
-          blue→indigo gradient tile — a blank swatch standing in for a logo,
-          and a different brand from the one the extension surface and the
-          marketing site already show. Same 20px box the tile occupied, same
-          aria-hidden treatment: ConnectionStatus beside it carries the words,
-          so a screen reader repeating "ComputerCaller" here is noise. */}
-      <CcMark size={20} variant="mini" className="flex-shrink-0" />
+      {/* The official lockup — mark with the wordmark beneath (2026-09-15,
+          dispatch J). Dennis: "we also have our logo with the 'computercaller'
+          title beneath ... I would like to use that one both on the web and the
+          extension and phone mode as well." It replaces the bare <CcMark> that
+          dispatch G put here; the mark inside it is byte-identical, the name is
+          what is new. 20px mark + 3.6px gap + 6.2px cap = ~30px in a 40px row,
+          so the header height is unchanged.
+          It keeps its accessible name here (unlike the bare mark, which was
+          aria-hidden because ConnectionStatus said the words): the wordmark IS
+          the product name rendered as artwork, so hiding it would delete the
+          only place a screen reader learns which app this header belongs to. */}
+      <CcLockup size={20} className="flex-shrink-0" />
 
       {/* Beta tag — Phone Mode is still in beta. Removed on the EXTENSION
           surface only (AC-6); the dashboard keeps it until Ken says otherwise. */}
@@ -123,17 +137,18 @@ function ExtensionHeader() {
       className="cc-ext-header sticky top-0 z-30 flex h-10 flex-shrink-0 items-center gap-1.5 border-b border-slate-200 bg-white px-2"
       role="banner"
     >
-      {/* The official CC mark (design/extension-marks/mark-mini.svg via
-          <CcMark>). This was a BLANK green→blue tile until 2026-09-15 — the
-          brand gradient with none of the brand in it, which is what Dennis
-          meant by "implement our official logo inside of the extension".
-          aria-hidden by default: the wordmark beside it is the readable name. */}
-      <CcMark size={18} variant="mini" className="flex-shrink-0" />
-      {/* Wordmark hides below 340px so the device pill always wins the space
-          fight — the pill carries state, the wordmark carries nothing the user
-          doesn't already know (they clicked our toolbar icon to get here). */}
-      <span className="hidden flex-shrink-0 text-[12.5px] font-bold tracking-tight text-slate-900 min-[340px]:inline">
-        ComputerCaller
+      {/* The official lockup (dispatch J). What stood here was the mark plus
+          "ComputerCaller" set in the page's UI face — which is not the brand's
+          wordmark; the brand sets it ALL CAPS, extra-bold, two-tone. The
+          lockup is 79px wide against the old pair's ~106px, so the device pill
+          gains room rather than losing it.
+          The 340px rule is kept, but it now swaps ARTWORK instead of hiding
+          text: below 340px the bare mark, at or above it the full lockup. A
+          wrapper span carries the responsive display because <CcLockup> sets
+          its own inline `display`, which a utility class cannot outrank. */}
+      <CcMark size={18} variant="mini" title="ComputerCaller" className="flex-shrink-0 min-[340px]:hidden" />
+      <span className="hidden flex-shrink-0 min-[340px]:block">
+        <CcLockup size={18} />
       </span>
 
       {/* min-w-0 is what lets the pill's truncate actually engage. */}
@@ -285,7 +300,7 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
             ref={menuRef}
             role="menu"
             aria-label="Account"
-            className="cc-menu absolute right-0 top-full z-50 mt-1 w-[186px] rounded-2xl border border-slate-200 bg-white p-1 shadow-[0_10px_28px_-8px_rgba(0,0,0,0.28)]"
+            className="cc-menu absolute right-0 top-full z-50 mt-1 w-[210px] rounded-2xl border border-slate-200 bg-white p-1 shadow-[0_10px_28px_-8px_rgba(0,0,0,0.28)]"
           >
             {/* Identity line — muted, not clickable. It answers "who am I signed
                 in as", which is the one thing the old extension never told you. */}
@@ -323,6 +338,8 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
               </div>
             )}
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
+            <ThemeChoice email={email} />
+            <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <MenuLink href={WEBAPP_DASHBOARD_URL} icon={<LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" />}>
               Open dashboard
             </MenuLink>
@@ -349,6 +366,112 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
     </div>
   );
 }
+
+/**
+ * Appearance — System / Light / Dark, inside the account menu.
+ *
+ * Dennis (2026-09-15, 13:05): "when clicking on the avatar username and the
+ * dropdown menu comes, there should be a quick toggle for light/dark mode
+ * there as well."
+ *
+ * EXTENSION ONLY, BY CONSTRUCTION. <AccountMenu> is mounted by
+ * <ExtensionHeader> and by nothing else — the dashboard's Phone Mode header
+ * has no account menu at all — so there is no surface check to get wrong here.
+ * /app has no dark theme to toggle (see lib/extensionTheme.ts).
+ *
+ * WHY A SEGMENTED ROW AND NOT A SWITCH
+ * A switch has two positions and this setting has three; the third ("follow
+ * the OS") is the default and the one most people want back after trying the
+ * others, so it has to be reachable rather than implied by "neither". Three
+ * equal targets also make the current value readable at a glance, which a
+ * switch label cannot do without a second line of text in a 186px menu.
+ *
+ * `menuitemradio` is the honest role: one choice out of a named group, inside
+ * a menu. Arrow-key roving is Chrome's own menu behaviour here — these are
+ * real buttons in DOM order, so Tab and the menu's Escape handler already
+ * work, and adding a roving tabindex would fight the pattern the rest of this
+ * menu uses.
+ */
+function ThemeChoice({ email }: { email: string | null }) {
+  // Initialised to the stored value on first client render rather than in an
+  // effect: the boot script has already painted the right theme, and starting
+  // this at 'system' would tick the wrong segment for one frame. (This menu
+  // only ever renders after a click, so there is no SSR pass to mismatch.)
+  const [theme, setTheme] = useState<CcTheme>(() =>
+    typeof window === 'undefined' ? 'system' : readStoredTheme(email),
+  );
+
+  // The account resolves AFTER the first render — the shell posts it — so the
+  // per-account preference has to be re-read when the email arrives; the
+  // initial read above was for `null`. Adjusted during render rather than in
+  // an effect: this is state derived from a prop changing, React's documented
+  // pattern for it, and the effect version re-renders the whole menu twice on
+  // the frame the email lands.
+  const [prevEmail, setPrevEmail] = useState(email);
+  if (email !== prevEmail) {
+    setPrevEmail(email);
+    setTheme(readStoredTheme(email));
+  }
+
+  // The DOM is the external system here, so this IS what an effect is for.
+  useEffect(() => {
+    applyTheme(resolveTheme(theme));
+  }, [theme]);
+
+  // 'system' is a live subscription, not a one-time read: the OS can flip at
+  // sunset while the panel is open, and a panel that stays light until the
+  // next open is the bug this toggle was meant to remove, not add.
+  useEffect(() => {
+    if (theme !== 'system') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => applyTheme(resolveTheme('system'));
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [theme]);
+
+  const choose = (next: CcTheme) => {
+    setTheme(next);
+    writeStoredTheme(email, next);
+    applyTheme(resolveTheme(next));
+  };
+
+  return (
+    <div role="group" aria-label="Appearance" className="px-2 py-1">
+      <p className="pb-1 text-[11px] text-slate-500">Appearance</p>
+      <div className="flex gap-1">
+        {CC_THEMES.map((t) => {
+          const Icon = t === 'system' ? Monitor : t === 'light' ? Sun : Moon;
+          const selected = theme === t;
+          return (
+            <button
+              key={t}
+              type="button"
+              role="menuitemradio"
+              aria-checked={selected}
+              onClick={() => choose(t)}
+              title={THEME_LABEL[t]}
+              className={
+                'flex h-7 flex-1 items-center justify-center gap-1 rounded-lg border text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 ' +
+                (selected
+                  ? 'border-slate-300 bg-slate-100 text-slate-900'
+                  : 'border-transparent text-slate-600 hover:bg-slate-50')
+              }
+            >
+              <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{THEME_LABEL[t]}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const THEME_LABEL: Record<CcTheme, string> = {
+  system: 'System',
+  light: 'Light',
+  dark: 'Dark',
+};
 
 function MenuLink({ href, icon, children }: { href: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (

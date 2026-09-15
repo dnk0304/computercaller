@@ -26,6 +26,7 @@
  */
 
 import type { Metadata } from 'next';
+import { THEME_BOOT_SCRIPT } from '@/lib/extensionTheme';
 
 const EXTENSION_DESCRIPTION =
   'Call and text from your browser. Your phone does the calling; your computer does the typing.';
@@ -41,5 +42,27 @@ export default function ExtensionMetadataLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return children;
+  /*
+   * ONE THING BESIDES METADATA (dispatch J addendum, 2026-09-15): the theme
+   * boot script. extension.css no longer asks the OS whether to go dark — it
+   * gates its whole remap on `data-cc-theme` on <html> — so something has to
+   * stamp that attribute, and it has to happen during HTML parse. Anything
+   * that waits for hydration paints a white panel first and corrects it a
+   * frame later, on every popup open, for every dark-mode user.
+   *
+   * Here rather than in the root layout because it is an extension-surface
+   * concern and this is the extension surface's boundary; here rather than in
+   * (surface)/layout.tsx because /extension/login is NOT inside that route
+   * group and needs the same theme.
+   *
+   * The passthrough note above still holds for layout purposes: a <script> is
+   * display:none per the UA stylesheet, so the (surface) layout's height:100%
+   * / overflow:hidden column is unaffected.
+   */
+  return (
+    <>
+      <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+      {children}
+    </>
+  );
 }
