@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- White thumb when ON (against the brand track), muted grey when OFF
+     (against the recessed field track). -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true" android:color="@color/white" />
+    <item android:color="@color/text_tertiary" />
+</selector>

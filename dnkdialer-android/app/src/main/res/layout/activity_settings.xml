@@ -1,0 +1,371 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Settings - v56 (Pixel, step 2). Built to DIRECTION frames 6 and 7.
+
+  Four caps sections, flat row-groups, 56dp rows, hairlines and no elevation.
+  There is no Bluetooth / PC-audio toggle: it is retired in v56, and the
+  honesty about where call audio goes moved into Home's hero copy while a
+  call is running (DIRECTION decision 5).
+
+  ONE gradient on this screen and it is the account avatar. Settings has no
+  primary action to spend the ramp on - everything here is either a
+  navigational row, a switch, or destructive - so the avatar is it.
+
+  TWO DELIBERATE DEPARTURES FROM FRAME 6, both noted in the resume:
+
+  1. The mockup draws the Stay-disconnected switch's ON track with the brand
+     gradient. Trait 3 reserves the ramp for the mark, the avatar and the one
+     primary action, and a switch is none of those; a white thumb on the
+     ramp's midpoint is also only ~2.8:1, under the 3:1 WCAG 2.2 floor for a
+     non-text control. The ON track takes the ramp's terminal stop as a solid
+     instead (~3.5:1). See res/color/cc_switch_track.xml.
+
+  2. The mockup has a separate "Disconnect this session" row under the switch.
+     That action is leaveActivePair(), which needs a PhoneService binding, and
+     SettingsActivity deliberately holds none (see its kdoc) - it drives the
+     lobby through broadcasts precisely so it can never leak one. Rather than
+     widen LobbyActionReceiver, which is kept narrow on purpose, that row
+     stays on Home inside the card it acts on, where the binding already
+     lives. Settings keeps the lobby toggle and the hard reset, which is what
+     the v56 addendum requires of it.
+
+  ID CONTRACT: SettingsActivity binds settingsScroll, settingsContent,
+  settingsTitle, settingsLabel*, settingsLobbyToggleButton,
+  settingsLobbySubtitle, settingsViewMessagesButton, settingsViewCallsButton,
+  settingsPermissionsButton, settingsEnableNotificationsButton,
+  settingsNotificationSettingsButton, settingsSignOutButton,
+  settingsHardResetButton and settingsHardResetSubtitle. All present. Several
+  are now rows or a switch rather than Buttons, so SettingsActivity's casts
+  widened to View / MaterialSwitch accordingly.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/settingsScroll"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:scrollbars="none"
+    android:overScrollMode="never"
+    android:background="?android:attr/windowBackground">
+
+    <LinearLayout
+        android:id="@+id/settingsContent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/cc_page_padding"
+        android:paddingEnd="@dimen/cc_page_padding"
+        android:paddingBottom="@dimen/space_32">
+
+        <!-- ==================== APP BAR ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/cc_appbar_height"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <ImageButton
+                android:id="@+id/settingsBackButton"
+                android:layout_width="@dimen/cc_touch_min"
+                android:layout_height="@dimen/cc_touch_min"
+                android:layout_marginStart="-12dp"
+                android:padding="13dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_cc_back"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/cd_back" />
+
+            <TextView
+                android:id="@+id/settingsTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="@dimen/space_8"
+                android:text="@string/settings_title"
+                android:textSize="@dimen/cc_text_appbar"
+                android:textColor="@color/text_primary"
+                android:fontFamily="sans-serif-medium"
+                android:textStyle="bold"
+                android:letterSpacing="-0.014"
+                android:includeFontPadding="false" />
+        </LinearLayout>
+
+        <!-- ==================== ACCOUNT ==================== -->
+        <TextView
+            android:id="@+id/settingsLabelAccount"
+            style="@style/CcSectionLabel"
+            android:text="@string/settings_section_account"
+            tools:text="ACCOUNT" />
+
+        <com.google.android.material.card.MaterialCardView style="@style/CcRowGroup">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <!-- Identity row. Not tappable: there is nothing behind it.
+                     The avatar is this screen's one gradient surface. -->
+                <LinearLayout
+                    style="@style/CcRow"
+                    android:background="@null"
+                    android:clickable="false"
+                    android:focusable="false"
+                    android:paddingTop="@dimen/space_12"
+                    android:paddingBottom="@dimen/space_12">
+
+                    <TextView
+                        android:id="@+id/settingsAccountAvatar"
+                        android:layout_width="@dimen/cc_avatar_account"
+                        android:layout_height="@dimen/cc_avatar_account"
+                        android:layout_marginEnd="@dimen/space_14"
+                        android:background="@drawable/bg_avatar_brand"
+                        android:gravity="center"
+                        android:textSize="17sp"
+                        android:textColor="#FFFFFFFF"
+                        android:fontFamily="sans-serif-medium"
+                        android:textStyle="bold"
+                        android:importantForAccessibility="no"
+                        tools:text="D" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView
+                            android:id="@+id/settingsAccountEmail"
+                            style="@style/CcRowTitle"
+                            android:text="@string/settings_account_unknown"
+                            android:ellipsize="middle"
+                            android:singleLine="true"
+                            tools:text="dennis@computercaller.com" />
+                        <TextView
+                            style="@style/CcRowSub"
+                            android:text="@string/settings_account_signed_in" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <View style="@style/CcRowHairline" />
+
+                <LinearLayout
+                    android:id="@+id/settingsSignOutButton"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/action_sign_out">
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/action_sign_out" />
+                        <TextView style="@style/CcRowSub" android:text="@string/settings_signout_sub" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- ==================== CONNECTION ==================== -->
+        <TextView
+            android:id="@+id/settingsLabelConnection"
+            style="@style/CcSectionLabel"
+            android:text="@string/settings_section_connection"
+            tools:text="CONNECTION" />
+
+        <com.google.android.material.card.MaterialCardView style="@style/CcRowGroup">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    style="@style/CcRow"
+                    android:background="@null"
+                    android:clickable="false"
+                    android:focusable="false">
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/row_stay_disconnected_title" />
+                        <TextView style="@style/CcRowSub" android:text="@string/row_stay_disconnected_sub" />
+                    </LinearLayout>
+
+                    <!-- Keeps the settingsLobbyToggleButton id: same job as
+                         before (leave the lobby / rejoin it, persisted across
+                         restarts), stated as a state rather than a verb that
+                         had to relabel itself. -->
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/settingsLobbyToggleButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="@dimen/cc_touch_min"
+                        android:layout_marginStart="@dimen/space_12"
+                        android:minWidth="0dp"
+                        android:minHeight="@dimen/cc_touch_min"
+                        android:contentDescription="@string/row_stay_disconnected_title"
+                        android:showText="false"
+                        app:thumbTint="@color/cc_switch_thumb"
+                        app:trackTint="@color/cc_switch_track" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <TextView
+            android:id="@+id/settingsLobbySubtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_8"
+            android:layout_marginStart="2dp"
+            android:text="@string/settings_lobby_subtitle"
+            android:textSize="@dimen/cc_text_meta"
+            android:textColor="@color/text_tertiary"
+            android:lineSpacingMultiplier="1.45" />
+
+        <!-- ==================== ON THIS PHONE ====================
+             The synced viewers, the permission deep link and the notification
+             settings. Same group, same order and the same three glyphs Home
+             uses, so the two screens teach each other. -->
+        <TextView
+            android:id="@+id/settingsLabelSynced"
+            style="@style/CcSectionLabel"
+            android:text="@string/section_on_this_phone"
+            tools:text="ON THIS PHONE" />
+
+        <!-- Shown only while notifications are blocked at OS level;
+             SettingsActivity flips it on every resume. -->
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/settingsEnableNotificationsButton"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/cc_pill_height_small"
+            android:layout_marginBottom="@dimen/space_10"
+            android:text="@string/action_enable_notifications"
+            android:textSize="@dimen/cc_text_sub"
+            android:textAllCaps="false"
+            android:textColor="@color/accent_blue"
+            android:fontFamily="sans-serif-medium"
+            android:background="@drawable/bg_pill_outline"
+            android:stateListAnimator="@null"
+            android:visibility="gone"
+            tools:visibility="visible" />
+
+        <com.google.android.material.card.MaterialCardView style="@style/CcRowGroup">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/settingsViewMessagesButton"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/row_messages_title">
+
+                    <ImageView style="@style/CcRowTile" android:src="@drawable/ic_cc_message" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/row_messages_title" />
+                        <TextView style="@style/CcRowSub" android:text="@string/row_messages_sub" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+
+                <View style="@style/CcRowHairline" />
+
+                <LinearLayout
+                    android:id="@+id/settingsViewCallsButton"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/row_calls_title">
+
+                    <ImageView style="@style/CcRowTile" android:src="@drawable/ic_cc_calllog" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/row_calls_title" />
+                        <TextView style="@style/CcRowSub" android:text="@string/row_calls_sub" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+
+                <View style="@style/CcRowHairline" />
+
+                <LinearLayout
+                    android:id="@+id/settingsPermissionsButton"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/settings_open_permissions">
+
+                    <ImageView style="@style/CcRowTile" android:src="@drawable/ic_cc_check" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/settings_open_permissions" />
+                        <TextView
+                            android:id="@+id/settingsPermissionsSub"
+                            style="@style/CcRowSub"
+                            android:text="@string/settings_permissions_sub" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+
+                <View style="@style/CcRowHairline" />
+
+                <LinearLayout
+                    android:id="@+id/settingsNotificationSettingsButton"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/settings_open_notifications">
+
+                    <ImageView style="@style/CcRowTile" android:src="@drawable/ic_stat_cc" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/settings_open_notifications" />
+                        <TextView style="@style/CcRowSub" android:text="@string/settings_notifications_sub" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Kept resolvable: SettingsActivity still binds this id, and the
+             permissions label is part of the id contract from step 1 even
+             though the section it labelled is now folded into ON THIS PHONE. -->
+        <TextView
+            android:id="@+id/settingsLabelPermissions"
+            style="@style/CcSectionLabel"
+            android:text="@string/settings_section_permissions"
+            android:visibility="gone" />
+
+        <!-- ==================== TROUBLESHOOTING ==================== -->
+        <TextView
+            android:id="@+id/settingsLabelTroubleshooting"
+            style="@style/CcSectionLabel"
+            android:text="@string/settings_section_troubleshooting"
+            tools:text="TROUBLESHOOTING" />
+
+        <com.google.android.material.card.MaterialCardView style="@style/CcRowGroup">
+
+            <LinearLayout
+                android:id="@+id/settingsHardResetButton"
+                style="@style/CcRow"
+                android:contentDescription="@string/action_hard_reset">
+
+                <LinearLayout style="@style/CcRowText">
+                    <TextView
+                        style="@style/CcRowTitle.Danger"
+                        android:text="@string/action_hard_reset" />
+                    <TextView
+                        android:id="@+id/settingsHardResetSubtitle"
+                        style="@style/CcRowSub"
+                        android:text="@string/settings_hard_reset_sub" />
+                </LinearLayout>
+
+                <ImageView style="@style/CcRowChevron" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <TextView
+            android:id="@+id/settingsFooter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:gravity="center"
+            android:textSize="@dimen/cc_text_foot"
+            android:textColor="@color/text_tertiary"
+            android:lineSpacingMultiplier="1.5"
+            tools:text="ComputerCaller 1.0.32 - Calls run on this device" />
+    </LinearLayout>
+</ScrollView>

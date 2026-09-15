@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      v56 — DARK overrides. The colour tokens themselves already swap via
+      values-night/colors.xml, so the only thing that genuinely has to be
+      restated here is the status-bar icon polarity: a dark surface needs
+      LIGHT icons, which is the opposite of the light-mode default.
+    -->
+    <style name="Theme.DNKDialerCompanion" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/accent_blue</item>
+        <item name="colorPrimaryVariant">@color/accent_blue_pressed</item>
+        <item name="colorOnPrimary">@color/text_primary</item>
+
+        <item name="colorSecondary">@color/accent_cyan</item>
+        <item name="colorSecondaryVariant">@color/accent_blue</item>
+        <item name="colorOnSecondary">@color/surface_base</item>
+
+        <item name="android:windowBackground">@drawable/bg_app_solid</item>
+        <item name="android:statusBarColor">@color/surface_base</item>
+        <item name="android:navigationBarColor">@color/surface_base</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+
+        <!-- Dark surface → light status-bar icons. -->
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <!-- v56: the nav bar is the same page surface as the status bar, so
+             its icon polarity has to match too. Without this the gesture pill
+             is light-on-light in day mode on API 27+. -->
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">false</item>
+    </style>
+</resources>

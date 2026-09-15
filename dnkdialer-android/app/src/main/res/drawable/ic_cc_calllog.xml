@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Call log row. Handset over a dial, matching the mockup glyph. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="@color/text_secondary">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M12,5c-4.4,0 -8,1.8 -8,4v2.2c0,0.5 0.4,0.9 0.9,0.8l3.1,-0.4c0.5,-0.1 0.8,-0.5 0.8,-0.9v-1c1,-0.3 2.1,-0.5 3.2,-0.5s2.2,0.2 3.2,0.5v1c0,0.4 0.3,0.8 0.8,0.9l3.1,0.4c0.5,0.1 0.9,-0.3 0.9,-0.8V9C20,6.8 16.4,5 12,5z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M12,13.2a2.9,2.9 0 1 0 0,5.8a2.9,2.9 0 0 0 0,-5.8z" />
+</vector>

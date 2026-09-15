@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  THE primary action. One of the three things allowed to carry the brand ramp
+  (DIRECTION trait 3) and at most one per screen: Accept on Home's connection
+  request, Rejoin lobby on Home when the phone is out of the lobby, Sign in on
+  the sign-in screen. CSS 135deg is angle 315 here: top-left to bottom-right.
+
+  The disabled state drops the ramp for a flat muted fill, because the ramp is
+  what says "this is the action" - keeping it while the button is inert (the
+  "Signing in..." beat on sign-in) would be a lie the user can tap.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/accent_blue_dim" />
+            <corners android:radius="@dimen/cc_radius_pill" />
+        </shape>
+    </item>
+    <item>
+        <ripple android:color="#33FFFFFF">
+            <item>
+                <shape android:shape="rectangle">
+                    <gradient
+                        android:type="linear"
+                        android:angle="315"
+                        android:startColor="@color/cc_brand_start"
+                        android:centerColor="@color/cc_brand_mid"
+                        android:endColor="@color/cc_brand_end" />
+                    <corners android:radius="@dimen/cc_radius_pill" />
+                </shape>
+            </item>
+        </ripple>
+    </item>
+</selector>

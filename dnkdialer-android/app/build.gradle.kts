@@ -330,8 +330,13 @@ android {
         // CP2 PC-audio confirmation (2026-09-08): adds the
         // AUDIO_CONNECT / AUDIO_STATUS / AUDIO_DISCONNECT protocol and the
         // ACTION_SCO_AUDIO_STATE_UPDATED receiver. No google-signin changes.
-        versionCode = 55
-        versionName = "1.0.31"
+        // v56 (2026-09-15) - REDESIGN wave. Notification body tap now
+        // surfaces the Accept/Decline dialog (the reported bug), new
+        // SettingsActivity, phone-side PC-audio surface retired behind
+        // FeatureFlags.PC_AUDIO_UI_ENABLED, monochrome ic_stat_cc small
+        // notification icon, DayNight theme + light/dark token sets.
+        versionCode = 56
+        versionName = "1.0.32"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client

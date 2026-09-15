@@ -196,6 +196,28 @@ class PhoneService : Service() {
     private val pendingRequestHandler = Handler(Looper.getMainLooper())
 
     /**
+     * v56 - browser identity per pending requestId, kept alongside
+     * [pendingRequestTimers] so [getPendingPairings] can re-surface the
+     * Accept/Decline dialog with the SAME copy the notification used when
+     * MainActivity comes to the foreground after the request arrived.
+     */
+    private val pendingRequestIdentities = mutableMapOf<String, String>()
+
+    /**
+     * v56 - snapshot of still-pending pairing requests (id -> identity).
+     *
+     * MainActivity calls this on every resume (bound-service path) so a
+     * request that arrived while the app was backgrounded still produces
+     * the in-app dialog, regardless of how the app was brought forward
+     * (launcher icon, notification body tap, recents).
+     */
+    fun getPendingPairings(): Map<String, String> =
+        pendingRequestTimers.keys.associateWith { pendingRequestIdentities[it].orEmpty() }
+
+    /** v56 - true while the phone leg of a call is ringing or off-hook. */
+    fun getIsCallInProgress(): Boolean = isTelephonyCallActive()
+
+    /**
      * Round 5 — client-side connect timeout.
      *
      * The `java_websocket` library's `connect()` opens a TCP socket and
@@ -2150,7 +2172,7 @@ class PhoneService : Service() {
         // stay identical apart from the body text.
         startForeground(
             NOTIFICATION_ID,
-            buildForegroundNotification("Phone bridge is active")
+            buildForegroundNotification(getString(R.string.notif_ongoing_waiting))
         )
 
         // Dispatch #29 — Phase 4 finish. startServer() (the LAN
@@ -2304,8 +2326,25 @@ class PhoneService : Service() {
         // a dedicated "incoming connection" screen — opening the app is
         // enough for the user to see the heads-up that's still sitting
         // in the shade.
+        // v56 notification-tap fix - the body tap must carry the pairing
+        // identifiers so MainActivity can raise the Accept/Decline dialog.
+        // Before v56 it opened a bare MainActivity; the only surface that
+        // ever showed the dialog was the ACTION_PAIRING_REQUEST_IN_FOREGROUND
+        // broadcast fired at ARRIVAL time, which nobody was listening to
+        // while the app was backgrounded - so tapping the notification
+        // opened an app with no prompt.
+        //
+        // MainActivity is launchMode=singleTop (AndroidManifest), so
+        // CLEAR_TOP on an existing instance delivers through onNewIntent;
+        // a cold start delivers through onCreate. Both are handled.
+        //
+        // Request code baseCode + 2 is distinct per pairingId AND distinct
+        // from the foreground notification's content-intent code 0, so
+        // FLAG_UPDATE_CURRENT refreshes THIS pairing's extras only.
         val tapIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_PAIRING_ID, requestId)
+            putExtra(EXTRA_PAIRING_IDENTITY, address)
         }
         val tapPending = PendingIntent.getActivity(
             this,
@@ -2321,16 +2360,22 @@ class PhoneService : Service() {
         // connect" — concise + same string in both surfaces so users
         // recognise the same wording in the shade and the dialog.
         val notification = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
-            .setContentTitle("Connection request")
-            .setContentText("$address wants to connect")
+            .setContentTitle(getString(R.string.pair_request_notification_title))
+            .setContentText(getString(R.string.notif_request_body, address))
             .setStyle(NotificationCompat.BigTextStyle().bigText(
-                "$address is trying to connect to your phone. " +
-                "Approve only if you started this connection."
+                getString(R.string.notif_request_big, address)
             ))
-            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setSmallIcon(R.drawable.ic_stat_cc)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            // v56 - NO setColor here. DIRECTION asks for a brand-green
+            // ACCEPT, but Android's notification colour is a single
+            // notification-wide value: tinting it would paint DECLINE green
+            // too, which is worse than stock. The platform exposes no
+            // per-action tint, so both actions stay in the system default
+            // rather than fake a green that also stains the destructive
+            // choice.
             .setAutoCancel(false)  // don't dismiss on tap — user must Accept or Decline
             .setOngoing(false)
             .setContentIntent(tapPending)
@@ -2346,6 +2391,7 @@ class PhoneService : Service() {
             )
             .build()
 
+        pendingRequestIdentities[requestId] = address
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.notify(notificationIdFor(requestId), notification)
     }
@@ -2409,6 +2455,7 @@ class PhoneService : Service() {
         pendingRequestTimers.remove(pairingId)?.let {
             pendingRequestHandler.removeCallbacks(it)
         }
+        pendingRequestIdentities.remove(pairingId)
         dismissConnectionRequestNotification(pairingId)
 
         val type = if (accept) "ACCEPT_PAIRING" else "DECLINE_PAIRING"
@@ -2469,6 +2516,7 @@ class PhoneService : Service() {
         pendingRequestTimers.remove(pairingId)?.let {
             pendingRequestHandler.removeCallbacks(it)
         }
+        pendingRequestIdentities.remove(pairingId)
         dismissConnectionRequestNotification(pairingId)
     }
 
@@ -2490,6 +2538,7 @@ class PhoneService : Service() {
             cancelPendingPairing(id)
         }
         pendingRequestTimers.clear()
+        pendingRequestIdentities.clear()
     }
 
     /**
@@ -2517,9 +2566,12 @@ class PhoneService : Service() {
         )
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("ComputerCaller")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            // v56 - the state is the TITLE, and there is no second line.
+            // Android already prints "ComputerCaller" in the shade header, so
+            // repeating it as the title cost a line and said nothing; the
+            // mockup's ongoing card is one line of state for that reason.
+            .setContentTitle(text)
+            .setSmallIcon(R.drawable.ic_stat_cc)
             // Round 7 — tint the notification chrome with the brand accent so
             // the OS row reads as part of the app. (Folded into updateNotification
             // too as of v27 — the old updateNotification dropped this.)
@@ -2562,6 +2614,17 @@ class PhoneService : Service() {
                 disconnectPending
             )
         }
+
+        // v56 (DIRECTION-android-v56.md) - the ongoing notification carries
+        // DISCONNECT / RECONNECT *and* OPEN. OPEN deliberately reuses the
+        // content intent above rather than minting a second one: the body
+        // tap and the button must land on exactly the same Activity, and a
+        // second PendingIntent on request code 0 would overwrite the first.
+        builder.addAction(
+            android.R.drawable.ic_menu_view,
+            getString(R.string.notif_action_open),
+            pendingIntent
+        )
 
         return builder.build()
     }
@@ -3123,7 +3186,12 @@ class PhoneService : Service() {
                 isClientConnected = connected
                 lastClientAddress = if (connected) "relay" else null
                 android.util.Log.d("PhoneService", if (connected) "Connected to relay!" else "Disconnected from relay")
-                updateNotification(if (connected) "Connected to PC via relay" else "Phone bridge is active")
+                updateNotification(
+                    getString(
+                        if (connected) R.string.notif_ongoing_connected
+                        else R.string.notif_ongoing_waiting
+                    )
+                )
                 // onOpen → OPEN. onClose → only flip to IDLE if we
                 // weren't already pushed to FAILED by the error callback
                 // (close fires AFTER error for non-normal closures).
@@ -3150,7 +3218,7 @@ class PhoneService : Service() {
                     isPairActive = false
                     // Foreground notification back to "Waiting" — the
                     // user is no longer connected to a browser.
-                    updateNotification(getString(R.string.status_waiting_for_web))
+                    updateNotification(getString(R.string.notif_ongoing_waiting))
                     // Unexpected disconnect (the user didn't tap Sign Out
                     // or anything that would have called disconnectRelay()
                     // — that path clears clientRelayUrl). Schedule the
@@ -3675,7 +3743,7 @@ class PhoneService : Service() {
                     // the foreground notification text — the pair is
                     // over but we're still available for the next one.
                     isPairActive = false
-                    updateNotification(getString(R.string.status_waiting_for_web))
+                    updateNotification(getString(R.string.notif_ongoing_waiting))
                     // Drop any pending request notifications for this
                     // session — defensive; usually nothing is pending
                     // by the time TERMINATED arrives.
@@ -4434,6 +4502,7 @@ class PhoneService : Service() {
         // late-arriving Accept broadcast can't reach a dead service.
         pendingRequestTimers.values.forEach { pendingRequestHandler.removeCallbacks(it) }
         pendingRequestTimers.clear()
+        pendingRequestIdentities.clear()
         ConnectionRequestReceiver.serviceHandler = null
         try {
             connectionRequestReceiver?.let { unregisterReceiver(it) }

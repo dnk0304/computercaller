@@ -1,4 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  v56 — LIGHT token set. Values are the DIRECTION-android-v56.md palette
+  (shared with the Reflecto extension direction). values-night/colors.xml
+  carries the DARK twin under the SAME names, so a token reference in a
+  layout or drawable resolves to the right side of the palette with no
+  qualifier logic at the call site.
+
+  The Round 7 "sleek-tech" dark-only values that used to live here moved
+  verbatim-in-spirit to values-night. Pre-v56 the app was dark-only; as of
+  v56 it follows the system theme (decision 3, approved).
+-->
 <resources>
     <!-- Legacy Android Material defaults (kept so Theme.AppCompat fallbacks resolve) -->
     <color name="purple_200">#FFBB86FC</color>
@@ -9,49 +20,40 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 
-    <!-- =================================================== -->
-    <!-- ComputerCaller — Round 7 (sleek-tech)               -->
-    <!--                                                     -->
-    <!-- Direction: modern fintech / AI tools / pro tools    -->
-    <!-- (Linear, Vercel, Revolut, Claude.ai). Dark base by  -->
-    <!-- default. Pure near-black. Electric blue accent.     -->
-    <!-- Emerald LIVE dot retained — semantically correct.   -->
-    <!--                                                     -->
-    <!-- Departures from Round 6 (warm-terracotta):          -->
-    <!--   - Warm near-black (#0A0A0B) → pure near-black     -->
-    <!--     (#050507). Slight cool bias on raised surfaces  -->
-    <!--     so layered chrome reads as "screen" not "paper" -->
-    <!--   - Warm orange #E8763A → electric blue #0A84FF     -->
-    <!--     (Apple system blue). Used on CTAs, URL bar,     -->
-    <!--     wordmark stroke. Cyan secondary for hover/glow. -->
-    <!--   - Text: warm off-white #F4F1EA → neutral cool     -->
-    <!--     #F5F7FA. Less "paper", more "OLED".             -->
-    <!--   - Hairlines on white@8-15% instead of warm grays. -->
-    <!-- =================================================== -->
+    <!-- ===================================================
+         v56 palette. The light values are DIRECTION-android-v56.md; the dark
+         twins live in values-night/colors.xml under the SAME names, so a
+         token reference in a layout or drawable needs no qualifier logic.
 
-    <!-- Surface scale — pure near-black with subtle cool elevation. -->
-    <color name="surface_base">#050507</color>          <!-- app background, the void -->
-    <color name="surface_raised">#0E0F12</color>        <!-- subtle elevation (cards) -->
-    <color name="surface_inset">#13141A</color>         <!-- recessed (url block, fields) -->
-    <color name="surface_border">#FFFFFF1A</color>      <!-- 10% white hairline -->
-    <color name="surface_border_strong">#FFFFFF26</color> <!-- 15% white — focused/active -->
+         The Round 7 "sleek-tech" commentary that used to sit here described
+         a dark-only, electric-blue (#0A84FF) palette that no longer exists:
+         as of v56 the app follows the system theme and the accent tokens
+         resolve to the brand ramp. The accent_blue / accent_warm names are
+         kept as aliases so un-migrated references stay on-palette.
+         =================================================== -->
+    <!-- Surface scale: page / card / field / hairline. Light values here,
+         dark twins in values-night under the same names. -->
+    <color name="surface_base">#FAFAFA</color>          <!-- page -->
+    <color name="surface_raised">#FFFFFF</color>        <!-- cards; separation is surface + hairline, never elevation -->
+    <color name="surface_inset">#F2F2F2</color>         <!-- recessed: fields, icon tiles, notice bands -->
+    <color name="surface_border">#E5E5E5</color>        <!-- hairline -->
+    <color name="surface_border_strong">#D4D4D4</color> <!-- outline buttons, switch track ring -->
     <color name="surface_qr">#FFFFFF</color>            <!-- pure white QR plate; max contrast for scanners -->
 
-    <!-- Text scale — cool neutral grays. -->
-    <color name="text_primary">#F5F7FA</color>          <!-- near-white, slight cool -->
-    <color name="text_secondary">#A1A6B0</color>        <!-- mid-cool gray -->
-    <color name="text_tertiary">#60656E</color>         <!-- dim cool gray -->
-    <color name="text_label">#6B7280</color>            <!-- eyebrow / label -->
+    <!-- Text scale. -->
+    <color name="text_primary">#171717</color>          <!-- ink -->
+    <color name="text_secondary">#525252</color>        <!-- body, presence line -->
+    <color name="text_tertiary">#737373</color>         <!-- row subtitles, footers, caps labels -->
+    <color name="text_label">#737373</color>            <!-- alias of tertiary, kept for old refs -->
 
-    <!-- Accent — electric blue. Apple system blue (#0A84FF) is the
-         de-facto "modern tech" primary in 2025. Used SPARINGLY:
-         primary CTA gradient, URL-block left bar, wordmark stroke,
-         focused field border. Cyan is the gradient companion for
-         depth on the primary CTA. -->
-    <color name="accent_blue">#0A84FF</color>           <!-- electric blue, primary -->
-    <color name="accent_blue_pressed">#0066D6</color>   <!-- darker pressed state -->
-    <color name="accent_blue_dim">#1F3A6B</color>       <!-- muted / disabled -->
-    <color name="accent_cyan">#00D4FF</color>           <!-- gradient companion, glow -->
+    <!-- Accent. As of v56 these resolve to stops on the brand ramp rather
+         than the old electric blue, so any reference that has not migrated to
+         cc_brand_* still lands on-palette. Used sparingly: focused field
+         border, the one link-weight action in a notice band. -->
+    <color name="accent_blue">#1E8FB2</color>           <!-- the brand ramp's terminal stop -->
+    <color name="accent_blue_pressed">#17708C</color>   <!-- darker pressed state -->
+    <color name="accent_blue_dim">#A8D6E4</color>       <!-- muted / disabled -->
+    <color name="accent_cyan">#22A89A</color>           <!-- the ramp's midpoint -->
 
     <!-- Google Sign-in branding (light variant) — fixed per Google's
          guidelines, NOT part of the app palette. Do not retint. -->
@@ -64,28 +66,37 @@
          so any drawable / theme reference that hasn't been migrated
          yet still compiles to the new palette. Pure mapping; no
          visual difference vs the canonical accent_blue tokens. -->
-    <color name="accent_warm">#0A84FF</color>
-    <color name="accent_warm_pressed">#0066D6</color>
-    <color name="accent_warm_dim">#1F3A6B</color>
+    <color name="accent_warm">#1E8FB2</color>
+    <color name="accent_warm_pressed">#17708C</color>
+    <color name="accent_warm_dim">#A8D6E4</color>
 
     <!-- Status semantic — the dot is the PRIMARY signal. Emerald
          stays for LIVE (universal "healthy service" green), amber
          for WAITING (universal "in-progress"), red for FAILED. The
          IDLE dim slate is now cooler so it sits in the same family
          as the rest of the chrome. -->
-    <color name="dot_live">#10B981</color>              <!-- emerald-500; connected -->
-    <color name="dot_live_soft">#10B98140</color>       <!-- 25% emerald — glow ring -->
-    <color name="dot_live_glow">#10B98166</color>       <!-- 40% emerald — outer glow -->
-    <color name="dot_waiting">#F59E0B</color>           <!-- amber-500; pending -->
-    <color name="dot_waiting_soft">#F59E0B40</color>    <!-- amber glow for pulse -->
-    <color name="dot_idle">#2A2D35</color>              <!-- cool dim gray; offline -->
-    <color name="dot_connecting">#0A84FF</color>        <!-- electric blue; handshake -->
-    <color name="dot_connecting_soft">#0A84FF40</color>
-    <color name="dot_failed">#FF453A</color>            <!-- iOS system red -->
-    <color name="dot_failed_soft">#FF453A40</color>
+    <color name="dot_live">#059669</color>              <!-- emerald-500; connected -->
+    <color name="dot_live_soft">#05966940</color>       <!-- 25% emerald — glow ring -->
+    <color name="dot_live_glow">#05966966</color>       <!-- 40% emerald — outer glow -->
+    <color name="dot_waiting">#D97706</color>           <!-- amber-500; pending -->
+    <color name="dot_waiting_soft">#D9770640</color>    <!-- amber glow for pulse -->
+    <color name="dot_idle">#D4D4D4</color>              <!-- cool dim gray; offline -->
+    <color name="dot_connecting">#1E8FB2</color>        <!-- electric blue; handshake -->
+    <color name="dot_connecting_soft">#1E8FB240</color>
+    <color name="dot_failed">#DC2626</color>            <!-- iOS system red -->
+    <color name="dot_failed_soft">#DC262640</color>
 
     <!-- Token-input chrome. -->
-    <color name="field_surface">#13141A</color>
-    <color name="field_border">#FFFFFF1A</color>
-    <color name="field_border_focused">#0A84FF</color>
+    <color name="field_surface">#F2F2F2</color>
+    <color name="field_border">#D4D4D4</color>
+    <color name="field_border_focused">#1E8FB2</color>
+
+    <!-- ================= v56 brand ramp (DIRECTION-android-v56.md) =========
+         linear-gradient(135deg, #35c977, #22a89a, #1e8fb2). Identical in
+         light and dark - the mark, the account avatar and the single
+         primary action per screen are the only three things allowed to
+         carry it. Not overridden in values-night. -->
+    <color name="cc_brand_start">#35C977</color>
+    <color name="cc_brand_mid">#22A89A</color>
+    <color name="cc_brand_end">#1E8FB2</color>
 </resources>

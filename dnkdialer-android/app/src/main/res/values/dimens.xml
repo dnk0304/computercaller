@@ -60,4 +60,46 @@
 
     <!-- QR — 200dp unchanged. -->
     <dimen name="qr_size">200dp</dimen>
+
+    <!-- ================= v56 geometry (DIRECTION-android-v56.md) =========
+         The mockups were authored at a 360dp phone width, so every px in
+         mock.html is 1:1 a dp here. Names are geometric, not per-screen,
+         because Home / Settings / Sign-in share the same pieces.
+
+         Touch targets: the VISUAL sizes below (30dp icon tile, 36dp gear
+         circle, 46x26 switch) are smaller than 48dp on purpose — each one
+         sits inside a 48dp-or-taller hit area (a 56dp row, or a 48dp
+         ImageButton with padding). Nothing tappable is under 48dp. -->
+    <dimen name="cc_page_padding">18dp</dimen>
+    <dimen name="cc_appbar_height">52dp</dimen>
+    <dimen name="cc_row_height">56dp</dimen>
+    <dimen name="cc_pill_height">50dp</dimen>
+    <dimen name="cc_pill_height_small">44dp</dimen>
+    <dimen name="cc_touch_min">48dp</dimen>
+
+    <dimen name="cc_radius_pill">999dp</dimen>
+    <dimen name="cc_radius_hero">20dp</dimen>
+    <dimen name="cc_radius_group">16dp</dimen>
+    <dimen name="cc_radius_band">14dp</dimen>
+    <dimen name="cc_radius_tile">9dp</dimen>
+
+    <dimen name="cc_mark_size">34dp</dimen>
+    <dimen name="cc_mark_signin">112dp</dimen>
+    <dimen name="cc_gear_size">36dp</dimen>
+    <dimen name="cc_tile_size">30dp</dimen>
+    <dimen name="cc_avatar_hero">86dp</dimen>
+    <dimen name="cc_avatar_account">44dp</dimen>
+    <dimen name="cc_presence_dot">9dp</dimen>
+    <dimen name="cc_hero_padding">18dp</dimen>
+
+    <!-- Type scale, straight off the direction's token block. -->
+    <dimen name="cc_text_hero">21sp</dimen>
+    <dimen name="cc_text_appbar">14.5sp</dimen>
+    <dimen name="cc_text_button">14.5sp</dimen>
+    <dimen name="cc_text_sub">13sp</dimen>
+    <dimen name="cc_text_row_title">13sp</dimen>
+    <dimen name="cc_text_presence">12.5sp</dimen>
+    <dimen name="cc_text_meta">11.5sp</dimen>
+    <dimen name="cc_text_section_label">10.5sp</dimen>
+    <dimen name="cc_text_foot">11sp</dimen>
 </resources>

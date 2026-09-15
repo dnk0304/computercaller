@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flat row-group under a caps label (DIRECTION trait 4). The group owns the
+     card surface, the hairline and the 16dp radius; rows inside are
+     transparent and separated by their own 1dp hairline views, so the first
+     and last rows clip to the group corners the way the mockup shows. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/surface_raised" />
+    <stroke android:width="1dp" android:color="@color/surface_border" />
+    <corners android:radius="@dimen/cc_radius_group" />
+</shape>

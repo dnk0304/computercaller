@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Inline notice band: "Notifications are off", the ColorOS hint, the
+     request-expiry line. Recessed field surface so it reads as a note about
+     the page rather than another card competing with the hero. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/surface_inset" />
+    <stroke android:width="1dp" android:color="@color/surface_border" />
+    <corners android:radius="@dimen/cc_radius_band" />
+</shape>

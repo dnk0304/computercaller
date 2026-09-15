@@ -1,26 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!--
-      ComputerCaller companion theme (Round 7 — sleek-tech).
+      ComputerCaller companion theme — v56.
 
-      Parent: MaterialComponents NoActionBar (Dark). The previous round
-      used the light-base MaterialComponents variant; switching to the
-      Dark base means OS-provided affordances (spinners, ripples,
-      checkbox tints) inherit the right contrast on the near-black
-      surface without per-widget overrides.
+      Parent is now the DayNight variant of MaterialComponents NoActionBar.
+      Pre-v56 it was the Dark variant and the app was dark-only; decision 3
+      of DIRECTION-android-v56.md (approved) ships light AND dark following
+      the system theme. AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM is set
+      in the Application/Activity entry points so the mode is explicit and
+      does not depend on an OEM default.
 
-      Primary swapped warm-terracotta → electric blue (Apple system
-      blue, #0A84FF). Status + nav bars match the surface so the app
-      is one continuous canvas with no chrome seam.
+      This file is the LIGHT configuration; values-night/themes.xml carries
+      the dark overrides. Every colour here is a token from
+      values/colors.xml, whose dark twin lives in values-night/colors.xml —
+      so most of the theme needs no night override at all.
+
+      Pixel (v56 step 2) owns the layout-level application of these tokens.
     -->
-    <style name="Theme.DNKDialerCompanion" parent="Theme.MaterialComponents.NoActionBar">
+    <style name="Theme.DNKDialerCompanion" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="colorPrimary">@color/accent_blue</item>
         <item name="colorPrimaryVariant">@color/accent_blue_pressed</item>
-        <item name="colorOnPrimary">@color/text_primary</item>
+        <item name="colorOnPrimary">@color/white</item>
 
         <item name="colorSecondary">@color/accent_cyan</item>
         <item name="colorSecondaryVariant">@color/accent_blue</item>
-        <item name="colorOnSecondary">@color/surface_base</item>
+        <item name="colorOnSecondary">@color/white</item>
 
         <item name="android:windowBackground">@drawable/bg_app_solid</item>
         <item name="android:statusBarColor">@color/surface_base</item>
@@ -28,7 +32,11 @@
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
 
-        <!-- Dark surface → light status-bar icons. -->
-        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <!-- Light surface → dark status-bar icons. Inverted in values-night. -->
+        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
+        <!-- v56: the nav bar is the same page surface as the status bar, so
+             its icon polarity has to match too. Without this the gesture pill
+             is light-on-light in day mode on API 27+. -->
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
     </style>
 </resources>
