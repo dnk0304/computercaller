@@ -45,11 +45,16 @@ import type { Contact, SmsMessage } from '@/hooks';
 import type { CallLogEntry } from '@/hooks/phoneTypes';
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
 import {
+  CallHistoryEntries,
+  callTypeStyle,
+  useCallHistoryEntries,
+  formatCallEntryDuration as formatDuration,
+} from '@/components/CallHistoryEntries';
+import {
   Phone,
   PhoneCall,
   PhoneMissed,
   PhoneOff,
-  PhoneIncoming,
   ArrowDownLeft,
   ArrowLeft,
   ArrowUpRight,
@@ -129,22 +134,6 @@ function formatCallDuration(seconds: number): string {
   const s = Math.floor(seconds % 60);
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-/**
- * Compact past-call duration for the call-history detail panel.
- * Renders as "2m 34s" / "0m 22s" / "1h 5m 10s". Returns an empty string for
- * zero / missing / negative values — missed and rejected calls have a
- * duration of 0, and the panel suppresses the duration column for those rows.
- */
-function formatDuration(seconds: number | undefined | null): string {
-  if (!seconds || seconds < 0) return '';
-  const total = Math.floor(seconds);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  return `${m}m ${s}s`;
 }
 
 /** Initials for an avatar. Falls back to "?" when nothing usable is given. */
@@ -258,30 +247,6 @@ function statusColor(status: MessageStatus): string {
   if (status === 'failed') return 'text-red-100';
   if (status === 'delivered') return 'text-emerald-200';
   return 'text-white/70';
-}
-
-// ---------- Call-log icon styling -------------------------------------------
-
-type CallTypeStyle = {
-  bg: string;
-  fg: string;
-  Icon: React.ComponentType<{ className?: string }>;
-  label: string;
-};
-
-function callTypeStyle(type: CallLogEntry['type']): CallTypeStyle {
-  switch (type) {
-    case 'incoming':
-      return { bg: 'bg-emerald-100', fg: 'text-emerald-600', Icon: ArrowDownLeft, label: 'Incoming' };
-    case 'outgoing':
-      return { bg: 'bg-blue-100', fg: 'text-blue-600', Icon: ArrowUpRight, label: 'Outgoing' };
-    case 'missed':
-      return { bg: 'bg-rose-100', fg: 'text-rose-600', Icon: PhoneMissed, label: 'Missed' };
-    case 'rejected':
-      return { bg: 'bg-red-100', fg: 'text-red-600', Icon: PhoneOff, label: 'Rejected' };
-    default:
-      return { bg: 'bg-slate-100', fg: 'text-slate-500', Icon: PhoneIncoming, label: 'Unknown' };
-  }
 }
 
 // ---------- MessengerBar ---------------------------------------------------
@@ -799,33 +764,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     [callHistoryNumber, contacts]
   );
 
-  // All call logs sharing the same number as `callHistoryNumber`. We compare
-  // the last 10 digits so "+47 45720075" / "4745720075" / "45720075" all
-  // resolve to the same person — Android exposes any of those formats
-  // depending on how the call was placed/received.
-  const callHistoryEntries = useMemo<CallLogEntry[]>(() => {
-    if (!callHistoryNumber) return [];
-    const digits = (n: string) => (n || '').replace(/\D/g, '');
-    const targetDigits = digits(callHistoryNumber);
-    if (!targetDigits) {
-      // Alphanumeric sender — exact case-insensitive compare.
-      const lower = callHistoryNumber.toLowerCase();
-      return deferredCallLogs
-        .filter((l) => (l.number ?? '').toLowerCase() === lower)
-        .sort((a, b) => b.date - a.date);
-    }
-    const matchLen = Math.min(targetDigits.length, 10);
-    const targetTail = targetDigits.slice(-matchLen);
-    return deferredCallLogs
-      .filter((l) => {
-        const ld = digits(l.number);
-        if (!ld) {
-          return (l.number ?? '').toLowerCase() === callHistoryNumber.toLowerCase();
-        }
-        return ld.slice(-matchLen) === targetTail;
-      })
-      .sort((a, b) => b.date - a.date);
-  }, [deferredCallLogs, callHistoryNumber]);
+  // All call logs sharing the same number as `callHistoryNumber` — the SAME
+  // hook Phone Mode's Recent list uses, so the two surfaces can never drift
+  // on number matching. See components/CallHistoryEntries.tsx.
+  const callHistoryEntries = useCallHistoryEntries(deferredCallLogs, callHistoryNumber);
 
   // Display name for the history panel header — prefer the contact name, then
   // any name on a matching log entry, then the raw number.
@@ -1800,40 +1742,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                 return [
                   rowEl,
                   <li key={`hist-${log.id}`} className="bg-slate-50/60 rounded-xl mx-1 mb-1 overflow-hidden animate-in slide-in-from-top-1 duration-150">
-                    <ul className="divide-y divide-slate-100/80 px-2 py-1">
-                      {callHistoryEntries.map((entry) => {
-                        const es = callTypeStyle(entry.type);
-                        const EIcon = es.Icon;
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        const entrySimId = (entry as any).simId;
-                        const simName = entrySimId && simList.length > 1
-                          ? simList.find((s) => String(s.id) === entrySimId)?.name ?? null
-                          : null;
-                        return (
-                          <li key={entry.id} className="flex items-center gap-2 py-2 text-[12px]">
-                            <div className={clsx('w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0', es.bg, es.fg)}>
-                              <EIcon className="w-3.5 h-3.5" />
-                            </div>
-                            <span className="flex-1 text-slate-800 font-medium truncate">
-                              {es.label}
-                              {simName && (
-                                <span className="ml-1.5 text-slate-400 font-normal">· {simName}</span>
-                              )}
-                            </span>
-                            <span className="text-slate-600 tabular-nums font-medium">
-                              {formatCallTime(entry.date, now)}
-                              {' · '}
-                              <span className="font-semibold">
-                                {new Date(entry.date).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
-                              </span>
-                            </span>
-                            {entry.duration > 0 && (
-                              <span className="text-slate-600 tabular-nums ml-1 font-medium">{formatDuration(entry.duration)}</span>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
+                    <CallHistoryEntries
+                      entries={callHistoryEntries}
+                      simList={simList}
+                      now={now}
+                      formatDate={formatCallTime}
+                    />
                   </li>,
                 ];
               })}
