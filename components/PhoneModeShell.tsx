@@ -473,7 +473,20 @@ function DialerView() {
             above 44px HIG). Backspace stays h-10 (40px hit target — non-
             critical control). */}
         <div className="flex items-center justify-center gap-5 px-3 py-2">
-          <span className="h-10 w-10" aria-hidden="true" /> {/* spacer for symmetry */}
+          {/* Send message. Took the symmetry spacer's slot — the extension's
+              pad has had this pill since AC-4 and /app's had nothing. Opens
+              the THREAD for the typed number (Dennis 14:04), so any history
+              with them is right there above the composer. */}
+          <button
+            type="button"
+            onClick={() => digits && push({ kind: 'thread', threadId: digits, from: 'dialer' })}
+            disabled={!digits}
+            className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-blue-50 hover:text-blue-600 active:scale-95 disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            aria-label="Send a message"
+            title="Send a message"
+          >
+            <MessageSquare className="h-4 w-4" aria-hidden="true" />
+          </button>
           <button
             type="button"
             onClick={call}
@@ -556,7 +569,7 @@ function DialerView() {
                     `from: 'dialer'`, so back lands on Dial. */}
                 <button
                   type="button"
-                  onClick={() => push({ kind: 'compose', to: r.number, from: 'dialer' })}
+                  onClick={() => push({ kind: 'thread', threadId: r.number, from: 'dialer' })}
                   aria-label={`Send a message to ${label}`}
                   title={`Send a message to ${label}`}
                   className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
@@ -678,7 +691,15 @@ function ExtDialerView() {
       <div className="flex-shrink-0">
         <Dialpad
           isCompact
-          onSendMessage={(number) => push({ kind: 'compose', to: number, from: 'dialer' })}
+          // Dennis 14:04: "when clicking on send sms to a number that's
+          // recently called, or click send message to a number I just put
+          // into the quick dial — it should then actually open a message chat
+          // with that number to see if there is any history." A blank
+          // composer threw away the one thing he was asking for. The thread
+          // view IS the composer plus that history, so it is strictly the
+          // better destination; the blank composer is now only what the
+          // "New message" button in Texts opens, where there is no number yet.
+          onSendMessage={(number) => push({ kind: 'thread', threadId: number, from: 'dialer' })}
         />
       </div>
 
@@ -766,7 +787,7 @@ function ExtDialerView() {
                       40px TARGET costs nothing. */}
                   <button
                     type="button"
-                    onClick={() => push({ kind: 'compose', to: r.number, from: 'dialer' })}
+                    onClick={() => push({ kind: 'thread', threadId: r.number, from: 'dialer' })}
                     aria-label={`Send a message to ${label}`}
                     title={`Send a message to ${label}`}
                     className="relative inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
@@ -1055,6 +1076,11 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
             </div>
           );
         })}
+        {threadMessages.length === 0 && (
+          <p className="px-4 py-10 text-center text-sm text-slate-400">
+            No messages with {displayName} yet
+          </p>
+        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -1062,6 +1088,11 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
           uses keyed rendering) ensures opening thread B after thread A doesn't
           leak the previous draft — risk #6 mitigation. */}
       <ThreadCompose
+        // No history with this number (the common case when the thread was
+        // opened from Dial): there is nothing to read, so the only thing worth
+        // doing is typing. Existing threads keep the caret out of the way so
+        // the OS keyboard does not cover the messages the user came to read.
+        autoFocus={threadMessages.length === 0}
         onSend={(text) => {
           // Free-tier guard — blocked sends return false so the draft stays.
           if (!guard('message')) return false;
@@ -1076,11 +1107,20 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
 interface ThreadComposeProps {
   /** Returns whether the send was accepted; the box only clears on true. */
   onSend: (text: string) => boolean;
+  /** Put the caret here on mount — an empty thread has nothing else to do. */
+  autoFocus?: boolean;
 }
 
-function ThreadCompose({ onSend }: ThreadComposeProps) {
+function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (autoFocus) ref.current?.focus();
+    // Mount-only: re-focusing whenever the flag flips would steal the caret
+    // back the instant the first message lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const send = useCallback(() => {
     const trimmed = text.trim();
