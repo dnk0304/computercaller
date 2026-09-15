@@ -56,7 +56,12 @@ import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterB
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
 import { CallHistoryEntries, useCallHistoryEntries } from '@/components/CallHistoryEntries';
 import { useExtensionTabBadges } from '@/hooks/useExtensionTabBadges';
-import { PhoneModeCallBanner, PhoneModeCallSurface, usePhoneModeCallSurface } from '@/components/PhoneModeCallSurface';
+import {
+  PhoneModeCallBanner,
+  PhoneModeCallToast,
+  PhoneModeIncomingCard,
+  usePhoneModeCallSurface,
+} from '@/components/PhoneModeCallSurface';
 import { readDeepLink, clearDeepLink } from '@/lib/extensionBridge';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import {
@@ -66,6 +71,7 @@ import {
   getNotificationIcon,
   type SmsMessage,
   type PhoneModeView,
+  type PhoneModeTab,
 } from '@/hooks';
 import { useTemplates } from '@/hooks/useTemplates';
 
@@ -356,6 +362,7 @@ function DialerView() {
   const phone = usePhone();
   const { makeCall, callLogs } = phone;
   const { guard } = useFreeTier();
+  const { push } = usePhoneMode();
   const [digits, setDigits] = useState<string>('');
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -542,6 +549,20 @@ function DialerView() {
                     <p className="truncate text-[11px] text-slate-500">{formatRelative(r.date, now)}</p>
                   </div>
                 </div>
+                {/* Message. Parity with the extension's Recent row, which has
+                    had this since AC-5 — /app had no way into the composer
+                    from Dial at all, which is also why "back from a compose
+                    started on Dial" could not be exercised here. It records
+                    `from: 'dialer'`, so back lands on Dial. */}
+                <button
+                  type="button"
+                  onClick={() => push({ kind: 'compose', to: r.number, from: 'dialer' })}
+                  aria-label={`Send a message to ${label}`}
+                  title={`Send a message to ${label}`}
+                  className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                >
+                  <MessageSquare className="h-4 w-4" aria-hidden="true" />
+                </button>
                 {/* Dial. 40px square — this is a touch surface on /app Phone
                     Mode, so it gets the real box rather than a bled target. */}
                 <button
@@ -657,7 +678,7 @@ function ExtDialerView() {
       <div className="flex-shrink-0">
         <Dialpad
           isCompact
-          onSendMessage={(number) => push({ kind: 'compose', to: number })}
+          onSendMessage={(number) => push({ kind: 'compose', to: number, from: 'dialer' })}
         />
       </div>
 
@@ -745,7 +766,7 @@ function ExtDialerView() {
                       40px TARGET costs nothing. */}
                   <button
                     type="button"
-                    onClick={() => push({ kind: 'compose', to: r.number })}
+                    onClick={() => push({ kind: 'compose', to: r.number, from: 'dialer' })}
                     aria-label={`Send a message to ${label}`}
                     title={`Send a message to ${label}`}
                     className="relative inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
@@ -879,7 +900,7 @@ function TextsView() {
         <h2 className="text-xs font-semibold text-slate-800">Messages</h2>
         <button
           type="button"
-          onClick={() => push({ kind: 'compose' })}
+          onClick={() => push({ kind: 'compose', from: 'texts' })}
           className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
           aria-label="New message"
         >
@@ -917,7 +938,7 @@ function TextsView() {
             <li key={t.id}>
               <button
                 type="button"
-                onClick={() => push({ kind: 'thread', threadId: t.id })}
+                onClick={() => push({ kind: 'thread', threadId: t.id, from: 'texts' })}
                 className="flex w-full items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50"
                 aria-label={`Open thread with ${t.name}`}
               >
@@ -944,12 +965,15 @@ function TextsView() {
 
 interface ThreadViewProps {
   threadId: string;
+  /** Tab this thread was opened from — back returns there. See ComposeView. */
+  from?: PhoneModeTab;
 }
 
-function ThreadView({ threadId }: ThreadViewProps) {
+function ThreadView({ threadId, from }: ThreadViewProps) {
   const { messages, contacts, sendSms, makeCall } = usePhone();
   const { guard } = useFreeTier();
-  const { pop } = usePhoneMode();
+  const { pop, setTab } = usePhoneMode();
+  const goBack = useCallback(() => { if (from) setTab(from); else pop(); }, [from, setTab, pop]);
 
   const threadMessages = useMemo(
     () => messages.filter(m => m.address === threadId).sort((a, b) => a.date - b.date),
@@ -985,9 +1009,9 @@ function ThreadView({ threadId }: ThreadViewProps) {
       <div className="flex-shrink-0 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
         <button
           type="button"
-          onClick={pop}
+          onClick={goBack}
           className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-          aria-label="Back to messages"
+          aria-label={from === 'dialer' ? 'Back to Dial' : from === 'bell' ? 'Back to Alerts' : 'Back to messages'}
         >
           <ArrowLeft className="h-5 w-5" aria-hidden="true" />
         </button>
@@ -1138,12 +1162,20 @@ function ThreadCompose({ onSend }: ThreadComposeProps) {
 interface ComposeViewProps {
   /** AC-4 — pre-addressed recipient handed over from the Dial view. */
   initialTo?: string;
+  /**
+   * The tab this composer was opened from. Back returns THERE — Dennis
+   * 2026-09-15: "If I was in the sms tab and clicked new message from there,
+   * then I should get sent back there. If I clicked new message from the dial
+   * tab, then I should get sent back to dial tab."
+   */
+  from?: PhoneModeTab;
 }
 
-function ComposeView({ initialTo }: ComposeViewProps) {
+function ComposeView({ initialTo, from }: ComposeViewProps) {
   const { sendSms } = usePhone();
   const { guard } = useFreeTier();
-  const { pop, push } = usePhoneMode();
+  const { pop, replace, setTab } = usePhoneMode();
+  const goBack = useCallback(() => { if (from) setTab(from); else pop(); }, [from, setTab, pop]);
   const [recipient, setRecipient] = useState(initialTo ?? '');
   const [text, setText] = useState('');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -1164,9 +1196,12 @@ function ComposeView({ initialTo }: ComposeViewProps) {
     // (do not navigate into a thread as if the message went out).
     if (!guard('message')) return;
     sendSms(recipient, text);
-    // After sending, dive into the thread we just started — feels more
-    // natural than dropping back to the list.
-    push({ kind: 'thread', threadId: recipient });
+    // After sending, dive into the thread we just started — feels more natural
+    // than dropping back to the list. REPLACE, never push: a sent message ends
+    // the composer, so leaving it in the stack meant back landed the user back
+    // in "New Message" (the bug Dennis reported). The thread inherits the
+    // composer's origin so back from it goes to the tab the trip started on.
+    replace({ kind: 'thread', threadId: recipient, from });
   };
 
   // Template-chip handler — same append semantics as ThreadCompose. The
@@ -1188,9 +1223,9 @@ function ComposeView({ initialTo }: ComposeViewProps) {
       <div className="flex-shrink-0 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
         <button
           type="button"
-          onClick={pop}
+          onClick={goBack}
           className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-          aria-label="Back to messages"
+          aria-label={from === 'dialer' ? 'Back to Dial' : from === 'bell' ? 'Back to Alerts' : 'Back to messages'}
         >
           <ArrowLeft className="h-5 w-5" aria-hidden="true" />
         </button>
@@ -1483,7 +1518,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
     // Thread last: setTab replaces the stack and push lands on top of it, so
     // the back arrow inside the thread returns to the Texts list rather than to
     // whatever the surface happened to be showing before the notification.
-    if (link.thread) push({ kind: 'thread', threadId: link.thread });
+    if (link.thread) push({ kind: 'thread', threadId: link.thread, from: link.tab ?? 'texts' });
   }, [isExt, setTab, push]);
 
   // ---------- Toast: surface freshest unread notification briefly ----------
@@ -1567,10 +1602,16 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
   // looking at is a message composer and tapping Texts should land on the
   // message list. Deriving it from the stack ROOT instead would light Dial
   // while the user types an SMS, which is worse than the bug.
-  const activeTab: 'dialer' | 'texts' | 'bell' =
+  // Pixel-N addendum: a stacked view now RECORDS the tab it was opened from,
+  // so the strip lights that tab rather than guessing "texts". A compose
+  // opened from Dial keeps Dial lit, which is the same answer its back arrow
+  // gives — the strip and the back arrow must not disagree about where the
+  // user is. Views with no recorded origin still fall back to Texts, which is
+  // correct for every message screen reached from the message list.
+  const activeTab: PhoneModeTab =
     current.kind === 'dialer' || current.kind === 'texts' || current.kind === 'bell'
       ? current.kind
-      : 'texts';
+      : current.from ?? 'texts';
 
   // Root views are the three tabs themselves. Only used to keep the free-tier
   // usage strip off the two tightest screens (thread, compose) — the tab strip
@@ -1595,11 +1636,31 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
   // `usePhoneMode().phoneMode` is true, so at desktop width this hook never
   // runs and GlobalDialer keeps owning the call UI exactly as before.
   const phoneCall = usePhoneModeCallSurface();
-  // A connected call is a BANNER, never a blanked screen (Dennis 2026-09-15):
-  // "being in a call disables checking texts, call history, alerts... it should
-  // function the same way it does inside of the dashboard in the quick dial."
-  // Only an unanswered incoming call (and the multi-call queue) takes the body.
-  const callTakesBody = phoneCall.mode === 'takeover';
+  // NOTHING in this shell takes the screen any more (Dennis 2026-09-15, 13:55:
+  // "now the incoming calls in the extension totally block out all the tabs.
+  // It should just show up on top inside of the dial tab in a normal way").
+  // A ringing call is a CARD at the top of the Dial tab; everything else — a
+  // connected call, and the 2+ call queue — is the compact banner. The tab
+  // strip, the usage strip and the active view are never stood down.
+  const isRinging = phoneCall.mode === 'ringing';
+  // The card belongs to the Dial tab and only to its ROOT view: pinning it
+  // above a half-typed SMS would be a second takeover by another name. Off
+  // Dial (or inside a stacked view) the banner carries the call instead, with
+  // its own Answer button, so the ring is never lost.
+  const ringingCardHere = isRinging && current.kind === 'dialer';
+
+  // A ring pulls the user to Dial, where the card lives — but only from
+  // another ROOT tab. Yanking someone out of a compose they are typing would
+  // destroy the draft, and the banner already makes the call answerable from
+  // wherever they are, so the draft wins.
+  const wasRingingRef = React.useRef(false);
+  useEffect(() => {
+    const rootView = current.kind === 'dialer' || current.kind === 'texts' || current.kind === 'bell';
+    if (isRinging && !wasRingingRef.current && rootView && current.kind !== 'dialer') {
+      setTab('dialer');
+    }
+    wasRingingRef.current = isRinging;
+  }, [isRinging, current.kind, setTab]);
 
   const renderView = (v: PhoneModeView): React.ReactNode => {
     switch (v.kind) {
@@ -1610,11 +1671,11 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
         // key={threadId} resets the compose textarea on thread switch
         // (risk #6). This keyed wrapper is load-bearing — removing it
         // re-introduces the draft-leak bug across thread switches.
-        return <ThreadView key={v.threadId} threadId={v.threadId} />;
+        return <ThreadView key={v.threadId} threadId={v.threadId} from={v.from} />;
       case 'compose':
         // Keyed on the recipient for the same reason: arriving from Dial with
         // a new number must not inherit the previous draft's To field.
-        return <ComposeView key={v.to ?? '__blank__'} initialTo={v.to} />;
+        return <ComposeView key={v.to ?? '__blank__'} initialTo={v.to} from={v.from} />;
     }
   };
 
@@ -1624,43 +1685,46 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
     // to fit the visible viewport when the OS keyboard takes screen real
     // estate — sticky compose stays anchored to the bottom of the visible
     // area rather than disappearing behind the keyboard.
-    <div className={clsx('phone-mode-shell flex flex-col bg-slate-50 font-sans', isExt && 'cc-ext')}>
+    <div className={clsx('phone-mode-shell relative flex flex-col bg-slate-50 font-sans', isExt && 'cc-ext')}>
       <PhoneModeHeader surface={surface} />
       {/* The live-call strip sits directly under the header and above the tab
           strip — the dashboard's quick-dial panel equivalent, in a shape a
           390px column can afford. It is chrome, so it is OUTSIDE the
           `min-h-0 flex-1` body box below: the active view keeps its own
           scroll and simply gets shorter by the height of the strip. */}
-      {phoneCall.mode === 'banner' && <PhoneModeCallBanner {...phoneCall.surfaceProps} />}
-      {/* An unanswered incoming call (and the 2+ call queue) still takes the
-          whole body — the header stays, so the user sees WHICH device is
-          ringing, and the tab strip plus usage strip stand down because
-          neither is actionable while a decision is pending. A CONNECTED call
-          does not hide them: see `callTakesBody` above. */}
-      {/* UNCONDITIONAL except during a takeover. The strip is the surface's
-          primary navigation; a view that hides it strands the user inside a
-          stack whose only exit is a back arrow they have to find. Only the
-          unanswered-ring / call-queue takeover still stands it down, because
-          a pending accept/decline is the one decision that outranks it. */}
-      {!callTakesBody && (
-        <TabBar
-          active={activeTab}
-          unreadCount={isExt ? tabBadges.alerts : unreadCount}
-          dialCount={tabBadges.dial}
-          textsCount={tabBadges.texts}
-          onSelect={setTab}
-        />
+      {(phoneCall.mode === 'banner' || (isRinging && !ringingCardHere)) && (
+        <PhoneModeCallBanner {...phoneCall.surfaceProps} />
       )}
+      {/* UNCONDITIONAL. The strip is the surface's primary navigation; a view
+          that hides it strands the user inside a stack whose only exit is a
+          back arrow they have to find. As of Pixel-N there is no exception —
+          not even an unanswered incoming call, which is a card inside Dial. */}
+      <TabBar
+        active={activeTab}
+        unreadCount={isExt ? tabBadges.alerts : unreadCount}
+        dialCount={tabBadges.dial}
+        textsCount={tabBadges.texts}
+        onSelect={setTab}
+      />
       {/* Free-tier usage strip (Pixel, forge/free-tier-p1, 2026-08-28) — thin
           bar under the tab bar. Self-hides for unlimited (paid) tiers.
           Pilot's rule holds on the extension: this may surface a neutral
           remaining-count status line, never a price or an upgrade CTA. */}
-      {isRootView && !callTakesBody && <UsageMeter variant="strip" />}
+      {isRootView && <UsageMeter variant="strip" />}
+      {/* The incoming-call card: top of the Dial tab, above the pad and the
+          recents list, outside the view's own scroller so a ringing phone
+          cannot be scrolled out of sight. */}
+      {ringingCardHere && <PhoneModeIncomingCard {...phoneCall.surfaceProps} />}
       {/* min-h-0 so the active view actually scrolls inside this box instead of
           stretching the column — the same class of bug as AC-2's. */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        {callTakesBody ? <PhoneModeCallSurface {...phoneCall.surfaceProps} /> : renderView(current)}
+        {renderView(current)}
       </div>
+      {/* Quick-reply confirmation. Was a 1.4 s full-body takeover; a sent SMS
+          is a confirmation, not a screen. */}
+      {phoneCall.surfaceProps.sentNotice && (
+        <PhoneModeCallToast notice={phoneCall.surfaceProps.sentNotice} />
+      )}
       {toastNotif && (
         <NotificationToast
           notif={{
