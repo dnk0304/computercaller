@@ -1,14 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Activity: SignIn — dispatch #28 (2026-05-24).
+  Sign-in - v56 (Pixel, step 2). Built to DIRECTION frames 8 and 9.
 
-  First-launch gate. The user signs in with the same email / password
-  they use on computercaller.com. Backend (/api/auth/apk-login) returns
-  a phoneToken; we stash it in EncryptedSharedPreferences and proceed
-  to MainActivity.
+  This is the first thing a new user sees, so it opens on the lockup: the
+  mark above "COMPUTER CALLER". That is the recognition moment - the same
+  mark they just saw on computercaller.com and in the browser extension -
+  and it is the reason the screen is centred rather than top-aligned.
 
-  Visual language matches activity_main.xml — pure near-black canvas,
-  electric blue accent on the primary CTA, sans-serif-black wordmark.
+  What changed from v55: a bare text wordmark became the official lockup; the
+  flat blue Google button became the outline one Google's own branding asks
+  for; square field boxes became rounded recessed fields; and the blue tinted
+  Sign in button became the single brand-gradient action.
+
+  Colour budget (trait 3): the mark and the Sign in pill. Nothing else on this
+  screen is coloured except error text, which is state.
+
+  The caps treatment on "COMPUTER CALLER" is the lockup's own wordmark, not a
+  label above a heading - the tracked capitals ARE the brand's setting of its
+  name, which is why the headline below it is sentence case.
+
+  ID CONTRACT: SignInActivity binds signinContentContainer, emailField,
+  passwordField, signInButton, googleSignInButton and errorText. All present
+  and all the same widget classes as before.
 -->
 <ScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -26,144 +39,201 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:gravity="center_vertical"
-        android:paddingStart="24dp"
-        android:paddingEnd="24dp"
-        android:paddingTop="48dp"
-        android:paddingBottom="32dp">
+        android:paddingStart="@dimen/cc_page_padding"
+        android:paddingEnd="@dimen/cc_page_padding"
+        android:paddingTop="@dimen/space_24"
+        android:paddingBottom="@dimen/space_32">
 
-        <!-- Wordmark -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textSize="36sp"
-            android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-black"
-            android:letterSpacing="-0.035"
-            android:layout_marginBottom="32dp" />
+        <!-- ==================== LOCKUP ==================== -->
+        <ImageView
+            android:layout_width="@dimen/cc_mark_signin"
+            android:layout_height="@dimen/cc_mark_signin"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="36dp"
+            android:layout_marginBottom="@dimen/space_16"
+            android:src="@drawable/ic_cc_mark"
+            android:importantForAccessibility="no" />
 
-        <!-- Title -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/signin_title"
-            android:textSize="24sp"
-            android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="8dp" />
-
-        <!-- Subtitle -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/signin_subtitle"
-            android:textSize="14sp"
-            android:textColor="@color/text_secondary"
-            android:lineSpacingMultiplier="1.3"
-            android:layout_marginBottom="32dp" />
+            android:gravity="center"
+            android:text="@string/signin_wordmark"
+            android:textSize="15sp"
+            android:textColor="@color/text_primary"
+            android:fontFamily="sans-serif-medium"
+            android:textStyle="bold"
+            android:letterSpacing="0.17"
+            android:contentDescription="@string/cd_brand_mark" />
 
-        <!-- Continue with Google (2026-07-06, v43). Primary path — one tap,
-             same Google account as the web. Email/password below remains as
-             the fallback. -->
+        <!-- What the product does, in the user's words, before we ask for
+             anything. Sentence case under the tracked-caps wordmark. -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="26dp"
+            android:gravity="center"
+            android:text="@string/signin_hero_title"
+            android:textSize="@dimen/cc_text_hero"
+            android:textColor="@color/text_primary"
+            android:textStyle="bold"
+            android:letterSpacing="-0.019"
+            android:lineSpacingMultiplier="1.25" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_8"
+            android:layout_marginBottom="26dp"
+            android:gravity="center"
+            android:text="@string/signin_hero_body"
+            android:textSize="@dimen/cc_text_sub"
+            android:textColor="@color/text_secondary"
+            android:lineSpacingMultiplier="1.5" />
+
+        <!-- ==================== GOOGLE ====================
+             The primary path: one tap, same account as the web. Google's
+             branding fixes this surface white with a #747775 hairline in BOTH
+             themes - it is the one control here that ignores our token set,
+             and the mockup calls that out explicitly. -->
         <Button
             android:id="@+id/googleSignInButton"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="@dimen/cc_pill_height"
             android:text="@string/signin_google_action"
-            android:textSize="14sp"
+            android:textSize="@dimen/cc_text_button"
             android:textColor="@color/google_btn_text"
             android:textAllCaps="false"
             android:fontFamily="sans-serif-medium"
             android:letterSpacing="0.0125"
-            android:background="@drawable/bg_google_button"
+            android:background="@drawable/bg_pill_google"
             android:backgroundTint="@null"
             android:stateListAnimator="@null"
             android:drawableStart="@drawable/ic_google_g"
             android:drawablePadding="12dp"
             android:gravity="center"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:layout_marginBottom="20dp" />
+            android:paddingStart="@dimen/space_16"
+            android:paddingEnd="@dimen/space_16" />
 
-        <!-- Divider between Google and the email fallback -->
-        <TextView
+        <!-- Rule / label / rule. The rules are what make this read as a fork
+             in the path rather than a heading for the fields below. -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/signin_divider_or"
-            android:textSize="12sp"
-            android:textColor="@color/text_tertiary"
-            android:gravity="center"
-            android:layout_marginBottom="20dp" />
+            android:layout_marginTop="@dimen/space_16"
+            android:layout_marginBottom="@dimen/space_16"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
 
-        <!-- Email -->
+            <View
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="1dp"
+                android:background="@drawable/bg_hairline"
+                android:importantForAccessibility="no" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_12"
+                android:layout_marginEnd="@dimen/space_12"
+                android:text="@string/signin_or"
+                android:textSize="@dimen/cc_text_meta"
+                android:textColor="@color/text_tertiary" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="1dp"
+                android:background="@drawable/bg_hairline"
+                android:importantForAccessibility="no" />
+        </LinearLayout>
+
+        <!-- ==================== EMAIL FALLBACK ==================== -->
         <EditText
             android:id="@+id/emailField"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
+            android:layout_height="54dp"
             android:hint="@string/signin_email_hint"
             android:inputType="textEmailAddress"
-            android:textSize="16sp"
+            android:imeOptions="actionNext"
+            android:maxLines="1"
+            android:textSize="15sp"
             android:textColor="@color/text_primary"
             android:textColorHint="@color/text_tertiary"
-            android:background="@color/surface_inset"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
+            android:background="@drawable/bg_field_rounded"
+            android:paddingStart="@dimen/space_16"
+            android:paddingEnd="@dimen/space_16"
             android:importantForAutofill="yes"
             android:autofillHints="emailAddress"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="11dp" />
 
-        <!-- Password -->
         <EditText
             android:id="@+id/passwordField"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
+            android:layout_height="54dp"
             android:hint="@string/signin_password_hint"
             android:inputType="textPassword"
-            android:textSize="16sp"
+            android:imeOptions="actionDone"
+            android:maxLines="1"
+            android:textSize="15sp"
             android:textColor="@color/text_primary"
             android:textColorHint="@color/text_tertiary"
-            android:background="@color/surface_inset"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
+            android:background="@drawable/bg_field_rounded"
+            android:paddingStart="@dimen/space_16"
+            android:paddingEnd="@dimen/space_16"
             android:importantForAutofill="yes"
             android:autofillHints="password"
-            android:layout_marginBottom="20dp" />
+            android:layout_marginBottom="@dimen/space_16" />
 
-        <!-- Error pill (shown only on failure) -->
+        <!-- Errors don't apologise and are never vague; SignInActivity picks
+             the string from the failure class. Announced politely so TalkBack
+             reads it the moment it appears. -->
         <TextView
             android:id="@+id/errorText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="13sp"
+            android:layout_marginBottom="@dimen/space_16"
+            android:textSize="@dimen/cc_text_sub"
             android:textColor="@color/dot_failed"
+            android:lineSpacingMultiplier="1.4"
+            android:accessibilityLiveRegion="polite"
             android:visibility="gone"
-            android:layout_marginBottom="16dp"
             tools:visibility="visible"
             tools:text="Invalid email or password." />
 
-        <!-- Sign in button -->
+        <!-- The one gradient action on this screen. -->
         <Button
             android:id="@+id/signInButton"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
+            android:layout_height="@dimen/cc_pill_height"
             android:text="@string/signin_action"
-            android:textSize="16sp"
-            android:textColor="@color/text_primary"
+            android:textSize="@dimen/cc_text_button"
+            android:textColor="#FFFFFFFF"
             android:textAllCaps="false"
             android:fontFamily="sans-serif-medium"
-            android:backgroundTint="@color/accent_blue"
-            android:layout_marginBottom="24dp" />
+            android:background="@drawable/bg_pill_brand"
+            android:backgroundTint="@null"
+            android:stateListAnimator="@null" />
 
-        <!-- Footer -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/signin_footer"
-            android:textSize="12sp"
-            android:textColor="@color/text_tertiary"
-            android:lineSpacingMultiplier="1.3"
+            android:layout_marginTop="20dp"
             android:gravity="center"
-            android:paddingTop="8dp" />
+            android:text="@string/signin_footer_short"
+            android:textSize="@dimen/cc_text_foot"
+            android:textColor="@color/text_tertiary"
+            android:lineSpacingMultiplier="1.5" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_10"
+            android:gravity="center"
+            android:text="@string/signin_footer"
+            android:textSize="@dimen/cc_text_foot"
+            android:textColor="@color/text_tertiary"
+            android:lineSpacingMultiplier="1.5" />
     </LinearLayout>
 </ScrollView>
