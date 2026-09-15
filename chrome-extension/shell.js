@@ -51,7 +51,24 @@
  */
 
 // 1) Presence signal — the disconnect fires automatically when this page unloads.
-try { chrome.runtime.connect({ name: 'cc-presence' }); } catch (_) {}
+//
+// The port is now HELD rather than dropped on the floor (2026-09-15,
+// forge/ext-badge-sidepanel). It was always a presence beacon; it is now also
+// the unread-count channel, because it already carries exactly the right
+// lifetime: it exists while a surface is on screen and dies with it. Adding a
+// second runtime.onMessage channel for counts would have duplicated that
+// bookkeeping and let the two disagree.
+let presencePort = null;
+try {
+  presencePort = chrome.runtime.connect({ name: 'cc-presence' });
+  presencePort.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'unread' && msg.unread) {
+      unread = msg.unread;
+      sendHello();
+    }
+  });
+  presencePort.onDisconnect.addListener(() => { presencePort = null; });
+} catch (_) {}
 
 const frame = document.getElementById('cc-frame');
 const overlay = document.getElementById('cc-signin');
@@ -62,9 +79,31 @@ const signinBody = document.getElementById('cc-signin-body');
 const loginFrame = document.getElementById('cc-login-frame');
 
 const NS = 'cc-ext';
-/** popup.html can spawn the detached window; popout.html IS it. */
-const CAN_POPOUT = !document.body.classList.contains('cc-is-popout')
-  && location.pathname.endsWith('popup.html');
+
+/**
+ * Which of the three surfaces are we? Read from the <body> marker, with the old
+ * pathname test kept as a fallback so a stale cached page still behaves.
+ * @type {'popup'|'popout'|'sidepanel'}
+ */
+const SURFACE = document.body.dataset.surface ||
+  (location.pathname.endsWith('popout.html') ? 'popout'
+    : location.pathname.endsWith('sidepanel.html') ? 'sidepanel' : 'popup');
+
+/** The docked surfaces can spawn the detached window; popout.html IS it. */
+const CAN_POPOUT = SURFACE !== 'popout';
+/** Only the detached window can dock — the docked ones are already home. */
+const CAN_DOCK = SURFACE === 'popout';
+
+/**
+ * Deep link carried in from a notification: background.js opens
+ * popout.html#tab=texts&thread=… and we pass the hash straight through to the
+ * hosted surface's URL. The extension never parses it; the app owns that
+ * vocabulary, so a new tab or param needs no change on this side.
+ */
+const DEEP_LINK = location.hash && location.hash.length > 1 ? location.hash : '';
+
+/** Latest unread counts pushed by the SW over the presence port. */
+let unread = { missedCalls: 0, newSms: 0, alerts: 0 };
 
 const COPY_SIGNIN =
   'Sign in and your phone does the calling — you do the typing.';
@@ -166,7 +205,17 @@ function sendHello() {
   if (!frame || !frame.contentWindow) return;
   try {
     frame.contentWindow.postMessage(
-      { source: NS, type: 'shell-hello', email: currentEmail, canPopout: CAN_POPOUT },
+      {
+        source: NS,
+        type: 'shell-hello',
+        email: currentEmail,
+        canPopout: CAN_POPOUT,
+        // Additive (2026-09-15). Older app builds ignore unknown fields, so the
+        // extension and the hosted app can be deployed in either order.
+        canDock: CAN_DOCK,
+        surface: SURFACE,
+        unread,
+      },
       self.CC.WEBAPP_ORIGIN,
     );
   } catch (_) {}
@@ -198,7 +247,8 @@ async function probeSession() {
 }
 
 function loadFrame() {
-  if (frame && frame.src !== self.CC.EXTENSION_URL) frame.src = self.CC.EXTENSION_URL;
+  const url = self.CC.EXTENSION_URL + DEEP_LINK;
+  if (frame && frame.src !== url) frame.src = url;
 }
 
 function clearFrame() {
@@ -301,6 +351,99 @@ async function openPopout() {
   window.close();
 }
 
+/**
+ * The reverse of openPopout — Dennis's "there is no button again for me to
+ * reconnect it to the extension browser window" (addendum 2026-09-15).
+ *
+ * THE OPEN HAPPENS HERE, IN THE PAGE. Not in the service worker, and that is a
+ * measured correction to the dispatch's proposed design. Both docking calls are
+ * gesture-gated, and the gesture DOES NOT survive a runtime.sendMessage hop.
+ * From a real trusted click, in the bundled Chromium
+ * (scripts/ext-dock-gesture-proof.mjs):
+ *
+ *   this page → SW → sidePanel.open()
+ *       → "`sidePanel.open()` may only be called in response to a user gesture."
+ *   this page → sidePanel.open()
+ *       → opened.
+ *
+ * So the page opens, and the worker closes. The split is not arbitrary: opening
+ * needs the gesture the click gave US, and closing this window is the one half
+ * that must NOT run here, because removing our own window mid-handler races our
+ * own teardown.
+ *
+ * An `await` before open() is fine — verified, the gesture survives an await
+ * inside the same handler — which is what lets us resolve the target window
+ * first.
+ *
+ * If Chrome refuses everything we stay open and tell the app, which shows the
+ * "Click the toolbar icon" hint rather than pretending the click did nothing.
+ */
+async function requestDock() {
+  let result = { ok: false, surface: 'none' };
+
+  // 1. Page-side, gesture-bound. The primary path.
+  try {
+    if (chrome.sidePanel && chrome.sidePanel.open) {
+      const win = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+      if (win && typeof win.id === 'number') {
+        await chrome.sidePanel.open({ windowId: win.id });
+        result = { ok: true, surface: 'sidepanel' };
+      }
+    }
+  } catch (_) { /* fall through */ }
+
+  // 2. The toolbar popup, for a build without the side panel. Only meaningful
+  //    while a default_popup exists; it does not today, so this is inert unless
+  //    the manifest changes back.
+  if (!result.ok) {
+    try {
+      if (chrome.action && chrome.action.openPopup) {
+        await chrome.action.openPopup();
+        result = { ok: true, surface: 'popup' };
+      }
+    } catch (_) { /* fall through */ }
+  }
+
+  // 3. Last resort: let the worker try. Expected to fail for the gesture reason
+  //    above, but it costs one message and it returns a clean answer.
+  if (!result.ok) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'dock' });
+      if (res && typeof res.surface === 'string' && res.ok) result = res;
+    } catch (_) {}
+  }
+
+  if (result.ok) {
+    // Docked. Ask the worker to remove THIS window — see above on why not here.
+    try { await chrome.runtime.sendMessage({ type: 'dock-close' }); } catch (_) {}
+    // Belt and braces for a surface the worker could not identify (no sender.tab).
+    try { window.close(); } catch (_) {}
+    return;
+  }
+
+  if (!frame || !frame.contentWindow) return;
+  try {
+    frame.contentWindow.postMessage(
+      { source: NS, type: 'dock-result', ok: result.ok, surface: result.surface },
+      self.CC.WEBAPP_ORIGIN,
+    );
+  } catch (_) {}
+}
+
+/**
+ * The app says which tab is on screen; the SW zeroes that counter. Sent over
+ * the presence port (not runtime.sendMessage) so it shares the exact lifetime
+ * of the surface reporting it.
+ */
+function reportTabViewed(tab) {
+  if (typeof tab !== 'string' || !tab) return;
+  if (presencePort) {
+    try { presencePort.postMessage({ type: 'tab-viewed', tab }); return; } catch (_) {}
+  }
+  // Port lost (SW recycled). One-shot fallback so a view is never silently lost.
+  try { chrome.runtime.sendMessage({ type: 'tab-viewed', tab }); } catch (_) {}
+}
+
 // ---- Inbound from the hosted app -------------------------------------------
 window.addEventListener('message', (event) => {
   // Two independent gates. Origin alone is not enough (any frame we host could
@@ -334,6 +477,12 @@ window.addEventListener('message', (event) => {
     sendHello();
   } else if (data.type === 'open-popout') {
     if (CAN_POPOUT) openPopout();
+  } else if (data.type === 'dock') {
+    // Guarded by surface, not by trust: a docked surface asking to dock would
+    // close the user's only window to reopen the same thing.
+    if (CAN_DOCK) requestDock();
+  } else if (data.type === 'tab-viewed') {
+    reportTabViewed(data.tab);
   } else if (data.type === 'sign-out') {
     signOut();
   }

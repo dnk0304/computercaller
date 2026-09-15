@@ -11,7 +11,6 @@
     "128": "icon128.png"
   },
   "action": {
-    "default_popup": "popup.html",
     "default_title": "ComputerCaller",
     "default_icon": {
       "16": "icon16.png",
@@ -23,6 +22,9 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["notifications", "storage", "identity", "alarms"],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "permissions": ["notifications", "storage", "identity", "alarms", "sidePanel"],
   "host_permissions": ["https://computercaller.com/*"]
 }

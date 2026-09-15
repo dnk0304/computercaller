@@ -1,4 +1,18 @@
 <!doctype html>
+<!--
+  sidepanel.html — the side-panel surface (2026-09-15, forge/ext-badge-sidepanel).
+
+  BYTE-FOR-BYTE popup.html apart from two things: the <body> carries
+  data-surface="sidepanel", and there is no fixed pixel box. Same shell.css,
+  same shell.js, same signed-out gate, same embedded login. That is the point of
+  the dispatch — the panel is not a second implementation of the extension, it
+  is the same one in a container Chrome does not destroy on blur.
+
+  Why a separate FILE rather than reusing popup.html: manifest side_panel.
+  default_path takes one path, and Chrome resolves it without a query string or
+  hash, so the surface cannot identify itself from location. data-surface is how
+  shell.js knows which of the three it is running in.
+-->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -6,15 +20,14 @@
   <title>ComputerCaller</title>
   <link rel="stylesheet" href="shell.css" />
   <style>
-    /* 400 × 600 (was 380 × 600), dispatch PIXEL-B2 / AC-1.
-       400 is Chrome's own side-panel default width and the extra 20px is
-       exactly what the header needed to fit the device pill on one row
-       alongside the pop-out and account controls. 600 is Chrome's hard
-       popup ceiling — it cannot go taller, so it doesn't try. */
-    body { width: 400px; height: 600px; }
+    /* NO fixed size. A side panel is resized by the user by dragging its edge,
+       and Chrome's popup ceiling (600px) does not apply here — the panel is as
+       tall as the browser window. Pinning 400 × 600 as popup.html does would
+       leave a letterboxed box inside a tall panel. */
+    html, body { width: 100%; height: 100%; margin: 0; }
   </style>
 </head>
-<body data-surface="popup">
+<body data-surface="sidepanel">
   <!-- Signed-out header. Shown ONLY with the overlay; when a session exists
        the iframe owns the entire surface and paints its own header. That is
        the fix for the old glass chip that floated on top of the iframe and
