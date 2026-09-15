@@ -102,6 +102,28 @@ eq('$5 column templates == TIER_LIMITS.plus', TIER_LIMITS[PROMOTED_TIER].templat
 eq('$5 column quick-replies == TIER_LIMITS.plus', TIER_LIMITS[PROMOTED_TIER].quickReplies, 3);
 eq('$5 column history == 3mo', TIER_LIMITS[PROMOTED_TIER].syncRangeMax, '3mo');
 
+// ── The pricing MODAL shows ONE "Included when subscribed" list ─────────────
+// Dennis, 2026-09-15: no trial-vs-paid framing in the modal. The modal renders
+// SUBSCRIBED_INCLUDES only; the trial-vs-plan matrix stays on SubscribeLocked.
+{
+  const modal = code('components/PricingModal.tsx');
+  ok('modal: renders the single subscribed list', /SUBSCRIBED_INCLUDES\.map/.test(modal));
+  ok('modal: headed "Included when subscribed"', /Included when subscribed/.test(modal));
+  ok('modal: the trial-vs-plan matrix is gone', !/STOREFRONT_MATRIX/.test(modal));
+  ok('modal: the "included from day one" row is gone', !/INCLUDED_ON_EVERY_PLAN/.test(modal));
+  ok('modal: no "cancel anytime before day N" box', !/before day/i.test(modal));
+  ok('modal: no "free trial vs" comparison copy', !/vs the full plan/i.test(modal));
+  // The list still traces to the enforced caps, so it cannot promise more than
+  // the app grants.
+  const src = read('lib/pricing.ts');
+  const listStart = src.indexOf('export const SUBSCRIBED_INCLUDES');
+  const list = src.slice(listStart, src.indexOf('];', listStart));
+  ok('list: template count is derived from TIER_LIMITS', /TIER_LIMITS\[PROMOTED_TIER\]\.templates/.test(list));
+  ok('list: quick-reply count is derived from TIER_LIMITS', /TIER_LIMITS\[PROMOTED_TIER\]\.quickReplies/.test(list));
+  ok('list: history is derived from TIER_LIMITS', /syncWords\(TIER_LIMITS\[PROMOTED_TIER\]\.syncRangeMax\)/.test(list));
+  ok('list: no hardcoded counts', !/\(7\)|\(3\)|3 months/.test(list));
+}
+
 // ── $7 must NOT appear on any pricing-PAGE surface (source-level guard) ──────
 for (const file of ['components/PricingModal.tsx', 'app/page.tsx', 'components/SubscribeLocked.tsx']) {
   const src = code(file);

@@ -8,8 +8,8 @@
  * 2026-08-17). SINGLE-PLAN storefront: it shows ONE price — $5/mo — beside the
  * limited free-trial column. $7 is NOT on this page (it is an in-app upgrade
  * prompt only). Every price/limit is read from lib/pricing at runtime — nothing
- * about a plan is typed into this file. The trial column is card-first: no
- * "no card needed" copy anywhere.
+ * about a plan is typed into this file. Below the hero card sits ONE list —
+ * "Included when subscribed" — with no trial-vs-paid comparison (2026-09-15).
  *
  * Hand-off (LOCKED): pricing → SIGNUP modal, in-page. The CTA stays a REAL
  * <a href="/auth/register?plan=plus"> so middle/cmd/ctrl-click and the no-JS
@@ -22,11 +22,10 @@
  */
 
 import React, { useEffect, useId, useMemo, useRef } from 'react';
-import { X, Check, Minus, ArrowRight, ShieldCheck } from 'lucide-react';
+import { X, Check, ArrowRight } from 'lucide-react';
 import {
   getPromotedPlan,
-  STOREFRONT_MATRIX,
-  INCLUDED_ON_EVERY_PLAN,
+  SUBSCRIBED_INCLUDES,
   PROMOTED_TIER,
   TRIAL_DAYS,
   type PlanTierId,
@@ -34,23 +33,6 @@ import {
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
-
-/**
- * FEATURE labels are plural by default ("Quick replies"). On a value of exactly
- * 1 the label follows a count and needs the singular ("1 Quick reply"). Applied
- * only to the bare number 1; "3 months" already carries its own noun.
- */
-function labelForCount(label: string, value: string): string {
-  if (value.trim() !== '1') return label;
-  const words = label.split(' ');
-  const last = words[words.length - 1];
-  let singular = last;
-  if (/ies$/.test(last)) singular = `${last.slice(0, -3)}y`;
-  else if (/[^s]s$/.test(last)) singular = last.slice(0, -1);
-  if (singular === last) return label;
-  words[words.length - 1] = singular;
-  return words.join(' ');
-}
 
 export interface PricingModalProps {
   open: boolean;
@@ -203,93 +185,33 @@ export function PricingModal({ open, onClose, triggerRef, onSelectTier }: Pricin
           </a>
         </div>
 
-        {/* What the free trial gives before you activate — vs the $5 plan. Every
-            number is reconciled against TIER_LIMITS by
-            reconcileStorefrontWithLimits(). This is a promise, so it is checked. */}
+        {/* ONE list — what a subscriber gets. No trial-vs-paid framing anywhere
+            (Dennis, 2026-09-15): the trial is already promised in the copy above
+            and on the CTA, so repeating it here only invited comparison. The
+            three countable lines come from TIER_LIMITS via SUBSCRIBED_INCLUDES,
+            so they cannot drift from what the app enforces. */}
         <div className="mt-8">
-          <p className="text-center text-xs font-semibold uppercase tracking-wide text-slate-400">
-            During your free trial vs the full plan
-          </p>
-          <table className="mt-4 w-full border-collapse text-left text-sm">
-            <caption className="sr-only">Free trial compared with the {plan.price} plan</caption>
-            <thead>
-              <tr className="border-b border-slate-200">
-                <th scope="col" className="py-2 pr-2 font-medium text-slate-500">
-                  Included
-                </th>
-                <th scope="col" className="px-2 py-2 text-center font-semibold text-slate-600">
-                  Free trial
-                </th>
-                <th scope="col" className="px-2 py-2 text-center font-semibold text-blue-700">
-                  {plan.price}/mo
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {STOREFRONT_MATRIX.map((row) => (
-                <tr key={row.label} className="border-b border-slate-100 last:border-0">
-                  <th scope="row" className="py-2 pr-2 font-normal text-slate-600">
-                    {row.label}
-                    {row.note && (
-                      <span className="block text-[11px] leading-snug text-slate-400">{row.note}</span>
-                    )}
-                  </th>
-                  {(['trial', 'plus'] as const).map((col) => {
-                    const v = row.values[col];
-                    const notIncluded = v === 0;
-                    return (
-                      <td
-                        key={col}
-                        className={
-                          'px-2 py-2 text-center tabular-nums ' +
-                          (col === 'plus' ? 'font-semibold text-slate-900' : 'text-slate-600')
-                        }
-                      >
-                        {notIncluded ? (
-                          <>
-                            <Minus className="mx-auto h-3.5 w-3.5 text-slate-300" aria-hidden="true" />
-                            <span className="sr-only">not included</span>
-                          </>
-                        ) : (
-                          <span>
-                            {typeof v === 'number'
-                              ? `${v} ${labelForCount(row.label, String(v)).toLowerCase()}`
-                              : v}
-                          </span>
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Risk-reversal — card-first, honest. No "no card needed" language. */}
-        <div className="mt-8 flex justify-center">
-          <p className="inline-flex items-center gap-2.5 rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-center text-sm text-slate-600 shadow-sm">
-            <ShieldCheck className="h-4 w-4 flex-shrink-0 text-emerald-500" aria-hidden="true" />
-            Cancel anytime before day {TRIAL_DAYS} and you won&apos;t be charged.
-          </p>
-        </div>
-
-        {/* Genuinely shared by the trial AND the plan. */}
-        <div className="mx-auto mt-8 max-w-2xl">
-          <p className="text-center text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Included from day one
-          </p>
-          <ul className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-3">
-            {INCLUDED_ON_EVERY_PLAN.map((f) => (
-              <li key={f} className="flex items-start gap-2.5">
-                <span className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border border-blue-100 bg-blue-50">
-                  <Check className="h-2.5 w-2.5 text-blue-600" strokeWidth={3} aria-hidden="true" />
+          <h3 className="text-center text-base font-semibold tracking-tight text-slate-900">
+            Included when subscribed
+          </h3>
+          <ul
+            className="mx-auto mt-4 grid max-w-xl gap-x-6 gap-y-2.5 text-sm text-slate-700 min-[400px]:grid-cols-2"
+            role="list"
+          >
+            {SUBSCRIBED_INCLUDES.map((f) => (
+              <li key={f} className="flex items-start gap-2">
+                <span
+                  className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border border-blue-100 bg-blue-50"
+                  aria-hidden="true"
+                >
+                  <Check className="h-2.5 w-2.5 text-blue-600" strokeWidth={3} />
                 </span>
                 <span>{f}</span>
               </li>
             ))}
           </ul>
         </div>
+
       </div>
     </div>
   );
