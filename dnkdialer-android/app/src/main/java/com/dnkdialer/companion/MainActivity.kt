@@ -138,7 +138,7 @@ class MainActivity : AppCompatActivity() {
     // The stay-disconnected switch. Guarded by [suppressStaySwitchCallback]
     // whenever WE set isChecked from the flag, so a programmatic repaint can
     // never be mistaken for a user tap and bounce the lobby.
-    private lateinit var staySwitch: com.google.android.material.materialswitch.MaterialSwitch
+    private lateinit var staySwitch: com.google.android.material.switchmaterial.SwitchMaterial
     private var suppressStaySwitchCallback = false
 
     // Dispatch #34 (v20) — Disconnect button (terminates the active
@@ -915,7 +915,7 @@ class MainActivity : AppCompatActivity() {
         // would be a lie. Short-circuit BEFORE the phase / pair-active
         // logic below since both would otherwise overwrite this.
         if (TokenStore.isUserStayedDisconnected(this)) {
-            statusText.text = getString(R.string.status_user_disconnected)
+            statusText.text = getString(R.string.status_user_disconnected_short)
             setStatusVisual(ConnState.IDLE)
             reconnectButton.visibility = View.GONE
             if (::disconnectPairButton.isInitialized) {
@@ -941,6 +941,21 @@ class MainActivity : AppCompatActivity() {
             if (::disconnectPairButton.isInitialized) {
                 disconnectPairButton.visibility = View.GONE
             }
+            // v56 — repaint the hero for these phases too. Without this the
+            // card kept the last good copy while the presence line above it
+            // said "Couldn't connect.", which is exactly the contradiction
+            // trait 1 exists to prevent. handleRelayPhaseChanged owns the
+            // presence LINE in these phases; paintHero owns what is under it.
+            pairedComputerName = null
+            paintHero(
+                if (latestRelayPhase == PhoneService.RelayPhase.FAILED) {
+                    ConnState.FAILED
+                } else {
+                    ConnState.CONNECTING
+                },
+                pairActive = false,
+                callInProgress = false
+            )
             return
         }
 
@@ -1086,6 +1101,18 @@ class MainActivity : AppCompatActivity() {
                 heroTitle.setText(R.string.home_hero_waiting_title)
                 heroBody.setText(R.string.home_hero_waiting_body)
             }
+            state == ConnState.CONNECTING -> {
+                heroTitle.setText(R.string.home_hero_connecting_title)
+                heroBody.setText(R.string.home_hero_connecting_body)
+            }
+            // The failure copy says what to check and that the app is still
+            // trying, because the relay retries on its own — telling the user
+            // it failed and stopping there would send them hunting for a
+            // retry button that does not exist.
+            state == ConnState.FAILED -> {
+                heroTitle.setText(R.string.home_hero_failed_title)
+                heroBody.setText(R.string.home_hero_failed_body)
+            }
             else -> {
                 heroTitle.setText(R.string.home_hero_offline_title)
                 heroBody.setText(R.string.home_hero_waiting_body)
@@ -1168,8 +1195,12 @@ class MainActivity : AppCompatActivity() {
             }
             ConnState.WAITING, ConnState.CONNECTING -> {
                 // Breathing halo. 1500ms loop, ease-in-out.
-                statusDotRing.alpha = 0.35f
-                statusPulseAnimator = ValueAnimator.ofFloat(0.35f, 1.0f).apply {
+                // v56 — the halo tops out at 0.7 rather than 1.0. At full
+                // alpha the amber ring was the heaviest thing on the hero
+                // card and pulled the eye off the state copy it exists to
+                // support (trait 1: ONE presence line).
+                statusDotRing.alpha = 0.25f
+                statusPulseAnimator = ValueAnimator.ofFloat(0.25f, 0.7f).apply {
                     duration = 1500
                     repeatCount = ValueAnimator.INFINITE
                     repeatMode = ValueAnimator.REVERSE
@@ -1300,7 +1331,12 @@ class MainActivity : AppCompatActivity() {
             }
             PhoneService.RelayPhase.FAILED -> {
                 val msg = mapConnectionError(error?.first ?: -1, error?.second, targetUrl)
-                statusText.text = getString(R.string.status_failed_prefix)
+                // v56 - the presence line is the STATE in a word or two; the
+                // explanation belongs to the hero copy under it (paintHero)
+                // and the machine detail to connectionErrorText below that.
+                // Before this the line and the hero both read "Couldn't
+                // connect", which is a wasted line, not emphasis.
+                statusText.text = getString(R.string.status_disconnected)
                 setStatusVisual(ConnState.FAILED)
                 renderConnectionDiagnostics(phase, targetUrl, msg)
             }

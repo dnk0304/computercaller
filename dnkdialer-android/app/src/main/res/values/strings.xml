@@ -326,7 +326,7 @@
     <string name="pair_active_notification">Connected — syncing data</string>
     <string name="pair_terminated_toast">Browser disconnected</string>
     <!-- Status row copy when relay is open but no active pair. -->
-    <string name="pair_lobby_status">Lobby — waiting for browser to connect</string>
+    <string name="pair_lobby_status">Waiting for your computer</string>
 
     <!-- =================================================== -->
     <!-- Permissions checklist (v18). Replaces the missing-only-->
@@ -385,6 +385,7 @@
 
     <!-- App bar -->
     <string name="cd_brand_mark">ComputerCaller</string>
+    <string name="section_on_this_phone">ON THIS PHONE</string>
     <string name="cd_open_settings">Settings</string>
     <string name="cd_back">Back</string>
 
@@ -399,6 +400,16 @@
     <string name="home_hero_call_body">A call is running through this phone. Audio stays on the phone; your computer mirrors the controls.</string>
 
     <!-- Home hero card - offline / out of lobby -->
+    <!-- Presence line while the user has chosen to stay out of the lobby.
+         The long variant above (status_user_disconnected) stays for the
+         ongoing NOTIFICATION, where naming the action is useful because the
+         Reconnect button is right there. On Home the hero card underneath
+         already explains it, so the line is one word. -->
+    <string name="status_user_disconnected_short">Disconnected</string>
+    <string name="home_hero_connecting_title">Connecting</string>
+    <string name="home_hero_connecting_body">Reaching the ComputerCaller relay so your computer can find this phone.</string>
+    <string name="home_hero_failed_title">Couldn\'t connect</string>
+    <string name="home_hero_failed_body">Check this phone\'s internet connection. It will keep trying on its own.</string>
     <string name="home_hero_offline_title">Not connected</string>
     <string name="home_hero_offline_body">This phone has left the lobby, so computers can\'t find it. Rejoin when you want to use it again.</string>
 

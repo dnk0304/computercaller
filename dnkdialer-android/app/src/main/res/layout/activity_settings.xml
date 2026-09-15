@@ -189,18 +189,17 @@
                          before (leave the lobby / rejoin it, persisted across
                          restarts), stated as a state rather than a verb that
                          had to relabel itself. -->
-                    <com.google.android.material.materialswitch.MaterialSwitch
+                    <com.google.android.material.switchmaterial.SwitchMaterial
                         android:id="@+id/settingsLobbyToggleButton"
                         android:layout_width="wrap_content"
                         android:layout_height="@dimen/cc_touch_min"
                         android:layout_marginStart="@dimen/space_12"
                         android:minWidth="0dp"
                         android:minHeight="@dimen/cc_touch_min"
-                        android:text=""
                         android:contentDescription="@string/row_stay_disconnected_title"
+                        android:showText="false"
                         app:thumbTint="@color/cc_switch_thumb"
-                        app:trackTint="@color/cc_switch_track"
-                        app:trackDecorationTint="@color/cc_switch_track_decoration" />
+                        app:trackTint="@color/cc_switch_track" />
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -223,7 +222,7 @@
         <TextView
             android:id="@+id/settingsLabelSynced"
             style="@style/CcSectionLabel"
-            android:text="@string/settings_section_synced_data"
+            android:text="@string/section_on_this_phone"
             tools:text="ON THIS PHONE" />
 
         <!-- Shown only while notifications are blocked at OS level;

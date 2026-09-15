@@ -6,7 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.TextView
-import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.switchmaterial.SwitchMaterial
 import androidx.appcompat.app.AppCompatActivity
 
 /**
@@ -30,8 +30,10 @@ import androidx.appcompat.app.AppCompatActivity
  * Sign Out and Hard Reset delegate to [AccountActions] — the same
  * implementation MainActivity calls, not a copy.
  *
- * VISUALS ARE A PLACEHOLDER. res/layout/activity_settings.xml is plain but
- * fully functional; Pixel restyles it in v56 step 2. Ids are the contract.
+ * Styled in v56 step 2 to DIRECTION frames 6/7: four caps sections, flat
+ * row-groups, 56dp rows, hairlines, no elevation, and no Bluetooth toggle.
+ * See the header of res/layout/activity_settings.xml for the two places this
+ * screen deliberately departs from the mockup and why.
  */
 class SettingsActivity : AppCompatActivity() {
 
@@ -42,7 +44,7 @@ class SettingsActivity : AppCompatActivity() {
      * a switch shows the state and the tap is unambiguous. Same flag, same
      * broadcast, same handler.
      */
-    private lateinit var lobbyToggle: MaterialSwitch
+    private lateinit var lobbyToggle: SwitchMaterial
     private lateinit var enableNotificationsButton: View
 
     /** Guards [lobbyToggle] so a repaint from the flag can't be read as a tap. */
@@ -61,10 +63,9 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         setContentView(R.layout.activity_settings)
-        InsetsUtils.applySystemBarInsets(findViewById(R.id.settingsContent))
 
-        // Edge-to-edge, matching Home: the surface fills behind the system
-        // bars and the scroll content is padded to clear them.
+        // Edge-to-edge, matching Home: the page surface fills behind the
+        // system bars and the scroll content is padded to clear them.
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         InsetsUtils.applySystemBarInsets(findViewById(R.id.settingsContent))
 
