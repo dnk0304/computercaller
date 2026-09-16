@@ -69,7 +69,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, MessageSquare } from 'lucide-react';
 import { usePhone } from '@/hooks';
 import { CallQueue, CallSessionView, formatDuration } from '@/components/GlobalDialer';
 import type { CallInfo } from '@/hooks/phoneTypes';
@@ -100,6 +100,21 @@ export interface PhoneModeCallSurfaceProps {
   onEnd: () => void;
   onQuickReply: (to: string, body: string, displayName?: string) => void;
   onSendSms: (to: string, body: string) => void;
+  /**
+   * Open the message thread for a number WITHOUT ending the call.
+   *
+   * Dennis, 2026-09-16: "when a call is active, i want to add a message button
+   * next to the hang up button so we can click that to send sms to the number
+   * we are in a call with." Distinct from `onQuickReply`, which sends a canned
+   * body and hangs up: this navigates, sends nothing, and leaves the call
+   * running with the banner still on screen above the thread.
+   *
+   * The shell owns it because only the shell has the view stack; the surface
+   * just says which number. Optional so a host that has no thread view (the
+   * marketing mockups import this file too) simply renders no button rather
+   * than a button that does nothing.
+   */
+  onMessage?: (to: string, displayName?: string) => void;
 }
 
 /**
@@ -337,7 +352,8 @@ export function PhoneModeCallBanner({
   onAnswer,
   onEnd,
   onSendSms,
-}: Pick<PhoneModeCallSurfaceProps, 'calls' | 'currentCall' | 'duration' | 'onAnswer' | 'onEnd' | 'onSendSms'>) {
+  onMessage,
+}: Pick<PhoneModeCallSurfaceProps, 'calls' | 'currentCall' | 'duration' | 'onAnswer' | 'onEnd' | 'onSendSms' | 'onMessage'>) {
   const isActive = currentCall?.state === 'active';
   const isRinging = currentCall?.state === 'ringing' && currentCall?.isIncoming !== false;
   const label = (currentCall?.name ?? '').trim() || null;
@@ -395,6 +411,26 @@ export function PhoneModeCallBanner({
         <span className="flex-shrink-0 text-[13px] font-medium tabular-nums text-slate-300">
           {status}
         </span>
+        {/* Message — texting the person you are talking to. Icon-only and
+            quiet (no fill) so it reads as secondary to Answer and End, which
+            are the two irreversible decisions; it sits BEFORE End so End keeps
+            the far-right position it has always had and no one hangs up while
+            reaching for it. 32 px visually with a 40 px hit target bled out by
+            the negative margin — a touch target must not cost the strip 8 px
+            of height on a 360 px panel. Hidden while ringing: an unanswered
+            call already has the quick-reply chips, and a third control in the
+            strip would crowd out the number at that width. */}
+        {!isRinging && onMessage && number && (
+          <button
+            type="button"
+            onClick={() => onMessage(number, label ?? undefined)}
+            aria-label="Message this number"
+            title={`Message ${label ?? number}`}
+            className="-my-1 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-slate-300 transition-colors hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+          >
+            <MessageSquare className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
         {isRinging && (
           <button
             type="button"

@@ -74,8 +74,34 @@ import {
   type PhoneModeTab,
 } from '@/hooks';
 import { useTemplates } from '@/hooks/useTemplates';
+import { ChipScroller } from '@/components/ChipScroller';
 
 // ---------- Lightweight helpers (module scope, pure) ------------------------
+
+/**
+ * Grow a composer textarea with its content up to a cap, then let it scroll.
+ *
+ * THE BUG (Dennis, 2026-09-16): "inside the text box to write sms in the
+ * extension, if the message is big i cannot see it." The box autogrew to a
+ * hardcoded 120 px and carried `overflow: hidden`, so everything past about
+ * five lines was clipped with no scrollbar, no wheel, and no way to reach the
+ * caret. Both halves of his ask are now true: it expands, and then it scrolls.
+ *
+ * The cap is derived rather than hardcoded — 40% of the window height, clamped
+ * to 96–168 px. In the 560 px extension panel that is ~168 px (about six
+ * lines) while the conversation above stays readable; in a shorter pop-up it
+ * shrinks instead of eating the thread. Past the cap the box scrolls
+ * internally, and a scrolling textarea keeps its own caret in view, so typing
+ * never runs off the bottom again.
+ */
+const COMPOSER_MIN_PX = 36;
+function autosize(el: HTMLTextAreaElement): void {
+  const viewport = el.ownerDocument?.defaultView?.innerHeight ?? 560;
+  const cap = Math.max(96, Math.min(168, Math.round(viewport * 0.4)));
+  el.style.maxHeight = `${cap}px`;
+  el.style.height = 'auto';
+  el.style.height = `${Math.max(COMPOSER_MIN_PX, Math.min(el.scrollHeight, cap))}px`;
+}
 
 function formatHmm(ts: number): string {
   const d = new Date(ts);
@@ -152,81 +178,37 @@ interface PhoneModeTemplatesProps {
 
 const PhoneModeTemplates = React.memo(function PhoneModeTemplates({ onInsert }: PhoneModeTemplatesProps) {
   const { templates } = useTemplates();
-  const stripRef = useRef<HTMLDivElement>(null);
-  // Which edges are actually overflowing. Drives the fade masks — a fade on a
-  // non-overflowing edge is a lie that says "there's more" when there isn't.
-  const [edges, setEdges] = useState({ left: false, right: false });
-
-  const syncEdges = useCallback(() => {
-    const el = stripRef.current;
-    if (!el) return;
-    const max = el.scrollWidth - el.clientWidth;
-    setEdges({ left: el.scrollLeft > 1, right: el.scrollLeft < max - 1 });
-  }, []);
-
-  useEffect(() => {
-    const el = stripRef.current;
-    if (!el) return;
-    syncEdges();
-    // Templates can be added from the manager while this is mounted, and the
-    // panel itself resizes (popup → pop-out), so watch the box, not just scroll.
-    const ro = new ResizeObserver(syncEdges);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [syncEdges, templates.length]);
 
   // Empty state — render nothing. Match Dashboard's `return null` behaviour
   // so users who haven't created any templates don't see an empty band.
   if (templates.length === 0) return null;
 
   return (
-    // AC-2 (Dennis: "on messages i cannot scroll the templates"). The strip is
-    // a real horizontal scroller with fade masks on whichever edge overflows.
-    // `relative` wraps the scroller so the masks can sit over it without
-    // joining the scroll content; the strip stays flex-shrink-0 so it can never
-    // push the composer below the fold — that pinning is half of the AC.
-    <div className="relative flex-shrink-0 border-t border-slate-200/60 bg-slate-50/80">
-      <div
-        ref={stripRef}
-        onScroll={syncEdges}
-        role="toolbar"
-        aria-label="Insert template"
-        // tabIndex on the scroll container: a keyboard user who is not tabbing
-        // chip-by-chip can still arrow the strip. Without it this is a
-        // mouse-only scroller, which the AC explicitly rules out.
-        tabIndex={0}
-        className="flex items-center gap-1.5 overflow-x-auto px-2 py-1.5 [scrollbar-width:none] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500/40 [&::-webkit-scrollbar]:hidden [scroll-snap-type:x_proximity]"
-      >
-        <FileText className="h-3 w-3 flex-shrink-0 text-slate-400" aria-hidden="true" />
-        {templates.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => onInsert(t.body)}
-            // Tab-focusing a chip that is scrolled out of view must bring it
-            // into view — the browser does this for free because the chip is a
-            // real focusable child of the scroller (not an aria-only widget).
-            className="inline-flex max-w-[140px] flex-shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-sm transition-colors [scroll-snap-align:start] hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-            title={t.body}
-          >
-            <span className="truncate">{t.name}</span>
-          </button>
-        ))}
-      </div>
-      {/* Fade masks — pointer-events-none so they never eat a chip click. */}
-      {edges.left && (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 left-0 w-7 bg-gradient-to-r from-slate-50 to-transparent"
-        />
-      )}
-      {edges.right && (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 right-0 w-7 bg-gradient-to-l from-slate-50 to-transparent"
-        />
-      )}
-    </div>
+    // AC-2 (Dennis: "on messages i cannot scroll the templates", and again
+    // 2026-09-16: "i can still not scroll the message templates"). The strip
+    // WAS a real horizontal scroller; it was just unreachable with a mouse.
+    // ChipScroller adds wheel→scrollLeft, drag-to-pan and edge arrows — see the
+    // root-cause note at the top of components/ChipScroller.tsx.
+    //
+    // The scroller stays flex-shrink-0 so it can never push the composer below
+    // the fold — that pinning is the other half of the AC.
+    <ChipScroller label="Insert template" itemNoun="templates" className="gap-1.5 px-2 py-1.5">
+      <FileText className="h-3 w-3 flex-shrink-0 text-slate-400" aria-hidden="true" />
+      {templates.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          onClick={() => onInsert(t.body)}
+          // Tab-focusing a chip that is scrolled out of view must bring it
+          // into view — the browser does this for free because the chip is a
+          // real focusable child of the scroller (not an aria-only widget).
+          className="inline-flex max-w-[140px] flex-shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          title={t.body}
+        >
+          <span className="truncate">{t.name}</span>
+        </button>
+      ))}
+    </ChipScroller>
   );
 });
 
@@ -1130,7 +1112,7 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
     if (!trimmed) return;
     if (!onSend(text)) return; // blocked → keep the draft
     setText('');
-    if (ref.current) ref.current.style.height = 'auto';
+    if (ref.current) { ref.current.style.height = 'auto'; ref.current.scrollTop = 0; }
   }, [text, onSend]);
 
   // Template-chip handler. APPENDS the template body to the current draft so a
@@ -1146,9 +1128,11 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
       // the new value to the textarea before we measure scrollHeight.
       requestAnimationFrame(() => {
         if (ref.current) {
-          ref.current.style.height = 'auto';
-          ref.current.style.height = Math.min(ref.current.scrollHeight, 120) + 'px';
+          autosize(ref.current);
           ref.current.focus();
+          // A just-inserted template lands at the end; keep it in view when the
+          // box is already at its cap and therefore scrolling internally.
+          ref.current.scrollTop = ref.current.scrollHeight;
         }
       });
       return next;
@@ -1171,8 +1155,7 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
           value={text}
           onChange={(e) => {
             setText(e.target.value);
-            e.target.style.height = 'auto';
-            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+            autosize(e.target);
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -1183,7 +1166,12 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
           placeholder="Message…"
           rows={1}
           aria-label="Message body"
-          style={{ resize: 'none', overflow: 'hidden', minHeight: '36px', maxHeight: '120px' }}
+          // `overflowY: auto`, NOT `overflow: hidden`. The box grew to a
+          // hardcoded 120 px cap and then clipped everything past it with no
+          // scrollbar and no wheel — Dennis, 2026-09-16: "if the message is big
+          // i cannot see it". `autosize` derives the cap from the panel height
+          // and this turns the box into a real internal scroller past it.
+          style={{ resize: 'none', overflowY: 'auto', minHeight: '36px' }}
           className="flex-1 bg-transparent px-2 py-1.5 text-base text-slate-800 placeholder-slate-400 focus:outline-none"
         />
         <button
@@ -1301,6 +1289,10 @@ function ComposeView({ initialTo, from }: ComposeViewProps) {
           onChange={(e) => setText(e.target.value)}
           placeholder="Type a message…"
           aria-label="Message body"
+          // `h-full` already fills the space above the Send footer; making
+          // `overflowY: auto` explicit guarantees a long message scrolls here
+          // too rather than relying on the UA default surviving a reset.
+          style={{ overflowY: 'auto' }}
           className="h-full w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-base text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
         />
       </div>
@@ -1692,6 +1684,17 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
   // its own Answer button, so the ring is never lost.
   const ringingCardHere = isRinging && current.kind === 'dialer';
 
+  // "Message this number" in the call banner (Dennis 2026-09-16). PUSH, not
+  // replace, and `from: 'dialer'` — the call started on Dial, so Back must
+  // return to Dial no matter which tab the user happened to be on when they
+  // reached for it. The banner lives above the view stack, so it stays on
+  // screen over the thread and the call is never traded for the text.
+  const openThreadForCall = useCallback((to: string) => {
+    push({ kind: 'thread', threadId: to, from: 'dialer' });
+  }, [push]);
+
+  const callSurfaceProps = { ...phoneCall.surfaceProps, onMessage: openThreadForCall };
+
   // A ring pulls the user to Dial, where the card lives — but only from
   // another ROOT tab. Yanking someone out of a compose they are typing would
   // destroy the draft, and the banner already makes the call answerable from
@@ -1736,7 +1739,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           `min-h-0 flex-1` body box below: the active view keeps its own
           scroll and simply gets shorter by the height of the strip. */}
       {(phoneCall.mode === 'banner' || (isRinging && !ringingCardHere)) && (
-        <PhoneModeCallBanner {...phoneCall.surfaceProps} />
+        <PhoneModeCallBanner {...callSurfaceProps} />
       )}
       {/* UNCONDITIONAL. The strip is the surface's primary navigation; a view
           that hides it strands the user inside a stack whose only exit is a
@@ -1757,7 +1760,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
       {/* The incoming-call card: top of the Dial tab, above the pad and the
           recents list, outside the view's own scroller so a ringing phone
           cannot be scrolled out of sight. */}
-      {ringingCardHere && <PhoneModeIncomingCard {...phoneCall.surfaceProps} />}
+      {ringingCardHere && <PhoneModeIncomingCard {...callSurfaceProps} />}
       {/* min-h-0 so the active view actually scrolls inside this box instead of
           stretching the column — the same class of bug as AC-2's. */}
       <div className="min-h-0 flex-1 overflow-hidden">
