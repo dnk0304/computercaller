@@ -140,14 +140,22 @@ body {
    in the shell's own UI face; the brand's wordmark is ALL CAPS, extra-bold and
    two-tone, so the two halves of the extension were showing two different
    logos. Now they show one.
-   The mini cut of the mark, not the full one: at 18px the full mark's monitor,
-   phone, call arc and handset badge collapse into green mush. The SVG carries
-   its own rounded tile, so no border-radius and no gradient here.
-   89 × 27 is the lockup's natural 3.30:1 at an 18px mark — 17px narrower than
-   the mark + text pair it replaces, so the 40px row gained space. */
+   PIXEL-O (Dennis, 2026-09-16: "Here is a screenshot of the wrong logo in the
+   extension. The text beneath is correct though."): both halves were showing a
+   logo this repo drew rather than the logo the product has. lockup-inline.svg
+   is now the OFFICIAL artwork — the monitor-and-phone mark with the call arc,
+   and the real two-tone wordmark keyed off the Play-listing lockup.
+   INLINE, not stacked, in this row. The official composition is stacked, but a
+   27px strip stacked gives the wordmark a 4px cap height, which is below the
+   size at which those letterforms resolve into anything. Inline at the same
+   row height the mark keeps its full 20px and the wordmark gets an 8px cap.
+   161 × 20 is that cut's natural 8.04:1. It is 72px wider than the drawn
+   lockup it replaces; the row is 380px+ and the device pill still fits.
+   The asset carries its own prefers-color-scheme block — a background-image
+   SVG is a separate document and this sheet cannot reach into it. */
 #cc-shell-header .cc-lockup {
-  width: 89px; height: 27px;
-  background: url("lockup.svg") left center / contain no-repeat;
+  width: 161px; height: 20px;
+  background: url("lockup-inline.svg") left center / contain no-repeat;
   flex-shrink: 0;
 }
 
@@ -155,7 +163,11 @@ body {
    rounder-cornered cut of the mark with no name on it. The lockup says who is
    asking for the sign-in. */
 #cc-signin .cc-lockup-hero {
-  width: 231px; height: 70px;
+  /* The hero has the room the header does not, so it gets the official
+     STACKED composition at its measured 2.168:1 — mark 72px tall, wordmark
+     16px cap. This is the one place in the extension that shows the logo the
+     way the Play listing shows it. */
+  width: 220px; height: 101px;
   background: url("lockup.svg") center / contain no-repeat;
   margin-bottom: 18px;
   flex-shrink: 0;
@@ -241,7 +253,7 @@ body {
 /* The framed login paints the lockup above its "Sign in" heading
    (dispatch J), so the skeleton has to reserve the same block or the
    handover shifts the whole form down by 60px. */
-.cc-sk-lockup { width: 100px; height: 34px; border-radius: 8px; margin-bottom: 12px; }
+.cc-sk-lockup { width: 170px; height: 79px; border-radius: 8px; margin-bottom: 12px; }
 .cc-sk-title  { width: 64px;  height: 26px; }
 .cc-sk-google { width: 100%;  height: 36px; border-radius: 999px; margin-top: 14px; }
 .cc-sk-rule   { width: 100%;  height: 1px;  border-radius: 0; margin-top: 22px; }

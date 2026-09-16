@@ -100,7 +100,11 @@ function AppHeader() {
           aria-hidden because ConnectionStatus said the words): the wordmark IS
           the product name rendered as artwork, so hiding it would delete the
           only place a screen reader learns which app this header belongs to. */}
-      <CcLockup size={20} className="flex-shrink-0" />
+      {/* PIXEL-O: the official artwork, inline. Stacked under a 20px mark the
+          real wordmark's cap height is 4px and the letterforms stop resolving;
+          inline in the same 40px row it gets a 9px cap. Same artwork, twice the
+          legibility, header height unchanged. */}
+      <CcLockup size={22} layout="inline" className="flex-shrink-0" />
 
       {/* Beta tag — Phone Mode is still in beta. Removed on the EXTENSION
           surface only (AC-6); the dashboard keeps it until Ken says otherwise. */}
@@ -146,9 +150,9 @@ function ExtensionHeader() {
           text: below 340px the bare mark, at or above it the full lockup. A
           wrapper span carries the responsive display because <CcLockup> sets
           its own inline `display`, which a utility class cannot outrank. */}
-      <CcMark size={18} variant="mini" title="ComputerCaller" className="flex-shrink-0 min-[340px]:hidden" />
+      <CcMark size={18} title="ComputerCaller" className="flex-shrink-0 min-[340px]:hidden" />
       <span className="hidden flex-shrink-0 min-[340px]:block">
-        <CcLockup size={18} />
+        <CcLockup size={20} layout="inline" />
       </span>
 
       {/* min-w-0 is what lets the pill's truncate actually engage. */}
