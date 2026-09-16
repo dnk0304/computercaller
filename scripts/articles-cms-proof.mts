@@ -10,7 +10,7 @@
  *   • app/api/admin/articles/[id]/publish/route.ts
  *   • app/api/admin/articles/[id]/unpublish/route.ts
  *   • app/sitemap.ts                              the real sitemap generator
- *   • app/guides/[slug]/page.tsx                  the real Markdown renderer
+ *   • app/(marketing)/guides/[slug]/page.tsx                  the real Markdown renderer
  *
  * The script refuses to run against a non-local database (assertLocalDb) and
  * cleans up every row it creates, so it can never touch production data.
@@ -470,7 +470,7 @@ async function main() {
     // via renderToStaticMarkup on the same ReactMarkdown config it ships with).
     const { renderToStaticMarkup } = require_('react-dom/server');
     const React = require_('react');
-    const GuidePageMod = await import('../app/guides/[slug]/page');
+    const GuidePageMod = await import('../app/(marketing)/guides/[slug]/page');
     const element = await GuidePageMod.default({
       params: Promise.resolve({ slug: 'proof-hostile' }),
     });

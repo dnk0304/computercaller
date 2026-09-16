@@ -18,7 +18,11 @@ import { CC_EXTENSION_ORIGIN } from "./lib/extension";
 //     Google sign-in form-action are the third-party origins we authorise.
 //     `unsafe-inline` on script-src is the Next.js hydration cost — closing
 //     this requires nonces on every inline boot script and is deferred.
-//   - Microsoft Clarity (2026-09-15): the inline bootstrap in app/layout.tsx
+//   - Microsoft Clarity (2026-09-16): SCOPED TO MARKETING ROUTES ONLY. The
+//     allow is no longer part of the site-wide policy — see MARKETING_HEADERS
+//     below and components/ClarityTag.tsx. Original 2026-09-15 note kept for
+//     the two-host reasoning, which still applies wherever the allow IS served:
+//     the inline bootstrap in app/layout.tsx
 //     was allowed by `unsafe-inline`, but the external tag it injects was not,
 //     so the tag never executed in production. TWO script hosts are required,
 //     not one: `https://www.clarity.ms` serves /tag/<id>, and that loader in
@@ -35,15 +39,23 @@ import { CC_EXTENSION_ORIGIN } from "./lib/extension";
 // ONE builder for both header sets — `frame-ancestors` is the ONLY directive
 // that differs between the site-wide policy and the /extension subtree's.
 // Deriving both from here makes drift structurally impossible.
-const buildCsp = (frameAncestors: string) =>
+// Clarity's hosts, added to a policy ONLY for the marketing routes. Keeping them
+// out of the default means that if the tag is ever re-added to an authenticated
+// page by accident, CSP blocks it — the header is the backstop for the
+// component-level scoping, not a duplicate of it. (It was exactly this backstop
+// being removed site-wide in 77a0136 that switched the /app leak on.)
+const CLARITY_SCRIPT_HOSTS = 'https://www.clarity.ms https://scripts.clarity.ms';
+const CLARITY_CONNECT_HOSTS = 'https://*.clarity.ms';
+
+const buildCsp = (frameAncestors: string, { clarity = false }: { clarity?: boolean } = {}) =>
   [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://www.clarity.ms https://scripts.clarity.ms",
+    `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com${clarity ? ` ${CLARITY_SCRIPT_HOSTS}` : ''}`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https:",
     "media-src 'self' data: blob:",
     "font-src 'self' data:",
-    "connect-src 'self' wss://computercaller.com https://api.cloudflare.com https://*.clarity.ms",
+    `connect-src 'self' wss://computercaller.com https://api.cloudflare.com${clarity ? ` ${CLARITY_CONNECT_HOSTS}` : ''}`,
     "frame-src 'self' https://whop.com",
     `frame-ancestors ${frameAncestors}`,
     "form-action 'self' https://accounts.google.com",
@@ -81,6 +93,24 @@ const EXTENSION_FRAME_HEADERS = [
     value: buildCsp(CC_EXTENSION_ORIGIN),
   },
 ];
+
+// Marketing CSP — the site-wide policy PLUS the Clarity hosts. Served only on
+// the public, logged-out, content-free routes that actually render <ClarityTag />.
+//
+// This list and ALLOWED_IMPORTERS in scripts/check-clarity-scope.mjs describe
+// the same boundary from two sides (header vs component); the gate script
+// asserts both at once, so they cannot silently drift.
+const MARKETING_HEADERS = [
+  {
+    key: 'Content-Security-Policy',
+    value: buildCsp("'self'", { clarity: true }),
+  },
+];
+
+// Only routes that exist AND are content-free. /pricing is a modal on `/`, and
+// there is no /blog — matchers for routes that don't exist are dead config that
+// reads like coverage, so they are deliberately omitted.
+const MARKETING_PATHS = ['/', '/guides', '/guides/:path*', '/privacy', '/terms'];
 
 const nextConfig: NextConfig = {
   // Disable StrictMode in dev — it double-renders every component on every
@@ -131,6 +161,11 @@ const nextConfig: NextConfig = {
         source: '/(.*)',
         headers: SECURITY_HEADERS,
       },
+      // Marketing routes re-state the full policy WITH the Clarity hosts. Sits
+      // after the global `/(.*)` block, so for the Content-Security-Policy key
+      // it REPLACES the global CSP on these paths only — the same last-wins
+      // semantics /extension and /auth/set-password already rely on.
+      ...MARKETING_PATHS.map((source) => ({ source, headers: MARKETING_HEADERS })),
       {
         // Chrome extension (2026-09-02, forge/chrome-extension-p1). The MV3
         // extension iframes https://computercaller.com/extension inside a

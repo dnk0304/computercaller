@@ -64,7 +64,7 @@ ok('1. exactly one register CTA on the page (single plan)',
 ok('1. the single-list section survives the CTA wiring', /SUBSCRIBED_INCLUDES/.test(modal));
 
 // ── STEP 2: the page stores it and hands it to signup ───────────────────────
-const page = read('app/page.tsx');
+const page = read('app/(marketing)/page.tsx');
 ok('2. handleTierSelect accepts a tier', /function handleTierSelect\(tierId:\s*PlanTierId\)/.test(page));
 ok('2. it records the choice', /setSelectedPlanTier\(tierId\)/.test(page));
 ok('2. SignupModal receives it', /planTier=\{selectedPlanTier\}/.test(page));

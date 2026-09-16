@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import Script from "next/script";
 import "./globals.css";
 import { PhoneProvider, DialerOpenProvider } from '@/hooks';
 // SyncSetupPanel is intentionally NOT mounted globally any more. It now mounts
@@ -132,16 +131,12 @@ export default function RootLayout({
             <GlobalDialerMount />
           </DialerOpenProvider>
         </PhoneProvider>
-        {/* Microsoft Clarity — visitor/behavior analytics (2026-08-31). Public
-            client-side tag, ID is not a secret. afterInteractive so it never
-            blocks hydration. Site-wide: root layout covers marketing + /app. */}
-        <Script id="ms-clarity" strategy="afterInteractive">
-          {`(function(c,l,a,r,i,t,y){
-              c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
-              t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
-              y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
-          })(window, document, "clarity", "script", "yaz1n9clas");`}
-        </Script>
+        {/* Microsoft Clarity is NOT loaded here. The root layout wraps the
+            authenticated app (/app, /messenger, /extension) as well as the
+            marketing pages, and Clarity session-replays the DOM — which on
+            those routes contains SMS bodies, contacts and notification text.
+            The tag is opt-IN per public route via <ClarityTag /> instead;
+            see components/ClarityTag.tsx for the allowed route list. */}
       </body>
     </html>
   );

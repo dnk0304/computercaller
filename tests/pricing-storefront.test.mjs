@@ -125,7 +125,7 @@ eq('$5 column history == 3mo', TIER_LIMITS[PROMOTED_TIER].syncRangeMax, '3mo');
 }
 
 // ── $7 must NOT appear on any pricing-PAGE surface (source-level guard) ──────
-for (const file of ['components/PricingModal.tsx', 'app/page.tsx', 'components/SubscribeLocked.tsx']) {
+for (const file of ['components/PricingModal.tsx', 'app/(marketing)/page.tsx', 'components/SubscribeLocked.tsx']) {
   const src = code(file);
   ok(`${file}: never renders the $7 price literal`, !/\$7\b/.test(src));
   ok(`${file}: never references the hidden $7 plan id`, !src.includes(PLAN_IDS.pro));
