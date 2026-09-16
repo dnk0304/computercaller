@@ -663,6 +663,12 @@ function startRelay(httpServer) {
     if (live <= 0) {
       broadcastToLobbyBrowsers(room, `PHONE_ABSENT:${JSON.stringify({})}`);
     }
+    // FORGE-O: every phone departure path funnels through here, so this is the
+    // one call that keeps the listener's `phonePresent` honest on the way OUT.
+    // Unconditional, not inside the `live <= 0` branch: a phone leaving a room
+    // that still has another phone changes nothing for PHONE_ABSENT but can
+    // still change `paired` (it may have been the ACTIVE one).
+    broadcastPairState(room);
   }
 
   /** Broadcast a message to every BROWSER currently sitting in the lobby. */
@@ -824,6 +830,12 @@ function startRelay(httpServer) {
       // what a cc_debug trace of a panel close needs to show.
       const hold = panelHold ? `, panelHold=YES (renewed each tick while a listener is present; grace ${LISTENER_HOLD_GRACE_MS}ms)` : '';
       console.log(`[Relay][${redactToken(room.token)}] socket_closed: soft-hold survivor (droppedRole=${droppedRole}, ${dc}), resume window armed (${RESUME_WINDOW_MS}ms)${hold}`);
+      // FORGE-O: active → held. This early return is the ONLY exit that leaves a
+      // pair alive-but-unsendable, and it is the common one (every panel close
+      // and every phone blip lands here). Without this the listener keeps a
+      // green dot over a pair that cannot carry a single frame until a peer
+      // returns — the same class of lie as the lobby-presence green.
+      broadcastPairState(room);
       return;
     }
 
@@ -896,6 +908,9 @@ function startRelay(httpServer) {
     // call is a no-op and the button stays blue. The soft-hold path above
     // returned early before reaching here, so a transient blip never trips
     // this (that's the point — absence only on genuine departure).
+    // FORGE-O: this already re-broadcasts pair state for every full-teardown
+    // path. The soft-hold path never reaches here — it is handled at its own
+    // early return above.
     broadcastPhoneAbsentIfLastPhoneGone(room);
   }
 
@@ -1039,6 +1054,10 @@ function startRelay(httpServer) {
       console.log(`[Relay][${redactToken(room.token)}] replayed ${replayed}/${room.frameBuffer.length} buffered frame(s) on resume`);
       room.frameBuffer = [];
     }
+    // FORGE-O: the pair just went held → active. The listener is the ONE peer
+    // that gets no PAIRING_ACTIVE here (it is not an active slot), so without
+    // this it would sit on a stale `held` until the next data frame.
+    broadcastPairState(room);
     return true;
   }
 
@@ -1170,6 +1189,10 @@ function startRelay(httpServer) {
     safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
     safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: pending.ua, ip: pending.ip })}`);
     console.log(`[Relay][${redactToken(room.token)}] Pairing ${pending.id} ACTIVE — browser ↔ phone`);
+    // FORGE-O: the one moment green is actually earned. The listener gets no
+    // PAIRING_ACTIVE of its own (it is not an active slot), so this is how it
+    // learns the pair formed.
+    broadcastPairState(room);
   }
 
   /**
@@ -1226,6 +1249,67 @@ function startRelay(httpServer) {
         safeSend(s, msg);
       }
     }
+  }
+
+  /**
+   * FORGE-O (2026-09-16) — the listener's view of pairing truth.
+   *
+   * THE BUG THIS EXISTS TO KILL. The extension's MV3 worker joins as
+   * `?role=listener` and sits in room.lobby forever: it is never promoted to
+   * room.active.browser, so it never receives PAIRING_ACTIVE or
+   * PAIRING_TERMINATED (those are sent to the ACTIVE sockets by name). The only
+   * pairing-ish frames it could ever see were LOBBY_STATUS on join and
+   * PHONE_PRESENT / PHONE_ABSENT broadcasts — all of which answer "is a phone in
+   * this room", never "is a phone PAIRED with a browser". The worker had no
+   * choice but to paint its green dot from presence, and presence is not
+   * connection: after the 6eb9bc7 relay restart the phone was in the lobby and
+   * pinging every 15 s with NO active pair, and the dot was green for minutes.
+   * Dennis, 10:01: "showing 'phone connected and green dot' even though phone is
+   * not connected."
+   *
+   * So the listener needs the three facts it cannot derive, stated explicitly:
+   *   phonePresent — a live phone socket exists (lobby or active slot)
+   *   paired       — BOTH active slots hold an OPEN socket right now
+   *   held         — no live pair, but a resume claim is armed and unexpired,
+   *                  i.e. this pair is legitimately mid-resume (FORGE-L panel
+   *                  hold, or a socket blip inside RESUME_WINDOW_MS)
+   *
+   * `held` is deliberately a THIRD state and not folded into `paired`. A held
+   * claim is a real, already-consented pair that the relay still owns and will
+   * re-form without anyone tapping Accept — showing it as hard-disconnected
+   * would make every panel close look like a dropout. But it is also not a live
+   * pair: nothing can be sent over it until a peer returns. Grey-vs-green cannot
+   * express that; a distinct "resuming" state can.
+   *
+   * WHY A NEW FRAME RATHER THAN FIELDS ON LOBBY_STATUS. PAIR_STATE goes to
+   * LISTENERS ONLY (broadcastToListeners, not broadcastToLobbyBrowsers), so the
+   * /app web client and the v55 APK never receive it and cannot be destabilised
+   * by it — no APK change, no web-client change, nothing to version. LOBBY_STATUS
+   * keeps its exact existing shape for both of those consumers.
+   */
+  function derivePairState(room) {
+    const phoneOpen = !!(room.active.phone && room.active.phone.readyState === WebSocket.OPEN);
+    const browserOpen = !!(room.active.browser && room.active.browser.readyState === WebSocket.OPEN);
+    const paired = phoneOpen && browserOpen;
+    // Unexpired claim only. An expired-but-not-yet-reaped claim is a torn-down
+    // pair wearing a live one's clothes, which is the whole class of lie here.
+    const claimLive = !!(room.resumable && Date.now() <= room.resumable.expiresAt);
+    return {
+      phonePresent: countLivePhones(room) > 0,
+      paired,
+      held: !paired && claimLive,
+    };
+  }
+
+  /**
+   * Push the current pairing truth to every listener. Cheap and idempotent —
+   * the worker dedupes identical states before touching chrome.action — so
+   * every transition site can call it unconditionally rather than each one
+   * reasoning about whether the state actually moved.
+   */
+  function broadcastPairState(room) {
+    if (!room || !room.lobby) return;
+    broadcastToListeners(room, `PAIR_STATE:${JSON.stringify(derivePairState(room))}`);
   }
 
   function forwardDataPlane(room, fromWs, msg) {
@@ -1771,6 +1855,13 @@ function startRelay(httpServer) {
         //    a pairable phone is present.
         broadcastToLobbyBrowsers(room, `PHONE_PRESENT:${JSON.stringify({})}`);
       }
+      // FORGE-O: and unconditionally tell listeners the new truth — INCLUDING on
+      // the `phoneResumed` path, which deliberately skips PHONE_PRESENT above.
+      // That skip is exactly the "KNOWN GAP" the worker documented and papered
+      // over with a catch-all that promoted any data frame to green; a resumed
+      // phone is now reported properly (phonePresent AND paired) instead of
+      // being inferred from traffic.
+      broadcastPairState(room);
 
       ws.on('message', (data) => {
         // F-C: inbound traffic is liveness proof. Reset before the body runs.
@@ -2013,6 +2104,16 @@ function startRelay(httpServer) {
         alreadyActive,
       })}`);
     }
+
+    // FORGE-O: the false-green origin, stated exactly. In Ken's 09:57 capture the
+    // listener joined a room holding a lobby phone and NO active pair, got
+    // `LOBBY_STATUS:{phonePresent:true, alreadyActive:false}`, and painted green
+    // off `phonePresent` — for minutes, while nothing could be dialled or texted.
+    // A joining listener now also gets the full truth, so its FIRST paint is
+    // correct rather than a presence-shaped guess it has to walk back later.
+    // Sent unconditionally (outside the tryAutoResume branch above): a listener
+    // is never promoted by tryAutoResume, so it must be told either way.
+    if (ws.listener) broadcastPairState(room);
 
     ws.on('message', async (data) => {
       // F-C: inbound traffic is liveness proof. Reset before the body runs.

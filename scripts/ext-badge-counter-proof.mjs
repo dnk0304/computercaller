@@ -261,6 +261,137 @@ try {
   check('HB does not notify', (await notifCount()) === 0, await notifCount());
   check('HB does not bump the badge', b === '', b);
   check('HB does NOT claim a phone is present', hbState.phonePresent === false, hbState);
+
+  // ---- 11. FORGE-O: the green dot must mean PAIRED, not "a phone exists" ---
+  //
+  // Dennis 2026-09-16, 10:01: "the CC extension is showing 'phone connected and
+  // green dot' even though phone is not connected."
+  //
+  // Reproduced from Ken's relay log for room MRsNsod3. The 6eb9bc7 deploy
+  // restarted the relay, which wiped the in-memory pair claim. At 09:57:06 the
+  // phone joined the LOBBY; at 09:57:33 our listener joined and was handed
+  // `LOBBY_STATUS:{phonePresent:true, alreadyActive:false}`. The phone then
+  // pinged every 15 s for four minutes with no pair — and the dot was green the
+  // whole time, over a connection that could not place a call or send a text.
+  //
+  // Read back through `lastIndicator`, which is the value applyIndicator
+  // actually committed to chrome.action, rather than through the fact variables
+  // — the bug was never in the facts, it was in the rule that mapped them.
+  const indicator = () => sw.evaluate(() => lastIndicator);
+  const title = () => sw.evaluate(() => chrome.action.getTitle({}));
+  /** Put the worker in a known signed-in, socket-up state with no pair. */
+  const armIndicator = () => sw.evaluate(async () => {
+    signedIn = true; wsOpen = true;
+    phonePresent = false; paired = false; held = false;
+    lastIndicator = null;
+    refreshIndicator();
+    await new Promise((r) => setTimeout(r, 120));
+  });
+  const PAIR_STATE = (o) => 'PAIR_STATE:' + JSON.stringify(o);
+  /** Feed one control frame and let the async applyIndicator settle. */
+  const feedState = (frame) => sw.evaluate(async (f) => {
+    handleFrame(f);
+    await new Promise((r) => setTimeout(r, 150));
+  }, frame);
+
+  // 11a. THE REGRESSION. The exact frame the listener got at 09:57:33.
+  await armIndicator();
+  await feedState('LOBBY_STATUS:' + JSON.stringify({ phonePresent: true, alreadyActive: false }));
+  let ind = await indicator();
+  check('REGRESSION: lobby phone, no pair ⇒ NOT connected (was green)',
+    ind !== 'connected', ind);
+  check('REGRESSION: that state is reported as phone-unpaired',
+    ind === 'phone-unpaired', ind);
+  let t = await title();
+  check('its tooltip tells the user to press Connect',
+    /not connected/i.test(t) && /Connect/.test(t), t);
+
+  // 11b. alreadyActive is NOT pairedness for a listener either. A pair existing
+  // somewhere in the room says nothing about a listener that is not in it.
+  await armIndicator();
+  await feedState('LOBBY_STATUS:' + JSON.stringify({ phonePresent: true, alreadyActive: true }));
+  ind = await indicator();
+  check('alreadyActive alone does NOT earn green', ind !== 'connected', ind);
+
+  // 11c. the full state table, driven through the authoritative frame.
+  await armIndicator();
+  await feedState(PAIR_STATE({ phonePresent: false, paired: false, held: false }));
+  ind = await indicator();
+  check('no phone ⇒ grey (signed-in-disconnected)', ind === 'signed-in-disconnected', ind);
+
+  await feedState(PAIR_STATE({ phonePresent: true, paired: false, held: false }));
+  ind = await indicator();
+  check('phone present, unpaired ⇒ grey (phone-unpaired)', ind === 'phone-unpaired', ind);
+
+  await feedState(PAIR_STATE({ phonePresent: true, paired: false, held: true }));
+  ind = await indicator();
+  check('held claim ⇒ amber (resuming), not green', ind === 'resuming', ind);
+
+  await feedState(PAIR_STATE({ phonePresent: true, paired: true, held: false }));
+  ind = await indicator();
+  check('PAIRED ⇒ green. The control arm — without this the rest is vacuous',
+    ind === 'connected', ind);
+  t = await title();
+  check('green says connected', /connected/i.test(t), t);
+
+  // 11d. and back down again. A dot that can only go green is not an indicator.
+  await feedState(PAIR_STATE({ phonePresent: true, paired: false, held: false }));
+  ind = await indicator();
+  check('pair torn down ⇒ leaves green immediately', ind === 'phone-unpaired', ind);
+
+  // 11e. a malformed/empty PAIR_STATE must fail toward grey, never toward a
+  // connection the user does not have.
+  await armIndicator();
+  await feedState(PAIR_STATE({ phonePresent: true, paired: true, held: false }));
+  check('green before the malformed frame', (await indicator()) === 'connected');
+  await feedState('PAIR_STATE:{');
+  ind = await indicator();
+  check('malformed PAIR_STATE falls back to grey, not green', ind !== 'connected', ind);
+
+  // 11f. THE CATCH-ALL DEMOTION. background.js promotes any non-PING data frame
+  // to "a phone is present" — correct, and it must stay. But it must no longer
+  // imply a PAIR: server.js fans phone frames to listeners BEFORE the
+  // active-pair gate precisely so notifications survive a closed panel, so an
+  // SMS arriving during a HELD pair is routine and is not evidence the pair is
+  // live. Inferring green here would rebuild the bug at its worst moment.
+  await armIndicator();
+  await feedState(PAIR_STATE({ phonePresent: true, paired: false, held: true }));
+  check('held before the data frame', (await indicator()) === 'resuming');
+  await feed([SMS(201)]);
+  await sw.evaluate(() => new Promise((r) => setTimeout(r, 150)));
+  ind = await indicator();
+  check('an SMS during a HELD pair does NOT turn the dot green', ind === 'resuming', ind);
+
+  // ---- 12. FORGE-O deliverable 3: notifications while the panel is CLOSED --
+  //
+  // Dennis: "I need to get notified in the extension if a message, alert or
+  // call is incoming even when its closed. Is that doable?" — asserted here
+  // under the FORGE-M hold state specifically, which is the hard case: panel
+  // closed (presenceCount 0), pair HELD rather than active. The frames must
+  // reach the listener and raise a real notification, not merely land in
+  // room.frameBuffer to be replayed to a browser that is not there.
+  await reset();
+  await armIndicator();
+  await feedState(PAIR_STATE({ phonePresent: true, paired: false, held: true }));
+  await sw.evaluate(() => { presenceCount = 0; });   // panel CLOSED
+  await armNotifSpy();
+  await feed([SMS_DIR(301, 'inbox'), CALL, NOTIF]);
+  b = await badge();
+  check('HELD pair + panel CLOSED: SMS/call/alert ⇒ badge "3"', b === '3', b);
+  check('HELD pair + panel CLOSED: 3 notifications raised',
+    (await notifCount()) === 3, await notifCount());
+  check('…and the dot still refuses to claim a live pair',
+    (await indicator()) === 'resuming', await indicator());
+
+  // 12b. the Forge-J guard, re-asserted under the hold state — an outgoing SMS
+  // must stay silent here too, or the hold path becomes a way to smuggle the
+  // suppressed notification back in.
+  await reset();
+  await armNotifSpy();
+  await feed([SMS_DIR(302, 'sent')]);
+  b = await badge();
+  check('HELD pair + panel CLOSED: OUTGOING sms still silent',
+    b === '' && (await notifCount()) === 0, { badge: b, notifs: await notifCount() });
 } finally {
   await ctx.close();
   fs.rmSync(userDataDir, { recursive: true, force: true });

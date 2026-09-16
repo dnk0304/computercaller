@@ -24,15 +24,57 @@ let reconnectAttempts = 0;      // drives exponential backoff
 let reconnectTimer = null;
 let presenceCount = 0;          // >0 ⇒ a popup / pop-out / panel is open (suppress notifs)
 
-// ── Connection indicator state (2026-09-15, forge/ext-badge-sidepanel) ──────
-// TWO independent facts, deliberately not collapsed into one boolean:
+// ── Connection indicator state ─────────────────────────────────────────────
+// (2026-09-15 forge/ext-badge-sidepanel; corrected 2026-09-16 FORGE-O.)
+//
+// FOUR independent facts, deliberately not collapsed:
 //   wsOpen       — our listener socket is up (we can hear the relay at all)
-//   phonePresent — a PHONE is in this user's room (the thing Dennis actually
-//                  means by "we are connected"; a relay socket with no phone
-//                  on the other end can neither call nor text)
-// Green requires BOTH. See deriveState().
+//   phonePresent — a live PHONE socket exists in this user's room
+//   paired       — a phone and a browser are BOTH in the active slots right now
+//   held         — no live pair, but the relay has an unexpired resume claim,
+//                  i.e. this pair is mid-resume and will re-form with no Accept
+//
+// WHAT WAS WRONG BEFORE, AND WHY IT MATTERED. Green used to require
+// `wsOpen && phonePresent`, and the comment above this line claimed phonePresent
+// was "the thing Dennis actually means by we are connected". It is not. A phone
+// sitting in the LOBBY is present and utterly unreachable — it is not paired
+// with anything, so it can neither place a call nor send a text. On 2026-09-16
+// the 6eb9bc7 deploy restarted the relay, which wiped the in-memory pair claim;
+// the phone rejoined the lobby and pinged happily every 15 s with no pair, and
+// this worker painted green for minutes over a dead connection. Dennis, 10:01:
+// "showing 'phone connected and green dot' even though phone is not connected."
+//
+// Green now means PAIRED, which is the only state in which the product works.
+// `held` gets its own amber rather than being rounded to either neighbour —
+// rounding it up to green re-creates exactly this bug for the (common) duration
+// of every panel close, and rounding it down to grey makes a normal panel close
+// look like a dropout. All three come from the relay's PAIR_STATE frame; none
+// of them is inferred from traffic any more. See refreshIndicator().
 let wsOpen = false;
 let phonePresent = false;
+let paired = false;
+let held = false;
+
+/**
+ * Drop every relay-derived fact back to "we know nothing" (FORGE-O).
+ *
+ * There are five places that invalidate this state — socket open, socket close,
+ * connect() throw, sign-out, and the auth refresh — and before FORGE-O each one
+ * hand-cleared `phonePresent` on its own line. Adding two more fields to five
+ * independent reset sites is how one of them quietly keeps `paired = true`
+ * across a reconnect and paints green over a room the worker has not heard from
+ * since. One function, five callers, nothing to keep in sync.
+ *
+ * Does NOT touch `signedIn` (auth outlives the socket) and does NOT repaint —
+ * callers decide when to call refreshIndicator(), since several of them change
+ * other facts in the same breath.
+ */
+function clearRelayFacts() {
+  wsOpen = false;
+  phonePresent = false;
+  paired = false;
+  held = false;
+}
 let signedIn = false;           // a durable ext_token exists
 let lastIndicator = null;       // last state pushed to chrome.action (dedupe)
 /**
@@ -63,6 +105,15 @@ const NOTIF_LINK_KEY = 'cc_notif_links';
 
 const GREEN = '#16a34a';
 const GREY = '#9ca3af';
+/**
+ * FORGE-O — the "resuming" dot. A held pair (panel closed, or a socket blip
+ * inside the resume window) is neither connected nor disconnected: the relay
+ * still owns the pair and will re-form it with no Accept tap, but nothing can
+ * be sent over it this instant. Amber, because the honest answer to "am I
+ * connected?" in that window is "not yet, hold on" — and because a user who
+ * sees green and then cannot dial has been lied to, which is the whole bug.
+ */
+const AMBER = '#d97706';
 /** Unread-count chip. Red because it is the one thing asking to be acted on. */
 const BADGE_RED = '#dc2626';
 
@@ -145,17 +196,31 @@ async function composeIcon(color) {
 
 /**
  * The ONE place the toolbar indicator is written.
- * @param {'connected'|'signed-in-disconnected'|'signed-out'} state
+ *
+ * FORGE-O widened the vocabulary from three states to five. `phone-unpaired` and
+ * `signed-in-disconnected` share the grey dot deliberately — the DOT only has to
+ * answer "can I use this right now?", and for both the answer is no — but they
+ * get different TITLES, because the required user action differs sharply: one
+ * needs you to click Connect, the other needs you to wait. Collapsing them to one
+ * tooltip is what left Dennis with no way to tell "your phone is right here,
+ * press the button" from "the relay is down".
+ *
+ * @param {'connected'|'resuming'|'phone-unpaired'|'signed-in-disconnected'|'signed-out'} state
  */
 async function applyIndicator(state) {
   if (state === lastIndicator) return;
   lastIndicator = state;
-  const color = state === 'connected' ? GREEN : state === 'signed-in-disconnected' ? GREY : null;
-  const title = state === 'connected'
-    ? 'ComputerCaller — phone connected'
-    : state === 'signed-in-disconnected'
-      ? 'ComputerCaller — reconnecting…'
-      : 'ComputerCaller';
+  const color =
+    state === 'connected' ? GREEN :
+    state === 'resuming' ? AMBER :
+    (state === 'phone-unpaired' || state === 'signed-in-disconnected') ? GREY :
+    null;
+  const title =
+    state === 'connected' ? 'ComputerCaller — phone connected' :
+    state === 'resuming' ? 'ComputerCaller — reconnecting…' :
+    state === 'phone-unpaired' ? 'ComputerCaller — phone nearby, not connected. Open the panel and press Connect.' :
+    state === 'signed-in-disconnected' ? 'ComputerCaller — waiting for phone' :
+    'ComputerCaller';
   try { chrome.action.setTitle({ title }); } catch (_) {}
   try {
     const imageData = await composeIcon(color);
@@ -228,17 +293,38 @@ function repaintBadge() {
   return readUnread().then(paintBadge).catch(() => {});
 }
 
-/** Recompute from the two facts + auth. Call after ANY of them changes. */
+/**
+ * Recompute from the four facts + auth. Call after ANY of them changes.
+ *
+ * The full table (FORGE-O), which is also the table the panel copy follows:
+ *
+ *   signedIn  wsOpen  phonePresent  paired  held │ dot    title / pill
+ *   ─────────────────────────────────────────────┼──────────────────────────────
+ *   false     –       –             –       –    │ none   (signed out)
+ *   true      false   –             –       –    │ grey   Reconnecting to relay
+ *   true      true    false         false   false│ grey   Waiting for phone
+ *   true      true    true          false   false│ grey   Phone nearby — not connected
+ *   true      true    –             false   true │ amber  Reconnecting…
+ *   true      true    true          true    –    │ GREEN  Connected
+ *
+ * `paired` is checked before `held` because the relay can briefly report both
+ * during a resume (the claim is cleared after PAIRING_ACTIVE goes out); a live
+ * pair always wins. `phonePresent` never reaches green on its own any more —
+ * that was the bug.
+ */
 function refreshIndicator() {
   if (!signedIn) return applyIndicator('signed-out');
-  if (wsOpen && phonePresent) return applyIndicator('connected');
+  if (!wsOpen) return applyIndicator('signed-in-disconnected');
+  if (paired) return applyIndicator('connected');
+  if (held) return applyIndicator('resuming');
+  if (phonePresent) return applyIndicator('phone-unpaired');
   return applyIndicator('signed-in-disconnected');
 }
 
 /** Re-read the token and re-render. Cheap; called on every auth transition. */
 async function refreshAuthAndIndicator() {
   signedIn = !!(await getToken());
-  if (!signedIn) { wsOpen = false; phonePresent = false; }
+  if (!signedIn) clearRelayFacts();
   refreshIndicator();
 }
 
@@ -613,10 +699,15 @@ async function connect() {
       connecting = false;
       wsOpen = true;
       trace('ws-open', { attempts: reconnectAttempts });
-      // phonePresent stays whatever LOBBY_STATUS tells us next. We do NOT
-      // optimistically assume a phone: a relay socket with no phone behind it
-      // is precisely the state a green dot must not claim.
-      phonePresent = false;
+      // Pairing facts stay false until the relay tells us otherwise — the
+      // PAIR_STATE frame the relay sends on listener join arrives within a
+      // round-trip. We do NOT optimistically assume a phone or a pair: a relay
+      // socket with no phone behind it is precisely the state a green dot must
+      // not claim, and a socket that just reopened knows nothing about the room
+      // it left. clearRelayFacts() then re-set wsOpen, in that order, because
+      // the clear is about the ROOM and the socket genuinely is open.
+      clearRelayFacts();
+      wsOpen = true;
       refreshIndicator();
       // NOTE: backoff is reset in onclose only after a MIN_OPEN_DWELL_MS-stable
       // connection, NOT here — a socket that dies right after open must keep
@@ -638,7 +729,7 @@ async function connect() {
       const wasCurrent = ws === sock;
       if (wasCurrent) ws = null;
       connecting = false;
-      if (wasCurrent) { wsOpen = false; phonePresent = false; refreshIndicator(); }
+      if (wasCurrent) { clearRelayFacts(); refreshIndicator(); }
       if (openedAt && dwell >= MIN_OPEN_DWELL_MS) reconnectAttempts = 0; // stable → reset
       // Reset lobby (dispatch FORGE-J, 2026-09-15). 4010 `room_reset` is the
       // relay deliberately emptying this user's room, so the listener must come
@@ -671,8 +762,7 @@ async function connect() {
   } catch (e) {
     console.warn('[CC-SW] connect error', e);
     connecting = false;
-    wsOpen = false;
-    phonePresent = false;
+    clearRelayFacts();
     refreshIndicator();
     scheduleReconnect();
   }
@@ -721,16 +811,39 @@ function pick(obj, keys) {
  * phones while the phone is very much connected. Green must mean "a phone is
  * reachable", not "a phone is idle and pairable".
  *
- * KNOWN GAP (reported, not papered over): server.js skips the PHONE_PRESENT
- * broadcast when a phone rejoins through tryAutoResume() inside the 180s resume
- * window. A phone that blips and auto-resumes while our listener is already
- * connected therefore raises no presence frame. The catch-all below closes it:
- * ANY phone→browser data frame reaching broadcastToListeners() is proof a phone
- * is on the other end, so the first call/SMS/sync frame repairs the state.
+ * KNOWN GAP — CLOSED PROPERLY 2026-09-16 (FORGE-O). server.js used to skip the
+ * PHONE_PRESENT broadcast when a phone rejoined through tryAutoResume(), so a
+ * resumed phone raised no presence frame; the catch-all below papered over it by
+ * treating ANY data frame as proof of a phone. The relay now emits PAIR_STATE on
+ * that path (and every other transition), so presence is reported rather than
+ * guessed, and the catch-all has been demoted accordingly.
  */
 function notePhonePresence(present) {
   if (phonePresent === present) return;
   phonePresent = present;
+  refreshIndicator();
+}
+
+/**
+ * Authoritative pairing truth from the relay (FORGE-O). One frame carries all
+ * three facts so they can never disagree with each other — deriving `paired`
+ * from a sequence of independent presence frames is what produced a green dot
+ * over an unpaired phone in the first place.
+ *
+ * Absent fields are read as FALSE, not as "unchanged". A malformed or truncated
+ * PAIR_STATE must fail toward grey: claiming a connection that is not there
+ * costs the user a call they think they placed, whereas a spurious grey costs
+ * one glance at the panel. Fail toward the cheaper mistake.
+ */
+function notePairState(data) {
+  const nextPresent = data?.phonePresent === true;
+  const nextPaired = data?.paired === true;
+  const nextHeld = data?.held === true;
+  if (phonePresent === nextPresent && paired === nextPaired && held === nextHeld) return;
+  phonePresent = nextPresent;
+  paired = nextPaired;
+  held = nextHeld;
+  trace('pair-state', { phonePresent, paired, held });
   refreshIndicator();
 }
 
@@ -765,7 +878,15 @@ function handleFrame(msg) {
 
   // Presence first, and OUTSIDE the notification switch: these frames must be
   // processed whether or not a surface is open, and they raise no notification.
+  // FORGE-O: authoritative. Handled first so it wins over any weaker inference.
+  if (type === 'PAIR_STATE') { notePairState(data); return; }
   if (type === 'LOBBY_STATUS') {
+    // FORGE-O: presence ONLY. This frame says nothing about pairing —
+    // `alreadyActive` means "some pair exists in this room", which for a
+    // passive listener is not the same as "the pair is live and usable", and
+    // OR-ing the two into one green boolean is the original defect. PAIR_STATE
+    // follows this frame on every listener join, so `paired`/`held` are set by
+    // the frame that actually knows them.
     notePhonePresence(data.phonePresent === true || data.alreadyActive === true);
     return;
   }
@@ -776,7 +897,8 @@ function handleFrame(msg) {
   // catch-all below, because that catch-all would otherwise read a ROOM_RESET
   // as proof of a live phone and leave the green dot on through the teardown —
   // the dot would go stale for the whole reconnect window.
-  if (type === 'ROOM_RESET') { notePhonePresence(false); return; }
+  // FORGE-O: a reset tears the pair down too, not just presence.
+  if (type === 'ROOM_RESET') { notePairState({}); return; }
   // MV3 keepalive heartbeat (dispatch FORGE-J addendum A, 2026-09-15). The
   // relay pushes HB to LISTENER sockets every 15s purely so this worker
   // receives a real message: a protocol-level ws ping is answered below the JS
@@ -791,7 +913,16 @@ function handleFrame(msg) {
   // whole job — the inbound message is what keeps the worker alive, so a reply
   // would be pure wire noise.
   if (type === 'HB') return;
-  // Catch-all for the tryAutoResume gap documented above.
+  // Catch-all, DEMOTED (FORGE-O). A phone→browser data frame proves a phone is
+  // on the other end, so it still repairs `phonePresent` if a presence frame was
+  // ever missed. It must NOT be read as proof of a PAIR: broadcastToListeners()
+  // fans phone frames to listeners "regardless of active-pair state" (server.js,
+  // its own doc comment) precisely so notifications survive a closed panel and a
+  // resume gap — so an SMS arriving during a HELD pair, or from a lobby phone, is
+  // routine and is not evidence the pair is live. Inferring `paired` here would
+  // re-introduce the exact lie this dispatch removes, at the worst moment: the
+  // held window, where the user is most likely to try to act on the dot.
+  // `paired`/`held` change ONLY via PAIR_STATE.
   if (type !== 'PING' && type !== 'PONG') notePhonePresence(true);
 
   switch (type) {
@@ -1121,8 +1252,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message?.type === 'signed-out') {
     try { ws && ws.close(); } catch (_) {}
     signedIn = false;
-    wsOpen = false;
-    phonePresent = false;
+    clearRelayFacts();
     refreshIndicator();
     try { chrome.storage.session.set({ [UNREAD_KEY]: { ...UNREAD_ZERO } }); } catch (_) {}
     // Signing out clears the counts, so it must clear the number on the icon

@@ -227,6 +227,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
  *   active     ● emerald   "Ready"              ✕ Disconnect
  *   requesting ● amber †   "Connecting"         —            († pulse, motion-safe)
  *   lobby      ● slate     "Waiting for phone"  Connect (text button, if present)
+ *              ● slate     "Phone nearby"       ← when phonePresent (FORGE-O)
  *   declined / timeout / rejected  ● red  short reason  —
  */
 function CompactDevicePill({
@@ -268,7 +269,17 @@ function CompactDevicePill({
           ? 'No answer'
           : state === 'rejected'
             ? 'Blocked'
-            : 'Waiting for phone';
+            // FORGE-O: the lobby state has always had TWO meanings and showed
+            // one word for both. "Waiting for phone" is right when no phone is
+            // there; when a phone IS present and simply unpaired it is actively
+            // misleading — it reads as "the phone hasn't arrived yet", so the
+            // user waits for something that has already happened instead of
+            // pressing the Connect button sitting next to this pill. The full
+            // sentence lives in the title/aria below; the pill is 210px and
+            // nowrap, so the word here has to stay short.
+            : phonePresent
+              ? 'Phone nearby'
+              : 'Waiting for phone';
 
   const wordClass = active
     ? 'text-emerald-700'
@@ -286,7 +297,14 @@ function CompactDevicePill({
     <div
       role="status"
       aria-live="polite"
-      title={failed ? reasonText : undefined}
+      title={
+        failed
+          ? reasonText
+          // FORGE-O: carries the meaning the 210px pill cannot spell out.
+          : (!active && !connecting && phonePresent)
+            ? 'Phone nearby — not connected. Press Connect to pair.'
+            : undefined
+      }
       className="inline-flex h-6 min-w-0 max-w-[210px] items-center gap-1.5 whitespace-nowrap rounded-full bg-slate-100 pl-2 pr-1 text-[11.5px] font-medium"
     >
       <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${dotClass}`} aria-hidden="true" />
@@ -384,7 +402,10 @@ function LobbyPill({
           defaults to min-width:auto and refuses to shrink past its text. */}
       <div className="flex min-w-0 flex-col leading-tight">
         <span className="truncate text-sm font-semibold text-slate-800">
-          {phonePresent ? 'Phone in lobby — ready to pair' : 'Waiting for phone…'}
+          {/* FORGE-O: "ready to pair" described the RELAY's readiness, not the
+              user's connection, and read as reassurance — the state it names is
+              NOT connected and needs a click. Say the not-connected part first. */}
+          {phonePresent ? 'Phone nearby — not connected' : 'Waiting for phone…'}
         </span>
         {/* The instruction line is the first thing to go on a phone: the pill
             sits in a ~200px slot there and the Connect button carries the
