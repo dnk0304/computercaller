@@ -38,6 +38,8 @@ Every read and write is wrapped: localStorage throws outright in a profile
  * with site data blocked, and a theme preference is not worth a blank panel.
  */
 
+import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
+
 export type CcTheme = 'system' | 'light' | 'dark';
 export type CcResolvedTheme = 'light' | 'dark';
 
@@ -111,7 +113,9 @@ export function applyTheme(resolved: CcResolvedTheme) {
  * by the blocking boot script's own surface and by /extension/login, and it
  * must stay free of React and of the bridge's hook imports. The payload is a
  * word, not a capability; the shell still gates it on origin + contentWindow
- * like every other inbound verb.
+ * like every other inbound verb — and since FORGE-P (2026-09-16) we address it
+ * to CC_EXTENSION_ORIGIN rather than '*', so no other installed extension that
+ * framed this page can read the theme channel either.
  *
  * A no-op everywhere else — on computercaller.com proper `window.parent` is
  * `window` and nothing is sent.
@@ -119,7 +123,10 @@ export function applyTheme(resolved: CcResolvedTheme) {
 function postThemeToShell(resolved: CcResolvedTheme) {
   try {
     if (typeof window === 'undefined' || window.parent === window) return;
-    window.parent.postMessage({ source: 'cc-ext', type: 'theme', theme: resolved }, '*');
+    window.parent.postMessage(
+      { source: 'cc-ext', type: 'theme', theme: resolved },
+      CC_EXTENSION_ORIGIN,
+    );
   } catch {
     /* a framer that refuses postMessage must not break the theme */
   }
@@ -134,4 +141,4 @@ function postThemeToShell(resolved: CcResolvedTheme) {
  * first and corrects it a frame later. Kept to one expression and one try/catch
  * because it is on the critical path of every popup open.
  */
-export const THEME_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem('${LAST_KEY}');if(t!=='light'&&t!=='dark'&&t!=='system')t='system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-cc-theme',d?'dark':'light');try{if(window.parent!==window)window.parent.postMessage({source:'cc-ext',type:'theme',theme:d?'dark':'light'},'*');}catch(e2){}}catch(e){}})();`;
+export const THEME_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem('${LAST_KEY}');if(t!=='light'&&t!=='dark'&&t!=='system')t='system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-cc-theme',d?'dark':'light');try{if(window.parent!==window)window.parent.postMessage({source:'cc-ext',type:'theme',theme:d?'dark':'light'},'${CC_EXTENSION_ORIGIN}');}catch(e2){}}catch(e){}})();`;

@@ -17,21 +17,26 @@
  * (cookie logout + chrome.storage token removal + SW notify) — we do not
  * reimplement any of it, because two sign-out paths is how one of them rots.
  *
- * SECURITY
- * The shell page lives on chrome-extension://<id> and this page on
- * https://computercaller.com. Cross-origin, so:
- *   - Outbound: we post to `parent` with targetOrigin '*'. The payload carries
- *     no secrets — it is a verb, not data — and the only listener that acts on
- *     it verifies `event.source === frame.contentWindow` on its side.
+ * SECURITY — pinned to ONE origin, in both directions (2026-09-16, FORGE-P)
+ * The shell page lives on {@link CC_EXTENSION_ORIGIN} (the extension ID is
+ * pinned by the committed `key` in chrome-extension/manifest.json, so dev and
+ * Web-Store builds share it) and this page on https://computercaller.com.
+ * Cross-origin, so:
+ *   - Outbound: `postMessage(msg, CC_EXTENSION_ORIGIN)` — NEVER '*'. With '*'
+ *     any extension that framed /extension received a copy of every verb we
+ *     sent; the browser now refuses to deliver unless the framer really is us.
  *   - Inbound: we accept a message ONLY when it comes from `window.parent`
- *     (i.e. we really are framed) and the origin starts with `chrome-extension://`.
- *     A same-origin page cannot spoof that origin, and an arbitrary third-party
- *     framer cannot either.
- * Nothing here grants capability: the worst a forged inbound message achieves
- * is showing a wrong email in a menu.
+ *     (i.e. we really are framed) AND `event.origin === CC_EXTENSION_ORIGIN`
+ *     exactly. The previous `startsWith('chrome-extension://')` accepted ANY
+ *     installed extension — a hostile one could frame /extension and drive this
+ *     channel. Origin cannot be spoofed by the framer, so an exact match is a
+ *     real identity check.
+ * Both gates are {@link isTrustedShellMessage}; the handler has no other path.
  */
 
 import { useEffect, useState } from 'react';
+
+import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
 
 export const WEBAPP_DASHBOARD_URL = '/app';
 export const WEBAPP_SETTINGS_URL = '/app/settings';
@@ -73,7 +78,7 @@ type OutboundType =
 function postToShell(type: OutboundType, extra?: Record<string, unknown>): void {
   if (typeof window === 'undefined' || window.parent === window) return;
   try {
-    window.parent.postMessage({ source: NS, type, ...extra }, '*');
+    window.parent.postMessage({ source: NS, type, ...extra }, CC_EXTENSION_ORIGIN);
   } catch {
     // A framer that refuses postMessage is not a case we can recover from, and
     // not one that should break the page.
@@ -263,6 +268,41 @@ function readUnread(raw: unknown): ExtensionUnread {
 }
 
 /**
+ * The ONLY inbound gate. Both halves are load-bearing:
+ *   - `event.source === window.parent`: we are really framed, and the sender is
+ *     our framer — not a popup we opened, not another frame on the page.
+ *   - `event.origin === CC_EXTENSION_ORIGIN`: that framer is OUR extension.
+ *     Exact match, never a `startsWith` prefix: `chrome-extension://<anything>`
+ *     is every extension the user has installed.
+ *
+ * Exported so the gate can be tested directly (scripts/ext-bridge-origin-pin-proof.mjs)
+ * rather than inferred from the handler's behaviour.
+ */
+export function isTrustedShellMessage(event: {
+  origin: string;
+  source: unknown;
+}): boolean {
+  if (typeof window === 'undefined' || window.parent === window) return false;
+  if (event.source !== window.parent) return DROPPED('source');
+  if (event.origin !== CC_EXTENSION_ORIGIN) return DROPPED('origin');
+  return true;
+}
+
+/**
+ * Dropped frames are silent in production — a rejected message is not an error
+ * the user can act on — but counted in dev so a broken handshake during
+ * extension work is visible instead of looking like "nothing happened".
+ */
+function DROPPED(reason: 'source' | 'origin'): false {
+  if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+    const w = window as unknown as { __ccBridgeDropped?: Record<string, number> };
+    w.__ccBridgeDropped = w.__ccBridgeDropped ?? {};
+    w.__ccBridgeDropped[reason] = (w.__ccBridgeDropped[reason] ?? 0) + 1;
+  }
+  return false;
+}
+
+/**
  * Handshake: we announce `ready`, the shell replies `shell-hello` with
  * { email, canPopout }. If no shell answers (someone opened /extension directly
  * in a tab) we stay in the initial state and the header simply renders without
@@ -276,8 +316,7 @@ export function useExtensionShell(): ExtensionShellState {
     if (typeof window === 'undefined' || window.parent === window) return;
 
     const onMessage = (event: MessageEvent) => {
-      if (event.source !== window.parent) return;
-      if (!event.origin.startsWith('chrome-extension://')) return;
+      if (!isTrustedShellMessage(event)) return;
       const data = event.data as {
         source?: string;
         type?: string;
