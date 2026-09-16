@@ -96,3 +96,8 @@ prisma/migrations/20260522093753_init/
 # Committing them put nine binaries in the repo root (2026-09-15) — the
 # harnesses now write straight to the ledger instead.
 /evidence/
+
+# e2e gate (E2E-P0): the lock is per-worktree state; the logs carry raw test
+# output (canaries, fixture bodies) and must NEVER be committed or mirrored.
+.e2e-lock
+.e2e-gate-logs/

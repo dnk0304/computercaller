@@ -8,7 +8,8 @@
     "start": "node server.js",
     "lint": "eslint",
     "dev:all": "node server.js",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "e2e:gate": "node tools/e2e-gate.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
