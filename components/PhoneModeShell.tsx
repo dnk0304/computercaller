@@ -708,7 +708,7 @@ function ExtDialerView() {
           {/* min-h-0 is load-bearing: a flex child defaults to min-height:auto
               and will grow past its parent rather than scroll, which is what
               pushed content off-screen before. */}
-          <ul className="min-h-0 flex-1 overflow-y-auto">
+          <ul className="cc-list min-h-0 flex-1 overflow-y-auto">
             {recent.length === 0 ? (
               <li><CallLogEmptyState onClear={filter.clear} /></li>
             ) : (
@@ -902,7 +902,7 @@ function TextsView() {
           sticky. Sticky here resolved against the viewport (no scrolling
           ancestor) and dropped the bar on top of the list; the flex-col +
           flex-1 scroller below keeps it cleanly above the list instead. */}
-      <div className="flex-shrink-0 flex items-center justify-between gap-2 bg-white/95 px-2.5 py-1.5 backdrop-blur-sm">
+      <div className="cc-band flex-shrink-0 flex items-center justify-between gap-2 bg-white/95 px-2.5 py-1.5 backdrop-blur-sm">
         <h2 className="text-xs font-semibold text-slate-800">Messages</h2>
         <button
           type="button"
@@ -917,7 +917,7 @@ function TextsView() {
 
       {/* Search input. inputMode="search" + autocomplete=off so iOS doesn't
           suggest contacts above the keyboard at this width. */}
-      <div className="flex-shrink-0 px-3 pb-2">
+      <div className="cc-band cc-band-foot flex-shrink-0 px-3 pb-2">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" aria-hidden="true" />
           <input
@@ -928,13 +928,13 @@ function TextsView() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search"
             aria-label="Search messages"
-            className="w-full rounded-lg border border-transparent bg-slate-100 py-2 pl-8 pr-2 text-base text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            className="cc-field w-full rounded-lg border border-transparent bg-slate-100 py-2 pl-8 pr-2 text-base text-slate-800 placeholder-slate-400 focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
           />
         </div>
       </div>
 
       {/* Thread list — divides for clean separation; tap row to open thread. */}
-      <ul className="flex-1 divide-y divide-slate-100 overflow-y-auto">
+      <ul className="cc-list flex-1 divide-y divide-slate-100 overflow-y-auto">
         {filtered.length === 0 ? (
           <li className="px-4 py-12 text-center text-sm text-slate-400">
             {search ? 'No results' : 'No messages yet'}
@@ -1012,7 +1012,7 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
           column with a scrolling middle pane, the header naturally pins at
           top-of-column without sticky semantics. flex-shrink-0 prevents it
           collapsing as the messages list grows. */}
-      <div className="flex-shrink-0 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
+      <div className="cc-band cc-band-foot flex-shrink-0 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
         <button
           type="button"
           onClick={goBack}
@@ -1039,7 +1039,7 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
       {/* Messages scroll region. Bubbles aligned left/right by sent type;
           tight 70% max-width so a long incoming bubble can't crash into
           the right gutter. */}
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
+      <div className="cc-thread-scroll min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
         {threadMessages.map((m) => {
           const isSent = m.type === 'sent';
           return (
@@ -1147,7 +1147,7 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
     // compose box so the templates are reachable without expanding to the
     // dashboard. Chip strip is part of the sticky bottom island so it stays
     // anchored with the input as the keyboard lifts.
-    <div className="sticky bottom-0 border-t border-slate-200/60 bg-white/95 backdrop-blur-sm">
+    <div className="cc-band cc-band-head sticky bottom-0 border-t border-slate-200/60 bg-white/95 backdrop-blur-sm">
       <PhoneModeTemplates onInsert={insertTemplate} />
       <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 mx-2 my-2 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-500/20">
         <textarea
@@ -1251,7 +1251,7 @@ function ComposeView({ initialTo, from }: ComposeViewProps) {
           sticky header), so we drop sticky entirely and let the natural flex-
           column lay out: header sits at top via flex-shrink-0, body grows,
           footer (Send) pins to bottom via sticky. No z-index conflicts left. */}
-      <div className="flex-shrink-0 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
+      <div className="cc-band cc-band-foot flex-shrink-0 flex h-10 items-center gap-2 border-b border-slate-200/60 bg-white/95 px-2 backdrop-blur-sm">
         <button
           type="button"
           onClick={goBack}
@@ -1352,7 +1352,7 @@ function BellView() {
         )}
       </div>
 
-      <ul className="flex-1 divide-y divide-slate-100 overflow-y-auto">
+      <ul className="cc-list flex-1 divide-y divide-slate-100 overflow-y-auto">
         {items.length === 0 ? (
           <li className="px-4 py-12 text-center text-sm text-slate-400">
             No notifications yet
@@ -1438,6 +1438,197 @@ function BellView() {
           })
         )}
       </ul>
+    </div>
+  );
+}
+
+// ---------- ExtBellView (Alerts, extension surface) -------------------------
+//
+// Dennis, 2026-09-16 09:38: "ability to search notifications and also a nice
+// bubble design for each notification that comes in."
+//
+// A SEPARATE VIEW, not a prop on BellView. The /app render is a hard gate on
+// this dispatch, and the surest way to keep it is for the dashboard to render
+// a function this one cannot reach — the same construction ExtDialerView uses.
+// Everything shared lives in the helpers above (getNotificationIcon, appGlyph,
+// formatRelative) rather than being copied.
+//
+// Layering (ART-DIRECTION §3.1): an L1 toolbar band holding the search field,
+// then cards at L3 floating on the L2 content ground. No wrapping list card —
+// a card on a card is a level the ladder does not have.
+
+function ExtBellView() {
+  const {
+    phoneNotifications,
+    sendNotificationReply,
+    clearNotification,
+    markAllNotificationsRead,
+    clearAllNotifications,
+  } = useNotifications();
+  const items = phoneNotifications;
+
+  useEffect(() => {
+    if (items.some(n => !n.read)) markAllNotificationsRead();
+  }, [items, markAllNotificationsRead]);
+
+  const [replyingId, setReplyingId] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState('');
+  const [search, setSearch] = useState('');
+
+  // Ticks the relative timestamps. 30s matches the Dial tab's Recent list, so
+  // "2m ago" means the same age on both tabs.
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // App name, title and body — the three strings the user can actually read on
+  // a card, so they are the three the field searches. Matching a package name
+  // would find rows whose match is invisible on screen.
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(n =>
+      `${n.appName} ${n.title} ${n.body}`.toLowerCase().includes(q),
+    );
+  }, [items, search]);
+
+  return (
+    <div className="cc-msg-view cc-alerts flex h-full min-h-0 flex-col">
+      {/* L1 toolbar band. Search earns the top slot here — unlike the Dial
+          tab's Recent list there is no filter chip beside it, because a
+          notification stream has no fixed vocabulary to filter by. */}
+      <div className="cc-band cc-band-foot flex flex-shrink-0 items-center gap-1.5 px-2.5 py-1.5">
+        <div className="relative min-w-0 flex-1">
+          <Search
+            className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400"
+            aria-hidden="true"
+          />
+          <input
+            id="cc-alerts-search"
+            type="search"
+            autoComplete="off"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape' && search) { e.preventDefault(); setSearch(''); } }}
+            placeholder="Search notifications"
+            aria-label="Search notifications by app, title or message"
+            className="cc-field h-7 w-full rounded-full border border-transparent bg-slate-100 pl-7 pr-6 text-[11.5px] text-slate-800 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch('')}
+              aria-label="Clear search"
+              className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition-colors hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+            >
+              <X className="h-3 w-3" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+        {items.length > 0 && (
+          <button
+            type="button"
+            onClick={clearAllNotifications}
+            className="flex-shrink-0 px-1 text-[11.5px] font-medium text-slate-500 transition-colors hover:text-slate-800 focus:outline-none focus-visible:underline"
+          >
+            Clear all
+          </button>
+        )}
+      </div>
+
+      <div className="cc-alerts-list min-h-0 flex-1 overflow-y-auto">
+        {filtered.length === 0 ? (
+          // Two different emptinesses, two different sentences. "Nothing has
+          // arrived" and "your search hid everything" call for opposite next
+          // actions, and one shared line would be wrong for both.
+          <p className="px-5 py-10 text-center text-[11.5px] leading-relaxed text-slate-500">
+            {search ? 'No notifications match' : 'Notifications from your phone will show up here.'}
+          </p>
+        ) : (
+          filtered.map((n) => {
+            const isReplying = replyingId === n.id;
+            const iconB64 = getNotificationIcon(n.packageName);
+            return (
+              <article key={n.id} className="cc-note-card">
+                <div className="cc-note-head">
+                  {iconB64 ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`data:image/png;base64,${iconB64}`}
+                      alt=""
+                      className="cc-note-icon"
+                    />
+                  ) : (
+                    <span className="cc-note-icon cc-note-glyph" aria-hidden="true">
+                      {appGlyph(n.packageName)}
+                    </span>
+                  )}
+                  {/* App name and age on one meta line, the title below it —
+                      the reference's order, and the one that lets a stack of
+                      cards be scanned by app without reading the titles. */}
+                  <p className="cc-note-app">{n.appName}</p>
+                  <span className="cc-note-time">{formatRelative(n.timestamp, now)}</span>
+                  <button
+                    type="button"
+                    onClick={() => clearNotification(n.id)}
+                    className="cc-note-dismiss"
+                    aria-label={`Dismiss notification from ${n.appName}`}
+                  >
+                    <X className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </div>
+                {n.title && <p className="cc-note-title">{n.title}</p>}
+                {n.body && <p className="cc-note-body">{n.body}</p>}
+                {n.hasReply && (
+                  <div className="cc-note-actions">
+                    {isReplying ? (
+                      <div className="flex w-full items-center gap-1.5">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={replyText}
+                          onChange={(e) => setReplyText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') { setReplyingId(null); setReplyText(''); }
+                          }}
+                          placeholder="Quick reply…"
+                          aria-label={`Reply to ${n.appName}`}
+                          className="cc-note-reply-field"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const t = replyText.trim();
+                            if (!t) return;
+                            sendNotificationReply(n.notificationKey, n.replyKey, t);
+                            setReplyingId(null);
+                            setReplyText('');
+                          }}
+                          disabled={!replyText.trim()}
+                          className="cc-note-send"
+                          aria-label="Send reply"
+                        >
+                          <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => { setReplyingId(n.id); setReplyText(''); }}
+                        className="cc-note-reply"
+                      >
+                        Reply
+                      </button>
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }
@@ -1712,7 +1903,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
     switch (v.kind) {
       case 'dialer': return isExt ? <ExtDialerView /> : <DialerView />;
       case 'texts': return <TextsView />;
-      case 'bell': return <BellView />;
+      case 'bell': return isExt ? <ExtBellView /> : <BellView />;
       case 'thread':
         // key={threadId} resets the compose textarea on thread switch
         // (risk #6). This keyed wrapper is load-bearing — removing it
@@ -1756,7 +1947,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           bar under the tab bar. Self-hides for unlimited (paid) tiers.
           Pilot's rule holds on the extension: this may surface a neutral
           remaining-count status line, never a price or an upgrade CTA. */}
-      {isRootView && <UsageMeter variant="strip" />}
+      {isRootView && <UsageMeter variant="strip" className={isExt ? 'cc-band cc-band-foot' : undefined} />}
       {/* The incoming-call card: top of the Dial tab, above the pad and the
           recents list, outside the view's own scroller so a ringing phone
           cannot be scrolled out of sight. */}
