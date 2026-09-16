@@ -27,7 +27,14 @@
  * to paint before the session is known, and reading the previous user's last
  * choice is a far better guess than defaulting to light and flashing.
  *
- * Every read and write is wrapped: localStorage throws outright in a profile
+ * THE EXTENSION SHELL
+The Chrome popup is two documents and only this one knows the choice. Both
+`applyTheme` and the boot script post the resolved theme up to the shell
+(chrome-extension/shell.js), which stamps the same `data-cc-theme` on its own
+<html> and caches it in chrome.storage.local so the NEXT open paints correctly
+before this page has even loaded. Dispatch PIXEL-R.
+
+Every read and write is wrapped: localStorage throws outright in a profile
  * with site data blocked, and a theme preference is not worth a blank panel.
  */
 
@@ -86,6 +93,36 @@ export function resolveTheme(theme: CcTheme): CcResolvedTheme {
  */
 export function applyTheme(resolved: CcResolvedTheme) {
   document.documentElement.setAttribute('data-cc-theme', resolved);
+  postThemeToShell(resolved);
+}
+
+/**
+ * Tell the Chrome extension shell (chrome-extension/shell.js) which theme this
+ * frame just painted (dispatch PIXEL-R, 2026-09-16).
+ *
+ * WHY: the popup is TWO documents — the shell, and this page inside its
+ * iframe. Only this one knows the choice, because the choice lives in this
+ * origin's localStorage and a chrome-extension:// page cannot read it. Without
+ * this line, forcing Light on a dark OS turned the iframe light and left the
+ * shell chrome around it — title band and the ring of page colour — dark. That
+ * is the mismatched ring Dennis reported.
+ *
+ * Deliberately NOT routed through extensionBridge.ts: this module is imported
+ * by the blocking boot script's own surface and by /extension/login, and it
+ * must stay free of React and of the bridge's hook imports. The payload is a
+ * word, not a capability; the shell still gates it on origin + contentWindow
+ * like every other inbound verb.
+ *
+ * A no-op everywhere else — on computercaller.com proper `window.parent` is
+ * `window` and nothing is sent.
+ */
+function postThemeToShell(resolved: CcResolvedTheme) {
+  try {
+    if (typeof window === 'undefined' || window.parent === window) return;
+    window.parent.postMessage({ source: 'cc-ext', type: 'theme', theme: resolved }, '*');
+  } catch {
+    /* a framer that refuses postMessage must not break the theme */
+  }
 }
 
 /**
@@ -97,4 +134,4 @@ export function applyTheme(resolved: CcResolvedTheme) {
  * first and corrects it a frame later. Kept to one expression and one try/catch
  * because it is on the critical path of every popup open.
  */
-export const THEME_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem('${LAST_KEY}');if(t!=='light'&&t!=='dark'&&t!=='system')t='system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-cc-theme',d?'dark':'light');}catch(e){}})();`;
+export const THEME_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem('${LAST_KEY}');if(t!=='light'&&t!=='dark'&&t!=='system')t='system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-cc-theme',d?'dark':'light');try{if(window.parent!==window)window.parent.postMessage({source:'cc-ext',type:'theme',theme:d?'dark':'light'},'*');}catch(e2){}}catch(e){}})();`;

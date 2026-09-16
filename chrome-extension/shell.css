@@ -11,6 +11,10 @@
    =========================================================================== */
 
 :root {
+  /* System is the default and stays the default: with no override the UA
+     decides light vs dark for form controls and scrollbars. A FORCED choice
+     pins it below, otherwise a Light-forced panel on a dark OS still paints
+     dark scrollbars inside a light shell. */
   color-scheme: light dark;
 
   /* These MUST equal the hosted app's outermost surface (app/extension/
@@ -29,16 +33,63 @@
 
   --cc-grad: linear-gradient(135deg, #35c977 0%, #22a89a 55%, #1e8fb2 100%);
   --cc-ring: rgba(53, 201, 119, 0.45);
+
+  /* The dark palette's ONE definition. It is applied from two different
+     places below (forced-dark, and system-dark), and a palette written out
+     twice is a palette that drifts — PIXEL-Q's ladder already had to be
+     re-synced once for exactly that reason. Aliases, not duplicates. */
+  --cc-d-page: #18181b;
+  --cc-d-card: #212125;
+  --cc-d-hair: #27272a;
+  --cc-d-ink: #fafafa;
+  --cc-d-sec: #a3a3a3;
+  --cc-d-mut: #8a8a8a;
+}
+
+/* ---------------------------------------------------------------------------
+   THEME (dispatch PIXEL-R, 2026-09-16).
+
+   Dennis: forcing Light from the account menu on a dark OS left a dark ring of
+   shell chrome around a light panel. The cause was that these two documents
+   disagreed about who decides the theme. The iframe (app/extension/
+   extension.css, dispatch J) keys off `data-cc-theme` on <html>; this sheet
+   still asked the OS directly. Any explicit choice therefore moved the iframe
+   and left the shell behind.
+
+   Same precedence pattern as extension.css now:
+     1. `[data-cc-theme=dark]`            → forced dark, beats the OS.
+     2. `[data-cc-theme=light]`           → forced light: it sets no tokens, it
+                                            exists to EXCLUDE itself from (3).
+     3. prefers-color-scheme, unless (2)  → System, the fallback.
+   shell.js stamps the attribute; with no attribute at all (storage blocked,
+   first paint before the async read resolves) rule 3 alone still gives the
+   old, correct System behaviour. Nothing here can render an unthemed shell.
+   --------------------------------------------------------------------------- */
+
+:root[data-cc-theme='dark'] {
+  color-scheme: dark;
+  --cc-page: var(--cc-d-page);
+  --cc-card: var(--cc-d-card);
+  --cc-hair: var(--cc-d-hair);
+  --cc-ink: var(--cc-d-ink);
+  --cc-sec: var(--cc-d-sec);
+  --cc-mut: var(--cc-d-mut);
+}
+
+:root[data-cc-theme='light'] {
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --cc-page: #18181b;
-    --cc-card: #212125;
-    --cc-hair: #27272a;
-    --cc-ink: #fafafa;
-    --cc-sec: #a3a3a3;
-    --cc-mut: #8a8a8a;
+  /* `:not([data-cc-theme=light])` is the whole fix: without it this block wins
+     on specificity ties and a Light-forced panel on a dark OS stays dark. */
+  :root:not([data-cc-theme='light']) {
+    --cc-page: var(--cc-d-page);
+    --cc-card: var(--cc-d-card);
+    --cc-hair: var(--cc-d-hair);
+    --cc-ink: var(--cc-d-ink);
+    --cc-sec: var(--cc-d-sec);
+    --cc-mut: var(--cc-d-mut);
   }
 }
 

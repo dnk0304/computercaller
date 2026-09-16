@@ -41,6 +41,7 @@
  *
  * postMessage contract with app/../lib/extensionBridge.ts:
  *   app   → shell : { source:'cc-ext', type:'ready' | 'open-popout' | 'sign-out' }
+ *   app   → shell : { source:'cc-ext', type:'theme', theme:'light'|'dark' }
  *   login → shell : { source:'cc-ext', type:'login-ready' | 'signed-in' | 'google-sign-in' }
  *   shell → app   : { source:'cc-ext', type:'shell-hello', email, canPopout }
  * Inbound is accepted ONLY from one of our OWN two iframes' contentWindow AND
@@ -49,6 +50,86 @@
  * DISJOINT verb sets: the app frame cannot fake a sign-in and the login frame
  * cannot trigger `sign-out` or the window-spawning `open-popout`.
  */
+
+// 0) THEME — run first, before anything can paint (dispatch PIXEL-R, 2026-09-16).
+//
+// WHY THIS IS HERE AND NOT IN THE APP
+// The panel is two documents: this shell, and the computercaller.com/extension
+// iframe filling it. Dispatch J gave the iframe a Light/Dark/System toggle in
+// the account menu, keyed off `data-cc-theme` on its own <html>. The shell was
+// never told. Force Light on a dark OS and the iframe turned light while the
+// shell chrome around it — the title band and the 1px ring of --cc-page — kept
+// asking the OS and stayed dark. Dennis saw a mismatched ring.
+//
+// The shell CANNOT read the site's preference directly: the choice lives in
+// computercaller.com's localStorage, and a chrome-extension:// page has no
+// access to another origin's storage. So the theme travels the wire that
+// already exists between these two documents — the same postMessage channel,
+// same `cc-ext` namespace, same origin + contentWindow gate as every other
+// inbound verb. It carries a word, not a capability: the worst a forged
+// `theme` message achieves is the wrong background colour.
+//
+// FIRST PAINT
+// chrome.storage.local is async, so the stored choice cannot be read before
+// the first frame. Two steps instead of one:
+//   (a) synchronously, right now — matchMedia. Correct for System, which is
+//       the default and the majority, and never worse than the old behaviour.
+//   (b) as soon as storage resolves (sub-millisecond, and this script is
+//       parser-blocking at the end of <body>) — the stored override.
+// The cache is what makes (b) matter at all: without it the shell would only
+// learn the theme once the iframe had loaded and announced it, which is
+// hundreds of milliseconds of visibly wrong chrome on every single open.
+const THEME_KEY = 'cc_theme';
+
+function systemTheme() {
+  try {
+    return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  } catch (_) {
+    return 'light';
+  }
+}
+
+/**
+ * @param {unknown} theme 'light' | 'dark' — a resolved theme, never 'system'.
+ *   'System' is resolved to one of the two by whoever chose it, so this shell
+ *   and shell.css have ONE code path (attribute always present) instead of two
+ *   (attribute present / attribute absent, media query decides). Two paths is
+ *   how a toggle ends up disagreeing with itself.
+ */
+function applyShellTheme(theme) {
+  if (theme !== 'light' && theme !== 'dark') return;
+  document.documentElement.setAttribute('data-cc-theme', theme);
+}
+
+// (a) Synchronous best guess. Runs during parse, before the body paints.
+applyShellTheme(systemTheme());
+
+// (b) The stored override, and live updates. A change written by ANY surface
+// (popup, side panel, pop-out) reaches the others through chrome.storage's own
+// change event, so two open surfaces cannot show two different themes.
+try {
+  chrome.storage.local.get(THEME_KEY, (got) => {
+    if (chrome.runtime.lastError) return;
+    applyShellTheme(got && got[THEME_KEY]);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[THEME_KEY]) return;
+    applyShellTheme(changes[THEME_KEY].newValue);
+  });
+} catch (_) {
+  // Storage unavailable — (a) already painted a sane System theme and the
+  // iframe's `theme` message below will still correct an override once it
+  // loads. A colour preference is not worth a broken panel.
+}
+
+/** Inbound `theme` from the app frame: stamp now, cache for the next open. */
+function receiveTheme(theme) {
+  if (theme !== 'light' && theme !== 'dark') return;
+  applyShellTheme(theme);
+  try {
+    chrome.storage.local.set({ [THEME_KEY]: theme });
+  } catch (_) {}
+}
 
 // 1) Presence signal — the disconnect fires automatically when this page unloads.
 //
@@ -528,6 +609,11 @@ window.addEventListener('message', (event) => {
     reportTabViewed(data.tab);
   } else if (data.type === 'sign-out') {
     signOut();
+  } else if (data.type === 'theme') {
+    // Posted by lib/extensionTheme.ts: once from the blocking boot script on
+    // every /extension load, and again on every toggle. Already resolved to
+    // light|dark on the sender's side.
+    receiveTheme(data.theme);
   }
 });
 
