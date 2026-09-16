@@ -87,8 +87,30 @@ function decodeCloseReason(reason) {
  */
 const droppedLobbyFrameCounts = new Map(); // token -> Map(type -> count)
 
+/**
+ * PII-safe label for a relay frame: TYPE and byte length, never content.
+ *
+ * Relay frames are `TYPE:{json}`. The payload of SMS_RECEIVED, SEND_SMS,
+ * PHONE_NOTIFICATION, CONTACTS and CALL_INCOMING carries message bodies,
+ * contact names, phone numbers and 2FA codes. Printing even a 40-char prefix
+ * put a sender + the start of an SMS body into container logs, which Docker /
+ * Coolify retain — so every frame print site goes through this instead.
+ *
+ * The type is validated against a strict shape rather than trusted: a frame
+ * with no colon (or a junk/garbled one) would otherwise make `split(':')[0]`
+ * return the ENTIRE frame, turning the redaction helper into the leak.
+ */
+function frameType(msg) {
+  const head = String(msg).split(':', 1)[0];
+  return /^[A-Z][A-Z0-9_]{0,39}$/.test(head) ? head : 'UNKNOWN';
+}
+
+function frameLabel(msg) {
+  return `type=${frameType(msg)} bytes=${Buffer.byteLength(String(msg), 'utf8')}`;
+}
+
 function countDroppedLobbyFrame(token, msg) {
-  const type = String(msg).split(':', 1)[0] || 'UNKNOWN';
+  const type = frameType(msg);
   let perRoom = droppedLobbyFrameCounts.get(token);
   if (!perRoom) { perRoom = new Map(); droppedLobbyFrameCounts.set(token, perRoom); }
   const n = (perRoom.get(type) ?? 0) + 1;
@@ -1873,7 +1895,7 @@ function startRelay(httpServer) {
         // exceptions up to the connection and tears it down; we don't want
         // a bad single message to evict a healthy peer.
         const msg = data.toString();
-        rlog(`[Relay][${redactToken(token)}] Phone ->`, msg.substring(0, 400));
+        rlog(`[Relay][${redactToken(token)}] Phone -> ${frameLabel(msg)}`);
 
         // DEVICE_INFO is special — capture deviceName so a subsequent
         // PAIRING_ACTIVE can include it. Phones send DEVICE_INFO inside
@@ -1995,7 +2017,7 @@ function startRelay(httpServer) {
           if (!room.frameBuffer) room.frameBuffer = [];
           room.frameBuffer.push({ msg, at: Date.now() });
           if (room.frameBuffer.length > FRAME_BUFFER_MAX) room.frameBuffer.shift();
-          rlog(`[Relay][${redactToken(token)}] Buffered lobby-phone frame during resume window (buffer=${room.frameBuffer.length}): ${msg.substring(0, 60)}`);
+          rlog(`[Relay][${redactToken(token)}] Buffered lobby-phone frame during resume window (buffer=${room.frameBuffer.length}): ${frameLabel(msg)}`);
           return;
         }
         // Counted by type, not just printed — see countDroppedLobbyFrame.
@@ -2007,7 +2029,7 @@ function startRelay(httpServer) {
         // path that re-materialises a notification without them.
         const dropStat = countDroppedLobbyFrame(token, msg);
         console.log(
-          `[Relay][${redactToken(token)}] Dropping lobby-phone frame: ${msg.substring(0, 60)} ` +
+          `[Relay][${redactToken(token)}] Dropping lobby-phone frame: bytes=${Buffer.byteLength(msg, 'utf8')} ` +
           `(type=${dropStat.type} count=${dropStat.n}; room totals: ${dropStat.summary})`,
         );
       });
@@ -2133,7 +2155,7 @@ function startRelay(httpServer) {
       if (ws.listener) {
         return;
       }
-      rlog(`[Relay][${redactToken(token)}] Browser ->`, msg.substring(0, 400));
+      rlog(`[Relay][${redactToken(token)}] Browser -> ${frameLabel(msg)}`);
 
       // Control plane — pairing kickoff.
       if (msg.startsWith('BROWSER_REQUEST_PAIRING:')) {
@@ -2203,11 +2225,11 @@ function startRelay(httpServer) {
       {
         const gate = gateBrowserSyncFrame(ws, msg);
         if (gate.action === 'drop') {
-          rlog(`[Relay][${redactToken(token)}] Tier-gated frame DROPPED (tier=${ws.tier} reason=${gate.reason}): ${msg.substring(0, 40)}`);
+          rlog(`[Relay][${redactToken(token)}] Tier-gated frame DROPPED (tier=${ws.tier} reason=${gate.reason}): ${frameLabel(msg)}`);
           return;
         }
         if (gate.action === 'clamp') {
-          rlog(`[Relay][${redactToken(token)}] Tier-clamped since (tier=${ws.tier} floor=${gate.floor}): ${msg.substring(0, 40)}`);
+          rlog(`[Relay][${redactToken(token)}] Tier-clamped since (tier=${ws.tier} floor=${gate.floor}): ${frameLabel(msg)}`);
           forwardMsg = gate.msg;
         }
       }
@@ -2267,7 +2289,7 @@ function startRelay(httpServer) {
 
       // Anything else from a lobby browser (e.g. legacy CONNECT_TO from a
       // stale tab, stray data frames) with no armed resume window. Drop + log.
-      console.log(`[Relay][${redactToken(token)}] Dropping lobby-browser frame: ${msg.substring(0, 60)}`);
+      console.log(`[Relay][${redactToken(token)}] Dropping lobby-browser frame: ${frameLabel(msg)}`);
     });
 
     ws.on('close', (closeCode, closeReason) => {
