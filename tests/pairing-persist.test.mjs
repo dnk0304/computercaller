@@ -50,7 +50,7 @@ function makeRoom() {
   return {
     token: 't', lobby: new Set(),
     active: { browser: null, phone: null },
-    pendingPairing: null, resumable: null, pairIdentity: null,
+    pendingPairing: null, resumable: null, pairIdentity: null, lastResume: null,
     frameBuffer: [],
   };
 }
@@ -97,13 +97,21 @@ function tryAutoResume(room) {
   const id = claim.identity ?? {};
   const deviceName = phoneWs.deviceName ?? id.deviceName ?? null;
   room.pairIdentity = { ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', deviceLabel: id.deviceLabel, deviceName };
-  if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
-  if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown' })}`);
+  // FORGE-M: a live panel hold is survivor-preserving in its own right — both
+  // peers may be away at once while the listener keeps the pair alive, and the
+  // pair that re-forms is the SAME pair. `resumed`/`gapMs` tell the client to
+  // run its SILENT merge backfill instead of a first-connect quicksync.
+  const held = !!(survivorPhone || survivorBrowser) || claim.panelHold === true;
+  const gapMs = now() - (claim.heldSince ?? claim.droppedAt);
+  const mark = { resumed: true, held, gapMs };
+  room.lastResume = { held, gapMs, droppedRole: claim.droppedRole, panelHold: claim.panelHold === true };
+  if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName, ...mark })}`);
+  if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', ...mark })}`);
   if (room.frameBuffer && room.frameBuffer.length) {
     // FORGE-L: cutoff tracks the claim's ACTUAL lifetime. A flat
     // now-RESUME_WINDOW_MS would discard every frame buffered more than 3
     // minutes ago — exactly the SMS this feature exists to preserve.
-    const cutoff = claim.panelHold ? claim.droppedAt : now() - RESUME_WINDOW_MS;
+    const cutoff = claim.panelHold ? (claim.heldSince ?? claim.droppedAt) : now() - RESUME_WINDOW_MS;
     for (const entry of room.frameBuffer) {
       if (entry.at < cutoff) continue;
       safeSend(browserWs, entry.msg);
@@ -125,12 +133,19 @@ function terminateActivePair(room, reason) {
     // FORGE-L panel hold: (1) the browser went away while the extension's MV3
     // listener is still there, or (2) STICKY — a prior claim was already
     // holding, so the phone's own blip cannot silently downgrade the hold.
+    const prior = room.resumable;
     const panelHold =
       (droppedRole === 'browser' && hasLiveListener(room)) ||
-      (!!room.resumable && room.resumable.panelHold === true);
+      (!!prior && prior.panelHold === true);
+    // FORGE-M: heldSince is the moment the CHAIN of drops began, carried across
+    // every re-entry while the hold is live (the second side dropping must not
+    // move the frame-buffer replay cutoff forward, nor restart the listener
+    // grace, nor make the re-formed pair look new).
+    const heldSince = (panelHold && prior && prior.heldSince) ? prior.heldSince : now();
     room.resumable = {
-      droppedRole, panelHold, droppedAt: now(), expiresAt: now() + RESUME_WINDOW_MS,
-      identity: room.pairIdentity ?? null, listenerGoneAt: null,
+      droppedRole, panelHold, heldSince, droppedAt: now(), expiresAt: now() + RESUME_WINDOW_MS,
+      identity: room.pairIdentity ?? null,
+      listenerGoneAt: (panelHold && prior) ? (prior.listenerGoneAt ?? null) : null,
     };
     const survivor = phoneOpen ? phone : (browserOpen ? browser : null);
     if (droppedRole === 'browser' && tryAutoResume(room)) return;
@@ -398,6 +413,116 @@ const isActive = (room, phone, browser) => room.active.phone === phone && room.a
   check('i2: a held claim with no interactive surface does not resume', tryAutoResume(room) === false);
   check('i3: claim still armed for a real surface', room.resumable?.panelHold === true);
   void sw; void phone;
+}
+
+// ── (j) FORGE-M: Dennis's exact prod timeline (2026-09-16 09:15:58 UTC) ───
+// Relay log, room MRsNsod3:a6644771:
+//   09:15:58 socket_closed droppedRole=browser code=1000 "page_unload" panelHold=YES
+//   09:16:01 socket_closed droppedRole=phone   code=1000 "(none)"     panelHold=YES
+//   09:16:24 auto-resumed  gap=23709ms droppedRole=phone survivorHeld=FALSE
+// survivorHeld=false is what made the client re-run a first-connect sync:
+// "it drops it and takes it up once with need to do a full sync again".
+{
+  console.log('\n(j) panel close -> phone blips 3 s later -> reopen 23 s later');
+  NOW = 1_000_000;
+  const { room, phone, browser: panel, sw } = pairedRoomWithListener();
+  const t0 = NOW;
+
+  browserSocketClosed(room, panel);                 // 09:15:58
+  check('j1: hold armed on the panel close', room.resumable?.panelHold === true && room.resumable.droppedRole === 'browser');
+  check('j2: heldSince stamped at the FIRST drop', room.resumable.heldSince === t0);
+
+  // An SMS lands while only the phone is up — buffered for replay. This is the
+  // frame the old droppedAt-based cutoff threw away once the phone blipped.
+  NOW += 1_000;
+  const activePhone = room.active.phone;
+  room.active.phone = null; room.lobby.add(phone);   // lobby-phone shape
+  check('j3: SMS during the hold is buffered', phoneDataFrame(room, phone, 'PHONE_SMS:{"id":"held"}') === 'buffered');
+  room.lobby.delete(phone); room.active.phone = activePhone;
+
+  NOW = t0 + 3_000;
+  phoneSocketClosed(room, phone);                   // 09:16:01 — the v55 APK redials
+  check('j4: still held after the phone blip (sticky)', room.resumable?.panelHold === true);
+  check('j5: droppedRole flipped to phone, as production shows', room.resumable.droppedRole === 'phone');
+  check('j6: heldSince did NOT move to the phone blip', room.resumable.heldSince === t0);
+  check('j7: BOTH sides away, yet the pair was never torn down', room.active.phone === null && room.active.browser === null && !gotFrame(phone, 'PAIRING_TERMINATED:'));
+
+  // The phone redials into the lobby ~5 s later (PhoneService lobbyReconnectDelayMs).
+  NOW = t0 + 8_000;
+  const phone2 = makeWs('phone', { deviceName: 'Pixel' });
+  check('j8: the phone alone cannot resume — it still needs a real surface', phoneJoin(room, phone2) === false);
+  check('j9: claim survives the half-resume', room.resumable?.panelHold === true);
+
+  // 09:16:24 — the user reopens the panel.
+  NOW = t0 + 23_709;
+  const panel2 = makeWs('browser');
+  check('j10: reopen resumes the pair', browserJoin(room, panel2) === true);
+  check('j11: pair re-formed onto the returning panel + phone', isActive(room, phone2, panel2));
+  check('j12: THE FIX — resume is survivor-preserving, not a new pair', room.lastResume.held === true);
+  check('j13: gap measured from the FIRST drop, not the phone blip', room.lastResume.gapMs === 23_709);
+  check('j14: the panel is told this is a RESUME, not a first connect', panel2.sent.some((m) => m.startsWith('PAIRING_ACTIVE:') && JSON.parse(m.slice('PAIRING_ACTIVE:'.length)).resumed === true));
+  check('j15: the rejoined phone is told the same', phone2.sent.some((m) => m.startsWith('PAIRING_ACTIVE:') && JSON.parse(m.slice('PAIRING_ACTIVE:'.length)).resumed === true));
+  check('j16: no re-accept round trip', !gotFrame(phone2, 'PAIRING_REQUEST:'));
+  check('j17: the SMS buffered BEFORE the phone blip was replayed, not dropped', gotFrame(panel2, 'PHONE_SMS:{"id":"held"}'));
+  void sw;
+}
+
+// ── (k) a genuine first connect must STAY a first connect ────────────────
+{
+  console.log('\n(k) the resume marker never leaks onto a real handshake');
+  NOW = 1_000_000;
+  const { room, phone, browser: panel } = pairedRoomWithListener();
+  // handleAcceptPairing's frame — mirrored here as the shape it actually sends.
+  safeSend(panel, `PAIRING_ACTIVE:${JSON.stringify({ deviceName: 'Pixel' })}`);
+  const frame = JSON.parse(panel.sent[0].slice('PAIRING_ACTIVE:'.length));
+  check('k1: a handshake PAIRING_ACTIVE carries no resume marker', frame.resumed === undefined);
+  check('k2: and no gap', frame.gapMs === undefined);
+  void room; void phone;
+}
+
+// ── (l) a NON-held resume (ordinary blip) still reports honestly ──────────
+{
+  console.log('\n(l) ordinary phone blip, no hold: resumed=true, held via the survivor');
+  NOW = 1_000_000;
+  const { room, phone, browser: panel } = pairedRoomWithListener();
+  phoneSocketClosed(room, phone);
+  check('l1: no panel hold for a phone drop', room.resumable?.panelHold === false);
+  NOW += 4_000;
+  const phone2 = makeWs('phone', { deviceName: 'Pixel' });
+  check('l2: the phone returning resumes', phoneJoin(room, phone2) === true);
+  check('l3: held=true because the BROWSER survived in active', room.lastResume.held === true);
+  check('l4: the surviving browser was not re-synced', !gotFrame(panel, 'PAIRING_ACTIVE:'));
+  check('l5: the returning phone is marked resumed', phone2.sent.some((m) => m.startsWith('PAIRING_ACTIVE:') && JSON.parse(m.slice('PAIRING_ACTIVE:'.length)).resumed === true));
+}
+
+// ── (m) listener absent → present → absent across a held claim ────────────
+{
+  console.log('\n(m) listener transitions do not corrupt the hold grace clock');
+  NOW = 1_000_000;
+  const { room, phone, browser: panel, sw } = pairedRoomWithListener();
+  browserSocketClosed(room, panel);
+
+  // absent
+  sw.readyState = CLOSED; room.lobby.delete(sw);
+  advance(room, 60_000);
+  const goneAt = room.resumable.listenerGoneAt;
+  check('m1: grace clock started', goneAt !== null);
+
+  // FORGE-M: a phone blip while the listener is ABSENT must not reset the
+  // grace — otherwise a closed browser plus a flapping phone holds forever.
+  phoneSocketClosed(room, phone);
+  check('m2: phone blip did NOT restart the listener grace', room.resumable.listenerGoneAt === goneAt);
+
+  // present again
+  const sw2 = makeWs('browser', { listener: true });
+  room.lobby.add(sw2);
+  advance(room, KEEPALIVE_TICK_MS);
+  check('m3: returning listener clears the grace', room.resumable.listenerGoneAt === null);
+
+  // absent for good
+  sw2.readyState = CLOSED; room.lobby.delete(sw2);
+  advance(room, LISTENER_HOLD_GRACE_MS + RESUME_WINDOW_MS + KEEPALIVE_TICK_MS);
+  check('m4: released once the extension is genuinely gone', room.resumable === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

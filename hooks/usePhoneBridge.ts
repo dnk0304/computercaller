@@ -1430,6 +1430,27 @@ export function usePhoneBridge() {
         }
         setConnectionError(null);
 
+        // FORGE-M (2026-09-16) — a relay-CONFIRMED resume is not a first
+        // connect. When the extension's side panel is closed the relay holds
+        // the pair alive (panel hold, gated on the MV3 listener socket); on
+        // reopen it re-forms the SAME pair and marks the frame
+        // `resumed:true` with `gapMs` = how long the pair was held.
+        //
+        // Without this the panel reopening ran the full first-connect
+        // quicksync with its visible progress bar every single time — Dennis:
+        // "it drops it and takes it up once with need to do a full sync again
+        // once we open the extension again". A resume instead runs the SILENT
+        // merge backfill the PEER_RECONNECTING soft-hold path already uses:
+        // same idempotent GET_MESSAGES/GET_CALL_LOGS merge, no progress UI, no
+        // quiet-sync banner. `resumed` is set ONLY by the relay's
+        // tryAutoResume — handleAcceptPairing never sets it, so a genuine
+        // first connect keeps the visible sync exactly as today.
+        const isResume = payload.resumed === true;
+        const heldForMs =
+          typeof payload.gapMs === 'number' && Number.isFinite(payload.gapMs) && payload.gapMs > 0
+            ? payload.gapMs
+            : 0;
+
         // Kick the initial data catch-up (previously fired off
         // STATUS:connected:true). Wrapped in the same dedup guard so any
         // duplicate PAIRING_ACTIVE during a reconnect race fires only one
@@ -1438,7 +1459,49 @@ export function usePhoneBridge() {
           quickSyncScheduledRef.current = true;
           setTimeout(() => {
             quickSyncScheduledRef.current = false;
-            if (wsRef.current?.readyState === WebSocket.OPEN) {
+            if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+
+            if (isResume) {
+              // ── SILENT resume backfill ────────────────────────────────────
+              // Mirror of the PEER_RECONNECTING resume snapshot, for the case
+              // where BOTH sides were away during the hold so no soft-hold
+              // frame was ever delivered. Merge mode + existing dedupe make it
+              // idempotent; nothing here touches the sync UI.
+              messagesBufferRef.current = [];
+              callLogsBufferRef.current = [];
+
+              // Expire call chips whose end-frame was lost across the hold —
+              // a live call heartbeats every ~5 s, so a row last touched
+              // before the hold began is one that ended inside it.
+              const cutoff = Date.now() - heldForMs;
+              for (const id of expiredStaleCallIds(
+                callsRef.current,
+                lastCallEventAtRef.current,
+                cutoff
+              )) {
+                console.warn('[PhoneBridge] resume: expiring stale call chip (end-frame lost during hold)', { callId: id });
+                removeCallLocally(id, false);
+              }
+
+              // Cover the whole hold plus a minute of slack, floored at the
+              // soft-hold path's 10 min so a short hold still overlaps
+              // generously. Capped at the 6 h first-connect window — beyond
+              // that a full quicksync is the honest thing to do anyway.
+              const since = Date.now() - Math.min(
+                Math.max(heldForMs + 60_000, 10 * 60 * 1000),
+                6 * 60 * 60 * 1000
+              );
+              console.log('[PhoneBridge] relay-confirmed resume — silent backfill since', new Date(since).toISOString(), { heldForMs });
+              wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since })}`);
+              setTimeout(() => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since })}`);
+                }
+              }, 300);
+              return;
+            }
+
+            {
               const since6h = Date.now() - 6 * 60 * 60 * 1000;
               // Reset chunk buffers — other quick-sync entry points
               // (syncAll, getCallLogs, manual quick sync) do this; this

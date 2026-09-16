@@ -741,19 +741,42 @@ function startRelay(httpServer) {
       // Note this only ever LENGTHENS how long a claim may be resumed. It does
       // not change WHO may resume it: tryAutoResume still requires a live
       // phone and a live interactive browser in the same token-scoped room.
+      const prior = room.resumable;
       const panelHold =
         (droppedRole === 'browser' && hasLiveListener(room)) ||
-        (!!room.resumable && room.resumable.panelHold === true);
+        (!!prior && prior.panelHold === true);
+      // FORGE-M (2026-09-16) — heldSince: when the SECOND side also drops
+      // during a hold (measured on Dennis's machine: the v55 APK closes its
+      // socket cleanly ~3 s after the panel's page_unload, every time), this
+      // re-entry REPLACES the claim and `droppedAt` jumps forward to now.
+      // Two things silently broke off that:
+      //
+      //   1. the frame-buffer replay cutoff is `claim.droppedAt` under a hold,
+      //      so every frame buffered before the phone's blip — exactly the SMS
+      //      the hold exists to preserve — was discarded on resume;
+      //   2. nothing recorded that this is still the SAME pair, so the resume
+      //      reported survivorHeld=false and the client re-ran a first-connect
+      //      sync ("it takes it up once with need to do a full sync again").
+      //
+      // heldSince is the moment the CHAIN of drops began, carried across every
+      // re-entry while the hold is live. It is the pair's continuity marker:
+      // the buffer replays from it, and tryAutoResume reports the gap from it.
+      const heldSince = (panelHold && prior && prior.heldSince) ? prior.heldSince : Date.now();
       room.resumable = {
         droppedRole,
         panelHold,
+        heldSince,
         droppedAt: Date.now(),
         expiresAt: Date.now() + RESUME_WINDOW_MS,
         identity: room.pairIdentity ?? null,
         // FORGE-L: set by the keepalive tick the first time no live listener is
         // seen while this claim is browser-dropped. null = a listener is (or
         // was last seen) present. See LISTENER_HOLD_GRACE_MS.
-        listenerGoneAt: null,
+        //
+        // FORGE-M: carried across a re-entry for the same reason as heldSince —
+        // a phone blip must not silently restart the listener-absence grace and
+        // let a genuinely-closed browser hold the pair past it.
+        listenerGoneAt: (panelHold && prior) ? (prior.listenerGoneAt ?? null) : null,
       };
       const survivor = phoneOpen ? phone : (browserOpen ? browser : null);
       // Dock fix (2026-09-15, forge/dock-reconnect-sw-badge).
@@ -966,9 +989,28 @@ function startRelay(httpServer) {
     // state — re-sending PAIRING_ACTIVE to it would needlessly re-trigger its
     // quicksync, so we send only to the side that actually returned. In the
     // legacy full-teardown path BOTH are freshly resumed ⇒ both get the frame.
-    if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
-    if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown' })}`);
-    console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, droppedRole=${claim.droppedRole}, survivorHeld=${!!(survivorPhone || survivorBrowser)})`);
+    // FORGE-M (2026-09-16) — survivor semantics and the resume marker.
+    //
+    // `survivorHeld` used to mean only "a socket stayed in room.active". Under
+    // a panel hold that is too narrow: both peers may legitimately be away at
+    // once (panel closed, then the phone blips) while the extension's listener
+    // keeps the pair alive, and the pair that re-forms is the SAME pair — the
+    // relay never released it, never sent PAIRING_TERMINATED, and never asked
+    // anyone to re-accept. A live hold is therefore survivor-preserving in its
+    // own right, from whichever side comes back first.
+    const held = !!(survivorPhone || survivorBrowser) || claim.panelHold === true;
+    // The client cannot tell a resume from a first connect by the frame alone,
+    // so it ran its visible first-connect quicksync every time the panel was
+    // reopened — Dennis: "need to do a full sync again once we open the
+    // extension again". `resumed` says the relay CONFIRMS this is a
+    // continuation; `gapMs` is how long the pair was held, so the client can
+    // size a silent merge backfill instead. handleAcceptPairing deliberately
+    // does NOT set these: a genuine first connect must stay a first connect.
+    const gapMs = Date.now() - (claim.heldSince ?? claim.droppedAt);
+    const resumeMark = { resumed: true, held, gapMs };
+    if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName, ...resumeMark })}`);
+    if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', ...resumeMark })}`);
+    console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, heldFor=${gapMs}ms, droppedRole=${claim.droppedRole}, panelHold=${claim.panelHold === true}, survivorHeld=${held})`);
 
     // Fix 2: replay phone→browser frames buffered during the blip, in order,
     // to the now-active browser. Discard entries older than RESUME_WINDOW_MS
@@ -984,7 +1026,11 @@ function startRelay(httpServer) {
       // :808 and when one expires at :906), so replaying from droppedAt is
       // sound, and FRAME_BUFFER_MAX still bounds it. Non-held claims keep the
       // historical cutoff exactly.
-      const cutoff = claim.panelHold ? claim.droppedAt : Date.now() - RESUME_WINDOW_MS;
+      // FORGE-M: replay from heldSince, not droppedAt. When the phone also
+      // blipped during the hold, droppedAt jumped forward to that blip and
+      // every frame buffered before it — the SMS this feature exists to
+      // preserve — was silently discarded here.
+      const cutoff = claim.panelHold ? (claim.heldSince ?? claim.droppedAt) : Date.now() - RESUME_WINDOW_MS;
       let replayed = 0;
       for (const entry of room.frameBuffer) {
         if (entry.at < cutoff) continue;

@@ -44,6 +44,10 @@ let badgeChipColor = null;
 
 const MIN_OPEN_DWELL_MS = 10_000;   // reset backoff only after a stable connection
 const MAX_BACKOFF_MS = 30_000;
+// FORGE-M: ceiling for an ABNORMAL close (1006/1001 — worker/network death).
+// Escalation still applies, it just tops out here instead of at 30 s, so the
+// relay's panel hold regains its listener liveness signal quickly.
+const ABNORMAL_CLOSE_BACKOFF_CAP_MS = 5_000;
 const CALL_NOTIF_PREFIX = 'cc-call';
 const SMS_NOTIF_PREFIX = 'cc-sms';
 const PHONE_NOTIF_PREFIX = 'cc-notif';
@@ -648,8 +652,20 @@ async function connect() {
       if (ev && (ev.code === 4010 || ev.reason === 'room_reset')) {
         reconnectAttempts = 0;
       }
+      // FORGE-M (2026-09-16). An ABNORMAL close (1006 — no close frame; 1001 —
+      // going away) is the worker or the network dying under us, not the relay
+      // refusing us. Those are exactly the closes where a long backoff is pure
+      // cost: nobody is watching the listener reconnect, and while it is away
+      // the relay's panel hold has no liveness signal and burns its grace.
+      //
+      // We deliberately do NOT reset reconnectAttempts here — a socket that
+      // dies immediately on open must keep escalating, or a relay that is down
+      // gets hammered (the storm the MIN_OPEN_DWELL_MS rule above exists to
+      // prevent). We only CAP the delay, so escalation still happens but the
+      // listener is never parked for the full 30 s ceiling on a link blip.
+      const abnormal = !!ev && (ev.code === 1006 || ev.code === 1001);
       openedAt = 0;
-      scheduleReconnect();
+      scheduleReconnect(abnormal ? ABNORMAL_CLOSE_BACKOFF_CAP_MS : MAX_BACKOFF_MS);
     };
     sock.onerror = () => { try { sock.close(); } catch (_) {} };
   } catch (e) {
@@ -662,9 +678,9 @@ async function connect() {
   }
 }
 
-function scheduleReconnect() {
+function scheduleReconnect(ceilingMs = MAX_BACKOFF_MS) {
   if (reconnectTimer) return;
-  const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), MAX_BACKOFF_MS);
+  const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), ceilingMs);
   reconnectAttempts = Math.min(reconnectAttempts + 1, 10);
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
