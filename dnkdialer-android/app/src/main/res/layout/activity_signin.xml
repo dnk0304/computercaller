@@ -44,26 +44,34 @@
         android:paddingTop="@dimen/space_24"
         android:paddingBottom="@dimen/space_32">
 
-        <!-- ==================== LOCKUP ==================== -->
+        <!-- ==================== LOCKUP ====================
+             PIXEL-O: the OFFICIAL logo, in the official composition — the
+             Play-listing mark with the Play-listing wordmark beneath it, at the
+             artwork's measured proportions (mark 0.636 of the wordmark's width,
+             gap 0.0615 of it).
+             What stood here was a 112dp square of ic_cc_mark (a mark this repo
+             drew) under "COMPUTER CALLER" set as tracked-caps sans-serif-medium
+             TextView — the brand's words in the system's letterforms, which is
+             not the brand's wordmark. The TextView is gone because the wordmark
+             image now carries the name, and it carries the accessible name with
+             it so nothing is lost to TalkBack. -->
         <ImageView
             android:layout_width="@dimen/cc_mark_signin"
-            android:layout_height="@dimen/cc_mark_signin"
+            android:layout_height="wrap_content"
+            android:adjustViewBounds="true"
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="36dp"
-            android:layout_marginBottom="@dimen/space_16"
-            android:src="@drawable/ic_cc_mark"
+            android:layout_marginBottom="@dimen/cc_lockup_gap"
+            android:src="@drawable/cc_mark"
             android:importantForAccessibility="no" />
 
-        <TextView
-            android:layout_width="match_parent"
+        <ImageView
+            android:layout_width="@dimen/cc_wordmark_signin"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:text="@string/signin_wordmark"
-            android:textSize="15sp"
-            android:textColor="@color/text_primary"
-            android:fontFamily="sans-serif-medium"
-            android:textStyle="bold"
-            android:letterSpacing="0.17"
+            android:adjustViewBounds="true"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="@dimen/space_16"
+            android:src="@drawable/cc_wordmark"
             android:contentDescription="@string/cd_brand_mark" />
 
         <!-- What the product does, in the user's words, before we ask for
