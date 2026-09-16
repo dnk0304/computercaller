@@ -1205,7 +1205,17 @@ function CallReplyPanel({
           Cancel
         </button>
       </div>
-      <ul className="space-y-1" aria-label="Quick reply messages">
+      {/* Capped and scrollable. The quick replies are a VERTICAL stack, not a
+          horizontal strip, so the failure mode is different from the template
+          chips: at the 5-reply cap this list is taller than the ringing card
+          has room for in a 360x560 extension panel, and the last rows —
+          including "Custom message" — fall off the bottom of the card. A
+          max-height plus its own scroller keeps every reply reachable without
+          the card growing past the fold. */}
+      <ul
+        className="max-h-[9.5rem] space-y-1 overflow-y-auto overscroll-contain"
+        aria-label="Quick reply messages"
+      >
         {chips.map((reply) => (
           <li key={reply.id}>
             <button
