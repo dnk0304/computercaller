@@ -18,7 +18,9 @@
      rings the iframe and the popup reads as a cropped web page in a box.
      Before B2 this was #0f172a navy behind an #f8fafc app — the seam was
      half the reason the old popup looked wrong. */
-  --cc-page: #fafafa;
+  /* PIXEL-Q: the hosted app's outermost surface is now L2 of the four-level
+     ladder (ART-DIRECTION §3.1), not the old flat page colour. */
+  --cc-page: #f1f1f2;
   --cc-card: #ffffff;
   --cc-hair: #e5e5e5;
   --cc-ink: #171717;
@@ -31,8 +33,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --cc-page: #0b0b0d;
-    --cc-card: #18181b;
+    --cc-page: #18181b;
+    --cc-card: #212125;
     --cc-hair: #27272a;
     --cc-ink: #fafafa;
     --cc-sec: #a3a3a3;

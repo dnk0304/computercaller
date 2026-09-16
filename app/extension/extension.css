@@ -737,3 +737,372 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   transition: color 0.12s ease-out;
 }
 .cc-ext .cc-account-manage:hover { color: var(--cc-ink); }
+
+/* ===========================================================================
+   SURFACE LAYERING — the four-level ladder
+   Dispatch PIXEL-Q · Vinci ART-DIRECTION §3.1 (addendum, 2026-09-16)
+
+   Dennis, 09:34: "i would also like our extension design to have a more clear
+   design … the clear line separation, different dark gradients. We need
+   something similar in our light view as well."
+
+   The panel used to be two surfaces — white chrome, near-white ground — with
+   translucent `bg-white/95` bands blurring into whatever scrolled under them.
+   At 400px wide that reads as one undifferentiated column, which is what the
+   Reflecto reference does NOT do: its title bar, device band, toolbar band and
+   content card are four distinct shades separated by hairlines.
+
+   So: four levels, declared once as tokens and applied by band.
+
+     L0  header                       the darkest step in dark, white in light
+     L1  tab strip · toolbars · composer · usage strip
+     L2  content ground               what a list scrolls on
+     L3  cards and rows               the object being read
+
+   Dark steps LIGHTER toward the content; light steps DARKER for L0→L2 and then
+   returns to white at L3. The invariant that survives both directions is the
+   one that matters: the card is always the surface furthest from its ground.
+
+   "Different dark gradients" is the stepped RAMP across the panel, not a
+   gradient fill inside a band. The gradient itself stays on exactly three
+   objects (§0 trait 3): the mark, the avatar, the one primary action.
+
+   Separation is a 1px hairline everywhere and a shadow nowhere — §0 trait 2,
+   "inside a 400px panel a drop shadow reads as dirt".
+   =========================================================================== */
+
+/* --- tokens. Same specificity as the base `.cc-ext` block above and declared
+       after it, so these win. --cc-page and --cc-card are kept as ALIASES
+       rather than retired: every card, field and ground rule already written
+       against them inherits the ladder without being touched. --- */
+.cc-ext {
+  --cc-l0: #ffffff;
+  --cc-l1: #f7f7f8;
+  --cc-l2: #f1f1f2;
+  --cc-l3: #ffffff;
+  /* Card outlines and band boundaries are the same hairline in light: at these
+     lightnesses one value reads correctly against both L2 and L1. */
+  --cc-hair-card: #dcdcde;
+
+  --cc-page: var(--cc-l2);
+  --cc-card: var(--cc-l3);
+  /* Zebra moves onto the ladder too. It used to be the only "second surface"
+     in a list; now it is a half-step inside the L3 card, so it has to sit
+     between L3 and L2 rather than being an independent grey. */
+  --cc-zebra: #f5f5f6;
+}
+
+:where([data-cc-theme=dark]) .cc-ext {
+  --cc-l0: #0b0b0d;
+  --cc-l1: #131316;
+  --cc-l2: #18181b;
+  --cc-l3: #212125;
+  /* One step lighter than --cc-hair. #27272a is the right boundary between
+     BANDS, where the two sides differ; around an L3 card sitting on L2 the
+     two sides are close enough that the same value disappears. */
+  --cc-hair-card: #303036;
+  --cc-zebra: #1c1c20;
+}
+
+/* --- L0: the header band ------------------------------------------------- */
+/* Two classes, so this outranks both Tailwind's `.bg-white` and the dark
+   remap's `.cc-ext .bg-white` (equal weight, declared later). */
+.cc-ext .cc-ext-header {
+  background: var(--cc-l0);
+  border-bottom: 1px solid var(--cc-hair);
+  /* The blur existed to soften content scrolling under a translucent bar.
+     Nothing scrolls under an opaque band, and backdrop-filter on a sticky
+     element is the single most expensive thing this panel paints. */
+  backdrop-filter: none;
+}
+
+/* --- L1: tab strip, toolbars, composer, usage strip ---------------------- */
+.cc-ext [role="tablist"],
+.cc-ext .cc-band,
+.cc-ext .cc-filterbar {
+  background: var(--cc-l1);
+  backdrop-filter: none;
+}
+.cc-ext [role="tablist"] { border-bottom: 1px solid var(--cc-hair); }
+/* Which edge carries the hairline is a property of where the band sits, so it
+   is a separate hook rather than baked into .cc-band: a toolbar above the
+   content closes with a bottom rule, a composer below it opens with a top one. */
+.cc-ext .cc-band-foot { border-bottom: 1px solid var(--cc-hair); }
+.cc-ext .cc-band-head { border-top: 1px solid var(--cc-hair); }
+/* The filter bar sits directly under the tab strip on Dial and closes the
+   toolbar band before the Recent card begins. */
+.cc-ext .cc-filterbar { border-bottom: 1px solid var(--cc-hair); }
+
+/* A band made of two stacked blocks (Texts: title row + search row) must not
+   show a rule between its halves — it is one band, drawn twice. */
+.cc-ext .cc-band + .cc-band { border-top: 0; }
+
+/* --- L2: the content ground --------------------------------------------- */
+/* .cc-ext's own background already resolves to --cc-l2 through --cc-page.
+   These are the inner scrollers that were painting white over it. */
+.cc-ext .cc-msg-view,
+.cc-ext .cc-dial-column,
+.cc-ext .cc-thread-scroll,
+.cc-ext .cc-alerts-list { background: var(--cc-l2); }
+
+/* --- L3: the content card ------------------------------------------------ */
+/* Lists become ONE inset card, which is exactly what the reference shows: a
+   toolbar band, then a rounded content card with rows inside it. The 8px
+   gutter is what finally makes L2 visible on a full list — without it the
+   ground only ever showed on an empty tab, i.e. never. */
+.cc-ext .cc-list {
+  background: var(--cc-l3);
+  border: 1px solid var(--cc-hair-card);
+  border-radius: var(--r-card);
+  margin: 8px;
+  /* The card clips its own rows so the first and last row corners follow the
+     radius instead of squaring it off. */
+  overflow: hidden auto;
+}
+/* A card with a border must not also carry its rows' outer rules, or the
+   bottom row draws a second line 1px inside the first. */
+.cc-ext .cc-list > li:last-child { border-bottom: 0; }
+/* Rows inside the card are flat and hairline-separated (§0 trait 4: flat zebra
+   rows, not nested cards). The card IS the nesting; the rows are its contents. */
+.cc-ext .cc-list > li { background: transparent; }
+
+/* Thread bubbles keep their own shape but lose the shadow — on an L2 ground a
+   bubble is already a level up, and the shadow was the only drop shadow left
+   in the panel. */
+.cc-ext .cc-thread-scroll .shadow-sm { box-shadow: none; }
+
+/* ===========================================================================
+   ALERTS — search band + one card per notification
+   Dispatch PIXEL-Q addendum · Dennis 09:38: "ability to search notifications
+   and also a nice bubble design for each notification that comes in."
+
+   Cards float directly on L2 here rather than sitting inside a .cc-list card.
+   A notification is a self-contained object with its own actions — it IS the
+   card — and wrapping a stack of cards in a further card is the one move the
+   layering table has no level for.
+   =========================================================================== */
+.cc-ext .cc-alerts-list { padding: 8px 8px 10px; }
+
+.cc-ext .cc-note-card {
+  display: block;
+  background: var(--cc-l3);
+  border: 1px solid var(--cc-hair-card);
+  border-radius: var(--r-card);
+  padding: 8px 10px 9px;
+  margin-bottom: 7px;
+}
+.cc-ext .cc-note-card:last-child { margin-bottom: 0; }
+
+/* Meta line: icon · app name · age · dismiss. The age is pushed right by the
+   app name's flex-grow, so a long app name truncates instead of shoving the
+   timestamp under the dismiss button. */
+.cc-ext .cc-note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.cc-ext .cc-note-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: var(--r-pill);
+  object-fit: cover;
+}
+.cc-ext .cc-note-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--cc-field);
+  font-size: 10px;
+  line-height: 1;
+}
+.cc-ext .cc-note-app {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--cc-sec);
+}
+.cc-ext .cc-note-time {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--cc-mut);
+}
+/* 20px, not the 26px header floor: this control is inside a card the user is
+   reading, and at 26px the × is the heaviest object on it. It still clears the
+   24×24 WCAG 2.2 target with its 2px card padding on three sides, and this
+   surface has no touch input. */
+.cc-ext .cc-note-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-right: -3px;
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--cc-mut);
+  cursor: pointer;
+  transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+.cc-ext .cc-note-dismiss:hover { background: var(--cc-field); color: var(--cc-ink); }
+
+.cc-ext .cc-note-title {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--cc-ink);
+}
+.cc-ext .cc-note-body {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--cc-sec);
+  /* Two lines is the glance; the rest is on the phone. A notification card
+     that grows to eight lines stops being scannable, which is the whole job. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.cc-ext .cc-note-actions {
+  display: flex;
+  align-items: center;
+  margin-top: 7px;
+}
+/* Reply is a text action, not a filled button. There is one filled control per
+   screen on this surface and on the Alerts tab it is the send arrow that
+   appears only once the user is actually typing. */
+.cc-ext .cc-note-reply {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--cc-chip-bd);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--cc-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease-out;
+}
+.cc-ext .cc-note-reply:hover { background: var(--cc-field); }
+
+.cc-ext .cc-note-reply-field {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 28px;
+  padding: 0 9px;
+  box-sizing: border-box;
+  border: 1px solid var(--cc-chip-bd);
+  border-radius: var(--r-pill);
+  background: var(--cc-l2);
+  color: var(--cc-ink);
+  font-size: 12.5px;
+  font-family: inherit;
+}
+.cc-ext .cc-note-reply-field::placeholder { color: var(--cc-mut); }
+
+.cc-ext .cc-note-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background-image: var(--cc-grad);
+  color: #fff;
+  cursor: pointer;
+  transition: filter 0.12s ease-out;
+}
+.cc-ext .cc-note-send:hover:not(:disabled) { filter: brightness(1.06); }
+.cc-ext .cc-note-send:disabled {
+  background-image: none;
+  background-color: var(--cc-field);
+  color: var(--cc-mut);
+  cursor: not-allowed;
+}
+
+/* The Alerts search field, like every field on this surface, sits one step
+   above its band rather than carrying a border of its own. */
+.cc-ext .cc-alerts .cc-field { background: var(--cc-field); }
+
+/* ===========================================================================
+   Consequences of the ladder on rules written before it existed.
+   =========================================================================== */
+
+/* The wide-panel gutters. The ground behind the column has to be one step
+   BELOW L0 in each theme, or the capped column reads as a light box floating
+   on a lighter one. */
+@media (min-width: 620px) {
+  html:has(.cc-ext), body:has(.cc-ext) { background: #e6e6e8; }
+  :where([data-cc-theme=dark]) html:has(.cc-ext),
+  :where([data-cc-theme=dark]) body:has(.cc-ext) { background: #050507; }
+}
+
+/* Menus and popovers are L3 objects. They are the one place a shadow survives,
+   because a floating layer has no band to be separated from. */
+.cc-ext .cc-menu,
+.cc-ext .cc-dock-hint {
+  background: var(--cc-l3);
+  border-color: var(--cc-hair-card);
+}
+
+/* The sign-in shell is a single full-panel band. It has no list and no
+   toolbar, so it stays on L2 with its footer strip stepping down to L1 —
+   the same two-surface reading as every other tab, at the one moment the
+   user has not signed in yet. */
+.cc-ext .cc-auth-foot { background: var(--cc-l1); }
+
+/* ---------------------------------------------------------------------------
+   Fields on a band. The ladder made L1 a grey, and --cc-field (#f2f2f2) sat
+   half a step from it — a search box you could only find by clicking where one
+   ought to be. In light a field now steps UP to L3 and takes a hairline; in
+   dark it steps up to --cc-field and needs no border, because a lighter box on
+   a near-black band is already an edge.
+   --------------------------------------------------------------------------- */
+.cc-ext .cc-field {
+  background: var(--cc-l3);
+  border: 1px solid var(--cc-hair-card);
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-field {
+  background: var(--cc-field);
+  border-color: transparent;
+}
+
+/* The composer box inside the footer band — same problem, same answer. */
+.cc-ext .cc-band-head .bg-slate-50 {
+  background-color: var(--cc-l3);
+  border-color: var(--cc-hair-card);
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-band-head .bg-slate-50 {
+  background-color: var(--cc-field);
+  border-color: var(--cc-hair);
+}
+
+/* ---------------------------------------------------------------------------
+   The single primary action. Dennis: "gradient only on the mark, avatar and
+   the single primary action." Send (thread and compose) and "New" (Texts) are
+   each the one primary on their screen and were still painting blue-600 —
+   Tailwind's blue, inherited from the dashboard, and a different brand from
+   the mark 40px above it. Scoped to .cc-ext, so /app keeps its blue.
+   --------------------------------------------------------------------------- */
+.cc-ext .bg-blue-600 {
+  background-image: var(--cc-grad);
+  background-color: transparent;
+}
+.cc-ext .hover\:bg-blue-700:hover {
+  background-color: transparent;
+  filter: brightness(1.06);
+}

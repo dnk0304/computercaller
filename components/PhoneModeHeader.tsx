@@ -141,19 +141,19 @@ function ExtensionHeader() {
       className="cc-ext-header sticky top-0 z-30 flex h-10 flex-shrink-0 items-center gap-1.5 border-b border-slate-200 bg-white px-2"
       role="banner"
     >
-      {/* The official lockup (dispatch J). What stood here was the mark plus
-          "ComputerCaller" set in the page's UI face — which is not the brand's
-          wordmark; the brand sets it ALL CAPS, extra-bold, two-tone. The
-          lockup is 79px wide against the old pair's ~106px, so the device pill
-          gains room rather than losing it.
-          The 340px rule is kept, but it now swaps ARTWORK instead of hiding
-          text: below 340px the bare mark, at or above it the full lockup. A
-          wrapper span carries the responsive display because <CcLockup> sets
-          its own inline `display`, which a utility class cannot outrank. */}
-      <CcMark size={18} title="ComputerCaller" className="flex-shrink-0 min-[340px]:hidden" />
-      <span className="hidden flex-shrink-0 min-[340px]:block">
-        <CcLockup size={20} layout="inline" />
-      </span>
+      {/* NO WORDMARK HERE (dispatch PIXEL-Q, Dennis 09:34: "We now have
+          computercaller x2 on top, its enough with the top bar, no need to
+          have CC name in the header as well in the extension").
+          Chrome paints the product name in the side panel's own title bar, and
+          the pop-out window paints it in its title bar — so the in-panel
+          lockup was the same five syllables a second time, 20px below the
+          first, costing ~79px of the row AC-1 was raised about.
+          The MARK stays: it is the only thing in the row that says which
+          product this is once the panel is dragged narrow, and it keeps the
+          brand gradient answering the gradient avatar at the far end of the
+          same row. It carries the accessible name now that the wordmark is
+          gone — ConnectionStatus says the device, not the product. */}
+      <CcMark size={18} title="ComputerCaller" className="flex-shrink-0" />
 
       {/* min-w-0 is what lets the pill's truncate actually engage. */}
       <div className="flex min-w-0 flex-1 items-center justify-start pl-1">
