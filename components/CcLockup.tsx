@@ -1,156 +1,176 @@
 /**
- * CcLockup — the official ComputerCaller brand lockup: the mark with the
- * wordmark set beneath it.
+ * CcLockup — the official ComputerCaller logo: the mark with the two-tone
+ * "COMPUTER CALLER" wordmark.
  *
- * WHY (dispatch PIXEL-J, Dennis 2026-09-15): "the official logo is not in the
- * extension view. We also have our logo with the 'computercaller' title
- * beneath, the one we used for the android app listing. I would like to use
- * that one both on the web and the extension and phone mode as well."
+ * WHAT CHANGED (dispatch PIXEL-O, Dennis 2026-09-16)
+ * --------------------------------------------------
+ * Dennis, on the extension header: "Here is a screenshot of the wrong logo in
+ * the extension. The text beneath is correct though." So: the wordmark's
+ * treatment was right, the mark was not. Both now come from the artwork rather
+ * than from geometry this repo drew — the mark out of
+ * computercaller-icon-transparent.png, the wordmark keyed off the Play-listing
+ * lockup, both cut by scripts/build-brand-lockup.ts. The reconstruction that
+ * used to live in lib/brand/wordmark.ts is gone; that file is now the
+ * measurements of the real thing.
  *
- * Until now there was no vector wordmark anywhere in the repo — only the
- * mark-only SVGs and <CcMark>. Surfaces that wanted the lockup either shipped
- * a PNG (which the extension cannot load: no content_security_policy key in
- * manifest.json means the MV3 default `img-src 'self'` applies, so anything on
- * computercaller.com is blocked) or set the name in the page's UI face, which
- * is not the brand's wordmark at all. lib/brand/wordmark.ts is the trace; this
- * component is the assembly.
+ * STACKED vs INLINE, AND WHY HEADERS GET INLINE
+ * The official composition is stacked, and that is what every slot with room
+ * for it gets (the sign-in hero, the extension's signed-out hero, the Android
+ * sign-in screen). Headers do not have room for it. In a 40px header row the
+ * mark can be ~24px tall, and stacked under a 24px mark the wordmark's cap
+ * height lands at 5px — below the size at which the real letterforms resolve
+ * into anything but a grey smear. Inline, the same 40px row gives the wordmark
+ * a 10px cap: twice the size, the same artwork, and the mark stays at full
+ * height instead of being halved to make room. That is the one composition
+ * decision in this component, it is reversible in one prop, and the evidence
+ * shots show both side by side.
  *
- * COMPOSITION, NOT A SECOND COPY OF THE MARK
- * The mark comes from <CcMark>, unmodified. Two SVGs side by side in a flex
- * box rather than one merged SVG: merging would have meant transcribing the
- * mark's twelve shapes a third time (CcMark.tsx, the static .svg files, and
- * here), and three transcriptions of one drawing is how the extension ended up
- * showing a blank gradient tile in the first place.
+ * TONE
+ * The wordmark's navy is #0e2d55; on the extension's dark surface (#18181b)
+ * that is 1.4:1, i.e. gone. A PNG's pixels cannot be recoloured by CSS, so a
+ * theme-aware wordmark is two images with one of them hidden — not one image
+ * that adapts. `tone="auto"` renders both and hides one with a rule keyed on
+ * the extension's own dark gate, `html[data-cc-theme=dark]`, the same
+ * attribute app/extension/extension.css switches on. The rule ships as a
+ * React 19 hoisted <style precedence>, so it is deduplicated to one copy in
+ * <head> no matter how many lockups a page renders, and this component does
+ * not have to reach into a stylesheet another surface owns.
  *
- * SIZING
- * `size` is the MARK's edge length in px, matching <CcMark size>. The wordmark
- * is sized off it, so swapping <CcMark size={18}/> for <CcLockup size={18}/>
- * keeps the mark identical and only adds the name underneath.
- *
- * ACCESSIBILITY
- * The whole lockup is one labelled image; the mark and the wordmark are both
- * aria-hidden inside it. The wordmark is a picture of the word "ComputerCaller"
- * — unlike <CcMark>, which sits beside real text, this one carries the name
- * itself, so it always needs an accessible name and `title` defaults to the
- * product name rather than to nothing.
+ * The MARK is never toned. Its green-to-blue gradient carries on both grounds,
+ * and recolouring it would be redrawing the logo again.
  */
 
 import React from 'react';
 import { CcMark } from '@/components/CcMark';
 import {
-  CAP,
-  STROKE,
-  WORDMARK_ASPECT,
-  WORDMARK_COLORS,
-  WORDMARK_D_FIRST,
-  WORDMARK_D_SECOND,
-  WORDMARK_W,
+  OFFICIAL,
+  INLINE,
+  LOCKUP_CUT,
+  WORDMARK_CUT,
+  brandSrc,
+  brandSrcSet,
+  type BrandTone,
 } from '@/lib/brand/wordmark';
 
 export interface CcLockupProps {
-  /** The MARK's edge length in px. The wordmark scales from it. */
+  /**
+   * The MARK's rendered height in px — the same anchor <CcMark size> uses, so
+   * swapping one for the other keeps the mark identical and only adds the
+   * wordmark. Everything else scales off it.
+   */
   size?: number;
   /**
-   * Which ground it sits on.
-   *   'auto' (default) — the ink comes from --cc-wordmark-1/-2, which
-   *       app/extension/extension.css redefines under its dark gate. That is
-   *       what makes the lockup follow the extension's System/Light/Dark
-   *       toggle without this component knowing the toggle exists.
-   *   'light' / 'dark' — literal ink, for callers painting on a ground the
-   *       theme system does not describe (a gradient splash, a PNG export).
-   * 'dark' lifts the navy half to near-white: #0b2d5c on a #18181b card is
-   * 1.4:1, i.e. invisible.
+   * 'auto' (default) follows the extension's dark gate; 'light' / 'dark' pin
+   * the wordmark's ink for callers painting on a ground the theme system does
+   * not describe (a gradient splash, a PNG export).
    */
-  tone?: 'auto' | 'light' | 'dark';
-  /** 'stacked' = wordmark beneath (the official lockup). 'inline' = beside. */
+  tone?: BrandTone;
+  /** 'stacked' = the official composition. 'inline' = beside, for headers. */
   layout?: 'stacked' | 'inline';
-  /**
-   * Which cut of the mark. Explicit rather than inferred from `size` — see the
-   * note in CcMark.tsx: the cuts are different artwork, not two scales, and
-   * nudging a header by 2px must not silently redraw the logo.
-   */
+  /** @deprecated There is one mark now. See CcMark. */
   mark?: 'mini' | 'full';
   /** Accessible name. Set to null only if adjacent text already names it. */
   title?: string | null;
   className?: string;
 }
 
-/**
- * Wordmark cap height as a fraction of the mark's edge.
- *
- * Stacked 0.36 is a deliberate departure from the source lockup's own ratio.
- * In computercaller-icon-square.png the wordmark sits under a WIDE monitor +
- * phone drawing ~400px across; here it sits under the square app tile, and
- * keeping the source's cap-to-artwork ratio against a 18px tile put the cap at
- * 5.6px — a wordmark you can see but not read. 0.36 gives 6.5px at the
- * extension header's 18px mark, in a block 92px wide: still 20px narrower than
- * the mark + text pair it replaced, so the 40px row's space budget (AC-1 of
- * dispatch B2) is better off, not worse.
- * Inline 0.34 is the same optical weight against a mark it stands beside.
- */
-const CAP_RATIO = { stacked: 0.36, inline: 0.34 } as const;
-const GAP_RATIO = { stacked: 0.18, inline: 0.34 } as const;
+/** Hoisted once by React 19's <style precedence>, however many lockups render. */
+const TONE_CSS = `
+.cc-lockup-dark{display:none}
+html[data-cc-theme=dark] .cc-lockup-light{display:none}
+html[data-cc-theme=dark] .cc-lockup-dark{display:inline-block}
+`;
+
+function ToneStyle() {
+  return (
+    <style href="cc-lockup-tone" precedence="default">
+      {TONE_CSS}
+    </style>
+  );
+}
 
 export function CcLockup({
   size = 20,
   tone = 'auto',
   layout = 'stacked',
-  mark = 'mini',
   title = 'ComputerCaller',
   className,
 }: CcLockupProps) {
-  const cap = size * CAP_RATIO[layout];
-  const wordmarkWidth = cap * WORDMARK_ASPECT;
-  const colors =
-    tone === 'auto'
-      ? {
-          first: `var(--cc-wordmark-1, ${WORDMARK_COLORS.light.first})`,
-          second: `var(--cc-wordmark-2, ${WORDMARK_COLORS.light.second})`,
-        }
-      : WORDMARK_COLORS[tone];
-  const labelled = title
+  const label = title
     ? { role: 'img' as const, 'aria-label': title }
     : { 'aria-hidden': true as const };
 
-  const wordmark = (
-    <svg
-      width={wordmarkWidth}
+  if (layout === 'stacked') {
+    // One image: the official composition, cut as one piece so the mark and
+    // the wordmark cannot drift apart at any scale.
+    const width = Math.round((size * OFFICIAL.wordmark.w) / OFFICIAL.mark.h);
+    const height = Math.round(
+      (size * (OFFICIAL.mark.h + OFFICIAL.stackGap + OFFICIAL.wordmark.h)) / OFFICIAL.mark.h,
+    );
+    return (
+      <span className={className} style={{ display: 'inline-block', lineHeight: 0 }} {...label}>
+        {tone === 'auto' && <ToneStyle />}
+        {tone !== 'dark' && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={brandSrc(LOCKUP_CUT.light)}
+            srcSet={brandSrcSet(LOCKUP_CUT.light)}
+            width={width}
+            height={height}
+            alt=""
+            decoding="async"
+            fetchPriority="high"
+            className={tone === 'auto' ? 'cc-lockup-light' : undefined}
+            style={{ width, height }}
+          />
+        )}
+        {tone !== 'light' && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={brandSrc(LOCKUP_CUT.dark)}
+            srcSet={brandSrcSet(LOCKUP_CUT.dark)}
+            width={width}
+            height={height}
+            alt=""
+            decoding="async"
+            className={tone === 'auto' ? 'cc-lockup-dark' : undefined}
+            style={{ width, height }}
+          />
+        )}
+      </span>
+    );
+  }
+
+  // Inline: the mark at full height, the wordmark beside it.
+  const cap = Math.round(size * INLINE.wordmarkCap);
+  const wordWidth = Math.round(cap * OFFICIAL.wordmark.aspect);
+  const gap = Math.round(size * INLINE.gap);
+
+  const wordmark = (cut: string, cls?: string) => (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      key={cut}
+      src={brandSrc(cut)}
+      srcSet={brandSrcSet(cut)}
+      width={wordWidth}
       height={cap}
-      viewBox={`0 0 ${WORDMARK_W} ${CAP}`}
-      // The stroke is centred on the glyph centrelines, so half of it and the
-      // round letters' overshoot fall outside the cap-height box. Without this
-      // the top of the C and the bottom of the O are clipped at small sizes.
-      style={{ overflow: 'visible' }}
-      fill="none"
-      strokeWidth={STROKE}
-      strokeLinecap="butt"
-      strokeLinejoin="miter"
-      focusable="false"
-      aria-hidden="true"
-    >
-      {/* style, not a stroke ATTRIBUTE: var() is a CSS value, and SVG
-          presentation attributes are not CSS — `stroke="var(--x)"` is parsed
-          as an invalid paint and silently falls back to black. */}
-      <path d={WORDMARK_D_FIRST} style={{ stroke: colors.first }} />
-      <path d={WORDMARK_D_SECOND} style={{ stroke: colors.second }} />
-    </svg>
+      alt=""
+      decoding="async"
+      className={cls}
+      style={{ width: wordWidth, height: cap }}
+    />
   );
 
   return (
     <span
       className={className}
-      style={{
-        display: 'inline-flex',
-        flexDirection: layout === 'stacked' ? 'column' : 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: `${size * GAP_RATIO[layout]}px`,
-        lineHeight: 0,
-      }}
-      {...labelled}
+      style={{ display: 'inline-flex', alignItems: 'center', gap, lineHeight: 0 }}
+      {...label}
     >
-      <CcMark size={size} variant={mark} />
-      {wordmark}
+      {tone === 'auto' && <ToneStyle />}
+      <CcMark size={size} />
+      {tone !== 'dark' && wordmark(WORDMARK_CUT.light, tone === 'auto' ? 'cc-lockup-light' : undefined)}
+      {tone !== 'light' && wordmark(WORDMARK_CUT.dark, tone === 'auto' ? 'cc-lockup-dark' : undefined)}
     </span>
   );
 }

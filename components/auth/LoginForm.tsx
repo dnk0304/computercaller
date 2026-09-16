@@ -259,7 +259,7 @@ export function LoginForm({ variant = 'web' }: { variant?: LoginFormVariant }) {
             becomes a second column and shoves the form off-centre.
             dispatch J. */}
         {isExtension && (
-          <CcLockup size={34} mark="full" className="mb-4 self-center" />
+          <CcLockup size={56} className="mb-4 self-center" />
         )}
         {/* The heading carries the whole page for AT, so it stays an <h1> on
             both surfaces — only its size and its words change. In the popup the

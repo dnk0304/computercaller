@@ -70,15 +70,32 @@ user gesture.
 - Extension ID: `helkcjjlidcceiifjccolmppanfmcjjg` (pinned via the manifest `key`).
 - `key.pem` is the **private** half — git-ignored, never commit it. Ken/Pilot use
   it to package the `.crx`/Web-Store build so dev and prod share one ID.
-- `icon*.png` are the **CC-branded finals** (Pixel, `88eab94`), tracked in git and
-  rendered from `design/extension-marks/mark-full.svg`. The line that called them
-  placeholders was stale from brief 2 and is corrected here (PIXEL-C, 2026-09-15).
-  Regenerate from the SVG master if they ever need to change — do not hand-edit
-  the PNGs.
-- `mark-mini.svg` is `design/extension-marks/mark-mini.svg`, copied in so the
-  shell's signed-out header can show the real mark instead of a blank gradient
-  tile. The 18px cut, because the full mark's five objects turn to mush at that
-  size. The hosted surfaces use the same artwork via `components/CcMark.tsx`.
+## Brand assets (PIXEL-O, 2026-09-16)
+
+Every brand file here is **generated**, never hand-edited. Rebuild with
+`bun scripts/build-brand-lockup.ts` from the repo root; it cuts all of them out
+of the official artwork (`public/brand/computercaller-icon-transparent.png`,
+`public/brand/computercaller-icon-square.png`, `marketing/store/app-icon-512.png`)
+and writes the web, extension and Android copies in one pass.
+
+- `lockup-inline.svg` — the header cut: mark left, wordmark right. Painted by
+  `#cc-shell-header .cc-lockup`.
+- `lockup.svg` — the official STACKED composition, for the signed-out hero.
+- `mark.svg` — the mark alone.
+- `icon16/32/48/128.png` — the toolbar/notification/side-panel-title icons, cut
+  from `marketing/store/app-icon-512.png`. Chrome also draws `icon16` in the
+  side panel's own title bar, which is why it had to change with the rest.
+
+They live **inside** the extension because an MV3 page declares no
+`content_security_policy`, so the default `img-src 'self'` applies and nothing
+from computercaller.com will load. Each SVG carries its own
+`prefers-color-scheme` block: a background-image SVG is a separate document and
+`shell.css` cannot reach into it.
+
+What was here before — `mark-mini.svg` and a redrawn `lockup.svg` — was a mark
+this repo drew (a green rounded tile with a handset). Dennis rejected it on
+2026-09-16: *"our official logo is not on the the extension either"*. Do not
+reintroduce a drawn mark.
 
 ## Load unpacked (dev)
 

@@ -83,8 +83,12 @@
     <dimen name="cc_radius_band">14dp</dimen>
     <dimen name="cc_radius_tile">9dp</dimen>
 
-    <dimen name="cc_mark_size">34dp</dimen>
-    <dimen name="cc_mark_signin">112dp</dimen>
+    <dimen name="cc_mark_size">26dp</dimen>
+    <!-- The official stacked lockup, at the artwork's own proportions:
+         the wordmark is 200dp wide, the mark 0.636 of that, the gap 0.0615. -->
+    <dimen name="cc_wordmark_signin">200dp</dimen>
+    <dimen name="cc_mark_signin">127dp</dimen>
+    <dimen name="cc_lockup_gap">12dp</dimen>
     <dimen name="cc_gear_size">36dp</dimen>
     <dimen name="cc_tile_size">30dp</dimen>
     <dimen name="cc_avatar_hero">86dp</dimen>

@@ -69,10 +69,21 @@
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
+            <!-- PIXEL-O (Dennis, 2026-09-16: "You have removed our official
+                 logo inside the app"): this was ic_cc_mark, a vector this repo
+                 drew — a simplified monitor and phone with the brand ramp on
+                 the strokes. The official mark is the Play-listing artwork:
+                 monitor and phone with the call arc sweeping between them and
+                 the handset badge at the centre. cc_mark is that artwork, cut
+                 by scripts/build-brand-lockup.ts.
+                 It is 1.936:1, not square, so the height is fixed and the width
+                 follows via adjustViewBounds. 26dp tall keeps the pair the same
+                 optical weight as the 34dp square it replaces. -->
             <ImageView
-                android:layout_width="@dimen/cc_mark_size"
+                android:layout_width="wrap_content"
                 android:layout_height="@dimen/cc_mark_size"
-                android:src="@drawable/ic_cc_mark"
+                android:adjustViewBounds="true"
+                android:src="@drawable/cc_mark"
                 android:importantForAccessibility="no" />
 
             <TextView

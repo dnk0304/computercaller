@@ -335,8 +335,15 @@ android {
         // SettingsActivity, phone-side PC-audio surface retired behind
         // FeatureFlags.PC_AUDIO_UI_ENABLED, monochrome ic_stat_cc small
         // notification icon, DayNight theme + light/dark token sets.
-        versionCode = 56
-        versionName = "1.0.32"
+        // v57 (2026-09-16) - OFFICIAL LOGO. Dennis rejected v56's branding:
+        // "You have removed our official logo inside the app". ic_cc_mark (a
+        // mark this repo drew) is gone; the app bar and the sign-in screen now
+        // show the Play-listing artwork, cut by scripts/build-brand-lockup.ts.
+        // Adds the adaptive launcher icon the app never had, a -night cut of
+        // the wordmark, and a raster ic_stat_cc silhouetted from the real mark.
+        // v56 was sideloaded and is SUPERSEDED — never reuse 56.
+        versionCode = 57
+        versionName = "1.0.33"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client

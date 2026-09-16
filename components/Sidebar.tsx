@@ -70,12 +70,16 @@ export const Sidebar = ({ activeTab, setActiveTab, isAdmin = false }: SidebarPro
               a wordmark the brand does not have. The real one is ALL CAPS,
               extra-bold and two-tone, and it now renders as vector, so the
               sidebar no longer waits on a 396×317 raster to show its own name.
-              Collapsed (w-16) there is no room for a 141px lockup, so the mark
-              stands alone and carries the accessible name itself. */}
+              PIXEL-O: both are now the OFFICIAL artwork rather than a redrawn
+              mark and a traced wordmark. Expanded, the lockup is inline — the
+              w-64 rail minus its padding and the collapse button leaves ~200px
+              of row, which fits a 24px mark and a 10px-cap wordmark but not the
+              stacked cut. Collapsed (w-16, ~40px of usable row) the mark stands
+              alone at 20px tall and carries the accessible name itself. */}
           {collapsed ? (
-            <CcMark size={36} variant="full" title="ComputerCaller" className="flex-shrink-0" />
+            <CcMark size={20} title="ComputerCaller" className="flex-shrink-0" />
           ) : (
-            <CcLockup size={32} mark="full" className="flex-shrink-0" />
+            <CcLockup size={24} layout="inline" className="flex-shrink-0" />
           )}
         </div>
         {!collapsed && (
