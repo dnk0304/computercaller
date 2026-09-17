@@ -663,6 +663,162 @@ const NP = V.noncePrefixes;
       { userId: LOCAL_USER, pairingId: 'pair-7f3a9c21' }), 'pairingId');
 }
 
+// ── 6d. (J) the frozen A4 vector, through the real module ──────────────────
+// 6c pinned the RULE with no frozen bytes. This block pins the BYTES, against
+// values Security computed in a clean-room HKDF/GCM implementation that imports
+// nothing from lib/e2e/kdf.mjs — so agreement here is cross-implementation
+// evidence, not one implementation agreeing with itself.
+{
+  const J = V.canonicalPeer;
+  const J1 = J.positiveJ1;
+  const SK = fromHex(V.traffic.sessionKeyHex);
+
+  eq('J: the canonical peer of the frozen wraps[] is the vector\'s',
+    canonicalPeerDeviceId(J.wraps), J.canonicalPeerDeviceId);
+  check('J: the fixture\'s canonical peer is NOT wraps[0] (so wraps[0] cannot pass)',
+    J.wraps[0].deviceId !== J.canonicalPeerDeviceId, J.wraps[0].deviceId);
+  eq('J: ctx.peerDeviceId IS that canonical peer', J1.ctxWire.peerDeviceId, J.canonicalPeerDeviceId);
+
+  // The page lane holds wraps[]; the SW lane (PAIR_STATE) does not. Both must
+  // reach the SAME bytes — that is the whole ruling in one assertion.
+  const page = pairContextFromWire(J1.ctxWire, { userId: J.localUserId, recipientDeviceIds: J.wraps });
+  const sw = pairContextFromWire(J1.ctxWire, { userId: J.localUserId });
+  eq('J.1: the page lane reproduces the frozen context bytes',
+    toHex(page.contextBytes), J1.contextBytesHexPage);
+  eq('J.1: the SW lane reproduces them too', toHex(sw.contextBytes), J1.contextBytesHexSw);
+  check('J.1: the vector asserts the two are IDENTICAL, not merely both present',
+    J1.contextsIdentical === true && J1.contextBytesHexPage === J1.contextBytesHexSw);
+  eq('J.1: …and this lane agrees', toHex(page.contextBytes), toHex(sw.contextBytes));
+
+  const kPage = await trafficKeys({ pairingId: J1.ctxWire.pairingId, sessionKey: SK, context: page.contextBytes, role: 'phone' });
+  const kSw = await trafficKeys({ pairingId: J1.ctxWire.pairingId, sessionKey: SK, context: sw.contextBytes, role: 'phone' });
+  eq('J.1: k_p2c', toHex(kPage.send.rawBytes), J1.phoneToComputerKeyHex);
+  eq('J.1: k_c2p', toHex(kPage.recv.rawBytes), J1.computerToPhoneKeyHex);
+  eq('J.1: np2c', toHex(kPage.send.sessionPrefix), J1.np2cHex);
+  eq('J.1: nc2p', toHex(kPage.recv.sessionPrefix), J1.nc2pHex);
+  eq('J.1: the SW lane derives the SAME traffic key set (one key set per pairing)',
+    `${toHex(kSw.send.rawBytes)}|${toHex(kSw.recv.rawBytes)}|${toHex(kSw.send.sessionPrefix)}`,
+    `${toHex(kPage.send.rawBytes)}|${toHex(kPage.recv.rawBytes)}|${toHex(kPage.send.sessionPrefix)}`);
+  // J's keys must NOT be I's: if they were, the two-recipient fixture would be
+  // proving nothing that vector I does not already prove.
+  check('J.1: a two-recipient pairing derives DIFFERENT keys from the one-recipient I.1',
+    J1.phoneToComputerKeyHex !== V.ctxWire.positiveI1.phoneToComputerKeyHex);
+
+  // J.1b — ONE broadcast ciphertext opens for BOTH recipients. This is the
+  // property a device-scoped ctx would destroy: the relay sends one ciphertext
+  // byte-identically to every listener, so under per-recipient traffic keys it
+  // would open for exactly one and hand the other a GCM tag failure that is
+  // indistinguishable from a network fault. Raw WebCrypto, not seal/open: J
+  // deliberately fixes an EMPTY AAD and an unpadded plaintext so it stands
+  // alone and does not re-pin A2's frame header.
+  {
+    const B = J.positiveJ1bBroadcast;
+    const ct = fromHex(B.ciphertextHex);
+    const iv = new Uint8Array(12);
+    iv.set(kPage.send.sessionPrefix, 0);
+    new DataView(iv.buffer).setBigUint64(4, BigInt(B.seq));
+    for (const [who, keys] of [['page', kPage], ['sw', kSw]]) {
+      const ck = await crypto.subtle.importKey('raw', keys.send.rawBytes, 'AES-GCM', false, ['decrypt']);
+      const pt = new Uint8Array(await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv, additionalData: new Uint8Array(0), tagLength: 128 }, ck, ct));
+      eq(`J.1b: the ONE broadcast ciphertext opens for the ${who}`,
+        new TextDecoder().decode(pt), who === 'page' ? B.opensForPage : B.opensForSw);
+    }
+  }
+
+  // J.1c — per-recipient KEKs DIFFER from the same ctx. This is why one shared
+  // traffic-key set costs nothing: separation still lives in the KEK, which
+  // binds the recipient's own static key on top of the shared context.
+  {
+    const C = J.positiveJ1cKeks;
+    const kekWeb = await kek({ pairingId: J1.ctxWire.pairingId, sharedSecret: SK, context: page.contextBytes, recipientKey: fromHex(C.webKeyHex) });
+    const kekExt = await kek({ pairingId: J1.ctxWire.pairingId, sharedSecret: SK, context: sw.contextBytes, recipientKey: fromHex(C.extKeyHex) });
+    eq('J.1c: KEK_web', toHex(kekWeb), C.kekWebHex);
+    eq('J.1c: KEK_ext', toHex(kekExt), C.kekExtHex);
+    check('J.1c: the KEKs DIFFER although the ctx is identical',
+      toHex(kekWeb) !== toHex(kekExt) && C.keksDiffer === true);
+  }
+
+  // J.2 / J.3 — the refusals, at ingest, before any derivation.
+  {
+    const P = J.negativeJ2PairingId;
+    await throws('J.2: a foreign ctx.pairingId is refused where we know ours',
+      () => pairContextFromWire({ ...J1.ctxWire, pairingId: P.ctxPairingId },
+        { userId: J.localUserId, pairingId: P.ownPairingId }), 'pairingId');
+  }
+  {
+    const S = J.negativeJ3SteeredPeer;
+    const steeredCtx = { ...J1.ctxWire, peerDeviceId: S.ctxPeerDeviceId };
+    await throws('J.3: a relay-steered non-canonical peer is refused where wraps[] is held',
+      () => pairContextFromWire(steeredCtx, { userId: J.localUserId, recipientDeviceIds: J.wraps }), 'canonical');
+    // What the steered context WOULD have derived — and why refusing it early
+    // matters: the derivation succeeds, it is simply the wrong key, which is a
+    // silent break unless something refuses before the first frame.
+    const steered = pairContextFromWire(steeredCtx, { userId: J.localUserId });
+    eq('J.3: the steered context bytes', toHex(steered.contextBytes), S.contextBytesHex);
+    const kSteer = await trafficKeys({ pairingId: J1.ctxWire.pairingId, sessionKey: SK, context: steered.contextBytes, role: 'phone' });
+    eq('J.3: the steered k_p2c', toHex(kSteer.send.rawBytes), S.phoneToComputerKeyHex);
+    check('J.3: …which is NOT J.1\'s key', S.phoneToComputerKeyHex !== J1.phoneToComputerKeyHex);
+
+    // SINGLE-RECIPIENT INVARIANCE — the proof that A4 rekeys nothing already
+    // shipped. For a one-recipient pairing the canonical lowest IS that
+    // recipient, so the steered context (peer forced to dev-web-01, the sole
+    // recipient of vector I) must reproduce I.1's frozen key EXACTLY. Two
+    // independent clean-room implementations agree on it; A4 adds no row to
+    // E-H or I and forces no re-pair.
+    eq('J.3: the steered k_p2c IS vector I.1\'s frozen key — single-recipient unchanged',
+      S.phoneToComputerKeyHex, V.ctxWire.positiveI1.phoneToComputerKeyHex);
+    eq('J.3: …and the steered context bytes ARE I.1\'s', S.contextBytesHex, V.ctxWire.positiveI1.contextBytesHex);
+    eq('J.3: …which are this file\'s own frozen contextBytesHex', S.contextBytesHex, V.contextBytesHex);
+    eq('J.3: a ONE-recipient pairing selects its sole recipient as canonical',
+      canonicalPeerDeviceId([{ deviceId: S.ctxPeerDeviceId }]), S.ctxPeerDeviceId);
+
+    // J.1b's ciphertext MUST FAIL authentication under the steered key. A
+    // steered derivation that merely "looked different" would prove nothing.
+    {
+      const B = J.positiveJ1bBroadcast;
+      const iv = new Uint8Array(12);
+      iv.set(kSteer.send.sessionPrefix, 0);
+      new DataView(iv.buffer).setBigUint64(4, BigInt(B.seq));
+      const ck = await crypto.subtle.importKey('raw', kSteer.send.rawBytes, 'AES-GCM', false, ['decrypt']);
+      await throws('J.3: the J.1b broadcast FAILS authentication under the steered key',
+        () => crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: new Uint8Array(0), tagLength: 128 },
+          ck, fromHex(B.ciphertextHex)));
+      check('J.3: the vector declares that failure', S.j1bCiphertextMustFailAuth === true);
+    }
+  }
+
+  // J.4 — the non-member. Its KEK is a real, derivable value; what refuses it
+  // is that no wraps[] entry opens under it. A4-M3: that is a PAIRING ABORT,
+  // never a degrade to counts-only badges.
+  {
+    const N = J.negativeJ4NonMember;
+    const outsiderKey = fromHex('04' + '00'.repeat(64));
+    check('J.4: the vector pins the outsider KEK', /^[0-9a-f]{64}$/.test(N.outsiderKekHex));
+    check('J.4: the outsider is not in wraps[]',
+      !J.wraps.some((w) => w.deviceId === 'dev-outsider-03'));
+    check('J.4: …so it cannot be the canonical peer either',
+      canonicalPeerDeviceId([...J.wraps, { deviceId: 'dev-outsider-03' }]) === J.canonicalPeerDeviceId);
+    check('J.4 shape control: a well-formed foreign key still derives A kek (the refusal is the UNWRAP, not the derive)',
+      outsiderKey.length === SEC1_P256_BYTES);
+  }
+
+  // J.5 — the regression, stated against the frozen fixture rather than inline.
+  {
+    const R = J.negativeJ5PreA4Regression;
+    eq('J.5: the pre-A4 rule refused the NON-canonical recipient', R.preA4RefusedDeviceId, 'dev-web-01');
+    eq('J.5: …and admitted only the canonical one', R.preA4AdmittedDeviceId, J.canonicalPeerDeviceId);
+    check('J.5: after A4 BOTH are admitted by the same block', R.bothMustBeAdmittedAfterA4 === true);
+    for (const w of J.wraps) {
+      // There is no longer any per-recipient input at all — which is exactly
+      // how "both recipients are admitted" is expressed after A4.
+      eq(`J.5: the block derives the frozen context for ${w.deviceId}`,
+        toHex(pairContextFromWire(J1.ctxWire, { userId: J.localUserId, recipientDeviceIds: J.wraps }).contextBytes),
+        J1.contextBytesHexPage);
+    }
+  }
+}
+
 // ── 7. persist-before-emit / FAIL CLOSED (A1 (3)) ──────────────────────────
 // The rule A1 calls the single most likely one to be quietly skipped, so it is
 // a constructor precondition rather than a comment — and therefore testable.
