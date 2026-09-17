@@ -15,6 +15,11 @@
  * FAIL-CLOSED guarantees.
  */
 
+// SERVER ONLY (2026-09-17, dispatch forge/w-strip-email-literals): the
+// entitlement decision reads ADMIN_EMAIL / ENTITLEMENT_ALLOWLIST from the
+// environment. It must never be bundled for the browser.
+import 'server-only';
+
 export type {
   EntitlementState,
   EntitlementResult,

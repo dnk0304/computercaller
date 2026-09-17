@@ -40,7 +40,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { CcLockup } from '@/components/CcLockup';
 import { Check } from 'lucide-react';
 import { AuthSplash } from '@/components/AuthSplash';
-import { sanitiseNext } from '@/lib/google';
+import { sanitiseNext } from '@/lib/nextPath';
 import { notifySignedIn, requestGoogleSignIn } from '@/lib/extensionBridge';
 
 // Inline Google "G" logo SVG — avoids a network round-trip + zero new deps.
