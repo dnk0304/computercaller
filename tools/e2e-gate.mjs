@@ -323,7 +323,16 @@ const passLine = (out) => {
   if (slash) return { passed: Number(slash[1]), total: Number(slash[2]) };
   const pf = [...out.matchAll(/(\d+)\s+passed,\s*(\d+)\s+failed/gi)].pop();
   if (pf) return { passed: Number(pf[1]), total: Number(pf[1]) + Number(pf[2]) };
-  return null;
+  // A fourth dialect: "21 assertion group(s) passed", "9 repro assertions
+  // passed". Without this, reset-room, listener-heartbeat, repro-resume-sync
+  // and bridge-origin-pin produce no counts — and a suite with no counts never
+  // enters the parity reference, so a later failure there is invisible to
+  // step 10. Four unprotected suites is not an acceptable parity baseline.
+  const bare = [...out.matchAll(/(\d+)\s+[A-Za-z][A-Za-z()\s-]*?passed/gi)].pop();
+  if (bare) return { passed: Number(bare[1]), total: Number(bare[1]) };
+  // Last resort: count the per-assertion "ok" lines the older suites print.
+  const oks = (out.match(/^\s*ok\b/gim) || []).length;
+  return oks > 0 ? { passed: oks, total: oks } : null;
 };
 
 // ── lint: a committed MANIFEST that may only shrink (GATE-SPEC amendment) ──

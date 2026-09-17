@@ -1,6 +1,6 @@
 {
   "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
-  "utc": "2026-09-17T01:49:25.511Z",
+  "utc": "2026-09-17T02:07:13.729Z",
   "harnessPass": [
     {
       "name": "relay:pairing-persist",
@@ -46,6 +46,11 @@
       "name": "harness:ext-in-call-shots",
       "passed": 47,
       "total": 47
+    },
+    {
+      "name": "harness:ext-badge-counter-proof",
+      "passed": 42,
+      "total": 42
     },
     {
       "name": "harness:ext-templates-scroll-call-message-proof",
