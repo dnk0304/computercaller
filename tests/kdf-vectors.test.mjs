@@ -734,6 +734,54 @@ check('be64 does not round above 2^53',
   }
   check('drift guard: §13.10 keeps the labels the vectors were derived under',
     section.includes('"cc-e2e-v1/kek"') && section.includes('"cc-e2e-v1/p2c"') && section.includes('"cc-e2e-v1/c2p"'));
+
+  // A2 and A3 land in the spec as §13.10.7 and §13.10.8. Same principle as the
+  // tag guard above: an addendum that changed the module but never reached the
+  // spec (or the reverse) fails here rather than at a pairing.
+  {
+    const a2 = section.slice(section.indexOf('#### 13.10.7'), section.indexOf('#### 13.10.8'));
+    const a3 = section.slice(section.indexOf('#### 13.10.8'));
+    check('drift guard: §13.10.7 exists (A2)', a2.length > 0);
+    check('drift guard: §13.10.8 exists (A3)', a3.length > 0);
+    check('drift guard: §13.10.7 carries the nonce-prefix labels the vectors were derived under',
+      a2.includes(`"${LABEL_NP2C}"`) && a2.includes(`"${LABEL_NC2P}"`));
+    check('drift guard: §13.10.7 states L = 4', /L = 4/.test(a2));
+    // A2 withdrew A1's rationale, and the withdrawal is the load-bearing part:
+    // a spec that kept "defence in depth" would leave rule 3 looking optional.
+    check('drift guard: §13.10.7 records that the prefix contributes ZERO uniqueness',
+      /zero nonce-uniqueness/i.test(a2));
+    check('drift guard: §13.10.7 names rule 3 the SOLE control',
+      /SOLE control against nonce reuse/.test(a2));
+    check('drift guard: §13.10.7 carries A2 MUST#1 (kid <-> SK strictly 1:1)',
+      /strictly 1:1/.test(a2));
+    check('drift guard: §13.10.7 carries A2 MUST#2 (never persisted)',
+      /never persisted/.test(a2));
+    check('drift guard: §13.10.5 rule 2 no longer calls the prefix defence in depth',
+      !/defence in depth against a state-restore bug\.\s+Anyone/.test(section));
+
+    // A3: the wire form, the decimal-string rule, and all four MUSTs by name.
+    for (const field of ['pairingId', 'phoneDeviceId', 'peerDeviceId', 'pairEpoch']) {
+      check(`drift guard: §13.10.8 states ctx.${field}`, a3.includes(field));
+    }
+    check('drift guard: §13.10.8 pins pairEpoch as a DECIMAL STRING',
+      /DECIMAL STRING/.test(a3) && a3.includes('^(0|[1-9][0-9]{0,19})$'));
+    eq('drift guard: the spec\'s epoch pattern is the module\'s',
+      a3.includes(String(PAIR_EPOCH_WIRE_RE).slice(1, -1)), true);
+    check('drift guard: §13.10.8 records that userId stays LOCAL',
+      /not transmitted/.test(a3));
+    for (const must of ['A3-M1', 'A3-M2', 'A3-M3', 'A3-M4']) {
+      check(`drift guard: §13.10.8 carries ${must}`, a3.includes(must));
+    }
+    check('drift guard: §13.10.8 states the A3-M1 splice as code',
+      a3.includes('ctx: block.ctx'));
+    check('drift guard: §13.10.8 records that ctx is a precondition of the SAS',
+      /SAS computable on the computer side at all/.test(a3));
+    check('drift guard: §13.10.8 records persist-before-use for the floor',
+      /persist-before-use/.test(a3));
+    // Control: these slices must be capable of failing.
+    check('drift guard control: a MUST the addenda do NOT define is absent',
+      !a3.includes('A3-M9') && !a2.includes('A2 MUST#7'));
+  }
   // Control: the parser must be capable of failing. If the section slice were
   // empty or the regexes matched nothing, every assertion above would be
   // vacuously green on a spec that says nothing at all.

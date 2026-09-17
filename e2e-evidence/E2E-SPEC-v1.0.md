@@ -245,6 +245,22 @@ authority for §13.10 and for nothing else: it freezes a layer §13 left open, i
 does not reopen anything §13 froze, and Gate 1's PASS verdict is unaffected.
 Where §13.10 and A1 could be read to disagree, A1 wins and §13.10 is the bug.
 
+A1 has since been amended twice, by the same signer, in the same way — each
+closing a layer that was left open or written wrong, neither reopening anything
+§13 froze, and **Gate 1's PASS verdict is unaffected by either**:
+
+- **Addendum A2 — nonce prefix: RATIFIED (A)** (2026-09-17T15:50Z). The nonce
+  prefix is **derived, not random**. §13.10.7 below. A2 also **strikes** A1's
+  "defence in depth" rationale for the prefix, which makes §13.10.5 rule 3 the
+  sole control against nonce reuse.
+- **Addendum A3 — pairContext channel: RATIFIED (A), AMENDED**
+  (2026-09-17T23:41Z). The pair context is **carried on the wire** as `ctx`.
+  §13.10.8 below.
+
+The same precedence rule applies to both: where §13.10 and the addendum could be
+read to disagree, **the addendum wins and §13.10 is the bug**. Where A2 or A3
+contradicts A1, the later one wins — that is the point of an amendment.
+
 *Numbering note:* A1's own text calls the new section "§13.9". §13.9 was already
 taken by **History** when A1 was written, and renumbering a frozen section would
 break every reference to it, so the addendum lands at **§13.10**. Ken ruled this
@@ -509,7 +525,9 @@ be violated.
 ```
 cipher = AES-256-GCM, 128-bit tag, 96-bit nonce.
 
-nonce (12 B) = sessionPrefix(4 B, random, per (kid,direction)) ‖ be64(seq)
+nonce (12 B) = sessionPrefix(4 B) ‖ be64(seq)
+               -- A1 wrote "random, per (kid,direction)". Addendum A2 REPLACED
+                  that word: the prefix is DERIVED. See §13.10.7.
 
 AAD = 0x21 u8(len) frameType          (ASCII, e.g. "SMS_RECEIVED")
     ‖ 0x22 u8(len) kid                (ASCII)
@@ -542,10 +560,12 @@ authentication rather than decrypting into something plausible.
    random nonce would collide around 2^48 frames by the birthday bound —
    comfortable, but "comfortable" is the wrong standard for a failure whose cost
    is total. The counter already exists: §13.5's dedupe window is keyed on it.
-2. **Uniqueness comes from the counter, not the prefix.** The 4-byte random
-   `sessionPrefix` is defence in depth against a state-restore bug. Anyone
-   reasoning "the prefix is random, so a counter collision is fine" has
-   reintroduced the bug.
+2. **Uniqueness comes from the counter, not the prefix.** A1 called the 4-byte
+   prefix "defence in depth against a state-restore bug"; **Addendum A2
+   WITHDRAWS that rationale** and §13.10.7 explains why it was never sound.
+   The prefix contributes **zero** nonce-uniqueness. Anyone reasoning "the
+   prefix varies, so a counter collision is fine" has reintroduced the bug, and
+   **rule 3 is now the SOLE control against nonce reuse.**
 3. **Persist before emit, and fail closed.** The counter MUST be durably
    committed *before* the frame it authorises leaves the device. A device that
    starts and cannot prove its counter is strictly beyond every value it has
@@ -576,3 +596,194 @@ authentication rather than decrypting into something plausible.
   `E2eKdfVectorsTest` (Android) assert **the same file**, so a drift in either
   lane fails its own build rather than surfacing as "Encrypted mode never
   pairs".
+
+#### 13.10.7 Addendum A2 — the nonce prefix is DERIVED, never random
+
+**RATIFIED (A), 2026-09-17T15:50Z.** A1's nonce line said the 4-byte prefix was
+"random per `(kid, direction)`". The merged, frozen frame `{e, kid, s, c}` has
+**no field to carry a random value**, so A1 as written was undecryptable: the
+two sides would each invent a prefix and neither could reproduce the other's.
+P4 escalated rather than inventing a field, and was right to. A2 replaces the
+word.
+
+```
+np2c = HKDF-SHA-256(salt = UTF8(pairingId), ikm = SK,
+                    info = "cc-e2e-v1/np2c" ‖ pairContext)   -> L = 4 bytes
+nc2p = HKDF-SHA-256(salt = UTF8(pairingId), ikm = SK,
+                    info = "cc-e2e-v1/nc2p" ‖ pairContext)   -> L = 4 bytes
+
+nonce (12 B) = np2c ‖ be64(seq)     for direction p2c (0x01)
+             = nc2p ‖ be64(seq)     for direction c2p (0x02)
+```
+
+`pairContext` is §13.10.3, byte for byte, unchanged. The two labels are exact
+ASCII, new members of the `cc-e2e-v1/` namespace, distinct from `/kek`, `/p2c`
+and `/c2p`. **`L = 4` and "expand 32 then truncate to 4" are the same bytes**
+(HKDF-Expand emits `T(1)` first), so either implementation is conformant — but
+implementations **SHOULD** request `L = 4` so the intent is not mistaken for a
+truncated key.
+
+Nothing about the envelope `{e, kid, s, c}`, the merged `e2e` block or
+`PAIR_STATE` changes. This is not a workaround, it is the standard construction:
+TLS 1.3 derives its per-connection record IV from the traffic secret by HKDF and
+never transmits it (RFC 8446 §5.3), and "fixed field ‖ counter" is RFC 5116
+§3.2. A nonce prefix has no confidentiality or unpredictability requirement at
+all — GCM's requirement is *uniqueness under a key*, and that is the counter's
+job.
+
+**WHAT A2 STRIKES, and implementers MUST NOT rely on.** A1 justified the prefix
+as "defence in depth against a state-restore bug". **That rationale is withdrawn
+— and on inspection it was never sound under A1 either.** A restored device
+restores its persisted state; under A1 the prefix was per `(kid, direction)`,
+not per process start, so a device that restored a stale counter also restored
+or re-derived the same prefix. It protected against the restore scenario only
+where the prefix was *not* persisted while the counter *was* — a specific
+storage bug, not a design property. Under A2 the prefix is a deterministic
+function of `SK` and `pairEpoch`, so within one epoch a restore reproduces it
+exactly. **The prefix contributes zero nonce-uniqueness. Say so in the code
+comment.**
+
+The load-bearing consequence: **§13.10.5 rule 3 — persist-before-emit, fail
+closed — is now the SOLE control against nonce reuse.** It was always the real
+one; A2 removes the fig leaf beside it. It is upgraded from an acceptance
+criterion to **blocking** for P2, P3 and P4 alike: a lane that seals frames
+without a restore-from-backup test proving refuse-and-rekey does not ship.
+Android's `E2eSeqStoreTest.restore_from_backup_fails_closed` is the model; the
+web and service-worker lanes owe the equivalent for their own storage
+(IndexedDB cleared, profile copied, SW storage evicted).
+
+**Two MUSTs A2 adds:**
+
+1. **`kid` ↔ `SK` MUST be strictly 1:1.** `pairContext` does not bind `kid`, so
+   `k_p2c` / `k_c2p` / `np2c` / `nc2p` are scoped to
+   `(pairing, pairEpoch, direction)` while §13.10.5 scopes the counter to
+   `(kid, direction)`. Those two scopes coincide **only** while one `kid` names
+   exactly one `SK`. If a second `kid` were minted under the same `SK`, its
+   counter would restart at 0 against the same key **and the same prefix** —
+   GCM nonce reuse, total loss of confidentiality and forgery resistance. Every
+   rekey MUST mint a fresh `SK` (and bump `pairEpoch`) with its new `kid`, and a
+   `kid` MUST NEVER be reused across `SK`s. **Enforce it where `kid` is minted,
+   not by convention.**
+2. **The prefix MUST be derived, never persisted, never carried across a
+   session.** Re-derive from `SK` + `pairContext` on every session
+   construction. A persisted prefix is stale state that can survive a restore,
+   and it is the only way this design drifts back into the bug it just removed.
+   `lib/e2e/kdf.mjs` expresses this structurally: `trafficKeys()` hands each
+   direction its prefix alongside its key, so a caller has nothing to store.
+
+**Vectors: E, F, G, H in `tests/kdf-vectors.json`** (`noncePrefixes`,
+`aead.vectorF`, `aead.vectorG`, `noncePrefixes.negativeH`). Vector A keeps its
+explicit `sessionPrefixHex` and is unaffected — it is the "given a prefix, seal
+correctly" test. Vector F is the *same frame as A with exactly one input
+changed*, so a divergence localises immediately; G is the reverse direction,
+which proves the direction byte, the c2p key and the c2p prefix all move
+together; H is the negative that catches feeding the same label twice.
+
+#### 13.10.8 Addendum A3 — the pairContext channel (`ctx`)
+
+**RATIFIED (A), AMENDED, 2026-09-17T23:41Z.** §13.10.3 froze *what* the pair
+context is and never said *how the computer side learns it*. Three of its four
+fields are known only to the phone, so a browser and a phone of different
+implementations derive different traffic keys and **every sealed frame fails
+authentication** — with both loopbacks blind to it by construction, and every
+log line on every side reporting success. Non-exploitable (fail-closed, no key
+compromise) and a total availability break on the first real pair. A3 supplies a
+transport for a context §13 already froze; it reopens nothing.
+
+**Wire form.** On `ACCEPT_PAIRING` / `PAIRING_ACTIVE` / `PAIR_STATE.e2e`:
+
+```
+ctx = { pairingId, phoneDeviceId, peerDeviceId, pairEpoch }   // pairEpoch: DECIMAL STRING
+```
+
+`userId` is deliberately **not transmitted**. Each side uses its own
+authenticated session userId and a mismatch fails closed; transmitting it would
+let the relay propose an identity, and the derivation would then agree with the
+relay instead of with the session. Vector I.3 pins that one character of local
+`userId` yields total key divergence.
+
+`pairEpoch` is a **decimal string and MUST NOT become a JSON number**:
+`JSON.parse` yields a double and §13.10.3 already forbids `pairEpoch` rounding
+above 2^53. Receivers MUST parse with BigInt and **reject** anything not
+matching `^(0|[1-9][0-9]{0,19})$` or exceeding 2^64−1 — no `Number()`, no
+leading zeros, no sign, no whitespace.
+
+**`ctx` is what makes the SAS computable on the computer side at all.** The
+frozen §13.3 SAS is
+`HKDF(salt = pairingId, ikm = epk ‖ sort(pub_phone, pub_peer) ‖ pairEpoch,
+info = "cc-sas-v1")`, and before A3 the browser could not compute it because it
+lacked `pairEpoch`. SAS display was silently *unreachable* on P2/P3, not merely
+mis-derived.
+
+The SAS is also why `ctx` needs no separate integrity binding. `pairEpoch` and
+`pairingId` are **already inside the SAS**: a relay that edits either changes
+the digits on exactly one side and the user sees a mismatch.
+`phoneDeviceId`/`peerDeviceId` are not SAS-covered and do not need to be — they
+enter `pairContext`, hence the traffic keys, hence every frame, so editing them
+yields decryption failure on frame one. **There is no wrong-but-working key
+reachable by editing `ctx`:** every field is either SAS-visible or key-binding.
+All four fields stay — dropping `peerDeviceId` would let one device's context
+derive another's keys, and dropping `phoneDeviceId` would unbind the pair from
+the phone identity the whole pinning story rests on.
+
+**A3-M1 (MUST, relay, P1 delta).** `server.js`'s `derivePairState` slice is an
+explicit allowlist `{kid, epk, mode, recipKeys, wrap}`, so a `ctx` on the block
+was **silently dropped** — fixing the web page and leaving the extension service
+worker, the one recipient whose whole purpose is decrypting with the panel
+closed, exactly as broken. It MUST splice `ctx: block.ctx` into `state.e2e`
+alongside `wrap`, under the same `block && forWs.deviceId && mine` precondition.
+`ctx` is **pair-scoped, not device-scoped**: unlike `wrap`, every recipient gets
+the identical object. `ACCEPT_PAIRING → PAIRING_ACTIVE` and the resume path
+forward the block **whole** — `validateE2eBlock` has no key allowlist and
+returns `raw` verbatim — so those recipients already receive it, and the 4 KB
+block cap absorbs `ctx` (~140 B). **The relay remains a byte-carrier:** it does
+not parse, validate, default or mint `ctx`. A relay that parsed it would be a
+relay that could propose one, and a relay that rejected a malformed one would
+hand an attacker a way to deny a working pairing. M2–M4 below are all
+**receiver-side**.
+
+**A3-M2 (MUST, blocking, P2/P3/P4) — the epoch floor.** Each computer-side
+device persists a floor `lastPairEpoch[(userId, phoneDeviceId)]` and **MUST
+refuse any `ctx.pairEpoch <= floor`**, aborting the pair — never falling back to
+plaintext, never deriving. The floor is written **before** the derived keys are
+used to seal or unseal anything (persist-before-use, the same family as
+§13.10.5 rule 3 and for the same reason: a crash between use and persist must
+leave the floor ahead, not behind). First sight of a `phoneDeviceId` sets the
+floor with **no comparison** (TOFU, consistent with §13 device pinning). The
+floor is cleared **only** by an explicit user unpair / revoke / sign-out —
+**never by a value arriving on the wire**.
+
+Rationale: `pairEpoch` is phone-owned and monotonic (Accept bumps it, Reset /
+`RESET_ROOM` increments it). Without the floor, a relay that replays an old
+`ACCEPT_PAIRING` block re-installs a superseded `SK` under its old epoch, and
+A2's per-`(kid, direction)` counter restarts at 0 against a key *and prefix*
+that have already sealed frames — **GCM nonce reuse**, the one failure in this
+protocol whose cost is total. The floor is what makes A2 MUST#1 hold across a
+*replay* rather than only across an honest rekey. The SAS would also mismatch,
+but §13 makes the SAS explicitly non-blocking, so it cannot be the control here.
+
+**A3-M3 (MUST).** A receiver MUST refuse a block whose `ctx.peerDeviceId` is not
+its own `deviceId`, and — wherever it independently knows the value — whose
+`ctx.pairingId` differs from the pairingId it is party to. Both fail closed, no
+plaintext fallback.
+
+**A3-M4 (MUST).** A `mode=1` block arriving with **no `ctx`** MUST be refused,
+**not derived-from-local**. Deriving from a locally guessed context is precisely
+the silent divergence A3 exists to kill, and it would let a stripping relay
+force both sides into a guess.
+
+**Vector I in `tests/kdf-vectors.json`** (`ctxWire`). I.1 is the positive — wire
+`ctx` + local `userId` reproduces the frozen `contextBytesHex`, the frozen
+traffic keys and A2's prefixes, and A2 vector F's ciphertext opens under the key
+derived from it. I.2 is the epoch-drift replay case, I.3 the `userId`-drift
+case, I.4 the parser negatives. **P4 asserts I.1 through its *encode* path (it
+builds `ctx`), P2/P3 through their *decode* path** — that pairing is what makes
+the vector cross-implementation rather than two copies of one belief.
+
+**Where this lives.** `pairContextFromWire()` in `lib/e2e/kdf.mjs` is the ingest
+point for the web and service-worker lanes: it enforces the decimal-string
+parse, A3-M3 and A3-M4, and returns `pairEpoch` as a BigInt so the **caller**
+can apply the A3-M2 floor — which is deliberately not in the module, because the
+floor needs durable per-device storage the module does not have and must not
+invent. The relay's half is `derivePairState` in `server.js`, pinned by
+`tests/e2e-pair-state-ctx.test.mjs`.
