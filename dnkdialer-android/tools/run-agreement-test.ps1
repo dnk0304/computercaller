@@ -31,7 +31,8 @@ $classes = @(
     "$pkg.E2eSeqStoreTest",       # A1 acceptance: persist-before-emit / restore fails closed
     "$pkg.E2eSessionTest",        # A1 item 2: directional separation, dedupe, re-pair
     "$pkg.E2eAcceptTest",         # (d) the Accept handshake, multi-recipient
-    "$pkg.E2eLifecycleTest"       # (f) rotation on Reset / sign-out, reinstall
+    "$pkg.E2eLifecycleTest",      # (f) rotation on Reset / sign-out, reinstall
+    "$pkg.E2eFrozenKdfVectorsTest" # A1 vectors vs P0.2's FROZEN tests/kdf-vectors.json
 )
 
 Write-Host '== building app + test APKs =='
@@ -100,3 +101,4 @@ Write-Host "COUNTER FAIL-CLOSED: PASS"
 Write-Host "SESSION: PASS"
 Write-Host "ACCEPT: PASS"
 Write-Host "LIFECYCLE: PASS"
+Write-Host "FROZEN KDF VECTORS: PASS"
