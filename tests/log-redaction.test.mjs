@@ -163,15 +163,57 @@ check('4b: no msg.substring(0, 60) anywhere', !/msg\.substring\(0,\s*60\)/.test(
 check('4c: no msg.substring(0, 40) anywhere', !/msg\.substring\(0,\s*40\)/.test(code));
 check('4d: frameLabel is actually used at the print sites', (code.match(/frameLabel\(/g) || []).length >= 5);
 
-console.log('\n── 5. logNotifLifecycle stays PII-clean (verified, not assumed) ──');
-const notifFn = stripComments(extractFn('logNotifLifecycle'));
-// It parses the notification payload into `p`. Only booleans, the package name,
-// hashed keys and lengths may be printed — never p.title / p.text / p.body.
-for (const field of ['title', 'text', 'body', 'sender', 'address', 'number']) {
-  check(`5.${field}: never printed`, !new RegExp(`\$\{[^}]*\bp\.${field}\b(?![^}]*\.length)`).test(notifFn));
+console.log('\n── 5. NO payload-parsing notification logger exists on the relay ──');
+// CHANGED BY P1(d). This section used to verify that logNotifLifecycle stayed
+// PII-clean. That function is now DELETED (see the tombstone in server.js), so
+// the section it earned has been replaced by the stronger claim: the relay does
+// not parse notification payloads for logging AT ALL.
+//
+// The old assertions could not be kept — they inspected a function that no
+// longer exists — and must not simply be dropped either, because "there is
+// nothing left to check" is how a deleted safeguard quietly comes back. So the
+// check is inverted: absence of the function, and absence of any notification
+// payload field reaching a log line anywhere in the file.
+check('5.a: logNotifLifecycle is gone', !/function logNotifLifecycle\s*\(/.test(code));
+check('5.b: nothing calls it', !/logNotifLifecycle\s*\(/.test(code));
+check('5.c: its shortHash helper went with it', !/function shortHash\s*\(/.test(code));
+
+// The negative assertion P1(d) asks for: no NOTIFICATION_* / PHONE_NOTIFICATION
+// payload field is ever interpolated into a log line. Scoped to console.* calls,
+// because the rule is about what gets PRINTED — reading a payload to FORWARD it
+// is the relay's entire job and must not be flagged.
+const printedSites = (code.match(/console\.(log|error|warn)\(([\s\S]*?)\);/g) || []).join('\n');
+check('5.d: the print-site scan is not vacuous', printedSites.length > 500);
+for (const field of ['title', 'text', 'body', 'sender', 'address', 'number', 'packageName', 'notificationKey', 'replyKey']) {
+  check(`5.e.${field}: never reaches a log line`,
+    !new RegExp(String.raw`\$\{[^}]*\b(p|payload|parsed|notif)\.${field}\b`).test(printedSites));
 }
-check('5.replyText: only its LENGTH is printed', /textLen=\$\{\(p\.text \|\| ''\)\.length\}/.test(notifFn));
-check('5.key: notification key is hashed, never raw', /shortHash\(p\.notificationKey/.test(notifFn) && !/\$\{p\.notificationKey\}/.test(notifFn));
+// …and no log site parses a notification frame in the first place. A JSON.parse
+// of a NOTIFICATION_* / PHONE_NOTIFICATION slice is the shape the deleted
+// function had, and the shape any reintroduction would have.
+const NOTIF_PARSE = /JSON\.parse\(\s*msg\.slice\(\s*'(PHONE_NOTIFICATION|NOTIFICATION_[A-Z_]+)/;
+check('5.f: nothing JSON.parses a notification frame', !NOTIF_PARSE.test(code));
+
+// Controls. Every assertion above is an ABSENCE, and an absence proved with a
+// broken regex is vacuous — it would pass just as happily against a file that
+// logs a notification body. These prove the regexes can actually fire.
+{
+  const decoy = "console.log(`[Notif] title=${p.title} key=${p.notificationKey}`);";
+  const decoySites = (decoy.match(/console\.(log|error|warn)\(([\s\S]*?)\);/g) || []).join('\n');
+  check('5.control-1: the field scan catches a deliberate leak',
+    new RegExp(String.raw`\$\{[^}]*\b(p|payload|parsed|notif)\.title\b`).test(decoySites));
+  check('5.control-2: the parse scan catches a deliberate reintroduction',
+    NOTIF_PARSE.test("const p = JSON.parse(msg.slice('PHONE_NOTIFICATION:'.length));"));
+}
+
+// logNotifFrame is deliberately KEPT and must stay hash+length only. It is the
+// opt-in "did the frame arrive at all" tool — the one diagnostic that has to go
+// on working when the payload is sealed and unparseable.
+const frameFn = stripComments(extractFn('logNotifFrame'));
+check('5.g: logNotifFrame still exists (opt-in arrival diagnostics)', frameFn.length > 50);
+check('5.h: logNotifFrame does not parse the payload', !/JSON\.parse/.test(frameFn));
+check('5.i: logNotifFrame prints a hash and a length only',
+  /hash=/.test(frameFn) && /len=/.test(frameFn));
 
 console.log(`\n${fail === 0 ? 'OK' : 'FAIL'} log-redaction: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

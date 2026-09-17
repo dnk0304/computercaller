@@ -206,62 +206,35 @@ function logNotifFrame(token, direction, msg) {
   console.log(`[NotifDiag][${redactToken(token)}] ${direction} PHONE_NOTIFICATION hash=${hash} len=${payload.length}`);
 }
 
-/**
- * ALWAYS-ON, PII-safe notification + reply-path logging (2026-08-10).
- *
- * The duplicate diagnostic above is gated behind DEBUG_NOTIF_RELAY and records
- * only a hash and a length — which cannot answer the question Dennis's report
- * actually raised ("some notifications I could answer, others not"), because it
- * never records whether the notification carried a reply action, and it is off
- * in prod anyway.
- *
- * ⭐ `hasReply` is the discriminating field. A notification is replyable in the
- * web UI iff its PHONE_NOTIFICATION frame carried hasReply=true; the reply box
- * is gated on exactly that. Logging it per frame turns "some worked, some
- * didn't" from an anecdote into a table.
- *
- * PII line, held: package name and booleans only. NEVER title, body, or sender —
- * these frames carry 2FA codes and message text. The notification key is hashed,
- * not printed, since it can embed a phone number for some apps.
- */
-function logNotifLifecycle(token, direction, msg) {
-  if (typeof msg !== 'string') return;
-  try {
-    if (msg.startsWith('PHONE_NOTIFICATION:')) {
-      const p = JSON.parse(msg.slice('PHONE_NOTIFICATION:'.length));
-      console.log(
-        `[Notif][${redactToken(token)}] ${direction} pkg=${p.packageName || '?'} ` +
-        `hasReply=${p.hasReply === true} replyKeySet=${!!p.replyKey} key=${shortHash(p.notificationKey || '')}`,
-      );
-    } else if (msg.startsWith('NOTIFICATION_REPLY:')) {
-      const p = JSON.parse(msg.slice('NOTIFICATION_REPLY:'.length));
-      // Length only — never the text.
-      console.log(
-        `[Notif][${redactToken(token)}] REPLY_ATTEMPT key=${shortHash(p.notificationKey || '')} ` +
-        `replyKeySet=${!!p.replyKey} textLen=${(p.text || '').length}`,
-      );
-    } else if (msg.startsWith('NOTIFICATION_DISMISS:')) {
-      // Web→phone dismissal. Key hashed, same as everywhere else — it can
-      // embed a phone number. No other field exists on this frame.
-      const p = JSON.parse(msg.slice('NOTIFICATION_DISMISS:'.length));
-      console.log(`[Notif][${redactToken(token)}] DISMISS_REQUEST key=${shortHash(p.notificationKey || '')}`);
-    } else if (msg.startsWith('NOTIFICATION_REPLY_SENT:')) {
-      const p = JSON.parse(msg.slice('NOTIFICATION_REPLY_SENT:'.length));
-      console.log(`[Notif][${redactToken(token)}] REPLY_CONFIRMED key=${shortHash(p.notificationKey || '')}`);
-    } else if (msg.startsWith('NOTIFICATION_REPLY_FAILED:')) {
-      const p = JSON.parse(msg.slice('NOTIFICATION_REPLY_FAILED:'.length));
-      console.log(
-        `[Notif][${redactToken(token)}] REPLY_FAILED key=${shortHash(p.notificationKey || '')} reason=${p.reason || 'unknown'}`,
-      );
-    }
-  } catch { /* malformed frame — never let logging break the data plane */ }
-}
+// ---------------------------------------------------------------------------
+// REMOVED in P1(d): the always-on per-frame notification logger and its hash
+// helper (logNotifLifecycle / shortHash).
+//
+// It printed package name, hasReply, replyKeySet, a hashed notification key and
+// a reply TEXT LENGTH. It never printed a title, a body or a sender, and it was
+// written carefully. It is still gone, for two reasons that only P1 makes
+// decisive:
+//
+//   1. Under Encrypted mode the relay CANNOT parse these frames — the body is
+//      sealed — so every line it emitted would become a parse failure or, worse,
+//      a reason for someone to reach for the plaintext before it was sealed. A
+//      logger that only works when the encryption is off is a standing argument
+//      for turning the encryption off.
+//   2. Its remaining output was metadata about individual notifications on a
+//      user's phone, kept in container logs reachable from the Coolify panel.
+//      A reply length alone separates a six-digit OTP from a sentence. The
+//      product promise is that we cannot read these; keeping a per-notification
+//      log of them is in tension with that regardless of which fields it omits.
+//
+// logNotifFrame (DEBUG_NOTIF_RELAY, off in prod, hash + byte length only) is
+// deliberately KEPT: it is opt-in, it does not parse the payload, and it answers
+// "did this frame arrive at all" — which stays necessary, and stays answerable,
+// when the body is opaque.
+//
+// Do not reintroduce a payload-parsing logger on the relay data plane.
+// tests/log-redaction.test.mjs asserts its absence.
+// ---------------------------------------------------------------------------
 
-function shortHash(str) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
-  return (h >>> 0).toString(16).padStart(8, '0').slice(0, 6);
-}
 
 // Pairing-request TTL. The browser sends BROWSER_REQUEST_PAIRING and the
 // phone has this many ms to ACCEPT or DECLINE before we auto-cancel.
@@ -1465,13 +1438,11 @@ function startRelay(httpServer) {
   function forwardDataPlane(room, fromWs, msg) {
     if (fromWs === room.active.browser && room.active.phone) {
       logNotifFrame(room.token, 'browser→phone (active)', msg);
-      logNotifLifecycle(room.token, 'browser→phone', msg);
       safeSend(room.active.phone, msg);
       return true;
     }
     if (fromWs === room.active.phone && room.active.browser) {
       logNotifFrame(room.token, 'phone→browser (active)', msg);
-      logNotifLifecycle(room.token, 'phone→browser', msg);
       safeSend(room.active.browser, msg);
       return true;
     }
