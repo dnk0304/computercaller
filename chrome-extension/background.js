@@ -100,6 +100,10 @@ const PHONE_NOTIF_PREFIX = 'cc-notif';
 // would silently reset itself several times an hour.
 const UNREAD_KEY = 'cc_unread';
 const UNREAD_ZERO = { missedCalls: 0, newSms: 0, alerts: 0 };
+// Companion row to UNREAD_KEY: the notificationKeys behind the current
+// `alerts` count, so a phone-side dismissal can decrement exactly the bumps it
+// owns. See bumpAlert/dropAlert.
+const ALERT_KEYS = 'cc_alert_keys';
 /** Notification id → deep-link hash, so a click survives an SW restart. */
 const NOTIF_LINK_KEY = 'cc_notif_links';
 
@@ -418,6 +422,90 @@ function readUnread() {
   });
 }
 
+function writeSession(obj) {
+  return new Promise((r) => {
+    try { chrome.storage.session.set(obj, r); } catch { r(); }
+  });
+}
+
+/**
+ * The notificationKeys whose `alerts` bump is still standing.
+ *
+ * Kept in storage.session next to the counter rather than in a module-level
+ * Set: the worker is routinely evicted between a notification arriving and the
+ * phone-side dismissal that takes it back, and a decrement that lands on a
+ * respawned worker with an empty Set would be silently dropped — leaving the
+ * badge permanently one too high, which is the bug this exists to prevent.
+ */
+function readAlertKeys() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.session.get(ALERT_KEYS, (o) => {
+        const v = o && o[ALERT_KEYS];
+        resolve(Array.isArray(v) ? v.slice() : []);
+      });
+    } catch { resolve([]); }
+  });
+}
+
+/** The phone's identity for one notification, across the spellings the APK uses. */
+function notifKeyOf(data) {
+  if (!data || typeof data !== 'object') return '';
+  const k = data.notificationKey || data.key || data.id;
+  return typeof k === 'string' || typeof k === 'number' ? String(k) : '';
+}
+
+/**
+ * bumpUnread('alerts'), plus a record of WHICH notification the bump was for.
+ *
+ * Same serialize() queue and the same presence gate as bumpUnread, and the two
+ * writes go out as ONE storage.session.set: if the counter and the key set
+ * could be written separately an eviction between them would leave a count
+ * nothing can decrement, or a key that decrements a count it never raised.
+ */
+function bumpAlert(notificationKey) {
+  return serialize(async () => {
+    if (presenceCount > 0) return;
+    const cur = await readUnread();
+    const next = Object.assign({}, cur, { alerts: (cur.alerts || 0) + 1 });
+    const keys = await readAlertKeys();
+    if (notificationKey && keys.indexOf(notificationKey) === -1) keys.push(notificationKey);
+    // Bounded. A phone that posts hundreds of notifications behind a closed
+    // panel must not grow this row without limit; the oldest keys are the ones
+    // least likely to still be dismissible.
+    await writeSession({ [UNREAD_KEY]: next, [ALERT_KEYS]: keys.slice(-200) });
+    paintBadge(next);
+    broadcastUnread(next);
+  });
+}
+
+/**
+ * A notification was dismissed ON THE PHONE (NOTIFICATION_REMOVED). Take the
+ * `alerts` bump back — but ONLY if this exact key is one we actually counted.
+ *
+ * The guard is the whole point. A dismissal can arrive for a notification that
+ * was never counted here: it landed while the panel was open (bumpUnread's
+ * presence gate declined it), or it arrived as a v58 backfill replay, or its
+ * bump was already cleared by the user viewing the Alerts tab. Decrementing
+ * blind on any of those drives the badge below the number of things actually
+ * waiting — a badge that undercounts is worse than one that is merely stale,
+ * because it hides real messages.
+ */
+function dropAlert(notificationKey) {
+  if (!notificationKey) return Promise.resolve();
+  return serialize(async () => {
+    const keys = await readAlertKeys();
+    const i = keys.indexOf(notificationKey);
+    if (i === -1) return;            // never counted ⇒ badge unchanged
+    keys.splice(i, 1);
+    const cur = await readUnread();
+    const next = Object.assign({}, cur, { alerts: Math.max(0, (cur.alerts || 0) - 1) });
+    await writeSession({ [UNREAD_KEY]: next, [ALERT_KEYS]: keys });
+    paintBadge(next);
+    broadcastUnread(next);
+  });
+}
+
 function bumpUnread(key) {
   // Only while nothing is watching. A popup, pop-out or side panel that is open
   // IS the read receipt — counting behind it would show a badge for messages
@@ -448,9 +536,12 @@ function clearUnread(tab) {
     const cur = await readUnread();
     if (!cur[key]) return cur;
     const next = Object.assign({}, cur, { [key]: 0 });
-    await new Promise((r) => {
-      try { chrome.storage.session.set({ [UNREAD_KEY]: next }, r); } catch (_) { r(); }
-    });
+    // Zeroing `alerts` retires every bump behind it, so the key set has to go
+    // with it — otherwise a later phone-side dismissal would find its key
+    // still listed and decrement a count that is already 0.
+    const write = { [UNREAD_KEY]: next };
+    if (key === 'alerts') write[ALERT_KEYS] = [];
+    await writeSession(write);
     paintBadge(next);
     broadcastUnread(next);
     return next;
@@ -1001,7 +1092,17 @@ function handleFrame(msg) {
       return;
     }
     case 'PHONE_NOTIFICATION': {
-      bumpUnread('alerts');
+      // v58 BACKFILL. On sync the phone replays everything currently in its
+      // shade under this same frame type, tagged `backfill:true` with the
+      // original `postedAt`. That is history the user has already seen on the
+      // phone, so it reaches the Alerts list (the page merges it chronologically)
+      // and NOTHING else here: no toast, no badge bump, no sound. A toast per
+      // card for a shade of twenty would be a notification storm on every sync.
+      //
+      // Only an explicit `true` takes this path. Unknown or absent — every APK
+      // before v58 — falls through to today's live behaviour unchanged.
+      if (data && data.backfill === true) return;
+      bumpAlert(notifKeyOf(data));
       if (presenceCount > 0) return;
       // Mirror the phone's own notification. Respect an explicit opt-out flag if
       // the phone sends one; otherwise show it.
@@ -1025,6 +1126,15 @@ function handleFrame(msg) {
           : [{ title: 'Open ComputerCaller' }],
       });
       rememberLink(notifId, '#tab=alerts');
+      return;
+    }
+    case 'NOTIFICATION_REMOVED': {
+      // The user swiped it away on the phone (or the source app cancelled it).
+      // The page already drops the row (usePhoneBridge's NOTIFICATION_REMOVED
+      // case) — but only when a surface is OPEN, and the badge exists precisely
+      // for when none is. Without this, clearing your phone left the pinned
+      // icon showing a count of alerts that no longer exist anywhere.
+      dropAlert(notifKeyOf(data));
       return;
     }
     case 'CALL_ANSWERED':
@@ -1254,7 +1364,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     signedIn = false;
     clearRelayFacts();
     refreshIndicator();
-    try { chrome.storage.session.set({ [UNREAD_KEY]: { ...UNREAD_ZERO } }); } catch (_) {}
+    try { chrome.storage.session.set({ [UNREAD_KEY]: { ...UNREAD_ZERO }, [ALERT_KEYS]: [] }); } catch (_) {}
     // Signing out clears the counts, so it must clear the number on the icon
     // too — a stale "3" on a signed-out extension is a lie about someone's
     // messages.

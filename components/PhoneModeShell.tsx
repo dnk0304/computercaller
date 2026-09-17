@@ -1770,6 +1770,12 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
     if (!newest) return;
     if (newest.id === seenNewestIdRef.current) return;
     seenNewestIdRef.current = newest.id;
+    // v58 sync backfill: the phone replaying its shade. These are cards the
+    // user has already seen ON THE PHONE, and a sync can put one at the top of
+    // the list by postedAt — which is exactly the condition this effect reads
+    // as "something new arrived". Marking it seen (above) and returning here
+    // keeps the list fresh without a toast for history.
+    if (newest.backfill) return;
     // Don't toast if the user is already looking at the Bell tab or inside
     // a thread/compose (their context dominates the viewport).
     if (current.kind === 'bell' || current.kind === 'thread' || current.kind === 'compose') return;
