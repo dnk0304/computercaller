@@ -30,3 +30,8 @@ fi
 grep -q '"manifest_version"' "$EXT/manifest.json"   || { echo "ERROR: manifest.json missing manifest_version"; exit 1; }
 
 echo "check-extension: OK"
+
+# Guard (2026-09-17, dispatch forge/w-strip-email-literals): no personal email
+# or access-control env NAME may ship in the unpacked extension or any public
+# client bundle. See tools/check-no-identities.sh for the incident this closes.
+bash "$ROOT/tools/check-no-identities.sh"
