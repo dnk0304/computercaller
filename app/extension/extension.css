@@ -1245,14 +1245,14 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    an overflow to hide. */
 .cc-ext .cc-ext-header .cc-ext-conn { min-width: auto; }
 
-/* ...and the lockup is the item that resolves it, which is Dennis's own rule
-   in addendum (a): "if it cannot fit, wordmark shrinks before anything
-   wraps". The MARK is pinned; the wordmark carries an aspect-ratio (see
-   CcLockup) so it scales rather than squashes; the floor stops it from
-   vanishing entirely in a panel narrower than this product supports. Every
-   other item in the row keeps every pixel it had. */
-.cc-ext .cc-ext-header .cc-ext-lockup { flex: 0 1 auto; min-width: 72px; }
-.cc-ext .cc-ext-header .cc-ext-lockup > svg { flex-shrink: 0; }
+/* ...and the brand slot is no longer what resolves it. PIXEL-S2 (a) dropped
+   the wordmark from this header (Chrome's own title strip carries the name),
+   so the slot is now a bare 18px mark - ~35px wide, fixed, and never the
+   thing that has to give. The old `flex: 0 1 auto; min-width: 72px` existed
+   to let the wordmark shrink before anything wrapped; with no wordmark to
+   shrink, a shrinkable brand slot would only squash the mark. It is pinned
+   instead, and the ~37px it hands back go to the pill, which truncates. */
+.cc-ext .cc-ext-header .cc-ext-lockup { flex: 0 0 auto; }
 
 /* ---- hit targets ------------------------------------------------------- */
 /* Header controls never get SMALLER as the type grows. The floor is stated

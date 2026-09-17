@@ -13,7 +13,7 @@
  *
  *   surface="extension" — the Chrome extension's hosted /extension route.
  *                       One 40px row at 0.8× density:
- *                         [CC mark 18px] [ComputerCaller] [device pill] ⋯ [⤢] [avatar]
+ *                         [CC mark 18px] [device pill] ⋯ [⤢] [avatar]
  *                       · CC green→blue gradient mark (was blue→indigo, a
  *                         different brand from the extension shell's sign-in
  *                         mark — they now agree).
@@ -37,6 +37,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings, PanelRight, Monitor, Sun, Moon, Type } from 'lucide-react';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { CcLockup } from '@/components/CcLockup';
+import { CcMark } from '@/components/CcMark';
 import { usePhoneMode } from '@/hooks';
 import {
   useExtensionShell,
@@ -148,34 +149,38 @@ function ExtensionHeader() {
       className="cc-ext-header sticky top-0 z-30 flex h-10 flex-shrink-0 items-center gap-1.5 border-b border-slate-200 bg-white px-2"
       role="banner"
     >
-      {/* THE FULL LOCKUP IS BACK (dispatch PIXEL-S addendum (a)+(d), Dennis
-          2026-09-17 10:45: "i see u inserted our icon there, but its not got
-          the ComputerCaller text like the app logo we use for the android
-          app", and 10:50: "I want to use the exact same text, font and color
-          like we have inside the android app icon").
+      {/* THE MARK ALONE — NO WORDMARK (dispatch PIXEL-S2 (a), Dennis
+          2026-09-17 13:26: "We now have duplicate title text showing twice. In
+          the header, remove the 'computer caller' text which is white and
+          blue.")
 
-          THIS REVERSES PIXEL-Q. That dispatch removed the wordmark on
-          Dennis's own 09:34 instruction ("We now have computercaller x2 on
-          top, its enough with the top bar") — the reasoning was that Chrome's
-          own title strip already says the name 20px above, so the in-panel
-          lockup was the same five syllables twice for ~79px of a row AC-1 was
-          raised about. Dennis has now looked at the result and wants the
-          lockup; his order wins, and the width it costs is measured at 360px
-          × Large in scripts/ext-text-size-proof.mjs.
+          REVERSAL CHAIN — read this before touching the line below:
+            PIXEL-Q  removed the wordmark (Dennis 09-16, "we now have
+                     computercaller x2 on top, its enough with the top bar")
+            PIXEL-S  restored the full lockup (Dennis 09-17 10:45, "its not got
+                     the ComputerCaller text like the app logo")
+            PIXEL-S2 removes it again (Dennis 09-17 13:26) — and this time the
+                     reason is structural rather than a preference: Chrome's own
+                     title strip above the panel now reads "Computer Caller"
+                     (manifest `name`, deliverable (d)), so the in-panel wordmark
+                     is the product name twice inside 20 vertical px. The name is
+                     still on screen; it is just no longer OUR pixels saying it.
+          Do not re-add <CcLockup> here without a newer instruction than 13:26.
 
-          <CcLockup layout="inline"> is Pixel-O's CUT ARTWORK, not a
-          re-typesetting: the same PNG the Android launcher icon is cut from,
-          two-tone inks and all, tone-swapped for dark by the same
-          data-cc-theme gate as the rest of this surface. Addendum (d) asked
-          for exactly that and explicitly not for a web font.
+          <CcMark> is the same artwork the lockup's mark half is cut from —
+          public/brand/official/cc-mark.png — so nothing about the logo changes
+          except that the letters beside it are gone. It carries NO accessible
+          name on purpose: ConnectionStatus speaks the state, Chrome's own strip
+          and the document <title> carry the product name, and an alt text that
+          repeats a name already two rows up is noise in a screen reader.
 
-          SIZE IS PINNED AT 18 and does NOT follow the text-size picker. The
-          header's width budget is the scarcest thing on this surface; keeping
-          the one fixed-width object fixed means Small, Medium and Large all
-          spend the same pixels on the brand and only ConnectionStatus (which
-          truncates) absorbs the difference. That is why the wordmark never
-          has to shrink at 360px × Large. */}
-      <CcLockup size={18} layout="inline" title="ComputerCaller" className="cc-ext-lockup" />
+          SIZE 18 IS PINNED and does not follow the text-size picker, for the
+          same reason the lockup's was: one fixed-width object in the row means
+          Small/Medium/Large all spend the same pixels on the brand and only
+          ConnectionStatus (which truncates) absorbs the difference. Dropping
+          the wordmark hands ~79px back to that pill at 360px x Large, so the
+          ext-text-size-proof overflow assertions get easier, not harder. */}
+      <CcMark size={18} className="cc-ext-lockup" />
 
       {/* min-w-0 is what lets the pill's truncate actually engage — and the
           `cc-ext-conn` hook is what lets it engage one level DOWN as well.
