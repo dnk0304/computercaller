@@ -730,6 +730,21 @@ if (WEB) {
     'devicekey-authz'];
   /** P0 DELIVERS these; BASE_SHA predates them. Only --baseline may excuse them. */
   const P0_NEW = new Set(['session-superseded', 'devicekey-authz']);
+  /**
+   * Suites that genuinely need the harness DATABASE_URL.
+   *
+   * The relay suites run under a SCRUBBED env on purpose — the P0 baseline run
+   * found `.env.local` leaking into tests/www-origin and producing four false
+   * FAILs. That scrub is correct and stays. But it means a DB-backed suite gets
+   * no DATABASE_URL and refuses to start, which is what devicekey-authz did on
+   * the first P1 run: "DATABASE_URL is required".
+   *
+   * So the DB URL is passed back EXPLICITLY, to the named suites only — exactly
+   * the pattern step 9 already uses for the harnesses. Explicit beats widening
+   * the scrub: the suites that must not see the ambient environment still
+   * cannot, and the one that needs a database says so by name.
+   */
+  const DB_BACKED = new Set(['devicekey-authz']);
   for (const base of RELAY) {
     const rel = resolveIn('tests', base);
     if (!rel) {
@@ -737,7 +752,8 @@ if (WEB) {
       else record(`relay:${base}`, `node tests/${base}`, 1, 0, { missing: 1 });
       continue;
     }
-    run(`relay:${base}`, `node ${rel}`, { parse: passLine, scrub: true });
+    const env = DB_BACKED.has(base) ? { DATABASE_URL: process.env.DATABASE_URL || '' } : {};
+    run(`relay:${base}`, `node ${rel}`, { parse: passLine, scrub: true, env });
   }
   for (const f of existsSync(join(ROOT, 'tests')) ? readdirSync(join(ROOT, 'tests')) : []) {
     if (/^e2e-.*\.test\.mjs$/.test(f)) run(`relay:${f}`, `node tests/${f}`, { parse: passLine, scrub: true });
