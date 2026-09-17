@@ -29,7 +29,8 @@ $classes = @(
     "$pkg.E2eKeyAgreementTest",   # P-256 ECDH on both backends
     "$pkg.E2eSasVectorsTest",     # the frozen SAS vs P1's tests/sas-vectors.json
     "$pkg.E2eSeqStoreTest",       # A1 acceptance: persist-before-emit / restore fails closed
-    "$pkg.E2eSessionTest"         # A1 item 2: directional separation, dedupe, re-pair
+    "$pkg.E2eSessionTest",        # A1 item 2: directional separation, dedupe, re-pair
+    "$pkg.E2eAcceptTest"          # (d) the Accept handshake, multi-recipient
 )
 
 Write-Host '== building app + test APKs =='
@@ -96,3 +97,4 @@ Write-Host "KEY AGREEMENT: PASS (API $api)"
 Write-Host "SAS VECTORS: PASS"
 Write-Host "COUNTER FAIL-CLOSED: PASS"
 Write-Host "SESSION: PASS"
+Write-Host "ACCEPT: PASS"
