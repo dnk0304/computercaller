@@ -84,14 +84,20 @@ export function EncryptionChip({ compact = false }: { compact?: boolean }) {
 
   return (
     <span
-      className={`cc-e2e-surface inline-flex min-w-0 items-center gap-1 ${toneInk[indicator.tone]}`}
+      // flex-shrink-0, and it is a fix rather than a default: inside the
+      // header's `min-w-0 flex-1` slot the chip was being squeezed by the
+      // connection pill and rendered as "Not encry…". A truncated security
+      // label is worse than no label — "Not encry…" and "Encrypted" share a
+      // prefix at a glance. The pill beside it already truncates a device NAME,
+      // which is the right thing to sacrifice first; these three words are not.
+      className={`cc-e2e-surface inline-flex flex-shrink-0 items-center gap-1 whitespace-nowrap ${toneInk[indicator.tone]}`}
       data-cc-e2e-chip={indicator.tone}
       data-cc-e2e-label={indicator.label}
       title={indicator.detail}
     >
       <Glyph className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
       {!compact && (
-        <span className="truncate text-[11px] font-medium">{indicator.label}</span>
+        <span className="text-[11px] font-medium">{indicator.label}</span>
       )}
       <span className="sr-only">{indicator.detail}</span>
     </span>

@@ -107,12 +107,12 @@ export function EncryptedModeToggle({ variant = 'row', email = null }: Encrypted
               <SwitchTrack checked={mode === 'on'} disabled={!availability.enabled} small />
             </span>
             {availability.reason && (
-              <span id={descId} className="mt-0.5 block leading-snug text-slate-500">
+              <span id={descId} className="mt-0.5 block break-words pr-1 leading-snug text-slate-500">
                 {availability.reason}
               </span>
             )}
             {showRepairNotice && (
-              <span id={noticeId} className="mt-0.5 block leading-snug text-slate-500">
+              <span id={noticeId} className="mt-0.5 block break-words pr-1 leading-snug text-slate-500">
                 {SETTING_REPAIR_NOTICE}
               </span>
             )}
@@ -124,18 +124,28 @@ export function EncryptedModeToggle({ variant = 'row', email = null }: Encrypted
 
   return (
     <div
-      className="rounded-2xl border border-slate-200 bg-white p-4"
+      className="rounded-2xl border border-slate-200 bg-white p-5"
       data-cc-e2e-toggle="row"
       data-cc-e2e-enabled={availability.enabled ? 'true' : 'false'}
       data-cc-e2e-reason={availability.reasonKey ?? ''}
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Lock className="h-4 w-4 flex-shrink-0 text-slate-500" aria-hidden="true" />
-            <h3 className="text-sm font-semibold text-slate-900">{SETTING_LABEL}</h3>
-          </div>
-          <p className="mt-1 max-w-[52ch] text-[13px] leading-relaxed text-slate-600">
+          {/* The tinted icon disc is the /app Settings page's own heading idiom
+              — Layout and Phone connection both use it. Matching it is not
+              decoration: a security setting that arrives styled differently
+              from the rows around it reads as bolted on, and the one control
+              that most needs to look native to the product is this one. */}
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <span
+              aria-hidden="true"
+              className="flex h-6 w-6 items-center justify-center rounded-lg bg-slate-100 text-slate-600"
+            >
+              <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+            {SETTING_LABEL}
+          </h3>
+          <p className="mt-1.5 max-w-[52ch] text-[13px] leading-relaxed text-slate-600">
             {SETTING_DESCRIPTION}
           </p>
           {availability.reason && (
