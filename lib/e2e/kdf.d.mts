@@ -50,9 +50,11 @@ export interface DirectionalKey {
   /** The raw 32 bytes. Exposed for tests/kdf-vectors.json; prefer `key`. */
   rawBytes: Uint8Array;
   key: CryptoKey;
+  /** A2's DERIVED 4-byte nonce prefix for this direction. Never persist it. */
+  sessionPrefix: Uint8Array;
 }
 
-/** A DirectionalKey bound to its per-(kid,direction) random nonce prefix. */
+/** A DirectionalKey bound to its per-direction DERIVED nonce prefix (A2). */
 export interface Endpoint extends Partial<DirectionalKey> {
   direction: Direction;
   sessionPrefix: Bytes;
@@ -68,6 +70,9 @@ export declare const LABEL_PREFIX: string;
 export declare const LABEL_KEK: string;
 export declare const LABEL_P2C: string;
 export declare const LABEL_C2P: string;
+/** A2 — the derived nonce-prefix labels. */
+export declare const LABEL_NP2C: string;
+export declare const LABEL_NC2P: string;
 
 export declare const TAG_USER_ID: number;
 export declare const TAG_PHONE_DEVICE_ID: number;
@@ -110,6 +115,56 @@ export declare function hkdf32(
   input: { salt: string; ikm: Bytes; info: Uint8Array },
   subtle?: SubtleCrypto,
 ): Promise<Uint8Array>;
+
+/** HKDF-SHA-256 → `length` bytes. A2's prefixes are a LENGTH, not a truncation. */
+export declare function hkdfBytes(
+  input: { salt: string; ikm: Bytes; info: Uint8Array; length?: number },
+  subtle?: SubtleCrypto,
+): Promise<Uint8Array>;
+
+/** "cc-e2e-v1/np2c" ‖ pairContext, or the /nc2p label. */
+export declare function noncePrefixInfo(context: ContextLike, direction: Direction): Uint8Array;
+
+/**
+ * The two 4-byte nonce prefixes (A2). DERIVED, never transmitted, never
+ * persisted — re-derive on every session construction. They contribute ZERO
+ * nonce-uniqueness; the persist-before-emit counter is the sole control.
+ */
+export declare function deriveNoncePrefixes(
+  input: { pairingId: string; sessionKey: Bytes; context: ContextLike },
+  subtle?: SubtleCrypto,
+): Promise<{ np2c: Uint8Array; nc2p: Uint8Array }>;
+
+/** The A3 `ctx` wire object. `pairEpoch` is a DECIMAL STRING, never a number. */
+export interface PairContextWire {
+  pairingId: string;
+  phoneDeviceId: string;
+  peerDeviceId: string;
+  pairEpoch: string;
+}
+
+export interface ResolvedPairContext {
+  contextBytes: Uint8Array;
+  pairingId: string;
+  phoneDeviceId: string;
+  peerDeviceId: string;
+  /** BigInt, for the A3-M2 epoch-floor comparison the CALLER owns. */
+  pairEpoch: bigint;
+}
+
+export declare const PAIR_EPOCH_WIRE_RE: RegExp;
+export declare const MAX_UINT64: bigint;
+
+/**
+ * A3 — wire ctx + the LOCAL session userId → the pair context. Throws on an
+ * absent ctx (A3-M4), on any pairEpoch that is not a bare decimal string, and
+ * on a peerDeviceId/pairingId that is not this device's (A3-M3). The A3-M2
+ * epoch floor is the caller's: compare the returned `pairEpoch`.
+ */
+export declare function pairContextFromWire(
+  ctxWire: PairContextWire | unknown,
+  local: { userId: string; deviceId?: string | null; pairingId?: string | null },
+): ResolvedPairContext;
 
 /** KEK_i — the key that wraps the session key for ONE recipient. */
 export declare function kek(

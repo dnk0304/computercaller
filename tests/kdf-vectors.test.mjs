@@ -58,6 +58,9 @@ import { dirname, join } from 'node:path';
 import {
   pairContext, kekInfo, trafficInfo, kek, trafficKeys, nonce, aad, seal, open, createSender,
   toHex, fromHex, DIR_P2C, DIR_C2P, SESSION_PREFIX_BYTES, SEC1_P256_BYTES, MAX_PREFIXED_BYTES,
+  // A2 (derived nonce prefixes) and A3 (the ctx wire form).
+  noncePrefixInfo, deriveNoncePrefixes, hkdfBytes, pairContextFromWire,
+  LABEL_NP2C, LABEL_NC2P, PAIR_EPOCH_WIRE_RE,
 } from '../lib/e2e/kdf.mjs';
 import { padPlaintext } from '../lib/e2e/padding.mjs';
 
@@ -286,6 +289,286 @@ eq('D: the vector names k_c2p', V.aead.crossDirection.keyHex, V.traffic.computer
   await throws('trafficKeys refuses an unknown role',
     () => trafficKeys({ pairingId: 'p', sessionKey: new Uint8Array(32).fill(1), context: CTX, role: 'relay' }),
     'role');
+}
+
+// ── 6a. (E/F/G/H) the DERIVED nonce prefixes — GATE1 Addendum A2 ───────────
+// A1 specified a "random per (kid,direction)" prefix, which the frozen frame
+// has no field to carry: undecryptable as written. A2 ratifies deriving it
+// instead, the way TLS 1.3 derives its record IV and never transmits it.
+//
+// Vector F is the SAME frame as vector A with exactly ONE input changed — the
+// prefix — so a divergence localises immediately. Vector A keeps its explicit
+// prefix and is the "given a prefix, seal correctly" test; F is the "derive the
+// prefix correctly" test. Both are needed.
+const NP = V.noncePrefixes;
+{
+  eq('E: infoNp2cHex', toHex(noncePrefixInfo(CTX, DIR_P2C)), NP.infoNp2cHex);
+  eq('E: infoNc2pHex', toHex(noncePrefixInfo(CTX, DIR_C2P)), NP.infoNc2pHex);
+  eq('E: the labels are the ones the vectors were derived under',
+    `${LABEL_NP2C}|${LABEL_NC2P}`,
+    `${V.labels.noncePrefixP2c}|${V.labels.noncePrefixC2p}`);
+
+  const { np2c, nc2p } = await deriveNoncePrefixes({
+    pairingId: CTX_INPUT.pairingId, sessionKey: fromHex(V.traffic.sessionKeyHex), context: CTX,
+  });
+  eq('E: np2cHex', toHex(np2c), NP.np2cHex);
+  eq('E: nc2pHex', toHex(nc2p), NP.nc2pHex);
+  eq('E: a prefix is 4 bytes', np2c.length, NP.lengthBytes);
+  eq('E: …and that is SESSION_PREFIX_BYTES', np2c.length, SESSION_PREFIX_BYTES);
+
+  // Independently, through node:crypto — the same cross-check the keys get.
+  eq('E: np2c (node:crypto, independent)',
+    independentHkdf(V.traffic.sessionKeyHex, NP.infoNp2cHex).slice(0, 8), NP.np2cHex);
+  // A2: "L = 4" and "expand 32 then truncate to 4" are the same bytes, because
+  // HKDF-Expand emits T(1) first. Asserted so an implementation that did it the
+  // other way is KNOWN conformant rather than assumed to be.
+  eq('E: L=4 and truncate-32-to-4 are the same bytes',
+    toHex(await hkdfBytes({
+      salt: CTX_INPUT.pairingId, ikm: fromHex(V.traffic.sessionKeyHex),
+      info: noncePrefixInfo(CTX, DIR_P2C), length: 32,
+    })).slice(0, 8), NP.np2cHex);
+
+  // H — the negative. A2's derivation cannot produce equal prefixes for distinct
+  // labels; an implementation that fed the SAME label twice would, and that is a
+  // one-character typo that nothing else here would catch.
+  check('H: np2c !== nc2p', toHex(np2c) !== toHex(nc2p));
+  check('H: neither prefix is all-zero',
+    !np2c.every((b) => b === 0) && !nc2p.every((b) => b === 0));
+  check('H: the vector declares both requirements',
+    NP.negativeH.mustDiffer === true && NP.negativeH.mustNotBeAllZero === true);
+  // The prefix is a function of the CONTEXT too, not only the label: a wrong
+  // epoch changes it. That is what makes I.2's replay case fail on the nonce as
+  // well as on the key.
+  const otherEpoch = await deriveNoncePrefixes({
+    pairingId: CTX_INPUT.pairingId,
+    sessionKey: fromHex(V.traffic.sessionKeyHex),
+    context: pairContext({ ...CTX_INPUT, pairEpoch: CTX_INPUT.pairEpoch + 1 }),
+  });
+  check('H: a different pairEpoch yields a different prefix', toHex(otherEpoch.np2c) !== toHex(np2c));
+
+  // A2 MUST#2, expressed structurally: trafficKeys() hands the prefix out with
+  // the key it belongs to, so a caller has nothing to persist and nothing stale
+  // to restore. A prefix that arrived from storage is the one way this design
+  // drifts back into the bug A2 just removed.
+  eq('A2 MUST#2: trafficKeys attaches the DERIVED p2c prefix to the phone\'s send key',
+    toHex(phoneKeys.send.sessionPrefix), NP.np2cHex);
+  eq('A2 MUST#2: …and the c2p prefix to its receive key',
+    toHex(phoneKeys.recv.sessionPrefix), NP.nc2pHex);
+  eq('A2 MUST#2: the computer sees the mirror image on send',
+    toHex(computerKeys.send.sessionPrefix), NP.nc2pHex);
+  eq('A2 MUST#2: …and on recv', toHex(computerKeys.recv.sessionPrefix), NP.np2cHex);
+
+  // F and G — the full frames under the derived prefixes.
+  for (const [label, Vec, keys] of [['F', V.aead.vectorF, phoneKeys], ['G', V.aead.vectorG, computerKeys]]) {
+    eq(`${label}: keyHex is the vector file's own traffic key`, Vec.keyHex, toHex(keys.send.rawBytes));
+    eq(`${label}: the prefix is the DERIVED one`, Vec.noncePrefixHex, toHex(keys.send.sessionPrefix));
+    eq(`${label}: nonceHex is prefix || be64(seq)`,
+      toHex(nonce(keys.send.sessionPrefix, Vec.seq)), Vec.nonceHex);
+    eq(`${label}: aadHex`, toHex(aad({
+      frameType: Vec.frameType, kid: Vec.kid, seq: Vec.seq, direction: keys.send.direction, pairEpoch: Vec.pairEpoch,
+    })), Vec.aadHex);
+    eq(`${label}: the direction byte matches the vector`, keys.send.direction, Vec.direction);
+    const ct = await seal({
+      sender: keys.send, frameType: Vec.frameType, kid: Vec.kid, seq: Vec.seq, pairEpoch: Vec.pairEpoch,
+      plaintext: new TextEncoder().encode(Vec.plaintextUtf8),
+    });
+    eq(`${label}: ciphertextHex`, toHex(ct), Vec.ciphertextHex);
+    eq(`${label}: 80 bytes = 64 ciphertext || 16 tag`, ct.length, Vec.ciphertextBytes);
+    // …and it opens on the OTHER side's receive half, which is the half that
+    // proves key, prefix and direction all move together.
+    const other = keys === phoneKeys ? computerKeys : phoneKeys;
+    const opened = await open({
+      receiver: other.recv, frameType: Vec.frameType, kid: Vec.kid, seq: Vec.seq,
+      pairEpoch: Vec.pairEpoch, ciphertext: fromHex(Vec.ciphertextHex),
+    });
+    eq(`${label}: round-trips to the original plaintext`, new TextDecoder().decode(opened), Vec.plaintextUtf8);
+  }
+  // F and G differ in EVERY direction-carried input, which is the claim: an
+  // implementation that flipped the AAD byte but kept the p2c key or the p2c
+  // prefix passes F and fails only here.
+  check('G: the c2p frame shares nothing with the p2c frame but the plaintext',
+    V.aead.vectorF.keyHex !== V.aead.vectorG.keyHex
+    && V.aead.vectorF.noncePrefixHex !== V.aead.vectorG.noncePrefixHex
+    && V.aead.vectorF.aadHex !== V.aead.vectorG.aadHex
+    && V.aead.vectorF.ciphertextHex !== V.aead.vectorG.ciphertextHex
+    && V.aead.vectorF.paddedPlaintextHex === V.aead.vectorG.paddedPlaintextHex);
+  // A and F differ in EXACTLY one input — that is what makes F a localiser.
+  eq('F: the AAD is byte-identical to vector A\'s', V.aead.vectorF.aadHex, A.aadHex);
+  eq('F: …and the padded plaintext too', V.aead.vectorF.paddedPlaintextHex, A.paddedPlaintextHex);
+  check('F: only the prefix differs from A', V.aead.vectorF.noncePrefixHex !== A.sessionPrefixHex);
+  check('F: …so the ciphertexts differ', V.aead.vectorF.ciphertextHex !== A.ciphertextHex);
+}
+
+// ── 6b. (I) ctx from the wire + the LOCAL userId — GATE1 Addendum A3 ───────
+// The assertion is one sentence: wire ctx + local userId == the frozen local
+// context, byte for byte. Everything else in this block is a way of proving
+// that the fields which are NOT on the wire, and the parse of the one field
+// whose encoding is unusual, are load-bearing rather than decorative.
+{
+  const W = V.ctxWire;
+  const I1 = W.positiveI1;
+
+  const r = pairContextFromWire(I1.ctxWire, { userId: I1.localUserId });
+  eq('I.1: wire ctx + local userId reproduces the FROZEN context bytes',
+    toHex(r.contextBytes), I1.contextBytesHex);
+  eq('I.1: …which is this file\'s own contextBytesHex', I1.contextBytesHex, V.contextBytesHex);
+  eq('I.1: pairEpoch is parsed as a BigInt, not a Number', typeof r.pairEpoch, 'bigint');
+  eq('I.1: …with the right value', r.pairEpoch, 42n);
+
+  const wireKeys = await trafficKeys({
+    pairingId: I1.ctxWire.pairingId, sessionKey: fromHex(V.traffic.sessionKeyHex),
+    context: r.contextBytes, role: 'phone',
+  });
+  eq('I.1: k_p2c from the wire ctx', toHex(wireKeys.send.rawBytes), I1.phoneToComputerKeyHex);
+  eq('I.1: k_c2p from the wire ctx', toHex(wireKeys.recv.rawBytes), I1.computerToPhoneKeyHex);
+  eq('I.1: …and they are the file\'s frozen traffic keys',
+    `${I1.phoneToComputerKeyHex}|${I1.computerToPhoneKeyHex}`,
+    `${V.traffic.phoneToComputerKeyHex}|${V.traffic.computerToPhoneKeyHex}`);
+  eq('I.1: np2c from the wire ctx', toHex(wireKeys.send.sessionPrefix), I1.np2cHex);
+  eq('I.1: nc2p from the wire ctx', toHex(wireKeys.recv.sessionPrefix), I1.nc2pHex);
+  eq('I.1: …and they are A2 vector E\'s', `${I1.np2cHex}|${I1.nc2pHex}`, `${NP.np2cHex}|${NP.nc2pHex}`);
+
+  // THE cross-implementation assertion: a ciphertext Security produced opens
+  // under a key this lane derived from the WIRE form. P4 asserts I.1 through
+  // its encode path (it builds ctx); P2/P3 through their decode path. That
+  // pairing is what makes the vector cross-implementation rather than two
+  // copies of one belief.
+  check('I.1: the vector declares it opens A2 vector F', I1.opensVectorF === true);
+  const openedF = await open({
+    // rawBytes, not the CryptoKey: trafficKeys imports the send half with
+    // ['encrypt'] usage only, so open() must import its own decrypt key.
+    receiver: { direction: DIR_P2C, rawBytes: wireKeys.send.rawBytes, sessionPrefix: wireKeys.send.sessionPrefix },
+    frameType: V.aead.vectorF.frameType, kid: V.aead.vectorF.kid, seq: V.aead.vectorF.seq,
+    pairEpoch: V.aead.vectorF.pairEpoch, ciphertext: fromHex(V.aead.vectorF.ciphertextHex),
+  });
+  eq('I.1: A2 vector F opens under the WIRE-derived key and prefix',
+    toHex(padPlaintext(V.aead.vectorF.frameType, openedF)), I1.openedPlaintextHex);
+
+  // I.2 — epoch drift. The A3-M2 replay case: a relay that replays an old
+  // ACCEPT_PAIRING re-installs a superseded SK under its old epoch, and the
+  // per-(kid,direction) counter restarts at 0 against a key and prefix that
+  // have already sealed frames. That is GCM nonce reuse, the one failure in
+  // this protocol whose cost is total.
+  const I2 = W.negativeI2EpochDrift;
+  const r2 = pairContextFromWire({ ...I1.ctxWire, pairEpoch: I2.pairEpoch }, { userId: I1.localUserId });
+  eq('I.2: one epoch changes the context bytes', toHex(r2.contextBytes), I2.contextBytesHex);
+  check('I.2: …in exactly the last byte',
+    I2.contextBytesHex.slice(0, -2) === I1.contextBytesHex.slice(0, -2)
+    && I2.contextBytesHex.slice(-2) !== I1.contextBytesHex.slice(-2));
+  const k2 = await trafficKeys({
+    pairingId: I1.ctxWire.pairingId, sessionKey: fromHex(V.traffic.sessionKeyHex),
+    context: r2.contextBytes, role: 'phone',
+  });
+  eq('I.2: k_p2c under the drifted epoch', toHex(k2.send.rawBytes), I2.phoneToComputerKeyHex);
+  eq('I.2: np2c under the drifted epoch', toHex(k2.send.sessionPrefix), I2.np2cHex);
+  check('I.2: the vector declares F must NOT open', I2.opensVectorF === false);
+  await throws('I.2: A2 vector F FAILS authentication under the drifted epoch', () => open({
+    receiver: { direction: DIR_P2C, rawBytes: k2.send.rawBytes, sessionPrefix: k2.send.sessionPrefix },
+    frameType: V.aead.vectorF.frameType, kid: V.aead.vectorF.kid, seq: V.aead.vectorF.seq,
+    pairEpoch: V.aead.vectorF.pairEpoch, ciphertext: fromHex(V.aead.vectorF.ciphertextHex),
+  }));
+
+  // I.3 — the un-transmitted field is load-bearing. One character of LOCAL
+  // session identity, and the keys diverge completely. This is the whole reason
+  // userId is not on the wire: transmitting it would let the relay propose an
+  // identity, and the derivation would agree with the relay instead of with the
+  // authenticated session.
+  const I3 = W.negativeI3UserIdDrift;
+  const r3 = pairContextFromWire(I1.ctxWire, { userId: I3.localUserId });
+  const k3 = await trafficKeys({
+    pairingId: I1.ctxWire.pairingId, sessionKey: fromHex(V.traffic.sessionKeyHex),
+    context: r3.contextBytes, role: 'phone',
+  });
+  eq('I.3: a one-character local userId drift changes k_p2c',
+    toHex(k3.send.rawBytes), I3.phoneToComputerKeyHex);
+  check('I.3: …to something completely different from I.1',
+    I3.phoneToComputerKeyHex !== I1.phoneToComputerKeyHex && I3.mustDifferFromI1 === true);
+  check('I.3: the wire ctx was byte-identical — only the LOCAL field moved',
+    JSON.stringify(I1.ctxWire) === JSON.stringify(I1.ctxWire)
+    && I1.localUserId !== I3.localUserId);
+
+  // I.4 — every one of these MUST throw at ingest, never coerce. Each is a
+  // value that would otherwise turn into a plausible-looking epoch and derive a
+  // key nobody else holds.
+  const I4 = W.negativeI4Parser;
+  for (const bad of I4.badPairEpoch) {
+    await throws(`I.4: pairEpoch ${JSON.stringify(bad)} is refused`,
+      () => pairContextFromWire({ ...I1.ctxWire, pairEpoch: bad }, { userId: I1.localUserId }),
+      'pairEpoch');
+  }
+  check('I.4: the JSON-number case really is a number', typeof I4.badPairEpoch[0] === 'number');
+  // The regex is A3's, character for character. A looser one (say `^[0-9]+$`)
+  // would accept "042" and " 42" is only excluded by the anchors — so the
+  // pattern itself is pinned, not merely its effect on this sample.
+  eq('I.4: the epoch pattern is A3\'s, exactly',
+    String(PAIR_EPOCH_WIRE_RE), '/^(0|[1-9][0-9]{0,19})$/');
+  {
+    const { pairEpoch, ...noEpoch } = I1.ctxWire;
+    await throws('I.4: an absent pairEpoch is refused',
+      () => pairContextFromWire(noEpoch, { userId: I1.localUserId }), 'pairEpoch');
+    check('I.4: the vector declares the missing-epoch case', I4.missingPairEpoch === true);
+  }
+  // A3-M4: no ctx at all on a mode=1 block. Refusing is the whole point —
+  // deriving from a locally guessed context is precisely the silent divergence
+  // A3 exists to kill, and it would let a STRIPPING relay force both sides into
+  // a guess. The error must name A3-M4 so nobody "fixes" it with a fallback.
+  check('I.4: the vector declares the missing-ctx case', I4.missingCtxOnMode1 === true);
+  for (const absent of [undefined, null]) {
+    await throws(`I.4: ctx ${String(absent)} on a mode=1 block is REFUSED, never derived from local`,
+      () => pairContextFromWire(absent, { userId: I1.localUserId }), 'A3-M4');
+  }
+  await throws('I.4: a ctx that is not an object is refused',
+    () => pairContextFromWire('nope', { userId: I1.localUserId }), 'object');
+  await throws('I.4: an array is not an object here either',
+    () => pairContextFromWire([], { userId: I1.localUserId }), 'object');
+
+  // A3-M3: peerDeviceId must be THIS device, and pairingId must be the pairing
+  // this device is party to wherever it independently knows the value.
+  await throws('I.4: a peerDeviceId that is not this device is refused (A3-M3)',
+    () => pairContextFromWire(
+      { ...I1.ctxWire, peerDeviceId: I4.peerDeviceIdMismatch.ctxPeerDeviceId },
+      { userId: I1.localUserId, deviceId: I4.peerDeviceIdMismatch.ownDeviceId },
+    ), 'A3-M3');
+  check('I.4 control: the MATCHING deviceId is accepted (the check is not a ban)',
+    toHex(pairContextFromWire(I1.ctxWire, {
+      userId: I1.localUserId, deviceId: I4.peerDeviceIdMismatch.ownDeviceId,
+    }).contextBytes) === I1.contextBytesHex);
+  await throws('I.4: a pairingId that is not ours is refused (A3-M3)',
+    () => pairContextFromWire(
+      { ...I1.ctxWire, pairingId: I4.pairingIdMismatch.ctxPairingId },
+      { userId: I1.localUserId, pairingId: I4.pairingIdMismatch.ownPairingId },
+    ), 'A3-M3');
+  check('I.4 control: the MATCHING pairingId is accepted',
+    pairContextFromWire(I1.ctxWire, {
+      userId: I1.localUserId, pairingId: I4.pairingIdMismatch.ownPairingId,
+    }).pairingId === I1.ctxWire.pairingId);
+
+  // A1's encode-time u8 cap, re-asserted on the DECODE side. A 256-byte id
+  // arriving from the wire must be refused, not truncated to `len & 0xff`.
+  const OVER = 'a'.repeat(I4.oversizeFieldBytes);
+  for (const f of I4.oversizeFields) {
+    if (f === 'userId') {
+      await throws(`I.4: a ${I4.oversizeFieldBytes}-byte LOCAL userId is refused at decode`,
+        () => pairContextFromWire(I1.ctxWire, { userId: OVER }), 'userId');
+    } else {
+      await throws(`I.4: a ${I4.oversizeFieldBytes}-byte ctx.${f} is refused at decode`,
+        () => pairContextFromWire({ ...I1.ctxWire, [f]: OVER }, { userId: I1.localUserId }), f);
+    }
+  }
+  // The local userId is never taken from the wire — an absent one must throw
+  // rather than fall back to anything the ctx happens to carry.
+  await throws('I.4: no LOCAL userId -> refuse (it is never read off the wire)',
+    () => pairContextFromWire(I1.ctxWire, {}), 'userId');
+  await throws('I.4: a ctx field that is not a string is refused',
+    () => pairContextFromWire({ ...I1.ctxWire, phoneDeviceId: 7 }, { userId: I1.localUserId }),
+    'phoneDeviceId');
+  // 2^64 is out of range; 2^64-1 is the largest legal epoch.
+  await throws('I.4: a pairEpoch above 2^64-1 is refused',
+    () => pairContextFromWire({ ...I1.ctxWire, pairEpoch: '18446744073709551616' }, { userId: I1.localUserId }),
+    '2^64');
+  check('I.4 control: 2^64-1 is accepted and does not round',
+    toHex(pairContextFromWire({ ...I1.ctxWire, pairEpoch: '18446744073709551615' }, { userId: I1.localUserId })
+      .contextBytes).endsWith('ffffffffffffffff'));
 }
 
 // ── 7. persist-before-emit / FAIL CLOSED (A1 (3)) ──────────────────────────

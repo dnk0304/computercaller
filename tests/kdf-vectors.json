@@ -21,7 +21,9 @@
   "labels": {
     "kek": "cc-e2e-v1/kek",
     "phoneToComputer": "cc-e2e-v1/p2c",
-    "computerToPhone": "cc-e2e-v1/c2p"
+    "computerToPhone": "cc-e2e-v1/c2p",
+    "noncePrefixP2c": "cc-e2e-v1/np2c",
+    "noncePrefixC2p": "cc-e2e-v1/nc2p"
   },
   "traffic": {
     "sessionKeyHex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
@@ -29,6 +31,78 @@
     "infoC2pHex": "63632d6532652d76312f633270110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
     "phoneToComputerKeyHex": "b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060",
     "computerToPhoneKeyHex": "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d"
+  },
+  "noncePrefixes": {
+    "_comment": "Vector E — GATE1 Addendum A2 (RATIFIED A, 2026-09-17T15:50Z). The 4-byte nonce prefix is DERIVED from SK and pairContext, exactly as TLS 1.3 derives its record IV (RFC 8446 s5.3) and never transmits it. It replaces the word 'random' in A1's nonce line, which described a value the frozen frame has no field to carry. Same context and sessionKeyHex as the blocks above; computed by Security in an independent HKDF implementation. L = 4 and 'expand 32 then truncate to 4' are the same bytes, but implementations SHOULD request L = 4 so the intent is not mistaken for a truncated key.",
+    "_warning": "The prefix contributes ZERO nonce-uniqueness. A2 withdraws A1's 'defence in depth against a state-restore bug' rationale: the prefix is a deterministic function of SK and pairEpoch, so within one epoch a restore reproduces it exactly. A1's persist-before-emit / fail-closed counter rule is the SOLE control against nonce reuse. It MUST also never be persisted — re-derive it on every session construction.",
+    "lengthBytes": 4,
+    "infoNp2cHex": "63632d6532652d76312f6e703263110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
+    "infoNc2pHex": "63632d6532652d76312f6e633270110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
+    "np2cHex": "6fa67348",
+    "nc2pHex": "4a786847",
+    "negativeH": {
+      "id": "H-prefixes-must-differ",
+      "_comment": "Vector H. np2c MUST NOT equal nc2p, and neither may be all-zero. A2's derivation cannot produce equal prefixes for distinct labels; an implementation that fed the same label twice would, and that is a one-character typo.",
+      "mustDiffer": true,
+      "mustNotBeAllZero": true
+    }
+  },
+  "ctxWire": {
+    "_comment": "Vector I — GATE1 Addendum A3 (RATIFIED A AMENDED, 2026-09-17T23:41Z). pairContext is derived from the ctx object carried on ACCEPT_PAIRING / PAIRING_ACTIVE / PAIR_STATE.e2e PLUS the receiver's OWN session userId. userId is deliberately NOT transmitted: each side uses its own authenticated identity and a mismatch fails closed, where transmitting it would let the relay propose an identity and the derivation would then agree with the relay instead of with the session. Computed by Security in an independent HKDF/GCM implementation (security/PROJECTS/computercaller/e2e/a3-vectors-verify.mjs).",
+    "_assertion": "wire ctx + local userId == the frozen local context, byte for byte. I.1's contextBytesHex is identical to this file's own contextBytesHex, and A2 vector F's ciphertext opens under the key and prefix derived from the wire form.",
+    "positiveI1": {
+      "id": "I1-wire-ctx-equals-local-context",
+      "ctxWire": {
+        "pairingId": "pair-7f3a9c21",
+        "phoneDeviceId": "dev-phone-01",
+        "peerDeviceId": "dev-web-01",
+        "pairEpoch": "42"
+      },
+      "pairEpochNote": "DECIMAL STRING, never a JSON number: JSON.parse yields a double and A1 forbids pairEpoch rounding above 2^53. Receivers MUST parse with BigInt and reject anything not matching ^(0|[1-9][0-9]{0,19})$ or exceeding 2^64-1 — no Number(), no leading zeros, no sign, no whitespace.",
+      "localUserId": "user-0191aa",
+      "contextBytesHex": "110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
+      "phoneToComputerKeyHex": "b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060",
+      "computerToPhoneKeyHex": "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d",
+      "np2cHex": "6fa67348",
+      "nc2pHex": "4a786847",
+      "opensVectorF": true,
+      "openedPlaintextHex": "00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "negativeI2EpochDrift": {
+      "id": "I2-epoch-43-must-not-open-F",
+      "_comment": "The A3-M2 replay case. A relay that replays an old ACCEPT_PAIRING block re-installs a superseded SK under its old epoch, and A2's per-(kid,direction) counter restarts at 0 against a key-and-prefix pair that has already sealed frames — GCM nonce reuse. Each computer-side device MUST persist a floor lastPairEpoch[(userId, phoneDeviceId)], write it BEFORE the derived keys are used, and refuse any ctx.pairEpoch <= floor.",
+      "pairEpoch": "43",
+      "contextBytesHex": "110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002b",
+      "phoneToComputerKeyHex": "92bb769b26bd88b059fed952bc189b47fa293563324d61eb4d88438eeb713652",
+      "np2cHex": "13168906",
+      "opensVectorF": false
+    },
+    "negativeI3UserIdDrift": {
+      "id": "I3-local-userId-drift",
+      "_comment": "Proves the UN-transmitted field is load-bearing: one character of local session identity yields total key divergence. This is the fail-closed behaviour A3 intends, pinned by a vector instead of by intent.",
+      "localUserId": "user-0191ab",
+      "phoneToComputerKeyHex": "838a45bc4c6cb537eb16efa37c51f949efb9b54c83e3f4fc2fe11636a838a65e",
+      "mustDifferFromI1": true
+    },
+    "negativeI4Parser": {
+      "id": "I4-ctx-ingest-must-refuse",
+      "_comment": "All of these MUST throw/refuse at ctx ingest, never coerce. A3-M3: a receiver MUST refuse a block whose ctx.peerDeviceId is not its own deviceId and — wherever it independently knows the value — whose ctx.pairingId differs from the pairingId it is party to. A3-M4: a mode=1 block arriving with NO ctx MUST be refused, never derived-from-local, because deriving from a locally guessed context is precisely the silent divergence A3 exists to kill and would let a stripping relay force both sides into a guess.",
+      "badPairEpoch": [42, "042", " 42", "-1", "4.2", ""],
+      "badPairEpochNote": "42 is the JSON NUMBER 42, not the string; absent is covered by missingPairEpoch below.",
+      "missingPairEpoch": true,
+      "missingCtxOnMode1": true,
+      "peerDeviceIdMismatch": {
+        "ownDeviceId": "dev-web-01",
+        "ctxPeerDeviceId": "dev-web-02"
+      },
+      "pairingIdMismatch": {
+        "ownPairingId": "pair-7f3a9c21",
+        "ctxPairingId": "pair-00000000"
+      },
+      "oversizeFieldBytes": 256,
+      "oversizeFields": ["userId", "phoneDeviceId", "peerDeviceId"],
+      "oversizeNote": "A1's encode-time throw, re-asserted on the DECODE side: a 256-byte id arriving from the wire must be refused, not truncated to len & 0xff."
+    }
   },
   "kek": {
     "sharedSecretHex": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da",
@@ -70,6 +144,49 @@
       "ciphertextHex": "da4a121115561b5ef08a85a603cf5c2b2e4f76ab190c81e772792a8e92946deb77c8aa340f06853f925fc2311d563e16a3697670b33ae2bb09a4ddf28757603ace75eef4c121a283ff4c9e85f6c95dbf",
       "ciphertextBytes": 80,
       "ciphertextNote": "80 bytes = 64 ciphertext || 16 tag"
+    },
+    "vectorF": {
+      "id": "F-p2c-sms-seq7-DERIVED-prefix",
+      "_comment": "Vector F — A2. The SAME frame as vector A, so the two differ in exactly ONE input (the nonce prefix) and any divergence localises immediately. A's prefix is an explicit input (the 'given a prefix, seal correctly' test and it stays as-is); F's is DERIVED, so it is the 'derive the prefix correctly' test.",
+      "frameType": "SMS_RECEIVED",
+      "kid": "kid-01",
+      "seq": 7,
+      "direction": 1,
+      "directionName": "p2c",
+      "pairEpoch": 42,
+      "aadHex": "210c534d535f524543454956454422066b69642d3031230000000000000007240125000000000000002a",
+      "aadNote": "byte-identical to vector A's aadHex",
+      "noncePrefixHex": "6fa67348",
+      "noncePrefixSource": "noncePrefixes.np2cHex — DERIVED, not an input",
+      "nonceHex": "6fa673480000000000000007",
+      "keyHex": "b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060",
+      "keySource": "traffic.phoneToComputerKeyHex",
+      "plaintextUtf8": "hi",
+      "paddedPlaintextHex": "00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "ciphertextHex": "9675ba5ab30c62bb4802c19f4bcd250612e6b7fead8e8aa4c7fff702cec36d68fb85220b16a4c823d2597780d8e664a977b9d0881ed2f41d7a9e402378f3928c6450b5bb8934fe688c6f728943ac10ce",
+      "ciphertextBytes": 80,
+      "ciphertextNote": "80 bytes = 64 ciphertext || 16 tag"
+    },
+    "vectorG": {
+      "id": "G-c2p-sms-seq7-DERIVED-prefix",
+      "_comment": "Vector G — A2. The reverse direction, proving the direction byte, the c2p key and the c2p prefix all move TOGETHER. An implementation that flipped the AAD byte but kept the p2c key (or the p2c prefix) passes F and fails only here.",
+      "frameType": "SMS_RECEIVED",
+      "kid": "kid-01",
+      "seq": 7,
+      "direction": 2,
+      "directionName": "c2p",
+      "pairEpoch": 42,
+      "aadHex": "210c534d535f524543454956454422066b69642d3031230000000000000007240225000000000000002a",
+      "aadNote": "0x24 tag carries 02, not 01",
+      "noncePrefixHex": "4a786847",
+      "noncePrefixSource": "noncePrefixes.nc2pHex — DERIVED, not an input",
+      "nonceHex": "4a7868470000000000000007",
+      "keyHex": "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d",
+      "keySource": "traffic.computerToPhoneKeyHex",
+      "plaintextUtf8": "hi",
+      "paddedPlaintextHex": "00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "ciphertextHex": "cd13472e5c80869dbf16635b09461270aca7bc49e9549c68604006478c1f47cb70941551e372c46296b740ef341c36a1ec28b4163695ea8951def0e477445214a80182070c9bbdc9c67ebfde834f95f0",
+      "ciphertextBytes": 80
     },
     "negativeOversizeIds": {
       "_comment": "A1 (4): u8 is RATIFIED over u16, but the cap MUST be enforced, not assumed. Each of these MUST THROW at encode on every platform. A test that only proves the happy path does not prove the cap is enforced.",
