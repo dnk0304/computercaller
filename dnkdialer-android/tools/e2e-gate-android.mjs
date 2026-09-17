@@ -106,7 +106,17 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
     if (dirty.length) throw new Error(`dirty working tree: ${dirty.join(' | ')}`);
     return `head=${head} ancestor=OK clean=OK`;
   });
-  finish(r, { counts: { dirtyFiles: 0, ancestorOk: 1 } });
+  // Recompute rather than hard-coding 0/1: the step above throws on a dirty
+  // tree, so hard-coded counts reported "dirtyFiles: 0" on the very runs that
+  // FAILED for dirtiness — a number that contradicts its own verdict is worse
+  // than no number.
+  const dirtyNow = (() => {
+    try {
+      return git(['status', '--porcelain']).split(/\r?\n/).map((l) => l.trim())
+        .filter(Boolean).filter((l) => !l.endsWith('.e2e-lock')).length;
+    } catch { return -1; }
+  })();
+  finish(r, { counts: { dirtyFiles: dirtyNow, ancestorOk: r.exit === 0 ? 1 : 0 } });
 }
 
 // ---------------------------------------------------------------- step 2
@@ -242,6 +252,33 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
   finish(r, {
     exit: skipped ? 0 : (ok ? 0 : 1),
     counts: { skipped: skipped ? 1 : 0, processDeathProof: ok && !skipped ? 'PASS' : (skipped ? 'SKIPPED' : 'FAIL') },
+  });
+
+  // --- Part 2 (a2): the ECDH itself, on both the Keystore and the software
+  // path. A separate step rather than a bigger keystore step, because the two
+  // prove different things and a merged step would hide which one broke. The
+  // measured API level / backend / StrongBox facts are lifted out of the
+  // script's logcat line into `counts` so the gate JSON carries them (N-3
+  // allows derived counts, never captured stdout).
+  const r2 = step('instrumented-E2eKeyAgreementTest', 'tools/run-agreement-test.ps1', () => {
+    if (!deviceUp) return 'SKIPPED: no device/emulator attached';
+    return execSync('powershell -ExecutionPolicy Bypass -File tools/run-agreement-test.ps1',
+      { ...gradleOpts, maxBuffer: 1 << 24 });
+  });
+  const ok2 = skipped || /KEY AGREEMENT: PASS/.test(r2._out);
+  const facts = /api=(\d+) backend=(\S+) strongBoxDeclared=(\S+)/.exec(r2._out);
+  finish(r2, {
+    exit: skipped ? 0 : (ok2 ? 0 : 1),
+    counts: {
+      skipped: skipped ? 1 : 0,
+      ecdh: ok2 && !skipped ? 'PASS' : (skipped ? 'SKIPPED' : 'FAIL'),
+      deviceApi: facts ? Number(facts[1]) : null,
+      backend: facts ? facts[2] : null,
+      strongBoxDeclared: facts ? facts[3] === 'true' : null,
+      // The API 26–30 fallback is exercised on ANY api level via the forced
+      // test entry points; a real API 26 image is a separate, open item.
+      api26ImageRun: false,
+    },
   });
 }
 

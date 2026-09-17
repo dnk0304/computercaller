@@ -485,3 +485,12 @@ dependencies {
     // version transitively, and pinning it here only added a GradleDependency
     // "newer version available" lint item against the baseline for no benefit.
 }
+
+// E2E P4 Part 2 (a3) — forward the vectors-regeneration switch into the test JVM.
+// Gradle does not propagate -D from the build JVM to the test JVM, so without
+// this `-De2e.writeVectors=true` is silently ignored and E2eKdfVectorsTest keeps
+// asserting against the old file while appearing to have regenerated it. See
+// LEARNINGS: "silently ignored CLI flag".
+tasks.withType<Test>().configureEach {
+    System.getProperty("e2e.writeVectors")?.let { systemProperty("e2e.writeVectors", it) }
+}
