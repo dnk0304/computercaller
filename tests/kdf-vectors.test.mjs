@@ -503,7 +503,8 @@ const NP = V.noncePrefixes;
   eq('I.4: the epoch pattern is A3\'s, exactly',
     String(PAIR_EPOCH_WIRE_RE), '/^(0|[1-9][0-9]{0,19})$/');
   {
-    const { pairEpoch, ...noEpoch } = I1.ctxWire;
+    const noEpoch = { ...I1.ctxWire };
+    delete noEpoch.pairEpoch;
     await throws('I.4: an absent pairEpoch is refused',
       () => pairContextFromWire(noEpoch, { userId: I1.localUserId }), 'pairEpoch');
     check('I.4: the vector declares the missing-epoch case', I4.missingPairEpoch === true);
