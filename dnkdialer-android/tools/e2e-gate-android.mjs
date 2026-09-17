@@ -23,7 +23,7 @@
  */
 
 import { execFileSync, execSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -189,6 +189,13 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
     // from a previous run and the gate would go green on nothing. So require
     // a report file written AFTER this step started. Caught in (s7).
     const report = join(MODULE_ROOT, 'app/build/reports/lint-results-debug.xml');
+    // Delete the previous report BEFORE running. Two birds: gradle treats a
+    // missing output as out-of-date and actually re-runs the task (otherwise
+    // it reports UP-TO-DATE and leaves the old XML in place), and the
+    // freshness assertion below then means something. Without this, the
+    // choice is between trusting a possibly-stale report and failing the gate
+    // every time lint is legitimately up to date.
+    if (existsSync(report)) rmSync(report);
     const startedAt = Date.now();
     let gradleOut = '';
     try {
