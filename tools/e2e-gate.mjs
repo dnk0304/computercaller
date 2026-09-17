@@ -1002,6 +1002,10 @@ if (WEB) {
   const HARNESS = ['app-in-call-shots', 'ext-in-call-shots', 'ext-badge-counter-proof',
     'ext-templates-scroll-call-message-proof', 'ext-shell-theme-proof', 'ext-layering-shots'];
   if (['P3', 'P4', 'P5A', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) HARNESS.splice(3, 0, 'ext-sw-lifetime-proof');
+  // P5a slice 2 — the Encrypted-mode UI proof. Added from P5A onwards, where
+  // the surfaces it asserts first exist; running it at P0-P4 would report a
+  // missing feature as a failure.
+  if (['P5A', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) HARNESS.push('e2e-ui-proof');
   if (!steps.some((s2) => s2.name === 'build' && s2.exit !== 0)) {
     const started = startDevServer();
     if (!started.ok) {
