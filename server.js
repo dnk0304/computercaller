@@ -1346,11 +1346,17 @@ function startRelay(httpServer) {
     return false;
   }
 
-  function broadcastToListeners(room, msg) {
+  function broadcastToListeners(room, msg, perSocket = null) {
     if (!room || !room.lobby) return;
     for (const s of room.lobby) {
       if (s.role === 'browser' && s.listener && s.readyState === WebSocket.OPEN) {
-        safeSend(s, msg);
+        // P1(c) — `perSocket` lets ONE frame type (PAIR_STATE) differ per
+        // listener, because each listener's e2e.wrap is its own and a shared
+        // string would hand one device another device's wrap. Returning null
+        // falls back to the shared `msg`, so every existing caller and every
+        // listener that declared no deviceId is byte-for-byte unaffected.
+        const per = perSocket ? perSocket(s) : null;
+        safeSend(s, per ?? msg);
       }
     }
   }
@@ -1391,18 +1397,49 @@ function startRelay(httpServer) {
    * by it — no APK change, no web-client change, nothing to version. LOBBY_STATUS
    * keeps its exact existing shape for both of those consumers.
    */
-  function derivePairState(room) {
+  function derivePairState(room, forWs = null) {
     const phoneOpen = !!(room.active.phone && room.active.phone.readyState === WebSocket.OPEN);
     const browserOpen = !!(room.active.browser && room.active.browser.readyState === WebSocket.OPEN);
     const paired = phoneOpen && browserOpen;
     // Unexpired claim only. An expired-but-not-yet-reaped claim is a torn-down
     // pair wearing a live one's clothes, which is the whole class of lie here.
     const claimLive = !!(room.resumable && Date.now() <= room.resumable.expiresAt);
-    return {
+    const state = {
       phonePresent: countLivePhones(room) > 0,
       paired,
       held: !paired && claimLive,
     };
+    // P1(c) — the listener's slice of the e2e block. PAIR_STATE is the only
+    // pairing frame a listener ever receives (it is never room.active.browser,
+    // so PAIRING_ACTIVE never reaches it), which makes this its one chance to
+    // learn the key material it needs to decrypt notification bodies with the
+    // panel closed.
+    //
+    // It gets `wrap` — SINGULAR, its own, selected by deviceId — and never the
+    // others. The whole wraps[] list would hand every listener the sealed keys
+    // of every other device on the account: still sealed, still useless to
+    // them, and still a pile of other devices' key material sitting in a
+    // service worker for no reason. recipKeys IS the full set, because B9's SAS
+    // is computed over the entire key set and a party holding only its own key
+    // could not reproduce the code the user is being asked to compare.
+    //
+    // The block is ABSENT (not null, not partial) whenever any of its
+    // preconditions fails, so a plaintext room's PAIR_STATE is byte-identical
+    // to what shipped before this commit.
+    const block = paired ? room.active.e2e : null;
+    if (block && forWs && forWs.deviceId) {
+      const mine = block.wraps.find((w) => w.deviceId === forWs.deviceId);
+      if (mine) {
+        state.e2e = {
+          kid: block.kid,
+          epk: block.epk,
+          mode: block.mode,
+          recipKeys: block.recipKeys,
+          wrap: mine.wrap,
+        };
+      }
+    }
+    return state;
   }
 
   /**
@@ -1413,7 +1450,16 @@ function startRelay(httpServer) {
    */
   function broadcastPairState(room) {
     if (!room || !room.lobby) return;
-    broadcastToListeners(room, `PAIR_STATE:${JSON.stringify(derivePairState(room))}`);
+    // The base state is built ONCE and serves every listener that declared no
+    // deviceId — which is every extension build shipped before P3, so the
+    // common path is exactly what it was. A listener that DID declare one gets
+    // its own frame with its own wrap spliced in; sharing one string across
+    // listeners would mean handing one device another device's wrap.
+    broadcastToListeners(
+      room,
+      `PAIR_STATE:${JSON.stringify(derivePairState(room))}`,
+      (s2) => (s2.deviceId ? `PAIR_STATE:${JSON.stringify(derivePairState(room, s2))}` : null),
+    );
   }
 
   function forwardDataPlane(room, fromWs, msg) {
@@ -1725,7 +1771,25 @@ function startRelay(httpServer) {
     // receives phone→browser frames. See the browser-path role assignment below.
     const rawRole = parsed.query?.role;
     const isListener = (typeof rawRole === 'string' && rawRole.trim().toLowerCase() === 'listener');
-    return { pathname, legacyToken, ticket, isListener };
+    // P1(c) — a listener may declare WHICH device it is (`?deviceId=…`). It is
+    // the only way the relay can hand a listener its OWN key wrap and nobody
+    // else's: PAIR_STATE is the listener's only pairing frame, and the wraps
+    // list is keyed by deviceId. Purely additive — a listener that sends none
+    // (every extension build shipped so far) simply gets a PAIR_STATE with no
+    // e2e block, which P3(d) already tolerates.
+    //
+    // This is an IDENTIFIER, not a credential: the socket is already
+    // authenticated into this user's room by relay-ticket, and every wrap in
+    // the room belongs to that same user. Claiming another deviceId gets you a
+    // wrap you cannot unwrap — the sealing keys are the access control, not
+    // this string. It is bounded and charset-limited so it cannot become a log
+    // or memory problem.
+    const rawDeviceId = parsed.query?.deviceId;
+    const listenerDeviceId = (typeof rawDeviceId === 'string'
+      && /^[A-Za-z0-9_-]{1,128}$/.test(rawDeviceId.trim()))
+      ? rawDeviceId.trim()
+      : null;
+    return { pathname, legacyToken, ticket, isListener, listenerDeviceId };
   }
 
   /**
@@ -1799,7 +1863,7 @@ function startRelay(httpServer) {
   }
 
   wss.on('connection', async (ws, req) => {
-    const { pathname, legacyToken, ticket, isListener } = parseConnection(req);
+    const { pathname, legacyToken, ticket, isListener, listenerDeviceId } = parseConnection(req);
 
     // Auth gate. Both paths produce a (userId, phoneToken) pair — the
     // phoneToken serves as the relay room key in either case so legacy
@@ -2177,11 +2241,14 @@ function startRelay(httpServer) {
     // control/data frames (see the receive-only short-circuit in its message
     // handler), and receives phone→browser data frames via broadcastToListeners.
     ws.listener = !!isListener;
+    // Only meaningful on a listener; left null everywhere else so no other code
+    // path can start depending on it.
+    ws.deviceId = isListener ? (listenerDeviceId ?? null) : null;
     // F-C: see phone-path note. Same counter semantics on the browser side.
     ws.missedPongs = 0;
     room.lobby.add(ws);
     if (ws.listener) {
-      console.log(`[Relay][${redactToken(token)}] Listener (extension SW) joined lobby — receive-only`);
+      console.log(`[Relay][${redactToken(token)}] Listener (extension SW) joined lobby — receive-only (deviceId=${ws.deviceId ?? '-'})`);
     }
 
     const counts = countLobby(room);
