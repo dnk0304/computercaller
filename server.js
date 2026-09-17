@@ -48,6 +48,12 @@ const { syncSinceFloorMsFromLimits } = require('./lib/tiers-core.js');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
 const { resetRoom: resetRoomCore, createResetRateLimiter } = require('./lib/roomReset-core.js');
 
+// P1 — the e2e pairing block's size cap and key-encoding pin. Same rationale as
+// roomReset-core above: the real implementation lives in a module so
+// tests/e2e-passthrough.test.mjs exercises it rather than a mirror of it.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
+const { validateE2eBlock, e2eRequestKeys } = require('./lib/e2eBlock-core.js');
+
 // Bundle A (2026-05-28) — Phase 4 security review fix (H7).
 // Every server.js log site that previously included the raw phoneToken (and
 // every site that includes any user-supplied token, including the new
@@ -1138,6 +1144,22 @@ function startRelay(httpServer) {
       if (cleaned.length > 0) deviceLabel = cleaned;
     }
 
+    // P1(a) — the opaque e2e block. Validated for SIZE and key SHAPE only (see
+    // validateE2eBlock); anything failing either check is dropped and the
+    // pairing continues in plaintext rather than failing. The block is
+    // forwarded VERBATIM: we pass the parsed object straight through, so any
+    // field the relay does not know about survives untouched, which is what
+    // lets P2/P3/P4 extend the block without a relay change.
+    const e2eCheck = validateE2eBlock(payload?.e2e, e2eRequestKeys);
+    if (e2eCheck.reason) {
+      console.log(
+        `[Relay][${redactToken(room.token)}] type=BROWSER_REQUEST_PAIRING e2e=${e2eCheck.reason}` +
+        (e2eCheck.bytes !== undefined ? ` bytes=${e2eCheck.bytes}` : '') +
+        ' — block dropped, pairing continues plaintext',
+      );
+    }
+    const e2eBlock = e2eCheck.block;
+
     const pairingId = crypto.randomUUID();
     const expiresAt = Date.now() + PAIRING_TTL_MS;
 
@@ -1152,15 +1174,18 @@ function startRelay(httpServer) {
       maybeReapRoom(room);
     }, PAIRING_TTL_MS);
 
-    room.pendingPairing = { id: pairingId, browserWs, ua, ip, deviceLabel, expiresAt, timer };
+    room.pendingPairing = { id: pairingId, browserWs, ua, ip, deviceLabel, expiresAt, timer, e2e: e2eBlock };
 
     // Build forward payload omitting deviceLabel when absent so older APK
     // builds (v22 and below) parse the same shape they always did.
     const forwardPayload = deviceLabel !== undefined
       ? { pairingId, ua, ip, deviceLabel }
       : { pairingId, ua, ip };
+    // Added only when present, so a plaintext pairing forwards byte-identically
+    // to what v55 and every older APK have always parsed.
+    if (e2eBlock) forwardPayload.e2e = e2eBlock;
     safeSend(phoneWs, `PAIRING_REQUEST:${JSON.stringify(forwardPayload)}`);
-    console.log(`[Relay][${redactToken(room.token)}] Pairing request ${pairingId} forwarded to phone (ua=${ua.slice(0, 40)} ip=${ip} label=${deviceLabel ?? '-'})`);
+    console.log(`[Relay][${redactToken(room.token)}] Pairing request ${pairingId} forwarded to phone (ua=${ua.slice(0, 40)} ip=${ip} label=${deviceLabel ?? '-'} e2e=${e2eBlock ? `v${e2eBlock.v}/mode${e2eBlock.mode}/recips${e2eBlock.recips.length}` : 'none'})`);
   }
 
   /**
