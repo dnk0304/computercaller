@@ -273,6 +273,14 @@ class PhoneService : Service() {
      * session; serialised is the correct semantics anyway, since only one pair
      * can be live.
      */
+    /**
+     * P4 (w3). ONE gate for the life of the service, reading [e2eSession] and
+     * [e2eLatchedOn] through providers rather than being handed a snapshot —
+     * a gate holding a captured session would keep sealing under a key the
+     * service had already torn down.
+     */
+    private val e2eFrameGate = E2eFrameGate({ e2eSession }, { e2eLatchedOn })
+
     private val e2eExecutor: java.util.concurrent.ExecutorService =
         java.util.concurrent.Executors.newSingleThreadExecutor { r ->
             Thread(r, "e2e-accept").apply { isDaemon = true }
@@ -3485,6 +3493,11 @@ class PhoneService : Service() {
         cancelLobbyReconnect()
 
         client?.close()
+        // P4 (w3): the gate goes on at construction, not at Accept. A live pair
+        // that reconnects (resume) keeps its session, and a client built
+        // without the gate would send the next sealed frame in the clear. With
+        // no session and no latch the gate is a pass-through, so installing it
+        // unconditionally costs nothing and removes the ordering question.
         client = PhoneClient(
             java.net.URI(relayUrl),
             { command, payload -> handleCommand(command, payload, true) },
@@ -3555,6 +3568,7 @@ class PhoneService : Service() {
                 }
             }
         )
+        client?.frameGate = e2eFrameGate
         client?.connectionLostTimeout = 15  // ping every 15 seconds
         client?.connect()
 
