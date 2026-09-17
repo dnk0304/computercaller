@@ -39,21 +39,21 @@ import java.io.InputStreamReader
  * becomes the derived `6fa67348` — so a divergence localises to the derivation
  * rather than to the cipher, the AAD or the padding.
  *
- * ## Why a second resource file
+ * ## One file, three implementations
  *
- * A2 says to ADD E–H to `tests/kdf-vectors.json`. That file belongs to the web
- * lane (P0.2), and `androidTest/resources/kdf-vectors.json` is a byte-identical
- * copy of it whose sha256 IS the (c3) cross-lane proof — appending rows there
- * would destroy the property it exists to demonstrate. E–H therefore live in
- * `kdf-vectors-a2.json`, transcribed verbatim from GATE1.md, until P0.2 lands
- * them in the canonical file. Flagged to Ken.
+ * E–H are asserted against the CANONICAL `tests/kdf-vectors.json` frozen on
+ * `e2e/integration` at `46e3084` (P1.1), copied byte-identically into this
+ * module's androidTest resources. P4 carried them in a sidecar file for as long
+ * as the canonical one lacked them; that sidecar is gone. A1 is explicit about
+ * why it matters: "the same assertion must exist in the web/SW lane against the
+ * same file, or the file only constrains one of the three implementations."
  */
 @RunWith(AndroidJUnit4::class)
 class E2eA2NoncePrefixVectorsTest {
 
     private fun load(): JsonObject {
-        val stream = javaClass.classLoader!!.getResourceAsStream("kdf-vectors-a2.json")
-            ?: throw AssertionError("kdf-vectors-a2.json is not on the androidTest classpath")
+        val stream = javaClass.classLoader!!.getResourceAsStream("kdf-vectors.json")
+            ?: throw AssertionError("kdf-vectors.json is not on the androidTest classpath")
         return InputStreamReader(stream, Charsets.UTF_8).use {
             JsonParser.parseReader(it).asJsonObject
         }
@@ -71,34 +71,14 @@ class E2eA2NoncePrefixVectorsTest {
     }
 
     private fun sessionKey(root: JsonObject): ByteArray =
-        E2eKdf.fromHex(root.getAsJsonObject("context").get("sessionKeyHex").asString)
-
-    /**
-     * The file has to describe the SAME pairing the frozen file describes, or
-     * E–H are vectors for a context nothing else in the programme uses and they
-     * prove nothing about the shipped key schedule.
-     */
-    @Test
-    fun the_a2_file_shares_the_frozen_context() {
-        val a2 = context(load())
-        val frozenStream = javaClass.classLoader!!.getResourceAsStream("kdf-vectors.json")!!
-        val frozen = InputStreamReader(frozenStream, Charsets.UTF_8).use {
-            JsonParser.parseReader(it).asJsonObject
-        }.getAsJsonObject("context")
-
-        assertEquals(frozen.get("pairingId").asString, a2.pairingId)
-        assertEquals(frozen.get("userId").asString, a2.userId)
-        assertEquals(frozen.get("phoneDeviceId").asString, a2.phoneDeviceId)
-        assertEquals(frozen.get("peerDeviceId").asString, a2.peerDeviceId)
-        assertEquals(frozen.get("pairEpoch").asLong, a2.pairEpoch)
-    }
+        E2eKdf.fromHex(root.getAsJsonObject("traffic").get("sessionKeyHex").asString)
 
     // ------------------------------------------------------------ vector E
 
     @Test
     fun vector_E_the_info_strings_are_byte_exact() {
         val root = load()
-        val e = root.getAsJsonObject("E_noncePrefixes")
+        val e = root.getAsJsonObject("noncePrefixes")
         val ctx = context(root)
 
         assertEquals("cc-e2e-v1/np2c", E2eKdf.LABEL_NONCE_P2C)
@@ -116,10 +96,10 @@ class E2eA2NoncePrefixVectorsTest {
     @Test
     fun vector_E_the_derived_prefixes_reproduce() {
         val root = load()
-        val e = root.getAsJsonObject("E_noncePrefixes")
+        val e = root.getAsJsonObject("noncePrefixes")
         val p = E2eKdf.deriveNoncePrefixes(sessionKey(root), context(root))
 
-        assertEquals(4, e.get("L").asInt)
+        assertEquals(4, e.get("lengthBytes").asInt)
         assertEquals(E2eEnvelope.SESSION_PREFIX_BYTES, p.phoneToComputer.size)
         assertEquals(E2eEnvelope.SESSION_PREFIX_BYTES, p.computerToPhone.size)
         assertEquals(
@@ -147,8 +127,8 @@ class E2eA2NoncePrefixVectorsTest {
         val prefixes = E2eKdf.deriveNoncePrefixes(sessionKey(root), ctx)
         val keys = E2eKdf.deriveTrafficKeys(sessionKey(root), ctx)
 
-        for (name in listOf("F_aead_p2c_with_derived_prefix", "G_aead_c2p_with_derived_prefix")) {
-            val v = root.getAsJsonObject(name)
+        for (name in listOf("vectorF", "vectorG")) {
+            val v = root.getAsJsonObject("aead").getAsJsonObject(name)
             val p2c = v.get("directionName").asString == "p2c"
             val direction = if (p2c) {
                 E2eEnvelope.Direction.PHONE_TO_COMPUTER
@@ -184,6 +164,7 @@ class E2eA2NoncePrefixVectorsTest {
                 )
             )
 
+            val plaintext = v.get("plaintextUtf8").asString.toByteArray(Charsets.UTF_8)
             val sealed = E2eEnvelope.seal(
                 key = key,
                 kid = v.get("kid").asString,
@@ -192,12 +173,12 @@ class E2eA2NoncePrefixVectorsTest {
                 pairEpoch = v.get("pairEpoch").asLong,
                 sessionPrefix = prefix,
                 frameType = v.get("frameType").asString,
-                plaintext = "hi".toByteArray(Charsets.UTF_8),
+                plaintext = plaintext,
             )
             assertEquals(
                 "$name: the padded block does not match §13.4",
-                v.get("plaintextHex").asString,
-                E2eKdf.toHex(E2ePadding.pad(v.get("frameType").asString, "hi".toByteArray(Charsets.UTF_8)))
+                v.get("paddedPlaintextHex").asString,
+                E2eKdf.toHex(E2ePadding.pad(v.get("frameType").asString, plaintext))
             )
             assertEquals(
                 "$name: CIPHERTEXT — this is the assertion a self-consistently wrong " +
@@ -207,7 +188,7 @@ class E2eA2NoncePrefixVectorsTest {
 
             // And it opens back, under that direction only.
             assertArrayEquals(
-                "hi".toByteArray(Charsets.UTF_8),
+                plaintext,
                 E2eEnvelope.open(key, sealed, direction, v.get("pairEpoch").asLong, prefix, v.get("frameType").asString)
             )
         }
@@ -225,7 +206,7 @@ class E2eA2NoncePrefixVectorsTest {
         val ctx = context(root)
         val prefixes = E2eKdf.deriveNoncePrefixes(sessionKey(root), ctx)
         val keys = E2eKdf.deriveTrafficKeys(sessionKey(root), ctx)
-        val f = root.getAsJsonObject("F_aead_p2c_with_derived_prefix")
+        val f = root.getAsJsonObject("aead").getAsJsonObject("vectorF")
 
         val envelope = E2eEnvelope.Sealed(
             E2eEnvelope.VERSION, f.get("kid").asString, f.get("seq").asLong,
