@@ -56,7 +56,7 @@ import {
   type WebDeviceKey,
   type WebKeyStore,
 } from '@/lib/e2e/webKey';
-import { pairContextFromWire, type ResolvedPairContext } from '@/lib/e2e/kdf.mjs';
+import { resolvePairContextA4, type ResolvedA4Context } from '@/lib/e2e/pairCtxA4';
 import {
   createComputerSession,
   indexedDbSeqStore,
@@ -341,22 +341,31 @@ export function useE2e(emailProp?: string | null): E2eApi {
       return true;
     }
 
-    let context: ResolvedPairContext;
+    let context: ResolvedA4Context;
     try {
-      // ONE call, and every A3 receiver rule is inside it:
-      //   M4  ctx absent on a mode=1 block      -> throws (never derive-from-local)
-      //   M3  ctx.peerDeviceId !== our deviceId -> throws
-      //   M3  ctx.pairingId !== our pairingId   -> throws, when we know it
-      //       pairEpoch not a bare decimal string, or > 2^64-1 -> throws
-      // `ourPairingId` is passed only when the relay actually told us one; A3's
-      // own wording is "wherever it independently knows the value", and passing
-      // ctx.pairingId back in as the expectation would be comparing a value
-      // with itself — a check that cannot fail is worse than no check, because
-      // it reads like one that can.
-      context = pairContextFromWire(block.ctx, {
+      // ONE call, and every A3/A4 receiver rule this lane can evaluate is
+      // inside it:
+      //   (a)  ctx.pairingId != our pairing                      -> refuse
+      //   (c)  ctx.peerDeviceId != canonical-lowest of wraps[]   -> refuse
+      //        pairEpoch not a bare decimal string, or > 2^64-1  -> refuse
+      //
+      // (b), MEMBERSHIP, is NOT here and must not be: A4-R3 made it the
+      // CRYPTOGRAPHIC check — the wrap addressed to us opening under
+      // KEK(ctx, our static key). That happens at `openWrap` below, and its
+      // success proves in one step that our ctx bytes are byte-identical to the
+      // phone's AND that the phone addressed us. A relay cannot forge it
+      // without SK, which is why A4 chose it over any syntactic test.
+      //
+      // We pass `wraps` because the PAGE holds the full set on
+      // ACCEPT_PAIRING / PAIRING_ACTIVE. The extension SW does not (PAIR_STATE
+      // carries only its own wrap) and must SKIP (c) rather than substitute its
+      // own deviceId — that substitution is the A3-M1/A3-M3 contradiction A4
+      // exists to remove.
+      context = resolvePairContextA4({
+        ctxWire: block.ctx,
         userId,
-        deviceId: key.deviceId,
         pairingId: typeof payload.pairingId === 'string' ? payload.pairingId : null,
+        wraps: block.wraps,
       });
     } catch (e) {
       fail('e2e-setup-failed', `ctx refused: ${(e as Error).message}`);
@@ -444,6 +453,19 @@ export function useE2e(emailProp?: string | null): E2eApi {
         fail('e2e-seq-fail-closed', e.message);
         return true;
       }
+      // A4-M3: an unwrap failure is a pairing ABORT, never a degrade.
+      // 13.2 row 2's "SW absent -> counts-only badges" covers a recipient that
+      // never had a key; it does NOT cover one whose wrap failed to open. That
+      // is a tampered or mismatched pairing and fails closed.
+      //
+      // A4-M5: log the canonical peer we derived from and our own deviceId --
+      // IDS ONLY, never key material and never ctx in full. Without it the
+      // multi-recipient failure mode is a tag error with no attribution, which
+      // is the concern that motivated the ruling.
+      console.error(
+        '[e2e] wrap did not open — aborting the pairing (A4-M3). ' +
+        `canonicalPeer=${context.canonicalPeerDeviceId} ownDeviceId=${key.deviceId}`,
+      );
       fail('e2e-setup-failed', `could not open our wrap: ${(e as Error).message}`);
       return true;
     }

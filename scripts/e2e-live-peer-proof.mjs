@@ -44,6 +44,7 @@ import * as KDF from '../lib/e2e/kdf.mjs';
 import * as SESSION from '../lib/e2e/session.mjs';
 import { sasDigits } from '../lib/e2e/sas.mjs';
 import * as WEBKEY from '../lib/e2e/webKey.ts';
+import { resolvePairContextA4, canonicalPeerDeviceId } from '../lib/e2e/pairCtxA4.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -63,25 +64,6 @@ function check(name, ok, detail = '') {
 const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v));
 const eq = (name, got, want) =>
   check(name, got === want, `got ${show(got)} want ${show(want)}`);
-
-/**
- * An assertion against a ruling that has NOT been signed yet.
- *
- * It prints its verdict and is counted separately, and it NEVER fails the run.
- * That is deliberate: a gate that goes red because a draft addendum was later
- * worded differently is a gate that punishes the lane for the spec moving, and
- * the next person's fix would be to delete the assertion rather than update it.
- * When the ruling lands, promote these to check()/eq() in one commit and the
- * PENDING count goes to zero -- which is itself the signal that it happened.
- */
-let pending = 0;
-let pendingFailed = 0;
-function pendingCheck(name, ok, detail = '') {
-  pending += 1;
-  if (ok) { console.log(`  PENDING-OK  ${name}`); return; }
-  pendingFailed += 1;
-  console.log(`  PENDING-DIVERGES  ${name}${detail ? ` -- ${detail}` : ''}`);
-}
 
 const enc = (o) => new TextEncoder().encode(JSON.stringify(o));
 const dec = (b) => JSON.parse(new TextDecoder().decode(b));
@@ -229,7 +211,14 @@ async function mintKeyPair() {
 
 /** The PHONE half: mint SK, wrap per recipient, build the accept block. */
 async function phoneAccept({ recips, phoneKey, pairEpoch, modeOn }) {
-  const ctxInput = { ...CONTEXT, peerDeviceId: [...recips].map((r) => r.deviceId).sort()[0], pairEpoch };
+  // A4-M2: the phone emits ctx.peerDeviceId = canonicalPeerDeviceId(wraps),
+  // computed over the SAME wraps[] it ships in this block — byte-wise lowest
+  // UTF-8 (A4-R2), NOT over recipKeys[] and not over the recips list that
+  // happens to produce it. Deriving it from the shipped array is the point:
+  // A4-M2 must be pinned by a set whose lowest is not first in array order,
+  // and that only means something if the emitter reads the shipped set.
+  const wrapDeviceIds = [...recips].map((r) => ({ deviceId: r.deviceId }));
+  const ctxInput = { ...CONTEXT, peerDeviceId: canonicalPeerDeviceId(wrapDeviceIds), pairEpoch };
   const ctx = KDF.pairContext(ctxInput);
   const sk = crypto.getRandomValues(new Uint8Array(32));
   const kid = b64(crypto.getRandomValues(new Uint8Array(16)));
@@ -340,77 +329,60 @@ async function main() {
       typeof active.payload.e2e.ctx.pairEpoch, 'string');
     check('ON/ON: userId was NOT transmitted', !('userId' in active.payload.e2e.ctx));
 
-    // ── A3-M3 IS NOT ENFORCEABLE HERE, AND THAT IS A BLOCKING FINDING ─────
-    // ESCALATED to Ken + Security by the P2 follow-up lane, 2026-09-17.
+    // ── A4 (RATIFIED (1) AMENDED 2026-09-17T20:58Z) ──────────────────────
+    // This lane escalated at 19:05Z that A3-M3's "peerDeviceId must be MY
+    // deviceId" is unenforceable for a multi-recipient pairing; P4 found the
+    // same thing independently from the encode side; A4 ruled it.
     //
-    // A3-M3 says a receiver MUST refuse a block whose `ctx.peerDeviceId` is not
-    // its OWN deviceId. `peerDeviceId` is SINGULAR, but a pairing has TWO
-    // computer-side recipients — the page and the extension service worker —
-    // and they share one SK and therefore one pairContext, because the phone
-    // seals each p2c frame ONCE and both must open it.
+    // A4-R1: there is ONE ctx, ONE pairContext, ONE traffic-key set and ONE
+    // nonce-prefix pair per pairing, shared by EVERY recipient. That is forced
+    // by the transport, not chosen: sealed phone frames are one ciphertext
+    // broadcast byte-identically to every listener, so a per-recipient key
+    // would open for exactly one of them and hand the other a GCM tag failure
+    // indistinguishable from a network fault.
     //
-    // P4 resolves the singular field by taking the canonically LOWEST recipient
-    // deviceId (E2ePairIdentity.peerDeviceIdFor), deterministic and
-    // order-independent, and says in its own class doc that the choice "is also
-    // part of the ruling being asked for". Under that rule exactly ONE
-    // recipient can satisfy A3-M3 literally. Here 'dev-sw-01' sorts below
-    // 'dev-web-01', so the SW passes and THE WEB PAGE REFUSES — i.e. the page
-    // never pairs whenever an extension key is present, which is the normal
-    // configuration. That is a total availability break of the same class A3
-    // itself was raised for, one layer up.
+    // A4-R2: ctx.peerDeviceId is the CANONICAL PEER — the byte-wise lowest of
+    // wraps[].deviceId (NOT recipKeys[], which is public KEYS and includes the
+    // phone; A4 corrected the draft on exactly that).
     //
-    // Vector I cannot see it: I.1 uses a single recipient whose deviceId IS the
-    // peerDeviceId, so the two readings agree there and the vector cannot
-    // discriminate between them.
-    //
-    // THIS LANE DOES NOT INVENT THE RULING. It does three things instead:
-    //   1. derives with `deviceId: null`, which SKIPS M3's device half rather
-    //      than silently redefining it — the skip is loud, here, in a comment
-    //      that names the MUST it is not enforcing;
-    //   2. asserts the property M3 exists to provide and which IS checkable
-    //      from local knowledge: ctx.peerDeviceId must be a member of the
-    //      recipient set THIS BROWSER offered, so a relay still cannot make us
-    //      derive under a device identity we never proposed;
-    //   3. proves in scenario 6 that M3 DOES fire, unchanged, in the
-    //      single-recipient case where it is well defined.
-    // STATUS 2026-09-17: Addendum A4 is BEING RULED on exactly this. P4 found the
-    // same contradiction independently -- A3-M1 gives every recipient an
-    // IDENTICAL ctx, which A3-M3 then makes refusable by all but one of them.
-    // Ken's proposal, which these assertions are written against:
-    //
-    //   ctx.peerDeviceId = canonical-lowest recipient deviceId (what P4 emits)
-    //   M3 re-scoped to refuse if:
-    //     ctx.pairingId      != our pairing                      OR
-    //     our own deviceId   is not among recipKeys[]            OR
-    //     ctx.peerDeviceId   != canonical-lowest of recipKeys[]
-    //
-    // Single-recipient sealing continues under A3 unchanged (scenario 6).
-    //
-    // These are pendingCheck(), NOT check(): the ruling is not signed, and a
-    // gate that goes red because a draft was reworded teaches the next person
-    // to delete the assertion instead of updating it. Promote them to check()
-    // when A4 lands -- vector J is expected to pin the same thing.
-    const offered = ['dev-web-01', 'dev-sw-01'];
-    const canonical = [...offered].sort()[0];
-    const OUR_DEVICE_ID = 'dev-web-01';
-
-    pendingCheck('A4(pending): ctx.peerDeviceId is the canonical-lowest recipient',
-      active.payload.e2e.ctx.peerDeviceId === canonical,
-      `got ${active.payload.e2e.ctx.peerDeviceId} want ${canonical}`);
-    pendingCheck('A4(pending): our own deviceId IS among the offered recipients',
-      offered.includes(OUR_DEVICE_ID));
-    pendingCheck('A4(pending): ctx.pairingId is the pairing we are party to',
-      active.payload.e2e.ctx.pairingId === active.payload.pairingId);
-    // The negative arm, so the re-scoped M3 is not a check that cannot fail:
-    // a ctx naming a device we never offered must be refusable under A4 too.
-    pendingCheck('A4(pending): a peerDeviceId we never offered would be REFUSED',
-      !offered.includes('dev-web-99'));
-
-    const ctxInput = KDF.pairContextFromWire(active.payload.e2e.ctx, {
+    // A4-R3 re-scopes M3 to (a) pairingId, (b) the wrap opening under
+    // KEK(ctx, our static key) — the CRYPTOGRAPHIC membership proof — and
+    // (c) canonical-peer, ONLY where the receiver holds wraps[]. The page does.
+    const ctxInput = resolvePairContextA4({
+      ctxWire: active.payload.e2e.ctx,
       userId: CONTEXT.userId,          // LOCAL session identity, never on the wire
-      deviceId: null,                  // see the block above — ESCALATED, not resolved
       pairingId: active.payload.pairingId,
+      wraps: active.payload.e2e.wraps, // we hold the set -> (c) applies
     });
+    eq('A4(c): ctx.peerDeviceId is the canonical-lowest of wraps[].deviceId',
+      ctxInput.canonicalPeerDeviceId,
+      canonicalPeerDeviceId(active.payload.e2e.wraps));
+    check('A4(c): and the canonical peer is NOT this device — which under the '
+      + 'DELETED A3-M3 clause is exactly the block the page used to refuse',
+      ctxInput.canonicalPeerDeviceId !== 'dev-web-01');
+
+    // The steering negative, so (c) is not a check that cannot fail.
+    let steerRefused = false;
+    try {
+      resolvePairContextA4({
+        ctxWire: { ...active.payload.e2e.ctx, peerDeviceId: 'dev-web-01' },
+        userId: CONTEXT.userId,
+        pairingId: active.payload.pairingId,
+        wraps: active.payload.e2e.wraps,
+      });
+    } catch { steerRefused = true; }
+    check('A4(c): a relay steering ctx.peerDeviceId off the canonical peer is REFUSED',
+      steerRefused);
+
+    // A4-R3's SW shape, on the same bytes: no wraps[] -> (c) SKIPPED, and the
+    // context is IDENTICAL. Asserted equal, not merely both present -- that
+    // identity is the ruling.
+    const swSide = resolvePairContextA4({
+      ctxWire: active.payload.e2e.ctx, userId: CONTEXT.userId, pairingId: null,
+    });
+    eq('A4-R3: the SW path (no wraps[]) derives the IDENTICAL context',
+      SESSION.toBase64Url(swSide.contextBytes),
+      SESSION.toBase64Url(ctxInput.contextBytes));
     eq('ON/ON: the wire ctx reproduces the pairEpoch the phone used',
       ctxInput.pairEpoch, BigInt(pairEpoch));
 
@@ -641,9 +613,13 @@ async function main() {
       wireCtx.peerDeviceId, 'dev-web-01');
 
     // The positive: full M3 enforcement ON, and it pairs.
-    const ctx = KDF.pairContextFromWire(wireCtx, {
-      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: active.payload.pairingId,
+    const ctx = resolvePairContextA4({
+      ctxWire: wireCtx, userId: CONTEXT.userId,
+      pairingId: active.payload.pairingId, wraps: active.payload.e2e.wraps,
     });
+    eq('A4(1:1): with ONE recipient the canonical peer IS us — single-recipient '
+      + 'sealing continues under A3 unchanged (A4 scope)',
+      ctx.canonicalPeerDeviceId, 'dev-web-01');
     const ourWrap = active.payload.e2e.wraps.find((w) => w.deviceId === 'dev-web-01').wrap;
     const sk = await SESSION.openWrap({
       wrap: ourWrap, kid: active.payload.e2e.kid, epk: SESSION.fromBase64Url(active.payload.e2e.epk),
@@ -664,19 +640,22 @@ async function main() {
     // A3-M3 negatives, against the block AS IT ARRIVED.
     let m3dev = false;
     try {
-      KDF.pairContextFromWire(wireCtx, {
-        userId: CONTEXT.userId, deviceId: 'dev-web-99', pairingId: active.payload.pairingId,
+      resolvePairContextA4({
+        ctxWire: { ...wireCtx, peerDeviceId: 'dev-web-99' },
+        userId: CONTEXT.userId, pairingId: active.payload.pairingId,
+        wraps: active.payload.e2e.wraps,
       });
     } catch { m3dev = true; }
-    check('A3-M3: a block addressed to ANOTHER deviceId is refused by identity', m3dev);
+    check('A4(c): a ctx naming a peer that is not the canonical one is refused', m3dev);
 
     let m3pair = false;
     try {
-      KDF.pairContextFromWire(wireCtx, {
-        userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: 'pair-00000000',
+      resolvePairContextA4({
+        ctxWire: wireCtx, userId: CONTEXT.userId, pairingId: 'pair-00000000',
+        wraps: active.payload.e2e.wraps,
       });
     } catch { m3pair = true; }
-    check('A3-M3: a ctx.pairingId that is not our pairing is refused', m3pair);
+    check('A4(a): a ctx.pairingId that is not our pairing is refused', m3pair);
 
     // A3-M4, driven END TO END: the phone sends a mode=1 block with the ctx
     // STRIPPED, exactly as a stripping relay would. It must be refused, never
@@ -689,8 +668,9 @@ async function main() {
     check('A3-M4: ...and it really has no ctx', active2.payload.e2e.ctx === undefined);
     let m4 = false;
     try {
-      KDF.pairContextFromWire(active2.payload.e2e.ctx, {
-        userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: active2.payload.pairingId,
+      resolvePairContextA4({
+        ctxWire: active2.payload.e2e.ctx, userId: CONTEXT.userId,
+        pairingId: active2.payload.pairingId, wraps: active2.payload.e2e.wraps,
       });
     } catch { m4 = true; }
     check('A3-M4: a mode=1 block with NO ctx is REFUSED, never derived from local', m4);
@@ -726,8 +706,9 @@ async function main() {
     const a42 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 42, modeOn: true });
     phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a42.block });
     const first = await browser.wait('PAIRING_ACTIVE');
-    const ctx42 = KDF.pairContextFromWire(first.payload.e2e.ctx, {
-      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: first.payload.pairingId,
+    const ctx42 = resolvePairContextA4({
+      ctxWire: first.payload.e2e.ctx, userId: CONTEXT.userId,
+      pairingId: first.payload.pairingId, wraps: first.payload.e2e.wraps,
     });
     const admitted = await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
@@ -739,8 +720,9 @@ async function main() {
     const a43 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 43, modeOn: true });
     phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a43.block });
     const second = await browser.wait('PAIRING_ACTIVE');
-    const ctx43 = KDF.pairContextFromWire(second.payload.e2e.ctx, {
-      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: second.payload.pairingId,
+    const ctx43 = resolvePairContextA4({
+      ctxWire: second.payload.e2e.ctx, userId: CONTEXT.userId,
+      pairingId: second.payload.pairingId, wraps: second.payload.e2e.wraps,
     });
     await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
@@ -758,8 +740,9 @@ async function main() {
 
     // It parses. It is a perfectly well-formed block and its ctx is valid --
     // which is the point: nothing upstream of the floor has grounds to refuse.
-    const ctxReplay = KDF.pairContextFromWire(replay.payload.e2e.ctx, {
-      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: replay.payload.pairingId,
+    const ctxReplay = resolvePairContextA4({
+      ctxWire: replay.payload.e2e.ctx, userId: CONTEXT.userId,
+      pairingId: replay.payload.pairingId, wraps: replay.payload.e2e.wraps,
     });
     check('FLOOR: the replayed ctx parses cleanly (nothing else can catch this)',
       ctxReplay.pairEpoch === 42n);
@@ -779,8 +762,9 @@ async function main() {
     const a44 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 44, modeOn: true });
     phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a44.block });
     const fourth = await browser.wait('PAIRING_ACTIVE');
-    const ctx44 = KDF.pairContextFromWire(fourth.payload.e2e.ctx, {
-      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: fourth.payload.pairingId,
+    const ctx44 = resolvePairContextA4({
+      ctxWire: fourth.payload.e2e.ctx, userId: CONTEXT.userId,
+      pairingId: fourth.payload.pairingId, wraps: fourth.payload.e2e.wraps,
     });
     const rekeyed = await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
@@ -829,12 +813,13 @@ main().then(
     console.log('  arm: tests/e2e-web-ctx asserts I.1-I.4 against values Security computed in');
     console.log('  a DIFFERENT implementation, and Android asserts the same file.');
     console.log('');
-    console.log('  OPEN: A3-M3 is not enforceable for a multi-recipient pairing (scenario 1).');
-    console.log('  Escalated 2026-09-17; Addendum A4 is BEING RULED on it. The multi-recipient');
-    console.log('  assertions are written against Ken proposal and reported as PENDING, so a');
-    console.log('  reworded ruling cannot turn this gate red:');
-    console.log(`  PENDING ${pending} checks, ${pendingFailed} diverging from the proposal.`);
-    console.log('  Single-recipient sealing (scenario 6) runs under A3 unchanged and IS gated.');
+    console.log('  RESOLVED: the multi-recipient A3-M3 contradiction this harness escalated');
+    console.log('  on 2026-09-17 is now Addendum A4 (RATIFIED (1) AMENDED). The assertions are');
+    console.log('  GATED again, not pending. Scenario 1 is the multi-recipient case under A4;');
+    console.log('  scenario 6 is the single-recipient case, which A4 leaves under A3 unchanged.');
+    console.log('  STILL PENDING Ken P1.2: A4-M1 deletes the own-deviceId clause from the shared');
+    console.log('  lib/e2e/kdf.mjs and freezes vector J; this lane applies A4 behind ONE local');
+    console.log('  function (lib/e2e/pairCtxA4.ts) until then. See tests/e2e-web-ctx-a4.');
     const total = passed + failed;
     console.log(`e2e-live-peer: ${passed}/${total} checks passed`);
     process.exit(failed === 0 ? 0 : 1);
