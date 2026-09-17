@@ -1,0 +1,19 @@
+R-K base-inherence comparison — ext-badge-counter-proof
+generated 2026-09-17T19:33:41Z by the P2 follow-up lane
+
+THIS RUN  gate-P2-16f9c8f  34/42 (attempts 2)  8 FAIL
+BASE      96042d0 (P1 base, NONE of this lane's code)  34/42  8 FAIL
+
+--- failure lines present in BOTH, byte-identical (7 of 8) ---
+PAIRED ⇒ green. The control arm
+REGRESSION: that state is reported as phone-unpaired
+an SMS during a HELD pair does NOT turn the dot green
+green says connected
+its tooltip tells the user to press Connect
+pair torn down ⇒ leaves green immediately
+…and the dot still refuses to claim a live pair
+
+--- only in THIS run ---
+held before the data frame
+--- only in BASE ---
+green before the malformed frame
