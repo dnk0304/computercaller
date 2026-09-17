@@ -25,7 +25,12 @@ Set-Location (Join-Path $PSScriptRoot '..')
 $adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
 $pkg = 'com.dnkdialer.companion'
 $runner = "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
-$classes = @("$pkg.E2eKeyAgreementTest", "$pkg.E2eSasVectorsTest")
+$classes = @(
+    "$pkg.E2eKeyAgreementTest",   # P-256 ECDH on both backends
+    "$pkg.E2eSasVectorsTest",     # the frozen SAS vs P1's tests/sas-vectors.json
+    "$pkg.E2eSeqStoreTest",       # A1 acceptance: persist-before-emit / restore fails closed
+    "$pkg.E2eSessionTest"         # A1 item 2: directional separation, dedupe, re-pair
+)
 
 Write-Host '== building app + test APKs =='
 & .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon -q
@@ -89,3 +94,5 @@ $fact = ((& $adb logcat -d -s 'E2E-FACT:I') | Select-String 'api=') -join ' '
 Write-Host "KEYSTORE FACTS: $fact"
 Write-Host "KEY AGREEMENT: PASS (API $api)"
 Write-Host "SAS VECTORS: PASS"
+Write-Host "COUNTER FAIL-CLOSED: PASS"
+Write-Host "SESSION: PASS"

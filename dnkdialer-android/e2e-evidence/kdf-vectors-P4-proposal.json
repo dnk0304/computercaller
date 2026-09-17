@@ -40,5 +40,35 @@
         "kekHex": "14fbbf29fbc59bc1d0ec8da2b23ddf6aac2172707bec90ef1e019ee7ec2e3fe5"
       }
     ]
+  },
+  "aead": {
+    "_comment": "GATE1 Addendum A1 (AMENDED). AES-256-GCM, 128-bit tag. nonce = sessionPrefix(4B random per kid+direction) || be64(seq). AAD = 0x21 u8(len) frameType || 0x22 u8(len) kid || 0x23 be64(seq) || 0x24 u8 direction (0x01=p2c, 0x02=c2p) || 0x25 be64(pairEpoch). AAD is RE-ENCODED from parsed fields, NEVER the JSON header bytes. Pad per s13.4 FIRST, then seal.",
+    "vectorA": {
+      "frameType": "SMS_RECEIVED",
+      "kid": "kid-01",
+      "seq": 7,
+      "direction": "p2c",
+      "pairEpoch": 42,
+      "aadHex": "210c534d535f524543454956454422066b69642d3031230000000000000007240125000000000000002a",
+      "sessionPrefixHex": "11223344",
+      "nonceHex": "112233440000000000000007",
+      "keyHex": "b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060",
+      "plaintextUtf8": "hi",
+      "paddedPlaintextHex": "00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "ciphertextHex": "da4a121115561b5ef08a85a603cf5c2b2e4f76ab190c81e772792a8e92946deb77c8aa340f06853f925fc2311d563e16a3697670b33ae2bb09a4ddf28757603ace75eef4c121a283ff4c9e85f6c95dbf"
+    },
+    "vectorB_mustThrowAtEncode": {
+      "_comment": "A1 item 4: u8 is ratified ONLY because the cap is enforced. Each case MUST throw at encode on every platform — silent truncation to len and 0xFF re-creates the framing collision the addendum exists to kill.",
+      "maxBytes": 255,
+      "cases": ["userId", "phoneDeviceId", "peerDeviceId", "kid", "frameType"]
+    },
+    "vectorC_tamper": {
+      "_comment": "Change any ONE of these AAD fields and the GCM tag check MUST fail. Proves the AAD is actually passed — a silently dropped AAD is indistinguishable from a working one on the happy path.",
+      "fields": ["frameType", "kid", "seq", "direction", "pairEpoch"]
+    },
+    "vectorD_crossDirection": {
+      "_comment": "computerToPhoneKeyHex MUST NOT open vectorA.ciphertextHex. This is what makes a reflection attack inert.",
+      "keyHex": "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d"
+    }
   }
 }

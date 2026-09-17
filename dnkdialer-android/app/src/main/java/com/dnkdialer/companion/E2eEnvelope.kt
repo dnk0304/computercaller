@@ -1,56 +1,74 @@
 package com.dnkdialer.companion
 
+import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * E2E programme, phase P4 Part 2 (c) — the sealed-frame envelope.
+ * E2E programme, phase P4 Part 2 (c2) — the sealed-frame envelope, re-derived
+ * against **GATE1.md Addendum A1 (AMENDED, 2026-09-17T22:34Z)**.
  *
  * ```
  *   { "e": 1, "kid": "<key id>", "s": <sequence>, "c": "<base64url ciphertext>" }
  * ```
  *
- * `e` is the envelope version, `kid` names the key, `s` is the per-direction
- * sequence number the dedupe window ([E2eDedupe]) keys on, and `c` is
- * AES-256-GCM over the PADDED plaintext ([E2ePadding]).
+ * ## What A1 changed from P4's original (c) proposal
  *
- * ## Status of the bytes — PROPOSAL, same standing as [E2eKdf]
+ * A1 ratified the KDF (items 1, 2, 4) byte for byte and **newly specified the
+ * AEAD**, which P4 had proposed differently. Both of P4's AEAD bytes are now
+ * replaced — this file is the amended version:
  *
- * §13 freezes the padding, the dedupe parameters and the SAS. It freezes the
- * envelope's *field names* (the brief gives `{e:1,kid,s,c}`) but not the nonce
- * construction or the AAD, and there is no reference `.mjs` for either. Both are
- * specified here and pinned by vectors, and both are flagged for P2/P3
- * agreement — see `e2e-evidence/KDF-LAYOUT-P4-PROPOSAL.md`.
+ * | | P4 (c) proposal — WRONG | A1 ratified — implemented here |
+ * |---|---|---|
+ * | nonce | `0x00*4 ‖ be64(seq)` | `sessionPrefix(4 B random) ‖ be64(seq)` |
+ * | AAD | `"cc-e2e-v1" ‖ 0x01 ‖ u8(len) kid ‖ be64(seq)` | tags `0x21..0x25`, below |
  *
  * ```
- *   nonce = 0x00 0x00 0x00 0x00 || be64(s)              (12 bytes)
- *   aad   = "cc-e2e-v1" || 0x01 || u8(len(kid)) || kid || be64(s)
+ *   nonce (12 B) = sessionPrefix(4 B, random, per (kid,direction)) ‖ be64(seq)
+ *
+ *   AAD = 0x21 u8(len) frameType     (ASCII, e.g. "SMS_RECEIVED")
+ *       ‖ 0x22 u8(len) kid           (ASCII)
+ *       ‖ 0x23 be64(seq)             (the SAME seq as the nonce)
+ *       ‖ 0x24 u8 direction          (0x01 = p2c, 0x02 = c2p)
+ *       ‖ 0x25 be64(pairEpoch)
  * ```
  *
- * **Why the nonce is just the sequence.** GCM's one unforgivable failure is
- * nonce reuse under the same key, which leaks the authentication key outright.
- * The traffic keys are already DIRECTIONAL ([E2eKdf.deriveTrafficKeys]), so
- * within one key there is exactly one sender and one monotonically increasing
- * `s`. Deriving the nonce from `s` alone therefore makes reuse impossible by
- * construction rather than by discipline — there is no random nonce to collide
- * and no counter that two senders could both advance. [Sender] owns that counter
- * so no call site can choose a sequence at all; the bare [seal] takes one
- * explicitly and exists for tests and vectors.
+ * ## The four rules A1 attaches to these bytes, and where each one lives
  *
- * **Why the AAD binds `kid` and `s`.** Without it, the relay can move a valid
- * ciphertext to a different sequence number or a different key id and it still
- * authenticates. Binding them means a relay that reorders or relabels frames
- * produces a decrypt failure, which §13.5 turns into a dropped frame — not a
- * silently accepted, reordered one.
+ * 1. **Uniqueness comes from the COUNTER, not the prefix.** The 4-byte random
+ *    `sessionPrefix` is defence in depth against a state-restore bug and must
+ *    never be treated as what makes nonces unique. Reasoning "the prefix is
+ *    random so a counter collision is fine" reintroduces the bug. The counter
+ *    is owned by [E2eSeqStore]; nothing here can choose a sequence.
+ * 2. **Persist-before-emit, fail closed.** [E2eSeqStore] — see that file.
+ * 3. **AAD is NOT the JSON header bytes.** JSON key order, spacing and number
+ *    formatting are not canonical across Kotlin and JS, so authenticating the
+ *    serializer's output would make a whitespace difference present as a
+ *    decryption failure. Both sides parse the header and RE-ENCODE the five
+ *    tagged fields above. [aad] is that re-encoding.
+ * 4. **Pad first, then seal.** The plaintext fed to GCM is the §13.4 padded
+ *    block. Sealing first would put the real length in the clear, which is the
+ *    entire leak padding exists to close.
  *
- * ## What an open failure must NOT do
+ * ## The u8 cap is enforced, not assumed (A1 item 4)
  *
- * [open] returns null rather than throwing on a bad tag. §13.5: a decrypt
- * failure drops the frame and never closes the socket; three failures in ten
- * seconds request a re-pair. An exception here would tempt a caller into a
- * reconnect loop, which is the behaviour the spec explicitly forbids.
+ * `kid` and `frameType` are `u8`-length-prefixed. A1 ratified `u8` over `u16`
+ * *on condition* that anything exceeding 255 bytes **throws at encode time**.
+ * Silent truncation to `len and 0xFF` would re-create the framing collision the
+ * addendum exists to kill, in the one code path nobody tests. [requireTagged]
+ * is that throw.
+ *
+ * ## Why this is the low-level API
+ *
+ * [seal] takes a key, a direction and a sequence explicitly, which is exactly
+ * what a vectors test needs and exactly what production code must never do. A1:
+ * *"each side holds exactly one send key and one receive key and MUST NOT be
+ * able to name the other — directional separation enforced by a naming
+ * convention is directional separation that will be violated."* Production code
+ * uses [E2eSession], which exposes only `seal`/`open` and holds the directions
+ * privately.
  */
 object E2eEnvelope {
 
@@ -59,9 +77,26 @@ object E2eEnvelope {
 
     private const val TRANSFORM = "AES/GCM/NoPadding"
     private const val GCM_TAG_BITS = 128
-    private const val NONCE_BYTES = 12
-    private const val AAD_LABEL = "cc-e2e-v1"
-    private const val AAD_TAG_ENVELOPE: Byte = 0x01
+    const val NONCE_BYTES = 12
+
+    /** Random per-(kid,direction) nonce prefix. Defence in depth, NOT uniqueness. */
+    const val SESSION_PREFIX_BYTES = 4
+
+    // Canonical AAD tags. A1 reserves 0x21..0x25 for this structure; 0x01..0x04
+    // are the SAS transcript (§13.3) and 0x11..0x15 the KDF pair context. The
+    // ranges are disjoint by construction and MUST stay disjoint, so no
+    // structure can be replayed as another.
+    private const val TAG_FRAME_TYPE: Byte = 0x21
+    private const val TAG_KID: Byte = 0x22
+    private const val TAG_SEQ: Byte = 0x23
+    private const val TAG_DIRECTION: Byte = 0x24
+    private const val TAG_PAIR_EPOCH: Byte = 0x25
+
+    /** Which way a frame travels. The byte is authenticated in the AAD. */
+    enum class Direction(val wireByte: Byte) {
+        PHONE_TO_COMPUTER(0x01),
+        COMPUTER_TO_PHONE(0x02),
+    }
 
     /** Thrown when an envelope cannot be built or parsed. Never on a bad tag. */
     class EnvelopeException(message: String) : IllegalArgumentException(message)
@@ -82,56 +117,63 @@ object E2eEnvelope {
     }
 
     /**
-     * Seal one frame.
+     * Seal one frame. LOW-LEVEL — production code uses [E2eSession].
      *
-     * @param frameType the wire frame type, used ONLY to decide padding
-     *        exemption ([E2ePadding.isExempt]). It travels in the clear anyway.
-     * @param seq must be strictly greater than any sequence previously sealed
-     *        under this [kid] — see the nonce note in the class doc.
+     * @param sessionPrefix exactly [SESSION_PREFIX_BYTES] random bytes, fixed
+     *        for the life of this (kid, direction).
+     * @param seq must never repeat under [key]. Owned by [E2eSeqStore].
      */
     fun seal(
         key: ByteArray,
         kid: String,
         seq: Long,
-        frameType: String?,
+        direction: Direction,
+        pairEpoch: Long,
+        sessionPrefix: ByteArray,
+        frameType: String,
         plaintext: ByteArray,
     ): Sealed {
         requireKey(key)
-        requireKid(kid)
-        if (seq < 0) throw EnvelopeException("sequence must be non-negative: $seq")
+        requireSeq(seq)
+        // A1 rule 4: pad FIRST, then seal.
         val padded = E2ePadding.pad(frameType, plaintext)
         val cipher = Cipher.getInstance(TRANSFORM)
         cipher.init(
             Cipher.ENCRYPT_MODE,
             SecretKeySpec(key, "AES"),
-            GCMParameterSpec(GCM_TAG_BITS, nonceFor(seq)),
+            GCMParameterSpec(GCM_TAG_BITS, nonceFor(sessionPrefix, seq)),
         )
-        cipher.updateAAD(aad(kid, seq))
+        cipher.updateAAD(aad(frameType, kid, seq, direction, pairEpoch))
         return Sealed(VERSION, kid, seq, cipher.doFinal(padded))
     }
 
     /**
-     * Open one frame.
+     * Open one frame. LOW-LEVEL — production code uses [E2eSession].
      *
      * @return the plaintext, or **null** when the frame does not authenticate or
      *         the padding is malformed. Null, not an exception: §13.5 says drop
-     *         the frame and never close the socket.
+     *         the frame and never close the socket, and an exception here would
+     *         tempt a caller into the reconnect loop the spec forbids.
      */
-    fun open(key: ByteArray, envelope: Sealed, frameType: String?): ByteArray? {
+    fun open(
+        key: ByteArray,
+        envelope: Sealed,
+        direction: Direction,
+        pairEpoch: Long,
+        sessionPrefix: ByteArray,
+        frameType: String,
+    ): ByteArray? {
         requireKey(key)
-        if (envelope.version != VERSION) {
-            // An unknown envelope version is not a decrypt failure, it is a
-            // build mismatch. Still a drop, but a distinguishable one.
-            return null
-        }
+        if (envelope.version != VERSION) return null
+        if (envelope.seq < 0) return null
         return try {
             val cipher = Cipher.getInstance(TRANSFORM)
             cipher.init(
                 Cipher.DECRYPT_MODE,
                 SecretKeySpec(key, "AES"),
-                GCMParameterSpec(GCM_TAG_BITS, nonceFor(envelope.seq)),
+                GCMParameterSpec(GCM_TAG_BITS, nonceFor(sessionPrefix, envelope.seq)),
             )
-            cipher.updateAAD(aad(envelope.kid, envelope.seq))
+            cipher.updateAAD(aad(frameType, envelope.kid, envelope.seq, direction, pairEpoch))
             E2ePadding.unpad(frameType, cipher.doFinal(envelope.ciphertext))
         } catch (e: javax.crypto.AEADBadTagException) {
             null
@@ -139,13 +181,16 @@ object E2eEnvelope {
             null
         } catch (e: E2ePadding.PaddingException) {
             null
+        } catch (e: EnvelopeException) {
+            // An over-long kid/frameType on the RECEIVE path is a hostile or
+            // corrupt frame, not a local bug: drop it like any other bad frame.
+            null
         }
     }
 
     /**
-     * Parse a wire body. Deliberately strict about the four fields and
-     * deliberately tolerant of unknown ones, so a future additive field does not
-     * break an older phone.
+     * Parse a wire body. Strict about the four fields, tolerant of unknown
+     * additive ones so a newer peer does not break an older phone.
      */
     fun parse(json: String): Sealed {
         val obj = try {
@@ -157,9 +202,9 @@ object E2eEnvelope {
             if (!obj.has(f)) throw EnvelopeException("envelope is missing '$f'")
         }
         val kid = obj["kid"].asString
-        requireKid(kid)
+        if (kid.isEmpty()) throw EnvelopeException("kid must not be empty")
         val seq = obj["s"].asLong
-        if (seq < 0) throw EnvelopeException("sequence must be non-negative: $seq")
+        requireSeq(seq)
         return Sealed(
             version = obj["e"].asInt,
             kid = kid,
@@ -168,24 +213,77 @@ object E2eEnvelope {
         )
     }
 
-    /** The 12-byte GCM nonce for [seq]. Exported so a test can pin it. */
-    fun nonceFor(seq: Long): ByteArray {
+    /**
+     * The 12-byte GCM nonce: `sessionPrefix ‖ be64(seq)`. Exported so the A1
+     * vector can pin it.
+     */
+    fun nonceFor(sessionPrefix: ByteArray, seq: Long): ByteArray {
+        if (sessionPrefix.size != SESSION_PREFIX_BYTES) {
+            throw EnvelopeException(
+                "sessionPrefix must be $SESSION_PREFIX_BYTES bytes, got ${sessionPrefix.size}"
+            )
+        }
+        requireSeq(seq)
         val out = ByteArray(NONCE_BYTES)
-        for (i in 0 until 8) out[4 + i] = ((seq ushr ((7 - i) * 8)) and 0xff).toByte()
+        System.arraycopy(sessionPrefix, 0, out, 0, SESSION_PREFIX_BYTES)
+        for (i in 0 until 8) {
+            out[SESSION_PREFIX_BYTES + i] = ((seq ushr ((7 - i) * 8)) and 0xff).toByte()
+        }
         return out
     }
 
-    /** The additional authenticated data for ([kid], [seq]). Exported for tests. */
-    fun aad(kid: String, seq: Long): ByteArray {
-        val k = kid.toByteArray(StandardCharsets.UTF_8)
-        val label = AAD_LABEL.toByteArray(StandardCharsets.UTF_8)
-        val out = ByteArray(label.size + 2 + k.size + 8)
-        var p = 0
-        System.arraycopy(label, 0, out, p, label.size); p += label.size
-        out[p++] = AAD_TAG_ENVELOPE
-        out[p++] = k.size.toByte()
-        System.arraycopy(k, 0, out, p, k.size); p += k.size
-        for (i in 0 until 8) out[p + i] = ((seq ushr ((7 - i) * 8)) and 0xff).toByte()
+    /**
+     * The canonical AAD of A1. Re-encoded from parsed fields, never taken from
+     * the JSON header bytes — see rule 3 in the class doc.
+     */
+    fun aad(
+        frameType: String,
+        kid: String,
+        seq: Long,
+        direction: Direction,
+        pairEpoch: Long,
+    ): ByteArray {
+        requireSeq(seq)
+        if (pairEpoch < 0) throw EnvelopeException("pairEpoch must be non-negative: $pairEpoch")
+        val out = ByteArrayOutputStream(96)
+        writeTagged(out, TAG_FRAME_TYPE, "frameType", frameType)
+        writeTagged(out, TAG_KID, "kid", kid)
+        out.write(TAG_SEQ.toInt())
+        out.write(be64(seq))
+        out.write(TAG_DIRECTION.toInt())
+        out.write(direction.wireByte.toInt())
+        out.write(TAG_PAIR_EPOCH.toInt())
+        out.write(be64(pairEpoch))
+        return out.toByteArray()
+    }
+
+    private fun writeTagged(out: ByteArrayOutputStream, tag: Byte, name: String, value: String) {
+        val bytes = requireTagged(name, value)
+        out.write(tag.toInt())
+        out.write(bytes.size)
+        out.write(bytes)
+    }
+
+    /**
+     * A1 item 4: the u8 cap is ENFORCED, not assumed. Truncating to
+     * `len and 0xFF` would re-create the framing collision the addendum exists
+     * to kill, in the one code path nobody tests.
+     */
+    private fun requireTagged(name: String, value: String): ByteArray {
+        val bytes = value.toByteArray(StandardCharsets.UTF_8)
+        if (bytes.isEmpty()) throw EnvelopeException("$name must not be empty")
+        if (bytes.size > 255) {
+            throw EnvelopeException(
+                "$name is ${bytes.size} bytes; the u8 length prefix holds 255 " +
+                    "(A1 item 4: refuse rather than truncate)"
+            )
+        }
+        return bytes
+    }
+
+    private fun be64(v: Long): ByteArray {
+        val out = ByteArray(8)
+        for (i in 0 until 8) out[i] = ((v ushr ((7 - i) * 8)) and 0xff).toByte()
         return out
     }
 
@@ -195,46 +293,8 @@ object E2eEnvelope {
         }
     }
 
-    private fun requireKid(kid: String) {
-        if (kid.isEmpty() || kid.length > 255) {
-            throw EnvelopeException("kid must be 1..255 chars, got ${kid.length}")
-        }
-        // u8 length-prefixed in the AAD, so it must fit in 255 BYTES too.
-        if (kid.toByteArray(StandardCharsets.UTF_8).size > 255) {
-            throw EnvelopeException("kid exceeds 255 bytes when UTF-8 encoded")
-        }
-    }
-
-    /**
-     * The send side of one (kid, direction). Owns the sequence counter, because
-     * a counter that call sites advance is a counter that will eventually be
-     * advanced twice — and under GCM a repeated nonce does not corrupt one
-     * frame, it leaks the authentication key for ALL of them.
-     *
-     * One instance per key id. A new Accept mints a new key and a new Sender
-     * starting at zero, which is safe precisely because the KEY is new: the
-     * (key, nonce) pair is what must never repeat, not the nonce alone.
-     */
-    class Sender(private val key: ByteArray, val kid: String) {
-
-        /** The next sequence number this sender will use. */
-        var nextSeq: Long = 0
-            private set
-
-        /** Seal the next frame and advance. */
-        @Synchronized
-        fun seal(frameType: String?, plaintext: ByteArray): Sealed {
-            if (nextSeq == Long.MAX_VALUE) {
-                // 2^63 frames is unreachable in practice; §13.8 rekeys at 2^32
-                // or 30 days. Refusing here means that if the rekey is ever
-                // missed we stop rather than wrap the counter and reuse a nonce.
-                throw EnvelopeException("sequence space exhausted for kid=$kid — rekey required")
-            }
-            return seal(key, kid, nextSeq++, frameType, plaintext)
-        }
-
-        /** Overwrite the key. Call when the pair ends (§13.8). */
-        fun zeroize() = key.fill(0)
+    private fun requireSeq(seq: Long) {
+        if (seq < 0) throw EnvelopeException("sequence must be non-negative: $seq")
     }
 
     private fun escape(s: String): String =

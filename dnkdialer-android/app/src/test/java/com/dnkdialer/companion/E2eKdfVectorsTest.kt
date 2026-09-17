@@ -96,8 +96,79 @@ class E2eKdfVectorsTest {
             append(",\n")
             append(recipientJson("extension-sw", sw, z, ctx))
             append("\n    ]\n")
-            append("  }\n")
+            append("  },\n")
+            append(aeadSection())
             append("}\n")
+        }
+    }
+
+    /**
+     * GATE1 Addendum A1's amended AEAD vectors, ADDED to the ratified file.
+     *
+     * A1: *"kdf-vectors-P4-proposal.json is ratified unchanged and becomes
+     * tests/kdf-vectors.json. Forge MUST ADD to it, and MUST NOT regenerate the
+     * existing values."* Everything above this section is produced by the same
+     * code that produced the ratified file, and
+     * `the committed KDF vectors match what the code derives` is what proves
+     * those values did not move.
+     *
+     * A1 also requires the web/SW lane to assert against the same file:
+     * *"or the file only constrains one of the three implementations."*
+     */
+    private fun aeadSection(): String {
+        val frameType = "SMS_RECEIVED"
+        val kid = "kid-01"
+        val seq = 7L
+        val dir = E2eEnvelope.Direction.PHONE_TO_COMPUTER
+        val epoch = 42L
+        val prefix = E2eKdf.fromHex("11223344")
+        val key = E2eKdf.fromHex(A1_P2C_KEY)
+        val hi = "hi".toByteArray(Charsets.UTF_8)
+        val sealed = E2eEnvelope.seal(key, kid, seq, dir, epoch, prefix, frameType, hi)
+        val q = "\""
+        return buildString {
+            append("  ${q}aead$q: {\n")
+            append("    ${q}_comment$q: ${q}GATE1 Addendum A1 (AMENDED). AES-256-GCM, 128-bit tag. ")
+            append("nonce = sessionPrefix(4B random per kid+direction) || be64(seq). ")
+            append("AAD = 0x21 u8(len) frameType || 0x22 u8(len) kid || 0x23 be64(seq) || ")
+            append("0x24 u8 direction (0x01=p2c, 0x02=c2p) || 0x25 be64(pairEpoch). ")
+            append("AAD is RE-ENCODED from parsed fields, NEVER the JSON header bytes. ")
+            append("Pad per s13.4 FIRST, then seal.$q,\n")
+            append("    ${q}vectorA$q: {\n")
+            append("      ${q}frameType$q: $q$frameType$q,\n")
+            append("      ${q}kid$q: $q$kid$q,\n")
+            append("      ${q}seq$q: $seq,\n")
+            append("      ${q}direction$q: ${q}p2c$q,\n")
+            append("      ${q}pairEpoch$q: $epoch,\n")
+            append("      ${q}aadHex$q: $q${E2eKdf.toHex(E2eEnvelope.aad(frameType, kid, seq, dir, epoch))}$q,\n")
+            append("      ${q}sessionPrefixHex$q: $q${E2eKdf.toHex(prefix)}$q,\n")
+            append("      ${q}nonceHex$q: $q${E2eKdf.toHex(E2eEnvelope.nonceFor(prefix, seq))}$q,\n")
+            append("      ${q}keyHex$q: $q${E2eKdf.toHex(key)}$q,\n")
+            append("      ${q}plaintextUtf8$q: ${q}hi$q,\n")
+            append("      ${q}paddedPlaintextHex$q: $q${E2eKdf.toHex(E2ePadding.pad(frameType, hi))}$q,\n")
+            append("      ${q}ciphertextHex$q: $q${E2eKdf.toHex(sealed.ciphertext)}$q\n")
+            append("    },\n")
+            append("    ${q}vectorB_mustThrowAtEncode$q: {\n")
+            append("      ${q}_comment$q: ${q}A1 item 4: u8 is ratified ONLY because the cap is enforced. ")
+            append("Each case MUST throw at encode on every platform — silent truncation to ")
+            append("len and 0xFF re-creates the framing collision the addendum exists to kill.$q,\n")
+            append("      ${q}maxBytes$q: 255,\n")
+            append("      ${q}cases$q: [${q}userId$q, ${q}phoneDeviceId$q, ${q}peerDeviceId$q, ")
+            append("${q}kid$q, ${q}frameType$q]\n")
+            append("    },\n")
+            append("    ${q}vectorC_tamper$q: {\n")
+            append("      ${q}_comment$q: ${q}Change any ONE of these AAD fields and the GCM tag check ")
+            append("MUST fail. Proves the AAD is actually passed — a silently dropped AAD is ")
+            append("indistinguishable from a working one on the happy path.$q,\n")
+            append("      ${q}fields$q: [${q}frameType$q, ${q}kid$q, ${q}seq$q, ${q}direction$q, ")
+            append("${q}pairEpoch$q]\n")
+            append("    },\n")
+            append("    ${q}vectorD_crossDirection$q: {\n")
+            append("      ${q}_comment$q: ${q}computerToPhoneKeyHex MUST NOT open vectorA.ciphertextHex. ")
+            append("This is what makes a reflection attack inert.$q,\n")
+            append("      ${q}keyHex$q: $q$A1_C2P_KEY$q\n")
+            append("    }\n")
+            append("  }\n")
         }
     }
 
@@ -148,6 +219,14 @@ class E2eKdfVectorsTest {
     }
 
     companion object {
+        /** traffic.phoneToComputerKeyHex from the ratified file — A1 vector A. */
+        private const val A1_P2C_KEY =
+            "b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060"
+
+        /** traffic.computerToPhoneKeyHex from the ratified file — A1 vector D. */
+        private const val A1_C2P_KEY =
+            "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d"
+
         /**
          * Two fixed, valid P-256 public points in uncompressed SEC1 hex. The
          * first is the standard base point G (SEC 2 §2.4.2) — a value anyone can

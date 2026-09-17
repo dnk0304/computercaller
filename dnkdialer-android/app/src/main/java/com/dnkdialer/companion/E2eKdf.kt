@@ -269,11 +269,20 @@ object E2eKdf {
     /**
      * The two directional traffic keys, from the session key minted at Accept.
      *
+     * **`internal` on purpose (GATE1 Addendum A1, item 2).** A1 requires that
+     * each side hold one send key and one receive key and be UNABLE to name the
+     * other — "directional separation enforced by a naming convention is
+     * directional separation that will be violated." Production code therefore
+     * cannot reach this: it goes through [E2eSession], which fixes send=p2c and
+     * recv=c2p at construction and takes no direction argument anywhere. The
+     * visibility is what makes that structural rather than advisory; the unit
+     * and instrumented suites are friend modules and can still pin the bytes.
+     *
      * [sessionKey] must be [KEY_BYTES] of CSPRNG output — see
      * [E2eSessionKey.mint]. An all-zero session key is rejected for the same
      * reason an all-zero ECDH result is.
      */
-    fun deriveTrafficKeys(sessionKey: ByteArray, ctx: PairContext): TrafficKeys {
+    internal fun deriveTrafficKeys(sessionKey: ByteArray, ctx: PairContext): TrafficKeys {
         if (sessionKey.size != KEY_BYTES) {
             throw KdfException("session key must be $KEY_BYTES bytes, got ${sessionKey.size}")
         }
@@ -282,6 +291,62 @@ object E2eKdf {
         return TrafficKeys(
             phoneToComputer = hkdf(salt, sessionKey, infoFor(LABEL_PHONE_TO_COMPUTER, ctx), KEY_BYTES),
             computerToPhone = hkdf(salt, sessionKey, infoFor(LABEL_COMPUTER_TO_PHONE, ctx), KEY_BYTES),
+        )
+    }
+
+    /** Info label for the p2c AEAD nonce prefix. See [deriveNoncePrefixes]. */
+    const val LABEL_NONCE_P2C = "cc-e2e-v1/np2c"
+
+    /** Info label for the c2p AEAD nonce prefix. See [deriveNoncePrefixes]. */
+    const val LABEL_NONCE_C2P = "cc-e2e-v1/nc2p"
+
+    /** The two 4-byte AEAD nonce prefixes for one pairing. */
+    class NoncePrefixes(val phoneToComputer: ByteArray, val computerToPhone: ByteArray)
+
+    /**
+     * The AEAD nonce prefixes, DERIVED rather than randomly generated.
+     *
+     * ## Why this deviates from A1's wording, and what Security must rule on
+     *
+     * GATE1 Addendum A1 specifies
+     * `nonce = sessionPrefix(4 B, **random**, per (kid,direction)) ‖ be64(seq)`.
+     * A randomly generated prefix has to be TRANSMITTED — the receiver cannot
+     * reconstruct a random value — and there is nowhere to put it. P1's `e2e`
+     * block is frozen and merged as
+     * `{v, mode, kid, epk, recipKeys[], wraps[]}`, the envelope is
+     * `{e, kid, s, c}`, and neither carries a nonce prefix. Taken literally,
+     * A1's random prefix is undecryptable by the peer.
+     *
+     * Rather than invent a wire field in a frozen frame, both prefixes are
+     * derived from the session key under their own HKDF labels, so each side
+     * computes both without transmitting anything.
+     *
+     * **The security property A1 asked for is preserved.** A1's stated purpose
+     * for the prefix is "defence in depth against a state-restore bug" — it is
+     * explicit that uniqueness comes from the COUNTER, never the prefix. SK is
+     * fresh CSPRNG output at every Accept, and `pairEpoch` is bound into
+     * `pairContext`, so a new Accept yields a new SK and therefore a new,
+     * unpredictable prefix. What changes is only that the value is
+     * *unpredictable-but-derived* instead of *random-and-transmitted*; what
+     * does not change is that a restored counter meets a different prefix
+     * whenever the pairing was re-Accepted.
+     *
+     * It is NOT a substitute for [E2eSeqStore]'s fail-closed rule, and nothing
+     * here should be read as making a counter collision tolerable.
+     *
+     * **FLAGGED for Security/Ken** alongside the A1 ratification: either bless
+     * this derivation, or add a prefix field to the `e2e` block (a P1 change).
+     * Recorded in `e2e-evidence/AEAD-NONCE-PREFIX-GAP.md`.
+     */
+    fun deriveNoncePrefixes(sessionKey: ByteArray, ctx: PairContext): NoncePrefixes {
+        if (sessionKey.size != KEY_BYTES) {
+            throw KdfException("session key must be $KEY_BYTES bytes, got ${sessionKey.size}")
+        }
+        requireNonZeroSharedSecret(sessionKey)
+        val salt = utf8(ctx.pairingId)
+        return NoncePrefixes(
+            phoneToComputer = hkdf(salt, sessionKey, infoFor(LABEL_NONCE_P2C, ctx), 4),
+            computerToPhone = hkdf(salt, sessionKey, infoFor(LABEL_NONCE_C2P, ctx), 4),
         )
     }
 
