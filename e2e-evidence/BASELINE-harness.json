@@ -1,16 +1,66 @@
 {
   "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
-  "utc": "2026-09-16T21:37:56.830Z",
+  "utc": "2026-09-17T01:49:25.511Z",
   "harnessPass": [
+    {
+      "name": "relay:pairing-persist",
+      "passed": 84,
+      "total": 84
+    },
     {
       "name": "relay:pair-state",
       "passed": 22,
       "total": 22
     },
     {
-      "name": "harness:ext-badge-counter-proof",
-      "passed": 42,
-      "total": 42
+      "name": "relay:dock-resume",
+      "passed": 26,
+      "total": 26
+    },
+    {
+      "name": "relay:relink-kill-frame-buffer",
+      "passed": 18,
+      "total": 18
+    },
+    {
+      "name": "relay:call-separation",
+      "passed": 16,
+      "total": 16
+    },
+    {
+      "name": "relay:www-origin",
+      "passed": 8,
+      "total": 8
+    },
+    {
+      "name": "relay:log-redaction",
+      "passed": 32,
+      "total": 32
+    },
+    {
+      "name": "harness:app-in-call-shots",
+      "passed": 47,
+      "total": 47
+    },
+    {
+      "name": "harness:ext-in-call-shots",
+      "passed": 47,
+      "total": 47
+    },
+    {
+      "name": "harness:ext-templates-scroll-call-message-proof",
+      "passed": 26,
+      "total": 26
+    },
+    {
+      "name": "harness:ext-shell-theme-proof",
+      "passed": 20,
+      "total": 20
+    },
+    {
+      "name": "harness:ext-layering-shots",
+      "passed": 14,
+      "total": 14
     }
   ]
 }

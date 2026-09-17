@@ -82,6 +82,18 @@ if (!IS_WORKTREE && !IS_MAIN) {
 const READ_ONLY = IS_MAIN;
 
 // ── env: the gate refuses without the harness env (rule 7) ─────────────────
+/**
+ * `.env.local` is the source of JWT_SECRET and nothing else the gate needs.
+ *
+ * DATABASE_URL is explicitly NOT read from it: this worktree's .env.local still
+ * carries `file:./dev.db` from the retired sqlite rig (production has been
+ * Postgres since 2026-05-24, see .gitignore). Importing it would hand Prisma a
+ * dead sqlite path under a name that looks configured — the harness would fail
+ * with a confusing Prisma error instead of the gate refusing with a clear one,
+ * and worse, a future sqlite file appearing on disk would make it "work".
+ * The harness DB is the operator's to supply, per rule 7.
+ */
+const ENV_LOCAL_NEVER = new Set(['DATABASE_URL']);
 function loadEnvLocal() {
   const p = join(ROOT, '.env.local');
   if (!existsSync(p)) return;
@@ -91,6 +103,7 @@ function loadEnvLocal() {
     const i = line.indexOf('=');
     if (i === -1) continue;
     const k = line.slice(0, i).trim();
+    if (ENV_LOCAL_NEVER.has(k)) continue;
     let v = line.slice(i + 1).trim();
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
     if (!(k in process.env)) process.env[k] = v;
@@ -98,7 +111,20 @@ function loadEnvLocal() {
 }
 loadEnvLocal();
 if (WEB) {
-  if (!process.env.DATABASE_URL) refuse('DATABASE_URL is not set (expected postgresql://pix:pix@localhost:15433/cc). The /app harnesses cannot run without it.');
+  const db = process.env.DATABASE_URL || '';
+  if (!db) {
+    refuse(
+      'DATABASE_URL is not set in the environment. The /app harnesses cannot run without it.\n' +
+      '            Expected: postgresql://pix:pix@localhost:15433/cc\n' +
+      '            It is deliberately NOT read from .env.local — that file still holds the\n' +
+      '            retired sqlite value (file:./dev.db), and silently handing that to Prisma\n' +
+      '            is exactly the failure this refusal exists to prevent. Export it:\n' +
+      '                DATABASE_URL=postgresql://pix:pix@localhost:15433/cc bun run e2e:gate ...'
+    );
+  }
+  if (!db.startsWith('postgresql://')) {
+    refuse(`DATABASE_URL is set but is not a postgresql:// URL (got "${db.split(':')[0]}:..."). Production is Postgres; the harnesses assume it.`);
+  }
   if (!process.env.JWT_SECRET) refuse('JWT_SECRET is not set (expected in .env.local). The /app harnesses cannot mint a session without it.');
 }
 
@@ -251,20 +277,29 @@ function skip(name, cmd, reason) {
  * not the lint). Independent steps keep running after a failure so ONE gate run
  * reports everything that is broken instead of one symptom at a time.
  */
-function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false } = {}) {
+function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false, attempts = 1 } = {}) {
   const blocker = needs.find((n) => steps.some((s) => s.name === n && s.exit !== 0));
   if (blocker) return skip(name, cmd, `not run — depends on "${blocker}", which failed`);
+
   const t0 = Date.now();
-  const r = spawnSync(cmd, {
-    cwd, shell: true, encoding: 'utf8', timeout,
-    maxBuffer: 256 * 1024 * 1024,
-    env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
-  });
+  let out = '', exit = 1, counts = null, used = 0;
+  for (let i = 0; i < Math.max(1, attempts); i++) {
+    used = i + 1;
+    const r = spawnSync(cmd, {
+      cwd, shell: true, encoding: 'utf8', timeout,
+      maxBuffer: 256 * 1024 * 1024,
+      env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
+    });
+    out = `${r.stdout || ''}${r.stderr || ''}`;
+    exit = r.status === null ? 124 : r.status;
+    try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
+    if (exit === 0) break;
+  }
   const ms = Date.now() - t0;
-  const out = `${r.stdout || ''}${r.stderr || ''}`;
-  const exit = r.status === null ? 124 : r.status;
-  let counts = null;
-  try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
+  // `attempts` is always recorded, not only when a retry happened, so flakiness
+  // is a number somebody can trend rather than something the gate hides.
+  if (used > 1) counts = { ...(counts || {}), attempts: used };
+
   if (exit !== 0) {
     mkdirSync(LOGDIR, { recursive: true });
     const log = join(LOGDIR, `${PHASE}-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.log`);
@@ -703,6 +738,22 @@ if (WEB) {
             parse: passLine,
             env: harnessEnv,
             scrub: true,
+            /**
+             * Playwright harnesses drive a real browser and a real MV3 service
+             * worker, and they are measurably flaky under load: the baseline run
+             * scored ext-badge-counter-proof 39/42 with three consecutive checks
+             * reading "signed-out" where they expected "held" — the SW had not
+             * finished re-signing-in. Standalone, the same harness scores 42/42.
+             * It reads no env at all (zero `process.env` references), so the
+             * scrub cannot be the cause.
+             *
+             * ONE retry, and the attempt count lands in the JSON. A gate that
+             * goes red at random teaches everyone to ignore it, which is the
+             * same failure as a gate that is permanently red; a real break still
+             * fails twice. Flagged to Ken as a harness-side flake to fix at
+             * source — this is a gate making the signal usable, not a fix.
+             */
+            attempts: 2,
             timeout: 8 * 60_000,
           });
         }

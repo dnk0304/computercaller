@@ -1,0 +1,259 @@
+{
+  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "utc": "2026-09-17T01:31:41.037Z",
+  "note": "Per-(file, rule) lint floor. May only SHRINK. A phase that reduces a cell regenerates this file in its own commit \"[E2E-P<N>] lint-baseline shrink\". New files and newly-triggered rules have an implicit floor of 0.",
+  "namedOwners": {
+    "app/app/admin/page.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/set-state-in-effect": 2
+      }
+    },
+    "app/app/page.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/set-state-in-effect": 1
+      }
+    },
+    "app/app/settings/page.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/purity": 1
+      }
+    },
+    "components/CallModal.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/refs": 2
+      }
+    },
+    "components/ChipScroller.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/immutability": 1
+      }
+    },
+    "components/Dashboard.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/exhaustive-deps": 1,
+        "react-hooks/purity": 2,
+        "react-hooks/set-state-in-effect": 2
+      }
+    },
+    "components/PhoneModeCallSurface.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/set-state-in-effect": 1
+      }
+    },
+    "components/PhoneStatusButton.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/set-state-in-effect": 1
+      }
+    },
+    "components/SMSInterface.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/set-state-in-effect": 1
+      }
+    },
+    "components/Sidebar.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/set-state-in-effect": 1
+      }
+    },
+    "hooks/PhoneProvider.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/exhaustive-deps": 1,
+        "react-hooks/use-memo": 1
+      }
+    },
+    "hooks/dashboardTabContext.tsx": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/set-state-in-effect": 1
+      }
+    },
+    "hooks/useDebouncedValue.ts": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/set-state-in-effect": 1
+      }
+    },
+    "hooks/usePhoneBridge.ts": {
+      "owner": "Forge",
+      "reason": "react-hooks family — no fix exists that is provably behaviour-preserving; named per plan NEW-mi-4 rather than suppressed.",
+      "rules": {
+        "react-hooks/exhaustive-deps": 5
+      }
+    }
+  },
+  "totals": {
+    "problems": 176,
+    "errors": 55,
+    "warnings": 121
+  },
+  "files": {
+    "app/(marketing)/page.tsx": {
+      "(fatal)": 1
+    },
+    "app/api/auth/account/set-password/route.ts": {
+      "@typescript-eslint/no-unused-vars": 1
+    },
+    "app/app/admin/page.tsx": {
+      "react-hooks/set-state-in-effect": 2
+    },
+    "app/app/page.tsx": {
+      "react-hooks/set-state-in-effect": 1,
+      "react/no-unescaped-entities": 1
+    },
+    "app/app/settings/page.tsx": {
+      "react-hooks/purity": 1
+    },
+    "app/messenger/[id]/page.tsx": {
+      "@next/next/no-img-element": 1
+    },
+    "chrome-extension/background.js": {
+      "@typescript-eslint/no-unused-expressions": 1,
+      "@typescript-eslint/no-unused-vars": 21
+    },
+    "chrome-extension/shell.js": {
+      "@typescript-eslint/no-unused-vars": 21
+    },
+    "components/CallModal.tsx": {
+      "react-hooks/refs": 2
+    },
+    "components/ChipScroller.tsx": {
+      "react-hooks/immutability": 1
+    },
+    "components/Dashboard.tsx": {
+      "(fatal)": 4,
+      "@next/next/no-img-element": 5,
+      "@typescript-eslint/no-explicit-any": 2,
+      "@typescript-eslint/no-unused-vars": 16,
+      "react-hooks/exhaustive-deps": 1,
+      "react-hooks/purity": 2,
+      "react-hooks/set-state-in-effect": 2
+    },
+    "components/HowItWorksDemo.tsx": {
+      "(fatal)": 1
+    },
+    "components/PhoneModeCallSurface.tsx": {
+      "react-hooks/set-state-in-effect": 1
+    },
+    "components/PhoneStatusButton.tsx": {
+      "react-hooks/set-state-in-effect": 1
+    },
+    "components/SMSInterface.tsx": {
+      "@typescript-eslint/no-unused-vars": 2,
+      "jsx-a11y/alt-text": 1,
+      "react-hooks/set-state-in-effect": 1
+    },
+    "components/Sidebar.tsx": {
+      "react-hooks/set-state-in-effect": 1
+    },
+    "dnkdialer-bridge/main.js": {
+      "@typescript-eslint/no-require-imports": 3,
+      "@typescript-eslint/no-unused-vars": 1
+    },
+    "hooks/PhoneProvider.tsx": {
+      "react-hooks/exhaustive-deps": 1,
+      "react-hooks/use-memo": 1
+    },
+    "hooks/dashboardTabContext.tsx": {
+      "react-hooks/set-state-in-effect": 1
+    },
+    "hooks/useDebouncedValue.ts": {
+      "react-hooks/set-state-in-effect": 1
+    },
+    "hooks/usePhoneBridge.ts": {
+      "(fatal)": 5,
+      "@typescript-eslint/no-explicit-any": 1,
+      "@typescript-eslint/no-unused-vars": 1,
+      "react-hooks/exhaustive-deps": 5
+    },
+    "lib/deviceLabel.ts": {
+      "(fatal)": 1
+    },
+    "lib/entitlement-core.js": {
+      "@typescript-eslint/no-unused-vars": 3
+    },
+    "lib/passwordSetToken-core.js": {
+      "@typescript-eslint/no-require-imports": 1
+    },
+    "lib/roomReset-core.d.ts": {
+      "(fatal)": 1
+    },
+    "lib/roomReset-core.js": {
+      "@typescript-eslint/no-unused-vars": 1
+    },
+    "scripts/admin-create-account-proof.cjs": {
+      "@typescript-eslint/no-require-imports": 2
+    },
+    "scripts/brand-lockup-shots.mjs": {
+      "@typescript-eslint/no-unused-vars": 1
+    },
+    "scripts/build-brand-lockup.ts": {
+      "(fatal)": 2
+    },
+    "scripts/entitlement-gate-proof.cjs": {
+      "@typescript-eslint/no-require-imports": 1,
+      "@typescript-eslint/no-unused-expressions": 1
+    },
+    "scripts/ext-sw-lifetime-proof.mjs": {
+      "@typescript-eslint/no-unused-vars": 1
+    },
+    "scripts/free-access-duration-proof.js": {
+      "@typescript-eslint/no-require-imports": 1
+    },
+    "scripts/free-access-email-proof.ts": {
+      "@typescript-eslint/no-explicit-any": 3
+    },
+    "scripts/official-logo-shots.mjs": {
+      "@typescript-eslint/no-unused-vars": 2
+    },
+    "server.js": {
+      "(fatal)": 3,
+      "@typescript-eslint/no-require-imports": 8,
+      "@typescript-eslint/no-unused-vars": 14
+    },
+    "tests/admin-badge-truth.test.js": {
+      "@typescript-eslint/no-require-imports": 2
+    },
+    "tests/admin-invite-resend.test.js": {
+      "@typescript-eslint/no-require-imports": 4
+    },
+    "tests/pair-state.test.mjs": {
+      "@typescript-eslint/no-unused-vars": 1
+    },
+    "tests/partner-api-keys.test.ts": {
+      "@typescript-eslint/no-explicit-any": 1
+    },
+    "tests/password-set-token.test.js": {
+      "@typescript-eslint/no-require-imports": 5
+    },
+    "tests/repro-resume-sync.mjs": {
+      "@typescript-eslint/no-unused-vars": 1
+    },
+    "tests/whop-reconcile.test.js": {
+      "@typescript-eslint/no-require-imports": 2
+    }
+  }
+}
