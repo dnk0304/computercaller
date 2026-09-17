@@ -988,9 +988,17 @@ check('be64 does not round above 2^53',
   // spec (or the reverse) fails here rather than at a pairing.
   {
     const a2 = section.slice(section.indexOf('#### 13.10.7'), section.indexOf('#### 13.10.8'));
-    const a3 = section.slice(section.indexOf('#### 13.10.8'));
+    // BOUNDED at §13.10.9, not "to the end of the section". A4 appended a
+    // sibling subsection, and an unbounded slice would let every §13.10.8
+    // assertion below be satisfied by text that lives in §13.10.9 — a guard
+    // that silently stops guarding the section it names.
+    const a3 = section.slice(section.indexOf('#### 13.10.8'), section.indexOf('#### 13.10.9'));
+    const a4 = section.slice(section.indexOf('#### 13.10.9'));
     check('drift guard: §13.10.7 exists (A2)', a2.length > 0);
     check('drift guard: §13.10.8 exists (A3)', a3.length > 0);
+    check('drift guard: §13.10.9 exists (A4)', a4.length > 0);
+    check('drift guard: the §13.10.8 slice is BOUNDED — it does not swallow §13.10.9',
+      !a3.includes('#### 13.10.9') && !a3.includes('A4-R1'));
     check('drift guard: §13.10.7 carries the nonce-prefix labels the vectors were derived under',
       a2.includes(`"${LABEL_NP2C}"`) && a2.includes(`"${LABEL_NC2P}"`));
     check('drift guard: §13.10.7 states L = 4', /L = 4/.test(a2));
@@ -1026,9 +1034,45 @@ check('be64 does not round above 2^53',
       /SAS computable on the computer side at all/.test(a3));
     check('drift guard: §13.10.8 records persist-before-use for the floor',
       /persist-before-use/.test(a3));
+    // A4: the deletion, the canonical-set definition, the five MUSTs, the
+    // conditional clause, the SAS "no", and A4.1's SW pairingId channel.
+    check('drift guard: §13.10.8 records that A3-M3 is SUPERSEDED, not still in force',
+      /A3-M3 — SUPERSEDED IN FULL/.test(a3) && a3.includes('13.10.9'));
+    for (const must of ['A4-R1', 'A4-R2', 'A4-R3', 'A4-M1', 'A4-M2', 'A4-M3', 'A4-M4', 'A4-M5', 'A4.1']) {
+      check(`drift guard: §13.10.9 carries ${must}`, a4.includes(must));
+    }
+    check('drift guard: §13.10.9 names the canonical set as wraps[].deviceId and NOT recipKeys[]',
+      a4.includes('`wraps[].deviceId`, NOT `recipKeys[]`') && /includes the phone/i.test(a4));
+    check('drift guard: §13.10.9 pins byte-wise UTF-8, not locale collation',
+      /byte-wise lexicographically lowest/.test(a4) && /localeCompare/.test(a4));
+    // Line wrapping and CRLF are not part of the claim, so the slice is
+    // flattened before the sentence-level assertions below.
+    const a4flat = a4.replace(/\r?\n>?\s*/g, ' ');
+    check('drift guard: §13.10.9 records the DELETED clause verbatim, so it cannot creep back',
+      a4flat.includes('**DELETED:**')
+      && a4flat.includes('a receiver MUST refuse a block whose `ctx.peerDeviceId` is not its own `deviceId`.'));
+    check('drift guard: §13.10.9 keeps clause (c) CONDITIONAL on holding wraps[]',
+      a4flat.includes('MUST NOT attempt this check')
+      && a4flat.includes('MUST NOT substitute its own `deviceId`'));
+    check('drift guard: §13.10.9 carries the single-recipient invariance proof (J.3 ≡ I.1)',
+      a4.includes('b12f964e') && /Single-recipient invariance/i.test(a4));
+    eq('drift guard: …and that key is still vector I.1\'s in the JSON',
+      V.ctxWire.positiveI1.phoneToComputerKeyHex.slice(0, 8), 'b12f964e');
+    check('drift guard: §13.10.9 states §13.3 stays FROZEN (no deviceIds in the SAS)',
+      /§13\.3 stays FROZEN/.test(a4));
+    check('drift guard: §13.10.9 records A4-M3 (unwrap failure is an ABORT, not counts-only)',
+      /counts-only badges/.test(a4) && /pairing abort/i.test(a4));
+    check('drift guard: §13.10.9 records A4.1\'s two SW pairingId sources and that (b) is unweakened',
+      /e2e-pubkey-request/.test(a4) && /TOFU/.test(a4) && /storage\.session/.test(a4)
+      && /not\*\* the anchor/.test(a4));
+    eq('drift guard: the spec names the helper the module exports',
+      a4.includes('canonicalPeerDeviceId('), true);
+    check('drift guard: §13.10.9 names the vector block the JSON actually carries',
+      a4.includes('`canonicalPeer`') && Object.keys(V).includes('canonicalPeer'));
+
     // Control: these slices must be capable of failing.
     check('drift guard control: a MUST the addenda do NOT define is absent',
-      !a3.includes('A3-M9') && !a2.includes('A2 MUST#7'));
+      !a3.includes('A3-M9') && !a2.includes('A2 MUST#7') && !a4.includes('A4-M9'));
   }
   // Control: the parser must be capable of failing. If the section slice were
   // empty or the regexes matched nothing, every assertion above would be
