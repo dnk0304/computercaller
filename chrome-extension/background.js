@@ -43,6 +43,9 @@ import {
   readDrops,
   pairContextInputs,
   clearEpochFloors,
+  inboundDisposition,
+  INBOUND_UNSEAL,
+  INBOUND_DROP_PLAINTEXT,
   CtxRefused,
 } from './e2e/sw-session.js';
 
@@ -1231,6 +1234,37 @@ function handleFrame(msg) {
   // whole job — the inbound message is what keeps the worker alive, so a reply
   // would be pure wire noise.
   if (type === 'HB') return;
+  // P3 (c). THE DOWNGRADE GUARD. Placed HERE — above the sealed branch, above
+  // deliverFrame, above every counter and every notifications.create — because
+  // "unseal before anything sees the bytes" is worth nothing if a frame that
+  // was never sealed walks past the check.
+  //
+  // While the session is OPEN, a §13.7 sealed-list frame arriving WITHOUT an
+  // envelope is a strip: a relay that removes `{e,kid,s,c}` and forwards the
+  // body in the clear gets it rendered exactly as a sealed one would be, with
+  // nothing thrown and nothing dropped. It is dropped and COUNTED instead
+  // (cc_e2e_drops, reason `plaintext-while-on`).
+  //
+  // Dropped ENTIRELY, not downgraded to the generic counts-only body: a badge
+  // increment still confirms to whoever stripped the envelope that the strip
+  // reached us, and counts-only exists for frames we cannot read, not for
+  // frames that should never have arrived in this shape.
+  //
+  // Scoped to `e2eMode === 'open'`. In 'off' and 'counts-only' the pair has no
+  // session and plaintext is simply how this product works today — dropping
+  // there would break every un-paired user. GET_MESSAGES / GET_CALL_LOGS /
+  // GET_CONTACTS are exempt inside requiresSeal() by §13.7's mandate.
+  // The DECISION is inboundDisposition() in sw-session.js, not a condition
+  // written out here: inline, the only way to test this rule is to drive a whole
+  // service worker in a browser, and a rule that can only be checked by the
+  // slowest harness in the programme is one that stops being checked.
+  const disposition = inboundDisposition({ mode: e2eMode, frameType: type, data });
+  if (disposition === INBOUND_DROP_PLAINTEXT) {
+    noteDrop('plaintext-while-on').catch(() => {});
+    trace('e2e-drop-plaintext', { type });
+    return;
+  }
+
   // Catch-all, DEMOTED (FORGE-O). A phone→browser data frame proves a phone is
   // on the other end, so it still repairs `phonePresent` if a presence frame was
   // ever missed. It must NOT be read as proof of a PAIR: broadcastToListeners()
@@ -1247,7 +1281,7 @@ function handleFrame(msg) {
   // anything out of it, and opening is async. The detour is taken ONLY for a
   // frame that actually carries an envelope, so every plaintext frame — which
   // today is all of them — runs the identical synchronous path it ran before.
-  if (isSealedEnvelope(data)) {
+  if (disposition === INBOUND_UNSEAL) {
     openIfSealed(type, data)
       .then((opened) => {
         // undefined = dropped by anti-replay; it raised no badge and must raise

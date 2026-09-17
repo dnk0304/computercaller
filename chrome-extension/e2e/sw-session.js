@@ -57,6 +57,7 @@ import {
   kek as deriveKek,
   trafficKeys,
   open as openAead,
+  seal as sealAead,
   pairContext as encodePairContext,
 } from './kdf.mjs';
 import { fromBase64Url, toBase64Url } from './sw-key.js';
@@ -626,6 +627,180 @@ export async function openSendCounter({ kid, direction }) {
   }
   all[mapKey] = 0;
   await sessionSet(SEQ_KEY, all);
+}
+
+// ── §13.7 FROZEN frame list — the seal/plaintext chokepoint ────────────────
+
+/**
+ * The frames §13.7 says are SEALED, transcribed from the frozen list.
+ *
+ * This set is the whole point of deliverable (c)'s inbound half. Without it a
+ * DOWNGRADE is free: the relay strips the envelope off an SMS_RECEIVED, sends
+ * the body in the clear, and the worker — which has a perfectly good session —
+ * renders it exactly as it would have rendered a sealed one. Nothing throws,
+ * nothing is dropped, the badge is right, the notification is right, and the
+ * message crossed the wire in plaintext. Every test that only ever feeds sealed
+ * frames to an ON session passes throughout.
+ *
+ * So the rule is stated positively over the FROZEN list rather than inferred
+ * from what happens to arrive: while the session is OPEN, a frame of a type on
+ * this list that carries no envelope is DROPPED AND COUNTED. It is not
+ * rendered, not counted as unread, and not shown generically — a generic
+ * notification would still tell the attacker their strip worked.
+ *
+ * Grouped as §13.7 groups them so the two can be diffed by eye.
+ */
+export const SEALED_FRAME_TYPES = Object.freeze(new Set([
+  'PHONE_NOTIFICATION', 'SMS_RECEIVED',
+  'MESSAGES', 'MESSAGES_CHUNK',
+  'CONTACTS', 'CONTACTS_CHUNK',
+  'CALL_LOGS', 'CALL_LOGS_CHUNK', 'CALL_LOG_ENTRY',
+  'MMS_MEDIA_CHUNK', 'MMS_MEDIA_ERROR',
+  'CALL_INCOMING', 'CALL_ADD', 'CALL_UPDATE', 'CALL_WAITING',
+  'CALL_ANSWERED', 'CALL_ENDED', 'CALL_REMOVE',
+  'SIM_LIST', 'SMS_SEND_STATUS', 'SYNC_ESTIMATE',
+  'SEND_SMS', 'MAKE_CALL',
+  'NOTIFICATION_REPLY', 'NOTIFICATION_DISMISS',
+  'NOTIFICATION_REPLY_SENT', 'NOTIFICATION_REPLY_FAILED', 'NOTIFICATION_REMOVED',
+]));
+
+/**
+ * The frames §13.7 marks **mandatorily** plaintext, even with a live session.
+ *
+ * `gateBrowserSyncFrame()` on the relay is the only tier-enforcement chokepoint
+ * in the product — it clamps `since` and drops `GET_CONTACTS` below Plus.
+ * Sealing these would move billing enforcement to the client, which is the same
+ * as deleting it. What leaks is a timestamp and a category, no content. §13.7
+ * calls this an accepted, documented trade; it is listed EXPLICITLY here rather
+ * than left to fall through the sealed-set check, so that a future edit that
+ * adds them to the sealed list collides with this constant instead of quietly
+ * breaking billing.
+ */
+export const MANDATORY_PLAINTEXT_FRAME_TYPES = Object.freeze(new Set([
+  'GET_MESSAGES', 'GET_CALL_LOGS', 'GET_CONTACTS',
+]));
+
+/**
+ * Must a frame of this type be sealed when the session is open?
+ *
+ * `CALL_STATUS` is deliberately absent from both sets: §13.7 splits it — the
+ * `{state}` field is clear and only the number and name are sealed — so it is
+ * neither wholly sealed nor mandatorily plaintext, and a blanket rule either
+ * way would be wrong. It stays out until §13.7 says how to express a per-field
+ * frame, and the unknown-type default below is the safe one.
+ */
+export function requiresSeal(frameType) {
+  if (MANDATORY_PLAINTEXT_FRAME_TYPES.has(frameType)) return false;
+  return SEALED_FRAME_TYPES.has(frameType);
+}
+
+/** What the inbound chokepoint decided to do with a frame. */
+export const INBOUND_DELIVER = 'deliver';
+export const INBOUND_UNSEAL = 'unseal';
+export const INBOUND_DROP_PLAINTEXT = 'drop-plaintext-while-on';
+
+/**
+ * THE INBOUND CHOKEPOINT, as a pure decision.
+ *
+ * It lives here rather than inline in `background.js` for one reason: inline,
+ * the only way to test it is to drive a whole service worker in a browser, and
+ * a rule that can only be checked by the slowest harness in the programme is a
+ * rule that stops being checked. Here it is three lines of node.
+ *
+ * The order of the branches IS the security property:
+ *   1. a sealed envelope → UNSEAL (before any counter, badge or notification);
+ *   2. otherwise, if the session is OPEN and §13.7 says this type is sealed →
+ *      DROP, because a plaintext frame of a sealed type while we hold a working
+ *      session is a strip, not a fallback;
+ *   3. otherwise → deliver as plaintext, which is every frame today.
+ *
+ * Note what (2) does NOT do: downgrade to the generic counts-only body. A badge
+ * increment still confirms to whoever stripped the envelope that it reached us,
+ * and counts-only is for frames we cannot READ, not for frames that should
+ * never have arrived in this shape.
+ *
+ * `mode` is the worker's own e2e mode — 'off' | 'counts-only' | 'open'. The
+ * drop is scoped to 'open' deliberately: in the other two there is no session,
+ * plaintext is simply how the product works today, and dropping would break
+ * every un-paired user.
+ */
+export function inboundDisposition({ mode, frameType, data }) {
+  if (isSealedEnvelope(data)) return INBOUND_UNSEAL;
+  if (mode === 'open' && requiresSeal(frameType)) return INBOUND_DROP_PLAINTEXT;
+  return INBOUND_DELIVER;
+}
+
+/**
+ * THE OUTBOUND CHOKEPOINT: payload → pad → seal → envelope.
+ *
+ * Read the warning on `nextSendSeq` first. The counter is obtained THROUGH it,
+ * so this function inherits fail-closed: no durably proven floor means it
+ * THROWS and the caller must rekey. It must never grow a `seq` argument and
+ * must never be handed one — a caller that could choose its own sequence number
+ * is a caller that can reuse a nonce, and in GCM that is not a degradation but
+ * total loss of confidentiality AND forgery for the key.
+ *
+ * The padding is not applied here because `seal()` applies it (§13.4, via
+ * padPlaintext) — doing it again here would pad the padding and produce a
+ * length that no receiver's unpad accepts.
+ */
+export async function sealFrame({ session, frameType, kid, pairEpoch, payload }, subtle = crypto.subtle) {
+  if (!session || !session.send) throw new Error('sealFrame: no open session — refusing to send');
+  if (!requiresSeal(frameType)) {
+    // Not an oversight to route around: a caller asking to seal a mandatorily
+    // plaintext frame has misread §13.7, and silently sealing it would break
+    // the relay's tier gate in a way that looks like a billing bug months later.
+    throw new Error(`sealFrame: ${frameType} is not a sealed frame type (§13.7) — refusing to seal it`);
+  }
+  const seq = await nextSendSeq({ kid, direction: session.send.direction });
+  const ciphertext = await sealAead({
+    sender: session.send,
+    frameType,
+    kid,
+    seq: BigInt(seq),
+    pairEpoch,
+    plaintext: new TextEncoder().encode(JSON.stringify(payload)),
+  }, subtle);
+  return { e: 1, kid, s: seq, c: toBase64Url(ciphertext) };
+}
+
+/**
+ * Pin the claim `nextSendSeq`'s doc comment makes: **this worker sends nothing
+ * on the listener socket.**
+ *
+ * The claim is load-bearing — the whole of `sealFrame`/`nextSendSeq` is dormant
+ * scaffolding that is correct only for as long as it is unused — and until now
+ * it was asserted by a doc comment referring to a function that did not exist.
+ * A comment cannot fail. This can: give it the text of background.js and it
+ * refuses if any `send(` call appears on a WebSocket-shaped receiver.
+ *
+ * Comments and strings are stripped first, because the file is full of prose
+ * ABOUT sending and a grep-proof that its own explanation trips is a proof
+ * nobody keeps. Returns the (empty) list of offenders so a test can print them.
+ */
+export function assertSwSendsNothing(source) {
+  const code = String(source)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+  const offenders = [];
+  const re = /\b([A-Za-z_$][\w$]*)\s*\.\s*send\s*\(/g;
+  let m;
+  while ((m = re.exec(code)) !== null) {
+    // chrome.runtime.sendMessage / port.postMessage are different verbs and do
+    // not match; this is specifically `<something>.send(` on the socket.
+    offenders.push(m[1]);
+  }
+  if (offenders.length) {
+    throw new Error(
+      `the service worker now sends on a socket (${[...new Set(offenders)].join(', ')}.send). `
+      + 'Route it through sealFrame() — which takes its seq from nextSendSeq() and so fails '
+      + 'closed on an unproven counter — and delete this assertion deliberately, not by accident.',
+    );
+  }
+  return offenders;
 }
 
 export { toBase64Url, fromBase64Url };
