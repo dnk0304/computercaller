@@ -187,68 +187,143 @@ class E2eA4CanonicalPeerVectorsTest {
         )
     }
 
-    // -------------------------------------------- the bug A4 actually caught
+    // ------------------------------------------- vector K (COUNTERSIGNED)
 
-    /**
-     * **The pinning case.** J's own ids are pure ASCII, where UTF-16 and UTF-8
-     * ordering agree — so J.1 alone would pass against the `minOrNull()` this
-     * letter replaces, and the fix would be unpinned. A4's own J.5 makes the
-     * same argument about its regression assertion.
+    /*
+     * Vector K, Security-countersigned 2026-09-17T19:07:20Z, verifier
+     * a4-vector-k-verify.mjs (imports nothing from lib/e2e). Fixtures are J's,
+     * unchanged — only wraps[].deviceId differs, so K isolates the
+     * canonical-order rule.
      *
-     * `U+FFFD` vs `U+10000` is where the two orderings disagree, and they
-     * disagree in OPPOSITE directions:
+     * TWO vectors, both mandatory, because ONE CANNOT PIN BOTH BUGS. The two
+     * divergences have mutually exclusive preconditions at the first differing
+     * byte:
      *
-     * ```
-     *   UTF-8   efbfbd   <  f0908080     -> U+FFFD  is lowest   (correct)
-     *   UTF-16  d800dc00 <  fffd         -> U+10000 is lowest   (minOrNull)
-     * ```
+     *   signed-vs-unsigned diverges only when it is ASCII vs non-ASCII;
+     *   UTF-16-vs-code-point diverges only when the first differing CHARACTER
+     *   is BMP >= U+E000 vs supplementary — and both of THOSE lead bytes are
+     *   non-ASCII (EE/EF vs F0-F4), so signed and unsigned agree there.
      *
-     * A supplementary character is a surrogate pair starting 0xD800 in UTF-16
-     * but 0xF0 in UTF-8, while U+E000..U+FFFF sit above 0xD800 in UTF-16 and
-     * below 0xF0 in UTF-8. Two sides picking different canonical peers derive
-     * different traffic keys, and every frame fails to authenticate for a
-     * reason no log explains.
+     * Measured here, not assumed:
+     *   K1  0xEF vs 0xF0 (signed -17 vs -16): unsigned A, signed A, UTF-16 B
+     *       -> catches UTF-16 only. A signed-Byte implementation PASSES K1.
+     *   K2  0x7A vs 0xF0 (signed 122 vs -16): unsigned A, signed B, UTF-16 A
+     *       -> catches signed only.
+     *
+     * My own first pinning attempt used K1's pair alone and would therefore
+     * have left the signed-byte half unpinned. Security caught that.
+     *
+     * Also binding, correcting the premise that reached me: U+FFFD sorts BELOW
+     * U+10000 under unsigned UTF-8 (0xEF < 0xF0) — unsigned UTF-8 byte order
+     * IS Unicode code-point order. It is UTF-16 that inverts it.
      */
-    @Test
-    fun the_ordering_is_utf8_bytes_and_not_utf16_code_units() {
-        val replacement = "id-�"          // efbfbd
-        val supplementary = "id-𐀀"  // f0908080, U+10000
 
-        assertEquals(
-            "efbfbd", E2eKdf.toHex(replacement.substring(3).toByteArray(Charsets.UTF_8))
-        )
-        assertEquals(
-            "f0908080", E2eKdf.toHex(supplementary.substring(3).toByteArray(Charsets.UTF_8))
-        )
+    /** `6465762defbfbd2d3031` */
+    private val idFffd = "dev-�-01"
 
-        val ids = listOf(supplementary, replacement)
-        assertEquals(
-            "A4-R2 is byte-wise UTF-8: U+FFFD (efbfbd) is lower than U+10000 (f0908080)",
-            replacement, E2ePairIdentity.canonicalPeerDeviceId(ids)
-        )
-        assertNotEquals(
-            "Kotlin's String.minOrNull() compares UTF-16 code units and picks the OTHER " +
-                "one here — that is the bug this letter fixes, and this assertion is what " +
-                "keeps it fixed",
-            ids.minOrNull(), E2ePairIdentity.canonicalPeerDeviceId(ids)
-        )
-        assertEquals("the premise: minOrNull really does disagree", supplementary, ids.minOrNull())
+    /** `6465762df09080802d3031`, U+10000 as a surrogate pair. */
+    private val idSupp = "dev-𐀀-01"
+
+    /** `6465762d7a2d3031` */
+    private val idZ = "dev-z-01"
+
+    /** Both negatives land on id B — the context a wrong comparator picks. */
+    private val negativeKp2c =
+        "4270886523cebaf18986ac82a8ed7197e3e5ecb5adce9a436d1c981bd8cb797d"
+
+    private fun assertKeys(
+        peer: String,
+        ctxHex: String,
+        p2c: String,
+        c2p: String,
+        np: String,
+        nc: String,
+    ) {
+        val ctx = contextWith(peer)
+        assertEquals("contextBytes", ctxHex, E2eKdf.toHex(E2eKdf.pairContextBytes(ctx)))
+        val k = E2eKdf.deriveTrafficKeys(sk, ctx)
+        assertEquals("k_p2c", p2c, E2eKdf.toHex(k.phoneToComputer))
+        assertEquals("k_c2p", c2p, E2eKdf.toHex(k.computerToPhone))
+        val n = E2eKdf.deriveNoncePrefixes(sk, ctx)
+        assertEquals("np2c", np, E2eKdf.toHex(n.phoneToComputer))
+        assertEquals("nc2p", nc, E2eKdf.toHex(n.computerToPhone))
     }
 
     /**
-     * `Byte` is signed in Kotlin, so a comparator written as `a[i] - b[i]`
-     * orders every byte >= 0x80 BELOW ASCII — the same class of bug as UTF-16
-     * ordering, reached by a different route. Any non-ASCII id must therefore
-     * sort ABOVE a pure-ASCII one.
+     * K1 — catches UTF-16 code-unit order (Kotlin `String.minOrNull`, JS `<`).
+     * Vacuous against the signed-byte bug; that is K2's job.
      */
     @Test
-    fun the_byte_comparison_is_unsigned() {
+    fun vector_K1_utf16_code_unit_order_is_not_used() {
+        assertEquals("6465762defbfbd2d3031", E2eKdf.toHex(idFffd.toByteArray(Charsets.UTF_8)))
+        assertEquals("6465762df09080802d3031", E2eKdf.toHex(idSupp.toByteArray(Charsets.UTF_8)))
+
+        for (order in listOf(listOf(idFffd, idSupp), listOf(idSupp, idFffd))) {
+            assertEquals(
+                "canonical must be order-independent and must be the U+FFFD id",
+                idFffd, E2ePairIdentity.canonicalPeerDeviceId(order)
+            )
+        }
+        assertKeys(
+            idFffd,
+            "110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762defbfbd2d" +
+                "303114000000000000002a",
+            "b165af0da430efc2434848b1ca7d677e86374d38d0e73a83fa17c28ab69125f7",
+            "de6e80ee1e2fff3c719fdf71d6b18a8ff528fc2729ed7abd2da39dfee8896625",
+            "20cc1730", "cfc3334b"
+        )
+
+        // K1.2 negative: UTF-16 order picks id B and a DIFFERENT key set.
         assertEquals(
-            "dev-a", E2ePairIdentity.canonicalPeerDeviceId(listOf("dev-ÿ", "dev-a"))
+            "the premise — Kotlin's own String order really does disagree here",
+            idSupp, listOf(idFffd, idSupp).minOrNull()
+        )
+        assertNotEquals(idSupp, E2ePairIdentity.canonicalPeerDeviceId(listOf(idFffd, idSupp)))
+        assertEquals(
+            negativeKp2c,
+            E2eKdf.toHex(E2eKdf.deriveTrafficKeys(sk, contextWith(idSupp)).phoneToComputer)
+        )
+    }
+
+    /**
+     * K2 — catches SIGNED byte comparison: ASCII vs non-ASCII at the first
+     * differing byte (0x7A vs 0xF0), the only shape where signed and unsigned
+     * diverge. Vacuous against the UTF-16 bug.
+     */
+    @Test
+    fun vector_K2_the_byte_comparison_is_unsigned() {
+        assertEquals("6465762d7a2d3031", E2eKdf.toHex(idZ.toByteArray(Charsets.UTF_8)))
+
+        for (order in listOf(listOf(idZ, idSupp), listOf(idSupp, idZ))) {
+            assertEquals(
+                "0x7A < 0xF0 UNSIGNED; a signed Byte compare makes 0xF0 = -16 the lower " +
+                    "and picks the other id",
+                idZ, E2ePairIdentity.canonicalPeerDeviceId(order)
+            )
+        }
+        assertKeys(
+            idZ,
+            "110b757365722d303139316161120c6465762d70686f6e652d303113086465762d7a2d" +
+                "303114000000000000002a",
+            "f73869c32db8cabde77474e244e27eb226fb2854ca1e836af4aae4ad6cb9366f",
+            "da329d3d68736a28bd292a7cbcdfa64ddca96faf169fac133d7633fbb7e98c7b",
+            "704de086", "b9739822"
+        )
+
+        // K2.3 negative: signed order picks id B — and UTF-16 order would NOT,
+        // which is exactly why K1 cannot stand in for this vector.
+        assertEquals(
+            "K2 is vacuous for the UTF-16 bug: String order agrees with the right answer",
+            idZ, listOf(idZ, idSupp).minOrNull()
         )
         assertEquals(
-            "a prefix must sort below its own extension",
-            "dev", E2ePairIdentity.canonicalPeerDeviceId(listOf("dev-x", "dev"))
+            negativeKp2c,
+            E2eKdf.toHex(E2eKdf.deriveTrafficKeys(sk, contextWith(idSupp)).phoneToComputer)
         )
+    }
+
+    @Test
+    fun a_prefix_sorts_below_its_own_extension() {
+        assertEquals("dev", E2ePairIdentity.canonicalPeerDeviceId(listOf("dev-x", "dev")))
     }
 }
