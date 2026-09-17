@@ -1,0 +1,32 @@
+SW VENDOR DRIFT — base-inherent on e2e/integration @ 40f1098, NOT introduced by e2e/p2-web-client
+generated 2026-09-17T20:00:59Z by the P2 follow-up lane
+
+PROOF OF BASE-INHERENCE (git blobs at 40f1098, independent of any working tree):
+  lib/e2e/kdf.mjs             7a94ef26e0b8cccded6eb3b429d6ba3fcab2f5324809436a5ea3613358418c0f
+  chrome-extension/e2e/kdf.mjs 030bc6cf0c5472472bedee3220503eae95a3d6bc2b8790665cd841f712cb1695
+  -> they already differ AT INTEGRATION. tests/e2e-sw-vendor-drift reads these two
+     files, so it fails at 40f1098 exactly as it does on this branch.
+
+PROOF THIS LANE DID NOT TOUCH EITHER FILE:
+  git diff 40f1098..HEAD --stat -- lib/e2e/kdf.mjs chrome-extension/e2e/kdf.mjs
+  (empty above = neither file changed by P2)
+
+WHAT THE DRIFT ACTUALLY IS — and it is substantive, not cosmetic:
+  the vendored SW copy is the PRE-A4 module.
+    canonicalPeerDeviceId  : ABSENT from the vendored copy
+    recipientDeviceIds     : ABSENT from the vendored copy
+    the DELETED A3-M3 clause: STILL PRESENT at chrome-extension/e2e/kdf.mjs:305-306
+  if (deviceId !== undefined && deviceId !== null && ctxWire.peerDeviceId !== deviceId) {
+    throw new Error('kdf: ctx.peerDeviceId is not this device — refusing the block (A3-M3)');
+
+IMPACT: A4-M1 required that clause deleted because it refuses every recipient
+except the canonical one. P1.2 deleted it in lib/, but the service worker's
+vendored copy still enforces it — so the SW would refuse a multi-recipient
+pairing, which is precisely the break A4 was ratified to remove, still live on
+the lane whose whole purpose is decrypting with the panel closed.
+
+OWNERSHIP: chrome-extension/ is OFF-LANE for P2. Re-vendoring it here would put
+an off-lane file in this branch's diff and break scope-diff offLane:0, which is
+the check that exists to stop exactly that. The fix is one copy
+(lib/e2e/kdf.mjs -> chrome-extension/e2e/kdf.mjs, never the reverse) and it
+belongs to P3 or to Ken's next integration commit.
