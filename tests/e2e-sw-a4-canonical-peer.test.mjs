@@ -370,12 +370,33 @@ await check('A4-M3: ensureSession routes the UNWRAP failure to an abort and the 
   // against its source — the same pattern, and for the same reason, as the
   // chokepoint proof in tests/e2e-sw-chokepoint.test.mjs. The DECISIONS above
   // are asserted behaviourally; this asserts that each one is actually reached.
-  const src = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8');
+  // NORMALISE THE LINE ENDINGS FIRST. The slice anchors on '\n}\n'; git checks
+  // background.js out with CRLF on Windows, so after a rebase re-materialised
+  // the file that needle was absent, indexOf returned -1, and
+  // `code.slice(start, -1 + 1)` produced the EMPTY STRING. This check went red
+  // in the P3 gate for that reason alone and nothing about ensureSession.
+  //
+  // The empty body did fail — `body.length > 100` caught it, and the guard below
+  // is kept for exactly that reason. But it failed with the WRONG diagnosis:
+  // "could not isolate ensureSession" reads as a refactor that moved the
+  // function, and it cost a diagnosis pass to find a line-ending difference
+  // instead. So: normalise, and fail on the ANCHOR where the anchor is what
+  // broke. The length and closed-block guards stay, because they are what stand
+  // between a bad slice and a body whose /…/.test() assertions would be
+  // vacuously false rather than loud.
+  const src = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
   const start = code.indexOf('async function ensureSession');
   assert(start > 0, 'could not find ensureSession in background.js');
-  const body = code.slice(start, code.indexOf('\n}\n', start) + 1);
+  const end = code.indexOf('\n}\n', start);
+  // Fail on the ANCHOR, not on what the anchor's absence silently produced.
+  assert(end > start, 'could not find the end of ensureSession — the slice anchor did not match');
+  const body = code.slice(start, end + 1);
+  // Both halves of "we isolated a function": long enough to be one, and closed.
+  // Length alone would accept a runaway slice to the end of the file.
   assert(body.length > 100, 'could not isolate ensureSession from background.js');
+  assert(body.trimEnd().endsWith('}'), 'the isolated ensureSession is not a closed block');
 
   const unwrapIdx = body.indexOf('unwrapSessionKey');
   assert(unwrapIdx > 0, 'ensureSession must still call unwrapSessionKey');
