@@ -116,8 +116,5 @@ const call = (callId, state, isIncoming) => ({ callId, number: callId, state, is
   check('5a: empty list — ended true, nothing to remove', r.ended === true && r.removedId === null);
 }
 
-// INJECTED-FAILURE PROOF (E2E-P0 (b) acceptance) — reverted in the next commit.
-check('INJECTED: deliberate failure proving the gate reports a red relay suite', false);
-
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
