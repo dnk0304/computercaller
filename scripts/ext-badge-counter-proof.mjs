@@ -372,19 +372,41 @@ try {
    */
   const KEEPALIVE_KNOB_OFF = process.env.CC_E2E_KEEPALIVE_KNOB === 'off';
   if (KEEPALIVE_KNOB_OFF) {
-    console.log('  [control arm] cc-keepalive LEFT ARMED + 1s token read delay injected');
-    // Establish the worker's own "I have held a token" fact BEFORE hiding it,
-    // exactly as a real sign-in would, then make the next second of reads come
-    // back null — a storage read racing a write, which is what the keepalive
-    // path used to paint 'signed-out' over.
+    console.log('  [control arm] cc-keepalive LEFT ARMED + token reads null for the whole block');
+    /**
+     * TWO THINGS THE OBVIOUS CONTROL ARM GETS WRONG, BOTH FOUND BY BUILDING IT.
+     *
+     * 1. WAITING FOR THE ALARM IS NOT A TEST. cc-keepalive fires every 30 s, so
+     *    "leave it armed and hope a tick lands inside the assertions" measures
+     *    how long the block happens to take. The alarm stays armed — that is
+     *    the realism half and 11z asserts it — but the proof does not depend on
+     *    its timing: armIndicator below calls `connect()` DIRECTLY, which is
+     *    the exact and only thing the alarm handler does. Every assertion in
+     *    block 11 is therefore immediately preceded by the repaint that used to
+     *    break it, instead of one lucky assertion in thirty.
+     *
+     * 2. THE DELAY IS FOR THE WHOLE BLOCK, NOT 1 s — because the subject is the
+     *    null read. `e2e-harness-token` is not a real ext-session JWT, so a
+     *    connect() that gets PAST the token read mints a ticket, is refused
+     *    401, and the worker signs itself out — correctly, that is an
+     *    authoritative revocation and the fix deliberately honours it. Letting
+     *    the read succeed would therefore measure the 401 path and call it a
+     *    flake. So the token is hidden for the duration: every keepalive tick
+     *    stops exactly where the bug lived, at `const token = await getToken()`
+     *    returning null, which is the code path this lane changed.
+     *
+     * The worker's own "I have held a token" fact is established BEFORE the
+     * hiding, exactly as a real sign-in would, so what follows is a read racing
+     * a write and not a signed-out profile.
+     */
     await sw.evaluate(async () => {
       await refreshAuthAndIndicator();
+      if (!signedIn) throw new Error('control arm: seeded token was not picked up before hiding it');
       const realGet = chrome.storage.local.get.bind(chrome.storage.local);
-      const until = Date.now() + 1000;
       chrome.storage.local.get = (keys, cb) => realGet(keys, (o) => {
-        if (Date.now() < until) { const c = { ...o }; delete c[self.CC.TOKEN_KEY]; return cb(c); }
-        chrome.storage.local.get = realGet;
-        cb(o);
+        const hidden = { ...o };
+        delete hidden[self.CC.TOKEN_KEY];
+        cb(hidden);
       });
     });
   }
@@ -402,6 +424,16 @@ try {
     phonePresent = false; paired = false; held = false;
     lastIndicator = null;
     refreshIndicator();
+    if (knobOff) {
+      // The alarm handler's entire body, run deterministically. Before this
+      // lane it repainted 'signed-out' here on the null read; it must now leave
+      // the state we just arranged exactly as it is.
+      await connect();
+      await new Promise((r) => setTimeout(r, 150));
+      if (lastIndicator === 'signed-out') {
+        throw new Error('control arm: the keepalive path still repaints signed-out on a null token');
+      }
+    }
     await new Promise((r) => setTimeout(r, 120));
   }, KEEPALIVE_KNOB_OFF);
   const PAIR_STATE = (o) => 'PAIR_STATE:' + JSON.stringify(o);

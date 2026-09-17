@@ -165,7 +165,9 @@ const BADGE_RED = '#dc2626';
  *   authHydrated  flipped by the first getToken() that completes, ever.
  *   tokenEverSeen flipped by any non-null read or a store.
  *   tokenRevoked  set ONLY by markTokenRevoked(): explicit sign-out, or 401/409
- *                 from the token endpoint. Cleared by a successful store.
+ *                 from the token endpoint. Retired by a store OR by simply
+ *                 OBSERVING a live token — a token in storage means the
+ *                 revocation no longer describes reality.
  *
  * Module scope, so all three die with the worker — which is correct: they
  * describe what THIS worker lifetime knows, and a respawn genuinely knows
