@@ -34,7 +34,8 @@ $classes = @(
     "$pkg.E2eLifecycleTest",      # (f) rotation on Reset / sign-out, reinstall
     "$pkg.E2eFrozenKdfVectorsTest", # A1 vectors vs P0.2 FROZEN tests/kdf-vectors.json
     "$pkg.E2eA2NoncePrefixVectorsTest", # A2 vectors E-H: the DERIVED nonce prefix
-    "$pkg.E2eA3CtxVectorsTest"  # A3 vector I: wire ctx + local userId == frozen context
+    "$pkg.E2eA3CtxVectorsTest",  # A3 vector I: wire ctx + local userId == frozen context
+    "$pkg.NotificationBackfillSmokeTest" # (i) 3 posted -> 3 backfill payloads
 )
 
 Write-Host '== building app + test APKs =='

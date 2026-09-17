@@ -2789,6 +2789,41 @@ class PhoneService : Service() {
     }
 
     /**
+     * P4 (i) — push the currently-visible shade to the web client as
+     * `PHONE_NOTIFICATION` frames with `backfill:true`.
+     *
+     * Goes through the SAME builder and the SAME `sendResponse` as the live
+     * path, so backfilled frames are sealed exactly like live ones once a pair
+     * is encrypted — the (w3) chokepoint sees no difference between them, and
+     * that is the point: two send paths would mean two chances to leak.
+     *
+     * Off the main thread. `getActiveNotifications()` is a binder round trip
+     * and each payload rasterises an app icon on a cache miss; doing 50 of
+     * those on the thread that just handled PAIRING_ACTIVE would jank the
+     * moment the pair goes live.
+     */
+    private fun backfillNotifications(reason: String) {
+        val listener = DnkNotificationListenerService.getInstance()
+        if (listener == null) {
+            android.util.Log.w("PhoneService", "backfill ($reason): listener not connected")
+            return
+        }
+        kotlin.concurrent.thread(name = "notif-backfill") {
+            val payloads = listener.activeNotificationPayloads()
+            android.util.Log.i(
+                "PhoneService",
+                "backfill ($reason): ${payloads.size} notification(s), newest first, cap " +
+                    NotificationBackfill.CAP
+            )
+            val emit = DnkNotificationListenerService.onMessageNotification
+            // Newest first out of the selector; emitted in that order so the
+            // web's merge sees the same ordering the phone decided rather than
+            // re-deriving it from arrival time.
+            for (p in payloads) emit?.invoke(p)
+        }
+    }
+
+    /**
      * Compose a short browser-identity string for the heads-up
      * notification body and AlertDialog message.
      *
@@ -3012,7 +3047,17 @@ class PhoneService : Service() {
             // unified timeline (the SMS/MMS content provider never sees them
             // unless we're the default messaging app). User must enable
             // "Notification access" once.
-            DnkNotificationListenerService.onMessageNotification = notif@{ appName, pkg, title, body, hasReply, replyKey, notificationKey, timestamp, icon, senderPersonUri ->
+            DnkNotificationListenerService.onMessageNotification = notif@{ n ->
+                val appName = n.appName
+                val pkg = n.packageName
+                val title = n.title
+                val body = n.body
+                val hasReply = n.hasReply
+                val replyKey = n.replyKey
+                val notificationKey = n.notificationKey
+                val timestamp = n.timestamp
+                val icon = n.icon
+                val senderPersonUri = n.senderPersonUri
                 val isViaClient = client?.isOpen == true
 
                 // RCS↔SMS merge: messages from Google/Samsung Messages arrive ONLY
@@ -3027,7 +3072,12 @@ class PhoneService : Service() {
                 val isMessagingApp = pkg == "com.google.android.apps.messaging" ||
                     pkg == "com.samsung.android.messaging"
 
-                if (isMessagingApp) {
+                // The RCS→SMS re-route is a LIVE-path behaviour. On a backfill
+                // it would re-inject shade entries as SMS rows the provider
+                // already holds, so the same conversation would arrive twice on
+                // every sync. Backfilled messaging notifications go out as
+                // notification cards, which is what the shade actually shows.
+                if (isMessagingApp && !n.backfill) {
                     // "You: …" body means the thread updated after WE sent a message.
                     val isSent = body.startsWith("You: ")
                     val msgBody = if (isSent) body.removePrefix("You: ").trim() else body
@@ -3065,6 +3115,20 @@ class PhoneService : Service() {
                     "timestamp" to timestamp
                 )
                 if (icon != null) data["icon"] = icon  // only include if available
+                if (n.backfill) {
+                    // P4 (i) — the shape Forge-T froze on the web side, and it
+                    // is byte-for-byte: {type:'PHONE_NOTIFICATION',
+                    // backfill:true, postedAt:<ms>, ...live fields}. The web
+                    // reads payload.backfill === true and merges by postedAt
+                    // instead of notifying, badging or playing a sound.
+                    //
+                    // postedAt duplicates `timestamp` today. It is sent anyway
+                    // because the web contract names postedAt, and a receiver
+                    // written against that contract must not depend on a field
+                    // that exists for unrelated historical reasons.
+                    data["backfill"] = true
+                    data["postedAt"] = timestamp
+                }
                 sendResponse("PHONE_NOTIFICATION", data, isViaClient)
             }
 
@@ -4071,6 +4135,10 @@ class PhoneService : Service() {
                     android.util.Log.d("PhoneService", "PAIRING_ACTIVE ua=$ua ip=$ip")
                     isPairActive = true
                     updateNotification(getString(R.string.pair_active_notification))
+                    // P4 (i): the shade as it stands right now. Dennis: "when
+                    // we sync phone, it should fetch all notifications that
+                    // currently are visible on the phone as well."
+                    backfillNotifications("PAIRING_ACTIVE")
                 }
                 "PAIRING_TERMINATED" -> {
                     val reason = (payload?.get("reason") as? String).orEmpty()
@@ -4410,6 +4478,16 @@ class PhoneService : Service() {
                         android.util.Log.d("PhoneService", "Estimate built: $estimate")
                         sendResponse("SYNC_ESTIMATE", estimate, viaClient)
                     }
+                }
+                /**
+                 * P4 (i) — the explicit sync action. PAIRING_ACTIVE covers the
+                 * automatic case with no web change at all; this is the frame
+                 * the web sends when the user asks for a resync, and it is
+                 * additive: a client that never sends it keeps today's
+                 * behaviour exactly.
+                 */
+                "GET_NOTIFICATIONS" -> {
+                    backfillNotifications("GET_NOTIFICATIONS")
                 }
                 "PING" -> {
                     android.util.Log.d("PhoneService", "PING received, sending PONG")
