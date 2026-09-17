@@ -20,33 +20,42 @@
  * chokepoint and lib/autoSync.ts keep working unchanged: a sealed frame is still
  * `TYPE:{...}`, the JSON just happens to be an envelope.
  *
- * ── BLOCKED, AND WHY THE BLOCK IS BEHIND ONE FUNCTION ──────────────────────
- * {@link resolvePairContext} is the single place the §13.10.3 pair context is
- * assembled, and it currently CANNOT be completed: `pairingId`, `pairEpoch` and
- * `userId` have no channel to the browser on any frozen frame (verified in
- * server.js at d56af9c — the browser's only frames are PAIRING_ACTIVE
- * {deviceName, e2e}, PAIRING_REJECTED, PAIRING_DECLINED and
- * PAIRING_E2E_UNAVAILABLE; `pairEpoch` does not appear in the relay at all).
- * P4 hit the phone-side half of the same gap and put its answer behind
- * E2ePairIdentity for the same reason: whichever way Ken and Security rule, it
- * is a one-function change on each side and no sealing code moves.
+ * ── THE PAIR CONTEXT COMES OFF THE WIRE (GATE1 Addendum A3) ───────────────
+ * This lane previously could not assemble the §13.10.3 pair context at all:
+ * `pairingId`, `pairEpoch` and `phoneDeviceId` reached the browser on no frozen
+ * frame, so {@link resolvePairContext} returned null and mode ON failed closed.
+ * That was the correct behaviour and it was also a total availability break,
+ * which is why it was escalated rather than papered over with zeroes.
  *
- * Until it is ruled, `resolvePairContext` returns null when it is missing an
- * input, and a null context FAILS CLOSED under mode ON — it does not invent
- * zeroes. Inventing them is the specific thing P4 rejected and was right to:
- * blanking unchannelled fields makes cross-implementation traffic APPEAR to work
- * while deleting the transcript binding §13.10.3 exists to provide.
+ * A3 RATIFIED the fix: the phone puts `ctx = {pairingId, phoneDeviceId,
+ * peerDeviceId, pairEpoch}` on the accept block, the relay carries it as bytes
+ * (P1.1 spliced it onto PAIR_STATE too), and each side supplies its OWN
+ * authenticated session userId, which is never transmitted. A relay that
+ * proposed a userId would be a relay the derivation agreed with instead of the
+ * session.
+ *
+ * The parsing is NOT here. `kdf.pairContextFromWire` is the single frozen
+ * function that turns wire ctx + local userId into context bytes, and it is the
+ * same function vector I.1-I.4 pin and the Android lane asserts. What lives in
+ * this file is the three things only a client can do: supply the local userId,
+ * supply its own deviceId for A3-M3, and take A3-M2's epoch floor decision
+ * BEFORE the derived keys are allowed to touch a frame.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
 import {
+  admitPairEpoch,
+  EpochFloorError,
   ensureWebDeviceKey,
+  indexedDbWebKeyStore,
   WebKeyRecordShapeError,
   WebKeyRecordVersionError,
   type WebDeviceKey,
+  type WebKeyStore,
 } from '@/lib/e2e/webKey';
+import { pairContextFromWire, type ResolvedPairContext } from '@/lib/e2e/kdf.mjs';
 import {
   createComputerSession,
   indexedDbSeqStore,
@@ -104,29 +113,38 @@ export function splitCallStatus(payload: Record<string, unknown>): {
   };
 }
 
+/**
+ * The five §13.10.3 context inputs. Four arrive in `ctx` on the wire; `userId`
+ * is the receiver's own session identity and is NEVER transmitted (A3).
+ */
 export interface PairContextInputs {
   userId: string;
   phoneDeviceId: string;
   peerDeviceId: string;
-  pairEpoch: number;
+  /** A BIGINT. `pairEpoch` is a uint64 and A1 forbids it rounding above 2^53. */
+  pairEpoch: bigint;
   pairingId: string;
 }
 
 /**
- * THE ONE PLACE the pair context is assembled. See the file header: three of the
- * five inputs have no channel to the browser today, so this returns null rather
- * than guessing, and mode ON fails closed on a null.
+ * Where the browser learns its OWN userId. `/api/auth/me` returns `user.id`
+ * from a validated session cookie, so this is the authenticated identity and
+ * not something a page or a relay can propose.
  *
- * When the ruling lands, this function is the whole change on the web side.
+ * A failure here is `null`, and a null userId means mode ON fails closed —
+ * because the alternative is deriving under a guessed identity, which is the
+ * silent divergence A3 exists to kill, wearing a different hat.
  */
-export function resolvePairContext(partial: Partial<PairContextInputs>): PairContextInputs | null {
-  const { userId, phoneDeviceId, peerDeviceId, pairEpoch, pairingId } = partial;
-  if (typeof userId !== 'string') return null;
-  if (typeof phoneDeviceId !== 'string' || phoneDeviceId.length === 0) return null;
-  if (typeof peerDeviceId !== 'string' || peerDeviceId.length === 0) return null;
-  if (typeof pairEpoch !== 'number' || !Number.isInteger(pairEpoch) || pairEpoch < 0) return null;
-  if (typeof pairingId !== 'string' || pairingId.length === 0) return null;
-  return { userId, phoneDeviceId, peerDeviceId, pairEpoch, pairingId };
+export async function fetchSessionUserId(signal?: AbortSignal): Promise<string | null> {
+  try {
+    const r = await fetch('/api/auth/me', { signal, credentials: 'same-origin' });
+    if (!r.ok) return null;
+    const d = (await r.json()) as { user?: { id?: unknown } };
+    const id = d?.user?.id;
+    return typeof id === 'string' && id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface E2eApi {
@@ -185,7 +203,11 @@ export function useE2e(emailProp?: string | null): E2eApi {
   const swRef = useRef<SwKeyResult>({ status: 'unknown', recipient: null });
   const latchedRef = useRef(false);
   const downgradeDropsRef = useRef(0);
-  const contextRef = useRef<Partial<PairContextInputs>>({});
+  /** The session userId, fetched once. Local identity — never from the wire. */
+  const userIdRef = useRef<string | null>(null);
+  /** One store instance for the life of the hook, so the floor write and the
+   *  key read cannot end up on two different IndexedDB handles. */
+  const keyStoreRef = useRef<WebKeyStore>(indexedDbWebKeyStore());
 
   useEffect(() => {
     setLocalModeState(readEncryptedMode(email));
@@ -236,7 +258,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
   const buildRequestE2e = useCallback(async (): Promise<RequestBlock | null> => {
     let key: WebDeviceKey;
     try {
-      key = (await ensureWebDeviceKey()).key;
+      key = (await ensureWebDeviceKey({ store: keyStoreRef.current })).key;
       keyRef.current = key;
     } catch (e) {
       if (e instanceof WebKeyRecordVersionError || e instanceof WebKeyRecordShapeError) {
@@ -256,7 +278,6 @@ export function useE2e(emailProp?: string | null): E2eApi {
       });
     }
     setView((v) => ({ ...v, peer: { ...v.peer, kind: swRef.current.status } }));
-    contextRef.current = { ...contextRef.current, peerDeviceId: key.deviceId };
     try {
       return buildRequestBlock({ localMode, webKey: key, sw: swRef.current });
     } catch (e) {
@@ -304,22 +325,76 @@ export function useE2e(emailProp?: string | null): E2eApi {
 
     // From here the pair IS encrypted. Latch it.
     latchedRef.current = true;
-    contextRef.current = {
-      ...contextRef.current,
-      peerDeviceId: key.deviceId,
-      phoneDeviceId: phoneDeviceId ?? contextRef.current.phoneDeviceId,
-      pairingId: typeof payload.pairingId === 'string' ? payload.pairingId : contextRef.current.pairingId,
-      pairEpoch: typeof payload.pairEpoch === 'number' ? payload.pairEpoch : contextRef.current.pairEpoch,
-      userId: typeof payload.userId === 'string' ? payload.userId : contextRef.current.userId,
-    };
-    const context = resolvePairContext(contextRef.current);
-    if (!context) {
-      // The unruled pairContext channel gap. Failing closed rather than
-      // inventing zeroes is the deliberate choice — see the file header.
+
+    // ── A3: the context comes off the wire, the userId comes from the session ──
+    // The LOCAL userId is required and is never taken from `payload`. Read that
+    // again at the next edit: `payload.userId` would be a value the RELAY chose,
+    // and a derivation that agrees with the relay instead of with the session is
+    // the failure A3 spends a paragraph refusing.
+    const userId = userIdRef.current ?? (await fetchSessionUserId());
+    userIdRef.current = userId;
+    if (!userId) {
       fail('e2e-setup-failed',
-        'the §13.10.3 pair context cannot be assembled in the browser: pairingId / pairEpoch / userId ' +
-        'have no channel on any frozen frame (escalated to Ken + Security 2026-09-17)');
+        'no authenticated session userId: the §13.10.3 pair context cannot be built, ' +
+        'and deriving under a guessed identity is exactly what A3 forbids');
       return true;
+    }
+
+    let context: ResolvedPairContext;
+    try {
+      // ONE call, and every A3 receiver rule is inside it:
+      //   M4  ctx absent on a mode=1 block      -> throws (never derive-from-local)
+      //   M3  ctx.peerDeviceId !== our deviceId -> throws
+      //   M3  ctx.pairingId !== our pairingId   -> throws, when we know it
+      //       pairEpoch not a bare decimal string, or > 2^64-1 -> throws
+      // `ourPairingId` is passed only when the relay actually told us one; A3's
+      // own wording is "wherever it independently knows the value", and passing
+      // ctx.pairingId back in as the expectation would be comparing a value
+      // with itself — a check that cannot fail is worse than no check, because
+      // it reads like one that can.
+      context = pairContextFromWire(block.ctx, {
+        userId,
+        deviceId: key.deviceId,
+        pairingId: typeof payload.pairingId === 'string' ? payload.pairingId : null,
+      });
+    } catch (e) {
+      fail('e2e-setup-failed', `ctx refused: ${(e as Error).message}`);
+      return true;
+    }
+
+    // A3-M2 — the epoch floor, and its position in this function is the control.
+    // It is BEFORE openWrap and before createComputerSession, so a replayed
+    // epoch never reaches a key derivation, let alone a frame. `phoneDeviceId`
+    // is taken from the CTX rather than from the DeviceKey API row: the floor
+    // must be keyed by the identity the derivation actually used, or a phone
+    // that changed rows would be filed under a floor that guards nothing.
+    try {
+      await admitPairEpoch({
+        store: keyStoreRef.current,
+        key,
+        userId,
+        phoneDeviceId: context.phoneDeviceId,
+        pairEpoch: context.pairEpoch,
+      });
+    } catch (e) {
+      if (e instanceof EpochFloorError) {
+        // Abandon the pair. NOT a downgrade to plaintext, and not a retry: the
+        // phone must mint a fresh SK at a higher epoch, which is what the user
+        // re-pairing does.
+        fail('e2e-epoch-replayed', e.message);
+        return true;
+      }
+      fail('e2e-setup-failed', `epoch floor unusable: ${(e as Error).message}`);
+      return true;
+    }
+
+    // The DeviceKey row's phoneDeviceId is now only a cross-check for the log:
+    // it is not what we derive from. A mismatch is not fatal (the row can lag a
+    // rotation) but it is worth saying out loud when someone is reading a trace.
+    if (phoneDeviceId && phoneDeviceId !== context.phoneDeviceId) {
+      console.warn(
+        '[e2e] ctx.phoneDeviceId differs from the DeviceKey row; deriving from ctx (A3)',
+      );
     }
 
     try {
@@ -327,10 +402,10 @@ export function useE2e(emailProp?: string | null): E2eApi {
       const sessionKey = await openWrap({
         wrap, kid: block.kid, epk: fromB64(block.epk),
         ourPrivateKey: key.privateKey, ourPublicSec1: key.pub, ourDeviceId: key.deviceId,
-        pairingId: context.pairingId, context, pairEpoch: context.pairEpoch,
+        pairingId: context.pairingId, context: context.contextBytes, pairEpoch: context.pairEpoch,
       });
       const session = await createComputerSession({
-        pairingId: context.pairingId, sessionKey, context,
+        pairingId: context.pairingId, sessionKey, context: context.contextBytes,
         kid: block.kid, pairEpoch: context.pairEpoch,
         store: indexedDbSeqStore(), fresh: payload.resumed !== true,
       });

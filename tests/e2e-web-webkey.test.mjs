@@ -50,7 +50,16 @@ import {
   loadWebDeviceKey,
   ensureWebDeviceKey,
   resetWebDeviceKey,
+  admitPairEpoch,
+  clearEpochFloors,
+  readEpochFloor,
+  epochFloorKey,
+  hydrateEpochFloors,
+  EpochFloorError,
+  PAIR_EPOCH_DECIMAL,
+  MAX_UINT64,
 } from '../lib/e2e/webKey.ts';
+import { PAIR_EPOCH_WIRE_RE } from '../lib/e2e/kdf.mjs';
 
 const require = createRequire(import.meta.url);
 const relay = require('../lib/e2eBlock-core.js');
@@ -62,8 +71,14 @@ function check(name, ok, detail = '') {
   failed++;
   console.error(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
 }
+/** JSON.stringify THROWS on a BigInt, and the epoch floor is bigint-typed —
+ *  an eagerly-built detail string would turn every floor assertion into a
+ *  TypeError from the helper rather than a pass or a readable failure. */
+function show(v) {
+  return typeof v === 'bigint' ? `${v}n` : JSON.stringify(v);
+}
 function eq(name, got, want) {
-  check(name, got === want, `got ${JSON.stringify(got)} want ${JSON.stringify(want)}`);
+  check(name, got === want, `got ${show(got)} want ${show(want)}`);
 }
 async function throws(name, fn, predicate) {
   try {
@@ -153,8 +168,24 @@ check('pin: assertSec1P256 rejects 64 bytes',
 // ── 3. the record: version guard, shape guard, never silent regeneration ────
 const record = toRecord(key);
 check('record: pubB64Url is derived, not stored', !('pubB64Url' in record));
+// An EXACT key set, not a subset check. A subset check would pass while a new
+// field appeared in storage, and the field this test exists to keep OUT is a
+// persisted nonce prefix (A2 MUST #2) — precisely the kind of thing that gets
+// added by someone optimising a re-derivation away.
 eq('record: field set', Object.keys(record).sort().join(','),
-  'createdAt,deviceId,kind,privateKey,pub,publicKey,v');
+  'createdAt,deviceId,epochFloors,kind,privateKey,pub,publicKey,v');
+
+// A2 MUST #2, asserted as an ABSENCE and asserted by SHAPE rather than by one
+// spelling: the prefix is derived per session and must never be persisted, and
+// a reviewer adding `np2c` or `sessionPrefix` or `prefix` must trip this.
+for (const forbidden of Object.keys(record)) {
+  check(`record: no persisted nonce prefix ("${forbidden}")`,
+    !/prefix|np2c|nc2p|nonce|sk|sessionKey/i.test(forbidden));
+}
+// and the guard is not vacuous — the same predicate over a name that WOULD be
+// a violation must fire.
+check('record: the prefix guard can actually fail (control)',
+  /prefix|np2c|nc2p|nonce|sk|sessionKey/i.test('sessionPrefix'));
 
 {
   const rehydrated = hydrateRecord(record);
@@ -162,8 +193,16 @@ eq('record: field set', Object.keys(record).sort().join(','),
   eq('record: hydrate re-derives pubB64Url', rehydrated.pubB64Url, key.pubB64Url);
 }
 
-await throws('record: unknown v THROWS', () => hydrateRecord({ ...record, v: 2 }),
+await throws('record: unknown v THROWS', () => hydrateRecord({ ...record, v: 3 }),
   (e) => e instanceof WebKeyRecordVersionError && e.state === 're-pair-needed');
+// The v1 -> v2 bump (A3-M2) has NO upgrade path, deliberately: a v1 record was
+// written by a build with no epoch floor, so continuing to use it would accept
+// one replayed epoch under TOFU. It must land on re-pair-needed like any other
+// unknown version, and this is the assertion that keeps someone from "helpfully"
+// adding a migration that seeds an empty floor map.
+await throws('record: a v1 record is REFUSED, not migrated',
+  () => hydrateRecord({ ...record, v: 1, epochFloors: undefined }),
+  (e) => e instanceof WebKeyRecordVersionError && e.found === 1);
 await throws('record: missing v THROWS', () => hydrateRecord({ ...record, v: undefined }),
   (e) => e instanceof WebKeyRecordVersionError);
 await throws('record: v as a string THROWS', () => hydrateRecord({ ...record, v: '1' }),
@@ -257,6 +296,171 @@ for (const [name, mutate] of [
   for (let i = 0; same && i < 32; i += 1) same = a[i] === b[i];
   check('ecdh: the published pub bytes agree with the stored private key', same);
 }
+
+// -- 5. A3-M2 -- the epoch floor -------------------------------------------
+//
+// The floor is the SOLE control against a relay replaying a superseded
+// ACCEPT_PAIRING. A replayed epoch re-installs an old SK under its old epoch,
+// A2's per-(kid,direction) counter restarts at 0 against a key AND a prefix
+// that have already sealed frames, and that is GCM nonce reuse -- the one
+// failure in this protocol whose cost is total. The SAS would also mismatch,
+// but 13 makes the SAS explicitly non-blocking, so it cannot be the control.
+
+eq('floor: the decimal-string rule is the SAME source as kdf.mjs',
+  PAIR_EPOCH_DECIMAL.source, PAIR_EPOCH_WIRE_RE.source);
+
+eq('floor: key is NUL-joined', epochFloorKey('u', 'p'), 'u' + String.fromCharCode(0) + 'p');
+// The collision this prevents is not hypothetical: ':' is legal in a userId.
+check('floor: colon-bearing ids cannot collide',
+  epochFloorKey('a:b', 'c') !== epochFloorKey('a', 'b:c'));
+await throws('floor: empty userId is refused', () => epochFloorKey('', 'p'));
+await throws('floor: empty phoneDeviceId is refused', () => epochFloorKey('u', ''));
+
+{
+  const store = memoryWebKeyStore();
+  const k = await ensureWebDeviceKey({ store, register: async () => ({ ok: true }) });
+  const key = k.key;
+  const USER = 'user-0191aa';
+  const PHONE = 'dev-phone-01';
+
+  eq('floor: a fresh record has an empty map', Object.keys(key.epochFloors).length, 0);
+  eq('floor: unseen pair reads null', readEpochFloor(key, USER, PHONE), null);
+
+  // TOFU -- first sight is accepted with NO comparison and becomes the floor.
+  const first = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n });
+  check('floor: first sight is TOFU', first.firstSight === true);
+  eq('floor: first sight sets the floor', first.floor, 42n);
+  eq('floor: in-memory floor updated', readEpochFloor(key, USER, PHONE), 42n);
+
+  // PERSIST-BEFORE-USE. The assertion is against the STORE, not the object:
+  // a floor that only exists in memory is gone after the crash it exists for.
+  {
+    const raw = await store.get();
+    eq('floor: persisted to the store, as a decimal STRING',
+      raw.epochFloors[epochFloorKey(USER, PHONE)], '42');
+    check('floor: persisted value is a string, never a number',
+      typeof raw.epochFloors[epochFloorKey(USER, PHONE)] === 'string');
+  }
+
+  // Monotonic: forward is fine.
+  const next = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n });
+  eq('floor: a HIGHER epoch advances the floor', next.floor, 43n);
+  check('floor: advancing is not first sight', next.firstSight === false);
+
+  // <=, not <. Re-offering the CURRENT epoch is the replay: the phone bumps on
+  // every Accept and every Reset, so an epoch already installed arriving again
+  // is either a duplicated or a replayed frame, and both mint a second kid
+  // under one epoch.
+  await throws('floor: the SAME epoch is REFUSED (<= not <)',
+    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n }),
+    (e) => e instanceof EpochFloorError && e.floor === 43n && e.offered === 43n);
+  await throws('floor: a LOWER epoch is refused',
+    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n }),
+    (e) => e instanceof EpochFloorError && e.state === 're-pair-needed');
+  eq('floor: a refused admit did not move the floor', readEpochFloor(key, USER, PHONE), 43n);
+  eq('floor: a refused admit did not touch storage',
+    (await store.get()).epochFloors[epochFloorKey(USER, PHONE)], '43');
+
+  // Scoped per (userId, phoneDeviceId): another phone, or another account on
+  // this shared profile, starts at its own TOFU rather than inheriting a floor.
+  const other = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'dev-phone-02', pairEpoch: 1n });
+  check('floor: a DIFFERENT phone gets its own TOFU', other.firstSight === true);
+  const otherUser = await admitPairEpoch({ store, key, userId: 'user-0191ab', phoneDeviceId: PHONE, pairEpoch: 1n });
+  check('floor: a DIFFERENT user gets its own TOFU', otherUser.firstSight === true);
+  eq('floor: the original pair is unaffected', readEpochFloor(key, USER, PHONE), 43n);
+
+  // uint64, and a Number is refused outright rather than rounded.
+  await throws('floor: a NUMBER epoch is refused (it would round above 2^53)',
+    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p3', pairEpoch: 44 }),
+    (e) => e instanceof TypeError);
+  await throws('floor: above 2^64-1 is refused',
+    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p4', pairEpoch: MAX_UINT64 + 1n }));
+  {
+    const big = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p5', pairEpoch: MAX_UINT64 });
+    eq('floor: exactly 2^64-1 is accepted and survives the round trip',
+      readEpochFloor(key, USER, 'p5'), MAX_UINT64);
+    check('floor: the big value did not lose precision in storage',
+      (await store.get()).epochFloors[epochFloorKey(USER, 'p5')] === '18446744073709551615' && big.floor === MAX_UINT64);
+  }
+
+  // Cleared ONLY by an explicit user action.
+  await clearEpochFloors({ store, key });
+  eq('floor: unpair clears every floor', Object.keys(key.epochFloors).length, 0);
+  eq('floor: the clear reached storage', Object.keys((await store.get()).epochFloors).length, 0);
+  const afterClear = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 1n });
+  check('floor: after an explicit unpair, TOFU applies again', afterClear.firstSight === true);
+}
+
+// -- 5b. RESTORE FROM BACKUP replays an old epoch => refuse + rekey ---------
+//
+// This is A2's blocking restore test AND A3-M2's replay test. ONE test
+// satisfies BOTH, and that is not a shortcut -- they are the same event seen
+// from two sides. A2 requires the web lane to prove refuse-and-rekey when
+// storage is restored behind live reality (the web equivalent of P4's
+// E2eSeqStoreTest.restore_from_backup_fails_closed); A3-M2 requires an epoch at
+// or below the floor to be refused. A profile restored from backup has BOTH a
+// stale seq counter and a stale floor, and the floor is what fires FIRST --
+// before openWrap, before any key exists -- which is the ordering that makes
+// the counter's job survivable at all.
+{
+  const store = memoryWebKeyStore();
+  const key = (await ensureWebDeviceKey({ store, register: async () => ({ ok: true }) })).key;
+  const USER = 'user-0191aa';
+  const PHONE = 'dev-phone-01';
+
+  // Live history: the pair has run through epochs 42 and 43.
+  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n });
+  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n });
+  const backup = { epochFloors: { ...key.epochFloors } };
+
+  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 44n });
+  eq('restore: the live floor is 44', readEpochFloor(key, USER, PHONE), 44n);
+
+  // Now restore the profile to the backup -- IndexedDB rolled back in time.
+  // This is the whole scenario: storage is BEHIND reality and does not know it.
+  const restoredKey = { ...key, epochFloors: { ...backup.epochFloors } };
+  await store.put(toRecord(restoredKey));
+  eq('restore: storage rolled back to 43', readEpochFloor(restoredKey, USER, PHONE), 43n);
+
+  // The relay now replays the epoch-43 ACCEPT_PAIRING it captured. Under the
+  // rolled-back floor this is <= 43 and MUST be refused, not accepted because
+  // "43 is greater than nothing".
+  await throws('restore: a replayed epoch 43 is REFUSED after a restore',
+    () => admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n }),
+    (e) => e instanceof EpochFloorError);
+  await throws('restore: the older epoch 42 is refused too',
+    () => admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n }),
+    (e) => e instanceof EpochFloorError);
+
+  // REKEY is the recovery, and it is the ONLY one: the phone mints a fresh SK
+  // at a higher epoch (what the user re-pairing does) and that is accepted.
+  const rekeyed = await admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 45n });
+  eq('restore: a REKEY at a higher epoch is accepted', rekeyed.floor, 45n);
+  eq('restore: and it persisted', (await store.get()).epochFloors[epochFloorKey(USER, PHONE)], '45');
+
+  // The control: without the floor this suite would prove nothing, so assert
+  // that a floor-less record really does accept the replay. If this line ever
+  // fails, the refusals above are passing for some other reason.
+  const naive = { ...key, epochFloors: {} };
+  const replayed = await admitPairEpoch({ store: memoryWebKeyStore(), key: naive, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n });
+  check('restore: CONTROL -- with no floor, the replay IS accepted (so the guard is load-bearing)',
+    replayed.firstSight === true);
+}
+
+// -- 5c. a malformed floor map is a SHAPE error, never an empty map ---------
+// Silently substituting {} is indistinguishable from "never paired", so every
+// floor would be forgotten and the next replay accepted under TOFU -- a bug
+// that deletes a security control while every "does it pair" test stays green.
+await throws('floors: absent map is a shape error', () => hydrateEpochFloors(undefined));
+await throws('floors: an array is a shape error', () => hydrateEpochFloors([]));
+await throws('floors: a NUMBER value is a shape error', () => hydrateEpochFloors({ k: 42 }));
+await throws('floors: a leading-zero value is a shape error', () => hydrateEpochFloors({ k: '042' }));
+await throws('floors: a signed value is a shape error', () => hydrateEpochFloors({ k: '-1' }));
+await throws('floors: a padded value is a shape error', () => hydrateEpochFloors({ k: ' 42' }));
+await throws('floors: above 2^64-1 is a shape error', () => hydrateEpochFloors({ k: '18446744073709551616' }));
+eq('floors: an empty map is legal (a browser that has never paired)',
+  Object.keys(hydrateEpochFloors({})).length, 0);
+eq('floors: a well-formed map round-trips', hydrateEpochFloors({ k: '42' }).k, '42');
 
 const total = passed + failed;
 console.log(`e2e-web-webkey: ${passed}/${total} checks passed`);

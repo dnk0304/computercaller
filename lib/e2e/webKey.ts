@@ -37,8 +37,20 @@
  * store. Type-stripped by node 24 on import; no build step (R-A).
  */
 
-/** Record format version. Bump ONLY with a migration; readers must fail loudly. */
-export const WEB_KEY_RECORD_VERSION = 1;
+/**
+ * Record format version. Bump ONLY with a migration; readers must fail loudly.
+ *
+ * v2 (E2E-P2 follow-up, GATE1 Addendum A3-M2) adds `epochFloors`. The bump is
+ * deliberate and it is NOT cosmetic: a v1 record is a record written by a build
+ * that had no floor, so a browser that silently kept using it would accept any
+ * `ctx.pairEpoch` once — which is exactly the replay A3-M2 exists to refuse.
+ * `hydrateRecord` therefore rejects v1 as an unknown version and the user
+ * re-pairs, per CHECKPOINT protocol rule 6 (a resumer must never "work on my
+ * machine" against an old record). There is no upgrade path from v1 on purpose:
+ * migrating would mean inventing a floor, and the only honest floor for a
+ * record that never had one is "none yet, and no key either".
+ */
+export const WEB_KEY_RECORD_VERSION = 2;
 
 /** Uncompressed SEC1 P-256 point: 0x04 ‖ X(32) ‖ Y(32). */
 export const SEC1_P256_BYTES = 65;
@@ -48,6 +60,24 @@ export const SEC1_P256_B64URL_LENGTH = 87;
 
 /** Device id entropy. 128 bits, hex — stable for the life of the record. */
 export const DEVICE_ID_BYTES = 16;
+
+/**
+ * The decimal-string form a floor is stored in. Identical to kdf.mjs's
+ * PAIR_EPOCH_WIRE_RE on purpose: the value that goes into the floor is the same
+ * value that came off the wire, and two regexes that are meant to agree but are
+ * written twice are two regexes that will eventually disagree. This module
+ * cannot import kdf.mjs (it is the .ts half and kdf.mjs is the frozen P0.2
+ * artifact), so the constant is restated here and
+ * tests/e2e-web-webkey.test.mjs asserts the two are the SAME SOURCE STRING.
+ */
+export const PAIR_EPOCH_DECIMAL = /^(0|[1-9][0-9]{0,19})$/;
+/**
+ * 2^64-1. Written as a BigInt() CALL, not the `0xffff…n` literal kdf.mjs uses:
+ * this file is typechecked against the project's ES2017 target, where a BigInt
+ * literal is TS2737. Changing the shared target to satisfy one constant would
+ * move every other file on a branch three lanes are editing.
+ */
+export const MAX_UINT64 = BigInt('18446744073709551615');
 
 export const WEB_KEY_DB_NAME = 'cc-e2e';
 export const WEB_KEY_DB_VERSION = 1;
@@ -67,6 +97,73 @@ export interface WebDeviceKeyRecord {
   pub: Uint8Array;
   privateKey: CryptoKey;
   publicKey: CryptoKey;
+  /**
+   * A3-M2. The monotonic epoch floor per `(userId, phoneDeviceId)`, keyed by
+   * {@link epochFloorKey}, VALUE AS A DECIMAL STRING.
+   *
+   * The string is not a style choice. `pairEpoch` is a uint64 and A1 forbids it
+   * rounding above 2^53; IndexedDB's structured clone would happily round-trip
+   * a `number`, so storing one would reintroduce on the READ side the exact
+   * precision loss A3 spent a paragraph forbidding on the wire side. BigInt is
+   * structured-cloneable too, but a decimal string survives a JSON export, a
+   * devtools edit and a future storage swap identically, and it is the same
+   * spelling the wire uses.
+   *
+   * NOTE what is deliberately NOT in this record: the nonce prefix. A2 MUST #2
+   * — the prefix is re-derived from SK + pairContext on every session
+   * construction and MUST NEVER be persisted, because a persisted prefix is
+   * stale state that can survive a restore. `tests/e2e-web-webkey.test.mjs`
+   * asserts the stored record has no prefix-shaped field at all.
+   */
+  epochFloors: Record<string, string>;
+}
+
+/**
+ * Raised when a `ctx.pairEpoch` is at or below the stored floor (A3-M2).
+ *
+ * This is a REFUSAL, not a warning, and there is no plaintext fallback: the
+ * failure it guards is a relay replaying a superseded `ACCEPT_PAIRING`, which
+ * re-installs an old `SK` under its old epoch. A2's per-`(kid,direction)`
+ * counter then restarts at 0 against a key AND a prefix that have already
+ * sealed frames — GCM nonce reuse, the one failure in this protocol whose cost
+ * is total. The SAS would also mismatch, but §13 makes the SAS explicitly
+ * non-blocking, so it cannot be the control here.
+ */
+export class EpochFloorError extends Error {
+  readonly code = 'e2e-epoch-replayed';
+  /** The hook state this maps to — abandon the pair and force a rekey. */
+  readonly state = 're-pair-needed';
+  readonly floor: bigint;
+  readonly offered: bigint;
+  constructor(floor: bigint, offered: bigint, scope: string) {
+    super(
+      `E2E pairEpoch ${offered} is at or below the stored floor ${floor} for ${scope}: ` +
+        'refusing the pairing (A3-M2 epoch monotonicity). This is what a replayed ' +
+        'ACCEPT_PAIRING looks like; accepting it would restart a seq counter at 0 ' +
+        'against a key that has already sealed frames.',
+    );
+    this.name = 'EpochFloorError';
+    this.floor = floor;
+    this.offered = offered;
+  }
+}
+
+/**
+ * The floor's key. NUL-joined rather than `:`-joined because both halves are
+ * caller-supplied strings and `:` is legal in a userId — `a:b` + `c` and `a` +
+ * `b:c` would collide, and a collision here merges two phones' floors, which
+ * either blocks a legitimate pair or admits a replayed one. NUL cannot appear
+ * in either field (both are length-prefixed UTF-8 ids under A1's encoder, and
+ * the relay charset is `[A-Za-z0-9_-]`).
+ */
+export function epochFloorKey(userId: string, phoneDeviceId: string): string {
+  if (typeof userId !== 'string' || userId.length === 0) {
+    throw new WebKeyRecordShapeError('epoch floor: userId must be a non-empty string');
+  }
+  if (typeof phoneDeviceId !== 'string' || phoneDeviceId.length === 0) {
+    throw new WebKeyRecordShapeError('epoch floor: phoneDeviceId must be a non-empty string');
+  }
+  return `${userId} ${phoneDeviceId}`;
 }
 
 /** The record as the rest of the client uses it, with the wire encoding attached. */
@@ -214,6 +311,12 @@ export async function generateWebDeviceKey(
     pub: raw,
     privateKey: pair.privateKey,
     publicKey,
+    // A fresh browser has seen no phone, so it has no floor. TOFU: the first
+    // epoch that arrives for a (userId, phoneDeviceId) is accepted with no
+    // comparison and BECOMES the floor (A3-M2, consistent with §13 device
+    // pinning). An empty map is the honest starting state; a map seeded with
+    // zeroes would refuse a legitimate first pair at epoch 0.
+    epochFloors: {},
     pubB64Url: toBase64Url(raw),
   };
 }
@@ -290,8 +393,42 @@ export function hydrateRecord(raw: unknown): WebDeviceKey {
     pub,
     privateKey,
     publicKey,
+    epochFloors: hydrateEpochFloors(r.epochFloors),
     pubB64Url: toBase64Url(pub),
   };
+}
+
+/**
+ * A malformed floor map is a SHAPE error, never an empty map.
+ *
+ * This is the one place where "be liberal in what you accept" is exactly wrong.
+ * Silently substituting `{}` for an unreadable map is indistinguishable, from
+ * the code's point of view, from a browser that has never paired — so every
+ * floor would be forgotten and the very next replayed epoch would be accepted
+ * under TOFU. The failure this guards against is a bug that DELETES a security
+ * control while every test that only checks "does it pair" stays green.
+ */
+export function hydrateEpochFloors(raw: unknown): Record<string, string> {
+  if (raw === undefined || raw === null) {
+    throw new WebKeyRecordShapeError('epochFloors is absent (v2 records always carry the map)');
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new WebKeyRecordShapeError('epochFloors must be a plain object');
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v !== 'string' || !PAIR_EPOCH_DECIMAL.test(v)) {
+      throw new WebKeyRecordShapeError(
+        `epochFloors[${JSON.stringify(k)}] must be a decimal string matching ${PAIR_EPOCH_DECIMAL} — ` +
+          `got ${typeof v} ${JSON.stringify(v)}`,
+      );
+    }
+    if (BigInt(v) > MAX_UINT64) {
+      throw new WebKeyRecordShapeError(`epochFloors[${JSON.stringify(k)}] exceeds 2^64-1`);
+    }
+    out[k] = v;
+  }
+  return out;
 }
 
 /** The persisted projection — `pubB64Url` is derived, so it is NOT stored. */
@@ -304,6 +441,10 @@ export function toRecord(key: WebDeviceKey): WebDeviceKeyRecord {
     pub: key.pub,
     privateKey: key.privateKey,
     publicKey: key.publicKey,
+    // Copied, not aliased: the persisted projection must not share a mutable
+    // object with the live one, or a later in-memory write would reach storage
+    // without going through admitPairEpoch's persist-before-use ordering.
+    epochFloors: { ...key.epochFloors },
   };
 }
 
@@ -494,4 +635,96 @@ export async function resetWebDeviceKey(opts: WebKeyOptions = {}): Promise<Ensur
   const store = storeOf(opts);
   await store.clear();
   return ensureWebDeviceKey({ ...opts, store });
+}
+
+// ---------------------------------------------------------------------------
+// A3-M2 — the epoch floor
+// ---------------------------------------------------------------------------
+
+/** Read the stored floor for a pair, or `null` on first sight (TOFU). */
+export function readEpochFloor(
+  key: Pick<WebDeviceKey, 'epochFloors'>,
+  userId: string,
+  phoneDeviceId: string,
+): bigint | null {
+  const v = key.epochFloors[epochFloorKey(userId, phoneDeviceId)];
+  return v === undefined ? null : BigInt(v);
+}
+
+export interface AdmitEpochResult {
+  /** The floor now in storage — always equal to `pairEpoch` on success. */
+  floor: bigint;
+  /** True when this `(userId, phoneDeviceId)` had never been seen (TOFU). */
+  firstSight: boolean;
+}
+
+/**
+ * A3-M2, the whole control, in one function the caller cannot go around.
+ *
+ * ORDERING IS THE POINT. The new floor is written to the store and the write is
+ * AWAITED before this resolves, so the derived keys cannot be used to seal or
+ * unseal anything until the floor is durable. A crash between "used" and
+ * "persisted" must leave the floor AHEAD of reality, never behind: a floor that
+ * is too high costs one re-pair, a floor that is too low costs the confidentiality
+ * of every frame under the replayed key. Same family as A2's persist-before-emit
+ * counter rule, and for the same reason.
+ *
+ * It takes the LIVE key object and mutates `epochFloors` only AFTER the store
+ * write succeeds, so a failed write leaves memory and storage agreeing.
+ *
+ * `pairEpoch` is a bigint because that is what `pairContextFromWire` returns;
+ * there is no overload taking a number, deliberately — a `number` here is how
+ * the uint64 gets rounded back.
+ */
+export async function admitPairEpoch(opts: {
+  store: WebKeyStore;
+  key: WebDeviceKey;
+  userId: string;
+  phoneDeviceId: string;
+  pairEpoch: bigint;
+}): Promise<AdmitEpochResult> {
+  const { store, key, userId, phoneDeviceId, pairEpoch } = opts;
+  if (typeof pairEpoch !== 'bigint') {
+    throw new TypeError('admitPairEpoch: pairEpoch must be a bigint (a number rounds above 2^53)');
+  }
+  if (pairEpoch < BigInt(0) || pairEpoch > MAX_UINT64) {
+    throw new WebKeyRecordShapeError(`pairEpoch ${pairEpoch} is outside uint64`);
+  }
+  const k = epochFloorKey(userId, phoneDeviceId);
+  const existing = key.epochFloors[k];
+  const firstSight = existing === undefined;
+
+  if (!firstSight) {
+    const floor = BigInt(existing);
+    // `<=`, not `<`. Re-accepting the CURRENT epoch is the replay: the phone
+    // bumps on every Accept and every Reset, so an epoch we have already
+    // installed arriving a second time is either a duplicated frame or a
+    // replayed one, and both would mint a second kid under the same epoch.
+    if (pairEpoch <= floor) throw new EpochFloorError(floor, pairEpoch, k);
+  }
+
+  const next = { ...key.epochFloors, [k]: pairEpoch.toString(10) };
+  // Persist FIRST. `toRecord` copies the map, so the record written here is the
+  // new floor even though `key.epochFloors` is still the old one at this line.
+  await store.put(toRecord({ ...key, epochFloors: next }));
+  key.epochFloors = next;
+  return { floor: pairEpoch, firstSight };
+}
+
+/**
+ * Drop every floor. The ONLY caller is an explicit user action — unpair, revoke
+ * or sign-out.
+ *
+ * There is deliberately no wire-triggered path to this function and no
+ * per-pairing reset: if a value arriving from the relay could clear a floor,
+ * the floor would defend against exactly nothing, because the replay that
+ * A3-M2 refuses could simply be preceded by a clear. Grep this symbol before
+ * adding a caller.
+ */
+export async function clearEpochFloors(opts: {
+  store: WebKeyStore;
+  key: WebDeviceKey;
+}): Promise<void> {
+  await opts.store.put(toRecord({ ...opts.key, epochFloors: {} }));
+  opts.key.epochFloors = {};
 }

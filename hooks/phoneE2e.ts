@@ -46,7 +46,18 @@ export type E2eError =
   | 'e2e-key-mismatch'
   | 'e2e-unavailable'
   | 're-pair-needed'
-  | 'e2e-seq-fail-closed';
+  | 'e2e-seq-fail-closed'
+  /**
+   * A3-M2. `ctx.pairEpoch` was at or below the stored floor for this
+   * (userId, phoneDeviceId) — what a replayed ACCEPT_PAIRING looks like.
+   *
+   * It is its own code rather than another 'e2e-setup-failed' because the two
+   * mean opposite things to whoever reads the log: setup-failed is "this pair
+   * could not be built", and this is "this pair was built once already and
+   * something is offering it to us again". One is a bug report, the other is
+   * the only signal a user gets that a replay was refused.
+   */
+  | 'e2e-epoch-replayed';
 
 /** Why the SW has no key. `absent` and `unknown` are DIFFERENT and the badge says so. */
 export type SwKeyStatus = 'present' | 'absent' | 'unknown';
@@ -65,6 +76,23 @@ export interface E2eAcceptBlock {
   epk: string;
   recipKeys: string[];
   wraps: { deviceId: string; wrap: string }[];
+  /**
+   * GATE1 Addendum A3 — the pair context carried on ACCEPT_PAIRING /
+   * PAIRING_ACTIVE / PAIR_STATE.e2e.
+   *
+   * Typed `unknown` and passed through RAW, on purpose. Every rule about this
+   * object (decimal-string pairEpoch, BigInt parse, the 2^64-1 bound, A3-M3's
+   * own-id checks, A3-M4's refuse-when-absent) lives in ONE function,
+   * `kdf.pairContextFromWire`, which P1.1 froze and which Android asserts the
+   * same vectors against. A second parser here that "just checked the shape"
+   * would be a second opinion about the same bytes, and the whole reason A3
+   * exists is that two implementations quietly disagreed about a context.
+   *
+   * So `readAcceptBlock` does not validate it, does not default it, and does
+   * not coerce it — a missing ctx stays `undefined` and reaches the one place
+   * that is allowed to refuse it.
+   */
+  ctx?: unknown;
 }
 
 export const E2E_BLOCK_MAX_BYTES = 4096;
@@ -199,7 +227,7 @@ export function readAcceptBlock(raw: unknown): E2eAcceptBlock | null {
     wraps.push({ deviceId, wrap });
   }
   if (new Set(wraps.map((w) => w.deviceId)).size !== wraps.length) return null;
-  return { v: 1, mode: b.mode, kid: b.kid, epk: b.epk, recipKeys: b.recipKeys as string[], wraps };
+  return { v: 1, mode: b.mode, kid: b.kid, epk: b.epk, recipKeys: b.recipKeys as string[], wraps, ctx: b.ctx };
 }
 
 export function findOurWrap(block: E2eAcceptBlock, ourDeviceId: string): string | null {
