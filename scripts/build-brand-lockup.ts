@@ -247,7 +247,7 @@ async function writePng(raw: Raw, file: string, width?: number, height?: number)
   note(file);
 }
 
-async function writePngFrom(src: string, file: string, size: number) {
+async function writePngFrom(src: string | Buffer, file: string, size: number) {
   mkdirSync(dirname(file), { recursive: true });
   await sharp(src)
     .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
@@ -425,9 +425,25 @@ async function main() {
     svgInline(markInlineB64, wordLightB64, wordDarkB64),
   );
 
-  // --- extension action icons, from the app icon --------------------------
+  // --- extension action icons, FROM THE MARK -------------------------------
+  // PIXEL-S2 (b), Dennis 2026-09-17 13:26: "Use the same logo from the header
+  // as the official one for extension, the one that doesnt contain the
+  // computercaller text in the icon."
+  //
+  // These used to come from marketing/store/app-icon-512.png, which is the
+  // LAUNCHER icon: mark plus "ComputerCaller" set inside the tile. At 16px that
+  // wordmark is ~2px tall — an unreadable smudge under the mark that still
+  // costs the mark a third of its height. The header now shows the bare mark
+  // (deliverable (a)) and so does the toolbar, off the same cut.
+  //
+  // `contain` on a square canvas, not `cover`: the mark is 1.936:1, so it lands
+  // full-width and vertically centred with transparent bands above and below.
+  // Cropping it to fill the square would cut the monitor and the phone out of a
+  // mark whose whole subject is the two of them talking to each other — i.e. it
+  // would be redrawing the logo, which is the thing PIXEL-O exists to stop.
+  const markIconBuf = await png(mark).png({ compressionLevel: 9 }).toBuffer();
   for (const size of [16, 32, 48, 128]) {
-    await writePngFrom(SRC_APPICON, join(extDir, `icon${size}.png`), size);
+    await writePngFrom(markIconBuf, join(extDir, `icon${size}.png`), size);
   }
 
   // --- Android ------------------------------------------------------------
