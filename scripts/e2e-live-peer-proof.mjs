@@ -43,6 +43,7 @@ import { dirname, join } from 'node:path';
 import * as KDF from '../lib/e2e/kdf.mjs';
 import * as SESSION from '../lib/e2e/session.mjs';
 import { sasDigits } from '../lib/e2e/sas.mjs';
+import * as WEBKEY from '../lib/e2e/webKey.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -56,8 +57,12 @@ function check(name, ok, detail = '') {
   failed++;
   console.error(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
 }
+// JSON.stringify THROWS on a BigInt, and pairEpoch is bigint-typed once it has
+// been through pairContextFromWire — an eagerly-built detail string would turn
+// every epoch assertion into a TypeError from the helper rather than a result.
+const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v));
 const eq = (name, got, want) =>
-  check(name, got === want, `got ${JSON.stringify(got)} want ${JSON.stringify(want)}`);
+  check(name, got === want, `got ${show(got)} want ${show(want)}`);
 
 const enc = (o) => new TextEncoder().encode(JSON.stringify(o));
 const dec = (b) => JSON.parse(new TextDecoder().decode(b));
@@ -113,26 +118,34 @@ function startRelay({ killSwitch = false } = {}) {
         room.active.e2e = v.block;
         const browserActive = { deviceName: 'Harness Phone' };
         if (room.active.e2e) browserActive.e2e = room.active.e2e;
-        // THE CHANNEL GAP, made visible: a real relay sends neither of these to
-        // the browser. The harness supplies them so both peers can build the
-        // SAME §13.10.3 context, and prints the fact so nobody mistakes this
-        // for the gap being closed.
+        // GATE1 Addendum A3 CLOSED THE CHANNEL GAP, and this harness no longer
+        // papers over it. The relay forwards the accept block VERBATIM and the
+        // pair context rides INSIDE it as `block.ctx` — which is real
+        // passthrough, not a harness favour: validateE2eBlock has no key
+        // allowlist and returns `raw`, so an added `ctx` object traverses
+        // untouched. The only field the relay contributes is the pairingId it
+        // already owned.
+        //
+        // The four `__harness*` fields that used to be injected here are GONE.
+        // They were the stand-in for the missing channel, and leaving them in
+        // place alongside a real ctx would mean the computer side could still
+        // pass by reading a value the relay handed it — the harness would be
+        // asserting its own scaffolding instead of the protocol.
         browserActive.pairingId = room.pending.id;
-        browserActive.pairEpoch = payload.__harnessPairEpoch;
-        browserActive.userId = payload.__harnessUserId;
-        browserActive.phoneDeviceId = payload.__harnessPhoneDeviceId;
         send(room.browser, 'PAIRING_ACTIVE', browserActive);
         return;
       }
       if (type === 'RESUME') {
         // A resume re-sends the SAME stashed block, by reference — that is P1's
         // contract and the reason "same kid" is not a sufficient assertion.
+        // Resume re-sends the SAME stashed block by reference, so ctx survives
+        // a resume for free — and that is worth an assertion rather than an
+        // assumption, because a resume that lost ctx would fail to derive only
+        // after a disconnect, which is the path nobody drives by hand.
         send(room.browser, 'PAIRING_ACTIVE', {
           deviceName: 'Harness Phone', resumed: true, held: true, gapMs: 1200,
           ...(room.active.e2e ? { e2e: room.active.e2e } : {}),
           pairingId: room.pending.id,
-          pairEpoch: payload.__harnessPairEpoch, userId: payload.__harnessUserId,
-          phoneDeviceId: payload.__harnessPhoneDeviceId,
         });
         return;
       }
@@ -221,6 +234,20 @@ async function phoneAccept({ recips, phoneKey, pairEpoch, modeOn }) {
   const block = {
     v: 1, mode: modeOn ? 1 : 0, kid, epk: b64(epk),
     recipKeys: [phoneKey.b64, ...recips.map((r) => r.pub)], wraps,
+    // A3's ratified wire form, built the way the PHONE builds it (P4's shape).
+    // `pairEpoch` is a DECIMAL STRING and `userId` is deliberately ABSENT — each
+    // side uses its own authenticated session identity, and transmitting it
+    // would let the relay propose one.
+    //
+    // This object is emitted only when mode is ON. A mode-0 block carries no
+    // ctx because there is nothing to derive; a mode-1 block that arrives
+    // without one must be REFUSED (A3-M4), and scenario 6 drives exactly that.
+    ...(modeOn ? { ctx: {
+      pairingId: CONTEXT.pairingId,
+      phoneDeviceId: CONTEXT.phoneDeviceId,
+      peerDeviceId: ctxInput.peerDeviceId,
+      pairEpoch: String(pairEpoch),
+    } } : {}),
   };
   const keys = await KDF.trafficKeys({ pairingId: CONTEXT.pairingId, sessionKey: sk, context: ctx, role: 'phone' });
   const { np2c, nc2p } = await SESSION.deriveNoncePrefixes({ pairingId: CONTEXT.pairingId, sessionKey: sk, context: ctx });
@@ -273,25 +300,87 @@ async function main() {
     });
     phone.send('ACCEPT_PAIRING', {
       pairingId: req.payload.pairingId, e2e: accept.block,
-      __harnessPairEpoch: pairEpoch, __harnessUserId: CONTEXT.userId, __harnessPhoneDeviceId: CONTEXT.phoneDeviceId,
     });
 
     const active = await browser.wait('PAIRING_ACTIVE');
     check('ON/ON: the accept block reached the browser', !!active.payload.e2e);
     eq('ON/ON: mode 1', active.payload.e2e.mode, 1);
 
-    // The COMPUTER side, through the exact code path the web page uses.
-    const ctxInput = { ...CONTEXT, peerDeviceId: ['dev-web-01', 'dev-sw-01'].sort()[0], pairEpoch };
+    // ── THE CROSS-IMPLEMENTATION CHECK ────────────────────────────────────
+    // The COMPUTER side now builds its context the way the browser does: from
+    // the ctx the PHONE put on the block and carried through the real relay,
+    // plus its OWN session userId. Nothing local is guessed and nothing is
+    // shared between the two halves of this file except bytes on a socket.
+    //
+    // This is what both loopbacks were structurally blind to (gap c3): they
+    // handed both peers the same context object, so a disagreement about the
+    // context could not exist. Here it can, and if the two sides disagreed by
+    // one byte every assertion below would fail.
+    check('ON/ON: the phone put ctx on the block', !!active.payload.e2e.ctx);
+    eq('ON/ON: pairEpoch crossed as a decimal STRING, not a number',
+      typeof active.payload.e2e.ctx.pairEpoch, 'string');
+    check('ON/ON: userId was NOT transmitted', !('userId' in active.payload.e2e.ctx));
+
+    // ── A3-M3 IS NOT ENFORCEABLE HERE, AND THAT IS A BLOCKING FINDING ─────
+    // ESCALATED to Ken + Security by the P2 follow-up lane, 2026-09-17.
+    //
+    // A3-M3 says a receiver MUST refuse a block whose `ctx.peerDeviceId` is not
+    // its OWN deviceId. `peerDeviceId` is SINGULAR, but a pairing has TWO
+    // computer-side recipients — the page and the extension service worker —
+    // and they share one SK and therefore one pairContext, because the phone
+    // seals each p2c frame ONCE and both must open it.
+    //
+    // P4 resolves the singular field by taking the canonically LOWEST recipient
+    // deviceId (E2ePairIdentity.peerDeviceIdFor), deterministic and
+    // order-independent, and says in its own class doc that the choice "is also
+    // part of the ruling being asked for". Under that rule exactly ONE
+    // recipient can satisfy A3-M3 literally. Here 'dev-sw-01' sorts below
+    // 'dev-web-01', so the SW passes and THE WEB PAGE REFUSES — i.e. the page
+    // never pairs whenever an extension key is present, which is the normal
+    // configuration. That is a total availability break of the same class A3
+    // itself was raised for, one layer up.
+    //
+    // Vector I cannot see it: I.1 uses a single recipient whose deviceId IS the
+    // peerDeviceId, so the two readings agree there and the vector cannot
+    // discriminate between them.
+    //
+    // THIS LANE DOES NOT INVENT THE RULING. It does three things instead:
+    //   1. derives with `deviceId: null`, which SKIPS M3's device half rather
+    //      than silently redefining it — the skip is loud, here, in a comment
+    //      that names the MUST it is not enforcing;
+    //   2. asserts the property M3 exists to provide and which IS checkable
+    //      from local knowledge: ctx.peerDeviceId must be a member of the
+    //      recipient set THIS BROWSER offered, so a relay still cannot make us
+    //      derive under a device identity we never proposed;
+    //   3. proves in scenario 6 that M3 DOES fire, unchanged, in the
+    //      single-recipient case where it is well defined.
+    const offered = ['dev-web-01', 'dev-sw-01'];
+    check('A3-M3(partial): ctx.peerDeviceId is one of the recipients WE offered',
+      offered.includes(active.payload.e2e.ctx.peerDeviceId));
+    eq('A3-M3(partial): ...and it is the canonical (lowest) one, as P4 mints it',
+      active.payload.e2e.ctx.peerDeviceId, [...offered].sort()[0]);
+
+    const ctxInput = KDF.pairContextFromWire(active.payload.e2e.ctx, {
+      userId: CONTEXT.userId,          // LOCAL session identity, never on the wire
+      deviceId: null,                  // see the block above — ESCALATED, not resolved
+      pairingId: active.payload.pairingId,
+    });
+    eq('ON/ON: the wire ctx reproduces the pairEpoch the phone used',
+      ctxInput.pairEpoch, BigInt(pairEpoch));
+
     const ourWrap = active.payload.e2e.wraps.find((w) => w.deviceId === 'dev-web-01').wrap;
     const sk = await SESSION.openWrap({
       wrap: ourWrap, kid: active.payload.e2e.kid, epk: SESSION.fromBase64Url(active.payload.e2e.epk),
       ourPrivateKey: web.priv, ourPublicSec1: web.pub, ourDeviceId: 'dev-web-01',
-      pairingId: CONTEXT.pairingId, context: ctxInput, pairEpoch,
+      pairingId: CONTEXT.pairingId, context: ctxInput.contextBytes, pairEpoch,
     });
-    check('ON/ON: the WEB opened its own wrap', sk.length === 32);
+    // Opening the wrap is already the proof: the KEK is derived from the pair
+    // context, so a context the two sides disagreed about could not unwrap SK
+    // at all. Everything sealed after this line rests on that one success.
+    check('ON/ON: the WEB opened its own wrap using the WIRE-DERIVED context', sk.length === 32);
 
     const session = await SESSION.createComputerSession({
-      pairingId: CONTEXT.pairingId, sessionKey: sk, context: ctxInput,
+      pairingId: CONTEXT.pairingId, sessionKey: sk, context: ctxInput.contextBytes,
       kid: active.payload.e2e.kid, pairEpoch, store: SESSION.memorySeqStore(), fresh: true,
     });
 
@@ -348,7 +437,7 @@ async function main() {
 
     // ── resume: the SAME kid, the SAME bytes, and NO rekey ────────────────
     const before = JSON.stringify(active.payload.e2e);
-    phone.send('RESUME', { __harnessPairEpoch: pairEpoch, __harnessUserId: CONTEXT.userId, __harnessPhoneDeviceId: CONTEXT.phoneDeviceId });
+    phone.send('RESUME', {});
     const resumed = await browser.wait('PAIRING_ACTIVE');
     check('RESUME: marked as a resume', resumed.payload.resumed === true);
     eq('RESUME: the SAME kid', resumed.payload.e2e.kid, active.payload.e2e.kid);
@@ -477,6 +566,189 @@ async function main() {
     browser.close();
     await relay.close();
   }
+
+  // -- scenario 6: A3 receiver rules, SINGLE recipient ----------------------
+  //
+  // One recipient is the case where A3-M3 is unambiguous: peerDeviceId is
+  // singular and there is exactly one computer-side device, so "ctx.peerDeviceId
+  // must be our own deviceId" has one meaning. Everything M3 and M4 promise is
+  // asserted here, through the real relay, with the block arriving on the wire.
+  {
+    const relay = startRelay();
+    const browser = await connect(relay.port, 'browser');
+    const phone = await connect(relay.port, 'phone');
+    const web = await mintKeyPair();
+    const phoneKey = await mintKeyPair();
+    const recips = [{ kind: 'web', deviceId: 'dev-web-01', pub: web.b64 }];
+    const pairEpoch = 42;
+
+    browser.send('BROWSER_REQUEST_PAIRING', {
+      ua: 'harness', e2e: { v: 1, mode: 1, recips },
+    });
+    const req = await phone.wait('PAIRING_REQUEST');
+    const accept = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch, modeOn: true });
+    phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: accept.block });
+    const active = await browser.wait('PAIRING_ACTIVE');
+
+    const wireCtx = active.payload.e2e.ctx;
+    eq('A3(1:1): peerDeviceId IS our deviceId when there is one recipient',
+      wireCtx.peerDeviceId, 'dev-web-01');
+
+    // The positive: full M3 enforcement ON, and it pairs.
+    const ctx = KDF.pairContextFromWire(wireCtx, {
+      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: active.payload.pairingId,
+    });
+    const ourWrap = active.payload.e2e.wraps.find((w) => w.deviceId === 'dev-web-01').wrap;
+    const sk = await SESSION.openWrap({
+      wrap: ourWrap, kid: active.payload.e2e.kid, epk: SESSION.fromBase64Url(active.payload.e2e.epk),
+      ourPrivateKey: web.priv, ourPublicSec1: web.pub, ourDeviceId: 'dev-web-01',
+      pairingId: CONTEXT.pairingId, context: ctx.contextBytes, pairEpoch,
+    });
+    check('A3(1:1): the wrap opens with M3 fully enforced', sk.length === 32);
+
+    const session = await SESSION.createComputerSession({
+      pairingId: CONTEXT.pairingId, sessionKey: sk, context: ctx.contextBytes,
+      kid: active.payload.e2e.kid, pairEpoch, store: SESSION.memorySeqStore(), fresh: true,
+    });
+    phone.send('SMS_RECEIVED', await accept.seal('SMS_RECEIVED', { from: '+4712345678', body: 'm3 on' }));
+    const inbound = await browser.wait('SMS_RECEIVED');
+    const opened = await session.open('SMS_RECEIVED', inbound.payload);
+    check('A3(1:1): and a p2c frame sealed by the PHONE opens on the COMPUTER', opened.ok === true);
+
+    // A3-M3 negatives, against the block AS IT ARRIVED.
+    let m3dev = false;
+    try {
+      KDF.pairContextFromWire(wireCtx, {
+        userId: CONTEXT.userId, deviceId: 'dev-web-99', pairingId: active.payload.pairingId,
+      });
+    } catch { m3dev = true; }
+    check('A3-M3: a block addressed to ANOTHER deviceId is refused by identity', m3dev);
+
+    let m3pair = false;
+    try {
+      KDF.pairContextFromWire(wireCtx, {
+        userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: 'pair-00000000',
+      });
+    } catch { m3pair = true; }
+    check('A3-M3: a ctx.pairingId that is not our pairing is refused', m3pair);
+
+    // A3-M4, driven END TO END: the phone sends a mode=1 block with the ctx
+    // STRIPPED, exactly as a stripping relay would. It must be refused, never
+    // derived from a local guess.
+    const stripped = { ...accept.block };
+    delete stripped.ctx;
+    phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: stripped });
+    const active2 = await browser.wait('PAIRING_ACTIVE');
+    eq('A3-M4: the stripped block still arrives as mode 1', active2.payload.e2e.mode, 1);
+    check('A3-M4: ...and it really has no ctx', active2.payload.e2e.ctx === undefined);
+    let m4 = false;
+    try {
+      KDF.pairContextFromWire(active2.payload.e2e.ctx, {
+        userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: active2.payload.pairingId,
+      });
+    } catch { m4 = true; }
+    check('A3-M4: a mode=1 block with NO ctx is REFUSED, never derived from local', m4);
+
+    browser.close(); phone.close();
+    await relay.close();
+  }
+
+  // -- scenario 7: A3-M2, the epoch floor, against a REPLAYED accept --------
+  //
+  // The floor is the only control against this, and this is the scenario it
+  // exists for: the relay captures a real ACCEPT_PAIRING and sends it again.
+  // Everything about the replayed frame is genuine — same signature-free block,
+  // same kid, same wraps — so nothing else in the stack has any reason to
+  // object. Only the floor does.
+  {
+    const relay = startRelay();
+    const browser = await connect(relay.port, 'browser');
+    const phone = await connect(relay.port, 'phone');
+    const web = await mintKeyPair();
+    const phoneKey = await mintKeyPair();
+    const recips = [{ kind: 'web', deviceId: 'dev-web-01', pub: web.b64 }];
+
+    const keyStore = WEBKEY.memoryWebKeyStore();
+    const webKeyRec = (await WEBKEY.ensureWebDeviceKey({
+      store: keyStore, register: async () => ({ ok: true }),
+    })).key;
+
+    browser.send('BROWSER_REQUEST_PAIRING', { ua: 'harness', e2e: { v: 1, mode: 1, recips } });
+    const req = await phone.wait('PAIRING_REQUEST');
+
+    // Epoch 42 -- the honest pair. Accepted, and it sets the floor.
+    const a42 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 42, modeOn: true });
+    phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a42.block });
+    const first = await browser.wait('PAIRING_ACTIVE');
+    const ctx42 = KDF.pairContextFromWire(first.payload.e2e.ctx, {
+      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: first.payload.pairingId,
+    });
+    const admitted = await WEBKEY.admitPairEpoch({
+      store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
+      phoneDeviceId: ctx42.phoneDeviceId, pairEpoch: ctx42.pairEpoch,
+    });
+    check('FLOOR: the honest epoch 42 is admitted (TOFU, first sight)', admitted.firstSight === true);
+
+    // Epoch 43 -- a legitimate rekey. Still fine.
+    const a43 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 43, modeOn: true });
+    phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a43.block });
+    const second = await browser.wait('PAIRING_ACTIVE');
+    const ctx43 = KDF.pairContextFromWire(second.payload.e2e.ctx, {
+      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: second.payload.pairingId,
+    });
+    await WEBKEY.admitPairEpoch({
+      store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
+      phoneDeviceId: ctx43.phoneDeviceId, pairEpoch: ctx43.pairEpoch,
+    });
+    check('FLOOR: a legitimate rekey to 43 advances the floor',
+      WEBKEY.readEpochFloor(webKeyRec, CONTEXT.userId, ctx43.phoneDeviceId) === 43n);
+
+    // THE REPLAY. The relay re-sends the epoch-42 block it already carried.
+    // Byte for byte the frame the phone really sent.
+    phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a42.block });
+    const replay = await browser.wait('PAIRING_ACTIVE');
+    eq('FLOOR: the replayed block is byte-identical to the original',
+      JSON.stringify(replay.payload.e2e), JSON.stringify(first.payload.e2e));
+
+    // It parses. It is a perfectly well-formed block and its ctx is valid --
+    // which is the point: nothing upstream of the floor has grounds to refuse.
+    const ctxReplay = KDF.pairContextFromWire(replay.payload.e2e.ctx, {
+      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: replay.payload.pairingId,
+    });
+    check('FLOOR: the replayed ctx parses cleanly (nothing else can catch this)',
+      ctxReplay.pairEpoch === 42n);
+
+    let refused = false;
+    try {
+      await WEBKEY.admitPairEpoch({
+        store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
+        phoneDeviceId: ctxReplay.phoneDeviceId, pairEpoch: ctxReplay.pairEpoch,
+      });
+    } catch (e) { refused = e instanceof WEBKEY.EpochFloorError; }
+    check('FLOOR: the REPLAYED epoch 42 is REFUSED (A3-M2)', refused);
+    check('FLOOR: ...and the floor did not move',
+      WEBKEY.readEpochFloor(webKeyRec, CONTEXT.userId, ctx43.phoneDeviceId) === 43n);
+
+    // The recovery is a REKEY at a higher epoch, and nothing else.
+    const a44 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 44, modeOn: true });
+    phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a44.block });
+    const fourth = await browser.wait('PAIRING_ACTIVE');
+    const ctx44 = KDF.pairContextFromWire(fourth.payload.e2e.ctx, {
+      userId: CONTEXT.userId, deviceId: 'dev-web-01', pairingId: fourth.payload.pairingId,
+    });
+    const rekeyed = await WEBKEY.admitPairEpoch({
+      store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
+      phoneDeviceId: ctx44.phoneDeviceId, pairEpoch: ctx44.pairEpoch,
+    });
+    check('FLOOR: a REKEY at 44 is accepted -- refuse-and-rekey, not refuse-forever',
+      rekeyed.floor === 44n);
+    check('FLOOR: and the floor persisted to the STORE, not just to memory',
+      (await keyStore.get()).epochFloors[
+        WEBKEY.epochFloorKey(CONTEXT.userId, ctx44.phoneDeviceId)] === '44');
+
+    browser.close(); phone.close();
+    await relay.close();
+  }
 }
 
 const WATCHDOG = setTimeout(() => {
@@ -489,11 +761,30 @@ main().then(
   () => {
     clearTimeout(WATCHDOG);
     console.log('');
-    console.log('  NOTE: both peers are the SAME implementation and are handed an IDENTICAL');
-    console.log('  pair context. A real browser cannot build that context today — pairingId,');
-    console.log('  pairEpoch and userId have no channel to it (escalated 2026-09-17). This is');
-    console.log('  protocol + this-lane evidence, NOT interop evidence. Cross-implementation');
-    console.log('  against the real Android build is P6 (R-L).');
+    console.log('  WHAT THIS RUN IS EVIDENCE OF, printed every time so no green line can be');
+    console.log('  quoted out of context:');
+    console.log('');
+    console.log('  SCRIPTED SIDE: the PHONE. phoneAccept() mints SK, wraps per recipient,');
+    console.log('  builds the accept block and emits ctx in the P4 wire shape (decimal-string');
+    console.log('  pairEpoch, NO userId). The COMPUTER side is the same lib/e2e/session.mjs +');
+    console.log('  lib/e2e/kdf.mjs the web page and the SW import, and lib/e2e/webKey.ts for');
+    console.log('  the A3-M2 floor. Neither half is a mirror of the other.');
+    console.log('');
+    console.log('  The two halves no longer SHARE a pair context. Since A3 the phone puts ctx');
+    console.log('  on the block, the relay carries it verbatim, and the computer rebuilds the');
+    console.log('  context from that plus its OWN userId — so a disagreement between the two');
+    console.log('  sides is now POSSIBLE here, which it was not before. The four __harness*');
+    console.log('  fields that used to hand the computer its context are gone.');
+    console.log('');
+    console.log('  STILL NOT INTEROP: both halves are JavaScript running one HKDF/GCM');
+    console.log('  implementation, and the socket plumbing around the real relay module');
+    console.log('  lib/e2eBlock-core.js is a stand-in. Cross-implementation against the real');
+    console.log('  Android build is P6 (R-L). What the frozen vectors add is the independent');
+    console.log('  arm: tests/e2e-web-ctx asserts I.1-I.4 against values Security computed in');
+    console.log('  a DIFFERENT implementation, and Android asserts the same file.');
+    console.log('');
+    console.log('  OPEN, BLOCKING: A3-M3 is not enforceable for a multi-recipient pairing —');
+    console.log('  see scenario 1. Escalated to Ken + Security 2026-09-17.');
     const total = passed + failed;
     console.log(`e2e-live-peer: ${passed}/${total} checks passed`);
     process.exit(failed === 0 ? 0 : 1);
