@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -37,6 +38,13 @@ class E2eSessionTest {
     @Before
     fun clean() {
         E2eSeqStore.clearAll(ctx)
+        // A2 MUST (1)'s kid<->SK binding is process-lifetime, and every test in
+        // this class deliberately reuses one `sk` fixture. Without this, the
+        // first test to bind a kid poisons every later one — and because JUnit
+        // does not guarantee method order, it would poison a DIFFERENT set on
+        // each run. Production never needs it: an SK is minted fresh at every
+        // Accept and zeroed at close, so no two pairings share one.
+        E2eSession.clearKidBindingsForTest()
     }
 
     private fun session(kid: String = "kid-s", fresh: Boolean = true) =
@@ -219,6 +227,49 @@ class E2eSessionTest {
             assertTrue("no plaintext in stats", !stats.contains("topsecret"))
             assertTrue("no key material in stats", !stats.contains(E2eKdf.toHex(sk)))
         }
+    }
+
+    /**
+     * GATE1 Addendum A2 MUST (1): **one `SK` names exactly one `kid`.**
+     *
+     * A second `kid` under the same `SK` would open a counter that restarts at
+     * 0 against the identical traffic key and the identical derived prefix —
+     * `pairContext` does not bind `kid`, so nothing in the key schedule moves.
+     * That is a GCM nonce reuse: both plaintexts leak and the GHASH key falls
+     * out with them, which is forgery for every frame under that key.
+     *
+     * A2 requires this enforced "where `kid` is minted, not by convention", so
+     * the assertion is that the construction THROWS, not that a reviewer would
+     * have noticed.
+     */
+    @Test
+    fun a_second_kid_under_one_session_key_is_refused() {
+        session("kid-a2-first").use {
+            try {
+                E2eSession.forPhone(ctx, sk, pairContext, "kid-a2-second", freshEpoch = true)
+                fail(
+                    "A2 MUST (1): a second kid was minted under one SK — its counter " +
+                        "restarts at 0 against the same key and prefix (nonce reuse)"
+                )
+            } catch (e: E2eSession.Companion.KidReuseException) {
+                assertTrue(
+                    "the refusal must name the kid already bound",
+                    e.message!!.contains("kid-a2-first")
+                )
+            }
+        }
+    }
+
+    /**
+     * The same `kid` with the same `SK` is NOT a reuse — it is a resume, and
+     * refusing it would break every reconnect. Guards against an enforcement
+     * that is merely "throw on the second call".
+     */
+    @Test
+    fun the_same_kid_under_the_same_session_key_is_allowed() {
+        session("kid-a2-resume").use { it.seal("SMS_RECEIVED", byteArrayOf(1)) }
+        E2eSession.forPhone(ctx, sk, pairContext, "kid-a2-resume", freshEpoch = false)
+            .use { assertTrue("a resume must still seal", it.seal("SMS_RECEIVED", byteArrayOf(2)).seq > 0) }
     }
 
     private fun prefixOf(s: E2eSession): ByteArray = s.sendNoncePrefix

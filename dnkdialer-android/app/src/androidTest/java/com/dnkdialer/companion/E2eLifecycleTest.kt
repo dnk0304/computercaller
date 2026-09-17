@@ -41,6 +41,10 @@ class E2eLifecycleTest {
     @Before
     fun clean() {
         E2eSeqStore.clearAll(ctx)
+        // See E2eSessionTest.clean: A2 MUST (1)'s kid<->SK binding is
+        // process-lifetime and this class reuses one `sk` fixture across tests
+        // that each name their own kid. Production mints a fresh SK per Accept.
+        E2eSession.clearKidBindingsForTest()
     }
 
     private fun session(kid: String) =
@@ -139,10 +143,19 @@ class E2eLifecycleTest {
      */
     @Test
     fun sign_out_deletes_locally_even_when_the_remote_revoke_fails_or_throws() {
-        for ((label, revoker) in listOf("down" to revokeDown, "threw" to revokeThrows)) {
+        for ((i, branch) in listOf("down" to revokeDown, "threw" to revokeThrows).withIndex()) {
+            val (label, revoker) = branch
             E2eLifecycle.deviceId(ctx)
             val before = E2eKeyAgreement.devicePublicSec1(ctx)
-            val out = E2eLifecycle.onSignOut(ctx, session("kid-$label"), "dev-1", "token", revoker)
+            // Each branch is a separate sign-out, so it gets its own SK as well
+            // as its own kid — A2 MUST (1) forbids two kids under one SK, and a
+            // fixture that broke that rule would be modelling something
+            // production cannot do (an Accept always mints a fresh SK).
+            val branchSk = ByteArray(32) { (it + 3 + (i + 1) * 64).toByte() }
+            val session = E2eSession.forPhone(
+                ctx, branchSk, pairContext, "kid-$label", freshEpoch = true
+            )
+            val out = E2eLifecycle.onSignOut(ctx, session, "dev-1", "token", revoker)
 
             assertEquals("revoke $label must be reported honestly", false, out.remoteRevokeOk)
             assertTrue("$label: the local delete must still happen", out.deviceKeyRotated)

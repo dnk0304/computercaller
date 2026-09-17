@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -109,6 +110,41 @@ class E2eSeqStoreTest {
     }
 
     /**
+     * GATE1 Addendum A2 MUST (2): **the nonce prefix is derived on every
+     * session construction and never persisted.**
+     *
+     * The assertion has to be that the CALLER'S prefix wins on a resume, not
+     * merely that the same prefix comes back — passing the same value twice
+     * cannot distinguish "re-derived" from "read off disk", which is exactly
+     * the state A2 forbids. So this reopens the same record with a DIFFERENT
+     * prefix and requires the new one to be in force. A build that still stored
+     * the prefix would hand back the old bytes and fail here.
+     *
+     * (Production can never take this branch: the prefix is a deterministic
+     * function of SK and pairContext, so a legitimate resume derives the same
+     * four bytes. The point is to prove where the value came FROM.)
+     */
+    @Test
+    fun the_nonce_prefix_is_never_persisted() {
+        val original = prefixFor("kid-A")
+        val first = E2eSeqStore.open(ctx, "kid-A", p2c, freshEpoch = true, original)
+        first.reserve()
+        assertArrayEquals(original, first.sessionPrefix)
+
+        val different = byteArrayOf(0x7f, 0x7e, 0x7d, 0x7c)
+        assertFalse(
+            "the test's own premise: the two prefixes must differ",
+            original.contentEquals(different)
+        )
+        val second = E2eSeqStore.open(ctx, "kid-A", p2c, freshEpoch = false, different)
+        assertArrayEquals(
+            "A2 MUST (2): the resumed store used a STORED prefix instead of the derived " +
+                "one it was given — the record is carrying state it must not carry",
+            different, second.sessionPrefix
+        )
+    }
+
+    /**
      * Simulates a process kill: a NEW store object opened over the same record,
      * as happens on the next app start. It must resume strictly beyond the
      * persisted mark, never re-issue.
@@ -124,7 +160,8 @@ class E2eSeqStoreTest {
         assertEquals("must resume AT the durable mark", mark, second.nextSequence)
         assertTrue("and that is beyond everything issued", issued.all { it < second.nextSequence })
         assertArrayEquals(
-            "the nonce prefix must survive the restart — it is part of the record",
+            "a resume re-derives the SAME prefix from the same SK — it is not stored, " +
+                "it is reproduced",
             first.sessionPrefix, second.sessionPrefix
         )
 

@@ -76,10 +76,18 @@ class E2eSeqStore private constructor(
     val direction: E2eEnvelope.Direction,
     /**
      * Per-(kid,direction) nonce prefix, DERIVED from the session key by
-     * [E2eKdf.deriveNoncePrefixes] rather than randomly generated — see there
-     * for why, and for the flag raised with Security. Defence in depth against
-     * a state-restore bug; A1 is explicit that uniqueness comes from the
-     * COUNTER, never from this.
+     * [E2eKdf.deriveNoncePrefixes] — ratified by GATE1 Addendum A2 (2026-09-17).
+     *
+     * **This prefix contributes ZERO nonce uniqueness.** A2 struck A1's
+     * "defence in depth against a state-restore bug" rationale: the prefix is a
+     * deterministic function of SK and pairEpoch, so a device that restores a
+     * stale counter re-derives exactly the same prefix. Uniqueness rests
+     * entirely on [reserve]'s persist-before-emit / fail-closed counter, which
+     * A2 upgraded from an acceptance criterion to the SOLE control.
+     *
+     * A2 MUST (2): it is derived on every session construction and **never
+     * persisted** — a stored prefix is stale state that can survive a restore.
+     * It is therefore absent from [Record]; see [open].
      */
     val sessionPrefix: ByteArray,
     private var reservedThrough: Long,
@@ -98,7 +106,7 @@ class E2eSeqStore private constructor(
         private const val PREFS = "computercaller_e2e_seq"
         private const val WRAP_ALIAS = "cc-e2e-seq-v1"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        private const val RECORD_VERSION = 1
+        private const val RECORD_VERSION = 2
 
         /** Sequences reserved per durable write. */
         const val WINDOW = 64L
@@ -133,9 +141,12 @@ class E2eSeqStore private constructor(
              * peer can reconstruct it without a wire field that does not exist
              * — see that function for the full reasoning and the flag.
              *
-             * On a RESUME the stored prefix wins: it is what the already-emitted
-             * sequences were used with, so replacing it would move the nonce
-             * space under frames that have already gone out.
+             * A2 MUST (2): this value is used on a RESUME too. The record does
+             * NOT store a prefix — re-deriving is not merely equivalent, it is
+             * the rule, because a persisted prefix is exactly the stale state a
+             * restore can carry forward. The derivation is deterministic in SK
+             * and pairEpoch, so a legitimate resume reproduces the same four
+             * bytes the already-emitted frames used.
              */
             noncePrefix: ByteArray,
         ): E2eSeqStore {
@@ -196,7 +207,8 @@ class E2eSeqStore private constructor(
             // Resume STRICTLY BEYOND the persisted high-water mark. Everything
             // below it may already have been emitted, so none of it is reusable.
             return E2eSeqStore(
-                ctx, kid, direction, rec.prefix, rec.reservedThrough, rec.reservedThrough
+                ctx, kid, direction, noncePrefix.copyOf(),
+                rec.reservedThrough, rec.reservedThrough
             )
         }
 
@@ -218,13 +230,13 @@ class E2eSeqStore private constructor(
             val version: Int,
             val kid: String,
             val direction: String,
-            val prefix: ByteArray,
             val reservedThrough: Long,
         )
 
         private fun seal(rec: Record): String {
+            // No prefix field: A2 MUST (2) forbids persisting it.
             val body = "${rec.version}\u0000${rec.kid}\u0000${rec.direction}\u0000" +
-                "${E2eKdf.toHex(rec.prefix)}\u0000${rec.reservedThrough}"
+                "${rec.reservedThrough}"
             val c = Cipher.getInstance("AES/GCM/NoPadding")
             c.init(Cipher.ENCRYPT_MODE, wrappingKey())
             val ct = c.doFinal(body.toByteArray(Charsets.UTF_8))
@@ -240,13 +252,12 @@ class E2eSeqStore private constructor(
             c.init(Cipher.DECRYPT_MODE, wrappingKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
             val fields = String(c.doFinal(E2eKeyEncoding.fromBase64Url(parts[1])), Charsets.UTF_8)
                 .split("\u0000")
-            require(fields.size == 5) { "sequence record has ${fields.size} fields" }
+            require(fields.size == 4) { "sequence record has ${fields.size} fields" }
             return Record(
                 version = fields[0].toInt(),
                 kid = fields[1],
                 direction = fields[2],
-                prefix = E2eKdf.fromHex(fields[3]),
-                reservedThrough = fields[4].toLong(),
+                reservedThrough = fields[3].toLong(),
             )
         }
 
@@ -323,7 +334,7 @@ class E2eSeqStore private constructor(
 
     /** Durably record that everything up to [through] is spoken for. */
     private fun persist(through: Long) {
-        val rec = Record(RECORD_VERSION, kid, direction.name, sessionPrefix, through)
+        val rec = Record(RECORD_VERSION, kid, direction.name, through)
         val blob = seal(rec)
         // commit(), NOT apply(): apply() is asynchronous, so a frame could leave
         // the device before its reservation reached disk — which is exactly the

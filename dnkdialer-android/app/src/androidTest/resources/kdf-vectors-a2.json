@@ -1,0 +1,54 @@
+{
+  "version": "cc-e2e-v1",
+  "addendum": "GATE1 Addendum A2 — nonce prefix: RATIFIED (A) — 2026-09-17T15:50Z",
+  "source": "ken/PROJECTS/computercaller/e2e/GATE1.md, section 'Vectors (required)'. Values computed by Security in an independent HKDF/GCM implementation against the context already frozen in tests/kdf-vectors.json. Transcribed here VERBATIM — never regenerated from P4's own code, which is the implementation under test.",
+  "note": "A2 says these vectors must be ADDED to tests/kdf-vectors.json. That file is the web lane's (P0.2 owns it) and the android lane must not edit it — app/src/androidTest/resources/kdf-vectors.json is a byte-identical copy whose sha256 is the (c3) cross-lane proof, so adding rows there would destroy the very thing it proves. E-H therefore live beside it in this file until P0.2/Forge lands them in the canonical one; the assertions are identical either way. Flagged to Ken in CHECKPOINTS.",
+  "context": {
+    "pairingId": "pair-7f3a9c21",
+    "userId": "user-0191aa",
+    "phoneDeviceId": "dev-phone-01",
+    "peerDeviceId": "dev-web-01",
+    "pairEpoch": 42,
+    "sessionKeyHex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+  },
+  "E_noncePrefixes": {
+    "label_np2c": "cc-e2e-v1/np2c",
+    "label_nc2p": "cc-e2e-v1/nc2p",
+    "L": 4,
+    "infoNp2cHex": "63632d6532652d76312f6e703263110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
+    "infoNc2pHex": "63632d6532652d76312f6e633270110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
+    "np2cHex": "6fa67348",
+    "nc2pHex": "4a786847"
+  },
+  "F_aead_p2c_with_derived_prefix": {
+    "frameType": "SMS_RECEIVED",
+    "kid": "kid-01",
+    "seq": 7,
+    "direction": 1,
+    "directionName": "p2c",
+    "pairEpoch": 42,
+    "aadHex": "210c534d535f524543454956454422066b69642d3031230000000000000007240125000000000000002a",
+    "noncePrefixHex": "6fa67348",
+    "nonceHex": "6fa673480000000000000007",
+    "keyHex": "b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060",
+    "plaintextHex": "00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "ciphertextHex": "9675ba5ab30c62bb4802c19f4bcd250612e6b7fead8e8aa4c7fff702cec36d68fb85220b16a4c823d2597780d8e664a977b9d0881ed2f41d7a9e402378f3928c6450b5bb8934fe688c6f728943ac10ce"
+  },
+  "G_aead_c2p_with_derived_prefix": {
+    "frameType": "SMS_RECEIVED",
+    "kid": "kid-01",
+    "seq": 7,
+    "direction": 2,
+    "directionName": "c2p",
+    "pairEpoch": 42,
+    "aadHex": "210c534d535f524543454956454422066b69642d3031230000000000000007240225000000000000002a",
+    "noncePrefixHex": "4a786847",
+    "nonceHex": "4a7868470000000000000007",
+    "keyHex": "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d",
+    "plaintextHex": "00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "ciphertextHex": "cd13472e5c80869dbf16635b09461270aca7bc49e9549c68604006478c1f47cb70941551e372c46296b740ef341c36a1ec28b4163695ea8951def0e477445214a80182070c9bbdc9c67ebfde834f95f0"
+  },
+  "H_negative": {
+    "requirement": "np2c MUST NOT equal nc2p, and neither may be all-zero. A2: 'an implementation that fed the same label twice would, and that is a one-character typo.'"
+  }
+}

@@ -1,7 +1,23 @@
 # AEAD nonce prefix — a gap in GATE1 Addendum A1
 
 Owner: forge-backend (P4, android lane). Audience: Security (A1 signer), Ken, P2, P3.
-Status: **OPEN — needs a ruling.** P4 has implemented a resolution; it is reversible in one function.
+Status: **CLOSED — RATIFIED (A) by Security, 2026-09-17T15:50Z.** P4's derived prefix stands as
+implemented; no wire change; (B) and (C) rejected. Ruling text: GATE1.md, "Addendum A2".
+
+Three consequences landed in commit (a2) on this branch:
+1. A2 STRUCK A1's "defence in depth against a state-restore bug" rationale — the prefix is a
+   deterministic function of SK and pairEpoch, so a restore re-derives it. **It contributes zero
+   nonce uniqueness**, and the persist-before-emit / fail-closed counter is now the SOLE control.
+   Said so at E2eSeqStore.sessionPrefix.
+2. A2 MUST (1) — kid <-> SK strictly 1:1, enforced at mint, not by convention
+   (E2eSession.bindKidToSessionKey; E2eSessionTest.a_second_kid_under_one_session_key_is_refused).
+3. A2 MUST (2) — the prefix is derived every session and NEVER persisted. It has been removed from
+   E2eSeqStore's sealed record (RECORD_VERSION 1 -> 2, which the existing unknown-version guard
+   fails closed on), and E2eSeqStoreTest.the_nonce_prefix_is_never_persisted proves it by resuming
+   with a DIFFERENT prefix and requiring the caller's to win — passing the same value twice cannot
+   distinguish "re-derived" from "read off disk".
+
+Vectors E-H reproduce: app/src/androidTest/resources/kdf-vectors-a2.json + E2eA2NoncePrefixVectorsTest.
 
 ## The gap
 

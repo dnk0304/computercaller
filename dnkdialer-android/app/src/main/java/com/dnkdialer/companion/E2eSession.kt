@@ -81,6 +81,58 @@ class E2eSession private constructor(
     }
 
     companion object {
+
+        /**
+         * GATE1 Addendum A2 MUST (1) — **`kid` ↔ `SK` is strictly 1:1**, and it
+         * is enforced here rather than left to convention.
+         *
+         * A2's reasoning, because the consequence is total: `pairContext` does
+         * NOT bind `kid`, so `k_p2c`, `k_c2p`, `np2c` and `nc2p` are scoped to
+         * `(pairing, pairEpoch, direction)`, while A1 scopes the *counter* to
+         * `(kid, direction)`. Those two scopes coincide only while one `kid`
+         * names exactly one `SK`. Mint a second `kid` under the same `SK` and
+         * its counter restarts at 0 against the same key and the same derived
+         * prefix — a GCM nonce reuse, which forfeits confidentiality for both
+         * frames and hands over the GHASH key, i.e. forgery for every other
+         * frame under that key.
+         *
+         * [E2eSession] is the one place an `SK` and a `kid` meet to produce
+         * traffic keys, so the check lives here and cannot be routed around by
+         * a caller that mints its own id.
+         *
+         * Only a digest of the SK is retained — never the key itself, and the
+         * map is process-lifetime only, which is sufficient: an SK never
+         * survives a process (it is minted at Accept, held in memory, and
+         * zeroed by [close]), so an SK reaching a second process is not a
+         * scenario this can or should try to police.
+         */
+        private val kidBySessionKey = HashMap<String, String>()
+
+        /** Thrown when a second, different `kid` is offered for one `SK`. */
+        class KidReuseException(message: String) : RuntimeException(message)
+
+        @Synchronized
+        private fun bindKidToSessionKey(sessionKey: ByteArray, kid: String) {
+            val digest = E2eKdf.toHex(
+                java.security.MessageDigest.getInstance("SHA-256").digest(sessionKey)
+            )
+            val existing = kidBySessionKey[digest]
+            if (existing != null && existing != kid) {
+                throw KidReuseException(
+                    "A2 MUST (1): this session key is already bound to kid=$existing; " +
+                        "refusing to mint kid=$kid under it — a second kid under one SK " +
+                        "restarts the counter against the same key and reuses a GCM nonce"
+                )
+            }
+            kidBySessionKey[digest] = kid
+        }
+
+        /** Test seam: forget the process-lifetime bindings. */
+        @JvmStatic
+        @androidx.annotation.VisibleForTesting
+        @Synchronized
+        fun clearKidBindingsForTest() = kidBySessionKey.clear()
+
         /**
          * Build the phone's session at Accept.
          *
@@ -98,6 +150,9 @@ class E2eSession private constructor(
             kid: String,
             freshEpoch: Boolean,
         ): E2eSession {
+            // A2 MUST (1), checked BEFORE any key is derived: a refused binding
+            // must leave no derived material behind.
+            bindKidToSessionKey(sessionKey, kid)
             val keys = E2eKdf.deriveTrafficKeys(sessionKey, pairContext)
             val prefixes = E2eKdf.deriveNoncePrefixes(sessionKey, pairContext)
             // The phone SENDS p2c and RECEIVES c2p. Fixed here, once. Nothing

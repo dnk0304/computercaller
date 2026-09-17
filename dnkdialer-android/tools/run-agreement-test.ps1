@@ -32,7 +32,8 @@ $classes = @(
     "$pkg.E2eSessionTest",        # A1 item 2: directional separation, dedupe, re-pair
     "$pkg.E2eAcceptTest",         # (d) the Accept handshake, multi-recipient
     "$pkg.E2eLifecycleTest",      # (f) rotation on Reset / sign-out, reinstall
-    "$pkg.E2eFrozenKdfVectorsTest" # A1 vectors vs P0.2's FROZEN tests/kdf-vectors.json
+    "$pkg.E2eFrozenKdfVectorsTest", # A1 vectors vs P0.2 FROZEN tests/kdf-vectors.json
+    "$pkg.E2eA2NoncePrefixVectorsTest" # A2 vectors E-H: the DERIVED nonce prefix
 )
 
 Write-Host '== building app + test APKs =='
