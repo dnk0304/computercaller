@@ -478,4 +478,10 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+
+    // E2E P4 (s3) — the androidTest source set was empty until E2eKeyStoreTest.
+    // androidx.test:runner (AndroidJUnitRunner / InstrumentationRegistry) is NOT
+    // declared explicitly on purpose: ext:junit 1.1.5 already brings a matching
+    // version transitively, and pinning it here only added a GradleDependency
+    // "newer version available" lint item against the baseline for no benefit.
 }
