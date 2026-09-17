@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Loader2, X, RefreshCw, AlertTriangle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
+import { SYNC_LIMITED_BY_PLAN } from '@/lib/autoSync';
 
 const AUTO_DISMISS_MS = 5000;
 
@@ -62,6 +63,7 @@ export const SyncProgressBar = () => {
     syncProgress?: SyncProgressShape | null;
     cancelSync?: () => void;
     openSyncPanel?: () => void;
+    syncLimitedByPlan?: boolean;
   };
 
   const isSyncing = phone.isSyncing ?? false;
@@ -69,6 +71,10 @@ export const SyncProgressBar = () => {
   const syncTimedOut = phone.syncTimedOut ?? false;
   const syncCompleteNotification = phone.syncCompleteNotification ?? null;
   const syncProgress = phone.syncProgress ?? null;
+  // FORGE-U: the relay's tier clamp shortened this run's window. ONE quiet
+  // line inside the bar that is already on screen — Dennis's brief is explicit
+  // that a plan limit here is not a modal.
+  const syncLimitedByPlan = phone.syncLimitedByPlan ?? false;
 
   const [timeoutDismissed, setTimeoutDismissed] = useState(false);
   const dismissTimerRef = useRef<number | null>(null);
@@ -279,6 +285,9 @@ export const SyncProgressBar = () => {
               ? `Syncing recent messages… ${msg.done.toLocaleString()} / ${msg.total.toLocaleString()}`
               : 'Syncing recent activity…'}
           </span>
+          {syncLimitedByPlan && (
+            <span className="text-xs text-slate-400 truncate">{SYNC_LIMITED_BY_PLAN}</span>
+          )}
         </div>
       </div>
     );

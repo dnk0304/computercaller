@@ -67,6 +67,7 @@ import {
   writeStoredSize,
   type CcSize,
 } from '@/lib/extensionTextSize';
+import { SyncRangeSetting } from '@/components/SyncRangeSetting';
 
 export interface PhoneModeHeaderProps {
   surface?: 'app' | 'extension';
@@ -369,6 +370,14 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <ThemeChoice email={email} />
             <SizeChoice email={email} />
+            <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
+            {/* FORGE-U (2026-09-17): the extension's half of "Sync range".
+                The panel no longer asks the user to sync on every reconnect —
+                it pulls 30 days automatically — so this is where that window
+                is changed, and "Sync now" is how a change is applied. Same
+                component /app/settings renders, in the menu's dense metrics,
+                so the two surfaces cannot offer different windows. */}
+            <SyncRangeSetting email={email} dense />
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <MenuLink href={WEBAPP_DASHBOARD_URL} icon={<LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" />}>
               Open dashboard

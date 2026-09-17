@@ -14,6 +14,7 @@ import {
 // SyncSetupPanel is mounted in app/app/layout.tsx — no import needed here.
 import { SignInSecuritySection } from './SignInSecuritySection';
 import { LayoutSettings } from '@/components/LayoutSettings';
+import { SyncRangeSetting } from '@/components/SyncRangeSetting';
 
 interface UserData {
   id: string;
@@ -592,6 +593,15 @@ export default function SettingsPage() {
           <span aria-hidden="true"> · </span>
           {callLogs.length.toLocaleString()} call logs
         </p>
+
+        {/* FORGE-U (2026-09-17): "Sync range" + "Sync now". The connect flow no
+            longer opens the Sync panel — a fresh pair auto-pulls this many days
+            of messages, calls and contacts by itself. This is where the user
+            changes that window and re-applies it. "Run Full Sync" below is
+            unchanged and stays available for a wider one-off pull. */}
+        <div className="mb-4 rounded-xl border border-slate-200 p-3">
+          <SyncRangeSetting email={user.email} />
+        </div>
 
         <div className="flex flex-col sm:flex-row gap-2">
           <button

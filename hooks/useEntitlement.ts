@@ -244,6 +244,29 @@ async function fetchEntitlement(signal?: AbortSignal): Promise<FetchResult> {
   return (await res.json()) as Entitlement;
 }
 
+// ---------------------------------------------------------------------------
+// Last-resolved limits cache (dispatch FORGE-U, 2026-09-17).
+//
+// usePhoneBridge fires an auto-sync from a WebSocket frame and needs the tier's
+// syncRangeMax / contactSync to size the request. It deliberately does NOT call
+// useEntitlement() for them: that would put a SECOND /api/entitlement fetch on
+// every app boot for a value the upgrade-modal provider has already fetched,
+// and would couple a 4,600-line socket hook to a React data-fetching lifecycle
+// it has no other reason to know about.
+//
+// So: whichever useEntitlement instance resolves first publishes the limits
+// here, and the bridge reads them synchronously. `null` is an honest answer —
+// "not resolved yet" — and lib/autoSync.ts is written to fail sensibly on it
+// (30d window, contacts still asked for, relay decides). This cache is a
+// CONVENIENCE, never an authority: the real gate is gateBrowserSyncFrame.
+// ---------------------------------------------------------------------------
+let lastKnownLimits: TierLimits | null = null;
+
+/** The most recently resolved tier limits, or null before the first fetch. */
+export function getLastKnownLimits(): TierLimits | null {
+  return lastKnownLimits;
+}
+
 export function useEntitlement(): UseEntitlementResult {
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [loading, setLoading] = useState(true);
@@ -258,9 +281,11 @@ export function useEntitlement(): UseEntitlementResult {
         if (result === UNAUTHORIZED) {
           // Not logged in — resolve to no-entitlement silently (never an error).
           setEntitlement(null);
+          lastKnownLimits = null;
           setError(false);
         } else {
           setEntitlement(result);
+          lastKnownLimits = result.limits ?? null;
           setError(false);
         }
       } catch {
