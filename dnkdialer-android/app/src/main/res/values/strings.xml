@@ -436,6 +436,20 @@
     <string name="row_permissions_title">Permissions</string>
     <string name="row_permissions_all">All granted</string>
     <string name="row_permissions_some">%1$d still needed</string>
+    <!-- E2E programme, P4 (s5) — the "Encrypted mode" row in CONNECTION.
+         NOTE for anyone editing this copy: it must never say "end-to-end".
+         That phrase is a specific claim, the feature is not finished, and a
+         store listing carrying it is a compliance problem as well as an
+         untrue one. Describe what it does, not what it is. -->
+    <string name="row_encrypted_mode_title">Encrypted mode</string>
+    <string name="row_encrypted_mode_sub">Scramble messages and call details in transit</string>
+    <!-- Shown while no computer has advertised support. "Waiting", not
+         "unsupported": we have not heard, and that is not evidence of absence. -->
+    <string name="settings_encrypted_mode_waiting">Waiting for a computer that supports encrypted mode.</string>
+    <string name="settings_encrypted_mode_peer_old">Update ComputerCaller on your computer to use encrypted mode.</string>
+    <string name="settings_encrypted_mode_device_old">This phone\'s Android version can\'t use encrypted mode.</string>
+    <string name="settings_encrypted_mode_ready">Both this phone and your computer support encrypted mode.</string>
+
     <string name="row_stay_disconnected_title">Stay disconnected</string>
     <string name="row_stay_disconnected_sub">Don\'t reconnect on restart</string>
 

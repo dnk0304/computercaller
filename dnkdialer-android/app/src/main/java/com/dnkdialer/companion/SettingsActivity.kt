@@ -47,6 +47,15 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var lobbyToggle: SwitchMaterial
     private lateinit var enableNotificationsButton: View
 
+    /**
+     * E2E programme, P4 (s5). Part 1 is a SCAFFOLD: there is no cryptography
+     * behind this switch yet, so it is always disabled and
+     * [refreshEncryptedModeRow] states why. Part 2 makes it operable once the
+     * paired computer's advertisement is on the wire.
+     */
+    private lateinit var encryptedModeToggle: SwitchMaterial
+    private lateinit var encryptedModeReason: TextView
+
     /** Guards [lobbyToggle] so a repaint from the flag can't be read as a tap. */
     private var suppressLobbyToggleCallback = false
 
@@ -110,6 +119,12 @@ class SettingsActivity : AppCompatActivity() {
             lobbyToggle.postDelayed({ refreshLobbyToggleLabel() }, 250)
         }
 
+        encryptedModeToggle = findViewById(R.id.settingsEncryptedModeToggle)
+        encryptedModeReason = findViewById(R.id.settingsEncryptedModeReason)
+        // No listener is attached in Part 1 ON PURPOSE. An inert switch that
+        // silently stored a preference would let the user believe they had
+        // turned encryption on. refreshEncryptedModeRow() disables it.
+
         // ---- ON THIS PHONE ----------------------------------------------
         findViewById<View>(R.id.settingsViewMessagesButton).setOnClickListener {
             startActivity(
@@ -145,6 +160,50 @@ class SettingsActivity : AppCompatActivity() {
         super.onResume()
         refreshLobbyToggleLabel()
         refreshNotificationRow()
+        refreshEncryptedModeRow()
+    }
+
+    /**
+     * Paint the "Encrypted mode" row from [E2ePeerCapability].
+     *
+     * Part 1 always lands on [E2ePeerCapability.State.UNKNOWN] or
+     * [E2ePeerCapability.State.DEVICE_UNSUPPORTED], so the switch is always
+     * disabled here — but the branches are the final ones, so Part 2 only has
+     * to make the provider tell the truth.
+     *
+     * The switch's checked state is read from [E2eSettings] (this device's
+     * local preference, C-1) and NEVER from the server. It is set with the
+     * listener absent — there is no listener in Part 1 — so a repaint can
+     * never be mistaken for a tap, the same hazard [suppressLobbyToggleCallback]
+     * exists to guard above.
+     *
+     * A disabled control always carries its reason. A greyed switch with no
+     * explanation is the thing users file bugs about.
+     */
+    private fun refreshEncryptedModeRow() {
+        if (!::encryptedModeToggle.isInitialized) return
+        val state = E2ePeerCapability.current(this)
+        val enabled = E2ePeerCapability.isToggleEnabled(state)
+
+        encryptedModeToggle.isEnabled = enabled
+        encryptedModeToggle.isChecked = enabled && E2eSettings.isEncryptedModeEnabled(this)
+
+        // The switch tints are a custom colour selector without a disabled
+        // state, so a disabled switch is pixel-identical to an enabled one
+        // that is merely off. Dim the row's text instead — otherwise the only
+        // signal that the control is inert is that tapping it does nothing.
+        val rowAlpha = if (enabled) 1f else 0.45f
+        findViewById<TextView>(R.id.settingsEncryptedModeTitle).alpha = rowAlpha
+        findViewById<TextView>(R.id.settingsEncryptedModeSub).alpha = rowAlpha
+        encryptedModeToggle.alpha = rowAlpha
+        encryptedModeReason.text = getString(
+            when (state) {
+                E2ePeerCapability.State.UNKNOWN -> R.string.settings_encrypted_mode_waiting
+                E2ePeerCapability.State.PEER_UNSUPPORTED -> R.string.settings_encrypted_mode_peer_old
+                E2ePeerCapability.State.DEVICE_UNSUPPORTED -> R.string.settings_encrypted_mode_device_old
+                E2ePeerCapability.State.PEER_SUPPORTED -> R.string.settings_encrypted_mode_ready
+            }
+        )
     }
 
     /**
