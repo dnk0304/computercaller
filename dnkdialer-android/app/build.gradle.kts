@@ -342,8 +342,23 @@ android {
         // Adds the adaptive launcher icon the app never had, a -night cut of
         // the wordmark, and a raster ic_stat_cc silhouetted from the real mark.
         // v56 was sideloaded and is SUPERSEDED — never reuse 56.
-        versionCode = 57
-        versionName = "1.0.33"
+        // v58 (2026-09-17) — E2E programme, phase P4 Part 1 (SCAFFOLD ONLY).
+        // Introduces the first AndroidKeyStore usage in this app (E2eKeyStore,
+        // alias scheme cc-e2e-dev-v<n>-<curve>), a per-DEVICE "encrypted mode"
+        // preference (E2eSettings, local truth — never read back from the
+        // server, plan C-1) and its greyed-out SettingsActivity toggle. There
+        // is deliberately NO cryptography yet: no ECDH, no HKDF, no AES-GCM,
+        // no SAS, no sealed frames, no wire change. The curve (X25519 vs
+        // P-256) is decided at Gate 1, which is why the alias carries the
+        // curve name — both can coexist across the switch. Part 2 lands the
+        // crypto on a later versionCode.
+        // NOTE 57 -> 58 is a normal +1: v57 (1.0.33) was BUILT but never
+        // uploaded to Play, so it consumed 57 and nothing else. versionCode 58
+        // is consumed EXACTLY ONCE by the eventual signed release; a Play
+        // rejection means 59, never a re-signed 58. P4 builds DEBUG only —
+        // signing and upload are human steps (DO-NOT-AUTO-RESUME).
+        versionCode = 58
+        versionName = "1.0.34"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
