@@ -286,6 +286,44 @@ try {
   // — the bug was never in the facts, it was in the rule that mapped them.
   const indicator = () => sw.evaluate(() => lastIndicator);
   const title = () => sw.evaluate(() => chrome.action.getTitle({}));
+  /**
+   * THE HARNESS RACED ITS OWN SUBJECT. Read this before touching armIndicator.
+   *
+   * `signedIn = true` here is a FICTION: this profile has no ext_token, and the
+   * worker is entitled to correct the fiction the moment it looks. It looks
+   * every 30 seconds — `chrome.alarms.create('cc-keepalive', { periodInMinutes:
+   * 0.5 })` fires `connect()`, and connect() opens with
+   *
+   *     const token = await getToken();
+   *     signedIn = !!token;
+   *     if (!token) { connecting = false; refreshIndicator(); return; }
+   *
+   * so the alarm repaints 'signed-out' straight over the state we arranged.
+   * Whichever indicator assertions happened to land inside that window failed,
+   * always with the same tell — an `ind` of "signed-out" and a title of the bare
+   * "ComputerCaller" — and the SIZE of the failing set tracked how slow the box
+   * was, not what background.js did: 11 failures while a second lane ran a
+   * parallel gate beside us, 1 on a quiet box, 0 on the next quiet run. That
+   * read as a regression for two lanes running and it was never one. The alarm
+   * is at 96042d0:1268 and 40f1098:1794, older than every branch that chased it.
+   *
+   * It is NOT a bug in background.js — repainting signed-out when there is no
+   * token is exactly right, and block 11 is measuring the indicator RULE (the
+   * facts → dot mapping), not the auth machinery. So the harness silences the
+   * alarm for the duration instead of the product accommodating the test. The
+   * clear is re-asserted on every arm rather than done once, so a block added
+   * later inherits the quiet, and it is POSITIVE-CONTROLLED below: a clear that
+   * silently failed would hand back the exact flake with nothing to show for it.
+   *
+   * Deliberately NOT restored afterwards, and that is safe rather than sloppy:
+   * `userDataDir` is a per-run mkdtemp that the `finally` closes and deletes, so
+   * the silenced worker dies with this process and no later harness can inherit
+   * it. Nothing after block 11 in this file asserts reconnect behaviour either —
+   * if something ever does, it must re-create the alarm itself and say so here.
+   */
+  const KEEPALIVE = 'cc-keepalive';
+  const alarmNames = () => sw.evaluate(async () => (await chrome.alarms.getAll()).map((a) => a.name));
+
   /** Put the worker in a known signed-in, socket-up state with no pair. */
   /**
    * P5a: the DETERMINISTIC SIGN-IN ARM (R-C).
@@ -313,6 +351,7 @@ try {
   await armSignedIn();
 
   const armIndicator = () => sw.evaluate(async () => {
+    await chrome.alarms.clear('cc-keepalive');
     signedIn = true; wsOpen = true;
     phonePresent = false; paired = false; held = false;
     lastIndicator = null;
@@ -325,6 +364,13 @@ try {
     handleFrame(f);
     await new Promise((r) => setTimeout(r, 150));
   }, frame);
+
+  // 11z. The positive control on the quiet. If this check ever fails, every
+  // indicator assertion below it is racing the keepalive alarm again and their
+  // greens mean nothing — which is precisely how the race hid for two lanes.
+  await armIndicator();
+  check('the keepalive alarm is silenced for the indicator block',
+    !(await alarmNames()).includes(KEEPALIVE), await alarmNames());
 
   // 11a. THE REGRESSION. The exact frame the listener got at 09:57:33.
   await armIndicator();
