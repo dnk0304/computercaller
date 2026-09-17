@@ -929,6 +929,11 @@ if (WEB) {
     // e2e-* file — a rule the gate never runs is a rule that stops being true.
     // ONLY e2e-gate.mjs change made by P5a-SW; declared in the résumé.
     ['ext-auth-absence', 'tests/ext-auth-absence.test.mjs', true],
+    // P5a-SW (d) / Security A4.1-M1. The pin-provenance reply shapes AND the
+    // diagnostics-only constraint (A4.1-M2: nothing may gate on a field a
+    // wire-delivered ROOM_RESET can erase). Named for the same reason as the
+    // line above — the sweep matches only tests/e2e-*.test.mjs.
+    ['ext-pin-provenance', 'tests/ext-pin-provenance.test.mjs', true],
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {

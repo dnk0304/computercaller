@@ -545,6 +545,34 @@ function refreshIndicator() {
 }
 
 /**
+ * A4.1-M1 (Security addendum A4.1, RATIFIED 2026-09-17). The PROVENANCE of the
+ * SW's own-pairingId pin, derived from the existing `cc_e2e_own_pairing`
+ * record — no new storage key, and nothing here writes.
+ *
+ * Why it must exist: `e2e-pubkey-get` echoes the pin's `pairingId` back, so a
+ * page that hands its pairingId over the pinned bridge cannot tell its
+ * hand-over LANDED from a TOFU pin being echoed straight back at it. The two
+ * replies are byte-identical today. D1 has to assert "hand-over landed" and
+ * P6(b) has to assert the epoch-reset re-pin; without the source, both can
+ * only infer it.
+ *
+ * DIAGNOSTICS ONLY, and that constraint is normative (A4.1-M1 + m-G): never
+ * rendered to a user, never gates a code path, never changes `mode`. A4.1-M2
+ * says why it must not: the pin is a consistency hint that a wire-delivered
+ * ROOM_RESET can erase, so it confers no authenticity — the SW's membership
+ * proof is A4 clause (b), the own-wrap unwrap under KEK(ctx, own static key).
+ * Gating on this would be gating on a field an attacker can clear at will.
+ *
+ * 'none' rather than null for the absent case, so the three states form one
+ * closed set a harness can assert exhaustively.
+ */
+function pinProvenance(own) {
+  const source = own && (own.source === 'bridge' || own.source === 'tofu') ? own.source : 'none';
+  const epoch = own && own.pairEpoch != null ? String(own.pairEpoch) : null;
+  return { pairingIdSource: source, pairingIdEpoch: epoch };
+}
+
+/**
  * Re-read the token and re-render. Cheap; called on every auth transition.
  *
  * P5a-SW (a): a null no longer means "signed out" on its own. When the rule
@@ -1855,10 +1883,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse?.({
           ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
           pairingId: (own && own.pairingId) || null,
+          // A4.1-M1: WHERE that pairingId came from. 'bridge' is this
+          // hand-over having landed; 'tofu' is the worker echoing a pin it
+          // learned from a ctx, which is what the page must be able to tell
+          // apart. Diagnostics only — see pinProvenance().
+          pairingIdSource: pinProvenance(own).pairingIdSource,
         });
       })
       .catch(() => sendResponse?.({
         ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError, pairingId: null,
+        pairingIdSource: 'none',
       }));
   } else if (message?.type === 'e2e-state-get') {
     // Observability for the harnesses (scripts/ext-badge-counter-proof.mjs,
@@ -1867,7 +1901,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // indistinguishable" — and (d)/(f) cannot be asserted from the outside
     // without knowing which mode the worker believes it is in. Read-only: it
     // reports state and changes none.
-    readDrops().then((drops) => sendResponse?.({
+    Promise.all([readDrops(), readOwnPairingId()]).then(([drops, own]) => sendResponse?.({
       ok: true,
       mode: e2eMode,          // 'off' | 'counts-only' | 'open'
       why: e2eWhy,            // never rendered to a user (m-G); diagnostics only
@@ -1876,6 +1910,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       hasKey: !!swPubKey,
       bootId: BOOT_ID,        // changes iff the worker died and respawned
       drops,
+      // A4.1-M1. Read-only, beside mode/why/kid and under the same m-G rule.
+      // `pairingIdEpoch` is what lets P6(b) assert the epoch-reset re-pin
+      // directly instead of inferring it from a pairingId that changed.
+      ...pinProvenance(own),
     }));
   } else if (message?.type === 'unread-get') {
     readUnread().then((unread) => sendResponse?.({ ok: true, unread }));
