@@ -562,7 +562,22 @@ async function requestDock() {
  * between a service worker and the pairing page is this bridge.
  *
  * Contract (agreed with P2 through Ken):
- *   { source:'cc-ext', type:'e2e-pubkey', v:1, deviceId:string|null, pub:string|null }
+ *   { source:'cc-ext', type:'e2e-pubkey', v:1, deviceId:string|null, pub:string|null,
+ *     pairingId:string|null, rid?:string }
+ *
+ * `pairingId` is A4.1 (Ken's ruling R-T). It travels PAGE → SW: the page owns
+ * the pairing and is the only authoritative source of its id, and the SW cannot
+ * learn it from the relay (PAIR_STATE carries it only INSIDE `ctx`, and
+ * checking `ctx.pairingId` against itself is a check that cannot fail). The
+ * page therefore puts its `pairingId` on the REQUEST; the worker pins it, and
+ * the reply carries back the value the worker now holds so the page can see
+ * that the hand-over landed rather than assume it. Its null arm is the same
+ * deliberate arm as `pub`'s: "the worker holds no pairingId yet" and "no reply
+ * arrived" are different states and must stay tellable apart.
+ *
+ * It is a CONSISTENCY pin, never an anchor: A4 clause (b) — the SW's own wrap
+ * opening under KEK(ctx, its own static key) — remains the cryptographic proof
+ * of membership, and nothing here weakens it.
  * `pub` is SEC1 uncompressed P-256, 65 bytes, 0x04-prefixed, base64url unpadded.
  * `deviceId` matches the relay's listener charset exactly.
  *
@@ -577,12 +592,20 @@ async function requestDock() {
  * navigated frame from being told which device to expect, which is the
  * substitution B9's SAS exists to make visible.
  */
-async function sendE2ePubKey(rid) {
+async function sendE2ePubKey(rid, pairingId) {
   if (!frame || !frame.contentWindow) return;
-  let identity = { v: 1, deviceId: null, pub: null };
+  let identity = { v: 1, deviceId: null, pub: null, pairingId: null };
   try {
-    const r = await chrome.runtime.sendMessage({ type: 'e2e-pubkey-get' });
-    if (r && r.ok) identity = { v: 1, deviceId: r.deviceId ?? null, pub: r.pub ?? null };
+    // The hand-over rides the request that was already being made. A second
+    // round trip would open a window in which the page had published a key it
+    // had not yet told the worker which pairing that key belongs to.
+    const r = await chrome.runtime.sendMessage({
+      type: 'e2e-pubkey-get',
+      ...(pairingId === undefined ? {} : { pairingId }),
+    });
+    if (r && r.ok) {
+      identity = { v: 1, deviceId: r.deviceId ?? null, pub: r.pub ?? null, pairingId: r.pairingId ?? null };
+    }
   } catch {
     // Worker asleep or mid-respawn. Fall through with the null arm rather than
     // going silent — the page can ask again.
@@ -664,9 +687,18 @@ window.addEventListener('message', (event) => {
     // never used to decide anything, and a request without one still works.
     // Bounded and type-checked before it goes anywhere, so a hostile page
     // cannot use it to push an unbounded string back through the bridge.
+    //
+    // A4.1: an optional `pairingId` on the REQUEST is the page's hand-over.
+    // Bounded and type-checked here for the same reason `rid` is — this branch
+    // is reachable from the app frame, so nothing arriving on it goes to the
+    // worker unvalidated. 255 is the u8 length prefix `pairContext` gives the
+    // field; anything longer could not be a real pairingId.
     sendE2ePubKey(
       (typeof data.rid === 'string' && data.rid.length > 0 && data.rid.length <= 64)
         ? data.rid
+        : undefined,
+      (typeof data.pairingId === 'string' && data.pairingId.length > 0 && data.pairingId.length <= 255)
+        ? data.pairingId
         : undefined,
     );
   } else if (data.type === 'open-popout') {

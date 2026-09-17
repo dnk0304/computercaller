@@ -42,6 +42,9 @@ import {
   noteDrop,
   readDrops,
   pairContextInputs,
+  setOwnPairingId,
+  readOwnPairingId,
+  clearOwnPairingId,
   clearEpochFloors,
   inboundDisposition,
   INBOUND_UNSEAL,
@@ -1309,6 +1312,7 @@ function handleFrame(msg) {
     // §13.8: a reset drops SK on both sides — and with it A4.1's pairingId pin
     // and any abort, which are both scoped to the pairing that just ended.
     dropSessionState().catch(() => {});
+    clearOwnPairingId().catch(() => {});
     clearAborted();
     notePairState({});
     return;
@@ -1740,9 +1744,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // failing, so the page can tell "the SW has no key" (pair without an
     // extension recipient — m-G counts-only) from "the message never arrived"
     // (wait). See the bridge contract in CHECKPOINTS.
-    primeDeviceKey().then(() => sendResponse?.({
-      ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
-    }));
+    //
+    // A4.1 (R-T), the hand-over. A `pairingId` on the REQUEST is the page
+    // telling the worker which pairing it is party to — the only channel that
+    // does not run through the relay, and the authoritative one, because the
+    // page initiated the pairing. It is pinned as source 'bridge', which
+    // outranks any TOFU pin. The reply carries the value the worker now holds,
+    // null included, so the page can see the hand-over landed.
+    primeDeviceKey()
+      .then(async () => {
+        if (typeof message.pairingId === 'string' && message.pairingId) {
+          await setOwnPairingId(message.pairingId);
+        }
+        const own = await readOwnPairingId();
+        sendResponse?.({
+          ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
+          pairingId: (own && own.pairingId) || null,
+        });
+      })
+      .catch(() => sendResponse?.({
+        ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError, pairingId: null,
+      }));
   } else if (message?.type === 'e2e-state-get') {
     // Observability for the harnesses (scripts/ext-badge-counter-proof.mjs,
     // scripts/ext-sw-lifetime-proof.mjs). §13.5 REQUIRES the drop counter to be
@@ -1789,6 +1811,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // A4.1: the pairingId pin goes with it. It is NOT cleared on an abort —
     // there the pin is the one thing that was right — but a sign-out ends the
     // pairing, and a pin outliving it would refuse the next one.
+    clearOwnPairingId().catch(() => {});
     clearAborted();
     // A3-M2: the epoch floor is cleared ONLY by an explicit user action, and
     // signing out is one. Nothing arriving on the wire may ever reach this.

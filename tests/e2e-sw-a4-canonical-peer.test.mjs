@@ -402,6 +402,42 @@ await check('A4-M3: ensureSession routes the UNWRAP failure to an abort and the 
 });
 
 
+// ── A4.1 — the bridge hand-over (item 4) ───────────────────────────────────
+
+await check('A4.1: the e2e-pubkey bridge carries pairingId, keeps rid, and keeps its null arm', async () => {
+  // The contract P2 consumes, asserted on BOTH sides of the bridge so the two
+  // cannot drift into agreeing about different fields:
+  //   { source:'cc-ext', type:'e2e-pubkey', v:1, deviceId, pub, pairingId, rid? }
+  const shell = readFileSync(join(ROOT, 'chrome-extension/shell.js'), 'utf8');
+  const bg = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8');
+
+  // Page → SW. The hand-over rides the REQUEST, bounded and type-checked before
+  // it reaches the worker — this branch is reachable from the app frame.
+  assert(/data\.pairingId === 'string'/.test(shell), 'shell.js must type-check an inbound pairingId');
+  assert(/data\.pairingId\.length <= 255/.test(shell), 'the inbound pairingId must be bounded (u8 length prefix)');
+  assert(/setOwnPairingId\(/.test(bg), 'background.js must pin the handed-over pairingId (A4.1 source 1)');
+
+  // SW → page. The reply carries what the worker now holds, null included: "no
+  // pairingId yet" and "no reply arrived" must stay tellable apart, the same
+  // deliberate null arm `pub` has.
+  assert(/pairingId: r\.pairingId \?\? null/.test(shell), 'the reply must carry pairingId with its null arm');
+  assert(/deviceId: null, pub: null, pairingId: null/.test(shell), 'the no-worker arm must be fully null, not absent');
+  assert(/pairingId: \(own && own\.pairingId\) \|\| null/.test(bg), 'the worker must answer with the value it holds');
+  // rid is UNCHANGED — still echoed only when the page supplied one.
+  assert(/\.\.\.\(rid === undefined \? \{\} : \{ rid \}\)/.test(shell), 'the rid echo must be unchanged');
+  // The envelope itself is untouched.
+  assert(/source: NS, type: 'e2e-pubkey'/.test(shell), 'the bridge envelope must be unchanged');
+
+  // A4.1 is a CONSISTENCY pin, not the anchor: the pin lives in storage.SESSION
+  // while the epoch floor (A3-M2), which IS load-bearing against nonce reuse,
+  // stays in storage.local. Keeping them in different stores is the point.
+  const sws = readFileSync(join(ROOT, 'chrome-extension/e2e/sw-session.js'), 'utf8');
+  assert(/OWN_PAIRING_KEY[\s\S]{0,400}?sessionGet\(OWN_PAIRING_KEY\)/.test(sws),
+    'the pairingId pin must live in storage.session');
+  assert(/EPOCH_FLOOR_KEY = 'cc_e2e_epoch_floor'/.test(sws), 'the epoch floor must keep its own (local) key');
+});
+
+
 console.log(`\n${passed}/${total} checks passed`);
 if (failures.length) {
   console.error(`\nFAILURES:\n${failures.map((f) => `  - ${f}`).join('\n')}`);
