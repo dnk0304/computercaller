@@ -70,10 +70,11 @@ object E2eLifecycle {
         val p = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         p.getString(KEY_DEVICE_ID, null)?.let { return it }
         val fresh = newDeviceId()
-        // commit(), not apply(): the id is about to be published to the
-        // registry, and an id that reached the server but not the disk would
-        // orphan the row.
-        p.edit().putString(KEY_DEVICE_ID, fresh).commit()
+        // commit = true, not the default apply(): the id is about to be
+        // published to the registry, and an id that reached the server but not
+        // the disk would orphan the row. The ktx `edit` overload takes the flag,
+        // so this stays synchronous AND satisfies the UseKtx lint rule.
+        p.edit(commit = true) { putString(KEY_DEVICE_ID, fresh) }
         if (BuildConfig.DEBUG) Log.d(TAG, "minted a device id")
         return fresh
     }
@@ -231,7 +232,7 @@ object E2eLifecycle {
     private fun mintNewDeviceId(ctx: Context): String {
         val fresh = newDeviceId()
         ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putString(KEY_DEVICE_ID, fresh).commit()
+            .edit(commit = true) { putString(KEY_DEVICE_ID, fresh) }
         return fresh
     }
 
