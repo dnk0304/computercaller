@@ -106,51 +106,211 @@ export async function noncePrefixes({ pairingId, sessionKey, context }, subtle =
   return { np2c: p, nc2p: c };
 }
 
-// ── THE BLOCKED SOURCE (kept behind ONE function, deliberately) ─────────────
+// ── A3: the pairContext channel (RATIFIED (A), AMENDED — 2026-09-17T23:41Z) ─
 
 /**
- * The five values `pairContext` (A1 item 1) is built from:
- * `{pairingId, userId, phoneDeviceId, peerDeviceId, pairEpoch}`.
+ * The epoch floor store. `chrome.storage.LOCAL`, not session — and that choice
+ * is the whole point of A3-M2.
  *
- * ┌── OPEN SPEC GAP — E2E-P3, escalated to Ken 2026-09-17. DO NOT INVENT. ────┐
- * │ NONE of these five reach the service worker, and four of the five reach   │
- * │ no computer-side party at all. Verified, not assumed:                     │
- * │                                                                          │
- * │  • PAIR_STATE's block is EXACTLY `{kid, epk, mode, recipKeys, wrap}` —    │
- * │    server.js derivePairState(), and tests/e2e-listener-wrap.test.mjs      │
- * │    asserts "exactly the five documented fields".                          │
- * │  • The phone's merged block is `{v, mode, kid, epk, recipKeys, wraps}` —  │
- * │    E2eNegotiation.buildAcceptBlock() on e2e/p4-android-v58 @ acb4eb2.     │
- * │    It calls addProperty for those six names and no others.                │
- * │  • `pairEpoch` is a parameter of E2eAccept.prepare() supplied by the      │
- * │    (still unwritten) PhoneService wiring. It is never serialised.         │
- * │  • `peerDeviceId` is SINGULAR in pairContext but there are TWO recipients │
- * │    (web + SW) sharing one context — so the SW would have to use the WEB   │
- * │    page's deviceId, which it also has no channel to learn.                │
- * │                                                                          │
- * │ Without them KEK cannot be derived, so the wrap cannot be opened, so no   │
- * │ sealed frame can be read. This is the SAME CLASS of defect as Addendum    │
- * │ A2 — a value the construction requires with no channel to carry it —      │
- * │ and it is unresolved because the producing side (PhoneService) has not    │
- * │ been written yet, so nobody has yet had to decide.                        │
- * │                                                                          │
- * │ Deliberately ONE function, per the dispatch's own instruction for the     │
- * │ nonce-prefix source: when Ken/Security rule, this body changes and        │
- * │ nothing else does. Everything above and below it is already correct.      │
- * └──────────────────────────────────────────────────────────────────────────┘
+ * A replayed `ACCEPT_PAIRING` reinstalls a superseded SK under its old epoch,
+ * and A2's per-(kid,direction) counter then restarts at 0 against a key and a
+ * derived prefix that have already sealed frames — GCM nonce reuse, the one
+ * failure in this protocol whose cost is total. A floor kept in
+ * `storage.session` would be cleared by a browser restart, so the replay would
+ * simply have to wait for one. It must outlive the browser; it lives in
+ * `storage.local`.
+ *
+ * Keyed by (userId, phoneDeviceId). Cleared ONLY by an explicit user unpair /
+ * revoke / sign-out — NEVER by a value arriving on the wire.
  */
-export class PairContextUnavailable extends Error {
-  constructor() {
-    super('pairContext inputs are not carried by PAIR_STATE — see the OPEN SPEC GAP note in sw-session.js');
-    this.name = 'PairContextUnavailable';
-    /** Consumers branch on this, never on the message. */
+export const EPOCH_FLOOR_KEY = 'cc_e2e_epoch_floor';
+
+/** A3's exact grammar for pairEpoch. No sign, no leading zeros, no whitespace. */
+const EPOCH_RE = /^(0|[1-9][0-9]{0,19})$/;
+const U64_MAX = (1n << 64n) - 1n;
+const MAX_ID_BYTES = 255;
+
+export class CtxRefused extends Error {
+  constructor(why) {
+    super(`e2e ctx refused: ${why}`);
+    this.name = 'CtxRefused';
+    this.why = why;
+    /** Every refusal lands in counts-only — never in a plaintext fallback. */
     this.countsOnly = true;
   }
 }
 
-/** @returns {Promise<{pairingId,userId,phoneDeviceId,peerDeviceId,pairEpoch}>} */
-export async function pairContextInputs() {
-  throw new PairContextUnavailable();
+function localGet(key) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.get(key, (o) => resolve((o && o[key]) || null)); }
+    catch { resolve(null); }
+  });
+}
+function localSet(key, value) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.set({ [key]: value }, resolve); }
+    catch { resolve(); }
+  });
+}
+
+const utf8Len = (v) => te.encode(v).length;
+
+/**
+ * Parse `ctx.pairEpoch`. A3: DECIMAL STRING, parsed with BigInt, never Number.
+ *
+ * `JSON.parse` turns a JSON number into a double and A1 already forbids
+ * `pairEpoch` rounding above 2^53 — so a number here is refused outright rather
+ * than accepted-and-rounded. `Number()` appears nowhere on this path: it would
+ * happily take `" 42"`, `"042"`, `"4.2"` and `"-1"` and coerce four distinct
+ * wire values into one epoch, which is precisely the silent agreement A3 exists
+ * to prevent.
+ */
+export function parseEpoch(raw) {
+  if (typeof raw === 'number') throw new CtxRefused('pairEpoch is a JSON number; it MUST be a decimal string');
+  if (typeof raw !== 'string') throw new CtxRefused('pairEpoch is missing or not a string');
+  if (!EPOCH_RE.test(raw)) throw new CtxRefused(`pairEpoch ${JSON.stringify(raw)} does not match the A3 grammar`);
+  const v = BigInt(raw);
+  if (v > U64_MAX) throw new CtxRefused('pairEpoch exceeds 2^64-1');
+  return v;
+}
+
+/**
+ * Validate the transmitted `ctx` and combine it with the LOCAL userId.
+ *
+ * `userId` is deliberately NOT on the wire (A3). Each side uses its own
+ * authenticated session identity, so a mismatch fails closed — transmitting it
+ * would let the relay propose an identity, and the derivation would then agree
+ * with the relay instead of with the session. Vector I.3 pins the consequence:
+ * one character of userId drift gives total key divergence.
+ */
+export function validateCtx({ ctx, mode, ownDeviceId, userId, pairingId = null }) {
+  // A3-M4: a mode=1 block with NO ctx is REFUSED, never derived from local
+  // values. Deriving from a locally guessed context is the silent divergence
+  // A3 exists to kill, and it would let a stripping relay force both sides
+  // into a guess.
+  if (!ctx || typeof ctx !== 'object' || Array.isArray(ctx)) {
+    throw new CtxRefused(mode === 1 ? 'mode=1 block carries no ctx (A3-M4)' : 'no ctx');
+  }
+  const ctxPairingId = ctx.pairingId;
+  const phoneDeviceId = ctx.phoneDeviceId;
+  const peerDeviceId = ctx.peerDeviceId;
+  for (const [name, v] of [
+    ['pairingId', ctxPairingId],
+    ['phoneDeviceId', phoneDeviceId],
+    ['peerDeviceId', peerDeviceId],
+  ]) {
+    if (typeof v !== 'string' || v.length === 0) throw new CtxRefused(`ctx.${name} is missing or not a string`);
+    // A1 (4)'s u8 cap, re-asserted on the DECODE side. A1 required the throw at
+    // encode time on every platform; a decoder that accepted 256 bytes would
+    // hand them to pairContext(), which throws there instead — correct, but far
+    // away from the field that caused it.
+    if (utf8Len(v) > MAX_ID_BYTES) throw new CtxRefused(`ctx.${name} exceeds ${MAX_ID_BYTES} UTF-8 bytes`);
+  }
+  if (typeof userId !== 'string' || userId.length === 0) throw new CtxRefused('no local userId — cannot derive');
+  if (utf8Len(userId) > MAX_ID_BYTES) throw new CtxRefused(`userId exceeds ${MAX_ID_BYTES} UTF-8 bytes`);
+
+  // A3-M3: the block must be addressed to US. One whose peerDeviceId names
+  // another device could not be opened anyway, but refusing it by identity
+  // rather than by decryption failure is the difference between a clear
+  // refusal and three seconds of indistinguishable tag failures.
+  if (peerDeviceId !== ownDeviceId) {
+    throw new CtxRefused(`ctx.peerDeviceId ${JSON.stringify(peerDeviceId)} is not this device (A3-M3)`);
+  }
+  // …and the pairingId, "wherever it independently knows the value". The SW
+  // does NOT: PAIR_STATE is its only pairing frame and carries no pairingId
+  // outside ctx, so there is nothing to compare against and the check is
+  // SKIPPED rather than faked against the very value it would be checking.
+  // The web page, which initiated the pairing, does know it and must compare —
+  // that is P2's half of A3-M3, not P3's.
+  if (pairingId !== null && ctxPairingId !== pairingId) {
+    throw new CtxRefused('ctx.pairingId does not match the pairing we are party to (A3-M3)');
+  }
+
+  return {
+    pairingId: ctxPairingId,
+    userId,
+    phoneDeviceId,
+    peerDeviceId,
+    pairEpoch: parseEpoch(ctx.pairEpoch),
+  };
+}
+
+/**
+ * A3-M2. Refuse a replayed or stale epoch, and commit the new floor BEFORE the
+ * derived keys are used for anything (persist-before-use).
+ *
+ * The ordering matters for the same reason A2's counter ordering does: a crash
+ * between use and persist must leave the floor AHEAD, not behind. Ahead costs
+ * one refused pair and a re-Accept; behind leaves a replay window open.
+ *
+ * FIRST SIGHT IS TOFU — a phoneDeviceId with no floor sets one with no
+ * comparison, consistent with §13's device pinning. There is nothing to compare
+ * against on a first pair, and refusing would make a first pair impossible.
+ */
+export async function admitEpoch({ userId, phoneDeviceId, pairEpoch }) {
+  const mapKey = `${userId}|${phoneDeviceId}`;
+  const all = (await localGet(EPOCH_FLOOR_KEY)) || {};
+  const seen = all[mapKey];
+  if (seen !== undefined) {
+    const floor = BigInt(seen);
+    if (pairEpoch <= floor) {
+      throw new CtxRefused(
+        `pairEpoch ${pairEpoch} is not above the floor ${floor} for this phone (A3-M2) — ` +
+        'refusing the pair. A replayed ACCEPT would reinstall a superseded SK and restart ' +
+        'its counter at 0 against a key that has already sealed frames.',
+      );
+    }
+  }
+  // Persist BEFORE the caller derives or uses anything.
+  all[mapKey] = pairEpoch.toString();
+  await localSet(EPOCH_FLOOR_KEY, all);
+  return { tofu: seen === undefined };
+}
+
+/**
+ * Clear the floor for a user. A3-M2: ONLY an explicit user unpair / revoke /
+ * sign-out may do this, NEVER a value arriving on the wire. There is
+ * deliberately no "reset the floor because the phone said so" path, and adding
+ * one would hand a replaying relay the key to the door this store is.
+ */
+export async function clearEpochFloors(userId) {
+  const all = (await localGet(EPOCH_FLOOR_KEY)) || {};
+  if (!userId) { await localSet(EPOCH_FLOOR_KEY, {}); return; }
+  for (const k of Object.keys(all)) if (k.startsWith(`${userId}|`)) delete all[k];
+  await localSet(EPOCH_FLOOR_KEY, all);
+}
+
+/** Read the floors. Exported so the harness and tests can assert them. */
+export function readEpochFloors() {
+  return localGet(EPOCH_FLOOR_KEY).then((v) => v || {});
+}
+
+/**
+ * THE ONE DERIVATION-INPUT FUNCTION (A3).
+ *
+ * Everything §13.10.3's pairContext needs: four fields from the wire `ctx` plus
+ * the local session `userId`. It refuses rather than guesses at every step, and
+ * every refusal is a `CtxRefused` carrying `countsOnly` — so the caller shows a
+ * badge and a generic body (m-G) instead of an error or a plaintext preview.
+ *
+ * NOTE ON WHAT IS NOT YET ON THE WIRE (A3-M1). `derivePairState`'s listener
+ * slice is an explicit allowlist — `{kid, epk, mode, recipKeys, wrap}` — so it
+ * DROPS `ctx` today, and this function therefore refuses every real block until
+ * Ken's one-line P1 splice (`ctx: block.ctx`) lands on e2e/integration. That is
+ * the correct behaviour in the meantime and needs no flag of its own: A3-M4
+ * says a mode=1 block with no ctx is refused, which is exactly what happens.
+ * This code is written against the SPLICED shape and changes not at all when
+ * the splice arrives.
+ */
+export async function pairContextInputs({ block, ownDeviceId, userId }) {
+  const inputs = validateCtx({
+    ctx: block && block.ctx,
+    mode: block && block.mode,
+    ownDeviceId,
+    userId,
+  });
+  await admitEpoch(inputs);          // persist-before-use; throws on a replay
+  return inputs;
 }
 
 // ── The wrap cache (chrome.storage.session) ─────────────────────────────────

@@ -259,10 +259,12 @@ await check('isSealedEnvelope is shape-checked, not duck-typed on `e`', () => {
 
 // ── The blocked source is blocked LOUDLY and lands in counts-only ───────────
 
-await check('pairContextInputs refuses, and flags countsOnly rather than a crash', async () => {
+await check('a mode=1 block with no ctx refuses with countsOnly (A3-M4; full vectors live in e2e-sw-a3-ctx)', async () => {
   let err = null;
-  try { await S.pairContextInputs({}); } catch (e) { err = e; }
-  assert(err instanceof S.PairContextUnavailable, 'expected PairContextUnavailable');
+  try {
+    await S.pairContextInputs({ block: { mode: 1 }, ownDeviceId: 'dev-x', userId: 'user-x' });
+  } catch (e) { err = e; }
+  assert(err instanceof S.CtxRefused, 'expected CtxRefused');
   eq(err.countsOnly, true, 'countsOnly flag');
 });
 

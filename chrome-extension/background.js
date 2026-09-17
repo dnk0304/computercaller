@@ -41,7 +41,8 @@ import {
   noteDrop,
   readDrops,
   pairContextInputs,
-  PairContextUnavailable,
+  clearEpochFloors,
+  CtxRefused,
 } from './e2e/sw-session.js';
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -195,6 +196,43 @@ let deviceKeyPrimed = null;
 function refreshDeviceKey() {
   deviceKeyPrimed = null;
   return primeDeviceKey();
+}
+
+/**
+ * The signed-in userId, for A3's pairContext.
+ *
+ * A3: `userId` is deliberately NOT transmitted. Each side uses its own
+ * AUTHENTICATED session identity, so a mismatch fails closed — transmitting it
+ * would let the relay propose an identity and the derivation would agree with
+ * the relay instead of with the session. Vector I.3 pins the cost of getting
+ * this wrong: one character of drift gives total key divergence.
+ *
+ * So it comes from `/api/auth/me` with the session cookie and from nowhere
+ * else. Cached in storage.session (not local) because it is scoped to who is
+ * signed in right now, and re-fetched on every worker boot and auth change.
+ */
+const USER_ID_KEY = 'cc_e2e_user_id';
+let cachedUserId = null;
+
+async function localUserId() {
+  if (cachedUserId) return cachedUserId;
+  const stored = await new Promise((r) => {
+    try { chrome.storage.session.get(USER_ID_KEY, (o) => r((o && o[USER_ID_KEY]) || null)); }
+    catch { r(null); }
+  });
+  if (stored) { cachedUserId = stored; return stored; }
+  try {
+    const res = await fetch(self.CC.ME_URL, { credentials: 'include' });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const id = body?.user?.id || body?.id || null;
+    if (typeof id === 'string' && id) {
+      cachedUserId = id;
+      try { chrome.storage.session.set({ [USER_ID_KEY]: id }); } catch { /* best effort */ }
+      return id;
+    }
+  } catch { /* offline — counts-only until the next attempt, which is correct */ }
+  return null;
 }
 
 function primeDeviceKey() {
@@ -948,7 +986,12 @@ async function ensureSession(kid) {
     // ONE function, and today it always refuses — see the OPEN SPEC GAP note in
     // sw-session.js. When the ruling lands, this line starts returning values
     // and everything below it already works.
-    const ctxInputs = await pairContextInputs(cached);
+    const userId = await localUserId();
+    const ctxInputs = await pairContextInputs({
+      block: cached,
+      ownDeviceId: rec.deviceId,
+      userId,
+    });
     const sk = await unwrapSessionKey({
       block: cached,
       privateKey: rec.priv,
@@ -965,7 +1008,11 @@ async function ensureSession(kid) {
     trace('e2e-open', { kid: e2eKid });
     return e2eSession;
   } catch (e) {
-    setCountsOnly(e instanceof PairContextUnavailable ? 'paircontext-unavailable' : (e && e.message) || 'unwrap-failed');
+    // A CtxRefused is a DECISION, not a malfunction: a stale epoch (A3-M2), a
+    // block addressed elsewhere (A3-M3), a mode=1 block with no ctx (A3-M4).
+    // All of them land in counts-only with the reason recorded for the trace
+    // and never shown to the user (m-G).
+    setCountsOnly(e instanceof CtxRefused ? `ctx:${e.why}` : (e && e.message) || 'unwrap-failed');
     return null;
   }
 }
@@ -1611,6 +1658,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // than left to browser exit — a second user signing in on the same profile
     // must not inherit the first one's key material.
     dropSessionState().catch(() => {});
+    // A3-M2: the epoch floor is cleared ONLY by an explicit user action, and
+    // signing out is one. Nothing arriving on the wire may ever reach this.
+    localUserId().then((uid) => clearEpochFloors(uid)).catch(() => {});
+    cachedUserId = null;
     try { ws && ws.close(); } catch (_) {}
     signedIn = false;
     clearRelayFacts();
@@ -1623,6 +1674,79 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse?.({ ok: true });
   }
   return true;
+});
+
+// ── Worker-scope surface for the proof harnesses ────────────────────────────
+/**
+ * WHY THIS BLOCK EXISTS, AND WHY IT IS NOT TEST CODE IN PRODUCTION.
+ *
+ * Four harnesses — ext-badge-counter-proof, ext-indicator-proof,
+ * ext-badge-sidepanel-proof and ext-sw-lifetime-proof — drive the SHIPPED
+ * worker by reading and WRITING its top-level bindings through a CDP
+ * `sw.evaluate()`. That is deliberate and it is the reason those proofs measure
+ * the thing the user looks at rather than a reimplementation of it; each of
+ * them says so in its own header ("background.js is a classic service worker,
+ * so its top-level functions and `let`s are reachable from an evaluate() in
+ * worker scope").
+ *
+ * P3 (a) made this worker an ES MODULE, because `importScripts` cannot load an
+ * `.mjs` with named exports and the frozen key schedule is one. A module
+ * worker's top-level declarations are MODULE-scoped, not global — so every one
+ * of those evaluates would have broken. Worse than broken: a bare
+ * `signedIn = true` inside an evaluate would have quietly created an unrelated
+ * global and the harness would have gone on reporting PASS while measuring
+ * nothing at all.
+ *
+ * So the surface the classic worker exposed BY ACCIDENT is republished here ON
+ * PURPOSE, as accessors that proxy to the real bindings — reads see live
+ * values and writes reach the module, which is exactly what the harnesses have
+ * always relied on. Making it explicit is strictly better than the accident it
+ * replaces: it is one list, a refactor that drops a name from it fails the
+ * harness loudly, and a reader can see precisely what the proofs depend on.
+ *
+ * NOT A SECURITY SURFACE. A service worker's `self` is reachable only from the
+ * worker itself and from a devtools/CDP session attached to it. No page, no
+ * content script and no other extension can read it. This publishes no key
+ * material: `e2eSession` and SK are deliberately absent from the list.
+ */
+for (const [name, get, set] of [
+  ['ws', () => ws, (v) => { ws = v; }],
+  ['wsOpen', () => wsOpen, (v) => { wsOpen = v; }],
+  ['signedIn', () => signedIn, (v) => { signedIn = v; }],
+  ['phonePresent', () => phonePresent, (v) => { phonePresent = v; }],
+  ['paired', () => paired, (v) => { paired = v; }],
+  ['held', () => held, (v) => { held = v; }],
+  ['presenceCount', () => presenceCount, (v) => { presenceCount = v; }],
+  ['lastIndicator', () => lastIndicator, (v) => { lastIndicator = v; }],
+  ['badgeChipColor', () => badgeChipColor, (v) => { badgeChipColor = v; }],
+]) {
+  Object.defineProperty(self, name, { get, set, configurable: true });
+}
+Object.assign(self, {
+  applyIndicator,
+  bumpUnread,
+  clearUnread,
+  composeIcon,
+  connect,
+  handleFrame,
+  deliverFrame,
+  notePhonePresence,
+  notePairState,
+  paintBadge,
+  readUnread,
+  refreshIndicator,
+  repaintBadge,
+  serialize,
+  GREEN,
+  // P3 additions, so the new proofs can drive the E2E paths the same way.
+  noteE2eBlock,
+  ensureSession,
+  openIfSealed,
+  isSealedEnvelope,
+  setCountsOnly,
+  COUNTS_ONLY_BODY,
+  COUNTS_ONLY_TITLE,
+  e2eStateForTest: () => ({ mode: e2eMode, why: e2eWhy, kid: e2eKid, deviceId: swDeviceId }),
 });
 
 // ── Keepalive / reconnect backstop ───────────────────────────────────────────
