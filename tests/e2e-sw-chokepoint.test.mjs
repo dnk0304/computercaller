@@ -388,20 +388,19 @@ await check('RESTORE: a replayed storage.local with an OLD epoch floor is REFUSE
   // BOTH: the restore is the attack A2 names, and the floor is the control A3
   // specifies against it. Stated explicitly so neither is later thought missing.
   reset();
-  const OWN = V.ctxWire.positiveI1.ctxWire.peerDeviceId;
   const wire = V.ctxWire.positiveI1.ctxWire;
   const uid = V.ctxWire.positiveI1.localUserId;
 
   // Live at epoch 42, then rekey to 43 — the floor follows.
-  await S.pairContextInputs({ block: { mode: 1, ctx: wire }, ownDeviceId: OWN, userId: uid });
-  await S.pairContextInputs({ block: { mode: 1, ctx: { ...wire, pairEpoch: '43' } }, ownDeviceId: OWN, userId: uid });
+  await S.pairContextInputs({ block: { mode: 1, ctx: wire }, userId: uid });
+  await S.pairContextInputs({ block: { mode: 1, ctx: { ...wire, pairEpoch: '43' } }, userId: uid });
   const floors = await S.readEpochFloors();
   eq(floors[`${uid}|${wire.phoneDeviceId}`], '43', 'floor after the rekey');
 
   // The restore: a backup of storage.local from BEFORE the rekey is put back,
   // and the relay replays the epoch-42 block that went with it.
   const err = await throws(
-    () => S.pairContextInputs({ block: { mode: 1, ctx: wire }, ownDeviceId: OWN, userId: uid }),
+    () => S.pairContextInputs({ block: { mode: 1, ctx: wire }, userId: uid }),
     'the replayed epoch-42 block',
   );
   assert(err instanceof S.CtxRefused, `expected CtxRefused, got ${err.name}`);

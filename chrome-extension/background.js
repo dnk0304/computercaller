@@ -991,11 +991,11 @@ async function ensureSession(kid) {
     // sw-session.js. When the ruling lands, this line starts returning values
     // and everything below it already works.
     const userId = await localUserId();
-    const ctxInputs = await pairContextInputs({
-      block: cached,
-      ownDeviceId: rec.deviceId,
-      userId,
-    });
+    // `ownDeviceId` is NOT passed: A4 deleted the peerDeviceId==own refusal and
+    // `pairContextInputs` now REJECTS the option rather than ignoring it, so a
+    // call site cannot keep believing a membership check runs at ingest. The
+    // SW's membership proof is the unwrap below - clause (b).
+    const ctxInputs = await pairContextInputs({ block: cached, userId });
     const sk = await unwrapSessionKey({
       block: cached,
       privateKey: rec.priv,

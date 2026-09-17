@@ -184,6 +184,18 @@ const utf8Len = (v) => te.encode(v).length;
  * one character of userId drift gives total key divergence.
  */
 export function validateCtx({ ctx, mode, ownDeviceId, userId, pairingId = null }) {
+  // A4-M1, mirrored from `pairContextFromWire`. `ownDeviceId` USED to be the
+  // A3-M3 peer check on this lane; A4 DELETED that clause, and this lane is the
+  // one that must never resurrect it (the SW holds no wraps[], so it cannot
+  // perform clause (c) and MUST NOT substitute its own id for the canonical
+  // peer). Silently ignoring the option would leave a caller believing a
+  // membership check is running while it is gone — the decorative control the
+  // kdf refuses by name, refused here for the same reason.
+  if (ownDeviceId !== undefined) {
+    throw new CtxRefused(
+      '`ownDeviceId` is not an input to validateCtx — A4 deleted the peerDeviceId==own refusal. The SW lane\'s binding membership check is clause (b), the wrap opening under KEK(ctx, own static key), in unwrapSessionKey (A4-M1)',
+    );
+  }
   // A3-M4: a mode=1 block with NO ctx is REFUSED, never derived from local
   // values. Deriving from a locally guessed context is the silent divergence
   // A3 exists to kill, and it would let a stripping relay force both sides
@@ -211,8 +223,8 @@ export function validateCtx({ ctx, mode, ownDeviceId, userId, pairingId = null }
 
   // ── Everything below is the SHARED parser, not a second copy of it ────────
   // P1.1 landed `pairContextFromWire()` in lib/e2e/kdf.mjs: the pairEpoch
-  // decimal-string regex, the 2^64-1 bound, A3-M3's peerDeviceId and pairingId
-  // identity checks and A3-M4's refuse-without-ctx all live there, and the page
+  // decimal-string regex, the 2^64-1 bound, A3-M3(a)'s pairingId check, A4's
+  // conditional clause (c) and A3-M4's refuse-without-ctx all live there, and the page
   // and the SW must apply byte-identical rules or a frame one side accepts is a
   // frame the other silently derives a different key for. Duplicating the regex
   // here is how the two drift by one character with every suite still green.
@@ -225,15 +237,21 @@ export function validateCtx({ ctx, mode, ownDeviceId, userId, pairingId = null }
   //      to tell "refuse this block and show counts" apart from a bug; a plain
   //      Error escaping here would surface as an error toast, which m-G forbids.
   //
-  // The pairingId half of A3-M3 is passed through as-is: the SW does NOT
-  // independently know the value (PAIR_STATE carries no pairingId outside ctx),
-  // so the default `null` SKIPS it rather than faking a comparison against the
-  // very value being checked. The web page, which initiated the pairing, does
-  // know it and must compare — P2's half of A3-M3. The parameter is real and
-  // tested so the check exists the day a caller can supply it.
+  // A3-M3(a) — the pairingId half — under A4.1's channel ruling (R-T). The SW
+  // does NOT learn its pairingId from PAIR_STATE (that frame carries the value
+  // only INSIDE ctx, and checking ctx.pairingId against itself is a check that
+  // CANNOT FAIL). It learns it two ways, neither of which touches the relay:
+  // handed over by the page over the FORGE-P pinned bridge, else TOFU from the
+  // first ctx of a new pairEpoch. `pairContextInputs` resolves that and passes
+  // it here; a `null` still SKIPS, so the branch is never faked.
+  //
+  // `recipientDeviceIds` is deliberately NOT passed: clause (c) is checked ONLY
+  // where the receiver holds the full wraps[], and PAIR_STATE's allowlist
+  // carries `wrap` SINGULAR. Omitting it makes the kdf perform NO peer check —
+  // which is A4-R3's whole point, not an oversight.
   let parsed;
   try {
-    parsed = pairContextFromWire(ctx, { userId, deviceId: ownDeviceId, pairingId });
+    parsed = pairContextFromWire(ctx, { userId, pairingId });
   } catch (e) {
     throw new CtxRefused(e && e.message ? e.message.replace(/^kdf: /, '') : 'ctx refused');
   }
@@ -315,14 +333,96 @@ export function readEpochFloors() {
  * the splice arrives.
  */
 export async function pairContextInputs({ block, ownDeviceId, userId }) {
+  // A4-M1, same reasoning as validateCtx's: the option is REJECTED, not
+  // ignored, so no caller can keep believing a peer check runs here.
+  if (ownDeviceId !== undefined) {
+    throw new CtxRefused(
+      '`ownDeviceId` is not an input to pairContextInputs — A4 deleted the peerDeviceId==own refusal; the SW lane\'s binding check is clause (b) at unwrap (A4-M1)',
+    );
+  }
+  // A4.1 step 1: what pairingId do we independently know? A bridge hand-over
+  // beats TOFU and is epoch-independent (the page owns the pairing). A TOFU
+  // pin is only good for the epoch it was pinned in, and the epoch is not
+  // trustworthy until the shared parser has validated it — so the TOFU half
+  // runs AFTER the parse, in `admitOwnPairingId`.
+  const known = await readOwnPairingId();
+  const expectPairingId = known && known.source === 'bridge' ? known.pairingId : null;
   const inputs = validateCtx({
     ctx: block && block.ctx,
     mode: block && block.mode,
-    ownDeviceId,
     userId,
+    pairingId: expectPairingId,
   });
+  await admitOwnPairingId({ known, ...inputs });   // A4.1 TOFU half; throws on drift
   await admitEpoch(inputs);          // persist-before-use; throws on a replay
   return inputs;
+}
+
+// ── A4.1 — the SW's `pairingId` channel (Ken's ruling R-T) ──────────────────
+/**
+ * `{ pairingId, pairEpoch, source:'bridge'|'tofu' }` in chrome.storage.SESSION.
+ *
+ * SESSION, not local, and that is the deliberate half. This is a consistency
+ * pin, NOT the anchor — clause (b), the SW's own wrap opening under its own
+ * KEK, stays the cryptographic proof of membership and A4.1 does not weaken it.
+ * A pin that outlived the browser would turn a legitimate re-pair into a
+ * permanent refusal for a check that was never load-bearing; the epoch floor
+ * (A3-M2), which IS load-bearing against nonce reuse, is the one that lives in
+ * storage.local. Keeping them in different stores is the point.
+ */
+export const OWN_PAIRING_KEY = 'cc_e2e_own_pairing';
+
+export function readOwnPairingId() {
+  return sessionGet(OWN_PAIRING_KEY);
+}
+
+/**
+ * A4.1 source 1 — the page hands its pairingId over the FORGE-P pinned bridge.
+ * The page initiated the pairing, so this is the AUTHORITATIVE value and it
+ * outranks any TOFU pin, including one from a different epoch.
+ */
+export async function setOwnPairingId(pairingId) {
+  if (typeof pairingId !== 'string' || pairingId.length === 0) return null;
+  if (utf8Len(pairingId) > MAX_ID_BYTES) return null;
+  const rec = { pairingId, pairEpoch: null, source: 'bridge' };
+  await sessionSet(OWN_PAIRING_KEY, rec);
+  return rec;
+}
+
+export async function clearOwnPairingId() {
+  await sessionSet(OWN_PAIRING_KEY, null);
+}
+
+/**
+ * A4.1 source 2 — TOFU, per pairEpoch.
+ *
+ * FIRST ctx of a NEW epoch pins the pairingId with no comparison (there is
+ * nothing to compare against, and refusing would make a first pair impossible —
+ * the same shape as A3-M2's first-sight rule). Every LATER ctx in that epoch
+ * must match the pin or the block is refused. A new epoch RESETS the pin: a
+ * legitimate re-pair mints a new pairingId, and pinning across epochs would
+ * refuse it forever.
+ *
+ * A bridge hand-over is authoritative and was already compared at ingest, so
+ * this only records the epoch it was seen under.
+ */
+export async function admitOwnPairingId({ known, pairingId, pairEpoch }) {
+  const epoch = String(pairEpoch);
+  if (known && known.source === 'bridge') {
+    if (known.pairEpoch !== epoch) {
+      await sessionSet(OWN_PAIRING_KEY, { ...known, pairEpoch: epoch });
+    }
+    return;
+  }
+  if (known && known.source === 'tofu' && known.pairEpoch === epoch) {
+    if (known.pairingId !== pairingId) {
+      throw new CtxRefused(
+        `ctx.pairingId "${pairingId}" is not the one TOFU-pinned for pairEpoch ${epoch} — refusing the block (A3-M3(a) / A4.1)`,
+      );
+    }
+    return;
+  }
+  await sessionSet(OWN_PAIRING_KEY, { pairingId, pairEpoch: epoch, source: 'tofu' });
 }
 
 // ── The wrap cache (chrome.storage.session) ─────────────────────────────────

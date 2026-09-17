@@ -256,11 +256,47 @@ export function pairContext({ userId, phoneDeviceId, peerDeviceId, pairEpoch }) 
  * reached. Every one of those is a value that would otherwise COERCE into a
  * plausible epoch and derive a key nobody else holds.
  *
- * `expect` carries A3-M3: a receiver MUST refuse a block whose `peerDeviceId`
- * is not its own deviceId and — wherever it independently knows the value —
- * whose `pairingId` differs from the one it is party to. Both are checked here,
- * at ingest, because that is the only place they are cheap and the only place a
- * caller cannot forget them.
+ * A3-M3 is RE-SCOPED IN FULL by GATE1 Addendum A4 (RATIFIED AMENDED,
+ * 2026-09-17T20:58Z). What this function used to enforce —
+ * `ctx.peerDeviceId !== own deviceId → refuse` — is DELETED, not relaxed. It
+ * refused every recipient except one and made multi-recipient pairing
+ * impossible: `ctx` is PAIR-scoped (A3-M1: "every recipient gets the identical
+ * object"), so under that clause the page and the extension SW could not both
+ * be admitted by the same block, and a single broadcast ciphertext (the relay
+ * sends ONE, byte-identically, to every listener) had no reading under which it
+ * opened for both.
+ *
+ * What replaces it, and where each half is checked:
+ *
+ *   (a) PAIRING — `ctx.pairingId` must equal the pairing this receiver is party
+ *       to, wherever it independently knows that value. Checked here, via
+ *       `pairingId`. Passing `ctxWire.pairingId` back as its own expectation is
+ *       a check that CANNOT FAIL, which is worse than no check because it reads
+ *       like one that can; callers must supply a value they learned elsewhere.
+ *
+ *   (b) MEMBERSHIP — the wrap addressed to this device opens under
+ *       `KEK(pairContext, its own static key)`. That is the binding check and
+ *       it is NOT here: this module does not hold wraps. It lives at the
+ *       caller's unwrap, and A4-M3 makes its failure a PAIRING ABORT — never a
+ *       degrade to counts-only, which §13.2 row 2 grants only to a recipient
+ *       that never had a key at all.
+ *
+ *   (c) CANONICAL PEER — conditional, and ONLY where verifiable. A receiver
+ *       that holds the full `wraps[]` (the page, via ACCEPT_PAIRING /
+ *       PAIRING_ACTIVE, which forward the block whole) passes
+ *       `recipientDeviceIds` and we refuse unless `ctx.peerDeviceId` is the
+ *       byte-wise lowest of that set. A receiver that does NOT hold the set
+ *       (the extension service worker, via PAIR_STATE, whose allowlist carries
+ *       `wrap` SINGULAR — deliberately, so other devices' sealed key material
+ *       never enters a service worker) omits it, and we then perform NO peer
+ *       check at all. It MUST NOT substitute its own deviceId: that is exactly
+ *       the deleted clause coming back through the side door.
+ *
+ * Hence `deviceId` is REJECTED rather than ignored. A caller still passing it
+ * believes a membership check is running; silently dropping the option would
+ * leave that belief intact while the check was gone — the decorative-control
+ * shape this programme has refused since §13.6's pin. It throws, and the
+ * message names the option to pass instead.
  *
  * NOT enforced here, and deliberately: A3-M2's epoch floor
  * (`lastPairEpoch[(userId, phoneDeviceId)]`, persisted BEFORE the derived keys
@@ -276,7 +312,77 @@ export function pairContext({ userId, phoneDeviceId, peerDeviceId, pairEpoch }) 
 export const PAIR_EPOCH_WIRE_RE = /^(0|[1-9][0-9]{0,19})$/;
 export const MAX_UINT64 = 0xffffffffffffffffn;
 
-export function pairContextFromWire(ctxWire, { userId, deviceId, pairingId } = {}) {
+/** Byte-wise lexicographic order over two UTF-8 encodings. Shorter-is-lower on a prefix. */
+function compareUtf8(a, b) {
+  const n = a.length < b.length ? a.length : b.length;
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return a.length - b.length;
+}
+
+/**
+ * A4-R2 (FROZEN) — the CANONICAL PEER of a pairing: the byte-wise
+ * lexicographically lowest `wraps[].deviceId`, compared as raw UTF-8 bytes.
+ *
+ * The canonical set is `wraps[].deviceId` and NOT `recipKeys[]`. `recipKeys[]`
+ * is the full static KEY set of the pairing — SEC1 public keys, and it includes
+ * the PHONE (lib/e2eBlock-core.js:152-155). A "lowest of recipKeys[]" is
+ * neither a deviceId nor a recipient-only set. `wraps[].deviceId` is bounded
+ * 1..128 chars and already proven duplicate-free by `validateE2eBlock`
+ * (lib/e2eBlock-core.js:169-173), and that uniqueness is what makes "lowest"
+ * TOTAL: there can be no tie to break.
+ *
+ * UTF-8 BYTES, not JS string order. `a < b` on strings compares UTF-16 code
+ * units, which disagrees with byte order for anything above U+FFFF (a
+ * surrogate pair sorts below U+E000..U+FFFF in UTF-16 and above it in UTF-8).
+ * deviceIds are ASCII today; the day one is not, a JS-`<` implementation and a
+ * Kotlin one would pick DIFFERENT canonical peers and every recipient would
+ * fail closed with a tag error and no attribution. `localeCompare` is worse
+ * still — it is locale-dependent, so the same build would disagree with itself
+ * across machines.
+ *
+ * Deterministic and ORDER-INDEPENDENT: a relay that re-orders `wraps[]` without
+ * editing it derives the same peer, so reordering alone cannot steer.
+ *
+ * Accepts `[{deviceId}]` (the block's own shape) or a bare `[string]`.
+ */
+export function canonicalPeerDeviceId(wraps) {
+  if (!Array.isArray(wraps) || wraps.length === 0) {
+    throw new Error('kdf: canonicalPeerDeviceId needs a non-empty wraps[] (or deviceId[]) — A4-R2');
+  }
+  const ids = wraps.map((w, i) => {
+    const id = typeof w === 'string' ? w : (w && typeof w === 'object' ? w.deviceId : undefined);
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new Error(`kdf: wraps[${i}].deviceId must be a non-empty string — A4-R2`);
+    }
+    // The cap is on UTF-8 BYTES, not characters: `pairContext` length-prefixes
+    // this id with a u8, so a 200-character id that encodes to 400 bytes is the
+    // truncation-to-`len & 0xff` collision A1's u8 ratification exists to kill.
+    const n = te.encode(id).length;
+    if (n > MAX_PREFIXED_BYTES) {
+      throw new Error(`kdf: wraps[${i}].deviceId is ${n} UTF-8 bytes, over the u8 cap of ${MAX_PREFIXED_BYTES} — A4-R2`);
+    }
+    return id;
+  });
+  // Duplicate-free is validateE2eBlock's guarantee; re-asserted because it is
+  // the precondition that makes "lowest" a total order rather than a coin flip.
+  if (new Set(ids).size !== ids.length) {
+    throw new Error('kdf: wraps[] contains a duplicate deviceId — the canonical peer would be ambiguous (A4-R2)');
+  }
+  let lowest = null;
+  let lowestBytes = null;
+  for (const id of ids) {
+    const b = te.encode(id);
+    if (lowestBytes === null || compareUtf8(b, lowestBytes) < 0) { lowest = id; lowestBytes = b; }
+  }
+  return lowest;
+}
+
+export function pairContextFromWire(ctxWire, { userId, deviceId, pairingId, recipientDeviceIds } = {}) {
+  if (deviceId !== undefined) {
+    throw new Error(
+      'kdf: `deviceId` is not an input to pairContextFromWire — A4 DELETED the "ctx.peerDeviceId must be my own deviceId" refusal (it makes multi-recipient pairing impossible). Pass `recipientDeviceIds` (the full wraps[].deviceId set) where you hold it; omit it on the PAIR_STATE lane, where the cryptographic wrap-opens check is the binding one (A4-M1)',
+    );
+  }
   if (ctxWire === undefined || ctxWire === null) {
     throw new Error('kdf: ctx is absent — a mode=1 block without ctx MUST be refused, never derived from a local guess (A3-M4)');
   }
@@ -300,13 +406,22 @@ export function pairContextFromWire(ctxWire, { userId, deviceId, pairingId } = {
   if (typeof userId !== 'string' || userId.length === 0) {
     throw new Error('kdf: the LOCAL session userId is required — it is never taken from the wire (A3)');
   }
-  // A3-M3. Fail closed, no plaintext fallback. `pairingId` is checked only when
-  // the caller independently knows it, which is the addendum's own wording.
-  if (deviceId !== undefined && deviceId !== null && ctxWire.peerDeviceId !== deviceId) {
-    throw new Error('kdf: ctx.peerDeviceId is not this device — refusing the block (A3-M3)');
-  }
+  // A3-M3(a), re-scoped by A4. Fail closed, no plaintext fallback. Checked only
+  // when the caller independently knows the value, which is the addendum's own
+  // wording — and the reason the caller, not this function, supplies it.
   if (pairingId !== undefined && pairingId !== null && ctxWire.pairingId !== pairingId) {
-    throw new Error('kdf: ctx.pairingId is not the pairing this device is party to — refusing the block (A3-M3)');
+    throw new Error('kdf: ctx.pairingId is not the pairing this device is party to — refusing the block (A3-M3(a))');
+  }
+  // A3-M3(c), re-scoped by A4: ONLY where the receiver holds the deviceId set.
+  // Absent means "this lane cannot see the set" (PAIR_STATE), and the correct
+  // behaviour there is NO peer check — never a fallback to the caller's own id.
+  if (recipientDeviceIds !== undefined && recipientDeviceIds !== null) {
+    const canonical = canonicalPeerDeviceId(recipientDeviceIds);
+    if (ctxWire.peerDeviceId !== canonical) {
+      throw new Error(
+        `kdf: ctx.peerDeviceId "${ctxWire.peerDeviceId}" is not the canonical (byte-wise lowest) recipient "${canonical}" — refusing the block (A3-M3(c) / A4-R2)`,
+      );
+    }
   }
 
   return {

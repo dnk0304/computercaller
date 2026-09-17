@@ -36,15 +36,20 @@ import { webcrypto } from 'node:crypto';
 
 // ── Fake chrome.storage (local AND session), installed before the module ────
 let local = {};
+let session = {};
 globalThis.chrome = {
   storage: {
     local: {
       get: (k, cb) => cb(k in local ? { [k]: local[k] } : {}),
       set: (o, cb) => { Object.assign(local, structuredClone(o)); if (cb) cb(); },
     },
+    // A4.1 needs a REAL storage.session, not a stub that always answers empty.
+    // The TOFU pin lives here, and a get that returns {} would make every
+    // pairingId look like a first sight — the branch would be untestable and,
+    // worse, would LOOK tested.
     session: {
-      get: (k, cb) => cb({}),
-      set: (o, cb) => { if (cb) cb(); },
+      get: (k, cb) => cb(k in session ? { [k]: session[k] } : {}),
+      set: (o, cb) => { Object.assign(session, structuredClone(o)); if (cb) cb(); },
     },
   },
 };
@@ -131,7 +136,7 @@ async function refuses(fn, what) {
 
 const OWN = I1.ctxWire.peerDeviceId;          // this "device" is the web peer id
 const sessionKey = K.fromHex(V.traffic.sessionKeyHex);
-const reset = () => { local = {}; };
+const reset = () => { local = {}; session = {}; };
 
 console.log('A3 vector I + MUSTs (decode path)\n');
 
@@ -141,7 +146,6 @@ await check('I.1: wire ctx + local userId reproduces the FROZEN contextBytes', a
   reset();
   const inputs = await S.pairContextInputs({
     block: { mode: 1, ctx: I1.ctxWire },
-    ownDeviceId: OWN,
     userId: I1.localUserId,
   });
   const bytes = K.pairContext(inputs);
@@ -155,7 +159,7 @@ await check('I.1: wire ctx + local userId reproduces the FROZEN contextBytes', a
 await check('I.1: traffic keys and A2 prefixes derive from the wire ctx', async () => {
   reset();
   const inputs = await S.pairContextInputs({
-    block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId,
+    block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId,
   });
   const ctxBytes = K.pairContext(inputs);
   const keys = await K.trafficKeys({
@@ -173,7 +177,7 @@ await check('I.1: traffic keys and A2 prefixes derive from the wire ctx', async 
 await check('I.1: A2 vector F OPENS under the wire-derived key + prefix', async () => {
   reset();
   const inputs = await S.pairContextInputs({
-    block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId,
+    block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId,
   });
   const ctxBytes = K.pairContext(inputs);
   const { np2c } = await S.noncePrefixes({ pairingId: inputs.pairingId, sessionKey, context: ctxBytes }, subtle);
@@ -202,7 +206,6 @@ await check(`I.2: pairEpoch "${I2.pairEpoch}" gives a DIFFERENT context, key and
   reset();
   const inputs = await S.pairContextInputs({
     block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: I2.pairEpoch } },
-    ownDeviceId: OWN,
     userId: I1.localUserId,
   });
   const ctxBytes = K.pairContext(inputs);
@@ -241,7 +244,7 @@ await check(`I.2: A2 vector F FAILS AUTHENTICATION under the epoch-${I2.pairEpoc
 await check('I.3: one character of local userId drift gives total key divergence', async () => {
   reset();
   const inputs = await S.pairContextInputs({
-    block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I3.localUserId,
+    block: { mode: 1, ctx: I1.ctxWire }, userId: I3.localUserId,
   });
   const ctxBytes = K.pairContext(inputs);
   const keys = await K.trafficKeys({ pairingId: inputs.pairingId, sessionKey, context: ctxBytes, role: 'phone' }, subtle);
@@ -278,7 +281,6 @@ for (const [value, label] of BAD_EPOCHS) {
     await refuses(
       () => S.pairContextInputs({
         block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: value } },
-        ownDeviceId: OWN,
         userId: I1.localUserId,
       }),
       label,
@@ -292,27 +294,117 @@ for (const [value, label] of BAD_EPOCHS) {
 await check('I.4 / A3-M4: a mode=1 block with NO ctx is refused, never derived from local', async () => {
   reset();
   const err = await refuses(
-    () => S.pairContextInputs({ block: { mode: 1 }, ownDeviceId: OWN, userId: I1.localUserId }),
+    () => S.pairContextInputs({ block: { mode: 1 }, userId: I1.localUserId }),
     'absent ctx on mode=1',
   );
   assert(/A3-M4/.test(err.why), `refusal should cite A3-M4, said: ${err.why}`);
 });
 
-await check('I.4 / A3-M3: a block addressed to ANOTHER device is refused', async () => {
+// ── A4 replaces the STRUCK clause ───────────────────────────────────────────
+//
+// WHAT WAS HERE, AND WHY IT IS GONE. This slot held "a block addressed to
+// ANOTHER device is refused" — the pre-A4 check `ctx.peerDeviceId !== own
+// deviceId -> refuse`. GATE1 Addendum A4 (RATIFIED (1) AMENDED,
+// 2026-09-17T20:58Z) DELETED that clause in full, and vector J.5 is the frozen
+// record of why: applied to J.1's two-recipient pairing it refuses
+// `dev-web-01` while admitting `dev-ext-02`, so at most ONE recipient per
+// pairing survives — the A3-M1/A3-M3 contradiction A4 exists to remove. A test
+// pinning a struck clause is worse than no test: it is a green assertion that
+// the bug is still present, and it would have to be deleted before the fix
+// could land.
+//
+// It is replaced by A4's pair, on the two clauses that ARE this lane's:
+//   (a) pairingId — a CONSISTENCY check, over A4.1's channel (Ken's R-T).
+//   (b) membership — the cryptographic one, the SW's binding check, asserted
+//       in tests/e2e-sw-a4-canonical-peer.test.mjs where a real wrap can be
+//       built and broken. Clause (c) is SKIPPED on this lane by design
+//       (PAIR_STATE carries `wrap` SINGULAR — no deviceId set to check), and
+//       that skip is asserted there too, so "we did not implement it" and "the
+//       spec says not to" cannot be confused.
+
+const J = mustBeFromFile(V.canonicalPeer, 'canonicalPeer');
+const J2 = mustBeFromFile(J.negativeJ2PairingId, 'canonicalPeer.negativeJ2PairingId');
+
+await check('A4.1 (a): a pairingId handed over by the PAGE refuses a foreign ctx.pairingId', async () => {
   reset();
-  // The frozen file names both sides of this case; using its own pair means the
-  // "own" id is the one vector I says we are, not one this test chose.
-  const M3 = mustBeFromFile(WI4.peerDeviceIdMismatch, 'negativeI4Parser.peerDeviceIdMismatch');
-  eq(M3.ownDeviceId, OWN, 'frozen ownDeviceId must be the device this file plays');
+  // Source 1 — the bridge hand-over. The page owns the pairing, so this is the
+  // authoritative value, and it is the only one that does not come from the
+  // relay. J.2's frozen pair: we are party to `ownPairingId`, the block claims
+  // `ctxPairingId`.
+  eq(J2.ownPairingId, I1.ctxWire.pairingId, "frozen ownPairingId must be vector I.1's");
+  await S.setOwnPairingId(J2.ownPairingId);
+  const pinned = await S.readOwnPairingId();
+  eq(pinned.source, 'bridge', 'a hand-over pins as source=bridge');
   const err = await refuses(
     () => S.pairContextInputs({
-      block: { mode: 1, ctx: { ...I1.ctxWire, peerDeviceId: M3.ctxPeerDeviceId } },
-      ownDeviceId: M3.ownDeviceId,
+      block: { mode: 1, ctx: { ...I1.ctxWire, pairingId: J2.ctxPairingId } },
       userId: I1.localUserId,
     }),
-    'peerDeviceId mismatch',
+    'foreign pairingId against a bridge hand-over',
   );
   assert(/A3-M3/.test(err.why), `refusal should cite A3-M3, said: ${err.why}`);
+  // Discriminating half: the refusal is at INGEST, before anything is written.
+  // A check that refused after moving the epoch floor would have made a hostile
+  // block expensive rather than free.
+  eq(Object.keys(local[S.EPOCH_FLOOR_KEY] || {}).length, 0, 'no floor written on a refusal');
+  // Control: the SAME hand-over admits the MATCHING pairingId, or the assertion
+  // above would pass for any reason at all.
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
+});
+
+await check('A4.1 (a): with NO page, TOFU pins the first ctx of an epoch and refuses later drift', async () => {
+  reset();
+  // Source 2 — no page has ever handed anything over. The FIRST ctx of a new
+  // pairEpoch pins with NO comparison (there is nothing to compare against, and
+  // refusing would make a first pair impossible — A3-M2's first-sight rule).
+  const first = await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
+  eq(first.pairingId, I1.ctxWire.pairingId, 'the first ctx is admitted');
+  const pinned = await S.readOwnPairingId();
+  eq(pinned.source, 'tofu', 'first sight pins as source=tofu');
+  eq(pinned.pairingId, I1.ctxWire.pairingId, 'the pin is the first ctx pairingId');
+  eq(pinned.pairEpoch, String(first.pairEpoch), 'the pin is scoped to THAT epoch');
+  // A LATER ctx in the SAME epoch must match the pin.
+  const err = await refuses(
+    () => S.pairContextInputs({
+      block: { mode: 1, ctx: { ...I1.ctxWire, pairingId: J2.ctxPairingId } },
+      userId: I1.localUserId,
+    }),
+    'pairingId drift inside one epoch',
+  );
+  assert(/A4\.1/.test(err.why), `refusal should cite A4.1, said: ${err.why}`);
+});
+
+await check('A4.1 (a): a NEW pairEpoch RESETS the TOFU pin — a re-pair is not refused forever', async () => {
+  reset();
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
+  // A legitimate re-pair mints a new pairingId AND a higher epoch. Pinning
+  // across epochs would refuse every future pairing on this install — a pin
+  // that cannot be replaced is a permanent denial of service dressed as a
+  // security control, and clause (b) is the anchor anyway.
+  const next = { ...I1.ctxWire, pairingId: J2.ctxPairingId, pairEpoch: '43' };
+  const inputs = await S.pairContextInputs({ block: { mode: 1, ctx: next }, userId: I1.localUserId });
+  eq(inputs.pairingId, J2.ctxPairingId, 'the new epoch admits the new pairingId');
+  const pinned = await S.readOwnPairingId();
+  eq(pinned.pairingId, J2.ctxPairingId, 're-pinned to the new pairing');
+  eq(pinned.pairEpoch, '43', 're-pinned to the new epoch');
+});
+
+await check('A4-M1: this lane REJECTS ownDeviceId rather than ignoring it', async () => {
+  reset();
+  // The struck clause must not come back through the side door. A caller still
+  // passing `ownDeviceId` believes a membership check is running; silently
+  // dropping the option would leave that belief intact with the check gone.
+  const err = await refuses(
+    () => S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId }),
+    'ownDeviceId passed to pairContextInputs',
+  );
+  assert(/A4-M1/.test(err.why), `refusal should cite A4-M1, said: ${err.why}`);
+  let threw = null;
+  try {
+    S.validateCtx({ ctx: I1.ctxWire, mode: 1, ownDeviceId: OWN, userId: I1.localUserId });
+  } catch (e) { threw = e; }
+  assert(threw instanceof S.CtxRefused, `validateCtx should refuse it too, got ${threw && threw.name}`);
+  assert(/A4-M1/.test(threw.why), `refusal should cite A4-M1, said: ${threw.why}`);
 });
 
 await check('I.4 / A3-M3: the pairingId half refuses WHEN the caller knows the value', async () => {
@@ -329,7 +421,6 @@ await check('I.4 / A3-M3: the pairingId half refuses WHEN the caller knows the v
     S.validateCtx({
       ctx: { ...I1.ctxWire, pairingId: MP.ctxPairingId },
       mode: 1,
-      ownDeviceId: OWN,
       userId: I1.localUserId,
       pairingId: MP.ownPairingId,
     });
@@ -339,7 +430,7 @@ await check('I.4 / A3-M3: the pairingId half refuses WHEN the caller knows the v
   // Control: the SAME call with the matching pairingId must NOT refuse, or the
   // assertion above would pass for any reason at all.
   S.validateCtx({
-    ctx: I1.ctxWire, mode: 1, ownDeviceId: OWN, userId: I1.localUserId, pairingId: MP.ownPairingId,
+    ctx: I1.ctxWire, mode: 1, userId: I1.localUserId, pairingId: MP.ownPairingId,
   });
 });
 
@@ -350,14 +441,14 @@ await check(`I.4: an id of ${OVERSIZE} UTF-8 bytes is refused on the DECODE side
     const ctx = { ...I1.ctxWire, [field]: 'a'.repeat(OVERSIZE) };
     if (field === 'peerDeviceId') continue;       // that one fails A3-M3 first
     await refuses(
-      () => S.pairContextInputs({ block: { mode: 1, ctx }, ownDeviceId: OWN, userId: I1.localUserId }),
+      () => S.pairContextInputs({ block: { mode: 1, ctx }, userId: I1.localUserId }),
       `${field} 256 bytes`,
     );
   }
   reset();
   await refuses(
     () => S.pairContextInputs({
-      block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: 'u'.repeat(OVERSIZE),
+      block: { mode: 1, ctx: I1.ctxWire }, userId: 'u'.repeat(OVERSIZE),
     }),
     `userId ${OVERSIZE} bytes`,
   );
@@ -367,19 +458,19 @@ await check(`I.4: an id of ${OVERSIZE} UTF-8 bytes is refused on the DECODE side
 
 await check('A3-M2: first sight of a phoneDeviceId is TOFU — no comparison, floor set', async () => {
   reset();
-  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
   const floors = await S.readEpochFloors();
   eq(floors[`${I1.localUserId}|${I1.ctxWire.phoneDeviceId}`], '42', 'floor after first sight');
 });
 
 await check('A3-M2: a REPLAYED epoch is refused — the GCM nonce-reuse case', async () => {
   reset();
-  await S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '42' } }, ownDeviceId: OWN, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '42' } }, userId: I1.localUserId });
   // The relay replays the old ACCEPT block. Accepting it would reinstall a
   // superseded SK whose counter restarts at 0 against a key and a derived
   // prefix that have already sealed frames.
   const err = await refuses(
-    () => S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '42' } }, ownDeviceId: OWN, userId: I1.localUserId }),
+    () => S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '42' } }, userId: I1.localUserId }),
     'epoch replay',
   );
   assert(/A3-M2/.test(err.why), `refusal should cite A3-M2, said: ${err.why}`);
@@ -387,24 +478,24 @@ await check('A3-M2: a REPLAYED epoch is refused — the GCM nonce-reuse case', a
 
 await check('A3-M2: an epoch BELOW the floor is refused too, not just equal', async () => {
   reset();
-  await S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '100' } }, ownDeviceId: OWN, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '100' } }, userId: I1.localUserId });
   await refuses(
-    () => S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '99' } }, ownDeviceId: OWN, userId: I1.localUserId }),
+    () => S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '99' } }, userId: I1.localUserId }),
     'epoch below floor',
   );
 });
 
 await check('A3-M2: a HIGHER epoch is admitted and advances the floor (a real rekey)', async () => {
   reset();
-  await S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '42' } }, ownDeviceId: OWN, userId: I1.localUserId });
-  await S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '43' } }, ownDeviceId: OWN, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '42' } }, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '43' } }, userId: I1.localUserId });
   const floors = await S.readEpochFloors();
   eq(floors[`${I1.localUserId}|${I1.ctxWire.phoneDeviceId}`], '43', 'advanced floor');
 });
 
 await check('A3-M2: persist-before-use — the floor is committed before the caller can derive', async () => {
   reset();
-  const inputs = await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId });
+  const inputs = await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
   // By the time the caller holds the inputs, the floor is already on disk. A
   // crash here leaves the floor AHEAD (one refused pair, one re-Accept) rather
   // than BEHIND (an open replay window).
@@ -414,12 +505,11 @@ await check('A3-M2: persist-before-use — the floor is committed before the cal
 
 await check('A3-M2: floors are per (userId, phoneDeviceId), not global', async () => {
   reset();
-  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
   // A DIFFERENT phone on the same account is a different pinning subject and
   // starts at TOFU rather than inheriting another phone's floor.
   await S.pairContextInputs({
     block: { mode: 1, ctx: { ...I1.ctxWire, phoneDeviceId: 'dev-phone-02', pairEpoch: '1' } },
-    ownDeviceId: OWN,
     userId: I1.localUserId,
   });
   const floors = await S.readEpochFloors();
@@ -429,21 +519,21 @@ await check('A3-M2: floors are per (userId, phoneDeviceId), not global', async (
 
 await check('A3-M2: ONLY an explicit clear removes a floor — nothing on the wire can', async () => {
   reset();
-  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
   // There is deliberately no "the phone asked us to reset" path, so the only
   // way to exercise a clear is to call the explicit one.
   await S.clearEpochFloors(I1.localUserId);
   eq(Object.keys(await S.readEpochFloors()).length, 0, 'cleared');
   // …and after a clear, TOFU applies again — which is correct: an unpair is
   // the user saying "forget this phone".
-  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
   eq((await S.readEpochFloors())[`${I1.localUserId}|dev-phone-01`], '42', 'TOFU after an explicit clear');
 });
 
 await check('A3-M2: clearing one user does not clear another', async () => {
   reset();
-  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: 'user-A' });
-  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: 'user-B' });
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: 'user-A' });
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: 'user-B' });
   await S.clearEpochFloors('user-A');
   const floors = await S.readEpochFloors();
   assert(!(`user-A|dev-phone-01` in floors), 'user-A cleared');
@@ -454,7 +544,7 @@ await check('A3-M2: clearing one user does not clear another', async () => {
 
 await check('A3-M2: the floor lives in storage.LOCAL — a browser restart must not clear it', async () => {
   reset();
-  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: I1.localUserId });
+  await S.pairContextInputs({ block: { mode: 1, ctx: I1.ctxWire }, userId: I1.localUserId });
   // storage.session is cleared on browser exit; a floor kept there would let a
   // replay simply wait for a restart. Assert the bytes are in `local`.
   assert(S.EPOCH_FLOOR_KEY in local, 'the floor must be in chrome.storage.local');
