@@ -127,6 +127,10 @@ export type PhoneEventType =
   | 'PAIRING_DECLINED'
   | 'PAIRING_TIMEOUT'
   | 'PAIRING_REJECTED'
+  // E2E-P2 (h). The relay's kill switch (E2E_PAIRING_ENABLED=false) refused a
+  // mode=1 request. Browser-only, and terminal: the hook lands in
+  // `e2e.state:'error'` with `error:'e2e-unavailable'` and does not retry.
+  | 'PAIRING_E2E_UNAVAILABLE'
   | 'PAIRING_TERMINATED'
   // Connection-stability soft-hold (2026-06-16). Relay emits this to the
   // SURVIVING side of an active pair when the OTHER side's socket dropped on a

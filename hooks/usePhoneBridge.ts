@@ -17,6 +17,10 @@ import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
 import { isPlaceholderAddress, evictHealedPlaceholders } from '@/lib/messagePlaceholders';
 import { normalizePayload } from '@/lib/normalizePayload';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
+// E2E-P2: encrypted mode. All of it lives in useE2e/phoneE2e/lib/e2e — the
+// footprint HERE is five call sites, deliberately, so the Monday rebase of
+// this 4,679-line file against Forge-U/Forge-T/Pixel-S is a local merge.
+import { useE2e } from './useE2e';
 import {
   getDeviceLabel,
   getEffectiveDeviceLabel,
@@ -374,6 +378,29 @@ function mergeCallLogs(
   return out.sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
 }
 
+/**
+ * Split a relay frame into `[type, payload]` for the E2E decoder.
+ *
+ * The delimiter is the FIRST colon, and a frame with NO colon must yield an
+ * EMPTY payload rather than the whole string. `data.split(':')[0]` looks like it
+ * does this and does not: for a colonless frame it returns the entire frame as
+ * the "type", and a naive `[1]` returns undefined while `slice(1).join(':')`
+ * silently re-joins a payload that contains colons — a JSON body always does.
+ * Getting this wrong hands the decoder a payload that is really a frame type.
+ */
+function splitFrame(data: unknown): [string, unknown] {
+  if (typeof data !== 'string') return ['', undefined];
+  const i = data.indexOf(':');
+  if (i === -1) return [data, undefined];
+  const type = data.slice(0, i);
+  const body = data.slice(i + 1);
+  try {
+    return [type, JSON.parse(body)];
+  } catch {
+    return [type, undefined];
+  }
+}
+
 export function usePhoneBridge() {
   // Dispatch #30 (2026-05-25): we depend on pathname so the token-fetch effect
   // re-fires when the user navigates (e.g. /signin → /). The hook mounts at
@@ -383,6 +410,15 @@ export function usePhoneBridge() {
   // cheap because we guard with relayTicketRef.current and short-circuit once
   // the ticket is loaded.
   const pathname = usePathname();
+
+  // E2E-P2 (g). Inert until the user turns encrypted mode on: with the setting
+  // OFF and no peer block, every call below is a pass-through.
+  const e2eApi = useE2e();
+  const e2eRef = useRef(e2eApi);
+  e2eRef.current = e2eApi;
+  // `leaveActive` is declared far below this point; the ref lets the inbound
+  // PAIRING_ACTIVE handler reach it without hoisting a 4,600-line file around.
+  const leaveActiveRef = useRef<(() => void) | null>(null);
   // State — split into individual useState calls so each update only re-renders
   // components that consume the changed slice (e.g. call-timer ticks don't
   // repaint the message thread or contact list).
@@ -1399,6 +1435,14 @@ export function usePhoneBridge() {
         break;
       }
 
+      // E2E-P2 (h). The relay's kill switch refused mode=1. Terminal by
+      // design: there is no retry loop against a switch someone deliberately
+      // threw, and the pairing does NOT silently continue in plaintext while
+      // the user believes it is encrypted.
+      case 'PAIRING_E2E_UNAVAILABLE':
+        e2eRef.current.onE2eUnavailable();
+        break;
+
       case 'PHONE_PRESENT':
         setPhonePresentInLobby(true);
         break;
@@ -1420,6 +1464,14 @@ export function usePhoneBridge() {
           clearTimeout(transientClearTimerRef.current);
           transientClearTimerRef.current = null;
         }
+        // E2E-P2 (c)+(d). Runs the B6/C-1/C-2 decision and, on mode ON,
+        // opens our wrap and builds the session. A `true` here means the pair
+        // must NOT be entered: fail-closed, LEAVE_ACTIVE, and the hook's
+        // `e2e.state` already carries the reason for P5a to render.
+        void e2eRef.current.onPairingActive(payload as Record<string, unknown>).then((abort) => {
+          if (abort) leaveActiveRef.current?.();
+        });
+
         setLobbyState('active');
         setLastBrowserRequest(null);
         setIsConnected(true);
@@ -2949,7 +3001,19 @@ export function usePhoneBridge() {
       };
 
       ws.onmessage = (event) => {
-        handleMessage(event.data);
+        // E2E-P2 (e) — THE inbound decoder, at the ONE place every frame enters.
+        // It runs before the switch rather than inside it so `handleMessage`
+        // and its ~40 cases stay exactly as they were: by the time a case sees
+        // a payload it is plaintext, sealed or not, and no branch has to know.
+        // With no session this is a synchronous pass-through.
+        void e2eRef.current
+          .openInbound(...splitFrame(event.data))
+          .then((result) => {
+            if (result.drop) return; // dedupe / downgrade / bad tag — silent
+            if (result.payload === undefined) { handleMessage(event.data); return; }
+            handleMessage(`${splitFrame(event.data)[0]}:${JSON.stringify(result.payload)}`);
+          })
+          .catch(() => { /* never let a decode fault kill the socket */ });
       };
 
       ws.onclose = (event: CloseEvent) => {
@@ -3054,13 +3118,33 @@ export function usePhoneBridge() {
 
   // Send command to phone
   const sendCommand = useCallback((type: string, payload: object = {}) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const message = `${type}:${JSON.stringify(payload)}`;
-      console.log('[PhoneBridge] Sending command:', message);
-      wsRef.current.send(message);
-    } else {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
       console.warn('[PhoneBridge] Cannot send command, WebSocket not open:', type);
+      return;
     }
+    // E2E-P2 (e) — THE outbound chokepoint. A thin wrapper around the existing
+    // send, not a replacement for it: the wire stays `TYPE:JSON` and only the
+    // JSON changes, so Forge-U's staggered syncData path and lib/autoSync.ts
+    // are untouched. With no session it resolves to the same object it was
+    // given, so the plaintext path is byte-identical to before.
+    //
+    // The seal is async (WebCrypto is), so this became fire-and-forget. That is
+    // safe because nothing here inspected the result before, and the ordering
+    // that matters — the seq counter — is serialised inside the session, not by
+    // this call site. A seal that FAILS (fail-closed counter) refuses to send
+    // rather than falling back to plaintext: a frame the user believes is
+    // encrypted must never leave in the clear.
+    void e2eRef.current.sealOutbound(type, payload).then(
+      (body) => {
+        if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+        const message = `${type}:${JSON.stringify(body)}`;
+        console.log('[PhoneBridge] Sending command:', type);
+        wsRef.current.send(message);
+      },
+      (err) => {
+        console.error(`[PhoneBridge] REFUSING to send ${type} — seal failed:`, err?.message ?? err);
+      },
+    );
   }, []);
 
   // Public actions
@@ -3124,12 +3208,19 @@ export function usePhoneBridge() {
       pairingTimerRef.current = null;
     }, PAIRING_REQUEST_TTL_MS);
 
-    try {
-      wsRef.current.send(`BROWSER_REQUEST_PAIRING:${JSON.stringify(payload)}`);
-      console.log('[PhoneBridge] BROWSER_REQUEST_PAIRING sent');
-    } catch (e) {
-      console.error('[PhoneBridge] requestPairing send failed:', e);
-    }
+    // E2E-P2 (b). The recipient set (our web key, plus the SW's if the bridge
+    // produced one within 1 s) rides on the SAME frame — no new round trip. A
+    // null block means "pair in the clear", which is the unchanged behaviour.
+    void e2eRef.current.buildRequestE2e().then((e2e) => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+      const body = e2e ? { ...payload, e2e } : payload;
+      try {
+        wsRef.current.send(`BROWSER_REQUEST_PAIRING:${JSON.stringify(body)}`);
+        console.log(`[PhoneBridge] BROWSER_REQUEST_PAIRING sent (e2e=${e2e ? `mode${e2e.mode}/recips${e2e.recips.length}` : 'none'})`);
+      } catch (e) {
+        console.error('[PhoneBridge] requestPairing send failed:', e);
+      }
+    });
   }, [lobbyState, phonePresentInLobby]);
 
   // leaveActive — explicit "I'm done with this pairing" from the user. Sends
@@ -3138,6 +3229,10 @@ export function usePhoneBridge() {
   // data caches synchronously (the PAIRING_TERMINATED echo will do the same
   // again — idempotent — but acting locally first feels instant to the user).
   const leaveActive = useCallback(() => {
+    // E2E-P2 (g) lifecycle: the pair is over, so SK goes. The DEVICE key stays
+    // — rotating it on every disconnect would churn DeviceKey rows and break
+    // the other side's C-2 pin for no benefit.
+    e2eRef.current.onPairEnded();
     if (wsRef.current?.readyState === WebSocket.OPEN && lobbyState === 'active') {
       try {
         wsRef.current.send(`LEAVE_ACTIVE:${JSON.stringify({})}`);
@@ -3192,6 +3287,11 @@ export function usePhoneBridge() {
     }
     console.log('[PhoneBridge] leaveActive — back in lobby');
   }, [lobbyState, clearAllCalls, clearAudioProbeTimer]);
+
+  // E2E-P2: published for the PAIRING_ACTIVE handler above, which runs before
+  // this declaration in source order and must be able to abandon a pair that
+  // failed the encrypted-mode checks (fail-closed, B6/C-2).
+  leaveActiveRef.current = leaveActive;
 
   // resetRoom — "Reset lobby" (dispatch FORGE-J, 2026-09-15).
   //
@@ -4671,6 +4771,13 @@ export function usePhoneBridge() {
     simList,
     selectedSimId,
     setSim,
+
+    // E2E-P2 (g). The encrypted-mode view-model P5a's brief is written from,
+    // plus the per-device setting. `e2e.state` is the single thing the UI
+    // switches on; `e2e.debug` is for diagnostics and never for the user.
+    e2e: e2eApi.e2e,
+    e2eLocalMode: e2eApi.localMode,
+    setE2eLocalMode: e2eApi.setLocalMode,
 
     // Full MMS media fetch (on-demand). Returns a base64-encoded media payload
     // plus its MIME type — caller composes the `data:` URL when rendering.
