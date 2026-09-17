@@ -47,6 +47,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
 import {
   admitPairEpoch,
+  clearEpochFloors,
   EpochFloorError,
   ensureWebDeviceKey,
   indexedDbWebKeyStore,
@@ -492,7 +493,25 @@ export function useE2e(emailProp?: string | null): E2eApi {
     sessionRef.current = null;
     latchedRef.current = false;
     downgradeDropsRef.current = 0;
+    userIdRef.current = null;
     setView(E2E_VIEW_INITIAL);
+
+    // A3-M2: the epoch floor is cleared ONLY by an explicit user action, and
+    // sign-out is one of the three the addendum names (unpair / revoke /
+    // sign-out). It is NOT cleared in onPairEnded, and the distinction is the
+    // whole control: leaving a pair is something the relay can cause, and a
+    // floor a relay can clear defends against nothing, because the replay it
+    // refuses could simply be preceded by a disconnect.
+    //
+    // Fire-and-forget with a swallowed rejection on purpose: a failed clear
+    // leaves the floor HIGHER than reality, which costs one re-pair. Blocking
+    // sign-out on an IndexedDB write would be the wrong trade in the one flow
+    // where the user is trying to leave.
+    const key = keyRef.current;
+    if (key) {
+      void clearEpochFloors({ store: keyStoreRef.current, key }).catch(() => {});
+    }
+    keyRef.current = null;
   }, []);
 
   const onPairEnded = useCallback(() => {

@@ -280,7 +280,11 @@ check('I.4: and it ACCEPTS a bare "42" (the guard is not vacuous)', PAIR_EPOCH_W
 check('I.4: and "0"', PAIR_EPOCH_WIRE_RE.test('0'));
 
 {
-  const { pairEpoch: _dropped, ...noEpoch } = I.positiveI1.ctxWire;
+  // Built by deletion rather than by rest-destructure: the unused binding a
+  // rest-destructure leaves behind is a lint warning, and this lane keeps its
+  // own files at zero so the gate's GROWN check stays meaningful.
+  const noEpoch = { ...I.positiveI1.ctxWire };
+  delete noEpoch.pairEpoch;
   await throws('I.4: an ABSENT pairEpoch is refused', () => pairContextFromWire(noEpoch, local));
 }
 await throws('I.4: above 2^64-1 is refused',
