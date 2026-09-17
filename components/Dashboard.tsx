@@ -516,7 +516,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // Cross-route dashboard tab control — Quick Dial's SMS shortcut routes the
   // user to the messages tab with the dialled / active-call number pre-selected.
   // See hooks/dashboardTabContext.tsx for the navigation contract.
-  const { setActiveTab, setSelectedMessageNumber } = useDashboardTab();
+  useDashboardTab();
 
   // Defer expensive thread/callLog computations so they run in the background
   // without blocking the UI when messages or callLogs update.
@@ -594,10 +594,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   type SimEntry = { id: number; slot: number; name: string; number: string };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const simList: SimEntry[] = ((phone as any).simList ?? []) as SimEntry[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const selectedSimId: number | null = (phone as any).selectedSimId ?? null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const setSim: ((simId: number | null) => void) | undefined = (phone as any).setSim;
 
   // ---- Phone notifications ----------------------------------------------
   // Read from a dedicated NotificationContext so notification updates (200ms
@@ -647,8 +643,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
   // Favorites store: array of contact IDs.
   const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
-  const [showFavoritePicker, setShowFavoritePicker] = useState(false);
-  const [favoriteSearch, setFavoriteSearch] = useState('');
+  const [, setShowFavoritePicker] = useState(false);
+  const [, setFavoriteSearch] = useState('');
 
   // Compose textarea value (per-thread, lives in Dashboard scope so it survives
   // a quick navigate-away-and-back inside this column).

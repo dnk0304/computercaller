@@ -73,7 +73,7 @@ async function shot(name, url, { width, height, scheme = 'light', authed = true,
   }
   if (storage) {
     await page.addInitScript((v) => {
-      try { localStorage.setItem('cc:theme:last', v); } catch (e) {}
+      try { localStorage.setItem('cc:theme:last', v); } catch {}
     }, storage);
   }
   await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
@@ -116,7 +116,7 @@ await shot('web-register', `${BASE}/auth/register`, { width: 1100, height: 900, 
 await shot('web-sidebar-collapsed', `${BASE}/app`, {
   width: 1440, height: 900,
   storage: null,
-  init: () => { try { localStorage.setItem('dnkdialer_sidebar_collapsed', '1'); } catch (e) {} },
+  init: () => { try { localStorage.setItem('dnkdialer_sidebar_collapsed', '1'); } catch {} },
 });
 
 await browser.close();

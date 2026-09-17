@@ -60,7 +60,7 @@ async function shot(name, url, { width, height, scheme = 'light', authed = true,
   // forced-dark shots prove the attribute gate rather than the OS setting.
   if (storage) {
     await page.addInitScript((v) => {
-      try { localStorage.setItem('cc:theme:last', v); } catch (e) {}
+      try { localStorage.setItem('cc:theme:last', v); } catch {}
     }, storage);
   }
   await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});

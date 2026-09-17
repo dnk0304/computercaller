@@ -27,7 +27,6 @@
 // passing, which would make this file worse than useless, so PART 2 asserts
 // against the REAL server.js SOURCE that every transition actually broadcasts.
 
-import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

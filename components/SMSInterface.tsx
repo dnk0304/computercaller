@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react';
-import { Send, Image, Smile, Search, MoreVertical, Phone, Plus, X, Save, Settings, Edit2, Trash2, ChevronDown, ChevronUp, RefreshCw, Inbox } from 'lucide-react';
+import { Send, Image, Smile, Search, MoreVertical, Phone, Plus, X, Settings, Edit2, Trash2, ChevronDown, RefreshCw, Inbox } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDebouncedValue } from '@/hooks';
 import { useFreeTier } from '@/hooks/freeTierContext';

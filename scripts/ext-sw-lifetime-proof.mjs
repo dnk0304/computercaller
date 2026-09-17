@@ -63,7 +63,7 @@ const PORT = 41777;
 
 // ---- stand-in relay ---------------------------------------------------------
 let serverSeesOpen = false;
-let lastPongAt = 0;
+let lastPongAt = 0; // eslint-disable-line @typescript-eslint/no-unused-vars -- written by the pong handler below purely to keep that listener registered; deleting it would delete the listener and change the probe.
 const wss = new WebSocketServer({ port: PORT });
 wss.on('connection', (socket) => {
   serverSeesOpen = true;
