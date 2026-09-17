@@ -16,6 +16,7 @@ import type {
 import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
 import { isPlaceholderAddress, evictHealedPlaceholders } from '@/lib/messagePlaceholders';
 import { normalizePayload } from '@/lib/normalizePayload';
+import { applyNotifEvents, type NotifEvent } from '@/lib/notificationMerge';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 import {
   getDeviceLabel,
@@ -159,38 +160,14 @@ export interface PhoneNotification {
   replyKey: string;
   notificationKey: string;
   read: boolean;
-}
-
-/**
- * Composite dedup window for mirrored phone notifications. Mirrors the SMS
- * MESSAGE_COMPOSITE_WINDOW_MS (10s) tolerance. The same logical messaging-app
- * notification that lands twice (group-summary + per-conversation child, or
- * cancel+repost on rapid delivery) always arrives within seconds of itself;
- * two genuinely-distinct messages with the same body in the same app are
- * virtually never <10s apart.
- */
-const NOTIFICATION_COMPOSITE_WINDOW_MS = 10000;
-
-/**
- * Composite identity signature for a mirrored phone notification:
- * packageName + normalized title + normalized body.
- *
- * Root-cause context (2026-06-18 duplicate-notification-card bug): WhatsApp
- * and other MessagingStyle apps post a group-SUMMARY notification AND a
- * per-conversation CHILD for the same logical message. Android forwards both
- * (the listener filter excludes neither), and both surface the SAME last
- * message via EXTRA_MESSAGES.last() → identical title+body but DIFFERENT
- * sbn.key. The web's primary dedup is keyed only on notificationKey, so the
- * two distinct keys produced TWO identical cards. This signature collapses
- * them: same package + same title + same body within the window = one card.
- *
- * Title/body are trimmed + collapsed-whitespace to absorb OEM formatting
- * noise. packageName is part of the key so two different apps that happen to
- * post identical text never merge.
- */
-function notificationCompositeSig(n: PhoneNotification): string {
-  const norm = (s: string) => (s || '').trim().replace(/\s+/g, ' ');
-  return `${n.packageName}|${norm(n.title)}|${norm(n.body)}`;
+  /**
+   * True when this card arrived as part of a v58 SYNC BACKFILL — the phone
+   * replaying its current shade — rather than as live news. Carried on the card
+   * (not just consumed at merge time) because anything that ANNOUNCES a new
+   * notification has to be able to tell the two apart: a sync of twenty cards
+   * must not fire twenty toasts for things the user already saw on the phone.
+   */
+  backfill?: boolean;
 }
 
 // Module-level icon cache — keyed by packageName, outside React state so
@@ -771,10 +748,7 @@ export function usePhoneBridge() {
 
   // Notification event buffer — flushed to React state every 200ms to batch
   // re-renders instead of re-rendering on every WebSocket notification event.
-  const notifPendingRef = useRef<Array<
-    | { type: 'add'; notif: PhoneNotification }
-    | { type: 'remove'; key: string }
-  >>([]);
+  const notifPendingRef = useRef<NotifEvent[]>([]);
 
   // WebSocket ref. Dispatch #32 (2026-05-25): reconnectTimeoutRef and
   // phoneUrlRef are GONE. There is no auto-reconnect anymore — if the relay
@@ -2631,19 +2605,33 @@ export function usePhoneBridge() {
         if (payload.icon && payload.packageName) {
           _notifIconCache.set(payload.packageName, payload.icon);
         }
+        // v58 BACKFILL. On sync the phone replays everything currently in its
+        // shade as ordinary PHONE_NOTIFICATION frames carrying `backfill:true`
+        // and `postedAt` (StatusBarNotification.postTime). One serializer, one
+        // frame type — only the two extra fields distinguish a replay from
+        // news, so an older APK that sends neither keeps today's behaviour
+        // exactly (`backfill` absent ⇒ falsy ⇒ live path).
+        const backfill = payload.backfill === true;
         const notif: PhoneNotification = {
           id: payload.id ?? `notif_${Date.now()}`,
           appName: payload.appName ?? payload.packageName ?? 'Unknown',
           packageName: payload.packageName ?? '',
           title: payload.title ?? '',
           body: payload.body ?? '',
-          timestamp: payload.timestamp ?? Date.now(),
+          // postedAt is the phone's own clock reading for WHEN the notification
+          // was posted, which for a replay is minutes or hours before it
+          // arrived here. Falling back to `timestamp` and then to arrival time
+          // keeps a backfill frame from an APK that omitted postedAt merging at
+          // "now" rather than crashing — it just lands at the top, as today.
+          timestamp: (backfill ? payload.postedAt : undefined)
+            ?? payload.timestamp ?? Date.now(),
           hasReply: payload.hasReply === true,
           replyKey: payload.replyKey ?? '',
           notificationKey: payload.notificationKey ?? '',
           read: false,
+          backfill,
         };
-        notifPendingRef.current.push({ type: 'add', notif });
+        notifPendingRef.current.push({ type: 'add', notif, backfill });
         break;
       }
 
@@ -4466,41 +4454,9 @@ export function usePhoneBridge() {
       const pending = notifPendingRef.current;
       if (pending.length === 0) return;
       notifPendingRef.current = [];
-      setPhoneNotifications(prev => {
-        let result = [...prev];
-        for (const event of pending) {
-          if (event.type === 'add') {
-            // Dedup on TWO axes (remove any matching prior card, prepend new):
-            //   1. PRIMARY — exact notificationKey match. Collapses a true
-            //      in-place MessagingStyle update (same sbn.key re-posted).
-            //   2. CONTENT-IDENTITY (2026-06-18 duplicate-card fix) — same
-            //      package + normalized title + body within the composite
-            //      window. Collapses the group-summary-vs-child / cancel-repost
-            //      dup, where one logical WhatsApp message is forwarded under
-            //      TWO different sbn.keys (so axis 1 alone can't catch it).
-            // Newest frame wins the rendered slot (prepended); a genuinely
-            // different body in the same thread keeps its own card (the body
-            // component of the signature prevents over-collapsing).
-            const incomingSig = notificationCompositeSig(event.notif);
-            const incomingTs = event.notif.timestamp;
-            result = result.filter(n =>
-              n.notificationKey !== event.notif.notificationKey
-              && !(
-                notificationCompositeSig(n) === incomingSig
-                && Math.abs((n.timestamp ?? 0) - incomingTs) <= NOTIFICATION_COMPOSITE_WINDOW_MS
-              )
-            );
-            result = [event.notif, ...result];
-          } else {
-            // Removal stays keyed on the EXACT dismissed notificationKey — a
-            // real NOTIFICATION_REMOVED carries the precise sbn.key. Do NOT
-            // widen removal to the content composite (would over-remove a
-            // sibling card on a single dismissal).
-            result = result.filter(n => n.notificationKey !== event.key);
-          }
-        }
-        return result.slice(0, 50);
-      });
+      // The merge rules (both dedup axes, backfill ordering, the 50-card cap)
+      // live in lib/notificationMerge.ts and are unit-tested there.
+      setPhoneNotifications(prev => applyNotifEvents(prev, pending));
     }, 200);
     return () => window.clearInterval(id);
   }, []); // stable — no deps needed, setPhoneNotifications is a stable useState setter
