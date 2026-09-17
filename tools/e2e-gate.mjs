@@ -763,6 +763,10 @@ if (WEB) {
   const UNIT = [
     ['sas-vectors', 'tests/sas-vectors.test.mjs', true],
     ['padding-property', 'tests/padding-property.test.mjs', true],
+    // P0.2: the frozen key schedule + AEAD (§13.10 / Addendum A1). Same file the
+    // Android lane's E2eKdfVectorsTest asserts, so a drift in either lane fails
+    // its own build instead of surfacing as "Encrypted mode never pairs".
+    ['kdf-vectors', 'tests/kdf-vectors.test.mjs', true],
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {
