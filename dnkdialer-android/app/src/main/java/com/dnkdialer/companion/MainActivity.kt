@@ -124,6 +124,28 @@ class MainActivity : AppCompatActivity() {
     // and the pairing broadcasts can repaint without re-finding views.
     private lateinit var heroDefaultFace: View
     private lateinit var heroRequestFace: View
+
+    /**
+     * P5b (c) — the third face of the hero card: the SAS confirm. Shown after
+     * Accept when the pair is Encrypted (verified), and BLOCKING while it is
+     * up: see [showSasConfirm].
+     */
+    private lateinit var heroSasFace: View
+
+    /**
+     * The pairing whose SAS is on screen, or null. Distinct from
+     * [pairingRequestDialogId]: by the time the SAS is up the request face is
+     * gone and that id has been cleared, and conflating the two would let a
+     * late ACTION_PAIRING_CANCELLED for the request tear down a SAS belonging
+     * to a different pairing.
+     */
+    private var sasPairingId: String? = null
+
+    /**
+     * Swallows Back while the SAS is on screen. Enabled/disabled alongside
+     * [heroSasFace]'s visibility so Back is untouched everywhere else.
+     */
+    private var sasBackCallback: androidx.activity.OnBackPressedCallback? = null
     private lateinit var heroTitle: TextView
     private lateinit var heroBody: TextView
     private lateinit var deviceDot: View
@@ -333,6 +355,25 @@ class MainActivity : AppCompatActivity() {
                 PhoneService.ACTION_PAIRING_CANCELLED_IN_FOREGROUND -> {
                     val pairingId = intent.getStringExtra(PhoneService.EXTRA_PAIRING_ID) ?: return
                     dismissPairingDialogIfMatching(pairingId)
+                    // The other end gave up. Take the SAS down too — but only
+                    // for THIS pairing, or a late cancellation for a request
+                    // the user already answered would dismiss a live prompt.
+                    if (sasPairingId == pairingId) hideSasConfirm()
+                }
+
+                // P5b (c) — the Accept path has the digits and is waiting.
+                E2eSasContract.ACTION_E2E_SAS_REQUIRED -> {
+                    val pairingId = intent.getStringExtra(PhoneService.EXTRA_PAIRING_ID) ?: return
+                    val digits = intent.getStringExtra(E2eSasContract.EXTRA_SAS_DIGITS).orEmpty()
+                    showSasConfirm(pairingId, digits)
+                }
+
+                // P5b (c)/(d) — a refusal the user must be told about. Nothing
+                // listened for this before P5b; see showE2eRefusal.
+                PhoneService.ACTION_PAIRING_E2E_REFUSED -> {
+                    val message = intent.getStringExtra(PhoneService.EXTRA_E2E_MESSAGE)
+                        ?: E2eNegotiation.ABORT_MESSAGE
+                    showE2eRefusal(message)
                 }
             }
         }
@@ -503,6 +544,35 @@ class MainActivity : AppCompatActivity() {
             val id = pairingRequestDialogId ?: return@setOnClickListener
             hidePairingRequest()
             dispatchPairingDecision(id, accept = false)
+        }
+
+        // P5b (c) — the SAS answers. Both go through dispatchSasVerdict, so
+        // "Matches" and "Doesn't match" are the same code path with one
+        // boolean between them; a refusal that took its own branch would be a
+        // second place for the refusal to be got wrong.
+        heroSasFace = findViewById(R.id.homeHeroSas)
+
+        // Back must not be an escape hatch from a security prompt. Enabled
+        // only while the SAS is up, so Back behaves exactly as before
+        // everywhere else — including on the pairing REQUEST face, which is
+        // dismissable on purpose (declining by leaving is a safe default;
+        // skipping verification is not).
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : androidx.activity.OnBackPressedCallback(false) {
+                override fun handleOnBackPressed() {
+                    heroSasFace.announceForAccessibility(
+                        getString(R.string.e2e_sas_prompt)
+                    )
+                }
+            }.also { sasBackCallback = it }
+        )
+
+        findViewById<View>(R.id.sasMatchesButton).setOnClickListener {
+            dispatchSasVerdict(matched = true)
+        }
+        findViewById<View>(R.id.sasNoMatchButton).setOnClickListener {
+            dispatchSasVerdict(matched = false)
         }
 
         // ---- v56 row groups ------------------------------------------------
@@ -2088,6 +2158,12 @@ class MainActivity : AppCompatActivity() {
         val filter = IntentFilter().apply {
             addAction(PhoneService.ACTION_PAIRING_REQUEST_IN_FOREGROUND)
             addAction(PhoneService.ACTION_PAIRING_CANCELLED_IN_FOREGROUND)
+            // P5b (c)/(d). RECEIVER_NOT_EXPORTED below matters more for these
+            // two than for anything above it: an exported SAS_REQUIRED would
+            // let any app on the phone put six digits of its choosing in front
+            // of the user, which is the whole ballgame.
+            addAction(E2eSasContract.ACTION_E2E_SAS_REQUIRED)
+            addAction(PhoneService.ACTION_PAIRING_E2E_REFUSED)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(pairingForegroundReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -2189,8 +2265,130 @@ class MainActivity : AppCompatActivity() {
     private fun hidePairingRequest() {
         if (!::heroRequestFace.isInitialized) return
         heroRequestFace.visibility = View.GONE
-        heroDefaultFace.visibility = View.VISIBLE
+        // Never uncover the default face while the SAS is up: the SAS replaces
+        // the request face, and a stray hidePairingRequest() (the relay
+        // cancelling the request we already accepted, the 30 s timer) would
+        // otherwise dismiss a blocking security prompt as a side effect.
+        if (sasPairingId == null) heroDefaultFace.visibility = View.VISIBLE
         pairingRequestDialogId = null
+    }
+
+    /**
+     * P5b (c) — put the six-digit SAS on the hero card and block on the answer.
+     *
+     * "Blocking" here is a property of the whole screen, not of a dialog:
+     *  - there is no dismiss affordance and no scrim to tap through;
+     *  - [onBackPressedDispatcher] swallows Back while it is up;
+     *  - [hidePairingRequest] refuses to uncover the default face underneath
+     *    it;
+     *  - the only exits are the two buttons and the pairing being cancelled
+     *    from the other end.
+     * A SAS a user can wave away verifies nothing, and "Doesn't match" is
+     * precisely the answer an attacker needs the user never to be asked for.
+     *
+     * A malformed payload is REFUSED, not rendered. Six digits is §13.3; if
+     * what arrived is not six digits then something upstream is wrong, and
+     * showing the user an arbitrary string to compare would teach them to
+     * confirm whatever they are shown.
+     */
+    private fun showSasConfirm(pairingId: String, digits: String) {
+        if (isFinishing || isDestroyed) return
+        if (!::heroSasFace.isInitialized) {
+            android.util.Log.d("MainActivity", "showSasConfirm: hero not inflated yet, skipping")
+            return
+        }
+        if (!E2eSasContract.isWellFormed(digits)) {
+            android.util.Log.w(
+                "MainActivity",
+                "showSasConfirm: refusing a malformed SAS payload for $pairingId"
+            )
+            dispatchSasVerdict(matched = false, pairingIdOverride = pairingId)
+            return
+        }
+
+        sasPairingId = pairingId
+        val grouped = E2eSasContract.group(digits)
+        val code = findViewById<TextView>(R.id.homeSasCode)
+        code.text = grouped
+        // The visible text and the spoken description come from the SAME
+        // grouping call, so a screen reader and a sighted user can never be
+        // comparing different codes. Spoken as "412 908"; ungrouped, TalkBack
+        // says "four hundred twelve thousand nine hundred and eight", which
+        // cannot be checked against a computer screen.
+        code.contentDescription = getString(R.string.e2e_sas_code_a11y, grouped)
+
+        heroRequestFace.visibility = View.GONE
+        heroDefaultFace.visibility = View.GONE
+        heroSasFace.visibility = View.VISIBLE
+        sasBackCallback?.isEnabled = true
+
+        heroSasFace.announceForAccessibility(
+            "${getString(R.string.e2e_sas_prompt)} ${code.contentDescription}"
+        )
+        code.sendAccessibilityEvent(
+            android.view.accessibility.AccessibilityEvent.TYPE_VIEW_FOCUSED
+        )
+        android.util.Log.d("MainActivity", "SAS confirm surfaced for $pairingId")
+    }
+
+    /** Take the SAS face down and restore the card's default face. */
+    private fun hideSasConfirm() {
+        if (!::heroSasFace.isInitialized) return
+        heroSasFace.visibility = View.GONE
+        heroDefaultFace.visibility = View.VISIBLE
+        sasPairingId = null
+        sasBackCallback?.isEnabled = false
+    }
+
+    /**
+     * Send the user's answer back to the Accept path.
+     *
+     * Both answers travel the same broadcast with one boolean between them.
+     * On `false` the service takes its EXISTING refusal path (latch +
+     * broadcastE2eRefusal) — no refusal logic is written here, because "the
+     * user says the codes differ" is the same outcome as "the peer could not
+     * give us an encrypted pairing" and a second implementation of it is a
+     * second thing to get wrong.
+     */
+    private fun dispatchSasVerdict(matched: Boolean, pairingIdOverride: String? = null) {
+        val id = pairingIdOverride ?: sasPairingId ?: return
+        hideSasConfirm()
+        sendBroadcast(
+            Intent(E2eSasContract.ACTION_E2E_SAS_RESULT).apply {
+                setPackage(packageName)
+                putExtra(PhoneService.EXTRA_PAIRING_ID, id)
+                putExtra(E2eSasContract.EXTRA_SAS_MATCHED, matched)
+            }
+        )
+        if (!matched) {
+            // Say what happened immediately rather than waiting for the
+            // service's refusal broadcast to make the round trip. A user who
+            // taps "Doesn't match" and sees nothing change assumes the tap
+            // missed and tries again — and retrying is what an attacker needs.
+            showE2eRefusal(getString(R.string.e2e_sas_refused))
+        }
+        android.util.Log.d("MainActivity", "SAS verdict for $id: matched=$matched")
+    }
+
+    /**
+     * Surface an encrypted-pairing refusal.
+     *
+     * Until P5b nothing in the UI listened for
+     * [PhoneService.ACTION_PAIRING_E2E_REFUSED] at all: the service broadcast
+     * the user-facing copy and it went nowhere, so a refused encrypted pairing
+     * looked to the user exactly like a connection that never arrived. That is
+     * the worst possible reading of a security refusal — it is indistinguishable
+     * from a bug, and the obvious response to a bug is to try again.
+     *
+     * Rendered in the hero card's own error line, never as "disconnected": the
+     * phone is fine, the relay is fine, and this pairing was refused on purpose.
+     */
+    private fun showE2eRefusal(message: String) {
+        hideSasConfirm()
+        val error = findViewById<TextView>(R.id.connectionErrorText)
+        error.text = message
+        error.visibility = View.VISIBLE
+        error.announceForAccessibility(message)
     }
 
     /**
