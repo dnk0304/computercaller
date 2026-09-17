@@ -239,6 +239,24 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   color: var(--cc-ink);
 }
 
+/* ---- Keypad toggle (PIXEL-S3). Targeted by its own class, not by
+       aria-label: the label flips between "Show keypad" and "Hide keypad" and
+       a theme rule must not depend on which half of a toggle you are looking
+       at. Two states, because "pressed" is the only signal that the pad below
+       is open once the pad itself is a 0px-tall clipped box.
+       The rule does not need the `:disabled` escape hatch above — this button
+       is never disabled; there is always a keypad to show. ---- */
+:where([data-cc-theme=dark]) .cc-ext .cc-keypad-toggle {
+  background-color: var(--cc-card);
+  border-color: var(--cc-chip-bd);
+  color: var(--cc-ink);
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-keypad-toggle[aria-pressed="true"] {
+  background-color: var(--cc-field);
+  border-color: var(--cc-ink);
+  color: var(--cc-ink);
+}
+
 /* ===========================================================================
    0.8× DENSITY
    Dennis: "the current look at 80% zoom is the new default". Header 48→40,
