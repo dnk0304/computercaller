@@ -4,6 +4,8 @@ import React from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
+import { EncryptionChip, EncryptionBanner } from '@/components/EncryptionStatus';
+import { SasConfirmDialog } from '@/components/SasConfirmDialog';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
 import { TierBadge } from '@/components/TierBadge';
@@ -244,6 +246,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Phone Mode in a popup window; the separate "Open in popup
                 window" sub-action was removed. See components/ProfileMenu.tsx. */}
             <ConnectionStatus />
+            {/* E2E-P5a (c). A SIBLING of the pill, never a branch inside it —
+                so an encryption outcome cannot repaint this header as
+                "signed-out". See components/EncryptionStatus.tsx. */}
+            <EncryptionChip />
             {/* TierBadge (Pixel, 2026-07-27, tier-gating) — the caller's current
                 plan (Solo / Plus / Pro), read from the shared entitlement.
                 Clicking opens the pricing/upgrade modal. Renders null until the
@@ -256,6 +262,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <ProfileMenu />
           </div>
         </header>
+
+        {/* E2E-P5a (b)+(c). Directly under the sticky header and ABOVE the
+            call-queue band: an encryption refusal outranks call chrome, and it
+            is the one band here that cannot be dismissed. The SAS dialog
+            portals to document.body, so its position in this tree does not
+            affect where it paints — it is mounted here so the dashboard gets
+            the blocking step too, not only Phone Mode. */}
+        <EncryptionBanner />
+        <SasConfirmDialog />
 
         {/* Incoming-call queue band (Pixel, 2026-06-11). Sits BETWEEN the
             sticky header and the dashboard content slot — the exact gap Dennis
