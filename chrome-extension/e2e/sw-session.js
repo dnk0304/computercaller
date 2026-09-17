@@ -826,7 +826,14 @@ export const INBOUND_DROP_PLAINTEXT = 'drop-plaintext-while-on';
  */
 export function inboundDisposition({ mode, frameType, data }) {
   if (isSealedEnvelope(data)) return INBOUND_UNSEAL;
-  if (mode === 'open' && requiresSeal(frameType)) return INBOUND_DROP_PLAINTEXT;
+  // 'aborted' (A4-M3) sits with 'open', not with 'counts-only'. In an aborted
+  // pairing the PHONE is still sealing — the abort is our side's refusal, not
+  // the phone's — so a frame that requiresSeal() arriving in the CLEAR is an
+  // anomaly, not the ordinary un-paired case, and accepting it would be the
+  // downgrade the abort exists to refuse. 'off' and 'counts-only' keep
+  // delivering plaintext: that is simply how an un-paired or key-less install
+  // works, and dropping there would break every such user.
+  if ((mode === 'open' || mode === 'aborted') && requiresSeal(frameType)) return INBOUND_DROP_PLAINTEXT;
   return INBOUND_DELIVER;
 }
 

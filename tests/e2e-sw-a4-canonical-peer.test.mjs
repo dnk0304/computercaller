@@ -272,6 +272,136 @@ await check('J.5: the pre-A4 check is GONE — both recipients are admitted, and
   }
 });
 
+// ── Clause (b) + A4-M3 — the unwrap is the membership proof, and its failure
+//    is an ABORT, never a degrade to counts-only ────────────────────────────
+
+const S = await import('../chrome-extension/e2e/sw-session.js');
+
+/**
+ * Build a real §13.2 wrap addressed to `ownDeviceId`, sealed under
+ * KEK(pairContext(ctx), the recipient's own static key) — the exact object
+ * `unwrapSessionKey` expects. Real ECDH, real AES-GCM; nothing is mocked,
+ * because the whole assertion is that the CRYPTOGRAPHY binds membership.
+ */
+async function buildWrap({ ctxWire, userId, ownDeviceId, kid = 'kid-a4' }) {
+  const inputs = K.pairContextFromWire(ctxWire, { userId });
+  const eph = await subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const recip = await subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const recipPub = new Uint8Array(await subtle.exportKey('raw', recip.publicKey));
+  const z = new Uint8Array(await subtle.deriveBits({ name: 'ECDH', public: recip.publicKey }, eph.privateKey, 256));
+  const kekBytes = await K.kek(
+    { pairingId: inputs.pairingId, sharedSecret: z, context: inputs.contextBytes, recipientKey: recipPub }, subtle,
+  );
+  const kekKey = await subtle.importKey('raw', kekBytes, 'AES-GCM', false, ['encrypt']);
+  const sk = new Uint8Array(32).fill(7);
+  const sealed = await K.seal({
+    sender: { direction: K.DIR_P2C, key: kekKey, sessionPrefix: await S.wrapPrefix(ownDeviceId, subtle) },
+    frameType: S.WRAP_FRAME_TYPE, kid, seq: 0, pairEpoch: inputs.pairEpoch, plaintext: sk,
+  }, subtle);
+  const b64 = (u8) => S.toBase64Url(u8);
+  return {
+    block: {
+      kid,
+      mode: 1,
+      ctx: ctxWire,
+      epk: b64(new Uint8Array(await subtle.exportKey('raw', eph.publicKey))),
+      wrap: b64(sealed),
+    },
+    privateKey: recip.privateKey,
+    ownPub: b64(recipPub),
+    ownDeviceId,
+    ctxInputs: { ...inputs, userId },
+    skHex: K.toHex(sk),
+  };
+}
+
+await check('A4 (b): the wrap addressed to this device OPENS under KEK(ctx, its own static key)', async () => {
+  // The POSITIVE control the negatives below need. Without it they would all
+  // pass against a harness that could never open anything at all.
+  const w = await buildWrap({ ctxWire: J.positiveJ1.ctxWire, userId: J.localUserId, ownDeviceId: 'dev-ext-02' });
+  const sk = await S.unwrapSessionKey(w, subtle);
+  eq(K.toHex(sk), w.skHex, 'unwrapped session key');
+});
+
+await check('A4 (b): a wrap belonging to ANOTHER recipient does NOT open', async () => {
+  // Same pairing, same ctx — only the recipient key differs, which is exactly
+  // where A4-R1 says per-recipient separation lives (J.1c). A spliced wrap must
+  // fail, fail-closed, with no plaintext fallback and no derive-anyway.
+  const mine = await buildWrap({ ctxWire: J.positiveJ1.ctxWire, userId: J.localUserId, ownDeviceId: 'dev-ext-02' });
+  const theirs = await buildWrap({ ctxWire: J.positiveJ1.ctxWire, userId: J.localUserId, ownDeviceId: 'dev-ext-02' });
+  let threw = null;
+  try { await S.unwrapSessionKey({ ...mine, block: { ...mine.block, wrap: theirs.block.wrap } }, subtle); }
+  catch (e) { threw = e; }
+  assert(threw, "another recipient's wrap opened under our KEK — clause (b) does not bind");
+});
+
+await check('A4 (b): a ctx steered to a non-canonical peer makes the wrap fail to open', async () => {
+  // The SW skips clause (c) — asserted above — so THIS is what protects it. A
+  // steered ctx derives a different KEK and the phone's wrap stops opening: the
+  // check the SW cannot perform is replaced by one the relay cannot forge.
+  const S3 = need(J.negativeJ3SteeredPeer, 'canonicalPeer.negativeJ3SteeredPeer');
+  const w = await buildWrap({ ctxWire: J.positiveJ1.ctxWire, userId: J.localUserId, ownDeviceId: 'dev-ext-02' });
+  const steered = K.pairContextFromWire(
+    { ...J.positiveJ1.ctxWire, peerDeviceId: S3.ctxPeerDeviceId }, { userId: J.localUserId },
+  );
+  let threw = null;
+  try { await S.unwrapSessionKey({ ...w, ctxInputs: { ...steered, userId: J.localUserId } }, subtle); }
+  catch (e) { threw = e; }
+  assert(threw, 'a steered ctx still opened the wrap — the cryptographic anchor is not binding');
+});
+
+await check("A4-M3: 'aborted' is fail-closed on plaintext, NOT a counts-only degrade", async () => {
+  // §13.2 row 2's counts-only covers a recipient that never had a key. An
+  // aborted pairing is a different thing: the PHONE is still sealing, so a
+  // frame that requiresSeal() arriving in the clear is an anomaly, and
+  // accepting it would be the downgrade the abort exists to refuse.
+  const plaintext = { body: 'hi' };
+  eq(S.inboundDisposition({ mode: 'aborted', frameType: 'SMS_RECEIVED', data: plaintext }),
+    S.INBOUND_DROP_PLAINTEXT, 'aborted + requiresSeal must DROP');
+  eq(S.inboundDisposition({ mode: 'counts-only', frameType: 'SMS_RECEIVED', data: plaintext }),
+    S.INBOUND_DELIVER, 'counts-only must keep delivering — an un-paired install is not an attack');
+  eq(S.inboundDisposition({ mode: 'off', frameType: 'SMS_RECEIVED', data: plaintext }),
+    S.INBOUND_DELIVER, 'off must keep delivering');
+});
+
+await check('A4-M3: ensureSession routes the UNWRAP failure to an abort and the ctx failure to counts-only', async () => {
+  // background.js cannot be imported under node (it is an MV3 module that binds
+  // `self`, chrome.* and a live socket at load), so the WIRING is asserted
+  // against its source — the same pattern, and for the same reason, as the
+  // chokepoint proof in tests/e2e-sw-chokepoint.test.mjs. The DECISIONS above
+  // are asserted behaviourally; this asserts that each one is actually reached.
+  const src = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  const start = code.indexOf('async function ensureSession');
+  assert(start > 0, 'could not find ensureSession in background.js');
+  const body = code.slice(start, code.indexOf('\n}\n', start) + 1);
+  assert(body.length > 100, 'could not isolate ensureSession from background.js');
+
+  const unwrapIdx = body.indexOf('unwrapSessionKey');
+  assert(unwrapIdx > 0, 'ensureSession must still call unwrapSessionKey');
+  const beforeUnwrap = body.slice(0, unwrapIdx);
+  const afterUnwrap = body.slice(unwrapIdx);
+
+  // The split itself. The single catch this item exists to remove routed EVERY
+  // failure — unwrap included — to setCountsOnly.
+  assert(/setAborted\(/.test(afterUnwrap), 'the unwrap failure must call setAborted (A4-M3)');
+  assert(!/setCountsOnly\(/.test(afterUnwrap.slice(0, afterUnwrap.indexOf('setAborted('))),
+    'a counts-only landing sits between the unwrap and its abort — A4-M3 forbids it');
+  // …and the ctx branch is UNCHANGED: still CtxRefused → counts-only.
+  assert(/setCountsOnly\([\s\S]{0,60}CtxRefused/.test(beforeUnwrap),
+    'the CtxRefused branch must still land in counts-only, unchanged');
+  // Sticky, or the abort becomes counts-only one frame later via `no-wrap`.
+  assert(/e2eMode === 'aborted'[\s\S]{0,140}return null/.test(body),
+    'ensureSession must early-return while aborted — otherwise the abort self-heals into counts-only');
+  // And the ONLY thing that clears it is a block with a different kid.
+  assert(/e2eMode === 'aborted' && block\.kid !== e2eAbortedKid/.test(code),
+    'only a block with a DIFFERENT kid may clear an abort');
+  // A4-M5: attribution on the failure, ids only — never key material.
+  assert(/trace\('e2e-abort'[\s\S]{0,240}canonicalPeer/.test(code),
+    'the abort trace must name the canonical peer it derived from (A4-M5)');
+});
+
+
 console.log(`\n${passed}/${total} checks passed`);
 if (failures.length) {
   console.error(`\nFAILURES:\n${failures.map((f) => `  - ${f}`).join('\n')}`);

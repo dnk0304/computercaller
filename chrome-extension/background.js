@@ -961,16 +961,62 @@ function scheduleReconnect(ceilingMs = MAX_BACKOFF_MS) {
 let e2eSession = null;
 let e2eKid = null;
 let e2ePairEpoch = null;
-/** 'off' | 'counts-only' | 'open' — what the UI/tests can observe. */
+/** 'off' | 'counts-only' | 'open' | 'aborted' — what the UI/tests can observe. */
 let e2eMode = 'off';
 /** Why we are in counts-only, for the trace. Never shown to the user (m-G). */
 let e2eWhy = null;
+/** The kid whose wrap failed to open (A4-M3). Only a DIFFERENT kid clears it. */
+let e2eAbortedKid = null;
 
 function setCountsOnly(why) {
   e2eSession = null;
   e2eMode = 'counts-only';
   e2eWhy = why;
   trace('e2e-counts-only', { why: String(why).slice(0, 60) });
+}
+
+/**
+ * A4-M3 — a wrap that fails to open is a PAIRING ABORT, never a degrade.
+ *
+ * §13.2 row 2 grants counts-only badges to a recipient that never had a key.
+ * It does NOT cover one whose wrap failed to open: that is a tampered or
+ * mismatched pairing, and the two must not share an outcome. Counts-only says
+ * "I cannot read this one, carry on"; an abort says "this pairing is wrong",
+ * and the difference is the whole content of A4-M3.
+ *
+ * STICKY, and that is the point. The cached wrap is dropped, so an ensureSession
+ * that simply re-ran would find no wrap and land in counts-only('no-wrap') —
+ * silently converting the abort into exactly the degrade A4-M3 forbids, one
+ * frame later. It is pinned to the kid that failed; a block bearing a DIFFERENT
+ * kid is a new pairing (a rekey always mints a fresh kid, A2 MUST 1) and clears
+ * it, so a re-pair recovers with no user action and a replay of the same broken
+ * block recovers nothing.
+ *
+ * A4-M5: the trace names the canonical peer we derived from and our own
+ * deviceId — ids only, never key material and never `ctx` in full. Without it
+ * the multi-recipient failure mode is a tag error with no attribution.
+ */
+function setAborted(why, { kid, canonicalPeer } = {}) {
+  e2eSession = null;
+  e2eKid = null;
+  e2ePairEpoch = null;
+  e2eMode = 'aborted';
+  e2eWhy = why;
+  e2eAbortedKid = kid || null;
+  dropSessionState().catch(() => {});
+  trace('e2e-abort', {
+    why: String(why).slice(0, 60),
+    kid: kid || null,
+    canonicalPeer: canonicalPeer || null,   // A4-M5 — ids only
+    ownDeviceId: swDeviceId || null,
+  });
+}
+
+function clearAborted() {
+  if (e2eMode !== 'aborted') return;
+  e2eMode = 'off';
+  e2eWhy = null;
+  e2eAbortedKid = null;
 }
 
 /**
@@ -983,10 +1029,15 @@ function setCountsOnly(why) {
  */
 async function ensureSession(kid) {
   if (e2eSession && (!kid || kid === e2eKid)) return e2eSession;
+  // A4-M3, the sticky half. Re-deriving the SAME aborted kid would walk
+  // straight back into counts-only via the no-wrap branch below.
+  if (e2eMode === 'aborted' && (!kid || kid === e2eAbortedKid)) return null;
   const cached = await readCachedWrap(kid);
   if (!cached) { setCountsOnly('no-wrap'); return null; }
+  let rec;
+  let ctxInputs;
   try {
-    const rec = await loadOrCreateDeviceKey();
+    rec = await loadOrCreateDeviceKey();
     // ONE function, and today it always refuses — see the OPEN SPEC GAP note in
     // sw-session.js. When the ruling lands, this line starts returning values
     // and everything below it already works.
@@ -994,29 +1045,57 @@ async function ensureSession(kid) {
     // `ownDeviceId` is NOT passed: A4 deleted the peerDeviceId==own refusal and
     // `pairContextInputs` now REJECTS the option rather than ignoring it, so a
     // call site cannot keep believing a membership check runs at ingest. The
-    // SW's membership proof is the unwrap below - clause (b).
-    const ctxInputs = await pairContextInputs({ block: cached, userId });
-    const sk = await unwrapSessionKey({
+    // SW's membership proof is the unwrap below — clause (b).
+    ctxInputs = await pairContextInputs({ block: cached, userId });
+  } catch (e) {
+    // ── BRANCH 1: ctx refused. UNCHANGED. ────────────────────────────────────
+    // A CtxRefused is a DECISION, not a malfunction: a stale epoch (A3-M2), a
+    // foreign pairingId (A3-M3(a) / A4.1), a mode=1 block with no ctx (A3-M4).
+    // All of them land in counts-only with the reason recorded for the trace
+    // and never shown to the user (m-G).
+    setCountsOnly(e instanceof CtxRefused ? `ctx:${e.why}` : (e && e.message) || 'ctx-failed');
+    return null;
+  }
+
+  // ── BRANCH 2: the unwrap. A FAILURE HERE IS AN ABORT, NEVER COUNTS-ONLY. ──
+  // A4-M3, and the reason this catch is split out of the one above at all. The
+  // single catch that used to wrap ctx AND unwrap routed every failure to
+  // setCountsOnly, which is correct for a refusal and WRONG for a wrap that did
+  // not open: clause (b) makes the opening wrap the cryptographic proof of
+  // membership, so its failure means this device is not the recipient the phone
+  // addressed, or the block was tampered with. Degrading that to a badge would
+  // present a broken pairing as a working one that happens to be quiet.
+  let sk;
+  try {
+    sk = await unwrapSessionKey({
       block: cached,
       privateKey: rec.priv,
       ownPub: rec.pub,
-      ownDeviceId: rec.deviceId,
+      ownDeviceId: rec.deviceId,     // genuinely used here — it keys the wrap PREFIX
       ctxInputs,
     });
+  } catch (e) {
+    setAborted(`unwrap:${(e && e.message) || 'failed'}`, {
+      kid: cached.kid,
+      canonicalPeer: ctxInputs.peerDeviceId,    // A4-M5 attribution
+    });
+    return null;
+  }
+
+  // ── BRANCH 3: local session construction. Counts-only, unchanged. ────────
+  try {
     e2eSession = await buildSession({ pairingId: ctxInputs.pairingId, sessionKey: sk, ctxInputs });
     sk.fill(0);                       // §2.1 control 4 — drop the raw bytes
     e2eKid = cached.kid;
     e2ePairEpoch = ctxInputs.pairEpoch;
     e2eMode = 'open';
     e2eWhy = null;
+    e2eAbortedKid = null;
     trace('e2e-open', { kid: e2eKid });
     return e2eSession;
   } catch (e) {
-    // A CtxRefused is a DECISION, not a malfunction: a stale epoch (A3-M2), a
-    // block addressed elsewhere (A3-M3), a mode=1 block with no ctx (A3-M4).
-    // All of them land in counts-only with the reason recorded for the trace
-    // and never shown to the user (m-G).
-    setCountsOnly(e instanceof CtxRefused ? `ctx:${e.why}` : (e && e.message) || 'unwrap-failed');
+    try { sk.fill(0); } catch { /* best effort */ }
+    setCountsOnly((e && e.message) || 'session-build-failed');
     return null;
   }
 }
@@ -1155,6 +1234,13 @@ function noteE2eBlock(block) {
     setCountsOnly('no-e2e-block');
     return;
   }
+  // A4-M3's release valve. An abort is pinned to the kid whose wrap failed to
+  // open; a block bearing a DIFFERENT kid is a new pairing (a rekey always
+  // mints a fresh kid, A2 MUST 1), so it clears the abort and the derivation
+  // below is allowed to run. The SAME kid arriving again — a resume, or a
+  // replay of the broken block — changes nothing and stays aborted.
+  if (e2eMode === 'aborted' && block.kid !== e2eAbortedKid) clearAborted();
+
   // Cache first, derive second. The cache is what survives an eviction, so it
   // must be written even if the derivation then fails — otherwise a worker
   // evicted between PAIR_STATE and the first notification comes back with
@@ -1219,7 +1305,14 @@ function handleFrame(msg) {
   // through noteE2eBlock(undefined) → counts-only, but the CACHED wrap has to
   // go too: a wrap that outlived its room would let a respawned worker
   // re-derive a key for a pairing that no longer exists.
-  if (type === 'ROOM_RESET') { dropSessionState().catch(() => {}); notePairState({}); return; }
+  if (type === 'ROOM_RESET') {
+    // §13.8: a reset drops SK on both sides — and with it A4.1's pairingId pin
+    // and any abort, which are both scoped to the pairing that just ended.
+    dropSessionState().catch(() => {});
+    clearAborted();
+    notePairState({});
+    return;
+  }
   // MV3 keepalive heartbeat (dispatch FORGE-J addendum A, 2026-09-15). The
   // relay pushes HB to LISTENER sockets every 15s purely so this worker
   // receives a real message: a protocol-level ws ping is answered below the JS
@@ -1693,6 +1786,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // than left to browser exit — a second user signing in on the same profile
     // must not inherit the first one's key material.
     dropSessionState().catch(() => {});
+    // A4.1: the pairingId pin goes with it. It is NOT cleared on an abort —
+    // there the pin is the one thing that was right — but a sign-out ends the
+    // pairing, and a pin outliving it would refuse the next one.
+    clearAborted();
     // A3-M2: the epoch floor is cleared ONLY by an explicit user action, and
     // signing out is one. Nothing arriving on the wire may ever reach this.
     localUserId().then((uid) => clearEpochFloors(uid)).catch(() => {});
