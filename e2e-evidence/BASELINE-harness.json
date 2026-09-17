@@ -1,6 +1,6 @@
 {
   "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
-  "utc": "2026-09-17T02:07:13.729Z",
+  "utc": "2026-09-17T02:20:41.240Z",
   "harnessPass": [
     {
       "name": "relay:pairing-persist",
@@ -18,6 +18,16 @@
       "total": 26
     },
     {
+      "name": "relay:reset-room",
+      "passed": 21,
+      "total": 21
+    },
+    {
+      "name": "relay:listener-heartbeat",
+      "passed": 11,
+      "total": 11
+    },
+    {
       "name": "relay:relink-kill-frame-buffer",
       "passed": 18,
       "total": 18
@@ -31,6 +41,11 @@
       "name": "relay:www-origin",
       "passed": 8,
       "total": 8
+    },
+    {
+      "name": "relay:repro-resume-sync",
+      "passed": 9,
+      "total": 9
     },
     {
       "name": "relay:log-redaction",
