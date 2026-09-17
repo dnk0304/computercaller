@@ -384,6 +384,32 @@ function skip(name, cmd, reason) {
  * not the lint). Independent steps keep running after a failure so ONE gate run
  * reports everything that is broken instead of one symptom at a time.
  */
+/**
+ * P5a slice 2 — KEEP THE OUTPUT OF EVERY FAILED ATTEMPT.
+ *
+ * Both retry loops used to write a log only when the FINAL attempt failed. A
+ * step that failed attempt 1 and passed attempt 2 therefore recorded
+ * `attempts: 2` and destroyed the only evidence of what went wrong. That is why
+ * `app-in-call-shots`, `ext-in-call-shots` and
+ * `ext-templates-scroll-call-message-proof` have carried "still needs attempts:2"
+ * across four dispatches with nobody able to say WHY: the retry that made the
+ * gate green was also deleting the diagnosis. The fix is one line in each loop.
+ *
+ * Only NON-FINAL failures land here (the final failure already writes the plain
+ * `<phase>-<step>.log`), and only when a retry was actually configured, so a
+ * normal green run writes nothing new.
+ */
+function keepFailedAttempt(name, index, exit, out, attempts) {
+  if (exit === 0 || attempts <= 1 || index >= attempts - 1) return;
+  try {
+    mkdirSync(LOGDIR, { recursive: true });
+    const slug = name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    const p = join(LOGDIR, `${PHASE}-${slug}-attempt${index + 1}.log`);
+    writeFileSync(p, out);
+    console.log(`  RETRY ${name} — attempt ${index + 1} failed (exit ${exit}); output kept at ${p.replace(/\\/g, '/')}`);
+  } catch { /* evidence is best-effort; never fail a step over its own log */ }
+}
+
 function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false, attempts = 1 } = {}) {
   const blocker = needs.find((n) => steps.some((s) => s.name === n && s.exit !== 0));
   if (blocker) return skip(name, cmd, `not run — depends on "${blocker}", which failed`);
@@ -400,6 +426,7 @@ function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_
     out = `${r.stdout || ''}${r.stderr || ''}`;
     exit = r.status === null ? 124 : r.status;
     try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
+    keepFailedAttempt(name, i, exit, out, attempts);
     if (exit === 0) break;
   }
   const ms = Date.now() - t0;
@@ -459,6 +486,7 @@ function runAsyncStep(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout =
       out = r.out;
       exit = r.exit;
       try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
+      keepFailedAttempt(name, i, exit, out, attempts);
       if (exit === 0) break;
     }
     const ms = Date.now() - t0;
@@ -613,8 +641,28 @@ function portOwnerPid(port) {
   const pid = Number((r.stdout || '').trim());
   return Number.isFinite(pid) && pid > 0 ? pid : null;
 }
-function freePort(from = 3300) {
-  for (let p = from; p < from + 200; p++) if (!portOwnerPid(p)) return p;
+/**
+ * P5a slice 2 — the scan START is RANDOM, and that is the whole point.
+ *
+ * This used to be a deterministic upward scan from a fixed 3300. Two gates
+ * running on this box at the same time — which happened, and is why rule R-AA
+ * now exists — both find 3300 free in the same instant and both take it: a
+ * classic time-of-check/time-of-use collision that presents as one gate's
+ * harnesses hitting the other gate's server. Combined with `attempts: 2`, an
+ * attempt-1 collision is then guaranteed to produce a second, equally
+ * misleading failure.
+ *
+ * A random start in a 2,000-port window makes an accidental collision between
+ * two concurrent gates ~0.05% instead of certain, and the ownership check below
+ * still refuses the port if something already holds it. R-AA remains the actual
+ * rule; this is the belt to its braces.
+ */
+function freePort(from = 3300, span = 2000) {
+  const start = from + Math.floor(Math.random() * span);
+  for (let i = 0; i < span; i++) {
+    const p = from + ((start - from + i) % span);
+    if (!portOwnerPid(p)) return p;
+  }
   return null;
 }
 
