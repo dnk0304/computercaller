@@ -116,3 +116,17 @@ The SVG masters for the extension marks live in `design/extension-marks/` (outsi
 folder on purpose). Chrome refuses to load an unpacked extension that contains any file or
 directory whose name starts with `_`, and nothing here may be `_`-prefixed. Run
 `bash tools/check-extension.sh` to verify.
+
+## The name in Chrome's title strip (PIXEL-S, 2026-09-17)
+
+`manifest.json` `name` and the three page `<title>`s read **COMPUTER CALLER**,
+not "ComputerCaller". Chrome draws the side panel's title strip itself — the
+icon and the name string are the only parts this repo owns — and Dennis's
+instruction (10:50) was that the strip must read exactly what the icon's
+wordmark says. The official artwork sets it as two words in caps.
+
+PILOT NOTE, unresolved on purpose: `docs/play-store/PLAY_STORE_LISTING.md`
+("App name: ComputerCaller") and the Android label
+(`dnkdialer-android/.../strings.xml` `app_name`) both still say the one-word
+form. Store names should match across stores; whether Play and the Android
+label follow this to "COMPUTER CALLER" is Pilot's call, not this dispatch's.

@@ -17,6 +17,15 @@
      dark scrollbars inside a light shell. */
   color-scheme: light dark;
 
+  /* TEXT SIZE (dispatch PIXEL-S, 2026-09-17). shell.js stamps
+     `data-cc-size` on this element from chrome.storage.local and from the
+     framed app's `size` message; every font-size in this sheet is a multiple
+     of it, so the signed-out chrome is set in the same type as the panel
+     behind it. Small is exactly what this sheet shipped. The DEFAULT here is
+     1 rather than 1.2 for the same reason the app CSS defaults to Small: if
+     the attribute ever fails to arrive, nothing moves. */
+  --cc-size: 1;
+
   /* These MUST equal the hosted app's outermost surface (app/extension/
      extension.css --cc-page). If they don't, a hairline of shell background
      rings the iframe and the popup reads as a cropped web page in a box.
@@ -66,6 +75,10 @@
    old, correct System behaviour. Nothing here can render an unthemed shell.
    --------------------------------------------------------------------------- */
 
+:root[data-cc-size='small'] { --cc-size: 1; }
+:root[data-cc-size='medium'] { --cc-size: 1.2; }
+:root[data-cc-size='large'] { --cc-size: 1.4; }
+
 :root[data-cc-theme='dark'] {
   color-scheme: dark;
   --cc-page: var(--cc-d-page);
@@ -100,7 +113,7 @@ body {
   background: var(--cc-page);
   color: var(--cc-ink);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--cc-size));
 }
 
 /* Chrome paints the popup's outer window frame and we cannot round it. So we
@@ -227,11 +240,11 @@ body {
 }
 
 #cc-signin h1 {
-  font-size: 17px; font-weight: 700; letter-spacing: -0.01em;
+  font-size: calc(17px * var(--cc-size)); font-weight: 800; letter-spacing: -0.01em;
   margin: 0 0 6px; color: var(--cc-ink); max-width: 260px;
 }
 #cc-signin p {
-  font-size: 12.5px; line-height: 1.45; color: var(--cc-sec);
+  font-size: calc(12.5px * var(--cc-size)); line-height: 1.45; color: var(--cc-sec);
   margin: 0; max-width: 268px;
 }
 
@@ -240,14 +253,14 @@ body {
   width: 100%; max-width: 268px; height: 36px;
   border: 0; border-radius: 999px;
   background-image: var(--cc-grad);
-  color: #fff; font-size: 13px; font-weight: 650; cursor: pointer;
+  color: #fff; font-size: calc(13px * var(--cc-size)); font-weight: 750; cursor: pointer;
   transition: filter 0.12s ease-out, transform 0.12s ease-out;
 }
 #cc-signin-btn:hover { filter: brightness(1.06); }
 #cc-signin-btn:active { transform: translateY(1px); }
 #cc-signin-btn:focus-visible { outline: 2px solid var(--cc-ring); outline-offset: 2px; }
 
-#cc-signin-msg  { margin-top: 8px; font-size: 11px; color: var(--cc-mut); min-height: 14px; }
+#cc-signin-msg  { margin-top: 8px; font-size: calc(11px * var(--cc-size)); color: var(--cc-mut); min-height: 14px; }
 
 /* Footer hairline strip — the trust line. It is the last thing on the screen
    on purpose: it answers the question the user is actually asking before they
@@ -256,7 +269,7 @@ body {
   position: absolute; bottom: 0; left: 0; right: 0;
   padding: 10px 16px;
   border-top: 1px solid var(--cc-hair);
-  font-size: 11px; color: var(--cc-mut);
+  font-size: calc(11px * var(--cc-size)); color: var(--cc-mut);
   box-sizing: border-box;
 }
 
@@ -351,7 +364,7 @@ body {
   padding: 8px 16px;
   border-top: 1px solid var(--cc-hair);
   background: var(--cc-page);
-  font-size: 11px;
+  font-size: calc(11px * var(--cc-size));
   color: var(--cc-mut);
   text-align: center;
   box-sizing: border-box;

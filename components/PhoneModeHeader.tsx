@@ -34,9 +34,8 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings, PanelRight, Monitor, Sun, Moon } from 'lucide-react';
+import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings, PanelRight, Monitor, Sun, Moon, Type } from 'lucide-react';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
-import { CcMark } from '@/components/CcMark';
 import { CcLockup } from '@/components/CcLockup';
 import { usePhoneMode } from '@/hooks';
 import {
@@ -61,6 +60,13 @@ import {
   writeStoredTheme,
   type CcTheme,
 } from '@/lib/extensionTheme';
+import {
+  CC_SIZES,
+  applySize,
+  readStoredSize,
+  writeStoredSize,
+  type CcSize,
+} from '@/lib/extensionTextSize';
 
 export interface PhoneModeHeaderProps {
   surface?: 'app' | 'extension';
@@ -141,22 +147,41 @@ function ExtensionHeader() {
       className="cc-ext-header sticky top-0 z-30 flex h-10 flex-shrink-0 items-center gap-1.5 border-b border-slate-200 bg-white px-2"
       role="banner"
     >
-      {/* NO WORDMARK HERE (dispatch PIXEL-Q, Dennis 09:34: "We now have
-          computercaller x2 on top, its enough with the top bar, no need to
-          have CC name in the header as well in the extension").
-          Chrome paints the product name in the side panel's own title bar, and
-          the pop-out window paints it in its title bar — so the in-panel
-          lockup was the same five syllables a second time, 20px below the
-          first, costing ~79px of the row AC-1 was raised about.
-          The MARK stays: it is the only thing in the row that says which
-          product this is once the panel is dragged narrow, and it keeps the
-          brand gradient answering the gradient avatar at the far end of the
-          same row. It carries the accessible name now that the wordmark is
-          gone — ConnectionStatus says the device, not the product. */}
-      <CcMark size={18} title="ComputerCaller" className="flex-shrink-0" />
+      {/* THE FULL LOCKUP IS BACK (dispatch PIXEL-S addendum (a)+(d), Dennis
+          2026-09-17 10:45: "i see u inserted our icon there, but its not got
+          the ComputerCaller text like the app logo we use for the android
+          app", and 10:50: "I want to use the exact same text, font and color
+          like we have inside the android app icon").
 
-      {/* min-w-0 is what lets the pill's truncate actually engage. */}
-      <div className="flex min-w-0 flex-1 items-center justify-start pl-1">
+          THIS REVERSES PIXEL-Q. That dispatch removed the wordmark on
+          Dennis's own 09:34 instruction ("We now have computercaller x2 on
+          top, its enough with the top bar") — the reasoning was that Chrome's
+          own title strip already says the name 20px above, so the in-panel
+          lockup was the same five syllables twice for ~79px of a row AC-1 was
+          raised about. Dennis has now looked at the result and wants the
+          lockup; his order wins, and the width it costs is measured at 360px
+          × Large in scripts/ext-text-size-proof.mjs.
+
+          <CcLockup layout="inline"> is Pixel-O's CUT ARTWORK, not a
+          re-typesetting: the same PNG the Android launcher icon is cut from,
+          two-tone inks and all, tone-swapped for dark by the same
+          data-cc-theme gate as the rest of this surface. Addendum (d) asked
+          for exactly that and explicitly not for a web font.
+
+          SIZE IS PINNED AT 18 and does NOT follow the text-size picker. The
+          header's width budget is the scarcest thing on this surface; keeping
+          the one fixed-width object fixed means Small, Medium and Large all
+          spend the same pixels on the brand and only ConnectionStatus (which
+          truncates) absorbs the difference. That is why the wordmark never
+          has to shrink at 360px × Large. */}
+      <CcLockup size={18} layout="inline" title="ComputerCaller" className="cc-ext-lockup" />
+
+      {/* min-w-0 is what lets the pill's truncate actually engage — and the
+          `cc-ext-conn` hook is what lets it engage one level DOWN as well.
+          A flex item's default min-width is auto, so ConnectionStatus inside
+          this slot had a min-content floor of its own and painted past the
+          panel edge at 360px; app/extension/extension.css releases it. */}
+      <div className="cc-ext-conn flex min-w-0 flex-1 items-center justify-start pl-1">
         <ConnectionStatus variant="compact" />
       </div>
 
@@ -343,6 +368,7 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
             )}
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <ThemeChoice email={email} />
+            <SizeChoice email={email} />
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <MenuLink href={WEBAPP_DASHBOARD_URL} icon={<LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" />}>
               Open dashboard
@@ -470,6 +496,94 @@ function ThemeChoice({ email }: { email: string | null }) {
     </div>
   );
 }
+
+/**
+ * Text size — Small / Medium / Large, directly under Appearance.
+ *
+ * Dennis (2026-09-17, 10:41): "increase the font size with 20%, or can we add
+ * an option so user can pick the size themselves, small, medium, large?" and
+ * 10:42: "normal size shall be 20% larger than now. Small shall be the current
+ * size and large shall be 40% bigger than now."
+ *
+ * SAME VISUAL LANGUAGE AS <ThemeChoice>, deliberately: three segments, one
+ * `menuitemradio` each, the same 28px row and the same selected treatment. Two
+ * adjacent three-way pickers that looked different would read as two different
+ * kinds of setting, and they are the same kind.
+ *
+ * EXTENSION ONLY BY CONSTRUCTION, for exactly the reason ThemeChoice is:
+ * <AccountMenu> is mounted by <ExtensionHeader> and by nothing else. The
+ * attribute it stamps is read only by `[data-cc-size] .cc-ext` rules, and
+ * /app never renders .cc-ext.
+ *
+ * THE SEGMENT LABELS DO NOT PREVIEW THEIR OWN SIZE. Setting "Large" in large
+ * type is a cute idea that makes the three targets different widths inside a
+ * 210px menu, so the middle one moves when the type scale changes — a control
+ * that relocates as you use it. The glyph carries the idea; the labels stay
+ * even.
+ */
+function SizeChoice({ email }: { email: string | null }) {
+  // Same first-render read as ThemeChoice: the boot script has already painted
+  // the stored size, so starting at the default would tick the wrong segment
+  // for a frame. (This menu only renders after a click — no SSR pass.)
+  const [size, setSize] = useState<CcSize>(() =>
+    typeof window === 'undefined' ? 'medium' : readStoredSize(email),
+  );
+
+  // The account arrives after the first render; re-read then. Adjusted during
+  // render rather than in an effect — React's documented pattern for state
+  // derived from a changing prop.
+  const [prevEmail, setPrevEmail] = useState(email);
+  if (email !== prevEmail) {
+    setPrevEmail(email);
+    setSize(readStoredSize(email));
+  }
+
+  useEffect(() => {
+    applySize(size);
+  }, [size]);
+
+  const choose = (next: CcSize) => {
+    setSize(next);
+    writeStoredSize(email, next);
+    applySize(next);
+  };
+
+  return (
+    <div role="group" aria-label="Text size" className="px-2 py-1">
+      <p className="pb-1 text-[11px] text-slate-500">Text size</p>
+      <div className="flex gap-1">
+        {CC_SIZES.map((s) => {
+          const selected = size === s;
+          return (
+            <button
+              key={s}
+              type="button"
+              role="menuitemradio"
+              aria-checked={selected}
+              onClick={() => choose(s)}
+              title={`${SIZE_LABEL[s]} text`}
+              className={
+                'flex h-7 flex-1 items-center justify-center gap-1 rounded-lg border text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 ' +
+                (selected
+                  ? 'border-slate-300 bg-slate-100 text-slate-900'
+                  : 'border-transparent text-slate-600 hover:bg-slate-50')
+              }
+            >
+              <Type className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{SIZE_LABEL[s]}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const SIZE_LABEL: Record<CcSize, string> = {
+  small: 'Small',
+  medium: 'Medium',
+  large: 'Large',
+};
 
 const THEME_LABEL: Record<CcTheme, string> = {
   system: 'System',

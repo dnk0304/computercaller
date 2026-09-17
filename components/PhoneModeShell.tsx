@@ -933,10 +933,19 @@ function TextsView() {
         </div>
       </div>
 
-      {/* Thread list — divides for clean separation; tap row to open thread. */}
-      <ul className="cc-list flex-1 divide-y divide-slate-100 overflow-y-auto">
+      {/* Thread list — divides for clean separation; tap row to open thread.
+
+          `cc-card-list` is a MARKER, not a style (dispatch PIXEL-S addendum
+          (e), Dennis 2026-09-17 10:51: "in the text tab in the extension, i
+          would like to have the same pill design around each message chat
+          like the one we use for alerts"). It carries no rule on /app, where
+          this stays the flat divided list it has always been; inside .cc-ext
+          it turns each <li> into the same L3 card the Alerts tab uses — same
+          radius, padding, hairline and hover — out of app/extension/
+          extension.css. One list implementation, two surfaces. */}
+      <ul className="cc-list cc-card-list flex-1 divide-y divide-slate-100 overflow-y-auto">
         {filtered.length === 0 ? (
-          <li className="px-4 py-12 text-center text-sm text-slate-400">
+          <li className="cc-card-list-empty px-4 py-12 text-center text-sm text-slate-400">
             {search ? 'No results' : 'No messages yet'}
           </li>
         ) : (
