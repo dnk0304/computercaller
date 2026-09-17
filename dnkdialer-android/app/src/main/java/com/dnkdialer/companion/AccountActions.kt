@@ -72,6 +72,45 @@ object AccountActions {
             android.util.Log.w("AccountActions", "beforeTeardown threw during sign-out: ${e.message}")
         }
 
+        // P4 (f)/(w2), §13.8 — sign-out: SK dropped, device key DELETED, and
+        // the registry row revoked.
+        //
+        // BEFORE TokenStore.clear, and that ordering is the whole point: the
+        // revoke has to happen while the token is still valid. After the clear
+        // we would be asking the server to revoke a key we can no longer prove
+        // we hold. The local delete happens either way — a stale registry row
+        // is superseded by the next register (N-4), whereas a key kept after
+        // the user signed out is the thing they explicitly asked us not to do.
+        //
+        // Off the main thread because the revoke is a blocking HTTPS call, and
+        // joined with a short timeout so a dead network delays sign-out by
+        // seconds rather than hanging the UI or, worse, skipping the local
+        // delete. Sign-out must complete even when the revoke cannot.
+        try {
+            val deviceId = if (E2eLifecycle.hasDeviceId(activity)) {
+                E2eLifecycle.deviceId(activity)
+            } else {
+                null
+            }
+            val token = TokenStore.getPhoneToken(activity)
+            val worker = Thread {
+                val outcome = E2eLifecycle.onSignOut(activity, null, deviceId, token)
+                android.util.Log.d("AccountActions", "E2E sign-out: ${outcome.notes}")
+            }
+            worker.start()
+            worker.join(5_000)
+            if (worker.isAlive) {
+                android.util.Log.w(
+                    "AccountActions",
+                    "E2E sign-out still running after 5s — continuing; the local delete is " +
+                        "idempotent and the next register supersedes any surviving row"
+                )
+            }
+            E2ePairIdentity.clearPairEpoch(activity)
+        } catch (e: Exception) {
+            android.util.Log.e("AccountActions", "E2E sign-out threw — continuing", e)
+        }
+
         try {
             TokenStore.clear(activity)
             android.util.Log.d("AccountActions", "TokenStore cleared")
