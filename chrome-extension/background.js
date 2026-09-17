@@ -195,7 +195,21 @@ function getToken() {
     chrome.storage.local.get(self.CC.TOKEN_KEY, (o) => {
       const token = o?.[self.CC.TOKEN_KEY] || null;
       authHydrated = true;
-      if (token) tokenEverSeen = true;
+      if (token) {
+        tokenEverSeen = true;
+        // OBSERVING a live token retires an earlier revocation. `cleared`
+        // means "the token we held was revoked", and a token sitting in
+        // storage is that statement being out of date — someone signed back
+        // in. Found by the P5a-SW control arm: the badge proof signs out in
+        // block 10 and re-seeds a token in block 11 by writing storage
+        // DIRECTLY, which is also what a second surface (the popup's own
+        // sign-in) does. Pinning the flag to storeToken() alone would leave
+        // the worker permanently convinced it was signed out while holding a
+        // perfectly good token. Both revocations null the token in storage
+        // first (clearToken before markTokenRevoked), so this can never
+        // resurrect the one that was just refused.
+        tokenRevoked = false;
+      }
       resolve(token);
     });
   });

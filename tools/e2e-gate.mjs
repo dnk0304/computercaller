@@ -923,6 +923,12 @@ if (WEB) {
     // value-level test stayed green — the duplicates were individually correct,
     // there were just supposed to be one of each.
     ['kdf-vectors-schema', 'tests/kdf-vectors-schema.test.mjs', true],
+    // P5a-SW (b). The null-token verdict table + the wiring that routes both
+    // of background.js's null paths through it. Named explicitly because the
+    // sweep above only matches `tests/e2e-*.test.mjs`, and this file is not an
+    // e2e-* file — a rule the gate never runs is a rule that stops being true.
+    // ONLY e2e-gate.mjs change made by P5a-SW; declared in the résumé.
+    ['ext-auth-absence', 'tests/ext-auth-absence.test.mjs', true],
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {

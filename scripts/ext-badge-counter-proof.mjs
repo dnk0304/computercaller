@@ -350,14 +350,60 @@ try {
   });
   await armSignedIn();
 
-  const armIndicator = () => sw.evaluate(async () => {
-    await chrome.alarms.clear('cc-keepalive');
-    signedIn = true; wsOpen = true;
+  /**
+   * P5a-SW (b): THE KNOB, AND THE ARM THAT NO LONGER NEEDS IT.
+   *
+   * Two things changed here, and they are the test half of the product fix.
+   *
+   * 1. The arm used to open with `signedIn = true` — a FICTION, as the block
+   *    comment above says at length. The worker was entitled to correct it and
+   *    did, 30 s later, from the keepalive alarm. An arm that asserts a state
+   *    it has not verified can only ever be racing its subject. It now seeds a
+   *    real token (armSignedIn, above) and then asks the WORKER whether it is
+   *    signed in, through the worker's own auth path, and throws if the worker
+   *    disagrees. Nothing is faked, so there is nothing to be corrected.
+   *
+   * 2. The alarm clear stays, but behind a knob. `CC_E2E_KEEPALIVE_KNOB=off`
+   *    leaves `cc-keepalive` ARMED for the whole indicator block — which is
+   *    the control arm that proves the PRODUCT fix, not the harness's quiet,
+   *    is what makes this block deterministic. Paired with the injected token
+   *    delay below it reproduces the exact race (a null read landing inside
+   *    the assertions) and must stay green with zero retries.
+   */
+  const KEEPALIVE_KNOB_OFF = process.env.CC_E2E_KEEPALIVE_KNOB === 'off';
+  if (KEEPALIVE_KNOB_OFF) {
+    console.log('  [control arm] cc-keepalive LEFT ARMED + 1s token read delay injected');
+    // Establish the worker's own "I have held a token" fact BEFORE hiding it,
+    // exactly as a real sign-in would, then make the next second of reads come
+    // back null — a storage read racing a write, which is what the keepalive
+    // path used to paint 'signed-out' over.
+    await sw.evaluate(async () => {
+      await refreshAuthAndIndicator();
+      const realGet = chrome.storage.local.get.bind(chrome.storage.local);
+      const until = Date.now() + 1000;
+      chrome.storage.local.get = (keys, cb) => realGet(keys, (o) => {
+        if (Date.now() < until) { const c = { ...o }; delete c[self.CC.TOKEN_KEY]; return cb(c); }
+        chrome.storage.local.get = realGet;
+        cb(o);
+      });
+    });
+  }
+
+  const armIndicator = () => sw.evaluate(async (knobOff) => {
+    if (!knobOff) await chrome.alarms.clear('cc-keepalive');
+    // VERIFY, do not assert: refreshAuthAndIndicator sets signedIn from the
+    // seeded token, or leaves the last known state alone when the read is
+    // transiently null. Either way the value is the worker's, not ours.
+    await refreshAuthAndIndicator();
+    if (!signedIn) {
+      throw new Error(`arm: worker did not verify the seeded token — facts=${JSON.stringify(authFacts())}`);
+    }
+    wsOpen = true;
     phonePresent = false; paired = false; held = false;
     lastIndicator = null;
     refreshIndicator();
     await new Promise((r) => setTimeout(r, 120));
-  });
+  }, KEEPALIVE_KNOB_OFF);
   const PAIR_STATE = (o) => 'PAIR_STATE:' + JSON.stringify(o);
   /** Feed one control frame and let the async applyIndicator settle. */
   const feedState = (frame) => sw.evaluate(async (f) => {
@@ -369,8 +415,13 @@ try {
   // indicator assertion below it is racing the keepalive alarm again and their
   // greens mean nothing — which is precisely how the race hid for two lanes.
   await armIndicator();
-  check('the keepalive alarm is silenced for the indicator block',
-    !(await alarmNames()).includes(KEEPALIVE), await alarmNames());
+  // P5a-SW: under the knob this is still the positive control on the quiet.
+  // With the knob OFF it inverts into the positive control on the CONTROL ARM:
+  // if the alarm is not actually armed, the arm proves nothing about the race.
+  check(KEEPALIVE_KNOB_OFF
+    ? 'CONTROL ARM: the keepalive alarm is ARMED for the indicator block'
+    : 'the keepalive alarm is silenced for the indicator block',
+    (await alarmNames()).includes(KEEPALIVE) === KEEPALIVE_KNOB_OFF, await alarmNames());
 
   // 11a. THE REGRESSION. The exact frame the listener got at 09:57:33.
   await armIndicator();
