@@ -77,14 +77,14 @@ const PAIRING_ID = V.context.pairingId;
 eq('context: reproduces the frozen contextBytesHex', hex(ctx), V.contextBytesHex);
 
 // ── 1. A2 vectors E, F, G, H ────────────────────────────────────────────────
-eq('A2 label: np2c', LABEL_NP2C, V.noncePrefix.labels.np2c);
-eq('A2 label: nc2p', LABEL_NC2P, V.noncePrefix.labels.nc2p);
-eq('E: infoNp2c bytes', hex(noncePrefixInfo(ctx, DIR_P2C)), V.noncePrefix.infoNp2cHex);
-eq('E: infoNc2p bytes', hex(noncePrefixInfo(ctx, DIR_C2P)), V.noncePrefix.infoNc2pHex);
+eq('A2 label: np2c', LABEL_NP2C, V.labels.noncePrefixP2c);
+eq('A2 label: nc2p', LABEL_NC2P, V.labels.noncePrefixC2p);
+eq('E: infoNp2c bytes', hex(noncePrefixInfo(ctx, DIR_P2C)), V.noncePrefixes.infoNp2cHex);
+eq('E: infoNc2p bytes', hex(noncePrefixInfo(ctx, DIR_C2P)), V.noncePrefixes.infoNc2pHex);
 
 const prefixes = await deriveNoncePrefixes({ pairingId: PAIRING_ID, sessionKey: SK, context: ctx });
-eq('E: np2c', hex(prefixes.np2c), V.noncePrefix.np2cHex);
-eq('E: nc2p', hex(prefixes.nc2p), V.noncePrefix.nc2pHex);
+eq('E: np2c', hex(prefixes.np2c), V.noncePrefixes.np2cHex);
+eq('E: nc2p', hex(prefixes.nc2p), V.noncePrefixes.nc2pHex);
 eq('E: np2c is 4 bytes', prefixes.np2c.length, 4);
 
 // H — the negative. Asserted as a property, and the guard is proven non-vacuous
@@ -101,12 +101,12 @@ check('H: neither prefix is all-zero',
 // The truncation is the documented-equivalent of L=4: T(1) first.
 eq('E: L=4 and truncate-32 are the same bytes',
   hex((await KDF.hkdf32({ salt: PAIRING_ID, ikm: SK, info: noncePrefixInfo(ctx, DIR_P2C) })).slice(0, 4)),
-  V.noncePrefix.np2cHex);
+  V.noncePrefixes.np2cHex);
 
 // F and G — full AEAD under the DERIVED prefix, one input different from A.
 for (const [name, vec, prefix] of [
-  ['F (p2c)', V.aeadDerived.p2c, prefixes.np2c],
-  ['G (c2p)', V.aeadDerived.c2p, prefixes.nc2p],
+  ['F (p2c)', V.aead.vectorF, prefixes.np2c],
+  ['G (c2p)', V.aead.vectorG, prefixes.nc2p],
 ]) {
   eq(`${name}: the vector's prefix is the DERIVED one`, hex(prefix), vec.noncePrefixHex);
   eq(`${name}: nonce`, hex(KDF.nonce(prefix, vec.seq)), vec.nonceHex);
@@ -115,7 +115,7 @@ for (const [name, vec, prefix] of [
     direction: vec.direction, pairEpoch: vec.pairEpoch,
   })), vec.aadHex);
   eq(`${name}: padded plaintext`, hex(padPlaintext(vec.frameType, new TextEncoder().encode(vec.plaintextUtf8))),
-    vec.plaintextHex);
+    vec.paddedPlaintextHex);
   const key = await crypto.subtle.importKey('raw', unhex(vec.keyHex), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
   const ct = await KDF.seal({
     sender: { direction: vec.direction, key, sessionPrefix: prefix },
@@ -133,18 +133,18 @@ for (const [name, vec, prefix] of [
 // localiser A2 asked for: same AAD, same key, same padded plaintext, different
 // prefix -> different ciphertext. If F ever fails while A passes, the prefix
 // derivation is the only thing that can be wrong.
-eq('F vs A: the AAD is IDENTICAL', V.aeadDerived.p2c.aadHex, V.aead.vectorA.aadHex);
-eq('F vs A: the key is identical', V.aeadDerived.p2c.keyHex, V.aead.vectorA.keyHex);
+eq('F vs A: the AAD is IDENTICAL', V.aead.vectorF.aadHex, V.aead.vectorA.aadHex);
+eq('F vs A: the key is identical', V.aead.vectorF.keyHex, V.aead.vectorA.keyHex);
 eq('F vs A: the padded plaintext is identical',
-  V.aeadDerived.p2c.plaintextHex, V.aead.vectorA.paddedPlaintextHex);
+  V.aead.vectorF.paddedPlaintextHex, V.aead.vectorA.paddedPlaintextHex);
 check('F vs A: the supplied prefix and the derived one really differ',
-  V.aead.vectorA.sessionPrefixHex !== V.aeadDerived.p2c.noncePrefixHex);
+  V.aead.vectorA.sessionPrefixHex !== V.aead.vectorF.noncePrefixHex);
 check('F vs A: so the ciphertexts DIFFER (the prefix really is an AEAD input)',
-  V.aeadDerived.p2c.ciphertextHex !== V.aead.vectorA.ciphertextHex);
+  V.aead.vectorF.ciphertextHex !== V.aead.vectorA.ciphertextHex);
 
 // ── 2. the AAD binds what A1 says it binds ─────────────────────────────────
 {
-  const vec = V.aeadDerived.p2c;
+  const vec = V.aead.vectorF;
   const key = await crypto.subtle.importKey('raw', unhex(vec.keyHex), { name: 'AES-GCM' }, false, ['decrypt']);
   const base = {
     receiver: { direction: vec.direction, key, sessionPrefix: prefixes.np2c },
@@ -168,14 +168,14 @@ check('F vs A: so the ciphertexts DIFFER (the prefix really is an AEAD input)',
 
 // ── 3. the envelope ────────────────────────────────────────────────────────
 {
-  const ct = unhex(V.aeadDerived.p2c.ciphertextHex);
+  const ct = unhex(V.aead.vectorF.ciphertextHex);
   const env = encodeEnvelope({ kid: 'kid-01', seq: 7, ciphertext: ct });
   eq('envelope: e', env.e, 1);
   eq('envelope: field set', Object.keys(env).sort().join(','), 'c,e,kid,s');
   const round = decodeEnvelope(env);
   eq('envelope: decodes kid', round.kid, 'kid-01');
   eq('envelope: decodes seq', round.seq, 7);
-  eq('envelope: decodes ciphertext', hex(round.ciphertext), V.aeadDerived.p2c.ciphertextHex);
+  eq('envelope: decodes ciphertext', hex(round.ciphertext), V.aead.vectorF.ciphertextHex);
   eq('envelope: base64url round-trips', hex(fromBase64Url(toBase64Url(ct))), hex(ct));
   for (const [name, bad] of [
     ['a plaintext object', { deviceName: 'Pixel' }],
@@ -361,7 +361,7 @@ const fp = await skFingerprint(SK);
   const comp = await mk(memorySeqStore());
   eq('session: computer SENDS c2p', hex(comp._raw.send), V.traffic.computerToPhoneKeyHex);
   eq('session: computer RECEIVES p2c', hex(comp._raw.recv), V.traffic.phoneToComputerKeyHex);
-  eq('session: send prefix is nc2p', hex(comp._raw.nc2p), V.noncePrefix.nc2pHex);
+  eq('session: send prefix is nc2p', hex(comp._raw.nc2p), V.noncePrefixes.nc2pHex);
 
   const env = await comp.seal('SEND_SMS', new TextEncoder().encode('hello phone'));
   eq('session: seal emits an envelope', env.e, 1);
