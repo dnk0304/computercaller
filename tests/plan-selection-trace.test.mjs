@@ -78,7 +78,11 @@ ok('3. next targets /subscribe with the plan', /\/subscribe\?plan=\$\{planTier\}
 ok('3. it is URL-encoded', /encodeURIComponent\(/.test(signup));
 
 // ── STEP 4: the OAuth round trip must PRESERVE path+query ───────────────────
-const googleSrc = read('lib/google.ts');
+// sanitiseNext moved to lib/nextPath.ts on 2026-09-17 (dispatch
+// forge/w-strip-email-literals) so the 'use client' LoginForm stops dragging
+// lib/google -> lib/auth -> lib/db + lib/entitlement-core into a public client
+// bundle. lib/google.ts still re-exports it for server callers.
+const googleSrc = read('lib/nextPath.ts');
 const body = /export function sanitiseNext\(next[^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(googleSrc)[1];
 const sanitiseNext = new Function('next', body);
 eq('4. sanitiseNext preserves "/subscribe?plan=plus"', sanitiseNext('/subscribe?plan=plus'), '/subscribe?plan=plus');

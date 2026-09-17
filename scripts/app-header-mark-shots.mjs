@@ -13,6 +13,16 @@
 import { chromium } from 'playwright';
 import path from 'node:path';
 
+// CC_SHOT_EMAIL is now REQUIRED (2026-09-17, dispatch
+// forge/w-strip-email-literals): the personal address that used to be the
+// default was a hardcoded literal in the repo. Set it when running shots.
+function requireShotEmail() {
+  const v = process.env.CC_SHOT_EMAIL;
+  if (!v) throw new Error('CC_SHOT_EMAIL must be set (screenshot account email)');
+  return v;
+}
+
+
 const LABEL = process.argv[2];               // 'before' | 'after'
 const OUT = process.argv[3];
 const BASE = process.env.CC_BASE || 'http://localhost:3123';
@@ -29,7 +39,7 @@ const signAccessToken = (p) => jwt.sign({ ...p, purpose: 'access' }, process.env
 const signIdleToken = (userId, secret) => jwt.sign({ userId, purpose: 'idle' }, secret, { algorithm: 'HS256', expiresIn: 4 * 60 * 60 });
 
 const user = await db.user.findFirst({
-  where: { email: process.env.CC_SHOT_EMAIL || 'dennis.kotlenko@gmail.com' },
+  where: { email: requireShotEmail() },
   select: { id: true, email: true, sessionVersion: true },
 });
 if (!user) throw new Error('no user to mint a session for');

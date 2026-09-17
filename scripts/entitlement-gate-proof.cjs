@@ -16,6 +16,16 @@
  */
 'use strict';
 
+// Identity fixtures are SYNTHETIC and the allowlist/admin identities come from
+// the environment (2026-09-17, dispatch forge/w-strip-email-literals). The
+// hardcoded email fallbacks were removed from lib/entitlement-core.js after they
+// shipped to every visitor in a public client chunk, so these suites must now
+// supply the env they exercise. Real personal addresses never appear in tests.
+process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.test';
+process.env.ENTITLEMENT_ALLOWLIST =
+  process.env.ENTITLEMENT_ALLOWLIST || 'admin@example.test,reviewer@example.test';
+
+
 const {
   evaluateEntitlement,
   evaluateUserEntitlement,
@@ -47,8 +57,8 @@ const USERS = {
     isAdmin: false, email: 'lapsed@example.com',
     subscription: { status: 'active', trialEndsAt: past(60), currentPeriodEnd: past(1) },
   },
-  u_admin: { isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null },
-  u_reviewer: { isAdmin: false, email: 'reviewer@computercaller.com', subscription: null },
+  u_admin: { isAdmin: true, email: 'admin@example.test', subscription: null },
+  u_reviewer: { isAdmin: false, email: 'reviewer@example.test', subscription: null },
   // Free-access user: NO subscription, email is in the FreeAccessEmail table.
   // Must resolve to state 'free_access' / Pro / allowed — proving a granted
   // email is admitted through the SAME gate without any paywall change.
@@ -181,7 +191,7 @@ function check(label, actual, expected) {
 
   console.log('=== TEST 7 — ADMIN AUTHORITY: isAdminUser + admin-route gate ===');
   check('7a isAdminUser(Dennis email, no flag) → true',
-    isAdminUser({ isAdmin: false, email: 'Dennis.Kotlenko@Gmail.com ' }), true);
+    isAdminUser({ isAdmin: false, email: 'admin@example.test ' }), true);
   check('7b isAdminUser(flag true) → true', isAdminUser({ isAdmin: true, email: 'someone@x.com' }), true);
   check('7c isAdminUser(random) → false', isAdminUser({ isAdmin: false, email: 'rando@x.com' }), false);
   check('7d isAdminUser(empty) → false', isAdminUser({}), false);

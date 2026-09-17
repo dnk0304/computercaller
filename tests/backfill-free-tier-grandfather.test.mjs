@@ -14,6 +14,15 @@
 //
 //   Run: node tests/backfill-free-tier-grandfather.test.mjs
 
+// Identity fixtures are SYNTHETIC and the allowlist/admin identities come from
+// the environment (2026-09-17, dispatch forge/w-strip-email-literals). The
+// hardcoded email fallbacks were removed from lib/entitlement-core.js after they
+// shipped to every visitor in a public client chunk, so these suites must now
+// supply the env they exercise. Real personal addresses never appear in tests.
+process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.test';
+process.env.ENTITLEMENT_ALLOWLIST =
+  process.env.ENTITLEMENT_ALLOWLIST || 'admin@example.test,reviewer@example.test';
+
 import assert from 'node:assert/strict';
 import { runBackfill, targetWhere } from '../scripts/backfill-free-tier-grandfather.mjs';
 
@@ -40,8 +49,8 @@ function prodUsers() {
   for (let i = 1; i <= 6; i += 1) {
     users.push({ id: `u-trial-${i}`, email: `trialist${i}@x.com`, createdAt: d(`2026-09-0${i}T00:00:00Z`), hasSub: true, freeTierGrandfathered: false });
   }
-  users.push({ id: 'u-comped-1', email: 'dennis.kotlenko@gmail.com', createdAt: d('2026-05-20T00:00:00Z'), hasSub: true, freeTierGrandfathered: false });
-  users.push({ id: 'u-comped-2', email: 'reviewer@computercaller.com', createdAt: d('2026-06-01T00:00:00Z'), hasSub: true, freeTierGrandfathered: false });
+  users.push({ id: 'u-comped-1', email: 'admin@example.test', createdAt: d('2026-05-20T00:00:00Z'), hasSub: true, freeTierGrandfathered: false });
+  users.push({ id: 'u-comped-2', email: 'reviewer@example.test', createdAt: d('2026-06-01T00:00:00Z'), hasSub: true, freeTierGrandfathered: false });
   // 13 free-tier users, no subscription row, all created before the flip.
   for (let i = 1; i <= 13; i += 1) {
     users.push({ id: `u-free-${i}`, email: `free${i}@x.com`, createdAt: d(`2026-08-${String(15 + (i % 14)).padStart(2, '0')}T00:00:00Z`), hasSub: false, freeTierGrandfathered: false });

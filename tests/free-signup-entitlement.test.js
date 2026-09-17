@@ -9,6 +9,16 @@
 // convention). Run: node tests/free-signup-entitlement.test.js
 'use strict';
 
+// Identity fixtures are SYNTHETIC and the allowlist/admin identities come from
+// the environment (2026-09-17, dispatch forge/w-strip-email-literals). The
+// hardcoded email fallbacks were removed from lib/entitlement-core.js after they
+// shipped to every visitor in a public client chunk, so these suites must now
+// supply the env they exercise. Real personal addresses never appear in tests.
+process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.test';
+process.env.ENTITLEMENT_ALLOWLIST =
+  process.env.ENTITLEMENT_ALLOWLIST || 'admin@example.test,reviewer@example.test';
+
+
 /* eslint-disable @typescript-eslint/no-require-imports -- repo runner-less CJS convention. */
 const assert = require('node:assert').strict;
 const { evaluateEntitlement } = require('../lib/entitlement-core.js');
@@ -32,11 +42,11 @@ function base(input) {
 // ── Privileged / paying states must be BYTE-STABLE regardless of how the user
 //    signed up. Signup method is not even an input to the entitlement core, so
 //    these are the ground truth the re-opened register route cannot disturb. ──
-eq('admin admitted', base({ isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null }),
+eq('admin admitted', base({ isAdmin: true, email: 'admin@example.test', subscription: null }),
   { allowed: true, state: 'admin', reason: 'admin' });
 
 eq('entitlement allowlist admitted (reviewer)',
-  base({ isAdmin: false, email: 'reviewer@computercaller.com', subscription: null }),
+  base({ isAdmin: false, email: 'reviewer@example.test', subscription: null }),
   { allowed: true, state: 'allowlisted', reason: 'entitlement_allowlist' });
 
 eq('free_access grant admitted',

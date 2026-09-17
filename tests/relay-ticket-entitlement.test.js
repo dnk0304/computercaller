@@ -33,6 +33,16 @@
 
 'use strict';
 
+// Identity fixtures are SYNTHETIC and the allowlist/admin identities come from
+// the environment (2026-09-17, dispatch forge/w-strip-email-literals). The
+// hardcoded email fallbacks were removed from lib/entitlement-core.js after they
+// shipped to every visitor in a public client chunk, so these suites must now
+// supply the env they exercise. Real personal addresses never appear in tests.
+process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.test';
+process.env.ENTITLEMENT_ALLOWLIST =
+  process.env.ENTITLEMENT_ALLOWLIST || 'admin@example.test,reviewer@example.test';
+
+
 /* eslint-disable @typescript-eslint/no-require-imports -- this test targets the
    plain-CJS entitlement core (see lib/entitlement-core.js header) and follows
    the repo's runner-less CJS test convention. */
@@ -255,7 +265,7 @@ const VER0 = { userId: 'u', ver: 0 };
   // 5. NO-LOCKOUT — admin and ENTITLEMENT_ALLOWLIST always mint, at top tier.
   {
     const db = makeDb({
-      user: { isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null },
+      user: { isAdmin: true, email: 'admin@example.test', subscription: null },
     });
     const d = await relayTicketDecision(db, VER0, NOW);
     eq('5. admin mints with no subscription', d.status, 200);
@@ -266,7 +276,7 @@ const VER0 = { userId: 'u', ver: 0 };
     // Rule (2) ENTITLEMENT_ALLOWLIST_FALLBACK still admits him, which is why
     // this route not using the isAdminUser() email fallback cannot lock him out.
     const db = makeDb({
-      user: { isAdmin: false, email: 'dennis.kotlenko@gmail.com', subscription: null },
+      user: { isAdmin: false, email: 'admin@example.test', subscription: null },
     });
     const d = await relayTicketDecision(db, VER0, NOW);
     eq('5b. lost isAdmin flag still admits Dennis via allowlist', d.status, 200);
@@ -274,7 +284,7 @@ const VER0 = { userId: 'u', ver: 0 };
   }
   {
     const db = makeDb({
-      user: { isAdmin: false, email: 'reviewer@computercaller.com', subscription: null },
+      user: { isAdmin: false, email: 'reviewer@example.test', subscription: null },
     });
     const d = await relayTicketDecision(db, VER0, NOW);
     eq('5c. allowlisted reviewer mints', d.status, 200);
@@ -319,7 +329,7 @@ const VER0 = { userId: 'u', ver: 0 };
   //    kicked session is never mislabelled as a billing failure.
   {
     const db = makeDb({
-      user: { isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null },
+      user: { isAdmin: true, email: 'admin@example.test', subscription: null },
       sessionVersion: 7,
     });
     const d = await relayTicketDecision(db, { userId: 'u', ver: 3 }, NOW);
@@ -338,7 +348,7 @@ const VER0 = { userId: 'u', ver: 0 };
   }
   {
     const db = makeDb({
-      user: { isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null },
+      user: { isAdmin: true, email: 'admin@example.test', subscription: null },
       sessionVersion: 4,
     });
     const d = await relayTicketDecision(db, { userId: 'u', ver: 4 }, NOW);

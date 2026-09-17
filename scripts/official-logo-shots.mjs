@@ -23,6 +23,16 @@ import { chromium } from 'playwright';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+// CC_SHOT_EMAIL is now REQUIRED (2026-09-17, dispatch
+// forge/w-strip-email-literals): the personal address that used to be the
+// default was a hardcoded literal in the repo. Set it when running shots.
+function requireShotEmail() {
+  const v = process.env.CC_SHOT_EMAIL;
+  if (!v) throw new Error('CC_SHOT_EMAIL must be set (screenshot account email)');
+  return v;
+}
+
+
 const OUT = process.argv[2];
 const BASE = process.env.CC_BASE || 'http://localhost:3123';
 if (!OUT) throw new Error('usage: node official-logo-shots.mjs <outDir>');
@@ -39,7 +49,7 @@ const signIdleToken = (userId, secret) =>
 // under test is chrome (header, sidebar, menu), not user data.
 const user = {
   id: process.env.CC_SHOT_USER_ID || 'shot-user',
-  email: process.env.CC_SHOT_EMAIL || 'dennis.kotlenko@gmail.com',
+  email: requireShotEmail(),
   sessionVersion: 0,
 };
 const auth = signAccessToken({ userId: user.id, email: user.email, ver: user.sessionVersion ?? 0 });
