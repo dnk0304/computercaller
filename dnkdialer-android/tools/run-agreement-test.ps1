@@ -36,7 +36,8 @@ $classes = @(
     "$pkg.E2eA2NoncePrefixVectorsTest", # A2 vectors E-H: the DERIVED nonce prefix
     "$pkg.E2eA3CtxVectorsTest",  # A3 vector I: wire ctx + local userId == frozen context
     "$pkg.NotificationBackfillSmokeTest", # (i) 3 posted -> 3 backfill payloads
-    "$pkg.E2eLoopbackScenariosTest"  # (w5) same-implementation loopback scenarios
+    "$pkg.E2eLoopbackScenariosTest",  # (w5) same-implementation loopback scenarios
+    "$pkg.E2eA4CanonicalPeerVectorsTest" # (a3) A4 vector J: the canonical peer
 )
 
 Write-Host '== building app + test APKs =='

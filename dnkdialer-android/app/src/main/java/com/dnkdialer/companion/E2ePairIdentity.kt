@@ -121,7 +121,62 @@ object E2ePairIdentity {
      */
     @JvmStatic
     fun peerDeviceIdFor(recipients: List<E2eNegotiation.Recipient>): String =
-        recipients.map { it.deviceId }.minOrNull().orEmpty()
+        canonicalPeerDeviceId(recipients.map { it.deviceId })
+
+    /**
+     * GATE1 Addendum A4-R2, FROZEN: the canonical peer is the **byte-wise
+     * lexicographically lowest** of the recipients' `deviceId`s, compared as
+     * **raw UTF-8 bytes** — not code points, not locale collation, not
+     * case-folded.
+     *
+     * This must not be `minOrNull()`. Kotlin's `String` ordering compares
+     * UTF-16 code units, which agrees with UTF-8 byte order for ASCII and
+     * **disagrees above the BMP**, because a supplementary character is a
+     * surrogate pair beginning `0xD800` in UTF-16 but `0xF0` in UTF-8, while
+     * `U+E000..U+FFFF` sit above `0xD800` in UTF-16 and below `0xF0` in UTF-8.
+     * Concretely `U+FFFD` vs `U+10000`: UTF-8 puts `U+FFFD` first
+     * (`efbfbd` < `f0908080`), UTF-16 puts `U+10000` first
+     * (`d800dc00` < `fffd`). Opposite answers, so the two sides would derive
+     * different traffic keys and every frame would fail to authenticate for a
+     * reason no log explains.
+     *
+     * Byte comparison rather than "refuse non-ASCII ids": these ids arrive from
+     * the peer over the wire, A4 specifies a comparison and not a restriction,
+     * and inventing a refusal condition the addendum does not state would
+     * reject pairings the spec admits. The comparison is total over every
+     * string, so nothing needs to be excluded.
+     *
+     * Deterministic and order-independent, so a re-ordered but otherwise
+     * identical offer derives the same keys.
+     */
+    @JvmStatic
+    fun canonicalPeerDeviceId(deviceIds: List<String>): String {
+        var best: String? = null
+        var bestBytes: ByteArray? = null
+        for (id in deviceIds) {
+            val bytes = id.toByteArray(Charsets.UTF_8)
+            if (bestBytes == null || compareUnsigned(bytes, bestBytes) < 0) {
+                best = id
+                bestBytes = bytes
+            }
+        }
+        return best.orEmpty()
+    }
+
+    /**
+     * Lexicographic comparison of UTF-8 bytes as UNSIGNED. `Byte` is signed in
+     * Kotlin, so a naive `a[i] - b[i]` would order every byte >= 0x80 BELOW
+     * ASCII — which is the same class of bug as using UTF-16 order, reached by
+     * a different route.
+     */
+    private fun compareUnsigned(a: ByteArray, b: ByteArray): Int {
+        val n = minOf(a.size, b.size)
+        for (i in 0 until n) {
+            val d = (a[i].toInt() and 0xff) - (b[i].toInt() and 0xff)
+            if (d != 0) return d
+        }
+        return a.size - b.size
+    }
 
     /**
      * Mint the next epoch for [pairingId]. Strictly increasing, persisted
@@ -237,8 +292,23 @@ object E2ePairIdentity {
      * - any id over 255 UTF-8 bytes — A1's u8 cap, re-asserted on the DECODE
      *   side so an oversized id is refused before it can throw deeper in.
      *
-     * @param expectedPairingId when known, A3-M3's check: a ctx for another
+     * @param expectedPairingId when known, A3-M3(a)'s check: a ctx for another
      *        pairing is refused.
+     * @param recipientDeviceIds A4-M1. When the caller holds the full
+     *        `wraps[]` set, `ctx.peerDeviceId` MUST be the canonical lowest of
+     *        it, or a relay could steer the derivation to a peer of its
+     *        choosing. When the caller does NOT hold the set — the extension
+     *        SW, whose `PAIR_STATE` carries only its own `wrap` — it must pass
+     *        null and perform NO peer check, and must never substitute its own
+     *        deviceId for the canonical peer. That substitution is the
+     *        A3-M1/A3-M3 contradiction A4 exists to delete: it refuses every
+     *        recipient except the canonical one and makes multi-recipient
+     *        pairing impossible.
+     *
+     *        Note there is no "peerDeviceId must equal my own deviceId" check
+     *        here to remove — P4 never implemented one, because the phone is
+     *        the encoder. This parameter is the decoder-side half, present so
+     *        vector J.3's refusal is assertable in this lane.
      */
     @JvmStatic
     @JvmOverloads
@@ -246,6 +316,7 @@ object E2ePairIdentity {
         ctx: com.google.gson.JsonObject?,
         localUserId: String,
         expectedPairingId: String? = null,
+        recipientDeviceIds: List<String>? = null,
     ): E2eKdf.PairContext {
         if (ctx == null) {
             // A3-M4: a mode=1 block with no ctx is REFUSED, never derived from
@@ -295,11 +366,25 @@ object E2ePairIdentity {
                 "ctx.pairEpoch '$epochText' exceeds this implementation's 2^63-1 ceiling"
             )
 
+        val peerDeviceId = str("peerDeviceId")
+        // A4-M1(c): only where the set is actually held. Checked BEFORE any
+        // derivation — a steered peer must be refused, not derived from and
+        // then noticed.
+        if (recipientDeviceIds != null) {
+            val canonical = canonicalPeerDeviceId(recipientDeviceIds)
+            if (peerDeviceId != canonical) {
+                throw CtxException(
+                    "A4-M1: ctx.peerDeviceId '$peerDeviceId' is not the canonical lowest " +
+                        "of wraps[].deviceId ('$canonical') — refusing a steered derivation"
+                )
+            }
+        }
+
         return E2eKdf.PairContext(
             pairingId = pairingId,
             userId = localUserId,
             phoneDeviceId = str("phoneDeviceId"),
-            peerDeviceId = str("peerDeviceId"),
+            peerDeviceId = peerDeviceId,
             pairEpoch = pairEpoch,
         )
     }
