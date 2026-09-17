@@ -1,0 +1,442 @@
+{
+  "phase": "P1",
+  "label": null,
+  "sha": "86451f9f2e26a73c3a860cf73fcb7547de6eb048",
+  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "utc": "2026-09-17T12:49:39.208Z",
+  "lane": "web",
+  "mode": "full",
+  "env": {
+    "node": "v24.12.0",
+    "bun": "1.3.11",
+    "chrome": "C:\\Users\\D\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe"
+  },
+  "steps": [
+    {
+      "name": "git-identity-clean-base-ancestry",
+      "cmd": "git rev-parse HEAD && git status --porcelain && git merge-base --is-ancestor BASE_SHA HEAD",
+      "exit": 0,
+      "ms": 277,
+      "counts": {
+        "dirtyPaths": 0,
+        "baseIsAncestor": true
+      }
+    },
+    {
+      "name": "scope-diff-vs-base",
+      "cmd": "git diff --name-only 445138a..HEAD",
+      "exit": 0,
+      "ms": 85,
+      "counts": {
+        "changed": 43,
+        "android": 0,
+        "nonAndroid": 43,
+        "offLane": 0
+      }
+    },
+    {
+      "name": "node-check:server.js",
+      "cmd": "node --check server.js",
+      "exit": 0,
+      "ms": 542,
+      "counts": null
+    },
+    {
+      "name": "node-check:chrome-extension/background.js",
+      "cmd": "node --check chrome-extension/background.js",
+      "exit": 0,
+      "ms": 739,
+      "counts": null
+    },
+    {
+      "name": "node-check:chrome-extension/shell.js",
+      "cmd": "node --check chrome-extension/shell.js",
+      "exit": 0,
+      "ms": 408,
+      "counts": null
+    },
+    {
+      "name": "tsc-noEmit",
+      "cmd": "bunx tsc --noEmit -p .",
+      "exit": 0,
+      "ms": 20312,
+      "counts": {
+        "errors": 0
+      }
+    },
+    {
+      "name": "lint",
+      "cmd": "bunx eslint . -f json (vs e2e-evidence/LINT-BASELINE.json)",
+      "exit": 0,
+      "ms": 86160,
+      "counts": {
+        "problems": 176,
+        "errors": 55,
+        "warnings": 121,
+        "grown": 0,
+        "shrunk": 0,
+        "manifestGrown": 0
+      }
+    },
+    {
+      "name": "build",
+      "cmd": "bun run build",
+      "exit": 0,
+      "ms": 56564,
+      "counts": {
+        "routes": 68
+      }
+    },
+    {
+      "name": "check-extension",
+      "cmd": "\"C:/Program Files/Git/bin/bash.exe\" tools/check-extension.sh",
+      "exit": 0,
+      "ms": 322,
+      "counts": null
+    },
+    {
+      "name": "relay:pairing-persist",
+      "cmd": "node tests/pairing-persist.test.mjs",
+      "exit": 0,
+      "ms": 104,
+      "counts": {
+        "passed": 84,
+        "total": 84
+      }
+    },
+    {
+      "name": "relay:pair-state",
+      "cmd": "node tests/pair-state.test.mjs",
+      "exit": 0,
+      "ms": 101,
+      "counts": {
+        "passed": 22,
+        "total": 22
+      }
+    },
+    {
+      "name": "relay:dock-resume",
+      "cmd": "node tests/dock-resume.test.mjs",
+      "exit": 0,
+      "ms": 96,
+      "counts": {
+        "passed": 26,
+        "total": 26
+      }
+    },
+    {
+      "name": "relay:reset-room",
+      "cmd": "node tests/reset-room.test.mjs",
+      "exit": 0,
+      "ms": 240,
+      "counts": {
+        "passed": 21,
+        "total": 21
+      }
+    },
+    {
+      "name": "relay:listener-heartbeat",
+      "cmd": "node tests/listener-heartbeat.test.mjs",
+      "exit": 0,
+      "ms": 159,
+      "counts": {
+        "passed": 11,
+        "total": 11
+      }
+    },
+    {
+      "name": "relay:relink-kill-frame-buffer",
+      "cmd": "node tests/relink-kill-frame-buffer.test.mjs",
+      "exit": 0,
+      "ms": 536,
+      "counts": {
+        "passed": 18,
+        "total": 18
+      }
+    },
+    {
+      "name": "relay:call-separation",
+      "cmd": "node tests/call-separation.test.mjs",
+      "exit": 0,
+      "ms": 185,
+      "counts": {
+        "passed": 16,
+        "total": 16
+      }
+    },
+    {
+      "name": "relay:www-origin",
+      "cmd": "node tests/www-origin.test.mjs",
+      "exit": 0,
+      "ms": 98,
+      "counts": {
+        "passed": 8,
+        "total": 8
+      }
+    },
+    {
+      "name": "relay:repro-resume-sync",
+      "cmd": "node tests/repro-resume-sync.mjs",
+      "exit": 0,
+      "ms": 190,
+      "counts": {
+        "passed": 9,
+        "total": 9
+      }
+    },
+    {
+      "name": "relay:session-superseded",
+      "cmd": "node tests/session-superseded.test.mjs",
+      "exit": 0,
+      "ms": 132,
+      "counts": {
+        "passed": 29,
+        "total": 29
+      }
+    },
+    {
+      "name": "relay:log-redaction",
+      "cmd": "node tests/log-redaction.test.mjs",
+      "exit": 0,
+      "ms": 108,
+      "counts": {
+        "passed": 43,
+        "total": 43
+      }
+    },
+    {
+      "name": "relay:devicekey-authz",
+      "cmd": "node tests/devicekey-authz.test.mjs",
+      "exit": 0,
+      "ms": 354,
+      "counts": {
+        "passed": 61,
+        "total": 61
+      }
+    },
+    {
+      "name": "relay:e2e-kill-switch.test.mjs",
+      "cmd": "node tests/e2e-kill-switch.test.mjs",
+      "exit": 0,
+      "ms": 171,
+      "counts": {
+        "passed": 47,
+        "total": 47
+      }
+    },
+    {
+      "name": "relay:e2e-listener-wrap.test.mjs",
+      "cmd": "node tests/e2e-listener-wrap.test.mjs",
+      "exit": 0,
+      "ms": 108,
+      "counts": {
+        "passed": 48,
+        "total": 48
+      }
+    },
+    {
+      "name": "relay:e2e-passthrough.test.mjs",
+      "cmd": "node tests/e2e-passthrough.test.mjs",
+      "exit": 0,
+      "ms": 219,
+      "counts": {
+        "passed": 75,
+        "total": 75
+      }
+    },
+    {
+      "name": "relay:e2e-reset-room-epoch.test.mjs",
+      "cmd": "node tests/e2e-reset-room-epoch.test.mjs",
+      "exit": 0,
+      "ms": 176,
+      "counts": {
+        "passed": 28,
+        "total": 28
+      }
+    },
+    {
+      "name": "relay:e2e-resume-carries-block.test.mjs",
+      "cmd": "node tests/e2e-resume-carries-block.test.mjs",
+      "exit": 0,
+      "ms": 146,
+      "counts": {
+        "passed": 57,
+        "total": 57
+      }
+    },
+    {
+      "name": "unit:sas-vectors",
+      "cmd": "node tests/sas-vectors.test.mjs",
+      "exit": 0,
+      "ms": 161,
+      "counts": {
+        "passed": 65,
+        "total": 65
+      }
+    },
+    {
+      "name": "unit:padding-property",
+      "cmd": "node tests/padding-property.test.mjs",
+      "exit": 0,
+      "ms": 161,
+      "counts": {
+        "passed": 46,
+        "total": 46
+      }
+    },
+    {
+      "name": "unit:bridge-origin-pin",
+      "cmd": "node scripts/ext-bridge-origin-pin-proof.mjs",
+      "exit": 0,
+      "ms": 1243,
+      "counts": null
+    },
+    {
+      "name": "harness-dev-server",
+      "cmd": "node server.js PORT=3300",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "port": 3300,
+        "pid": 41412
+      }
+    },
+    {
+      "name": "clarity-scope",
+      "cmd": "node scripts/check-clarity-scope.mjs",
+      "exit": 0,
+      "ms": 1330,
+      "counts": {
+        "exit": 0,
+        "buildChecked": 1,
+        "runtimeChecked": 1
+      }
+    },
+    {
+      "name": "harness-env",
+      "cmd": "assert DATABASE_URL reaches the harness env",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "dbUrlSet": 1,
+        "jwtSet": 1,
+        "ccBaseUrlSet": 1
+      }
+    },
+    {
+      "name": "harness:ext-templates-scroll-call-message-proof",
+      "cmd": "node scripts/ext-templates-scroll-call-message-proof.mjs",
+      "exit": 0,
+      "ms": 47471,
+      "counts": {
+        "passed": 26,
+        "total": 26
+      }
+    },
+    {
+      "name": "harness:app-in-call-shots",
+      "cmd": "node scripts/app-in-call-shots.mjs",
+      "exit": 0,
+      "ms": 86198,
+      "counts": {
+        "passed": 47,
+        "total": 47
+      }
+    },
+    {
+      "name": "harness:ext-in-call-shots",
+      "cmd": "node scripts/ext-in-call-shots.mjs",
+      "exit": 0,
+      "ms": 135797,
+      "counts": {
+        "passed": 47,
+        "total": 47
+      }
+    },
+    {
+      "name": "harness:ext-shell-theme-proof",
+      "cmd": "node scripts/ext-shell-theme-proof.mjs",
+      "exit": 0,
+      "ms": 143309,
+      "counts": {
+        "passed": 20,
+        "total": 20
+      }
+    },
+    {
+      "name": "harness:ext-badge-counter-proof",
+      "cmd": "node scripts/ext-badge-counter-proof.mjs",
+      "exit": 0,
+      "ms": 172394,
+      "counts": {
+        "passed": 42,
+        "total": 42,
+        "attempts": 2
+      }
+    },
+    {
+      "name": "harness:ext-layering-shots",
+      "cmd": "node scripts/ext-layering-shots.mjs",
+      "exit": 0,
+      "ms": 208797,
+      "counts": {
+        "passed": 14,
+        "total": 14
+      }
+    },
+    {
+      "name": "harness-mode",
+      "cmd": "parallel",
+      "exit": 0,
+      "ms": 208884,
+      "counts": {
+        "parallel": 1,
+        "harnesses": 6
+      }
+    },
+    {
+      "name": "baseline-parity",
+      "cmd": "diff vs C:/Users/D/worktrees/computercaller/e2e-p1/e2e-evidence/BASELINE-harness.json",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "reference": 16,
+        "regressed": 0
+      }
+    }
+  ],
+  "harnessPass": [
+    "relay:pairing-persist",
+    "relay:pair-state",
+    "relay:dock-resume",
+    "relay:reset-room",
+    "relay:listener-heartbeat",
+    "relay:relink-kill-frame-buffer",
+    "relay:call-separation",
+    "relay:www-origin",
+    "relay:repro-resume-sync",
+    "relay:session-superseded",
+    "relay:log-redaction",
+    "relay:devicekey-authz",
+    "relay:e2e-kill-switch.test.mjs",
+    "relay:e2e-listener-wrap.test.mjs",
+    "relay:e2e-passthrough.test.mjs",
+    "relay:e2e-reset-room-epoch.test.mjs",
+    "relay:e2e-resume-carries-block.test.mjs",
+    "unit:sas-vectors",
+    "unit:padding-property",
+    "harness:ext-templates-scroll-call-message-proof",
+    "harness:app-in-call-shots",
+    "harness:ext-in-call-shots",
+    "harness:ext-shell-theme-proof",
+    "harness:ext-badge-counter-proof",
+    "harness:ext-layering-shots"
+  ],
+  "baselineDiff": [],
+  "ms": 389480,
+  "failedStep": null,
+  "produced": [
+    "e2e-evidence/gate-P1-86451f9.json"
+  ],
+  "result": "PASS"
+}
