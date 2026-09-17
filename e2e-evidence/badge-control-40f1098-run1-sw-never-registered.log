@@ -1,0 +1,8 @@
+file:///C:/Users/D/worktrees/computercaller/e2e-p3/scripts/ext-badge-counter-proof.mjs:51
+  if (!sw) throw new Error('service worker never registered');
+                 ^
+
+Error: service worker never registered
+    at file:///C:/Users/D/worktrees/computercaller/e2e-p3/scripts/ext-badge-counter-proof.mjs:51:18
+
+Node.js v24.12.0

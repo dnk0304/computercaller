@@ -1,0 +1,44 @@
+PASS  shipped badge writer is reachable in worker scope  — {"paintBadge":"function","bumpUnread":"function","clearUnread":"function","handleFrame":"function"}
+PASS  no unread ⇒ empty badge
+PASS  2 texts + 1 missed call + 1 alert with the panel CLOSED ⇒ "4"  — "4"
+PASS  counters agree with the badge  — {"missedCalls":1,"newSms":2,"alerts":1}
+PASS  viewing Texts drops the 2 texts ⇒ "2"  — "2"
+PASS  viewing the rest clears the badge entirely
+PASS  panel OPEN ⇒ nothing counted, no badge
+PASS  unread count beats the fallback colour chip  — "1"
+PASS  chip returns once the count is read  — " "
+PASS  two waiting before sign-out  — "2"
+PASS  sign-out clears the badge
+PASS  250 unread ⇒ "99+"  — "99+"
+PASS  outgoing SMS (type:"sent") ⇒ badge NOT bumped
+PASS  outgoing SMS (type:"sent") ⇒ NO notification
+PASS  incoming SMS (type:"inbox") ⇒ badge bumped to "1"  — "1"
+PASS  incoming SMS (type:"inbox") ⇒ notification raised  — 1
+PASS  SMS with NO type field still counts (defaults to incoming)  — "1"
+PASS  SMS with NO type field still notifies  — 1
+PASS  2 outgoing + 2 incoming ⇒ badge "2", not "4"  — "2"
+PASS  2 outgoing + 2 incoming ⇒ exactly 2 notifications  — 2
+PASS  wrapped {message:{type:"sent"}} also suppressed
+PASS  HB does not notify
+PASS  HB does not bump the badge
+PASS  HB does NOT claim a phone is present  — {"phonePresent":false,"unreadSum":null}
+PASS  REGRESSION: lobby phone, no pair ⇒ NOT connected (was green)  — "phone-unpaired"
+PASS  REGRESSION: that state is reported as phone-unpaired  — "phone-unpaired"
+PASS  its tooltip tells the user to press Connect  — "ComputerCaller — phone nearby, not connected. Open the panel and press Connect."
+PASS  alreadyActive alone does NOT earn green  — "phone-unpaired"
+PASS  no phone ⇒ grey (signed-in-disconnected)  — "signed-in-disconnected"
+PASS  phone present, unpaired ⇒ grey (phone-unpaired)  — "phone-unpaired"
+PASS  held claim ⇒ amber (resuming), not green  — "resuming"
+PASS  PAIRED ⇒ green. The control arm — without this the rest is vacuous  — "connected"
+PASS  green says connected  — "ComputerCaller — phone connected"
+FAIL  pair torn down ⇒ leaves green immediately  — "signed-out"
+PASS  green before the malformed frame
+PASS  malformed PAIR_STATE falls back to grey, not green  — "signed-in-disconnected"
+PASS  held before the data frame
+PASS  an SMS during a HELD pair does NOT turn the dot green  — "resuming"
+PASS  HELD pair + panel CLOSED: SMS/call/alert ⇒ badge "3"  — "3"
+PASS  HELD pair + panel CLOSED: 3 notifications raised  — 3
+PASS  …and the dot still refuses to claim a live pair  — "resuming"
+PASS  HELD pair + panel CLOSED: OUTGOING sms still silent  — {"badge":"","notifs":0}
+
+41/42 passed
