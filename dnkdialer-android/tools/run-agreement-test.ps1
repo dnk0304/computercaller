@@ -1,4 +1,9 @@
-# E2E P4 Part 2 (a2) — instrumented run of E2eKeyAgreementTest.
+# E2E P4 Part 2 (a2)+(b) — instrumented run of the crypto suite:
+#   E2eKeyAgreementTest   — P-256 ECDH on both backends
+#   E2eSasVectorsTest     — the frozen SAS against P1's tests/sas-vectors.json
+#
+# Both classes run off ONE install because the install is the slow part and
+# because a second install between them would reintroduce the stale-APK trap.
 #
 # Separate from run-keystore-test.ps1 because that script's shape is a
 # two-phase process-death proof and this one is not: key agreement is proven in
@@ -20,7 +25,7 @@ Set-Location (Join-Path $PSScriptRoot '..')
 $adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
 $pkg = 'com.dnkdialer.companion'
 $runner = "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
-$cls = "$pkg.E2eKeyAgreementTest"
+$classes = @("$pkg.E2eKeyAgreementTest", "$pkg.E2eSasVectorsTest")
 
 Write-Host '== building app + test APKs =='
 & .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon -q
@@ -52,18 +57,30 @@ if ($vc -notmatch 'versionCode=58') { throw "device is not running versionCode 5
 $api = ((& $adb shell getprop ro.build.version.sdk) -join '').Trim()
 Write-Host "device API level: $api"
 
-& $adb shell am force-stop $pkg | Out-Null
 & $adb logcat -c | Out-Null
-$out = (& $adb shell am instrument -w -e class $cls $runner) -join "`n"
-Write-Host $out
+$total = 0
+foreach ($cls in $classes) {
+    & $adb shell am force-stop $pkg | Out-Null
+    $out = (& $adb shell am instrument -w -e class $cls $runner) -join "`n"
+    Write-Host $out
 
-# `am instrument` exits 0 even when tests FAIL, and `-notmatch` on a STRING
-# ARRAY is a filter rather than a boolean — hence the -join and the explicit
-# text assertions. Both cost real time in (s3).
-if ($out -match 'FAILURES!!!' -or $out -match 'INSTRUMENTATION_STATUS: stack=') {
-    throw 'E2eKeyAgreementTest FAILED'
+    # `am instrument` exits 0 even when tests FAIL, and `-notmatch` on a STRING
+    # ARRAY is a filter rather than a boolean — hence the -join and the explicit
+    # text assertions. Both cost real time in (s3).
+    if ($out -match 'FAILURES!!!' -or $out -match 'INSTRUMENTATION_STATUS: stack=') {
+        throw "$cls FAILED"
+    }
+    if ($out -notmatch 'OK \(') { throw "$cls did not report OK" }
+
+    # Assert the run was not EMPTY. `am instrument` prints "OK (0 tests)" and
+    # exits 0 when a class filter matches nothing — a typo in a class name would
+    # otherwise read as a clean pass.
+    $m = [regex]::Match($out, 'OK \((\d+) test')
+    if (-not $m.Success -or [int]$m.Groups[1].Value -lt 1) { throw "$cls ran ZERO tests" }
+    $total += [int]$m.Groups[1].Value
+    Write-Host "$cls : $($m.Groups[1].Value) tests OK"
 }
-if ($out -notmatch 'OK \(') { throw 'E2eKeyAgreementTest did not report OK' }
+Write-Host "INSTRUMENTED TOTAL: $total tests"
 
 # Surface the measured platform facts for the gate JSON / commit message.
 # They come from logcat, not $out: `am instrument` discards a PASSING test's
@@ -71,3 +88,4 @@ if ($out -notmatch 'OK \(') { throw 'E2eKeyAgreementTest did not report OK' }
 $fact = ((& $adb logcat -d -s 'E2E-FACT:I') | Select-String 'api=') -join ' '
 Write-Host "KEYSTORE FACTS: $fact"
 Write-Host "KEY AGREEMENT: PASS (API $api)"
+Write-Host "SAS VECTORS: PASS"
