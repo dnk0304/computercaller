@@ -237,6 +237,19 @@ change and needs a new version string, not an edit. Where §§1–12 and this se
 disagree, this section wins — the earlier text is kept as the record of how the
 decision was reached.
 
+**AMENDING AUTHORITY.** §13 as frozen on 2026-09-17 left the key schedule and
+the AEAD layout unspecified. `GATE1.md` **"Addendum A1 — KDF/AEAD layout:
+AMENDED"** (2026-09-17T22:34Z, signed by the Gate 1 security signer) closes that
+gap, and **§13.10 below is that addendum**, transcribed. A1 is the amending
+authority for §13.10 and for nothing else: it freezes a layer §13 left open, it
+does not reopen anything §13 froze, and Gate 1's PASS verdict is unaffected.
+Where §13.10 and A1 could be read to disagree, A1 wins and §13.10 is the bug.
+
+*Numbering note:* A1's own text calls the new section "§13.9". §13.9 was already
+taken by **History** when A1 was written, and renumbering a frozen section would
+break every reference to it, so the addendum lands at **§13.10**. Ken ruled this
+on 2026-09-17. Read every "§13.9" in A1 as §13.10.
+
 ### 13.1 Encrypted mode is PER-DEVICE (C-1) — corrects §12.1
 
 §12.1 says "a per-account setting … stored locally per device". Those are two
@@ -402,3 +415,164 @@ Approved by Dennis 2026-09-17. History stays on the device; we store nothing
 server-side. This is already what ships, so it is a confirmation rather than a
 change — and it is what lets §9.1's "we do not store your content" survive
 scrutiny.
+
+### 13.10 Key schedule + AEAD — FROZEN (GATE1 Addendum A1, which calls it §13.9)
+
+§13 froze the SAS transcript (13.3), the padding (13.4), the dedupe parameters
+(13.5) and the key lifecycle (13.8) — and left the key schedule and the AEAD
+layout unspecified. The only statement of the schedule was the brief's prose,
+`HKDF-SHA-256(info = "cc-e2e-v1" ‖ userId ‖ phoneDeviceId ‖ peerDeviceId ‖
+pairEpoch, salt = pairingId)`, and that `‖` is bare concatenation of
+variable-length strings: user `ab` + phone `cd` produces the same info bytes as
+user `a` + phone `bcd`, so two different pairings derive **identical traffic
+keys**. It is invisible to any test that uses fixed-width ids, and it is
+unfixable once shipped because fixing it is a breaking protocol change.
+
+P4 caught it, published it as a proposal rather than implementing it silently,
+and Security ratified the fix and specified the AEAD half — the higher-risk
+half, because a nonce-reuse bug in GCM is not a degradation, it is total loss of
+confidentiality *and* forgery for the affected key.
+
+#### 13.10.1 Reserved tag ranges
+
+Every tagged structure in this protocol allocates its own range, and the ranges
+are disjoint **by construction and must stay that way**: a SAS transcript can
+never be replayed as a KDF info string, or the reverse. That is a real
+cross-protocol defence, not tidiness.
+
+| Range | Owner | Status |
+|---|---|---|
+| `0x01..0x04` | SAS transcript | frozen, §13.3 |
+| `0x11..0x15` | KDF pair context | frozen, this section |
+| `0x21..0x25` | AEAD associated data | frozen, this section |
+| `0x05..0x10`, `0x16..0x20`, `0x26..0xff` | — | **RESERVED** |
+
+The next person adding a tagged structure **allocates a new range**. Reusing an
+existing one reintroduces exactly the ambiguity the tags exist to remove.
+
+#### 13.10.2 Framing rule
+
+Inherited from the frozen SAS (§13.3): **every variable-length value carries a
+one-byte tag and a `u8` length prefix.**
+
+`u8` is deliberate and is **not** to be widened to `u16` — the ids are
+cuid/uuid-shaped (~25–36 bytes), 255 is an order of magnitude of headroom, and
+`u16` would break framing symmetry with the frozen SAS for no gain. **But the
+cap is enforced, never assumed:** any of `userId`, `phoneDeviceId`,
+`peerDeviceId`, `kid` or `frameType` exceeding 255 bytes **MUST THROW at encode
+time on every platform**. Silent truncation to `len & 0xff` would recreate the
+exact collision this section exists to kill, in the one code path nobody tests.
+
+`pairingId` carries **no tag and no prefix** and that is correct: it is the HKDF
+salt, a separate argument, structurally unambiguous.
+
+#### 13.10.3 Pair context and key schedule
+
+```
+pairContext = 0x11 u8(len) userId
+            ‖ 0x12 u8(len) phoneDeviceId
+            ‖ 0x13 u8(len) peerDeviceId
+            ‖ 0x14 be64(pairEpoch)
+
+salt        = UTF8(pairingId)
+
+KEK_i = HKDF-SHA-256(salt, ikm = ECDH(epk_priv, K_i),
+            info = "cc-e2e-v1/kek" ‖ pairContext ‖ 0x15 u8(65) K_i)   -> 32 bytes
+k_p2c = HKDF-SHA-256(salt, ikm = SK, info = "cc-e2e-v1/p2c" ‖ pairContext) -> 32
+k_c2p = HKDF-SHA-256(salt, ikm = SK, info = "cc-e2e-v1/c2p" ‖ pairContext) -> 32
+```
+
+- `K_i` is the recipient's static public key in the Gate 1 R1 wire encoding:
+  uncompressed SEC1, `0x04`-prefixed, **exactly 65 bytes**. Reject any other
+  length at import — do not infer.
+- The three labels are distinct suffixes of a common prefix, so the same `salt`
+  and `pairContext` can never yield the same key for two purposes.
+- `pairEpoch` is `be64` via BigInt, **not** a JS number: a value above 2^53 must
+  not silently round on the web side and derive a different key from the one
+  Kotlin derives from the same value.
+- **The KEK info binds `K_i` but not `epk`, and this is correct** — recorded so
+  a later reader does not "fix" it. The ECDH ikm already binds `epk`
+  cryptographically, and `pairEpoch` bumps on every Accept, so a wrap cannot be
+  replayed into another epoch. Binding `K_i` is the load-bearing part: it is
+  what stops a wrap minted for the web page from opening in the service worker.
+
+**Directional keys never cross.** `k_p2c ≠ k_c2p`, so a frame reflected back at
+its sender cannot decrypt under the sender's own receive key. **Mandatory
+consequence for implementers:** each side holds exactly one *send* key and one
+*receive* key and **MUST NOT be able to name the other**. There is deliberately
+no `keyForDirection(dir)` helper anywhere in this protocol — directional
+separation enforced by a naming convention is directional separation that will
+be violated.
+
+#### 13.10.4 AEAD
+
+```
+cipher = AES-256-GCM, 128-bit tag, 96-bit nonce.
+
+nonce (12 B) = sessionPrefix(4 B, random, per (kid,direction)) ‖ be64(seq)
+
+AAD = 0x21 u8(len) frameType          (ASCII, e.g. "SMS_RECEIVED")
+    ‖ 0x22 u8(len) kid                (ASCII)
+    ‖ 0x23 be64(seq)                  (the SAME seq as the nonce)
+    ‖ 0x24 u8 direction               (0x01 = p2c, 0x02 = c2p)
+    ‖ 0x25 be64(pairEpoch)
+
+plaintext fed to GCM = the §13.4 padded block (be32(len) ‖ plaintext ‖ 0x00*).
+```
+
+**Pad first, then seal.** Sealing first would put the real plaintext length in
+the clear, which is the entire point of §13.4.
+
+**The AAD is NOT the JSON header bytes.** The wire header `{e,kid,s}` is JSON,
+and JSON key order, spacing and number formatting are not canonical across
+Kotlin and JS. Both sides **MUST parse the header and re-encode the five fields
+above**. Authenticating serializer output would make a whitespace difference
+present itself as a decryption failure.
+
+What the AAD buys: it binds `frameType`, so a sealed `CALL_STATUS` cannot be
+relabelled `SMS_RECEIVED` by the relay; it binds `seq`, so a frame cannot be
+moved to a different sequence position to slip the §13.5 dedupe window; it binds
+`direction` and `pairEpoch`, so replay across directions or epochs fails
+authentication rather than decrypting into something plausible.
+
+#### 13.10.5 The nonce counter — four rules, all fail-closed
+
+1. **Counter-based, never random-only.** `seq` is per `(kid, direction)`, starts
+   at `0`, strictly increments, and never repeats under a given key. A 96-bit
+   random nonce would collide around 2^48 frames by the birthday bound —
+   comfortable, but "comfortable" is the wrong standard for a failure whose cost
+   is total. The counter already exists: §13.5's dedupe window is keyed on it.
+2. **Uniqueness comes from the counter, not the prefix.** The 4-byte random
+   `sessionPrefix` is defence in depth against a state-restore bug. Anyone
+   reasoning "the prefix is random, so a counter collision is fine" has
+   reintroduced the bug.
+3. **Persist before emit, and fail closed.** The counter MUST be durably
+   committed *before* the frame it authorises leaves the device. A device that
+   starts and cannot prove its counter is strictly beyond every value it has
+   used — restore from backup, cleared storage, corrupt state — **MUST refuse to
+   encrypt and force a rekey**. Never resume at a guess, never restart at 0.
+   A1 names this the single most likely way this design gets broken in the
+   field, an Android restore-from-backup silently replaying counters, so it is
+   an acceptance criterion with its own restore-from-backup test rather than a
+   note. In `lib/e2e/kdf.mjs` it is a constructor precondition: `createSender()`
+   refuses without an awaited durable commit and refuses outright without a
+   proven counter floor.
+4. **The rekey bound is load-bearing now.** §13.8's rekey at 2^32 frames /
+   30 days keeps `seq` far from any wrap. It is no longer only hygiene.
+
+#### 13.10.6 Where this lives
+
+- `lib/e2e/kdf.mjs` + `lib/e2e/kdf.d.mts` — one `.mjs`, no build step, so node,
+  the web page (P2) and the MV3 service worker (P3) import the same bytes
+  (Gate 1 R2). The sidecar is `.d.mts`, not `.d.ts`: TypeScript resolves the
+  types for `./kdf.mjs` at `./kdf.d.mts` and never consults a `.d.ts` beside an
+  `.mjs`.
+- `tests/kdf-vectors.json` — frozen vectors. The context / labels / traffic /
+  kek blocks are P4's proposal values, which Security recomputed independently
+  and ratified byte for byte; they **must not be regenerated**. The `aead` block
+  is A1's own amended set: the full AEAD vector, the three 256-byte-id cases
+  that must throw, the AAD tamper, and the cross-direction negative.
+- `tests/kdf-vectors.test.mjs` (web + service-worker context) and
+  `E2eKdfVectorsTest` (Android) assert **the same file**, so a drift in either
+  lane fails its own build rather than surfacing as "Encrypted mode never
+  pairs".
