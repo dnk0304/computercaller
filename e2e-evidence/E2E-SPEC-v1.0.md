@@ -985,6 +985,48 @@ J.1/J.1b/J.1c/J.3/J.5 through its *decode* path with the full `wraps[]`; P3
 asserts J.1/J.1b/J.4 through the `PAIR_STATE` path without the deviceId set** —
 proving (c) is correctly skipped there and (b) correctly binds.
 
+**Vector K in `tests/kdf-vectors.json`** (`canonicalPeerByteOrder`) — GATE1
+"Addendum A4 — vector K: **COUNTERSIGNED**", 2026-09-17T19:07:20Z. Vector J
+freezes the rule's bytes but **cannot catch a wrong comparator**: all of its
+deviceIds are pure ASCII, where unsigned UTF-8 byte order, signed byte order and
+UTF-16 code-unit order all agree. K is the fixture where they disagree, on J's
+otherwise-unchanged fixtures, and it is **two** mandatory vectors because one
+pair cannot pin both bugs — signed-vs-unsigned diverges only when the first
+differing byte is ASCII vs non-ASCII, UTF-16-vs-code-point only when the first
+differing character is BMP ≥ U+E000 vs supplementary, and those conditions are
+mutually exclusive at the same position.
+
+- **K1** catches **UTF-16 code-unit order** (Kotlin `String.minOrNull()`, JS
+  `<`): `"dev-�-01"` vs `"dev-𐀀-01"` (U+10000). Canonical =
+  `"dev-�-01"`. A signed-`Byte` implementation picks the **correct** id
+  here, so K1 alone does **not** satisfy the requirement.
+- **K2** catches **signed byte comparison** (Kotlin `Byte`, Java `byte`):
+  `"dev-z-01"` vs the U+10000 id. Canonical = `"dev-z-01"` (`0x7A < 0xF0`
+  unsigned; signed reads `0xF0` as −16 and picks the wrong id). UTF-16 order
+  agrees with unsigned here, so K2 alone does not satisfy it either.
+
+Each is frozen in **both** `wraps[]` orders: selection is a function of the
+**set**, never of arrival order. The negatives (K1.2, K2.3) freeze the key the
+wrong comparator would derive — which is the point: the derivation **succeeds**,
+it is simply a key nobody else holds, so without the refusal the break is silent.
+The page lane MUST refuse them; the SW lane, holding no set, skips clause (c)
+and anchors on clause (b) (K.4, unchanged from A4).
+
+**CORRECTION, binding.** An earlier statement of this requirement asserted that
+U+10000 (`F0 90 80 80`) sorts **below** U+FFFD (`EF BF BD`) under unsigned UTF-8
+byte order. It does not: unsigned UTF-8 byte order is identical to Unicode
+code-point order, `0xEF < 0xF0`, so **U+FFFD is the lower** and is the canonical
+peer. The inverted direction is the **UTF-16 answer** — precisely the wrong
+answer the vector exists to catch, so freezing it would have pinned the bug
+instead of the rule. A4-R2's rule is unchanged; only the illustrative direction
+was wrong.
+
+**Implementation requirement (normative).** `canonicalPeerDeviceId(wraps)` MUST
+compare `new TextEncoder().encode(id)` (`Uint8Array`, unsigned by construction)
+element-wise, shorter-is-lower on a common prefix. It MUST NOT use JS string
+`<`, `Array.prototype.sort` on strings, Kotlin `String.minOrNull()` /
+`compareTo`, or any signed-`Byte` comparison.
+
 **Scope.** A4 blocks **P3's multi-recipient acceptance only**. P2 / P3 / P4
 sealing on the **single-recipient** path continues under A3 unchanged — A4-R2's
 invariance proof (J.3 ≡ I.1) is what makes that safe rather than hopeful. A1 /

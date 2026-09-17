@@ -819,6 +819,150 @@ const NP = V.noncePrefixes;
   }
 }
 
+// ── 6e. (K) the canonical ORDER rule — A4 vector K, COUNTERSIGNED ──────────
+// J proves the RULE and freezes the bytes, but every one of its deviceIds is
+// pure ASCII, where unsigned UTF-8 byte order, SIGNED byte order and UTF-16
+// code-unit order all AGREE. J therefore cannot catch a wrong comparator at
+// all. K is the fixture where they disagree, and it is TWO vectors because one
+// pair cannot pin both bugs: signed-vs-unsigned diverges only when the first
+// differing byte is ASCII vs non-ASCII, UTF-16-vs-code-point only when the
+// first differing CHARACTER is BMP≥U+E000 vs supplementary, and those
+// conditions are mutually exclusive at the same position. On K1 a signed-Byte
+// implementation gives the CORRECT answer and would pass; K2 is what catches
+// it. P4 hit exactly this on Android at 86aed97.
+{
+  const K = V.canonicalPeerByteOrder;
+  const SK = fromHex(V.traffic.sessionKeyHex);
+  const F = K.sharedFixture;
+
+  // The three comparators, written out so the fixture's discriminating power is
+  // demonstrated rather than asserted. Only `unsigned` is the module's rule.
+  const bytesOf = (s) => new TextEncoder().encode(s);
+  const pickUnsigned = (ids) => ids.slice().sort((x, y) => {
+    const a = bytesOf(x), b = bytesOf(y);
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return a.length - b.length;
+  })[0];
+  const pickSigned = (ids) => ids.slice().sort((x, y) => {
+    const a = bytesOf(x), b = bytesOf(y);
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+      const d = (a[i] << 24 >> 24) - (b[i] << 24 >> 24);
+      if (d !== 0) return d;
+    }
+    return a.length - b.length;
+  })[0];
+  const pickUtf16 = (ids) => ids.slice().sort()[0];
+
+  for (const name of ['K1', 'K2']) {
+    const T = K[name];
+    const ids = [T.idA, T.idB];
+
+    // The fixture must actually encode what it claims, or every assertion below
+    // is about a string that is not the one the vector froze.
+    eq(`${name}: idA encodes to the frozen UTF-8 bytes`, toHex(bytesOf(T.idA)), T.idAUtf8Hex);
+    eq(`${name}: idB encodes to the frozen UTF-8 bytes`, toHex(bytesOf(T.idB)), T.idBUtf8Hex);
+
+    // The module's answer, in BOTH array orders — selection must be a function
+    // of the SET, never of arrival order, or a relay that merely re-orders
+    // wraps[] without editing a byte could steer the derivation (A4-M4 forbids
+    // the reorder; this makes the receiver not care).
+    eq(`${name}: canonical peer, wraps[] in order A,B`,
+      canonicalPeerDeviceId(T.wrapsOrderAB), T.canonicalPeerDeviceId);
+    eq(`${name}: canonical peer, wraps[] in order B,A`,
+      canonicalPeerDeviceId(T.wrapsOrderBA), T.canonicalPeerDeviceId);
+    check(`${name}: …so selection is order-independent`, T.orderIndependent === true);
+    check(`${name}: the two wraps[] orderings really are reversed, not duplicates`,
+      T.wrapsOrderAB[0].deviceId === T.wrapsOrderBA[1].deviceId
+      && T.wrapsOrderAB[1].deviceId === T.wrapsOrderBA[0].deviceId);
+
+    // The truth table, demonstrated. This is what makes K discriminating rather
+    // than merely another positive: on each vector exactly one WRONG comparator
+    // disagrees with the module, and the file says which.
+    const TT = K.comparatorTruthTable[name];
+    eq(`${name}: an unsigned-UTF-8 comparator agrees with the module`, pickUnsigned(ids), TT.unsignedUtf8);
+    eq(`${name}: a SIGNED-byte comparator picks the vector's stated id`, pickSigned(ids), TT.signedBytes);
+    eq(`${name}: a UTF-16 comparator picks the vector's stated id`, pickUtf16(ids), TT.utf16CodeUnits);
+    eq(`${name}: the module follows the UNSIGNED column`, canonicalPeerDeviceId(ids), TT.unsignedUtf8);
+    eq(`${name}: …which is the column the file marks correct`, K.comparatorTruthTable.correctColumn, 'unsignedUtf8');
+    // Exactly one of the two wrong comparators must DISAGREE on this vector —
+    // that is the vector's entire discriminating power, and if an edit ever made
+    // both agree the vector would pass vacuously.
+    check(`${name}: exactly one wrong comparator disagrees here (the other is vacuous)`,
+      (TT.signedBytes !== TT.unsignedUtf8) !== (TT.utf16CodeUnits !== TT.unsignedUtf8),
+      `signed=${TT.signedBytes} utf16=${TT.utf16CodeUnits} unsigned=${TT.unsignedUtf8}`);
+
+    // The positive: ctx built on the canonical peer reproduces Security's
+    // frozen context bytes, traffic keys and nonce prefixes.
+    const pos = T.positiveK1_1 || T.positiveK2_1;
+    eq(`${name}.1: ctx.peerDeviceId IS the canonical peer`, pos.ctxPeerDeviceId, T.canonicalPeerDeviceId);
+    const ctxWire = {
+      pairingId: F.pairingId, phoneDeviceId: F.phoneDeviceId,
+      peerDeviceId: pos.ctxPeerDeviceId, pairEpoch: F.pairEpoch,
+    };
+    const r = pairContextFromWire(ctxWire, { userId: F.localUserId, recipientDeviceIds: T.wrapsOrderAB });
+    eq(`${name}.1: the frozen context bytes`, toHex(r.contextBytes), pos.contextBytesHex);
+    const keys = await trafficKeys({ pairingId: F.pairingId, sessionKey: SK, context: r.contextBytes, role: 'phone' });
+    eq(`${name}.1: k_p2c`, toHex(keys.send.rawBytes), pos.phoneToComputerKeyHex);
+    eq(`${name}.1: k_c2p`, toHex(keys.recv.rawBytes), pos.computerToPhoneKeyHex);
+    eq(`${name}.1: np2c`, toHex(keys.send.sessionPrefix), pos.np2cHex);
+    eq(`${name}.1: nc2p`, toHex(keys.recv.sessionPrefix), pos.nc2pHex);
+    // The reversed wraps[] must reach the SAME bytes, not merely the same id.
+    eq(`${name}.1: the reversed wraps[] derives byte-identical context`,
+      toHex(pairContextFromWire(ctxWire, { userId: F.localUserId, recipientDeviceIds: T.wrapsOrderBA }).contextBytes),
+      pos.contextBytesHex);
+
+    // The negative: the id a WRONG comparator would choose. The page lane holds
+    // wraps[] and MUST refuse it — and the derived key is frozen too, to show
+    // what refusing actually prevents: the derivation SUCCEEDS, it is simply a
+    // key nobody else holds, so without the refusal the break is silent.
+    const neg = T.negativeK1_2Utf16Pick || T.negativeK2_3SignedPick;
+    const wrongCtx = { ...ctxWire, peerDeviceId: neg.wrongCanonical };
+    check(`${name}: the wrong-comparator id is NOT the canonical one`,
+      neg.wrongCanonical !== T.canonicalPeerDeviceId);
+    await throws(`${name}: the page lane (holds wraps[]) REFUSES the wrong-comparator ctx`,
+      () => pairContextFromWire(wrongCtx, { userId: F.localUserId, recipientDeviceIds: T.wrapsOrderAB }), 'canonical');
+    check(`${name}: the vector declares the page lane must refuse`, neg.pageLaneMustRefuse === true);
+    // K.4 — the SW lane holds no set, so clause (c) is SKIPPED there. Its
+    // anchor is clause (b), the wrap opening under its own KEK, which lives at
+    // unwrap. This control is what proves (c) is conditional and not silently
+    // skipped everywhere.
+    const swDerived = pairContextFromWire(wrongCtx, { userId: F.localUserId });
+    eq(`${name}: K.4 CONTROL — the SW lane derives (clause (c) skipped, no wraps[])`,
+      toHex(swDerived.contextBytes), neg.contextBytesHex);
+    const wrongKeys = await trafficKeys({ pairingId: F.pairingId, sessionKey: SK, context: swDerived.contextBytes, role: 'phone' });
+    eq(`${name}: the wrong-comparator k_p2c is Security's frozen value`,
+      toHex(wrongKeys.send.rawBytes), neg.phoneToComputerKeyHex);
+    check(`${name}: …and it DIFFERS from the canonical key — the break would be silent`,
+      neg.phoneToComputerKeyHex !== pos.phoneToComputerKeyHex && neg.differsFromCanonical === true);
+    // K's keys must not collide with J's or I's, or K would be re-proving them.
+    check(`${name}.1: k_p2c differs from vector J's and vector I.1's`,
+      pos.phoneToComputerKeyHex !== V.canonicalPeer.positiveJ1.phoneToComputerKeyHex
+      && pos.phoneToComputerKeyHex !== V.ctxWire.positiveI1.phoneToComputerKeyHex);
+  }
+
+  // The vacuity notes are part of the countersign: K1 alone does NOT satisfy
+  // the requirement, and the file has to say so where a reader will see it.
+  eq('K1.3: signed byte order picks the CORRECT id on K1 — vacuous there',
+    K.K1.K1_3SignedIsVacuous.signedBytePick, K.K1.canonicalPeerDeviceId);
+  check('K1.3: …and the file marks it non-discriminating', K.K1.K1_3SignedIsVacuous.discriminating === false);
+  eq('K2.2: UTF-16 order picks the CORRECT id on K2 — vacuous there',
+    K.K2.K2_2Utf16IsVacuous.utf16Pick, K.K2.canonicalPeerDeviceId);
+  check('K2.2: …and the file marks it non-discriminating', K.K2.K2_2Utf16IsVacuous.discriminating === false);
+  // Together they must leave NO wrong comparator that passes both.
+  const TT = K.comparatorTruthTable;
+  check('K1+K2: no wrong comparator satisfies BOTH vectors',
+    (TT.K1.signedBytes !== TT.K1.unsignedUtf8 || TT.K2.signedBytes !== TT.K2.unsignedUtf8)
+    && (TT.K1.utf16CodeUnits !== TT.K1.unsignedUtf8 || TT.K2.utf16CodeUnits !== TT.K2.unsignedUtf8));
+  check('K.4: the file records that the SW lane skips clause (c) and anchors on (b)',
+    K.K4LaneScope.pageLaneChecksClauseC === true && K.K4LaneScope.swLaneChecksClauseC === false
+    && /clause \(b\)/.test(K.K4LaneScope.swLaneAnchor));
+  // Both negatives land on the same supplementary id, so they share a key. Said
+  // out loud, because two frozen values being equal otherwise looks like a
+  // copy-paste error rather than the fact it is.
+  eq('K1.2 and K2.3 share a negative key — both wrong comparators pick the same id',
+    K.K1.negativeK1_2Utf16Pick.phoneToComputerKeyHex, K.K2.negativeK2_3SignedPick.phoneToComputerKeyHex);
+}
+
 // ── 7. persist-before-emit / FAIL CLOSED (A1 (3)) ──────────────────────────
 // The rule A1 calls the single most likely one to be quietly skipped, so it is
 // a constructor precondition rather than a comment — and therefore testable.
@@ -1069,6 +1213,33 @@ check('be64 does not round above 2^53',
       a4.includes('canonicalPeerDeviceId('), true);
     check('drift guard: §13.10.9 names the vector block the JSON actually carries',
       a4.includes('`canonicalPeer`') && Object.keys(V).includes('canonicalPeer'));
+
+    // Vector K's half of §13.10.9. K is the countersigned fixture that makes
+    // the comparator testable at all, so the spec must carry BOTH vectors and
+    // the reason neither alone is sufficient — a spec that mentioned only K1
+    // would document a guard that does not catch the Android bug it exists for.
+    check('drift guard: §13.10.9 names the K block the JSON actually carries',
+      a4.includes('`canonicalPeerByteOrder`') && Object.keys(V).includes('canonicalPeerByteOrder'));
+    check('drift guard: §13.10.9 carries BOTH K1 and K2, and says neither alone suffices',
+      /\*\*K1\*\*/.test(a4) && /\*\*K2\*\*/.test(a4)
+      && a4flat.includes('K1 alone does **not** satisfy the requirement')
+      && a4flat.includes('so K2 alone does not satisfy it either'));
+    check('drift guard: §13.10.9 records the binding CORRECTION to the inverted premise',
+      a4flat.includes('**U+FFFD is the lower**') && /is the \*\*UTF-16 answer\*\*/.test(a4flat));
+    check('drift guard: §13.10.9 forbids the three wrong comparators by name',
+      a4.includes('String.minOrNull()') && a4.includes('signed-`Byte`')
+      && a4.includes('`Array.prototype.sort` on strings'));
+    check('drift guard: §13.10.9 requires BOTH wraps[] orders be frozen',
+      a4flat.includes('frozen in **both** `wraps[]` orders'));
+    for (const hexField of [
+      V.canonicalPeerByteOrder.K1.positiveK1_1.phoneToComputerKeyHex,
+      V.canonicalPeerByteOrder.K2.positiveK2_1.phoneToComputerKeyHex,
+    ]) {
+      check('drift guard: the JSON\'s K keys are well-formed 32-byte hex', /^[0-9a-f]{64}$/.test(hexField));
+    }
+    check('drift guard: the spec\'s K1 canonical id IS the JSON\'s',
+      a4.includes(V.canonicalPeerByteOrder.K2.canonicalPeerDeviceId)
+      && V.canonicalPeerByteOrder.K1.canonicalPeerDeviceId === 'dev-�-01');
 
     // Control: these slices must be capable of failing.
     check('drift guard control: a MUST the addenda do NOT define is absent',

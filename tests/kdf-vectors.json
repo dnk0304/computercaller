@@ -184,6 +184,98 @@
     "assertionSplitNote": "What makes J cross-implementation rather than two copies of one belief: P4 asserts J.1 + J.3's canonical selection through its ENCODE path (it builds wraps[] and picks the peer); P2 asserts J.1/J.1b/J.1c/J.3/J.5 through its DECODE path with the full wraps[]; P3 asserts J.1/J.1b/J.4 through the PAIR_STATE path WITHOUT the deviceId set, proving A3-M3(c) is correctly skipped there and (b) correctly binds.",
     "sasNote": "s13.3 stays FROZEN — deviceIds are NOT added to the SAS. pairingId (the salt) + pairEpoch + the full static key set K_1..K_n already cover everything the canonical-peer choice can affect: pairingId and pairEpoch are SAS-visible, and phoneDeviceId/peerDeviceId are key-binding (editing either yields universal authentication failure on frame one — a property A4 STRENGTHENS, since one shared key set means a tampered canonical peer breaks EVERY recipient identically and loudly). Adding deviceIds would re-freeze s13.3 for zero security property and would make the user-facing digits depend on relay-mutable NON-KEY metadata, converting a rename from both-sides-fail-loudly into the-digits-also-disagree — teaching users to dismiss mismatches."
   },
+  "canonicalPeerByteOrder": {
+    "_comment": "Vector K — GATE1 'Addendum A4 — vector K: COUNTERSIGNED', 2026-09-17T19:07:20Z, authored and independently recomputed by Security in a clean room (security/PROJECTS/computercaller/e2e/a4-vector-k-verify.mjs, importing nothing from lib/e2e/kdf.mjs). Frozen VERBATIM. Fixtures are vector J's and UNCHANGED (SK a0a1..bebf, pairingId/salt pair-7f3a9c21, phoneDeviceId dev-phone-01, pairEpoch 42, LOCAL userId user-0191aa, labels cc-e2e-v1/{p2c,c2p,np2c,nc2p}); only wraps[].deviceId differs, so K isolates the canonical-ORDER rule from everything else.",
+    "_whyJIsNotEnough": "Vector J's deviceIds are pure ASCII, where unsigned UTF-8 byte order, SIGNED byte order and UTF-16 code-unit order all AGREE. J therefore cannot catch a wrong comparator at all. K is the fixture where they disagree. P4 hit exactly this on Android at 86aed97.",
+    "_whyTwoVectors": "ONE two-id vector cannot pin both bugs, and Security's countersign is explicit that K1 alone does NOT satisfy the requirement. Signed-vs-unsigned byte order diverges only when the first differing byte is ASCII vs non-ASCII; UTF-16-vs-code-point order diverges only when the first differing CHARACTER is BMP>=U+E000 vs supplementary. Those conditions are MUTUALLY EXCLUSIVE at the same position — a supplementary lead byte is F0..F4 and a BMP>=E000 lead byte is EE/EF, both non-ASCII, so signed and unsigned agree there. On K1's pair a signed-Byte Kotlin implementation gives the CORRECT answer and would PASS; K2 is what catches it.",
+    "_correctionToAddendum2": "Ken's Addendum 2 stated that U+10000 (F0 90 80 80) sorts BELOW U+FFFD (EF BF BD) under unsigned UTF-8 byte order. Security's countersign rules that INVERTED and binding: UTF-8 unsigned byte order is identical to Unicode code-point order, 0xEF < 0xF0, so U+FFFD sorts BELOW U+10000 and is the canonical peer. The inverted direction is the UTF-16 answer (D800 < FFFD) — precisely the WRONG answer the vector exists to catch, so freezing it would have pinned the bug instead of the rule. A4-R2's RULE is unchanged; only Addendum 2's illustrative direction was wrong.",
+    "_rule": "canonicalPeerDeviceId(wraps) MUST compare new TextEncoder().encode(id) (Uint8Array, unsigned by construction) element-wise, shorter-is-lower on a common prefix. It MUST NOT use JS string <, Array.prototype.sort on strings, Kotlin String.minOrNull()/compareTo, or any signed-Byte comparison.",
+    "sharedFixture": {
+      "pairingId": "pair-7f3a9c21",
+      "phoneDeviceId": "dev-phone-01",
+      "pairEpoch": "42",
+      "localUserId": "user-0191aa",
+      "sessionKeyRef": "traffic.sessionKeyHex (a0a1..bebf) — the same SK as E-H, I and J"
+    },
+    "K1": {
+      "id": "K1-utf16-code-unit-order-is-the-discriminator",
+      "_comment": "Catches UTF-16 code-unit order — Kotlin String.minOrNull(), JS string <. U+FFFD is one code unit FFFD; U+10000 is the surrogate pair D800 DC00, and D800 < FFFD, so UTF-16 order picks the WRONG id.",
+      "idA": "dev-�-01",
+      "idAUtf8Hex": "6465762defbfbd2d3031",
+      "idB": "dev-𐀀-01",
+      "idBUtf8Hex": "6465762df09080802d3031",
+      "wrapsOrderAB": [{ "deviceId": "dev-�-01" }, { "deviceId": "dev-𐀀-01" }],
+      "wrapsOrderBA": [{ "deviceId": "dev-𐀀-01" }, { "deviceId": "dev-�-01" }],
+      "orderIndependent": true,
+      "canonicalPeerDeviceId": "dev-�-01",
+      "positiveK1_1": {
+        "ctxPeerDeviceId": "dev-�-01",
+        "contextBytesHex": "110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762defbfbd2d303114000000000000002a",
+        "phoneToComputerKeyHex": "b165af0da430efc2434848b1ca7d677e86374d38d0e73a83fa17c28ab69125f7",
+        "computerToPhoneKeyHex": "de6e80ee1e2fff3c719fdf71d6b18a8ff528fc2729ed7abd2da39dfee8896625",
+        "np2cHex": "20cc1730",
+        "nc2pHex": "cfc3334b"
+      },
+      "negativeK1_2Utf16Pick": {
+        "_comment": "The id a UTF-16-ordering implementation would choose. The page lane, which holds wraps[], MUST REFUSE this ctx — and the derived key is included to show the failure is silent without that refusal: the derivation SUCCEEDS, it is simply a key nobody else holds.",
+        "wrongCanonical": "dev-𐀀-01",
+        "contextBytesHex": "110b757365722d303139316161120c6465762d70686f6e652d3031130b6465762df09080802d303114000000000000002a",
+        "phoneToComputerKeyHex": "4270886523cebaf18986ac82a8ed7197e3e5ecb5adce9a436d1c981bd8cb797d",
+        "differsFromCanonical": true,
+        "pageLaneMustRefuse": true
+      },
+      "K1_3SignedIsVacuous": {
+        "_comment": "Signed byte order picks id A on this pair — the CORRECT id — so K1 cannot detect a signed-Byte implementation. Recorded explicitly so nobody mistakes K1 for full coverage. This is exactly why K2 exists.",
+        "signedBytePick": "dev-�-01",
+        "discriminating": false
+      }
+    },
+    "K2": {
+      "id": "K2-signed-byte-order-is-the-discriminator",
+      "_comment": "Catches SIGNED byte comparison — Kotlin Byte, Java byte. 0x7A is +122 and 0xF0 is -16, so a signed comparison picks the WRONG id while unsigned correctly picks the ASCII one.",
+      "idA": "dev-z-01",
+      "idAUtf8Hex": "6465762d7a2d3031",
+      "idB": "dev-𐀀-01",
+      "idBUtf8Hex": "6465762df09080802d3031",
+      "wrapsOrderAB": [{ "deviceId": "dev-z-01" }, { "deviceId": "dev-𐀀-01" }],
+      "wrapsOrderBA": [{ "deviceId": "dev-𐀀-01" }, { "deviceId": "dev-z-01" }],
+      "orderIndependent": true,
+      "canonicalPeerDeviceId": "dev-z-01",
+      "positiveK2_1": {
+        "ctxPeerDeviceId": "dev-z-01",
+        "contextBytesHex": "110b757365722d303139316161120c6465762d70686f6e652d303113086465762d7a2d303114000000000000002a",
+        "phoneToComputerKeyHex": "f73869c32db8cabde77474e244e27eb226fb2854ca1e836af4aae4ad6cb9366f",
+        "computerToPhoneKeyHex": "da329d3d68736a28bd292a7cbcdfa64ddca96faf169fac133d7633fbb7e98c7b",
+        "np2cHex": "704de086",
+        "nc2pHex": "b9739822"
+      },
+      "negativeK2_3SignedPick": {
+        "_comment": "The id a signed-Byte implementation would choose (0xF0 -> -16 < 0x7A -> 122). Page lane MUST REFUSE. Note the ctx and key are byte-identical to K1.2's, because both wrong comparators land on the same supplementary id — which is why the two vectors share a negative and still pin different bugs.",
+        "wrongCanonical": "dev-𐀀-01",
+        "contextBytesHex": "110b757365722d303139316161120c6465762d70686f6e652d3031130b6465762df09080802d303114000000000000002a",
+        "phoneToComputerKeyHex": "4270886523cebaf18986ac82a8ed7197e3e5ecb5adce9a436d1c981bd8cb797d",
+        "differsFromCanonical": true,
+        "pageLaneMustRefuse": true
+      },
+      "K2_2Utf16IsVacuous": {
+        "_comment": "UTF-16 order picks id A on this pair — the CORRECT id — so K2 cannot detect a UTF-16-ordering implementation. That is why K1 exists. Together K1 and K2 leave no wrong comparator that passes both.",
+        "utf16Pick": "dev-z-01",
+        "discriminating": false
+      }
+    },
+    "K4LaneScope": {
+      "_comment": "Unchanged from A4. Clause (c) — the canonical-peer check — is evaluated ONLY where the receiver holds wraps[] (the page lane, via ACCEPT_PAIRING / PAIRING_ACTIVE). The SW lane (PAIR_STATE, singular wrap) skips (c) and MUST NOT substitute its own deviceId; its cryptographic anchor remains clause (b) — its own wrap opens under KEK(ctx, its own static key).",
+      "pageLaneChecksClauseC": true,
+      "swLaneChecksClauseC": false,
+      "swLaneAnchor": "clause (b): own wrap opens under KEK(ctx, own static key)"
+    },
+    "comparatorTruthTable": {
+      "_comment": "Exactly one column is correct for BOTH rows, so no single wrong comparator satisfies the whole block and no subset of it passes by luck.",
+      "K1": { "unsignedUtf8": "dev-�-01", "signedBytes": "dev-�-01", "utf16CodeUnits": "dev-𐀀-01" },
+      "K2": { "unsignedUtf8": "dev-z-01", "signedBytes": "dev-𐀀-01", "utf16CodeUnits": "dev-z-01" },
+      "correctColumn": "unsignedUtf8"
+    }
+  },
   "kek": {
     "sharedSecretHex": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da",
     "recipients": [
