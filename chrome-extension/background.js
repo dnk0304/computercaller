@@ -14,7 +14,21 @@
  * that reconnects if the SW was ever torn down while a session token exists.
  */
 
-importScripts('config.js');
+// P3 (a): the worker is now an ES MODULE (manifest `background.type:"module"`).
+// `importScripts` does not exist in a module worker, and a module worker is the
+// only kind that can `import` — which is what the frozen key schedule requires,
+// since lib/e2e/kdf.mjs is an .mjs with named exports and R-A forbids the build
+// step that would turn it into anything else. config.js is UNCHANGED and still
+// loads as a classic <script> in popup.html / popout.html / sidepanel.html; it
+// assigns `self.CC`, and every reference in this file is already `self.CC.*`
+// (not bare `CC`), so importing it for its side effect is exactly equivalent to
+// the importScripts it replaces.
+import './config.js';
+import {
+  loadOrCreateDeviceKey,
+  publicIdentity,
+  registerDeviceKey as registerSwDeviceKey,
+} from './e2e/sw-key.js';
 
 // ── State ──────────────────────────────────────────────────────────────────
 let ws = null;
@@ -130,6 +144,75 @@ function storeToken(token) {
   return new Promise((resolve) =>
     chrome.storage.local.set({ [self.CC.TOKEN_KEY]: token }, resolve),
   );
+}
+
+// ── E2E: this worker's device key (P3 (a)) ──────────────────────────────────
+/**
+ * The key itself lives in chrome-extension/e2e/sw-key.js; what lives here is
+ * the worker's relationship to it.
+ *
+ * `swDeviceId` is cached in module scope ON PURPOSE even though module scope
+ * does not survive an MV3 eviction: it is read on the synchronous path that
+ * builds the relay URL, and re-reading IndexedDB there would mean either an
+ * await in connect() before the socket exists (fine) or a stale id (not fine).
+ * It is loaded once per worker boot by primeDeviceKey() below, and connect()
+ * awaits that priming rather than guessing.
+ *
+ * FAIL SOFT, LOUDLY. If the key cannot be loaded — an unknown record version,
+ * a broken IndexedDB — the worker still connects, just WITHOUT `?deviceId=`.
+ * The relay then sends a PAIR_STATE with no `e2e` block, which is precisely the
+ * pre-P3 behaviour every shipped build already produces and which (d) handles
+ * as counts-only. Refusing to connect would cost the user their notifications
+ * entirely in exchange for nothing.
+ */
+let swDeviceId = null;
+let swPubKey = null;
+let deviceKeyError = null;
+let deviceKeyPrimed = null;
+
+function primeDeviceKey() {
+  if (!deviceKeyPrimed) {
+    deviceKeyPrimed = publicIdentity()
+      .then((id) => {
+        swDeviceId = id.deviceId;
+        swPubKey = id.pub;
+        deviceKeyError = null;
+        trace('e2e-key', { deviceId: id.deviceId });
+        return id;
+      })
+      .catch((e) => {
+        // Never cached as a resolved value: the message is the whole diagnostic
+        // and an unknown-version record must keep saying so on every boot.
+        swDeviceId = null;
+        swPubKey = null;
+        deviceKeyError = String((e && e.message) || e);
+        console.warn('[CC-SW] e2e device key unavailable — counts-only:', deviceKeyError);
+        trace('e2e-key-fail', { why: deviceKeyError.slice(0, 120) });
+        return null;
+      });
+  }
+  return deviceKeyPrimed;
+}
+
+/**
+ * Register the key in the DeviceKey pin registry (§13.6). Best effort by
+ * design: the registry is a CHECK, and the channel that actually puts this key
+ * into a pairing is the page bridge. A failure downgrades the pair to
+ * UNVERIFIED and is logged; it never blocks the socket and never throws.
+ */
+async function registerDeviceKeyBestEffort() {
+  const token = await getToken();
+  if (!token) return;           // signed out — nothing to register against
+  const r = await registerSwDeviceKey({
+    webappOrigin: self.CC.WEBAPP_ORIGIN,
+    token,
+  });
+  if (!r.ok) {
+    console.warn('[CC-SW] device key registration failed (pair will be UNVERIFIED):', r.reason);
+    trace('e2e-register-fail', { reason: String(r.reason).slice(0, 40) });
+    return;
+  }
+  trace('e2e-register', { rotated: !!r.rotated });
 }
 
 // ── Connection indicator on the toolbar icon ────────────────────────────────
@@ -690,7 +773,16 @@ async function connect() {
     const ticket = await mintTicket(token);
     if (!ticket) { connecting = false; return; }          // token dropped
 
-    const url = `${self.CC.RELAY_BASE}?ticket=${encodeURIComponent(ticket)}&role=listener`;
+    // P3 (a). `?deviceId=` is what makes the relay hand THIS listener its own
+    // key wrap: derivePairState() splices `e2e` into PAIR_STATE only
+    // `if (block && forWs && forWs.deviceId)`. Without it the socket is
+    // byte-for-byte the pre-P3 listener and gets no wrap at all — which is a
+    // legal state (d), not an error, and is exactly what happens if the key
+    // failed to load. Appended ONLY when we have one, so the URL of a
+    // keyless worker is unchanged rather than carrying `deviceId=null`.
+    await primeDeviceKey();
+    const url = `${self.CC.RELAY_BASE}?ticket=${encodeURIComponent(ticket)}&role=listener`
+      + (swDeviceId ? `&deviceId=${encodeURIComponent(swDeviceId)}` : '');
     const sock = new WebSocket(url);
     ws = sock;
 
@@ -1219,6 +1311,8 @@ chrome.action.onClicked.addListener(() => openPopout());
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'auth-updated') {
     reconnectAttempts = 0;
+    // Registration needs a session, so a fresh sign-in is the moment to try.
+    registerDeviceKeyBestEffort().catch(() => {});
     connect();
     sendResponse?.({ ok: true });
   } else if (message?.type === 'dock') {
@@ -1228,6 +1322,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message?.type === 'dock-close') {
     // shell.js already docked. Just take the pop-out window away.
     closeSenderWindow(sender).then((ok) => sendResponse?.({ ok }));
+  } else if (message?.type === 'e2e-pubkey-get') {
+    // shell.js asks for the identity it is about to publish to the app frame
+    // over the pinned bridge. The NULL arm is deliberate and load-bearing: a
+    // worker with no key answers `{deviceId:null, pub:null}` rather than
+    // failing, so the page can tell "the SW has no key" (pair without an
+    // extension recipient — m-G counts-only) from "the message never arrived"
+    // (wait). See the bridge contract in CHECKPOINTS.
+    primeDeviceKey().then(() => sendResponse?.({
+      ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
+    }));
   } else if (message?.type === 'unread-get') {
     readUnread().then((unread) => sendResponse?.({ ok: true, unread }));
   } else if (message?.type === 'tab-viewed') {
@@ -1283,6 +1387,11 @@ chrome.runtime.onInstalled.addListener(() => { installPanelBehavior(); connect()
 // user sees the signed-out icon for the first second of every SW respawn.
 initTrace();
 installPanelBehavior();
+// Load (or mint) the device key before anything asks for it. Fire-and-forget:
+// primeDeviceKey() swallows its own failure into the counts-only state, and
+// connect() awaits the same promise rather than racing it.
+primeDeviceKey();
+registerDeviceKeyBestEffort().catch(() => {});
 refreshAuthAndIndicator();
 // Re-assert the count from storage on every worker boot. chrome.action state
 // does outlive the worker, so this is usually a no-op — but it is the only

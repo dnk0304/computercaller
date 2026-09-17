@@ -553,6 +553,52 @@ async function requestDock() {
 }
 
 /**
+ * P3 (a) — publish the SERVICE WORKER's E2E public key to the app frame.
+ *
+ * The SW is a recipient of the pairing's session key (§13.3 B9: the SAS covers
+ * the whole key set, SW key included), but it is not `room.active.browser` and
+ * therefore never takes part in the pairing handshake itself. The page does
+ * that. So the page has to learn this key from somewhere, and the only channel
+ * between a service worker and the pairing page is this bridge.
+ *
+ * Contract (agreed with P2 through Ken):
+ *   { source:'cc-ext', type:'e2e-pubkey', v:1, deviceId:string|null, pub:string|null }
+ * `pub` is SEC1 uncompressed P-256, 65 bytes, 0x04-prefixed, base64url unpadded.
+ * `deviceId` matches the relay's listener charset exactly.
+ *
+ * THE NULL ARM IS NOT AN ERROR PATH. A worker with no key still publishes
+ * `{deviceId:null, pub:null}`, because "the SW has no key — pair without it,
+ * it will show counts only" (m-G) and "the message has not arrived yet — wait"
+ * are different states that a consumer must be able to tell apart. Sending
+ * nothing collapses them into one and the page would wait forever.
+ *
+ * Sent with the SAME targetOrigin pin as every other shell→app message. This
+ * is a public key, so it is not a secret — but the pin is what stops a
+ * navigated frame from being told which device to expect, which is the
+ * substitution B9's SAS exists to make visible.
+ */
+async function sendE2ePubKey() {
+  if (!frame || !frame.contentWindow) return;
+  let identity = { v: 1, deviceId: null, pub: null };
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'e2e-pubkey-get' });
+    if (r && r.ok) identity = { v: 1, deviceId: r.deviceId ?? null, pub: r.pub ?? null };
+  } catch {
+    // Worker asleep or mid-respawn. Fall through with the null arm rather than
+    // going silent — the page can ask again.
+  }
+  // Re-checked AFTER the await: the frame can be torn down while the worker
+  // answers, and postMessage on a dead contentWindow throws.
+  if (!frame || !frame.contentWindow) return;
+  try {
+    frame.contentWindow.postMessage(
+      { source: NS, type: 'e2e-pubkey', ...identity },
+      self.CC.WEBAPP_ORIGIN,
+    );
+  } catch {}
+}
+
+/**
  * The app says which tab is on screen; the SW zeroes that counter. Sent over
  * the presence port (not runtime.sendMessage) so it shares the exact lifetime
  * of the surface reporting it.
@@ -599,6 +645,15 @@ window.addEventListener('message', (event) => {
 
   if (data.type === 'ready') {
     sendHello();
+    // Unsolicited on every `ready` so a reloaded app re-learns the key without
+    // having to know it should ask.
+    sendE2ePubKey();
+  } else if (data.type === 'e2e-pubkey-request') {
+    // On demand. Reachable ONLY from the app frame — this branch sits inside
+    // the `fromApp` verb set, and the login frame's set above is disjoint and
+    // returns before it. The signed-out login page must never be able to probe
+    // for device identity.
+    sendE2ePubKey();
   } else if (data.type === 'open-popout') {
     if (CAN_POPOUT) openPopout();
   } else if (data.type === 'dock') {
