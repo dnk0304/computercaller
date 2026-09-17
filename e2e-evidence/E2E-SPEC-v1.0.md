@@ -762,10 +762,13 @@ protocol whose cost is total. The floor is what makes A2 MUST#1 hold across a
 *replay* rather than only across an honest rekey. The SAS would also mismatch,
 but §13 makes the SAS explicitly non-blocking, so it cannot be the control here.
 
-**A3-M3 (MUST).** A receiver MUST refuse a block whose `ctx.peerDeviceId` is not
-its own `deviceId`, and — wherever it independently knows the value — whose
-`ctx.pairingId` differs from the pairingId it is party to. Both fail closed, no
-plaintext fallback.
+**A3-M3 — SUPERSEDED IN FULL by Addendum A4 (below).** Its original text —
+"a receiver MUST refuse a block whose `ctx.peerDeviceId` is not its own
+`deviceId`" — is **DELETED**, not relaxed: it contradicted A3-M1 ("`ctx` is
+pair-scoped; every recipient gets the identical object") and the two together
+admit at most ONE recipient per pairing. The replacement text, its three
+clauses, and the reason the deletion is safe for everything already shipped are
+in **§13.10.9**. The `pairingId` half survives there as clause (a).
 
 **A3-M4 (MUST).** A `mode=1` block arriving with **no `ctx`** MUST be refused,
 **not derived-from-local**. Deriving from a locally guessed context is precisely
@@ -782,8 +785,250 @@ the vector cross-implementation rather than two copies of one belief.
 
 **Where this lives.** `pairContextFromWire()` in `lib/e2e/kdf.mjs` is the ingest
 point for the web and service-worker lanes: it enforces the decimal-string
-parse, A3-M3 and A3-M4, and returns `pairEpoch` as a BigInt so the **caller**
+parse, A3-M3 (as re-scoped by §13.10.9) and A3-M4, and returns `pairEpoch` as a BigInt so the **caller**
 can apply the A3-M2 floor — which is deliberately not in the module, because the
 floor needs durable per-device storage the module does not have and must not
 invent. The relay's half is `derivePairState` in `server.js`, pinned by
 `tests/e2e-pair-state-ctx.test.mjs`.
+
+#### 13.10.9 Addendum A4 — multi-recipient `ctx` and the canonical peer
+
+**RATIFIED (1), AMENDED, 2026-09-17T20:58Z.** A3 froze two MUSTs that cannot
+both hold. A3-M1 made `ctx` **pair-scoped** — "every recipient gets the
+identical object". A3-M3 then made a receiver refuse any block whose
+`ctx.peerDeviceId` was not its own `deviceId`. Together they admit **at most one
+recipient per pairing**: the page and the extension service worker could not
+both be admitted by the same block, and §13.6's whole reason for a second
+recipient disappears. A4 resolves the contradiction and freezes a selection
+rule. It reopens no frozen frame, rekeys no shipped pairing, and **Gate 1's PASS
+verdict is unaffected**.
+
+**Why not per-recipient contexts.** A device-scoped `ctx` would mean a different
+`pairContext` per recipient, hence different `k_p2c`/`k_c2p` per recipient. It
+is not a costlier variant — it is a protocol the shipped transport cannot carry.
+Sealed phone data frames are **one ciphertext broadcast byte-identically to
+every listener** (`broadcastToListeners(room, msg, perSocket = null)` in
+`server.js`; the per-socket builder exists **only** for `PAIR_STATE`, which is
+§13.6's per-listener `wrap`). A single broadcast frame would open for exactly
+one recipient and present the other with a GCM tag failure **indistinguishable
+from a network fault** — a silent, permanent, unattributable half-break. It also
+contradicts §13.2's multi-recipient wrap design, in which every wrap's KEK
+derives from **one** context.
+
+**A4-R1 (RATIFIED).** `ctx.peerDeviceId` is the **canonical peer for
+derivation**, not "the receiver". There is ONE `ctx`, ONE `pairContext`, ONE
+traffic-key set and ONE nonce-prefix pair per pairing, shared by every
+recipient. Per-recipient separation is provided **where it already belongs** —
+the KEK, which binds the recipient's own static key on top of the shared context
+(`kekInfo = "cc-e2e-v1/kek" ‖ pairContext ‖ 0x15 u8(65) K_i`). Vector J.1c pins
+that the KEKs differ while the traffic keys do not.
+
+**A4-R2 (FROZEN) — the canonical set is `wraps[].deviceId`, NOT `recipKeys[]`.**
+
+> `canonicalPeerDeviceId(wraps)` = the **byte-wise lexicographically lowest** of
+> `wraps[].deviceId`, compared as **raw UTF-8 bytes** — not code points, not
+> locale collation, not `String.prototype.localeCompare`, not case-folded.
+
+`recipKeys[]` is the **full static key set** of the pairing — SEC1 public keys,
+and it **includes the phone** (`lib/e2eBlock-core.js`:152–155). A "lowest of
+`recipKeys[]`" is neither a deviceId nor a recipient-only set, so that wording
+MUST NOT be adopted. The recipient deviceId set lives in `wraps[].deviceId`,
+which `validateE2eBlock` already bounds (1..128 chars) and already proves
+**duplicate-free** (`lib/e2eBlock-core.js`:169–173). That uniqueness is what
+makes "lowest" **total** — there can be no tie.
+
+UTF-8 **bytes**, not JS string order: `a < b` compares UTF-16 code units and
+disagrees with byte order above U+FFFF, so a `<`-based lane and a byte-based
+lane would pick **different** canonical peers and both fail closed with a tag
+error and no attribution. The selection is deterministic and
+**order-independent**, so a re-ordered but otherwise identical offer derives the
+same keys and a reordering relay alone cannot steer.
+
+**Single-recipient invariance — FROZEN.** Tag `0x13` keeps its existing
+encoding: one id, `u8`-length-prefixed, no count byte, no list. For a
+one-recipient pairing the canonical lowest **is** that recipient, so the context
+bytes are byte-identical to what ships today. Proof, not assertion: vector
+**J.3**'s steered context — the two-recipient pairing with `peerDeviceId` forced
+to `dev-web-01` — recomputes `k_p2c = b12f964e…e060`, which is **exactly** A3
+vector I.1's frozen `phoneToComputerKeyHex`. A4 rekeys nothing already shipped,
+adds no row to E–H or I, and forces no re-pair.
+
+**A4-R3 — the membership check must be the cryptographic one.** "Refuse when
+`ctx.peerDeviceId` is not the canonical lowest" is sound against relay steering
+**only where the receiver can see the deviceId set**. It cannot on the lane that
+matters: `derivePairState`'s allowlist is `{kid, epk, mode, recipKeys, wrap,
+ctx}` — `wrap` **singular**, the opaque value only, deliberately, because
+handing a listener every wrap would put other devices' sealed key material in a
+service worker for no reason. The extension SW therefore holds **no deviceId
+list at all**. Shipping the syntactic check as a flat MUST would produce a check
+the SW must silently skip — the decorative control §13.6's pin exists to refuse.
+
+The real membership proof is already in the protocol and is strictly stronger:
+**the wrap addressed to this device opens under the KEK derived from `(ctx, its
+own static key)`.** Success proves in one step that (i) this device's `ctx`
+bytes are **byte-identical to the phone's** — a cryptographic confirmation of
+the whole shared context, canonical-peer choice included — and (ii) the phone
+deliberately addressed this device. A relay cannot forge it without `SK`.
+
+**A3-M3, re-scoped — REPLACEMENT TEXT (supersedes A3-M3 in full).**
+
+> **A3-M3 (MUST; receiver-side; fail-closed, never a plaintext fallback).** A
+> receiver MUST refuse a `mode=1` block when **any** of the following holds:
+>
+> **(a) Pairing.** `ctx.pairingId` differs from the id of the pairing it is
+> party to, wherever it independently knows that value.
+>
+> **(b) Membership — cryptographic.** The wrap addressed to it does not open
+> under the KEK derived from `(pairContext(ctx ‖ local userId), its own static
+> key K_i)`; or no wrap is addressed to it at all. The wrap that opens **is**
+> the proof of recipient status. Refusal is fail-closed: no retry in the clear,
+> no derive-anyway.
+>
+> **(c) Canonical peer — conditional, and ONLY where verifiable.** A receiver
+> that holds the full `wraps[]` (the page, via `ACCEPT_PAIRING` /
+> `PAIRING_ACTIVE`, which forward the block whole) MUST refuse when
+> `ctx.peerDeviceId` is not the byte-wise lexicographically lowest of
+> `wraps[].deviceId`. A receiver that does **not** hold the set (the extension
+> service worker, via `PAIR_STATE`, which carries only its own `wrap`) MUST NOT
+> attempt this check, and MUST NOT substitute its own `deviceId` for the
+> canonical peer — doing so is the A3-M1/A3-M3 contradiction A4 exists to
+> remove. For that receiver, (b) is the binding check.
+>
+> **DELETED:** "a receiver MUST refuse a block whose `ctx.peerDeviceId` is not
+> its own `deviceId`." It refuses every recipient except the canonical one and
+> makes multi-recipient pairing impossible. It is **removed** from
+> `pairContextFromWire()`, not merely relaxed.
+
+**Residual risk, stated plainly.** A relay that **rewrites** `wraps[].deviceId`
+(renaming, not re-keying) can move the canonical peer and desynchronise
+derivation. It is a **denial of service only**: the relay holds no `SK`, gains
+no plaintext, and every recipient fails closed on frame one. It is not a
+downgrade and not key confusion. Clause (c) narrows even that wherever the set
+is visible. Accepted, with the reasoning recorded so it is not rediscovered as a
+finding.
+
+**A4-M1 (MUST, `lib/e2e/kdf.mjs`).** `pairContextFromWire()` drops the
+`deviceId !== ctxWire.peerDeviceId` refusal and takes an optional
+`recipientDeviceIds` instead. When supplied it MUST refuse unless
+`ctx.peerDeviceId` equals the byte-wise lowest of that set; when absent it MUST
+perform **no** peer check and MUST NOT default to the caller's own `deviceId`.
+`pairingId` (a) and the A3 decimal-string/BigInt parse are unchanged. The
+implementation **rejects** a `deviceId` option rather than ignoring it: a caller
+still passing it believes a membership check is running, and silently dropping
+the option would leave that belief intact with the check gone. `canonicalPeerDeviceId(wraps)`
+is exported as the single helper both lanes and the tests use.
+
+**A4-M2 (MUST, P4 encoder).** The phone emits
+`ctx.peerDeviceId = canonicalPeerDeviceId(wraps)` under A4-R2's byte-wise UTF-8
+rule, computed over the **same** `wraps[]` it ships in that block. It MUST be
+pinned by a test with a set whose lowest is **not first in array order**.
+
+**A4-M3 (MUST, every receiver).** Unwrap failure is a **pairing abort**, never a
+degrade. §13.2 row 2's "SW absent → counts-only badges" covers a recipient that
+never had a key; it does **not** cover one whose wrap failed to open. That is a
+tampered or mismatched pairing and MUST fail closed.
+
+**A4-M4 (MUST, relay — restatement, no code change).** The relay stays a
+byte-carrier for `ctx`: it does not parse, validate, default, mint or reorder
+it, and it does not reorder `wraps[]`. Reordering would be indistinguishable
+from steering. A3-M1's splice is verbatim-forward and remains correct.
+
+**A4-M5 (SHOULD, diagnostics).** On unwrap failure a receiver logs the
+**canonical peer it derived from** and its own `deviceId` — ids only, never key
+material, never `ctx` in full. Without it the multi-recipient failure mode is a
+tag error with no attribution.
+
+**A4.1 — the SW's `pairingId` channel (Ken's ruling; PENDING Security ack).**
+Clause (a) is unverifiable on the SW lane as A4 writes it: `PAIR_STATE` carries
+`pairingId` only **inside `ctx`**, and checking `ctx.pairingId` against itself is
+a check that cannot fail. The SW's **own** `pairingId` is therefore learned two
+ways, neither of which touches the relay:
+
+1. **Handed over by the page** over the FORGE-P pinned bridge whenever the page
+   is open — the `e2e-pubkey-request` reply gains `pairingId`. The page owns the
+   pairing, so this is the authoritative source.
+2. **Otherwise TOFU** from the **first** `PAIR_STATE` `ctx` of a new
+   `pairEpoch`, persisted in `storage.session` alongside that epoch. Every later
+   `ctx` in that epoch MUST match it; a mismatch refuses. A new epoch resets it.
+
+**No relay change.** And clause (b) — the SW's own wrap opening under its own
+KEK — remains the SW's cryptographic proof of membership. A4.1 makes (a) a
+**consistency** check on that lane; it is **not** the anchor, and it does not
+weaken (b) in any way. Security to acknowledge as A4.1.
+
+**SAS — §13.3 stays FROZEN.** `pairingId` (the salt) + `pairEpoch` + the full
+static key set `K_1..K_n` already cover everything the canonical-peer choice can
+affect, and A3's test applies unchanged: **every `ctx` field is either
+SAS-visible or key-binding, and there is no wrong-but-working key reachable by
+editing `ctx`.** `pairingId` and `pairEpoch` are SAS-visible — editing either
+changes the digits on one side and the user sees it.
+`phoneDeviceId`/`peerDeviceId` are key-binding — editing either yields universal
+authentication failure on frame one, a property A4 makes *stronger*: one shared
+key set means a tampered canonical peer breaks **every** recipient identically
+and loudly rather than one of them quietly. Adding deviceIds to the SAS would
+re-freeze §13.3 for zero security property and would make the user-facing digits
+depend on relay-mutable **non-key metadata** — converting a rename from "both
+sides fail loudly" into "the digits also disagree", which teaches users to
+dismiss mismatches.
+
+**Vector J in `tests/kdf-vectors.json`** (`canonicalPeer`). Fixtures continue
+A3's, so J composes with E–H and I instead of standing apart.
+`wraps[].deviceId = ["dev-web-01", "dev-ext-02"]`, deliberately ordered so the
+canonical lowest (`dev-ext-02`) is **not** first. J.1 is the positive — one
+`ctx`, identical context bytes and identical traffic keys on both lanes. J.1b is
+the ONE broadcast ciphertext that opens for BOTH. J.1c is the per-recipient KEKs
+differing from that same `ctx`. J.2 is the `pairingId` refusal, J.3 the
+relay-steering refusal **and** the single-recipient invariance cross-check, J.4
+the non-member, J.5 the pre-A4 regression this addendum is for. **P4 asserts
+J.1 + J.3's canonical selection through its *encode* path; P2 asserts
+J.1/J.1b/J.1c/J.3/J.5 through its *decode* path with the full `wraps[]`; P3
+asserts J.1/J.1b/J.4 through the `PAIR_STATE` path without the deviceId set** —
+proving (c) is correctly skipped there and (b) correctly binds.
+
+**Vector K in `tests/kdf-vectors.json`** (`canonicalPeerByteOrder`) — GATE1
+"Addendum A4 — vector K: **COUNTERSIGNED**", 2026-09-17T19:07:20Z. Vector J
+freezes the rule's bytes but **cannot catch a wrong comparator**: all of its
+deviceIds are pure ASCII, where unsigned UTF-8 byte order, signed byte order and
+UTF-16 code-unit order all agree. K is the fixture where they disagree, on J's
+otherwise-unchanged fixtures, and it is **two** mandatory vectors because one
+pair cannot pin both bugs — signed-vs-unsigned diverges only when the first
+differing byte is ASCII vs non-ASCII, UTF-16-vs-code-point only when the first
+differing character is BMP ≥ U+E000 vs supplementary, and those conditions are
+mutually exclusive at the same position.
+
+- **K1** catches **UTF-16 code-unit order** (Kotlin `String.minOrNull()`, JS
+  `<`): `"dev-�-01"` vs `"dev-𐀀-01"` (U+10000). Canonical =
+  `"dev-�-01"`. A signed-`Byte` implementation picks the **correct** id
+  here, so K1 alone does **not** satisfy the requirement.
+- **K2** catches **signed byte comparison** (Kotlin `Byte`, Java `byte`):
+  `"dev-z-01"` vs the U+10000 id. Canonical = `"dev-z-01"` (`0x7A < 0xF0`
+  unsigned; signed reads `0xF0` as −16 and picks the wrong id). UTF-16 order
+  agrees with unsigned here, so K2 alone does not satisfy it either.
+
+Each is frozen in **both** `wraps[]` orders: selection is a function of the
+**set**, never of arrival order. The negatives (K1.2, K2.3) freeze the key the
+wrong comparator would derive — which is the point: the derivation **succeeds**,
+it is simply a key nobody else holds, so without the refusal the break is silent.
+The page lane MUST refuse them; the SW lane, holding no set, skips clause (c)
+and anchors on clause (b) (K.4, unchanged from A4).
+
+**CORRECTION, binding.** An earlier statement of this requirement asserted that
+U+10000 (`F0 90 80 80`) sorts **below** U+FFFD (`EF BF BD`) under unsigned UTF-8
+byte order. It does not: unsigned UTF-8 byte order is identical to Unicode
+code-point order, `0xEF < 0xF0`, so **U+FFFD is the lower** and is the canonical
+peer. The inverted direction is the **UTF-16 answer** — precisely the wrong
+answer the vector exists to catch, so freezing it would have pinned the bug
+instead of the rule. A4-R2's rule is unchanged; only the illustrative direction
+was wrong.
+
+**Implementation requirement (normative).** `canonicalPeerDeviceId(wraps)` MUST
+compare `new TextEncoder().encode(id)` (`Uint8Array`, unsigned by construction)
+element-wise, shorter-is-lower on a common prefix. It MUST NOT use JS string
+`<`, `Array.prototype.sort` on strings, Kotlin `String.minOrNull()` /
+`compareTo`, or any signed-`Byte` comparison.
+
+**Scope.** A4 blocks **P3's multi-recipient acceptance only**. P2 / P3 / P4
+sealing on the **single-recipient** path continues under A3 unchanged — A4-R2's
+invariance proof (J.3 ≡ I.1) is what makes that safe rather than hopeful. A1 /
+A2 / A3 conditions carry over unchanged except A3-M3, superseded in full above.
+§13.3 is untouched.

@@ -61,6 +61,8 @@ import {
   // A2 (derived nonce prefixes) and A3 (the ctx wire form).
   noncePrefixInfo, deriveNoncePrefixes, hkdfBytes, pairContextFromWire,
   LABEL_NP2C, LABEL_NC2P, PAIR_EPOCH_WIRE_RE,
+  // A4 (the canonical peer of a multi-recipient pairing).
+  canonicalPeerDeviceId,
 } from '../lib/e2e/kdf.mjs';
 import { padPlaintext } from '../lib/e2e/padding.mjs';
 
@@ -523,17 +525,19 @@ const NP = V.noncePrefixes;
   await throws('I.4: an array is not an object here either',
     () => pairContextFromWire([], { userId: I1.localUserId }), 'object');
 
-  // A3-M3: peerDeviceId must be THIS device, and pairingId must be the pairing
-  // this device is party to wherever it independently knows the value.
-  await throws('I.4: a peerDeviceId that is not this device is refused (A3-M3)',
-    () => pairContextFromWire(
-      { ...I1.ctxWire, peerDeviceId: I4.peerDeviceIdMismatch.ctxPeerDeviceId },
-      { userId: I1.localUserId, deviceId: I4.peerDeviceIdMismatch.ownDeviceId },
-    ), 'A3-M3');
-  check('I.4 control: the MATCHING deviceId is accepted (the check is not a ban)',
-    toHex(pairContextFromWire(I1.ctxWire, {
+  // I.4's peerDeviceId-mismatch case was A3-M3's "must be my own deviceId"
+  // refusal. A4 DELETED that clause, so the case is re-pointed rather than
+  // dropped: the same fixture ids now prove the clause is GONE — passing
+  // `deviceId` throws as an unknown option, and the value it used to reject is
+  // accepted when it is the canonical peer of the set it belongs to. Section 6c
+  // carries the replacement checks.
+  await throws('I.4 (A4): `deviceId` is REJECTED, not ignored — the A3-M3 self-check is deleted',
+    () => pairContextFromWire(I1.ctxWire, {
       userId: I1.localUserId, deviceId: I4.peerDeviceIdMismatch.ownDeviceId,
-    }).contextBytes) === I1.contextBytesHex);
+    }), 'A4-M1');
+  check('I.4 (A4): with no deviceId and no set, I.1 still derives the frozen bytes',
+    toHex(pairContextFromWire(I1.ctxWire, { userId: I1.localUserId }).contextBytes)
+      === I1.contextBytesHex);
   await throws('I.4: a pairingId that is not ours is refused (A3-M3)',
     () => pairContextFromWire(
       { ...I1.ctxWire, pairingId: I4.pairingIdMismatch.ctxPairingId },
@@ -570,6 +574,393 @@ const NP = V.noncePrefixes;
   check('I.4 control: 2^64-1 is accepted and does not round',
     toHex(pairContextFromWire({ ...I1.ctxWire, pairEpoch: '18446744073709551615' }, { userId: I1.localUserId })
       .contextBytes).endsWith('ffffffffffffffff'));
+}
+
+// ── 6c. (A4) the canonical peer — GATE1 Addendum A4, module behaviour ──────
+// A4 resolves a contradiction between two A3 MUSTs. A3-M1 froze `ctx` as
+// PAIR-scoped ("every recipient gets the identical object"); A3-M3 then made a
+// receiver refuse any block whose `ctx.peerDeviceId` was not its own. Together
+// those two admit at most ONE recipient, which is not a costlier multi-recipient
+// pairing — it is no multi-recipient pairing at all. This block pins the
+// deletion (A4-M1) and the rule that replaces it (A4-R2), with no frozen bytes:
+// section 6d does the bytes, against Security's independently computed vector J.
+{
+  // Deliberately ordered so the canonical lowest is NOT first in array order —
+  // an implementation that returned `wraps[0]` would pass a same-order fixture.
+  const WRAPS = [{ deviceId: 'dev-web-01', wrap: 'x' }, { deviceId: 'dev-ext-02', wrap: 'y' }];
+  const CANON = 'dev-ext-02';
+
+  eq('A4-R2: the canonical peer is the byte-wise lowest, not wraps[0]',
+    canonicalPeerDeviceId(WRAPS), CANON);
+  eq('A4-R2: …and it is ORDER-INDEPENDENT (a re-ordering relay cannot steer)',
+    canonicalPeerDeviceId([...WRAPS].reverse()), CANON);
+  eq('A4-R2: a bare deviceId[] is accepted as well as wraps[]',
+    canonicalPeerDeviceId(['dev-web-01', 'dev-ext-02']), CANON);
+
+  // UTF-8 BYTES, not UTF-16 code units. This pair is the case where `a < b` on
+  // JS strings and byte order DISAGREE: U+10000 encodes to f0 90 80 80, which is
+  // ABOVE U+FF00's ef bc 80 in UTF-8, while its leading surrogate D800 is BELOW
+  // FF00 in UTF-16. A `<`-based implementation picks the other id here, and two
+  // lanes that disagree about the canonical peer both fail closed with a tag
+  // error and no attribution — the exact silent break A4-M5 exists to name.
+  {
+    const hi = `d-\u{10000}`;      // f0 90 80 80  — HIGHER byte-wise
+    const lo = 'd-＀';         // ef bc 80     — LOWER  byte-wise
+    check('A4-R2: the fixture really does split UTF-8 from UTF-16 order',
+      (hi < lo) && !(new TextEncoder().encode(hi)[2] < new TextEncoder().encode(lo)[2]),
+      `JS-< says ${hi < lo}`);
+    eq('A4-R2: the lowest is chosen by UTF-8 BYTES, not by JS string order',
+      canonicalPeerDeviceId([hi, lo]), lo);
+  }
+
+  // Uniqueness is what makes "lowest" a TOTAL order. validateE2eBlock already
+  // proves it (lib/e2eBlock-core.js:169-173); re-asserted because a duplicate
+  // would make "the canonical peer" a coin flip rather than a rule.
+  await throws('A4-R2: a duplicate deviceId is refused — "lowest" must be total',
+    () => canonicalPeerDeviceId(['dev-a', 'dev-a']), 'duplicate');
+  await throws('A4-R2: an empty set has no canonical peer', () => canonicalPeerDeviceId([]), 'non-empty');
+  await throws('A4-R2: a non-array is refused', () => canonicalPeerDeviceId('dev-a'), 'non-empty');
+  await throws('A4-R2: a deviceId over the u8 byte cap is refused at selection',
+    () => canonicalPeerDeviceId(['dev-a', 'b'.repeat(MAX_PREFIXED_BYTES + 1)]), 'u8 cap');
+
+  const CTXW = { pairingId: 'pair-7f3a9c21', phoneDeviceId: 'dev-phone-01', peerDeviceId: CANON, pairEpoch: '42' };
+  const LOCAL_USER = 'user-0191aa';
+
+  // A4-M1, the deletion. The option is REJECTED rather than ignored: a caller
+  // still passing `deviceId` believes a membership check is running, and
+  // silently dropping it would leave that belief intact with the check gone.
+  await throws('A4-M1: `deviceId` throws — the self-check is deleted, not relaxed',
+    () => pairContextFromWire(CTXW, { userId: LOCAL_USER, deviceId: 'dev-web-01' }), 'A4-M1');
+
+  // J.5 — THE REGRESSION THIS ADDENDUM IS FOR. Under the pre-A4 rule this exact
+  // block refused dev-web-01 while admitting dev-ext-02. Both recipients must
+  // now be admitted by the SAME block, and must derive the SAME context bytes.
+  const asPage = pairContextFromWire(CTXW, { userId: LOCAL_USER, recipientDeviceIds: WRAPS });
+  const asSw = pairContextFromWire(CTXW, { userId: LOCAL_USER });   // PAIR_STATE lane: no set
+  check('J.5: the NON-canonical recipient (dev-web-01) is admitted by this block',
+    toHex(asPage.contextBytes).length > 0);
+  eq('J.5: page and SW derive BYTE-IDENTICAL context bytes (ctx is pair-scoped)',
+    toHex(asPage.contextBytes), toHex(asSw.contextBytes));
+
+  // A3-M3(c), re-scoped — enforced ONLY where the set is held.
+  await throws('A3-M3(c): a steered non-canonical peer is refused where wraps[] is held',
+    () => pairContextFromWire({ ...CTXW, peerDeviceId: 'dev-web-01' },
+      { userId: LOCAL_USER, recipientDeviceIds: WRAPS }), 'canonical');
+  check('A3-M3(c) CONTROL: the SAME steered ctx is ACCEPTED without the set (PAIR_STATE lane)',
+    toHex(pairContextFromWire({ ...CTXW, peerDeviceId: 'dev-web-01' },
+      { userId: LOCAL_USER }).contextBytes).includes('6465762d7765622d3031'));
+  // The control above is the whole point of (c) being conditional: the SW lane
+  // MUST NOT attempt it and MUST NOT substitute its own deviceId. Its binding
+  // check is (b) — the wrap opening under its own KEK — which lives at unwrap,
+  // not here, and whose failure is a PAIRING ABORT, never a counts-only degrade
+  // (A4-M3). §13.2 row 2 grants that degrade only to a recipient that never had
+  // a key; the wrap-open failure is a tampered or mismatched pairing.
+
+  // A3-M3(a) survives A4 unchanged, and is still only checked where the
+  // receiver independently knows the pairing it is party to.
+  await throws('A3-M3(a): a foreign pairingId is refused (J.2)',
+    () => pairContextFromWire({ ...CTXW, pairingId: 'pair-DEADBEEF' },
+      { userId: LOCAL_USER, pairingId: 'pair-7f3a9c21' }), 'pairingId');
+}
+
+// ── 6d. (J) the frozen A4 vector, through the real module ──────────────────
+// 6c pinned the RULE with no frozen bytes. This block pins the BYTES, against
+// values Security computed in a clean-room HKDF/GCM implementation that imports
+// nothing from lib/e2e/kdf.mjs — so agreement here is cross-implementation
+// evidence, not one implementation agreeing with itself.
+{
+  const J = V.canonicalPeer;
+  const J1 = J.positiveJ1;
+  const SK = fromHex(V.traffic.sessionKeyHex);
+
+  eq('J: the canonical peer of the frozen wraps[] is the vector\'s',
+    canonicalPeerDeviceId(J.wraps), J.canonicalPeerDeviceId);
+  check('J: the fixture\'s canonical peer is NOT wraps[0] (so wraps[0] cannot pass)',
+    J.wraps[0].deviceId !== J.canonicalPeerDeviceId, J.wraps[0].deviceId);
+  eq('J: ctx.peerDeviceId IS that canonical peer', J1.ctxWire.peerDeviceId, J.canonicalPeerDeviceId);
+
+  // The page lane holds wraps[]; the SW lane (PAIR_STATE) does not. Both must
+  // reach the SAME bytes — that is the whole ruling in one assertion.
+  const page = pairContextFromWire(J1.ctxWire, { userId: J.localUserId, recipientDeviceIds: J.wraps });
+  const sw = pairContextFromWire(J1.ctxWire, { userId: J.localUserId });
+  eq('J.1: the page lane reproduces the frozen context bytes',
+    toHex(page.contextBytes), J1.contextBytesHexPage);
+  eq('J.1: the SW lane reproduces them too', toHex(sw.contextBytes), J1.contextBytesHexSw);
+  check('J.1: the vector asserts the two are IDENTICAL, not merely both present',
+    J1.contextsIdentical === true && J1.contextBytesHexPage === J1.contextBytesHexSw);
+  eq('J.1: …and this lane agrees', toHex(page.contextBytes), toHex(sw.contextBytes));
+
+  const kPage = await trafficKeys({ pairingId: J1.ctxWire.pairingId, sessionKey: SK, context: page.contextBytes, role: 'phone' });
+  const kSw = await trafficKeys({ pairingId: J1.ctxWire.pairingId, sessionKey: SK, context: sw.contextBytes, role: 'phone' });
+  eq('J.1: k_p2c', toHex(kPage.send.rawBytes), J1.phoneToComputerKeyHex);
+  eq('J.1: k_c2p', toHex(kPage.recv.rawBytes), J1.computerToPhoneKeyHex);
+  eq('J.1: np2c', toHex(kPage.send.sessionPrefix), J1.np2cHex);
+  eq('J.1: nc2p', toHex(kPage.recv.sessionPrefix), J1.nc2pHex);
+  eq('J.1: the SW lane derives the SAME traffic key set (one key set per pairing)',
+    `${toHex(kSw.send.rawBytes)}|${toHex(kSw.recv.rawBytes)}|${toHex(kSw.send.sessionPrefix)}`,
+    `${toHex(kPage.send.rawBytes)}|${toHex(kPage.recv.rawBytes)}|${toHex(kPage.send.sessionPrefix)}`);
+  // J's keys must NOT be I's: if they were, the two-recipient fixture would be
+  // proving nothing that vector I does not already prove.
+  check('J.1: a two-recipient pairing derives DIFFERENT keys from the one-recipient I.1',
+    J1.phoneToComputerKeyHex !== V.ctxWire.positiveI1.phoneToComputerKeyHex);
+
+  // J.1b — ONE broadcast ciphertext opens for BOTH recipients. This is the
+  // property a device-scoped ctx would destroy: the relay sends one ciphertext
+  // byte-identically to every listener, so under per-recipient traffic keys it
+  // would open for exactly one and hand the other a GCM tag failure that is
+  // indistinguishable from a network fault. Raw WebCrypto, not seal/open: J
+  // deliberately fixes an EMPTY AAD and an unpadded plaintext so it stands
+  // alone and does not re-pin A2's frame header.
+  {
+    const B = J.positiveJ1bBroadcast;
+    const ct = fromHex(B.ciphertextHex);
+    const iv = new Uint8Array(12);
+    iv.set(kPage.send.sessionPrefix, 0);
+    new DataView(iv.buffer).setBigUint64(4, BigInt(B.seq));
+    for (const [who, keys] of [['page', kPage], ['sw', kSw]]) {
+      const ck = await crypto.subtle.importKey('raw', keys.send.rawBytes, 'AES-GCM', false, ['decrypt']);
+      const pt = new Uint8Array(await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv, additionalData: new Uint8Array(0), tagLength: 128 }, ck, ct));
+      eq(`J.1b: the ONE broadcast ciphertext opens for the ${who}`,
+        new TextDecoder().decode(pt), who === 'page' ? B.opensForPage : B.opensForSw);
+    }
+  }
+
+  // J.1c — per-recipient KEKs DIFFER from the same ctx. This is why one shared
+  // traffic-key set costs nothing: separation still lives in the KEK, which
+  // binds the recipient's own static key on top of the shared context.
+  {
+    const C = J.positiveJ1cKeks;
+    const kekWeb = await kek({ pairingId: J1.ctxWire.pairingId, sharedSecret: SK, context: page.contextBytes, recipientKey: fromHex(C.webKeyHex) });
+    const kekExt = await kek({ pairingId: J1.ctxWire.pairingId, sharedSecret: SK, context: sw.contextBytes, recipientKey: fromHex(C.extKeyHex) });
+    eq('J.1c: KEK_web', toHex(kekWeb), C.kekWebHex);
+    eq('J.1c: KEK_ext', toHex(kekExt), C.kekExtHex);
+    check('J.1c: the KEKs DIFFER although the ctx is identical',
+      toHex(kekWeb) !== toHex(kekExt) && C.keksDiffer === true);
+  }
+
+  // J.2 / J.3 — the refusals, at ingest, before any derivation.
+  {
+    const P = J.negativeJ2PairingId;
+    await throws('J.2: a foreign ctx.pairingId is refused where we know ours',
+      () => pairContextFromWire({ ...J1.ctxWire, pairingId: P.ctxPairingId },
+        { userId: J.localUserId, pairingId: P.ownPairingId }), 'pairingId');
+  }
+  {
+    const S = J.negativeJ3SteeredPeer;
+    const steeredCtx = { ...J1.ctxWire, peerDeviceId: S.ctxPeerDeviceId };
+    await throws('J.3: a relay-steered non-canonical peer is refused where wraps[] is held',
+      () => pairContextFromWire(steeredCtx, { userId: J.localUserId, recipientDeviceIds: J.wraps }), 'canonical');
+    // What the steered context WOULD have derived — and why refusing it early
+    // matters: the derivation succeeds, it is simply the wrong key, which is a
+    // silent break unless something refuses before the first frame.
+    const steered = pairContextFromWire(steeredCtx, { userId: J.localUserId });
+    eq('J.3: the steered context bytes', toHex(steered.contextBytes), S.contextBytesHex);
+    const kSteer = await trafficKeys({ pairingId: J1.ctxWire.pairingId, sessionKey: SK, context: steered.contextBytes, role: 'phone' });
+    eq('J.3: the steered k_p2c', toHex(kSteer.send.rawBytes), S.phoneToComputerKeyHex);
+    check('J.3: …which is NOT J.1\'s key', S.phoneToComputerKeyHex !== J1.phoneToComputerKeyHex);
+
+    // SINGLE-RECIPIENT INVARIANCE — the proof that A4 rekeys nothing already
+    // shipped. For a one-recipient pairing the canonical lowest IS that
+    // recipient, so the steered context (peer forced to dev-web-01, the sole
+    // recipient of vector I) must reproduce I.1's frozen key EXACTLY. Two
+    // independent clean-room implementations agree on it; A4 adds no row to
+    // E-H or I and forces no re-pair.
+    eq('J.3: the steered k_p2c IS vector I.1\'s frozen key — single-recipient unchanged',
+      S.phoneToComputerKeyHex, V.ctxWire.positiveI1.phoneToComputerKeyHex);
+    eq('J.3: …and the steered context bytes ARE I.1\'s', S.contextBytesHex, V.ctxWire.positiveI1.contextBytesHex);
+    eq('J.3: …which are this file\'s own frozen contextBytesHex', S.contextBytesHex, V.contextBytesHex);
+    eq('J.3: a ONE-recipient pairing selects its sole recipient as canonical',
+      canonicalPeerDeviceId([{ deviceId: S.ctxPeerDeviceId }]), S.ctxPeerDeviceId);
+
+    // J.1b's ciphertext MUST FAIL authentication under the steered key. A
+    // steered derivation that merely "looked different" would prove nothing.
+    {
+      const B = J.positiveJ1bBroadcast;
+      const iv = new Uint8Array(12);
+      iv.set(kSteer.send.sessionPrefix, 0);
+      new DataView(iv.buffer).setBigUint64(4, BigInt(B.seq));
+      const ck = await crypto.subtle.importKey('raw', kSteer.send.rawBytes, 'AES-GCM', false, ['decrypt']);
+      await throws('J.3: the J.1b broadcast FAILS authentication under the steered key',
+        () => crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: new Uint8Array(0), tagLength: 128 },
+          ck, fromHex(B.ciphertextHex)));
+      check('J.3: the vector declares that failure', S.j1bCiphertextMustFailAuth === true);
+    }
+  }
+
+  // J.4 — the non-member. Its KEK is a real, derivable value; what refuses it
+  // is that no wraps[] entry opens under it. A4-M3: that is a PAIRING ABORT,
+  // never a degrade to counts-only badges.
+  {
+    const N = J.negativeJ4NonMember;
+    const outsiderKey = fromHex('04' + '00'.repeat(64));
+    check('J.4: the vector pins the outsider KEK', /^[0-9a-f]{64}$/.test(N.outsiderKekHex));
+    check('J.4: the outsider is not in wraps[]',
+      !J.wraps.some((w) => w.deviceId === 'dev-outsider-03'));
+    check('J.4: …so it cannot be the canonical peer either',
+      canonicalPeerDeviceId([...J.wraps, { deviceId: 'dev-outsider-03' }]) === J.canonicalPeerDeviceId);
+    check('J.4 shape control: a well-formed foreign key still derives A kek (the refusal is the UNWRAP, not the derive)',
+      outsiderKey.length === SEC1_P256_BYTES);
+  }
+
+  // J.5 — the regression, stated against the frozen fixture rather than inline.
+  {
+    const R = J.negativeJ5PreA4Regression;
+    eq('J.5: the pre-A4 rule refused the NON-canonical recipient', R.preA4RefusedDeviceId, 'dev-web-01');
+    eq('J.5: …and admitted only the canonical one', R.preA4AdmittedDeviceId, J.canonicalPeerDeviceId);
+    check('J.5: after A4 BOTH are admitted by the same block', R.bothMustBeAdmittedAfterA4 === true);
+    for (const w of J.wraps) {
+      // There is no longer any per-recipient input at all — which is exactly
+      // how "both recipients are admitted" is expressed after A4.
+      eq(`J.5: the block derives the frozen context for ${w.deviceId}`,
+        toHex(pairContextFromWire(J1.ctxWire, { userId: J.localUserId, recipientDeviceIds: J.wraps }).contextBytes),
+        J1.contextBytesHexPage);
+    }
+  }
+}
+
+// ── 6e. (K) the canonical ORDER rule — A4 vector K, COUNTERSIGNED ──────────
+// J proves the RULE and freezes the bytes, but every one of its deviceIds is
+// pure ASCII, where unsigned UTF-8 byte order, SIGNED byte order and UTF-16
+// code-unit order all AGREE. J therefore cannot catch a wrong comparator at
+// all. K is the fixture where they disagree, and it is TWO vectors because one
+// pair cannot pin both bugs: signed-vs-unsigned diverges only when the first
+// differing byte is ASCII vs non-ASCII, UTF-16-vs-code-point only when the
+// first differing CHARACTER is BMP≥U+E000 vs supplementary, and those
+// conditions are mutually exclusive at the same position. On K1 a signed-Byte
+// implementation gives the CORRECT answer and would pass; K2 is what catches
+// it. P4 hit exactly this on Android at 86aed97.
+{
+  const K = V.canonicalPeerByteOrder;
+  const SK = fromHex(V.traffic.sessionKeyHex);
+  const F = K.sharedFixture;
+
+  // The three comparators, written out so the fixture's discriminating power is
+  // demonstrated rather than asserted. Only `unsigned` is the module's rule.
+  const bytesOf = (s) => new TextEncoder().encode(s);
+  const pickUnsigned = (ids) => ids.slice().sort((x, y) => {
+    const a = bytesOf(x), b = bytesOf(y);
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return a.length - b.length;
+  })[0];
+  const pickSigned = (ids) => ids.slice().sort((x, y) => {
+    const a = bytesOf(x), b = bytesOf(y);
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+      const d = (a[i] << 24 >> 24) - (b[i] << 24 >> 24);
+      if (d !== 0) return d;
+    }
+    return a.length - b.length;
+  })[0];
+  const pickUtf16 = (ids) => ids.slice().sort()[0];
+
+  for (const name of ['K1', 'K2']) {
+    const T = K[name];
+    const ids = [T.idA, T.idB];
+
+    // The fixture must actually encode what it claims, or every assertion below
+    // is about a string that is not the one the vector froze.
+    eq(`${name}: idA encodes to the frozen UTF-8 bytes`, toHex(bytesOf(T.idA)), T.idAUtf8Hex);
+    eq(`${name}: idB encodes to the frozen UTF-8 bytes`, toHex(bytesOf(T.idB)), T.idBUtf8Hex);
+
+    // The module's answer, in BOTH array orders — selection must be a function
+    // of the SET, never of arrival order, or a relay that merely re-orders
+    // wraps[] without editing a byte could steer the derivation (A4-M4 forbids
+    // the reorder; this makes the receiver not care).
+    eq(`${name}: canonical peer, wraps[] in order A,B`,
+      canonicalPeerDeviceId(T.wrapsOrderAB), T.canonicalPeerDeviceId);
+    eq(`${name}: canonical peer, wraps[] in order B,A`,
+      canonicalPeerDeviceId(T.wrapsOrderBA), T.canonicalPeerDeviceId);
+    check(`${name}: …so selection is order-independent`, T.orderIndependent === true);
+    check(`${name}: the two wraps[] orderings really are reversed, not duplicates`,
+      T.wrapsOrderAB[0].deviceId === T.wrapsOrderBA[1].deviceId
+      && T.wrapsOrderAB[1].deviceId === T.wrapsOrderBA[0].deviceId);
+
+    // The truth table, demonstrated. This is what makes K discriminating rather
+    // than merely another positive: on each vector exactly one WRONG comparator
+    // disagrees with the module, and the file says which.
+    const TT = K.comparatorTruthTable[name];
+    eq(`${name}: an unsigned-UTF-8 comparator agrees with the module`, pickUnsigned(ids), TT.unsignedUtf8);
+    eq(`${name}: a SIGNED-byte comparator picks the vector's stated id`, pickSigned(ids), TT.signedBytes);
+    eq(`${name}: a UTF-16 comparator picks the vector's stated id`, pickUtf16(ids), TT.utf16CodeUnits);
+    eq(`${name}: the module follows the UNSIGNED column`, canonicalPeerDeviceId(ids), TT.unsignedUtf8);
+    eq(`${name}: …which is the column the file marks correct`, K.comparatorTruthTable.correctColumn, 'unsignedUtf8');
+    // Exactly one of the two wrong comparators must DISAGREE on this vector —
+    // that is the vector's entire discriminating power, and if an edit ever made
+    // both agree the vector would pass vacuously.
+    check(`${name}: exactly one wrong comparator disagrees here (the other is vacuous)`,
+      (TT.signedBytes !== TT.unsignedUtf8) !== (TT.utf16CodeUnits !== TT.unsignedUtf8),
+      `signed=${TT.signedBytes} utf16=${TT.utf16CodeUnits} unsigned=${TT.unsignedUtf8}`);
+
+    // The positive: ctx built on the canonical peer reproduces Security's
+    // frozen context bytes, traffic keys and nonce prefixes.
+    const pos = T.positiveK1_1 || T.positiveK2_1;
+    eq(`${name}.1: ctx.peerDeviceId IS the canonical peer`, pos.ctxPeerDeviceId, T.canonicalPeerDeviceId);
+    const ctxWire = {
+      pairingId: F.pairingId, phoneDeviceId: F.phoneDeviceId,
+      peerDeviceId: pos.ctxPeerDeviceId, pairEpoch: F.pairEpoch,
+    };
+    const r = pairContextFromWire(ctxWire, { userId: F.localUserId, recipientDeviceIds: T.wrapsOrderAB });
+    eq(`${name}.1: the frozen context bytes`, toHex(r.contextBytes), pos.contextBytesHex);
+    const keys = await trafficKeys({ pairingId: F.pairingId, sessionKey: SK, context: r.contextBytes, role: 'phone' });
+    eq(`${name}.1: k_p2c`, toHex(keys.send.rawBytes), pos.phoneToComputerKeyHex);
+    eq(`${name}.1: k_c2p`, toHex(keys.recv.rawBytes), pos.computerToPhoneKeyHex);
+    eq(`${name}.1: np2c`, toHex(keys.send.sessionPrefix), pos.np2cHex);
+    eq(`${name}.1: nc2p`, toHex(keys.recv.sessionPrefix), pos.nc2pHex);
+    // The reversed wraps[] must reach the SAME bytes, not merely the same id.
+    eq(`${name}.1: the reversed wraps[] derives byte-identical context`,
+      toHex(pairContextFromWire(ctxWire, { userId: F.localUserId, recipientDeviceIds: T.wrapsOrderBA }).contextBytes),
+      pos.contextBytesHex);
+
+    // The negative: the id a WRONG comparator would choose. The page lane holds
+    // wraps[] and MUST refuse it — and the derived key is frozen too, to show
+    // what refusing actually prevents: the derivation SUCCEEDS, it is simply a
+    // key nobody else holds, so without the refusal the break is silent.
+    const neg = T.negativeK1_2Utf16Pick || T.negativeK2_3SignedPick;
+    const wrongCtx = { ...ctxWire, peerDeviceId: neg.wrongCanonical };
+    check(`${name}: the wrong-comparator id is NOT the canonical one`,
+      neg.wrongCanonical !== T.canonicalPeerDeviceId);
+    await throws(`${name}: the page lane (holds wraps[]) REFUSES the wrong-comparator ctx`,
+      () => pairContextFromWire(wrongCtx, { userId: F.localUserId, recipientDeviceIds: T.wrapsOrderAB }), 'canonical');
+    check(`${name}: the vector declares the page lane must refuse`, neg.pageLaneMustRefuse === true);
+    // K.4 — the SW lane holds no set, so clause (c) is SKIPPED there. Its
+    // anchor is clause (b), the wrap opening under its own KEK, which lives at
+    // unwrap. This control is what proves (c) is conditional and not silently
+    // skipped everywhere.
+    const swDerived = pairContextFromWire(wrongCtx, { userId: F.localUserId });
+    eq(`${name}: K.4 CONTROL — the SW lane derives (clause (c) skipped, no wraps[])`,
+      toHex(swDerived.contextBytes), neg.contextBytesHex);
+    const wrongKeys = await trafficKeys({ pairingId: F.pairingId, sessionKey: SK, context: swDerived.contextBytes, role: 'phone' });
+    eq(`${name}: the wrong-comparator k_p2c is Security's frozen value`,
+      toHex(wrongKeys.send.rawBytes), neg.phoneToComputerKeyHex);
+    check(`${name}: …and it DIFFERS from the canonical key — the break would be silent`,
+      neg.phoneToComputerKeyHex !== pos.phoneToComputerKeyHex && neg.differsFromCanonical === true);
+    // K's keys must not collide with J's or I's, or K would be re-proving them.
+    check(`${name}.1: k_p2c differs from vector J's and vector I.1's`,
+      pos.phoneToComputerKeyHex !== V.canonicalPeer.positiveJ1.phoneToComputerKeyHex
+      && pos.phoneToComputerKeyHex !== V.ctxWire.positiveI1.phoneToComputerKeyHex);
+  }
+
+  // The vacuity notes are part of the countersign: K1 alone does NOT satisfy
+  // the requirement, and the file has to say so where a reader will see it.
+  eq('K1.3: signed byte order picks the CORRECT id on K1 — vacuous there',
+    K.K1.K1_3SignedIsVacuous.signedBytePick, K.K1.canonicalPeerDeviceId);
+  check('K1.3: …and the file marks it non-discriminating', K.K1.K1_3SignedIsVacuous.discriminating === false);
+  eq('K2.2: UTF-16 order picks the CORRECT id on K2 — vacuous there',
+    K.K2.K2_2Utf16IsVacuous.utf16Pick, K.K2.canonicalPeerDeviceId);
+  check('K2.2: …and the file marks it non-discriminating', K.K2.K2_2Utf16IsVacuous.discriminating === false);
+  // Together they must leave NO wrong comparator that passes both.
+  const TT = K.comparatorTruthTable;
+  check('K1+K2: no wrong comparator satisfies BOTH vectors',
+    (TT.K1.signedBytes !== TT.K1.unsignedUtf8 || TT.K2.signedBytes !== TT.K2.unsignedUtf8)
+    && (TT.K1.utf16CodeUnits !== TT.K1.unsignedUtf8 || TT.K2.utf16CodeUnits !== TT.K2.unsignedUtf8));
+  check('K.4: the file records that the SW lane skips clause (c) and anchors on (b)',
+    K.K4LaneScope.pageLaneChecksClauseC === true && K.K4LaneScope.swLaneChecksClauseC === false
+    && /clause \(b\)/.test(K.K4LaneScope.swLaneAnchor));
+  // Both negatives land on the same supplementary id, so they share a key. Said
+  // out loud, because two frozen values being equal otherwise looks like a
+  // copy-paste error rather than the fact it is.
+  eq('K1.2 and K2.3 share a negative key — both wrong comparators pick the same id',
+    K.K1.negativeK1_2Utf16Pick.phoneToComputerKeyHex, K.K2.negativeK2_3SignedPick.phoneToComputerKeyHex);
 }
 
 // ── 7. persist-before-emit / FAIL CLOSED (A1 (3)) ──────────────────────────
@@ -741,9 +1132,17 @@ check('be64 does not round above 2^53',
   // spec (or the reverse) fails here rather than at a pairing.
   {
     const a2 = section.slice(section.indexOf('#### 13.10.7'), section.indexOf('#### 13.10.8'));
-    const a3 = section.slice(section.indexOf('#### 13.10.8'));
+    // BOUNDED at §13.10.9, not "to the end of the section". A4 appended a
+    // sibling subsection, and an unbounded slice would let every §13.10.8
+    // assertion below be satisfied by text that lives in §13.10.9 — a guard
+    // that silently stops guarding the section it names.
+    const a3 = section.slice(section.indexOf('#### 13.10.8'), section.indexOf('#### 13.10.9'));
+    const a4 = section.slice(section.indexOf('#### 13.10.9'));
     check('drift guard: §13.10.7 exists (A2)', a2.length > 0);
     check('drift guard: §13.10.8 exists (A3)', a3.length > 0);
+    check('drift guard: §13.10.9 exists (A4)', a4.length > 0);
+    check('drift guard: the §13.10.8 slice is BOUNDED — it does not swallow §13.10.9',
+      !a3.includes('#### 13.10.9') && !a3.includes('A4-R1'));
     check('drift guard: §13.10.7 carries the nonce-prefix labels the vectors were derived under',
       a2.includes(`"${LABEL_NP2C}"`) && a2.includes(`"${LABEL_NC2P}"`));
     check('drift guard: §13.10.7 states L = 4', /L = 4/.test(a2));
@@ -779,9 +1178,72 @@ check('be64 does not round above 2^53',
       /SAS computable on the computer side at all/.test(a3));
     check('drift guard: §13.10.8 records persist-before-use for the floor',
       /persist-before-use/.test(a3));
+    // A4: the deletion, the canonical-set definition, the five MUSTs, the
+    // conditional clause, the SAS "no", and A4.1's SW pairingId channel.
+    check('drift guard: §13.10.8 records that A3-M3 is SUPERSEDED, not still in force',
+      /A3-M3 — SUPERSEDED IN FULL/.test(a3) && a3.includes('13.10.9'));
+    for (const must of ['A4-R1', 'A4-R2', 'A4-R3', 'A4-M1', 'A4-M2', 'A4-M3', 'A4-M4', 'A4-M5', 'A4.1']) {
+      check(`drift guard: §13.10.9 carries ${must}`, a4.includes(must));
+    }
+    check('drift guard: §13.10.9 names the canonical set as wraps[].deviceId and NOT recipKeys[]',
+      a4.includes('`wraps[].deviceId`, NOT `recipKeys[]`') && /includes the phone/i.test(a4));
+    check('drift guard: §13.10.9 pins byte-wise UTF-8, not locale collation',
+      /byte-wise lexicographically lowest/.test(a4) && /localeCompare/.test(a4));
+    // Line wrapping and CRLF are not part of the claim, so the slice is
+    // flattened before the sentence-level assertions below.
+    const a4flat = a4.replace(/\r?\n>?\s*/g, ' ');
+    check('drift guard: §13.10.9 records the DELETED clause verbatim, so it cannot creep back',
+      a4flat.includes('**DELETED:**')
+      && a4flat.includes('a receiver MUST refuse a block whose `ctx.peerDeviceId` is not its own `deviceId`.'));
+    check('drift guard: §13.10.9 keeps clause (c) CONDITIONAL on holding wraps[]',
+      a4flat.includes('MUST NOT attempt this check')
+      && a4flat.includes('MUST NOT substitute its own `deviceId`'));
+    check('drift guard: §13.10.9 carries the single-recipient invariance proof (J.3 ≡ I.1)',
+      a4.includes('b12f964e') && /Single-recipient invariance/i.test(a4));
+    eq('drift guard: …and that key is still vector I.1\'s in the JSON',
+      V.ctxWire.positiveI1.phoneToComputerKeyHex.slice(0, 8), 'b12f964e');
+    check('drift guard: §13.10.9 states §13.3 stays FROZEN (no deviceIds in the SAS)',
+      /§13\.3 stays FROZEN/.test(a4));
+    check('drift guard: §13.10.9 records A4-M3 (unwrap failure is an ABORT, not counts-only)',
+      /counts-only badges/.test(a4) && /pairing abort/i.test(a4));
+    check('drift guard: §13.10.9 records A4.1\'s two SW pairingId sources and that (b) is unweakened',
+      /e2e-pubkey-request/.test(a4) && /TOFU/.test(a4) && /storage\.session/.test(a4)
+      && /not\*\* the anchor/.test(a4));
+    eq('drift guard: the spec names the helper the module exports',
+      a4.includes('canonicalPeerDeviceId('), true);
+    check('drift guard: §13.10.9 names the vector block the JSON actually carries',
+      a4.includes('`canonicalPeer`') && Object.keys(V).includes('canonicalPeer'));
+
+    // Vector K's half of §13.10.9. K is the countersigned fixture that makes
+    // the comparator testable at all, so the spec must carry BOTH vectors and
+    // the reason neither alone is sufficient — a spec that mentioned only K1
+    // would document a guard that does not catch the Android bug it exists for.
+    check('drift guard: §13.10.9 names the K block the JSON actually carries',
+      a4.includes('`canonicalPeerByteOrder`') && Object.keys(V).includes('canonicalPeerByteOrder'));
+    check('drift guard: §13.10.9 carries BOTH K1 and K2, and says neither alone suffices',
+      /\*\*K1\*\*/.test(a4) && /\*\*K2\*\*/.test(a4)
+      && a4flat.includes('K1 alone does **not** satisfy the requirement')
+      && a4flat.includes('so K2 alone does not satisfy it either'));
+    check('drift guard: §13.10.9 records the binding CORRECTION to the inverted premise',
+      a4flat.includes('**U+FFFD is the lower**') && /is the \*\*UTF-16 answer\*\*/.test(a4flat));
+    check('drift guard: §13.10.9 forbids the three wrong comparators by name',
+      a4.includes('String.minOrNull()') && a4.includes('signed-`Byte`')
+      && a4.includes('`Array.prototype.sort` on strings'));
+    check('drift guard: §13.10.9 requires BOTH wraps[] orders be frozen',
+      a4flat.includes('frozen in **both** `wraps[]` orders'));
+    for (const hexField of [
+      V.canonicalPeerByteOrder.K1.positiveK1_1.phoneToComputerKeyHex,
+      V.canonicalPeerByteOrder.K2.positiveK2_1.phoneToComputerKeyHex,
+    ]) {
+      check('drift guard: the JSON\'s K keys are well-formed 32-byte hex', /^[0-9a-f]{64}$/.test(hexField));
+    }
+    check('drift guard: the spec\'s K1 canonical id IS the JSON\'s',
+      a4.includes(V.canonicalPeerByteOrder.K2.canonicalPeerDeviceId)
+      && V.canonicalPeerByteOrder.K1.canonicalPeerDeviceId === 'dev-�-01');
+
     // Control: these slices must be capable of failing.
     check('drift guard control: a MUST the addenda do NOT define is absent',
-      !a3.includes('A3-M9') && !a2.includes('A2 MUST#7'));
+      !a3.includes('A3-M9') && !a2.includes('A2 MUST#7') && !a4.includes('A4-M9'));
   }
   // Control: the parser must be capable of failing. If the section slice were
   // empty or the regexes matched nothing, every assertion above would be
