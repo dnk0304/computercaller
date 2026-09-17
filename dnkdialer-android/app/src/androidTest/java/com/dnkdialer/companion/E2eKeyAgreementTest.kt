@@ -27,6 +27,12 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class E2eKeyAgreementTest {
 
+    /** The software path's prefs file (E2eKeyAgreement.SoftwareDeviceKey.PREFS). */
+    private val SW_PREFS = "computercaller_e2e_swkey"
+
+    /** A scratch record used ONLY by the negative control; deleted in its finally. */
+    private val NEG_CONTROL_PREFS = "computercaller_e2e_swkey_negctl"
+
     private val ctx: Context
         get() = InstrumentationRegistry.getInstrumentation().targetContext
 
@@ -213,31 +219,219 @@ class E2eKeyAgreementTest {
         }
     }
 
+    /**
+     * The security property, proven by ASKING THE QUESTION AN ATTACKER ASKS:
+     * given everything the app wrote to disk under `shared_prefs`, can the
+     * software-path private key be recovered from it?
+     *
+     * WHY THIS IS NOT THE ASSERTION IT USED TO BE (the P5b(a) fix). The previous
+     * version asserted `blob[0] != 0x30` - "ciphertext must not start with the
+     * DER SEQUENCE tag". The wrapped blob is AES-256-GCM output, i.e. uniformly
+     * random bytes, so that assertion failed with probability 1/256 on a
+     * perfectly sealed key and for no other reason. It did exactly that once on
+     * the P4 lane ("stored blob looks like plaintext DER. Actual: 48"). The
+     * flake was in the TEST, not the product: a security property was being
+     * checked through a probabilistic proxy. [E2eKeyAgreement]'s software path
+     * is unchanged by this fix.
+     *
+     * The replacement has no probabilistic branch. It slides a 32-byte window
+     * over every byte the app persisted - the raw prefs XML AND the decoded
+     * value of every string it stores - treats each window as a candidate P-256
+     * scalar, and performs a real ECDH with it against a probe public key. If
+     * any window reproduces the secret the PRODUCT produces for that same probe,
+     * the private key is recoverable from disk and the test fails. Recovering
+     * the key from bytes that do not contain it would mean guessing a 256-bit
+     * scalar, so a pass is deterministic, not lucky.
+     *
+     * [a_deliberately_readable_key_makes_the_scan_FAIL] is the control: it runs
+     * this same helper over a record that stores the key in the clear and
+     * asserts the helper raises. Without it, a scan that silently examined
+     * nothing would pass forever.
+     */
     @Test
     fun software_wrapped_private_key_is_not_readable_from_the_prefs_file() {
         E2eKeyAgreement.softwarePathRotate(ctx)
         val swPub = E2eKeyAgreement.softwarePathPublicSec1(ctx)
-        val prefs = ctx.getSharedPreferences("computercaller_e2e_swkey", Context.MODE_PRIVATE)
+        val prefs = ctx.getSharedPreferences(SW_PREFS, Context.MODE_PRIVATE)
 
         val wrapped = prefs.getString("priv_wrapped_b64", null)
         assertTrue("the wrapped private key must be stored", wrapped != null)
 
-        // The stored blob must be ciphertext, not a PKCS#8 key: a PKCS#8 EC key
-        // opens with the DER SEQUENCE tag 0x30, and it embeds the public point.
+        // The stored blob must not be loadable as a key. Catching Throwable, not
+        // GeneralSecurityException: which exception a DER decoder throws on
+        // random input is a provider detail, and a narrow catch would turn a
+        // correctly-sealed key into a test ERROR on some future provider.
         val blob = E2eKeyEncoding.fromBase64Url(wrapped!!)
-        assertNotEquals("stored blob looks like plaintext DER", 0x30.toByte(), blob[0])
+        try {
+            java.security.KeyFactory.getInstance("EC")
+                .generatePrivate(java.security.spec.PKCS8EncodedKeySpec(blob))
+            fail("the stored blob loaded as a private key - it is not sealed")
+        } catch (e: Throwable) {
+            assertTrue(e.toString().isNotEmpty())
+        }
         assertTrue(
             "the public point must not appear in the sealed blob",
             indexOf(blob, swPub.copyOfRange(1, 17)) < 0
         )
-        // And it must not be loadable as a key.
-        try {
-            java.security.KeyFactory.getInstance("EC")
-                .generatePrivate(java.security.spec.PKCS8EncodedKeySpec(blob))
-            fail("the stored blob loaded as a private key — it is not sealed")
-        } catch (e: java.security.GeneralSecurityException) {
-            assertTrue(e.toString().isNotEmpty())
+
+        // The real question. The probe is an ephemeral whose public half we own,
+        // so the target secret is one the product computes with the very key we
+        // are claiming is unreadable.
+        E2eKeyAgreement.mintEphemeral().use { probe ->
+            val target = E2eKeyAgreement.softwarePathAgree(ctx, probe.publicSec1)
+            assertEquals(32, target.size)
+            assertPrivateKeyNotRecoverable(SW_PREFS, probe.publicSec1, target)
         }
+    }
+
+    /**
+     * NEGATIVE CONTROL for the scan above. Writes a prefs record that stores an
+     * EC private key the way a careless implementation would - the PKCS#8 and
+     * the bare scalar, base64 like everything else - and requires
+     * [assertPrivateKeyNotRecoverable] to FAIL on it.
+     *
+     * A green [software_wrapped_private_key_is_not_readable_from_the_prefs_file]
+     * means nothing unless this one is also green: together they say the scan
+     * fires when the key is readable and stays quiet when it is not.
+     */
+    @Test
+    fun a_deliberately_readable_key_makes_the_scan_FAIL() {
+        val gen = java.security.KeyPairGenerator.getInstance("EC")
+        gen.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val kp = gen.generateKeyPair()
+        val scalar = (kp.private as java.security.interfaces.ECPrivateKey).s
+        val scalarBytes = ByteArray(32).also { out ->
+            val raw = scalar.toByteArray()
+            val src = if (raw.size > 32) raw.copyOfRange(raw.size - 32, raw.size) else raw
+            System.arraycopy(src, 0, out, 32 - src.size, src.size)
+        }
+
+        val p = ctx.getSharedPreferences(NEG_CONTROL_PREFS, Context.MODE_PRIVATE)
+        try {
+            p.edit()
+                .putInt("v", 1)
+                // Base64, not raw bytes: a plaintext leak in a prefs file looks
+                // exactly like a sealed one to the naked eye, which is why the
+                // scan decodes every stored string instead of only reading the
+                // XML.
+                .putString("priv_wrapped_b64", E2eKeyEncoding.toBase64Url(kp.private.encoded))
+                .putString("priv_scalar_b64", E2eKeyEncoding.toBase64Url(scalarBytes))
+                .putString(
+                    "pub_sec1_b64",
+                    E2eKeyEncoding.toBase64Url(E2eKeyEncoding.toSec1(kp.public))
+                )
+                .commit()
+
+            E2eKeyAgreement.mintEphemeral().use { probe ->
+                val ka = javax.crypto.KeyAgreement.getInstance("ECDH")
+                ka.init(kp.private)
+                ka.doPhase(E2eKeyEncoding.fromSec1(probe.publicSec1), true)
+                val target = ka.generateSecret()
+
+                try {
+                    assertPrivateKeyNotRecoverable(NEG_CONTROL_PREFS, probe.publicSec1, target)
+                    fail(
+                        "CONTROL FAILED: the scan did not notice a private key stored in the " +
+                            "clear, so a pass of the positive test proves nothing"
+                    )
+                } catch (expected: AssertionError) {
+                    assertTrue(
+                        "the control must fail for the right reason: ${expected.message}",
+                        expected.message!!.contains("RECOVERABLE")
+                    )
+                }
+            }
+        } finally {
+            p.edit().clear().commit()
+            java.io.File(prefsFile(NEG_CONTROL_PREFS)).delete()
+        }
+    }
+
+    // ------------------------------------------ the scan, shared by both tests
+
+    private fun prefsFile(name: String): String =
+        java.io.File(java.io.File(ctx.applicationContext.dataDir, "shared_prefs"), "$name.xml").path
+
+    /**
+     * Fails iff the P-256 private key behind [target] can be reconstructed from
+     * anything the app persisted under [prefsName].
+     *
+     * Vacuity guards, because an empty scan is the failure mode that would make
+     * this whole file decorative: the XML must exist and be non-empty on disk,
+     * and the scan must actually have tried at least one candidate scalar.
+     */
+    private fun assertPrivateKeyNotRecoverable(
+        prefsName: String,
+        probePub: ByteArray,
+        target: ByteArray,
+    ) {
+        val prefs = ctx.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        // SharedPreferences.apply() writes to disk asynchronously; a commit() on
+        // the same instance blocks until the queued writes have drained, so the
+        // file read below is the file the product actually wrote. Without this
+        // the scan could read a stale or absent XML and pass vacuously.
+        prefs.edit().putLong("zz_test_disk_flush", System.nanoTime()).commit()
+
+        val file = java.io.File(prefsFile(prefsName))
+        assertTrue("prefs XML not on disk at ${file.path} - the scan would be vacuous", file.isFile)
+        val fileBytes = file.readBytes()
+        assertTrue("prefs XML is empty - the scan would be vacuous", fileBytes.size > 32)
+
+        val sources = LinkedHashMap<String, ByteArray>()
+        sources["prefs-xml"] = fileBytes
+        for ((k, v) in prefs.all) {
+            if (v !is String) continue
+            try {
+                sources["b64($k)"] = E2eKeyEncoding.fromBase64Url(v)
+            } catch (ignored: Throwable) {
+                // not base64 - the raw XML source already covers its bytes
+            }
+        }
+
+        val params = E2eKeyEncoding.p256Params()
+        val kf = java.security.KeyFactory.getInstance("EC")
+        val probeKey = E2eKeyEncoding.fromSec1(probePub)
+        var tried = 0
+        for ((label, bytes) in sources) {
+            if (bytes.size < 32) continue
+            for (i in 0..bytes.size - 32) {
+                val s = java.math.BigInteger(1, bytes.copyOfRange(i, i + 32))
+                if (s.signum() <= 0 || s >= params.order) continue
+                val secret = try {
+                    tried++
+                    val priv = kf.generatePrivate(java.security.spec.ECPrivateKeySpec(s, params))
+                    javax.crypto.KeyAgreement.getInstance("ECDH").let {
+                        it.init(priv)
+                        it.doPhase(probeKey, true)
+                        it.generateSecret()
+                    }
+                } catch (ignored: Throwable) {
+                    continue
+                }
+                if (secret.contentEquals(target)) {
+                    fail(
+                        "PRIVATE KEY RECOVERABLE from $prefsName: the scalar at byte $i of " +
+                            "$label reproduces the product's own ECDH output"
+                    )
+                }
+            }
+        }
+        // Not `tried > 0`: a single candidate would satisfy that while covering
+        // none of the record. The smallest thing worth calling a scan is the
+        // whole XML minus a 32-byte window, and the XML is always longer than
+        // the base64 of a 65-byte public key.
+        val floor = fileBytes.size - 32
+        assertTrue(
+            "the scan examined $tried candidate scalars in $prefsName across " +
+                "${sources.size} sources, below the floor of $floor - it proved nothing",
+            tried >= floor
+        )
+        android.util.Log.i(
+            "E2E-FACT",
+            "keyscan prefs=$prefsName sources=" +
+                sources.entries.joinToString(",") { "${it.key}:${it.value.size}B" } +
+                " candidateScalars=$tried floor=$floor"
+        )
     }
 
     @Test
