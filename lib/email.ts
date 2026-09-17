@@ -26,7 +26,7 @@ const FROM = process.env.EMAIL_FROM ?? 'ComputerCaller <hello@computercaller.com
 
 // Reply-To always points at support@ so any customer reply to a transactional
 // email reaches a real human inbox (Cloudflare Email Routing forwards
-// support@ → dennis.kotlenko@gmail.com). Crucial: send-from and reply-to are
+// support@ → the owner mailbox). Crucial: send-from and reply-to are
 // SEPARATE concerns. Sending from support@ would pollute the inbox with
 // auto-receipts; sending from noreply@ would lose customer replies. This
 // pattern (friendly hello@ + support@ reply-to) is the SaaS standard.
