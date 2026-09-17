@@ -35,10 +35,16 @@
  * A2: "L = 4 and 'expand 32 then truncate to 4' are the same bytes (HKDF-Expand
  * emits T(1) first), so either implementation is conformant — but implementations
  * SHOULD request L = 4 so the intent is not mistaken for a truncated key."
- * `lib/e2e/kdf.mjs` is FROZEN and exposes only `hkdf32`, and P3 may not edit it.
- * So the truncation happens here, in a function named for what it produces, with
- * this comment attached — the SHOULD is about legibility, and a dedicated
- * `noncePrefixes()` that returns 4-byte values reads no worse than an `L=4` call.
+ * UPDATE (P3 follow-up, rebased onto P1.1 46e3084): when this was written,
+ * `lib/e2e/kdf.mjs` exposed only `hkdf32`, so the L=4 truncation lived here.
+ * P1.1 landed `deriveNoncePrefixes()` in the shared module with a real
+ * `hkdfBytes({length: 4})` call — the A2 SHOULD, done properly. This file now
+ * DELEGATES to it rather than keeping a second derivation: two implementations
+ * of one KDF is precisely the drift `e2e-sw-vendor-drift.test.mjs` exists to
+ * prevent, and a local copy would have kept passing vectors E–H while silently
+ * diverging from the page the moment either side was touched.
+ *
+ * What stays here is the part the shared module does NOT do: vector H's guard.
  * The bytes are asserted against A2 vectors E/F/G/H in tests/e2e-sw-nonce-prefix.test.mjs.
  */
 
@@ -46,18 +52,20 @@ import {
   DIR_P2C,
   DIR_C2P,
   SESSION_PREFIX_BYTES,
-  hkdf32,
+  deriveNoncePrefixes,
+  pairContextFromWire,
   kek as deriveKek,
   trafficKeys,
   open as openAead,
   pairContext as encodePairContext,
-  concatBytes,
 } from './kdf.mjs';
 import { fromBase64Url, toBase64Url } from './sw-key.js';
 
 // ── A2 labels ───────────────────────────────────────────────────────────────
-export const LABEL_NP2C = 'cc-e2e-v1/np2c';
-export const LABEL_NC2P = 'cc-e2e-v1/nc2p';
+// RE-EXPORTED from the shared module, not re-declared. A local string literal
+// here would be a second place the label could be typo'd, and vector H only
+// catches the case where BOTH directions get the same one.
+export { LABEL_NP2C, LABEL_NC2P } from './kdf.mjs';
 
 // ── §13.5 dedupe parameters (FROZEN) ────────────────────────────────────────
 export const DEDUPE_WINDOW = 1024;
@@ -87,13 +95,12 @@ const te = new TextEncoder();
  * typo. The caller destructures the one it needs and the names say which.
  */
 export async function noncePrefixes({ pairingId, sessionKey, context }, subtle = undefined) {
-  const ctx = context instanceof Uint8Array ? context : encodePairContext(context);
-  const [np2c, nc2p] = await Promise.all([
-    hkdf32({ salt: pairingId, ikm: sessionKey, info: concatBytes([te.encode(LABEL_NP2C), ctx]) }, subtle),
-    hkdf32({ salt: pairingId, ikm: sessionKey, info: concatBytes([te.encode(LABEL_NC2P), ctx]) }, subtle),
-  ]);
-  const p = np2c.subarray(0, SESSION_PREFIX_BYTES);
-  const c = nc2p.subarray(0, SESSION_PREFIX_BYTES);
+  // The derivation itself is the SHARED one — same bytes as the page, by
+  // construction rather than by two copies agreeing today.
+  const { np2c: p, nc2p: c } = await deriveNoncePrefixes({ pairingId, sessionKey, context }, subtle);
+  if (p.length !== SESSION_PREFIX_BYTES || c.length !== SESSION_PREFIX_BYTES) {
+    throw new Error(`a derived nonce prefix is ${p.length}/${c.length} bytes, expected ${SESSION_PREFIX_BYTES}`);
+  }
   // A2 vector H, enforced rather than documented: distinct labels cannot produce
   // equal prefixes, so equality here means someone fed the same label twice —
   // a one-character typo that no happy-path test would ever catch.
@@ -125,9 +132,8 @@ export async function noncePrefixes({ pairingId, sessionKey, context }, subtle =
  */
 export const EPOCH_FLOOR_KEY = 'cc_e2e_epoch_floor';
 
-/** A3's exact grammar for pairEpoch. No sign, no leading zeros, no whitespace. */
-const EPOCH_RE = /^(0|[1-9][0-9]{0,19})$/;
-const U64_MAX = (1n << 64n) - 1n;
+// A3's grammar for pairEpoch (decimal string, BigInt, bounded at 2^64-1) is
+// the shared parser's — see the note where parseEpoch() used to be.
 const MAX_ID_BYTES = 255;
 
 export class CtxRefused extends Error {
@@ -156,23 +162,16 @@ function localSet(key, value) {
 const utf8Len = (v) => te.encode(v).length;
 
 /**
- * Parse `ctx.pairEpoch`. A3: DECIMAL STRING, parsed with BigInt, never Number.
- *
- * `JSON.parse` turns a JSON number into a double and A1 already forbids
- * `pairEpoch` rounding above 2^53 — so a number here is refused outright rather
- * than accepted-and-rounded. `Number()` appears nowhere on this path: it would
- * happily take `" 42"`, `"042"`, `"4.2"` and `"-1"` and coerce four distinct
- * wire values into one epoch, which is precisely the silent agreement A3 exists
- * to prevent.
+ * `ctx.pairEpoch` parsing used to live here as `parseEpoch()`. It is now the
+ * shared parser's job (`pairContextFromWire` in lib/e2e/kdf.mjs, landed by
+ * P1.1): decimal STRING only, BigInt not Number, bounded at 2^64-1, no leading
+ * zeros / sign / whitespace / decimal point. A local copy of that grammar is a
+ * second thing to keep in step with the page, and the failure mode of it
+ * drifting is a wire value the two sides read as two different epochs — which
+ * derives two different keys and looks exactly like a network problem.
+ * The A3 grammar is asserted end-to-end in tests/e2e-sw-a3-ctx.test.mjs (I.4),
+ * driven off the frozen file's own `badPairEpoch` list.
  */
-export function parseEpoch(raw) {
-  if (typeof raw === 'number') throw new CtxRefused('pairEpoch is a JSON number; it MUST be a decimal string');
-  if (typeof raw !== 'string') throw new CtxRefused('pairEpoch is missing or not a string');
-  if (!EPOCH_RE.test(raw)) throw new CtxRefused(`pairEpoch ${JSON.stringify(raw)} does not match the A3 grammar`);
-  const v = BigInt(raw);
-  if (v > U64_MAX) throw new CtxRefused('pairEpoch exceeds 2^64-1');
-  return v;
-}
 
 /**
  * Validate the transmitted `ctx` and combine it with the LOCAL userId.
@@ -209,29 +208,41 @@ export function validateCtx({ ctx, mode, ownDeviceId, userId, pairingId = null }
   if (typeof userId !== 'string' || userId.length === 0) throw new CtxRefused('no local userId — cannot derive');
   if (utf8Len(userId) > MAX_ID_BYTES) throw new CtxRefused(`userId exceeds ${MAX_ID_BYTES} UTF-8 bytes`);
 
-  // A3-M3: the block must be addressed to US. One whose peerDeviceId names
-  // another device could not be opened anyway, but refusing it by identity
-  // rather than by decryption failure is the difference between a clear
-  // refusal and three seconds of indistinguishable tag failures.
-  if (peerDeviceId !== ownDeviceId) {
-    throw new CtxRefused(`ctx.peerDeviceId ${JSON.stringify(peerDeviceId)} is not this device (A3-M3)`);
-  }
-  // …and the pairingId, "wherever it independently knows the value". The SW
-  // does NOT: PAIR_STATE is its only pairing frame and carries no pairingId
-  // outside ctx, so there is nothing to compare against and the check is
-  // SKIPPED rather than faked against the very value it would be checking.
-  // The web page, which initiated the pairing, does know it and must compare —
-  // that is P2's half of A3-M3, not P3's.
-  if (pairingId !== null && ctxPairingId !== pairingId) {
-    throw new CtxRefused('ctx.pairingId does not match the pairing we are party to (A3-M3)');
+  // ── Everything below is the SHARED parser, not a second copy of it ────────
+  // P1.1 landed `pairContextFromWire()` in lib/e2e/kdf.mjs: the pairEpoch
+  // decimal-string regex, the 2^64-1 bound, A3-M3's peerDeviceId and pairingId
+  // identity checks and A3-M4's refuse-without-ctx all live there, and the page
+  // and the SW must apply byte-identical rules or a frame one side accepts is a
+  // frame the other silently derives a different key for. Duplicating the regex
+  // here is how the two drift by one character with every suite still green.
+  //
+  // Two things stay OURS and are the reason this wrapper exists at all:
+  //   1. the UTF-8 byte cap above — A1 (4)'s u8 field length, re-asserted at
+  //      DECODE. The shared parser leaves it to pairContext()'s encode-time
+  //      throw, which is correct but fires far from the field that caused it.
+  //   2. the error TYPE. The SW's m-G tolerance needs `CtxRefused.countsOnly`
+  //      to tell "refuse this block and show counts" apart from a bug; a plain
+  //      Error escaping here would surface as an error toast, which m-G forbids.
+  //
+  // The pairingId half of A3-M3 is passed through as-is: the SW does NOT
+  // independently know the value (PAIR_STATE carries no pairingId outside ctx),
+  // so the default `null` SKIPS it rather than faking a comparison against the
+  // very value being checked. The web page, which initiated the pairing, does
+  // know it and must compare — P2's half of A3-M3. The parameter is real and
+  // tested so the check exists the day a caller can supply it.
+  let parsed;
+  try {
+    parsed = pairContextFromWire(ctx, { userId, deviceId: ownDeviceId, pairingId });
+  } catch (e) {
+    throw new CtxRefused(e && e.message ? e.message.replace(/^kdf: /, '') : 'ctx refused');
   }
 
   return {
-    pairingId: ctxPairingId,
+    pairingId: parsed.pairingId,
     userId,
-    phoneDeviceId,
-    peerDeviceId,
-    pairEpoch: parseEpoch(ctx.pairEpoch),
+    phoneDeviceId: parsed.phoneDeviceId,
+    peerDeviceId: parsed.peerDeviceId,
+    pairEpoch: parsed.pairEpoch,
   };
 }
 

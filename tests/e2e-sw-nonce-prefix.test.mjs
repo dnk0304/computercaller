@@ -11,23 +11,24 @@
  * both assert E–H against the same file, or the file constrains one
  * implementation of three."
  *
- * ── WHY THE EXPECTED BYTES ARE INLINE RATHER THAN READ FROM THE FILE ────────
- * A2 says to ADD E–H to `tests/kdf-vectors.json`. That file is P0.2-FROZEN and
- * is asserted by three lanes (this one, P2's `kdf-vectors.test.mjs`, and
- * Android's `E2eKdfVectorsTest`); P2 is running in parallel right now and P3
- * does not own it. Editing a frozen shared file from a parallel lane is how two
- * branches produce two different "frozen" vector sets. So this test reads the
- * CONTEXT INPUTS from the frozen file — `pairingId`, `userId`, `phoneDeviceId`,
- * `peerDeviceId`, `pairEpoch`, `sessionKeyHex`, and both traffic keys, none of
- * which it invents — and pins A2's OUTPUT bytes here, transcribed from the
- * signed addendum. When whoever owns the §13.10.x follow-up lands E–H in the
- * JSON, this file should be re-pointed at it and the inline copies deleted.
- * Flagged in the P3 résumé so it is not forgotten.
+ * ── VECTOR SOURCE (P3 follow-up, rebased onto P1.1 46e3084) ────────────────
+ * The earlier revision pinned A2's output bytes INLINE, because at the time
+ * E–H were not yet in the P0.2-frozen `tests/kdf-vectors.json` and a parallel
+ * lane editing a frozen shared file is how two branches end up with two
+ * different "frozen" vector sets. P1.1 landed them (`noncePrefixes`,
+ * `aead.vectorF`, `aead.vectorG`), so the flagged re-point is now done: every
+ * expected byte is READ FROM THE FILE and nothing is transcribed.
  *
- * The cross-check that matters is unaffected either way: these bytes came from
- * Security's independent implementation, and reproducing them from ours is the
- * whole point. A test that generated its own expectations would pass against
- * any self-consistent bug.
+ * The inline copies were compared against the frozen file before deletion and
+ * agreed byte-for-byte in every field — np2c, nc2p, both info strings, both
+ * AADs, both nonces, both 80-byte ciphertexts. Nothing was adjusted on either
+ * side; a mismatch would have been a finding and a stop, not a reconciliation.
+ *
+ * The cross-check that matters is unaffected: these bytes came from Security's
+ * independent implementation, and reproducing them from ours is the whole
+ * point. A test that generated its own expectations would pass against any
+ * self-consistent bug — which is also why `mustBeFromFile()` below refuses a
+ * missing field rather than letting it read as `undefined`.
  *
  * Run: node tests/e2e-sw-nonce-prefix.test.mjs
  */
@@ -53,36 +54,59 @@ const subtle = webcrypto.subtle;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const V = JSON.parse(readFileSync(join(ROOT, 'tests/kdf-vectors.json'), 'utf8'));
 
-// ── A2's published bytes, transcribed from the signed addendum ──────────────
+// ── A2's published bytes — READ FROM THE FROZEN FILE, never transcribed ─────
+// A missing field must be a hard stop, not an `undefined` that turns an
+// assertion into `undefined === undefined` and passes.
+function mustBeFromFile(value, where) {
+  if (value === undefined || value === null) {
+    throw new Error(`frozen tests/kdf-vectors.json is missing ${where} — refusing to substitute a local expectation`);
+  }
+  return value;
+}
+const NP = mustBeFromFile(V.noncePrefixes, 'noncePrefixes');
+const VF = mustBeFromFile(V.aead?.vectorF, 'aead.vectorF');
+const VG = mustBeFromFile(V.aead?.vectorG, 'aead.vectorG');
+
+// The direction constants stay OURS, not the file's: `direction: 1` in the
+// JSON is data, and asserting our DIR_P2C against it is a real check. Reading
+// the byte out of the file and feeding it back in would assert nothing.
+const dir = (v, expected, name) => {
+  if (v.direction !== expected) {
+    throw new Error(`${name}: frozen direction ${v.direction} != our constant ${expected}`);
+  }
+  return expected;
+};
+
 const A2 = {
-  infoNp2cHex: '63632d6532652d76312f6e703263110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a',
-  infoNc2pHex: '63632d6532652d76312f6e633270110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a',
-  np2cHex: '6fa67348',
-  nc2pHex: '4a786847',
+  infoNp2cHex: mustBeFromFile(NP.infoNp2cHex, 'noncePrefixes.infoNp2cHex'),
+  infoNc2pHex: mustBeFromFile(NP.infoNc2pHex, 'noncePrefixes.infoNc2pHex'),
+  np2cHex: mustBeFromFile(NP.np2cHex, 'noncePrefixes.np2cHex'),
+  nc2pHex: mustBeFromFile(NP.nc2pHex, 'noncePrefixes.nc2pHex'),
+  prefixLengthBytes: mustBeFromFile(NP.lengthBytes, 'noncePrefixes.lengthBytes'),
   // F — p2c, the DERIVED prefix. Same frame as A1 vector A, so the two differ
   // in exactly one input and a divergence localises immediately.
   F: {
-    frameType: 'SMS_RECEIVED',
-    kid: 'kid-01',
-    seq: 7,
-    direction: DIR_P2C,
-    pairEpoch: 42,
-    aadHex: '210c534d535f524543454956454422066b69642d3031230000000000000007240125000000000000002a',
-    nonceHex: '6fa673480000000000000007',
-    ciphertextHex: '9675ba5ab30c62bb4802c19f4bcd250612e6b7fead8e8aa4c7fff702cec36d68fb85220b16a4c823d2597780d8e664a977b9d0881ed2f41d7a9e402378f3928c6450b5bb8934fe688c6f728943ac10ce',
+    frameType: mustBeFromFile(VF.frameType, 'vectorF.frameType'),
+    kid: mustBeFromFile(VF.kid, 'vectorF.kid'),
+    seq: mustBeFromFile(VF.seq, 'vectorF.seq'),
+    direction: dir(VF, DIR_P2C, 'vectorF'),
+    pairEpoch: mustBeFromFile(VF.pairEpoch, 'vectorF.pairEpoch'),
+    aadHex: mustBeFromFile(VF.aadHex, 'vectorF.aadHex'),
+    nonceHex: mustBeFromFile(VF.nonceHex, 'vectorF.nonceHex'),
+    ciphertextHex: mustBeFromFile(VF.ciphertextHex, 'vectorF.ciphertextHex'),
   },
   // G — c2p. Proves the direction byte, the c2p key and the c2p prefix all move
   // together; any one of the three left behind still produces a valid-looking
   // 80-byte ciphertext, which is why all three are pinned at once.
   G: {
-    frameType: 'SMS_RECEIVED',
-    kid: 'kid-01',
-    seq: 7,
-    direction: DIR_C2P,
-    pairEpoch: 42,
-    aadHex: '210c534d535f524543454956454422066b69642d3031230000000000000007240225000000000000002a',
-    nonceHex: '4a7868470000000000000007',
-    ciphertextHex: 'cd13472e5c80869dbf16635b09461270aca7bc49e9549c68604006478c1f47cb70941551e372c46296b740ef341c36a1ec28b4163695ea8951def0e477445214a80182070c9bbdc9c67ebfde834f95f0',
+    frameType: mustBeFromFile(VG.frameType, 'vectorG.frameType'),
+    kid: mustBeFromFile(VG.kid, 'vectorG.kid'),
+    seq: mustBeFromFile(VG.seq, 'vectorG.seq'),
+    direction: dir(VG, DIR_C2P, 'vectorG'),
+    pairEpoch: mustBeFromFile(VG.pairEpoch, 'vectorG.pairEpoch'),
+    aadHex: mustBeFromFile(VG.aadHex, 'vectorG.aadHex'),
+    nonceHex: mustBeFromFile(VG.nonceHex, 'vectorG.nonceHex'),
+    ciphertextHex: mustBeFromFile(VG.ciphertextHex, 'vectorG.ciphertextHex'),
   },
 };
 
@@ -148,13 +172,20 @@ check('E: infoNc2p = "cc-e2e-v1/nc2p" ‖ pairContext', () => {
 });
 
 let prefixes;
-await acheck('E: np2c = 6fa67348 and nc2p = 4a786847 (derived, L=4)', async () => {
+await acheck(`E: np2c = ${A2.np2cHex} and nc2p = ${A2.nc2pHex} (derived, L=${A2.prefixLengthBytes})`, async () => {
   prefixes = await noncePrefixes({ pairingId, sessionKey, context: ctxBytes }, subtle);
   eq(toHex(prefixes.np2c), A2.np2cHex, 'np2c');
   eq(toHex(prefixes.nc2p), A2.nc2pHex, 'nc2p');
 });
 
 // ── H. The negative that catches the one-character typo ─────────────────────
+// Driven off the frozen file's own flags, so H is asserted because the file
+// says to assert it — not because this lane remembered to.
+const H = mustBeFromFile(NP.negativeH, 'noncePrefixes.negativeH');
+check('H: the frozen file demands both halves of H', () => {
+  if (H.mustDiffer !== true) throw new Error('negativeH.mustDiffer is not true');
+  if (H.mustNotBeAllZero !== true) throw new Error('negativeH.mustNotBeAllZero is not true');
+});
 check('H: np2c !== nc2p', () => {
   if (toHex(prefixes.np2c) === toHex(prefixes.nc2p)) throw new Error('prefixes are equal — same label used twice');
 });
@@ -162,6 +193,10 @@ check('H: neither prefix is all-zero', () => {
   for (const [n, p] of [['np2c', prefixes.np2c], ['nc2p', prefixes.nc2p]]) {
     if (p.every((b) => b === 0)) throw new Error(`${n} is all-zero`);
   }
+});
+check(`E: each prefix is exactly ${A2.prefixLengthBytes} bytes (frozen lengthBytes)`, () => {
+  eq(prefixes.np2c.length, A2.prefixLengthBytes, 'np2c length');
+  eq(prefixes.nc2p.length, A2.prefixLengthBytes, 'nc2p length');
 });
 await acheck('H: feeding the same label twice is REFUSED, not silently accepted', async () => {
   // Proves the guard in noncePrefixes() is reachable, not decorative: a

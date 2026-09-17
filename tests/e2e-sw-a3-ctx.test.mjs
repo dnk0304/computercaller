@@ -12,12 +12,19 @@
  * is what makes the vector cross-implementation rather than two copies of one
  * belief". This file is the SW's decode half.
  *
- * Expected bytes are transcribed from the signed addendum for the same reason
- * they are in tests/e2e-sw-nonce-prefix.test.mjs: A3 says to ADD vector I to
- * the P0.2-frozen `tests/kdf-vectors.json`, which three lanes assert and P3
- * does not own while P2 runs in parallel. The context INPUTS are read from that
- * file; only A3's published outputs are inline. Re-point and delete the inline
- * copies when the §13.10.x follow-up lands them.
+ * ── VECTOR SOURCE (P3 follow-up, rebased onto P1.1 46e3084) ────────────────
+ * The earlier revision of this file carried A3's published bytes INLINE, with
+ * a flag saying to re-point them once the §13.10.x follow-up landed vector I
+ * in the P0.2-frozen `tests/kdf-vectors.json`. P1.1 landed it (`ctxWire`), so
+ * every expected byte below is now READ FROM THAT FILE and nothing is
+ * transcribed. The inline copies were compared against the frozen file before
+ * deletion and agreed byte-for-byte — no value was adjusted in either
+ * direction, which is the only outcome that means anything: a mismatch would
+ * have been a finding, not a merge conflict.
+ *
+ * `mustBeFromFile()` below makes the re-point structural rather than a promise
+ * — it fails if a field the frozen file is supposed to supply is missing, so a
+ * future edit cannot quietly reintroduce a local expectation.
  *
  * Run: node tests/e2e-sw-a3-ctx.test.mjs
  */
@@ -50,38 +57,51 @@ const V = JSON.parse(readFileSync(join(ROOT, 'tests/kdf-vectors.json'), 'utf8'))
 const K = await import('../chrome-extension/e2e/kdf.mjs');
 const S = await import('../chrome-extension/e2e/sw-session.js');
 
-// ── A3's published bytes ────────────────────────────────────────────────────
+// ── A3's published bytes — READ FROM THE FROZEN FILE, never transcribed ─────
+// A missing field is a hard stop rather than an `undefined` that turns an
+// assertion into a tautology (`undefined === undefined` passes).
+function mustBeFromFile(value, where) {
+  if (value === undefined || value === null) {
+    throw new Error(`frozen tests/kdf-vectors.json is missing ${where} — refusing to substitute a local expectation`);
+  }
+  return value;
+}
+const W = mustBeFromFile(V.ctxWire, 'ctxWire');
+const WI1 = mustBeFromFile(W.positiveI1, 'ctxWire.positiveI1');
+const WI2 = mustBeFromFile(W.negativeI2EpochDrift, 'ctxWire.negativeI2EpochDrift');
+const WI3 = mustBeFromFile(W.negativeI3UserIdDrift, 'ctxWire.negativeI3UserIdDrift');
+const WI4 = mustBeFromFile(W.negativeI4Parser, 'ctxWire.negativeI4Parser');
+
 const I1 = {
-  ctxWire: {
-    pairingId: 'pair-7f3a9c21',
-    phoneDeviceId: 'dev-phone-01',
-    peerDeviceId: 'dev-web-01',
-    pairEpoch: '42',
-  },
-  localUserId: 'user-0191aa',
-  contextBytesHex: '110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a',
-  kP2cHex: 'b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060',
-  kC2pHex: 'd519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d',
-  np2cHex: '6fa67348',
-  nc2pHex: '4a786847',
-  openedPlaintextHex: '00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+  ctxWire: mustBeFromFile(WI1.ctxWire, 'ctxWire.positiveI1.ctxWire'),
+  localUserId: mustBeFromFile(WI1.localUserId, 'positiveI1.localUserId'),
+  contextBytesHex: mustBeFromFile(WI1.contextBytesHex, 'positiveI1.contextBytesHex'),
+  kP2cHex: mustBeFromFile(WI1.phoneToComputerKeyHex, 'positiveI1.phoneToComputerKeyHex'),
+  kC2pHex: mustBeFromFile(WI1.computerToPhoneKeyHex, 'positiveI1.computerToPhoneKeyHex'),
+  np2cHex: mustBeFromFile(WI1.np2cHex, 'positiveI1.np2cHex'),
+  nc2pHex: mustBeFromFile(WI1.nc2pHex, 'positiveI1.nc2pHex'),
+  openedPlaintextHex: mustBeFromFile(WI1.openedPlaintextHex, 'positiveI1.openedPlaintextHex'),
 };
 const I2 = {
-  contextBytesHex: '110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002b',
-  kP2cHex: '92bb769b26bd88b059fed952bc189b47fa293563324d61eb4d88438eeb713652',
-  np2cHex: '13168906',
+  pairEpoch: mustBeFromFile(WI2.pairEpoch, 'negativeI2EpochDrift.pairEpoch'),
+  contextBytesHex: mustBeFromFile(WI2.contextBytesHex, 'negativeI2EpochDrift.contextBytesHex'),
+  kP2cHex: mustBeFromFile(WI2.phoneToComputerKeyHex, 'negativeI2EpochDrift.phoneToComputerKeyHex'),
+  np2cHex: mustBeFromFile(WI2.np2cHex, 'negativeI2EpochDrift.np2cHex'),
 };
 const I3 = {
-  localUserId: 'user-0191ab',
-  kP2cHex: '838a45bc4c6cb537eb16efa37c51f949efb9b54c83e3f4fc2fe11636a838a65e',
+  localUserId: mustBeFromFile(WI3.localUserId, 'negativeI3UserIdDrift.localUserId'),
+  kP2cHex: mustBeFromFile(WI3.phoneToComputerKeyHex, 'negativeI3UserIdDrift.phoneToComputerKeyHex'),
 };
-// A2 vector F — the p2c frame the opened plaintext above comes from.
+// A2 vector F — the p2c frame the opened plaintext above comes from. Same
+// file, `aead.vectorF`, so I.1's "opensVectorF" claim is checked against the
+// very bytes vector F publishes rather than a second copy of them.
+const VF = mustBeFromFile(V.aead?.vectorF, 'aead.vectorF');
 const F = {
-  frameType: 'SMS_RECEIVED',
-  kid: 'kid-01',
-  seq: 7,
-  pairEpoch: 42,
-  ciphertextHex: '9675ba5ab30c62bb4802c19f4bcd250612e6b7fead8e8aa4c7fff702cec36d68fb85220b16a4c823d2597780d8e664a977b9d0881ed2f41d7a9e402378f3928c6450b5bb8934fe688c6f728943ac10ce',
+  frameType: mustBeFromFile(VF.frameType, 'aead.vectorF.frameType'),
+  kid: mustBeFromFile(VF.kid, 'aead.vectorF.kid'),
+  seq: mustBeFromFile(VF.seq, 'aead.vectorF.seq'),
+  pairEpoch: mustBeFromFile(VF.pairEpoch, 'aead.vectorF.pairEpoch'),
+  ciphertextHex: mustBeFromFile(VF.ciphertextHex, 'aead.vectorF.ciphertextHex'),
 };
 
 let passed = 0;
@@ -178,10 +198,10 @@ await check('I.1: A2 vector F OPENS under the wire-derived key + prefix', async 
 
 // ── I.2 — epoch drift ───────────────────────────────────────────────────────
 
-await check('I.2: pairEpoch "43" gives a DIFFERENT context, key and prefix', async () => {
+await check(`I.2: pairEpoch "${I2.pairEpoch}" gives a DIFFERENT context, key and prefix`, async () => {
   reset();
   const inputs = await S.pairContextInputs({
-    block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: '43' } },
+    block: { mode: 1, ctx: { ...I1.ctxWire, pairEpoch: I2.pairEpoch } },
     ownDeviceId: OWN,
     userId: I1.localUserId,
   });
@@ -193,7 +213,8 @@ await check('I.2: pairEpoch "43" gives a DIFFERENT context, key and prefix', asy
   eq(K.toHex(np2c), I2.np2cHex, 'np2c');
 });
 
-await check('I.2: A2 vector F FAILS AUTHENTICATION under the epoch-43 key', async () => {
+await check(`I.2: A2 vector F FAILS AUTHENTICATION under the epoch-${I2.pairEpoch} key`, async () => {
+  assert(WI2.opensVectorF === false, 'the frozen file must be asserting non-opening here');
   const key = await subtle.importKey('raw', K.fromHex(I2.kP2cHex), 'AES-GCM', false, ['decrypt']);
   let opened = false;
   try {
@@ -230,16 +251,27 @@ await check('I.3: one character of local userId drift gives total key divergence
 
 // ── I.4 — parser negatives: refuse, NEVER coerce ────────────────────────────
 
+// The refused set is the frozen file's `badPairEpoch` list, taken verbatim and
+// in order, plus two cases this lane adds on top (the frozen list's
+// `missingPairEpoch` flag, and the 2^64 boundary A3 bounds the parser at). The
+// coverage assertion below is the point: if a later edit to the frozen file
+// adds a case, this file starts failing instead of quietly testing the old set.
+const FROZEN_BAD_EPOCHS = mustBeFromFile(WI4.badPairEpoch, 'negativeI4Parser.badPairEpoch');
 const BAD_EPOCHS = [
-  [42, 'a JSON number'],
-  ['042', 'a leading zero'],
-  [' 42', 'leading whitespace'],
-  ['-1', 'a sign'],
-  ['4.2', 'a decimal point'],
-  ['', 'an empty string'],
-  [undefined, 'an absent value'],
+  ...FROZEN_BAD_EPOCHS.map((v) => [v, `frozen badPairEpoch ${JSON.stringify(v)}`]),
+  [undefined, 'an absent value (frozen missingPairEpoch)'],
   ['18446744073709551616', 'a value above 2^64-1'],
 ];
+await check('I.4: every frozen badPairEpoch case is exercised', async () => {
+  assert(WI4.missingPairEpoch === true, 'frozen file must flag missingPairEpoch');
+  assert(WI4.missingCtxOnMode1 === true, 'frozen file must flag missingCtxOnMode1');
+  for (const v of FROZEN_BAD_EPOCHS) {
+    assert(
+      BAD_EPOCHS.some(([value]) => Object.is(value, v)),
+      `frozen badPairEpoch case ${JSON.stringify(v)} is not covered`,
+    );
+  }
+});
 for (const [value, label] of BAD_EPOCHS) {
   await check(`I.4: pairEpoch with ${label} is REFUSED, not coerced`, async () => {
     reset();
@@ -268,10 +300,14 @@ await check('I.4 / A3-M4: a mode=1 block with NO ctx is refused, never derived f
 
 await check('I.4 / A3-M3: a block addressed to ANOTHER device is refused', async () => {
   reset();
+  // The frozen file names both sides of this case; using its own pair means the
+  // "own" id is the one vector I says we are, not one this test chose.
+  const M3 = mustBeFromFile(WI4.peerDeviceIdMismatch, 'negativeI4Parser.peerDeviceIdMismatch');
+  eq(M3.ownDeviceId, OWN, 'frozen ownDeviceId must be the device this file plays');
   const err = await refuses(
     () => S.pairContextInputs({
-      block: { mode: 1, ctx: { ...I1.ctxWire, peerDeviceId: 'dev-someone-else' } },
-      ownDeviceId: OWN,
+      block: { mode: 1, ctx: { ...I1.ctxWire, peerDeviceId: M3.ctxPeerDeviceId } },
+      ownDeviceId: M3.ownDeviceId,
       userId: I1.localUserId,
     }),
     'peerDeviceId mismatch',
@@ -279,10 +315,39 @@ await check('I.4 / A3-M3: a block addressed to ANOTHER device is refused', async
   assert(/A3-M3/.test(err.why), `refusal should cite A3-M3, said: ${err.why}`);
 });
 
-await check('I.4: an id over 255 UTF-8 bytes is refused on the DECODE side', async () => {
+await check('I.4 / A3-M3: the pairingId half refuses WHEN the caller knows the value', async () => {
+  // A3-M3 is two checks. The SW cannot perform the pairingId half from
+  // PAIR_STATE alone (that frame carries no pairingId — documented in
+  // validateCtx, and it is P2's half), so `pairingId` is an optional argument
+  // that defaults to null. Optional is not the same as absent: this asserts the
+  // branch is real and refuses, so the day a caller CAN supply the value it
+  // gets a check rather than a parameter nothing reads.
+  const MP = mustBeFromFile(WI4.pairingIdMismatch, 'negativeI4Parser.pairingIdMismatch');
+  eq(MP.ownPairingId, I1.ctxWire.pairingId, 'frozen ownPairingId must be vector I.1\'s');
+  let threw = null;
+  try {
+    S.validateCtx({
+      ctx: { ...I1.ctxWire, pairingId: MP.ctxPairingId },
+      mode: 1,
+      ownDeviceId: OWN,
+      userId: I1.localUserId,
+      pairingId: MP.ownPairingId,
+    });
+  } catch (e) { threw = e; }
+  assert(threw instanceof S.CtxRefused, `expected CtxRefused, got ${threw && threw.name}`);
+  assert(/A3-M3/.test(threw.why), `refusal should cite A3-M3, said: ${threw.why}`);
+  // Control: the SAME call with the matching pairingId must NOT refuse, or the
+  // assertion above would pass for any reason at all.
+  S.validateCtx({
+    ctx: I1.ctxWire, mode: 1, ownDeviceId: OWN, userId: I1.localUserId, pairingId: MP.ownPairingId,
+  });
+});
+
+const OVERSIZE = mustBeFromFile(WI4.oversizeFieldBytes, 'negativeI4Parser.oversizeFieldBytes');
+await check(`I.4: an id of ${OVERSIZE} UTF-8 bytes is refused on the DECODE side`, async () => {
   for (const field of ['pairingId', 'phoneDeviceId', 'peerDeviceId']) {
     reset();
-    const ctx = { ...I1.ctxWire, [field]: 'a'.repeat(256) };
+    const ctx = { ...I1.ctxWire, [field]: 'a'.repeat(OVERSIZE) };
     if (field === 'peerDeviceId') continue;       // that one fails A3-M3 first
     await refuses(
       () => S.pairContextInputs({ block: { mode: 1, ctx }, ownDeviceId: OWN, userId: I1.localUserId }),
@@ -292,9 +357,9 @@ await check('I.4: an id over 255 UTF-8 bytes is refused on the DECODE side', asy
   reset();
   await refuses(
     () => S.pairContextInputs({
-      block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: 'u'.repeat(256),
+      block: { mode: 1, ctx: I1.ctxWire }, ownDeviceId: OWN, userId: 'u'.repeat(OVERSIZE),
     }),
-    'userId 256 bytes',
+    `userId ${OVERSIZE} bytes`,
   );
 });
 
