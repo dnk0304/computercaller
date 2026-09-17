@@ -23,7 +23,7 @@
  */
 
 import { execFileSync, execSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -78,7 +78,10 @@ function finish(rec, { exit, counts } = {}) {
   return rec;
 }
 
-const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+// Absolute path, quoted. A bare `gradlew.bat` is not resolvable through
+// execSync's shell even with cwd set to the module root — it is not on PATH
+// and cmd.exe does not search the child's cwd. Cost a false FAIL in (s7).
+const gradlew = `"${join(MODULE_ROOT, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew')}"`;
 const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: true };
 
 // ---------------------------------------------------------------- step 1
@@ -181,10 +184,27 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
     // lintDebug exits non-zero on the 8 pre-existing BASE_SHA errors
     // (abortOnError). That is EXPECTED and is exactly why the manifest rule
     // exists; the verdict comes from lint-manifest --check, not from gradle.
+    // BUT the failure must not be swallowed blindly: if gradle never RAN
+    // (bad path, no JDK), --check would happily pass against a stale report
+    // from a previous run and the gate would go green on nothing. So require
+    // a report file written AFTER this step started. Caught in (s7).
+    const report = join(MODULE_ROOT, 'app/build/reports/lint-results-debug.xml');
+    const startedAt = Date.now();
+    let gradleOut = '';
     try {
-      execSync(`${gradlew} :app:lintDebug --no-daemon --continue`, gradleOpts);
-    } catch { /* see above */ }
-    return execFileSync(process.execPath, [join(HERE, 'lint-manifest.mjs'), '--check'],
+      gradleOut = execSync(`${gradlew} :app:lintDebug --no-daemon --continue`, gradleOpts);
+    } catch (e) {
+      gradleOut = `${e.stdout ?? ''}\n${e.stderr ?? ''}`;
+    }
+    if (!existsSync(report)) throw new Error('lint produced no XML report — did gradle run?');
+    const mtime = statSync(report).mtimeMs;
+    if (mtime < startedAt - 5000) {
+      throw new Error(
+        `lint report is STALE (written ${new Date(mtime).toISOString()}, step started ` +
+        `${new Date(startedAt).toISOString()}) — gradle did not actually run lint`
+      );
+    }
+    return gradleOut + '\n' + execFileSync(process.execPath, [join(HERE, 'lint-manifest.mjs'), '--check'],
       { cwd: MODULE_ROOT, encoding: 'utf8' });
   });
   const total = /\((\d+) issues/.exec(r._out)?.[1];
