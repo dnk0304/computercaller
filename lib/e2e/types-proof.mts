@@ -53,3 +53,51 @@ export function provePadding(): number {
   void MAX_PLAINTEXT_BYTES;
   return bucketFor(padded.length);
 }
+
+import {
+  pairContext, kekInfo, trafficInfo, kek, trafficKeys, nonce, aad, seal, open, createSender,
+  DIR_P2C, DIR_C2P, SEC1_P256_BYTES, MAX_PREFIXED_BYTES, NONCE_BYTES, TAG_BITS, KEY_BYTES,
+  SESSION_PREFIX_BYTES, LABEL_KEK, LABEL_P2C, LABEL_C2P, be64, concatBytes,
+  type PairContextInput, type TrafficKeys, type Endpoint, type Sender,
+} from './kdf.mjs';
+
+export async function proveKdf(): Promise<Uint8Array> {
+  const input: PairContextInput = {
+    userId: 'user-0191aa',
+    phoneDeviceId: 'dev-phone-01',
+    peerDeviceId: 'dev-web-01',
+    pairEpoch: 42,
+  };
+  const ctx: Uint8Array = pairContext(input);
+  void kekInfo(ctx, p256Point);
+  void trafficInfo(ctx, DIR_C2P);
+  void concatBytes([be64(1), ctx]);
+
+  const wrapKey: Uint8Array = await kek({
+    pairingId: 'pair-1', sharedSecret: new Uint8Array(32).fill(7), context: ctx, recipientKey: p256Point,
+  });
+  const keys: TrafficKeys = await trafficKeys({
+    pairingId: 'pair-1', sessionKey: wrapKey, context: input, role: 'phone',
+  });
+
+  // The send half is the ONLY key a sender can name — there is no
+  // keyForDirection() to call with the wrong argument (A1 (2)).
+  const sender: Sender = createSender({
+    trafficKey: keys.send,
+    sessionPrefix: new Uint8Array(SESSION_PREFIX_BYTES),
+    resumeFrom: 0,
+    commitSeq: async () => {},
+  });
+  const seq: bigint = await sender.nextSeq();
+  void nonce(sender.sessionPrefix, seq);
+  void aad({ frameType: 'SMS_RECEIVED', kid: 'kid-01', seq, direction: DIR_P2C, pairEpoch: 42 });
+
+  const ct: Uint8Array = await seal({
+    sender, frameType: 'SMS_RECEIVED', kid: 'kid-01', seq, pairEpoch: 42,
+    plaintext: new TextEncoder().encode('hi'),
+  });
+  const receiver: Endpoint = { ...keys.recv, direction: keys.send.direction, sessionPrefix: sender.sessionPrefix };
+  void SEC1_P256_BYTES; void MAX_PREFIXED_BYTES; void NONCE_BYTES; void TAG_BITS; void KEY_BYTES;
+  void LABEL_KEK; void LABEL_P2C; void LABEL_C2P;
+  return open({ receiver, frameType: 'SMS_RECEIVED', kid: 'kid-01', seq, pairEpoch: 42, ciphertext: ct });
+}
