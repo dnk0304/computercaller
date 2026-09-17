@@ -215,11 +215,26 @@ function assertUsable(record) {
 /**
  * The worker's device key, generating one on first use or after a wipe.
  *
+ * SINGLE-FLIGHT BUT NOT CACHED, and the distinction is deliverable (e).
+ *
  * Single-flight: the SW handles frames concurrently, and two callers racing on
  * an empty store would each generate a keypair and the loser's would be
  * overwritten — after it had already been published to the page. The pairing
  * would then seal to a key nobody holds. A module-level promise is a sufficient
  * mutex here for the same reason background.js's `serialize()` is: one thread.
+ *
+ * NOT cached past settlement: the promise is cleared when it resolves, so every
+ * later call re-reads IndexedDB. That is what makes M-C fall out of the design
+ * instead of needing a test-only "the key was wiped" hook. Clear the store —
+ * from devtools, from Chrome's Clear-site-data, from a profile reset — and the
+ * next call finds nothing, mints a new key with a NEW deviceId, and the next
+ * reconnect carries that deviceId to the relay. The worker is then simply a
+ * device the current pairing never sealed to, so it degrades to counts-only
+ * until the next pairing includes it, and THE WEB PAIR IS UNTOUCHED — the web
+ * page holds its own key and its own wrap, and nothing here can reach either.
+ *
+ * The cost is one IndexedDB read per call. The callers are connect() and the
+ * page bridge — never the per-frame path — so this is not on any hot path.
  */
 let inflight = null;
 export function loadOrCreateDeviceKey() {
@@ -230,20 +245,15 @@ export function loadOrCreateDeviceKey() {
       const fresh = await generateRecord();
       await writeRecord(fresh);
       return fresh;
-    })().catch((e) => {
-      // A failure must not be cached — the next PAIR_STATE deserves a fresh
-      // attempt (a transient IDB error during profile startup is real).
-      // An unknown-version throw will simply throw again, which is correct.
-      inflight = null;
-      throw e;
-    });
+    })();
+    // Cleared on BOTH outcomes. On success so a wipe is seen by the next
+    // caller; on failure so a transient IDB error during profile startup does
+    // not poison the worker for its whole life. An unknown-version record
+    // simply throws again on the next call, which is the correct behaviour.
+    const settle = () => { inflight = null; };
+    inflight.then(settle, settle);
   }
   return inflight;
-}
-
-/** Forget the cached promise. Used by (e)'s wipe path and by the tests. */
-export function resetDeviceKeyCache() {
-  inflight = null;
 }
 
 /** `{deviceId, pub}` — everything the page bridge and the relay need, and no more. */

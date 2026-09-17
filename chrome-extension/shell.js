@@ -577,7 +577,7 @@ async function requestDock() {
  * navigated frame from being told which device to expect, which is the
  * substitution B9's SAS exists to make visible.
  */
-async function sendE2ePubKey() {
+async function sendE2ePubKey(rid) {
   if (!frame || !frame.contentWindow) return;
   let identity = { v: 1, deviceId: null, pub: null };
   try {
@@ -592,7 +592,11 @@ async function sendE2ePubKey() {
   if (!frame || !frame.contentWindow) return;
   try {
     frame.contentWindow.postMessage(
-      { source: NS, type: 'e2e-pubkey', ...identity },
+      // `rid` is echoed ONLY when the app supplied one (P2's request, 2026-09-17).
+      // Spread last and conditionally, so an unsolicited emission carries no
+      // `rid: undefined` field that a strict consumer might read as a reply to
+      // a request it never made.
+      { source: NS, type: 'e2e-pubkey', ...identity, ...(rid === undefined ? {} : { rid }) },
       self.CC.WEBAPP_ORIGIN,
     );
   } catch {}
@@ -653,7 +657,18 @@ window.addEventListener('message', (event) => {
     // the `fromApp` verb set, and the login frame's set above is disjoint and
     // returns before it. The signed-out login page must never be able to probe
     // for device identity.
-    sendE2ePubKey();
+    //
+    // An optional `rid` is echoed back on the reply so the page can match a
+    // reply to its own request rather than to an unsolicited emission. It is
+    // an OPAQUE CORRELATOR, not a credential: it is echoed, never interpreted,
+    // never used to decide anything, and a request without one still works.
+    // Bounded and type-checked before it goes anywhere, so a hostile page
+    // cannot use it to push an unbounded string back through the bridge.
+    sendE2ePubKey(
+      (typeof data.rid === 'string' && data.rid.length > 0 && data.rid.length <= 64)
+        ? data.rid
+        : undefined,
+    );
   } else if (data.type === 'open-popout') {
     if (CAN_POPOUT) openPopout();
   } else if (data.type === 'dock') {

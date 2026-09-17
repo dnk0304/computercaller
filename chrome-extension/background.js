@@ -29,6 +29,20 @@ import {
   publicIdentity,
   registerDeviceKey as registerSwDeviceKey,
 } from './e2e/sw-key.js';
+import {
+  cacheWrap,
+  readCachedWrap,
+  dropSessionState,
+  unwrapSessionKey,
+  buildSession,
+  isSealedEnvelope,
+  openSealedFrame,
+  admitSeq,
+  noteDrop,
+  readDrops,
+  pairContextInputs,
+  PairContextUnavailable,
+} from './e2e/sw-session.js';
 
 // ── State ──────────────────────────────────────────────────────────────────
 let ws = null;
@@ -170,10 +184,32 @@ let swPubKey = null;
 let deviceKeyError = null;
 let deviceKeyPrimed = null;
 
+/**
+ * Re-read the key rather than trusting the last answer. Deliverable (e) / M-C:
+ * an IndexedDB wipe must produce a NEW deviceId on the next reconnect, and a
+ * module-level cache that outlives the wipe would keep announcing a deviceId
+ * whose private key no longer exists — the relay would keep handing this worker
+ * wraps it can never open, which looks identical to a crypto bug and is not one.
+ * Called from connect(), which is already serialised by `connecting`.
+ */
+function refreshDeviceKey() {
+  deviceKeyPrimed = null;
+  return primeDeviceKey();
+}
+
 function primeDeviceKey() {
   if (!deviceKeyPrimed) {
     deviceKeyPrimed = publicIdentity()
       .then((id) => {
+        if (swDeviceId && swDeviceId !== id.deviceId) {
+          // The key was regenerated under us (M-C). Every cached wrap was
+          // sealed to the key that is now gone, so keeping them would mean
+          // re-deriving garbage on the next wake. Drop them and say counts-only
+          // until a pairing includes the new key.
+          dropSessionState().catch(() => {});
+          setCountsOnly('device-key-regenerated');
+          trace('e2e-key-regen', { from: swDeviceId, to: id.deviceId });
+        }
         swDeviceId = id.deviceId;
         swPubKey = id.pub;
         deviceKeyError = null;
@@ -780,7 +816,7 @@ async function connect() {
     // legal state (d), not an error, and is exactly what happens if the key
     // failed to load. Appended ONLY when we have one, so the URL of a
     // keyless worker is unchanged rather than carrying `deviceId=null`.
-    await primeDeviceKey();
+    await refreshDeviceKey();
     const url = `${self.CC.RELAY_BASE}?ticket=${encodeURIComponent(ticket)}&role=listener`
       + (swDeviceId ? `&deviceId=${encodeURIComponent(swDeviceId)}` : '');
     const sock = new WebSocket(url);
@@ -872,6 +908,110 @@ function scheduleReconnect(ceilingMs = MAX_BACKOFF_MS) {
 }
 
 // ── Frame → notification mapping ─────────────────────────────────────────────
+// ── E2E session state (P3 (b)/(c)/(d)) ──────────────────────────────────────
+/**
+ * SK NEVER LEAVES THIS VARIABLE. It is module scope, which under MV3 means it
+ * dies with the worker — and that is the intended lifetime. What survives an
+ * eviction is the WRAP in chrome.storage.session, from which `ensureSession()`
+ * re-derives SK on the next boot without waiting for a fresh PAIR_STATE. A
+ * worker that had to wait would miss exactly the notifications it exists for.
+ */
+let e2eSession = null;
+let e2eKid = null;
+let e2ePairEpoch = null;
+/** 'off' | 'counts-only' | 'open' — what the UI/tests can observe. */
+let e2eMode = 'off';
+/** Why we are in counts-only, for the trace. Never shown to the user (m-G). */
+let e2eWhy = null;
+
+function setCountsOnly(why) {
+  e2eSession = null;
+  e2eMode = 'counts-only';
+  e2eWhy = why;
+  trace('e2e-counts-only', { why: String(why).slice(0, 60) });
+}
+
+/**
+ * Re-derive SK from the cached wrap, or explain why we cannot.
+ *
+ * NEVER THROWS. Every failure path lands in counts-only, because the honest
+ * behaviour when we cannot read a body is to say "New message on your phone"
+ * and increment the badge — not to show an error, and above all not to fall
+ * back to a plaintext preview (m-G). Fail toward the cheaper mistake.
+ */
+async function ensureSession(kid) {
+  if (e2eSession && (!kid || kid === e2eKid)) return e2eSession;
+  const cached = await readCachedWrap(kid);
+  if (!cached) { setCountsOnly('no-wrap'); return null; }
+  try {
+    const rec = await loadOrCreateDeviceKey();
+    // ONE function, and today it always refuses — see the OPEN SPEC GAP note in
+    // sw-session.js. When the ruling lands, this line starts returning values
+    // and everything below it already works.
+    const ctxInputs = await pairContextInputs(cached);
+    const sk = await unwrapSessionKey({
+      block: cached,
+      privateKey: rec.priv,
+      ownPub: rec.pub,
+      ownDeviceId: rec.deviceId,
+      ctxInputs,
+    });
+    e2eSession = await buildSession({ pairingId: ctxInputs.pairingId, sessionKey: sk, ctxInputs });
+    sk.fill(0);                       // §2.1 control 4 — drop the raw bytes
+    e2eKid = cached.kid;
+    e2ePairEpoch = ctxInputs.pairEpoch;
+    e2eMode = 'open';
+    e2eWhy = null;
+    trace('e2e-open', { kid: e2eKid });
+    return e2eSession;
+  } catch (e) {
+    setCountsOnly(e instanceof PairContextUnavailable ? 'paircontext-unavailable' : (e && e.message) || 'unwrap-failed');
+    return null;
+  }
+}
+
+/**
+ * m-G, deliverable (d). The body shown when we hold no key, or hold the wrong
+ * one, or the frame does not authenticate.
+ *
+ * ONE constant, used by every sealed frame type, so no call site can invent a
+ * chattier version that leaks what it just failed to read. "New message on your
+ * phone" says a thing happened and says nothing about what.
+ */
+const COUNTS_ONLY_TITLE = 'ComputerCaller';
+const COUNTS_ONLY_BODY = 'New message on your phone';
+
+/**
+ * Turn a sealed payload into a readable one, or into `null` for counts-only.
+ *
+ * `null` is NOT an error — it is the specified outcome of (d) and the caller
+ * renders the generic body. A throw here would become an error toast, which
+ * m-G forbids.
+ */
+async function openIfSealed(type, data) {
+  if (!isSealedEnvelope(data)) return data;        // plaintext frame — unchanged
+  const session = await ensureSession(data.kid);
+  if (!session) return null;                        // counts-only
+  if (data.kid !== e2eKid) { await noteDrop('wrong-kid'); return null; }
+  // §13.5 anti-replay BEFORE the open, so a replayed frame costs no crypto.
+  // A duplicate is dropped silently: frameBuffer legitimately re-sends on
+  // resume, and treating that as an attack turns every reconnect into a failure.
+  const admit = await admitSeq({
+    kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: e2ePairEpoch,
+  });
+  if (!admit.ok) { await noteDrop(admit.why); return undefined; }   // drop entirely
+  try {
+    return await openSealedFrame({
+      session, frameType: type, envelope: data, pairEpoch: e2ePairEpoch,
+    });
+  } catch {
+    // Tag failure. §13.5: drop the frame, NEVER close the socket. The user
+    // still gets a badge and a generic body — silence would be worse.
+    await noteDrop('open-failed');
+    return null;
+  }
+}
+
 function splitFrame(msg) {
   const i = msg.indexOf(':');
   if (i < 0) return { type: msg, data: {} };
@@ -928,6 +1068,14 @@ function notePhonePresence(present) {
  * one glance at the panel. Fail toward the cheaper mistake.
  */
 function notePairState(data) {
+  // P3 (b)/(d). The e2e block is handled BEFORE the early-return below: that
+  // return fires when the three presence booleans are unchanged, which is
+  // exactly what a RESUME looks like — same pair, same booleans, and the relay
+  // re-sending the SAME e2e block (§13.8: resume/hold/dock reuse SK). Handling
+  // the key material after the return would drop the wrap on every resume, and
+  // the worker would silently fall to counts-only the moment a panel closed.
+  noteE2eBlock(data && data.e2e);
+
   const nextPresent = data?.phonePresent === true;
   const nextPaired = data?.paired === true;
   const nextHeld = data?.held === true;
@@ -937,6 +1085,32 @@ function notePairState(data) {
   held = nextHeld;
   trace('pair-state', { phonePresent, paired, held });
   refreshIndicator();
+}
+
+/**
+ * The `e2e` slice of a PAIR_STATE, or its ABSENCE.
+ *
+ * ABSENCE IS A FIRST-CLASS, EXPECTED STATE (m-G / deliverable (d)), not a
+ * failure. The relay omits the block entirely — never null, never partial —
+ * whenever the room is plaintext, the phone is on a build without encrypted
+ * mode, or this listener declared no deviceId. Every one of those is a normal
+ * configuration, and the ONLY correct response is counts-only. The extension
+ * and the phone app update through different stores on different review
+ * clocks, so "the other end is older than me" is the common case, not the edge
+ * case, and it must never look like an error to the user.
+ */
+function noteE2eBlock(block) {
+  if (!block || typeof block !== 'object' || typeof block.wrap !== 'string') {
+    setCountsOnly('no-e2e-block');
+    return;
+  }
+  // Cache first, derive second. The cache is what survives an eviction, so it
+  // must be written even if the derivation then fails — otherwise a worker
+  // evicted between PAIR_STATE and the first notification comes back with
+  // nothing at all, which is the exact window (f) exists to prove.
+  cacheWrap(block)
+    .then(() => ensureSession(block.kid))
+    .catch((e) => setCountsOnly((e && e.message) || 'cache-failed'));
 }
 
 /**
@@ -990,7 +1164,11 @@ function handleFrame(msg) {
   // as proof of a live phone and leave the green dot on through the teardown —
   // the dot would go stale for the whole reconnect window.
   // FORGE-O: a reset tears the pair down too, not just presence.
-  if (type === 'ROOM_RESET') { notePairState({}); return; }
+  // §13.8: a reset drops SK on both sides. notePairState({}) already routes
+  // through noteE2eBlock(undefined) → counts-only, but the CACHED wrap has to
+  // go too: a wrap that outlived its room would let a respawned worker
+  // re-derive a key for a pairing that no longer exists.
+  if (type === 'ROOM_RESET') { dropSessionState().catch(() => {}); notePairState({}); return; }
   // MV3 keepalive heartbeat (dispatch FORGE-J addendum A, 2026-09-15). The
   // relay pushes HB to LISTENER sockets every 15s purely so this worker
   // receives a real message: a protocol-level ws ping is answered below the JS
@@ -1017,6 +1195,40 @@ function handleFrame(msg) {
   // `paired`/`held` change ONLY via PAIR_STATE.
   if (type !== 'PING' && type !== 'PONG') notePhonePresence(true);
 
+  // P3 (c)/(d). A sealed body has to be opened before the switch below can read
+  // anything out of it, and opening is async. The detour is taken ONLY for a
+  // frame that actually carries an envelope, so every plaintext frame — which
+  // today is all of them — runs the identical synchronous path it ran before.
+  if (isSealedEnvelope(data)) {
+    openIfSealed(type, data)
+      .then((opened) => {
+        // undefined = dropped by anti-replay; it raised no badge and must raise
+        // no notification. null = we could not open it: deliverFrame renders
+        // the generic body (m-G). An object = the real payload.
+        if (opened === undefined) return;
+        deliverFrame(type, opened);
+      })
+      .catch((e) => console.warn('[CC-SW] sealed frame handling failed', e));
+    return;
+  }
+  deliverFrame(type, data);
+}
+
+/**
+ * Render one phone→browser data frame.
+ *
+ * `data === null` means "this frame was sealed and we could not open it". That
+ * is a NORMAL state (m-G / deliverable (d)), not an error: the badge still
+ * counts, the notification still appears, and the body is the generic
+ * COUNTS_ONLY_BODY. It must never become a plaintext preview and never an
+ * error toast — a user whose extension is a version behind their phone should
+ * see "you have a message", not a crash report.
+ */
+function deliverFrame(type, data) {
+  /** True when the body is unreadable and every field below must be generic. */
+  const sealed = data === null;
+  if (sealed) data = {};
+
   switch (type) {
     case 'CALL_INCOMING':
     case 'CALL_WAITING': {
@@ -1024,8 +1236,14 @@ function handleFrame(msg) {
       // but the visible notification is skipped if a popup/pop-out is open.
       bumpUnread('missedCalls');
       if (presenceCount > 0) return;
-      const who = pick(data, ['name', 'contactName', 'displayName']) ||
-                  pick(data, ['number', 'from', 'phoneNumber', 'msisdn']) || 'Unknown number';
+      // §13.7 seals a caller's number and name — the exact short secret the
+      // padding buckets exist to hide — so an unopenable call frame must not
+      // fall through to `pick()` on an empty object and render "Unknown number"
+      // as if we had looked and found nothing. Say what is true.
+      const who = sealed
+        ? 'Someone is calling your phone'
+        : (pick(data, ['name', 'contactName', 'displayName']) ||
+           pick(data, ['number', 'from', 'phoneNumber', 'msisdn']) || 'Unknown number');
       const callId = pick(data, ['callId', 'id']) || String(Date.now());
       chrome.notifications.create(`${CALL_NOTIF_PREFIX}:${callId}`, {
         type: 'basic',
@@ -1060,12 +1278,21 @@ function handleFrame(msg) {
       // notifications.create: the badge is a count of things needing attention
       // and your own outbox needs none. Suppressing only the popup would leave
       // the badge lying, which is the same bug wearing a different hat.
-      if (isOutgoingSms(data)) return;
+      // A sealed row's direction marker is inside the ciphertext, so an
+      // unopenable one cannot be classified. DEFAULT IS INCOMING, exactly as
+      // isOutgoingSms() already defaults for an absent marker: missing a real
+      // incoming text is a product failure; one stray notification for an
+      // outgoing one is an annoyance. Fail toward the cheaper mistake.
+      if (!sealed && isOutgoingSms(data)) return;
       bumpUnread('newSms');
       if (presenceCount > 0) return;
-      const who = pick(data, ['name', 'contactName']) ||
-                  pick(data, ['from', 'sender', 'number', 'address']) || 'New message';
-      const body = pick(data, ['body', 'text', 'message', 'preview']) || '';
+      const who = sealed
+        ? COUNTS_ONLY_TITLE
+        : (pick(data, ['name', 'contactName']) ||
+           pick(data, ['from', 'sender', 'number', 'address']) || 'New message');
+      const body = sealed
+        ? COUNTS_ONLY_BODY
+        : (pick(data, ['body', 'text', 'message', 'preview']) || '');
       // Thread identity, best-effort: the relay's SMS payload shape varies by
       // APK version, so we take the first field that looks like a thread and
       // fall back to the sender's address — which is what the app threads on
@@ -1098,13 +1325,22 @@ function handleFrame(msg) {
       // Mirror the phone's own notification. Respect an explicit opt-out flag if
       // the phone sends one; otherwise show it.
       if (data && (data.suppressMirror === true || data.mirror === false)) return;
-      const title = pick(data, ['title', 'appName', 'app']) || 'Phone notification';
-      const body = pick(data, ['body', 'text', 'message', 'content']) || '';
+      // (d) / m-G. An unopenable mirror gets the ONE generic body and nothing
+      // else: not the app name (which would leak which app messaged you), not
+      // an empty string, and never an error. The badge above already counted it.
+      const title = sealed
+        ? COUNTS_ONLY_TITLE
+        : (pick(data, ['title', 'appName', 'app']) || 'Phone notification');
+      const body = sealed
+        ? COUNTS_ONLY_BODY
+        : (pick(data, ['body', 'text', 'message', 'content']) || '');
       const notifId = `${PHONE_NOTIF_PREFIX}:${Date.now()}`;
       // The phone tells us whether the mirrored notification is actionable.
       // Only then do we offer Reply — a Reply button on a battery warning is
       // noise, and worse, a promise we cannot keep.
-      const canReply = !!(data && (data.hasReply === true || data.canReply === true));
+      // A Reply button we cannot honour is a promise we cannot keep, and the
+      // flag lives inside the ciphertext, so a sealed frame never offers one.
+      const canReply = !sealed && !!(data && (data.hasReply === true || data.canReply === true));
       chrome.notifications.create(notifId, {
         type: 'basic',
         iconUrl: 'icon128.png',
@@ -1332,6 +1568,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     primeDeviceKey().then(() => sendResponse?.({
       ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
     }));
+  } else if (message?.type === 'e2e-state-get') {
+    // Observability for the harnesses (scripts/ext-badge-counter-proof.mjs,
+    // scripts/ext-sw-lifetime-proof.mjs). §13.5 REQUIRES the drop counter to be
+    // exported — "a silent dropper and a working receiver are otherwise
+    // indistinguishable" — and (d)/(f) cannot be asserted from the outside
+    // without knowing which mode the worker believes it is in. Read-only: it
+    // reports state and changes none.
+    readDrops().then((drops) => sendResponse?.({
+      ok: true,
+      mode: e2eMode,          // 'off' | 'counts-only' | 'open'
+      why: e2eWhy,            // never rendered to a user (m-G); diagnostics only
+      kid: e2eKid,
+      deviceId: swDeviceId,
+      hasKey: !!swPubKey,
+      bootId: BOOT_ID,        // changes iff the worker died and respawned
+      drops,
+    }));
   } else if (message?.type === 'unread-get') {
     readUnread().then((unread) => sendResponse?.({ ok: true, unread }));
   } else if (message?.type === 'tab-viewed') {
@@ -1354,6 +1607,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     openPopout(typeof message.hash === 'string' ? message.hash : '');
     sendResponse?.({ ok: true });
   } else if (message?.type === 'signed-out') {
+    // §13.8: sign-out drops SK. storage.session is cleared explicitly rather
+    // than left to browser exit — a second user signing in on the same profile
+    // must not inherit the first one's key material.
+    dropSessionState().catch(() => {});
     try { ws && ws.close(); } catch (_) {}
     signedIn = false;
     clearRelayFacts();
