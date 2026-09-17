@@ -42,6 +42,7 @@
  * postMessage contract with app/../lib/extensionBridge.ts:
  *   app   → shell : { source:'cc-ext', type:'ready' | 'open-popout' | 'sign-out' }
  *   app   → shell : { source:'cc-ext', type:'theme', theme:'light'|'dark' }
+ *   app   → shell : { source:'cc-ext', type:'size',  size:'small'|'medium'|'large' }
  *   login → shell : { source:'cc-ext', type:'login-ready' | 'signed-in' | 'google-sign-in' }
  *   shell → app   : { source:'cc-ext', type:'shell-hello', email, canPopout }
  * Inbound is accepted ONLY from one of our OWN two iframes' contentWindow AND
@@ -128,6 +129,54 @@ function receiveTheme(theme) {
   applyShellTheme(theme);
   try {
     chrome.storage.local.set({ [THEME_KEY]: theme });
+  } catch (_) {}
+}
+
+// ---------------------------------------------------------------------------
+// TEXT SIZE — the exact same wire, one dispatch later (PIXEL-S, 2026-09-17).
+//
+// The shell chrome the user sees before signing in (the lockup header, the
+// sign-in hero, the trust strip) is THIS document's type, not the iframe's. If
+// only the app frame followed the picker, choosing Large would grow everything
+// inside the panel and leave the sign-in screen at Small — the same split the
+// theme message was added to close.
+//
+// Mirrors applyShellTheme() line for line on purpose: same cache-then-correct
+// order, same chrome.storage.onChanged fan-out so two open surfaces cannot
+// disagree, same try/catch posture. There is no OS-level equivalent of
+// prefers-color-scheme for this setting, so the synchronous best guess is the
+// documented default rather than a media query.
+const SIZE_KEY = 'cc_size';
+const DEFAULT_SIZE = 'medium';
+
+/** @param {unknown} size 'small' | 'medium' | 'large'. */
+function applyShellSize(size) {
+  if (size !== 'small' && size !== 'medium' && size !== 'large') return;
+  document.documentElement.setAttribute('data-cc-size', size);
+}
+
+applyShellSize(DEFAULT_SIZE);
+
+try {
+  chrome.storage.local.get(SIZE_KEY, (got) => {
+    if (chrome.runtime.lastError) return;
+    applyShellSize(got && got[SIZE_KEY]);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[SIZE_KEY]) return;
+    applyShellSize(changes[SIZE_KEY].newValue);
+  });
+} catch (_) {
+  // Storage unavailable — the default above is already painted and the frame's
+  // `size` message will still correct an override once it loads.
+}
+
+/** Inbound `size` from the app frame: stamp now, cache for the next open. */
+function receiveSize(size) {
+  if (size !== 'small' && size !== 'medium' && size !== 'large') return;
+  applyShellSize(size);
+  try {
+    chrome.storage.local.set({ [SIZE_KEY]: size });
   } catch (_) {}
 }
 
@@ -614,6 +663,10 @@ window.addEventListener('message', (event) => {
     // every /extension load, and again on every toggle. Already resolved to
     // light|dark on the sender's side.
     receiveTheme(data.theme);
+  } else if (data.type === 'size') {
+    // Posted by lib/extensionTextSize.ts: once from the blocking boot script
+    // on every /extension load, and again on every pick.
+    receiveSize(data.size);
   }
 });
 

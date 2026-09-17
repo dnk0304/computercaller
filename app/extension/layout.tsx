@@ -27,6 +27,7 @@
 
 import type { Metadata } from 'next';
 import { THEME_BOOT_SCRIPT } from '@/lib/extensionTheme';
+import { SIZE_BOOT_SCRIPT } from '@/lib/extensionTextSize';
 
 const EXTENSION_DESCRIPTION =
   'Call and text from your browser. Your phone does the calling; your computer does the typing.';
@@ -62,6 +63,12 @@ export default function ExtensionMetadataLayout({
   return (
     <>
       <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+      {/* And its twin (dispatch PIXEL-S, 2026-09-17): the TYPE SIZE stamp.
+          Here for the identical reason, and it matters more — Medium is the
+          new default, so without a pre-paint stamp every popup open would
+          paint Small and then RELAYOUT one frame later. A colour flash is
+          ugly; a layout flash moves the row the user is reaching for. */}
+      <script dangerouslySetInnerHTML={{ __html: SIZE_BOOT_SCRIPT }} />
       {children}
     </>
   );
