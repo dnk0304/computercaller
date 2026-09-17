@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react';
-import { Send, Image, Smile, Search, MoreVertical, Phone, Plus, X, Settings, Edit2, Trash2, ChevronDown, RefreshCw, Inbox } from 'lucide-react';
+import { Send, Image as ImageIcon, Smile, Search, MoreVertical, Phone, Plus, X, Settings, Edit2, Trash2, ChevronDown, RefreshCw, Inbox } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone, useDebouncedValue } from '@/hooks';
 import { useFreeTier } from '@/hooks/freeTierContext';
@@ -257,7 +257,7 @@ const ComposeBar = memo(function ComposeBar({ onSend, disabled }: ComposeBarProp
           <Smile className="w-5 h-5" aria-hidden="true" />
         </button>
         <button className="p-2 text-slate-400 hover:text-slate-600 transition-colors self-end" aria-label="Attach image">
-          <Image className="w-5 h-5" aria-hidden="true" />
+          <ImageIcon className="w-5 h-5" aria-hidden="true" />
         </button>
         <textarea
           id="sms-compose"

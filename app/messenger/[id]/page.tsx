@@ -64,7 +64,7 @@ export default function MessengerSplashPage({ params }: Props) {
       aria-live="polite"
       aria-label={`Opening ${messenger.name}`}
     >
-      <img
+      <img /* eslint-disable-line @next/next/no-img-element -- runtime-variable source (data: URI, MMS media, or public SVG) with no known intrinsic size; next/image cannot optimize it and this layout must stay pixel-identical. */
         src={messenger.icon}
         alt=""
         aria-hidden="true"
