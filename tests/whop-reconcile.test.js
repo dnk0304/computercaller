@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Runner-less CommonJS test (repo convention: no Jest/Vitest) — require() is the only import form available. */
 // Unit tests for lib/whop-core.js — the PURE membership-selection and
 // membership→Subscription mapping rules shared by the reconciliation job
 // (lib/whop-reconcile.ts), the one-shot backfill script

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Runner-less CommonJS test (repo convention: no Jest/Vitest) — require() is the only import form available. */
 /**
  * admin-badge-truth — the "Free access" badge must not be able to lie.
  *

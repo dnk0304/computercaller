@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Runner-less CommonJS test (repo convention: no Jest/Vitest) — require() is the only import form available. */
 /**
  * admin-invite-resend — the one-time invite link must be recoverable, and the
  * recovery must never become a credential reset.

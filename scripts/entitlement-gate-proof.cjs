@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS proof script (.cjs) — require() is the only import form available. */
 /**
  * scripts/entitlement-gate-proof.cjs — end-to-end proof that the relay
  * entitlement gate closes the revenue leak (dispatch forge/relay-entitlement-

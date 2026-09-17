@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS proof script (.cjs) — require() is the only import form available. */
 /**
  * scripts/admin-create-account-proof.cjs — invariant proof for the admin
  * "create account" feature (dispatch forge/admin-create-account, 2026-08-15).
