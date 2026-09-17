@@ -156,14 +156,39 @@ export declare const PAIR_EPOCH_WIRE_RE: RegExp;
 export declare const MAX_UINT64: bigint;
 
 /**
- * A3 — wire ctx + the LOCAL session userId → the pair context. Throws on an
- * absent ctx (A3-M4), on any pairEpoch that is not a bare decimal string, and
- * on a peerDeviceId/pairingId that is not this device's (A3-M3). The A3-M2
- * epoch floor is the caller's: compare the returned `pairEpoch`.
+ * A4-R2 (FROZEN) — the canonical peer of a pairing: the byte-wise
+ * lexicographically lowest `wraps[].deviceId`, compared as raw UTF-8 bytes
+ * (never `<` on strings, never `localeCompare`). The canonical set is
+ * `wraps[].deviceId`, NOT `recipKeys[]` — those are SEC1 public keys and
+ * include the phone.
+ */
+export declare function canonicalPeerDeviceId(
+  wraps: ReadonlyArray<{ deviceId: string } | string>,
+): string;
+
+/**
+ * A3 (re-scoped by A4) — wire ctx + the LOCAL session userId → the pair
+ * context. Throws on an absent ctx (A3-M4), on any pairEpoch that is not a bare
+ * decimal string, on a `pairingId` that is not this device's (A3-M3(a)), and —
+ * only when `recipientDeviceIds` is supplied — on a `ctx.peerDeviceId` that is
+ * not the canonical lowest of that set (A3-M3(c) / A4-R2).
+ *
+ * `deviceId` is NOT an input: A4 deleted the "peerDeviceId must be my own"
+ * refusal outright, and passing it THROWS rather than being ignored. Omit
+ * `recipientDeviceIds` on the PAIR_STATE lane, where the binding check is
+ * cryptographic — the wrap opening under this device's KEK (A3-M3(b)).
+ *
+ * The A3-M2 epoch floor is the caller's: compare the returned `pairEpoch`.
  */
 export declare function pairContextFromWire(
   ctxWire: PairContextWire | unknown,
-  local: { userId: string; deviceId?: string | null; pairingId?: string | null },
+  local: {
+    userId: string;
+    pairingId?: string | null;
+    recipientDeviceIds?: ReadonlyArray<{ deviceId: string } | string> | null;
+    /** @deprecated Removed by A4-M1 — passing it throws. */
+    deviceId?: never;
+  },
 ): ResolvedPairContext;
 
 /** KEK_i — the key that wraps the session key for ONE recipient. */

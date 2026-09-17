@@ -61,6 +61,8 @@ import {
   // A2 (derived nonce prefixes) and A3 (the ctx wire form).
   noncePrefixInfo, deriveNoncePrefixes, hkdfBytes, pairContextFromWire,
   LABEL_NP2C, LABEL_NC2P, PAIR_EPOCH_WIRE_RE,
+  // A4 (the canonical peer of a multi-recipient pairing).
+  canonicalPeerDeviceId,
 } from '../lib/e2e/kdf.mjs';
 import { padPlaintext } from '../lib/e2e/padding.mjs';
 
@@ -523,17 +525,19 @@ const NP = V.noncePrefixes;
   await throws('I.4: an array is not an object here either',
     () => pairContextFromWire([], { userId: I1.localUserId }), 'object');
 
-  // A3-M3: peerDeviceId must be THIS device, and pairingId must be the pairing
-  // this device is party to wherever it independently knows the value.
-  await throws('I.4: a peerDeviceId that is not this device is refused (A3-M3)',
-    () => pairContextFromWire(
-      { ...I1.ctxWire, peerDeviceId: I4.peerDeviceIdMismatch.ctxPeerDeviceId },
-      { userId: I1.localUserId, deviceId: I4.peerDeviceIdMismatch.ownDeviceId },
-    ), 'A3-M3');
-  check('I.4 control: the MATCHING deviceId is accepted (the check is not a ban)',
-    toHex(pairContextFromWire(I1.ctxWire, {
+  // I.4's peerDeviceId-mismatch case was A3-M3's "must be my own deviceId"
+  // refusal. A4 DELETED that clause, so the case is re-pointed rather than
+  // dropped: the same fixture ids now prove the clause is GONE — passing
+  // `deviceId` throws as an unknown option, and the value it used to reject is
+  // accepted when it is the canonical peer of the set it belongs to. Section 6c
+  // carries the replacement checks.
+  await throws('I.4 (A4): `deviceId` is REJECTED, not ignored — the A3-M3 self-check is deleted',
+    () => pairContextFromWire(I1.ctxWire, {
       userId: I1.localUserId, deviceId: I4.peerDeviceIdMismatch.ownDeviceId,
-    }).contextBytes) === I1.contextBytesHex);
+    }), 'A4-M1');
+  check('I.4 (A4): with no deviceId and no set, I.1 still derives the frozen bytes',
+    toHex(pairContextFromWire(I1.ctxWire, { userId: I1.localUserId }).contextBytes)
+      === I1.contextBytesHex);
   await throws('I.4: a pairingId that is not ours is refused (A3-M3)',
     () => pairContextFromWire(
       { ...I1.ctxWire, pairingId: I4.pairingIdMismatch.ctxPairingId },
@@ -570,6 +574,93 @@ const NP = V.noncePrefixes;
   check('I.4 control: 2^64-1 is accepted and does not round',
     toHex(pairContextFromWire({ ...I1.ctxWire, pairEpoch: '18446744073709551615' }, { userId: I1.localUserId })
       .contextBytes).endsWith('ffffffffffffffff'));
+}
+
+// ── 6c. (A4) the canonical peer — GATE1 Addendum A4, module behaviour ──────
+// A4 resolves a contradiction between two A3 MUSTs. A3-M1 froze `ctx` as
+// PAIR-scoped ("every recipient gets the identical object"); A3-M3 then made a
+// receiver refuse any block whose `ctx.peerDeviceId` was not its own. Together
+// those two admit at most ONE recipient, which is not a costlier multi-recipient
+// pairing — it is no multi-recipient pairing at all. This block pins the
+// deletion (A4-M1) and the rule that replaces it (A4-R2), with no frozen bytes:
+// section 6d does the bytes, against Security's independently computed vector J.
+{
+  // Deliberately ordered so the canonical lowest is NOT first in array order —
+  // an implementation that returned `wraps[0]` would pass a same-order fixture.
+  const WRAPS = [{ deviceId: 'dev-web-01', wrap: 'x' }, { deviceId: 'dev-ext-02', wrap: 'y' }];
+  const CANON = 'dev-ext-02';
+
+  eq('A4-R2: the canonical peer is the byte-wise lowest, not wraps[0]',
+    canonicalPeerDeviceId(WRAPS), CANON);
+  eq('A4-R2: …and it is ORDER-INDEPENDENT (a re-ordering relay cannot steer)',
+    canonicalPeerDeviceId([...WRAPS].reverse()), CANON);
+  eq('A4-R2: a bare deviceId[] is accepted as well as wraps[]',
+    canonicalPeerDeviceId(['dev-web-01', 'dev-ext-02']), CANON);
+
+  // UTF-8 BYTES, not UTF-16 code units. This pair is the case where `a < b` on
+  // JS strings and byte order DISAGREE: U+10000 encodes to f0 90 80 80, which is
+  // ABOVE U+FF00's ef bc 80 in UTF-8, while its leading surrogate D800 is BELOW
+  // FF00 in UTF-16. A `<`-based implementation picks the other id here, and two
+  // lanes that disagree about the canonical peer both fail closed with a tag
+  // error and no attribution — the exact silent break A4-M5 exists to name.
+  {
+    const hi = `d-\u{10000}`;      // f0 90 80 80  — HIGHER byte-wise
+    const lo = 'd-＀';         // ef bc 80     — LOWER  byte-wise
+    check('A4-R2: the fixture really does split UTF-8 from UTF-16 order',
+      (hi < lo) && !(new TextEncoder().encode(hi)[2] < new TextEncoder().encode(lo)[2]),
+      `JS-< says ${hi < lo}`);
+    eq('A4-R2: the lowest is chosen by UTF-8 BYTES, not by JS string order',
+      canonicalPeerDeviceId([hi, lo]), lo);
+  }
+
+  // Uniqueness is what makes "lowest" a TOTAL order. validateE2eBlock already
+  // proves it (lib/e2eBlock-core.js:169-173); re-asserted because a duplicate
+  // would make "the canonical peer" a coin flip rather than a rule.
+  await throws('A4-R2: a duplicate deviceId is refused — "lowest" must be total',
+    () => canonicalPeerDeviceId(['dev-a', 'dev-a']), 'duplicate');
+  await throws('A4-R2: an empty set has no canonical peer', () => canonicalPeerDeviceId([]), 'non-empty');
+  await throws('A4-R2: a non-array is refused', () => canonicalPeerDeviceId('dev-a'), 'non-empty');
+  await throws('A4-R2: a deviceId over the u8 byte cap is refused at selection',
+    () => canonicalPeerDeviceId(['dev-a', 'b'.repeat(MAX_PREFIXED_BYTES + 1)]), 'u8 cap');
+
+  const CTXW = { pairingId: 'pair-7f3a9c21', phoneDeviceId: 'dev-phone-01', peerDeviceId: CANON, pairEpoch: '42' };
+  const LOCAL_USER = 'user-0191aa';
+
+  // A4-M1, the deletion. The option is REJECTED rather than ignored: a caller
+  // still passing `deviceId` believes a membership check is running, and
+  // silently dropping it would leave that belief intact with the check gone.
+  await throws('A4-M1: `deviceId` throws — the self-check is deleted, not relaxed',
+    () => pairContextFromWire(CTXW, { userId: LOCAL_USER, deviceId: 'dev-web-01' }), 'A4-M1');
+
+  // J.5 — THE REGRESSION THIS ADDENDUM IS FOR. Under the pre-A4 rule this exact
+  // block refused dev-web-01 while admitting dev-ext-02. Both recipients must
+  // now be admitted by the SAME block, and must derive the SAME context bytes.
+  const asPage = pairContextFromWire(CTXW, { userId: LOCAL_USER, recipientDeviceIds: WRAPS });
+  const asSw = pairContextFromWire(CTXW, { userId: LOCAL_USER });   // PAIR_STATE lane: no set
+  check('J.5: the NON-canonical recipient (dev-web-01) is admitted by this block',
+    toHex(asPage.contextBytes).length > 0);
+  eq('J.5: page and SW derive BYTE-IDENTICAL context bytes (ctx is pair-scoped)',
+    toHex(asPage.contextBytes), toHex(asSw.contextBytes));
+
+  // A3-M3(c), re-scoped — enforced ONLY where the set is held.
+  await throws('A3-M3(c): a steered non-canonical peer is refused where wraps[] is held',
+    () => pairContextFromWire({ ...CTXW, peerDeviceId: 'dev-web-01' },
+      { userId: LOCAL_USER, recipientDeviceIds: WRAPS }), 'canonical');
+  check('A3-M3(c) CONTROL: the SAME steered ctx is ACCEPTED without the set (PAIR_STATE lane)',
+    toHex(pairContextFromWire({ ...CTXW, peerDeviceId: 'dev-web-01' },
+      { userId: LOCAL_USER }).contextBytes).includes('6465762d7765622d3031'));
+  // The control above is the whole point of (c) being conditional: the SW lane
+  // MUST NOT attempt it and MUST NOT substitute its own deviceId. Its binding
+  // check is (b) — the wrap opening under its own KEK — which lives at unwrap,
+  // not here, and whose failure is a PAIRING ABORT, never a counts-only degrade
+  // (A4-M3). §13.2 row 2 grants that degrade only to a recipient that never had
+  // a key; the wrap-open failure is a tampered or mismatched pairing.
+
+  // A3-M3(a) survives A4 unchanged, and is still only checked where the
+  // receiver independently knows the pairing it is party to.
+  await throws('A3-M3(a): a foreign pairingId is refused (J.2)',
+    () => pairContextFromWire({ ...CTXW, pairingId: 'pair-DEADBEEF' },
+      { userId: LOCAL_USER, pairingId: 'pair-7f3a9c21' }), 'pairingId');
 }
 
 // ── 7. persist-before-emit / FAIL CLOSED (A1 (3)) ──────────────────────────
