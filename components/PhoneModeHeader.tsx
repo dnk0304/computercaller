@@ -174,10 +174,14 @@ function ExtensionHeader() {
           spend the same pixels on the brand and only ConnectionStatus (which
           truncates) absorbs the difference. That is why the wordmark never
           has to shrink at 360px × Large. */}
-      <CcLockup size={18} layout="inline" title="ComputerCaller" className="flex-shrink-0" />
+      <CcLockup size={18} layout="inline" title="ComputerCaller" className="cc-ext-lockup" />
 
-      {/* min-w-0 is what lets the pill's truncate actually engage. */}
-      <div className="flex min-w-0 flex-1 items-center justify-start pl-1">
+      {/* min-w-0 is what lets the pill's truncate actually engage — and the
+          `cc-ext-conn` hook is what lets it engage one level DOWN as well.
+          A flex item's default min-width is auto, so ConnectionStatus inside
+          this slot had a min-content floor of its own and painted past the
+          panel edge at 360px; app/extension/extension.css releases it. */}
+      <div className="cc-ext-conn flex min-w-0 flex-1 items-center justify-start pl-1">
         <ConnectionStatus variant="compact" />
       </div>
 

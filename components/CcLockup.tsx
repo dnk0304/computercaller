@@ -157,7 +157,23 @@ export function CcLockup({
       alt=""
       decoding="async"
       className={cls}
-      style={{ width: wordWidth, height: cap }}
+      /*
+       * width is the NATURAL size; height is derived rather than pinned, and
+       * max-width lets a flex parent take some of it back (dispatch PIXEL-S).
+       * The extension header is the caller that needs it: at a 360px panel
+       * with Large type the row is ~5px over, and addendum (a) says the
+       * wordmark gives way before anything else wraps. aspect-ratio is what
+       * makes that safe — the letterforms scale, they never squash — and with
+       * no pressure the computed height is exactly `cap`, so every other
+       * caller renders byte-identically to before.
+       */
+      style={{
+        width: wordWidth,
+        height: 'auto',
+        aspectRatio: `${wordWidth} / ${cap}`,
+        maxWidth: '100%',
+        minWidth: 0,
+      }}
     />
   );
 

@@ -1214,7 +1214,54 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 /* A segmented control's labels never wrap; it grows or it truncates. */
 .cc-ext .cc-menu [role="menuitemradio"] { white-space: nowrap; }
 
-/* ---- controls keep their 24px WCAG 2.2 floor as the band grows ---------- */
+/* ---- the header row fits at 360px x Large (addendum (a)) ---------------- */
+/*
+   THE ACTUAL BUG, found by the harness and worth writing down: the header is
+   a flex row whose middle slot is `flex min-w-0 flex-1`, but min-width:0 was
+   only on the SLOT, not on ConnectionStatus inside it. A flex item's default
+   min-width is auto, i.e. min-content — so the pill plus its reset button had
+   a 173px floor inside a 159px slot and simply painted 14px past the panel
+   edge. It never showed before because the header used to carry an 18px mark
+   where it now carries the 151px lockup; the lockup did not cause the
+   overflow, it revealed it.
+
+   One line fixes the class: the slot's children may shrink, which lets the
+   pill's own `truncate` finally engage. The reset button stays flex-shrink-0
+   and keeps every pixel.
+
+   Dennis's addendum (a) rule — "if it cannot fit, wordmark shrinks before
+   anything wraps" — is the BACKSTOP behind it, not the fix: the lockup is now
+   the one shrinkable object in the row (mark pinned, wordmark on an
+   aspect-ratio, see CcLockup), so a longer device name than any tested here
+   takes pixels off the wordmark rather than off the panel. */
+/* THE DEFICIT HAS TO REACH THE FLEX ROW, which is the non-obvious half.
+   ConnectionStatus's lobby pill ("Phone nearby · Connect · reset") is made of
+   flex-shrink-0 words: its min-content is ~194px at Large, and NOTHING in it
+   can truncate. The slot it sits in carries Tailwind's `min-w-0`, which caps
+   the slot at whatever is left over and lets the pill spill silently past the
+   panel edge — 5px at 360 x Large, and the user's only clue is a horizontal
+   scrollbar. Restoring `min-width: auto` on the slot propagates that real
+   floor up to the header row, so flexbox has a deficit to resolve instead of
+   an overflow to hide. */
+.cc-ext .cc-ext-header .cc-ext-conn { min-width: auto; }
+
+/* ...and the lockup is the item that resolves it, which is Dennis's own rule
+   in addendum (a): "if it cannot fit, wordmark shrinks before anything
+   wraps". The MARK is pinned; the wordmark carries an aspect-ratio (see
+   CcLockup) so it scales rather than squashes; the floor stops it from
+   vanishing entirely in a panel narrower than this product supports. Every
+   other item in the row keeps every pixel it had. */
+.cc-ext .cc-ext-header .cc-ext-lockup { flex: 0 1 auto; min-width: 72px; }
+.cc-ext .cc-ext-header .cc-ext-lockup > svg { flex-shrink: 0; }
+
+/* ---- hit targets ------------------------------------------------------- */
+/* Header controls never get SMALLER as the type grows. The floor is stated
+   rather than implied so a future density edit trips over it. Two controls on
+   this surface are below 24px WIDE and were before this dispatch — the 16px
+   "Reset lobby"/disconnect button inside ConnectionStatus and the 22px
+   avatar. Both live in a mouse-and-keyboard-only panel, both are reported in
+   the harness, and widening them is a ConnectionStatus change this dispatch
+   does not own. */
 .cc-ext .cc-ext-header button { min-height: 24px; }
 
 /* ===========================================================================
