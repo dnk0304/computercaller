@@ -137,14 +137,43 @@ export class Reaper {
   reap() {
     const snapshot = census();
     const live = new Set(snapshot.map((p) => p.pid));
-    const pids = [];
+
+    /**
+     * Collect every LIVE descendant, then kill each one BY ITS OWN PID.
+     *
+     * The first version only did `killTree(root)` and trusted it. The gate's
+     * own leak assertion caught that being wrong on the very first run:
+     * ext-badge-counter-proof reported "reaped: yes 2 (41316,20616)" and the
+     * gate then found both still running with a dead parent (34856).
+     *
+     * Cause: `await ctx.close()` runs BEFORE this, and it already kills the
+     * browser root. `taskkill /PID <dead pid> /T` then has no tree to walk, so
+     * any renderer that outlived its parent — which is exactly the orphan we
+     * are trying to prevent — was never touched. Killing the root is necessary
+     * and not sufficient; the descendants must be named individually, deepest
+     * first so a parent's death cannot reparent a child out from under us.
+     */
+    const targets = [];
     for (const [pid] of this.owned) {
-      for (const d of descendantsOf(pid, snapshot)) if (live.has(d)) pids.push(d);
+      for (const d of descendantsOf(pid, snapshot)) if (live.has(d)) targets.push(d);
+    }
+    const unique = [...new Set(targets)];
+    // Deepest first: descendantsOf returns root-first, so reverse it.
+    for (const pid of unique.slice().reverse()) {
       try { killTree(pid); } catch { /* already gone */ }
     }
     this.owned.clear();
-    const unique = [...new Set(pids)];
-    return { killed: unique.length, pids: unique };
+
+    /**
+     * Report what actually DIED, not what we tried to kill. A cleanup routine
+     * that reports its intentions is how the bug above stayed invisible: the
+     * harness printed a confident "reaped: yes 2" about two processes that
+     * were still running.
+     */
+    const after = new Set(census().map((p) => p.pid));
+    const gone = unique.filter((p) => !after.has(p));
+    const survived = unique.filter((p) => after.has(p));
+    return { killed: gone.length, pids: gone, survived };
   }
 
   /**
@@ -178,8 +207,13 @@ export class Reaper {
 
   /** One line for the harness's own output, so "reaped" is a number not a claim. */
   reapAndReport(tag = 'harness') {
-    const { killed, pids } = this.reap();
+    const { killed, pids, survived } = this.reap();
     console.log(`[reap] ${tag}: spawned PIDs reaped: yes ${killed}${killed ? ` (${pids.slice(0, 12).join(',')}${pids.length > 12 ? ',…' : ''})` : ''}`);
+    // Never silent about a survivor: the gate will fail the step for it anyway,
+    // and the harness's own log should say so first.
+    if (survived?.length) {
+      console.log(`[reap] ${tag}: WARNING — ${survived.length} process(es) SURVIVED the kill: ${survived.join(',')}`);
+    }
     return killed;
   }
 }

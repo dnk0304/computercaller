@@ -56,7 +56,29 @@ const has = (name) => argv.includes(`--${name}`);
  */
 const PARALLEL_HARNESSES = has('parallel-harnesses');
 
-const PHASE = (flag('phase', 'P0') || 'P0').toUpperCase();
+/**
+ * (f) --phase is REQUIRED. It used to default to P0, and a P3 lane ran its
+ * whole gate as P0 by accident: the phase-gated steps — ext-sw-lifetime-proof
+ * among them — simply never ran, and the JSON said PASS. A step that was never
+ * executed is not a step that passed, and a default that silently narrows the
+ * gate is the most expensive kind of convenience.
+ *
+ * Refusing costs one flag. Every caller in the repo and in the briefs already
+ * passes --phase.
+ */
+const PHASE_RAW = flag('phase', null);
+if (!PHASE_RAW) {
+  console.error(
+    '\ne2e-gate: REFUSING TO RUN — --phase is required.\n'
+    + '    usage: bun run e2e:gate --phase P<N> [--lane web|android|all] [--parallel-harnesses]\n'
+    + '    e.g.:  bun run e2e:gate --phase P5A --parallel-harnesses\n\n'
+    + '    It used to default to P0. A P3 lane ran its entire gate as P0 without noticing,\n'
+    + '    which quietly skipped every phase-gated step (ext-sw-lifetime-proof included) and\n'
+    + '    still reported PASS. Absent is not the same as passing.\n'
+  );
+  process.exit(2);
+}
+const PHASE = PHASE_RAW.toUpperCase();
 const BASELINE = has('baseline');
 const OUTDIR = join(ROOT, flag('out', 'e2e-evidence'));
 const LABEL = flag('label', null);
@@ -253,6 +275,58 @@ const SCRUBBED = Object.fromEntries(
   })
 );
 
+/**
+ * ── declared assertion floors (Ken, 2026-09-17) ────────────────────────────
+ *
+ * Two lanes shipped a step that still read PASS while one of its checks had
+ * been silently switched off — a mis-named option in one, duplicate keys in a
+ * vector table in the other. Neither is visible in an exit code, because a
+ * suite that runs 41 of its 42 checks and passes all 41 exits 0 and prints a
+ * perfectly cheerful "41/41 checks passed".
+ *
+ * So every step that reports a count declares the number of checks it is known
+ * to make, and the gate FAILS it when the count comes in BELOW that number.
+ *
+ * It is deliberately the TOTAL that is compared, not the passes. A disabled
+ * check removes itself from both sides of "N/N", so only the denominator can
+ * see it go; comparing passes would find nothing.
+ *
+ * Maintenance rule, same as LINT-BASELINE.json: a floor may only RISE, and it
+ * rises in the commit that adds the checks ("[E2E-P<N>] min-checks raise").
+ * Lowering one requires a named reason in the commit message — that is the
+ * whole point of the mechanism, and a lane that lowers a floor to go green has
+ * done the exact thing this catches.
+ *
+ * WHERE THE NUMBERS COME FROM. Mostly not from here: e2e-evidence/BASELINE-
+ * harness.json already records, per step, the total this repo measured at the
+ * parity baseline — a committed declaration that every lane already maintains.
+ * Re-typing those 16 numbers into a second table would guarantee the two
+ * disagree within a phase, so the floor is READ from that file and this table
+ * holds only explicit overrides and steps the baseline does not cover.
+ *
+ * Note this is a strictly stronger check than the existing baseline-parity
+ * step, which compares the run's passes against the reference and reports a
+ * diff at the END. The floor fails the STEP, at the step, which is what makes
+ * a silently-disabled check impossible to walk past.
+ */
+const MIN_CHECKS_OVERRIDE = {
+  // Not in the parity baseline (a `unit:` step added after that file was
+  // written), and until this commit it reported no count at all — see the
+  // last-resort branch of passLine(). Measured: 13 assertions.
+  'unit:bridge-origin-pin': 13,
+};
+const MIN_CHECKS = (() => {
+  const table = {};
+  try {
+    const ref = JSON.parse(readFileSync(join(OUTDIR, 'BASELINE-harness.json'), 'utf8'));
+    for (const h of ref.harnessPass || []) {
+      const t = h?.counts?.total ?? h?.total;
+      if (typeof t === 'number' && h.name) table[h.name] = t;
+    }
+  } catch { /* no baseline yet — overrides still apply */ }
+  return { ...table, ...MIN_CHECKS_OVERRIDE };
+})();
+
 // ── step runner ────────────────────────────────────────────────────────────
 const steps = [];
 /** Repo paths this run wrote — recorded in the JSON so a resumer commits them. */
@@ -262,11 +336,36 @@ const GITBASH = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files (x86)/Gi
   .find((p) => existsSync(p)) || 'bash';
 
 function record(name, cmd, exit, ms, counts, extra = {}) {
-  const step = { name: redact(name), cmd: redact(cmd), exit, ms, counts: counts ?? null, ...extra };
+  /**
+   * The assertion floor, applied here rather than in run()/runAsyncStep() so
+   * that BOTH paths — and anything else that records a count — are covered by
+   * one piece of code. Only a step that CLAIMS success is judged: a step that
+   * already failed, or was skipped, has a louder problem than its count.
+   */
+  const floor = MIN_CHECKS[name];
+  let floorNote = null;
+  if (floor != null && exit === 0 && !extra.skipped) {
+    const total = typeof counts?.total === 'number' ? counts.total : null;
+    if (total === null) {
+      floorNote = `declares ${floor} checks but reported NO count at all — its pass line did not parse, `
+        + 'so the gate cannot tell whether its checks ran';
+    } else if (total < floor) {
+      floorNote = `ran ${total} checks, declares ${floor} — ${floor - total} check(s) vanished. `
+        + 'A suite that skips a check still prints "N/N passed", so this is the only place it shows.';
+    }
+    if (floorNote) {
+      exit = 1;
+      counts = { ...(counts || {}), minChecks: floor, ranChecks: total };
+    }
+  }
+
+  const step = { name: redact(name), cmd: redact(cmd), exit, ms, counts: counts ?? null, ...extra,
+    ...(floorNote ? { minChecksViolation: floorNote } : {}) };
   steps.push(step);
   const mark = step.skipped ? 'SKIP' : exit === 0 ? 'PASS' : 'FAIL';
   const detail = counts ? ` (${JSON.stringify(counts)})` : '';
   console.log(`  ${mark}  ${step.name}${detail}${step.skipped ? ` — ${step.skipped}` : ''}`);
+  if (floorNote) console.log(`        min-checks: ${step.name} ${floorNote}`);
   if (mark === 'FAIL' && !failed) failed = step.name;
   return step;
 }
@@ -396,9 +495,23 @@ const passLine = (out) => {
   // step 10. Four unprotected suites is not an acceptable parity baseline.
   const bare = [...out.matchAll(/(\d+)\s+[A-Za-z][A-Za-z()\s-]*?passed/gi)].pop();
   if (bare) return { passed: Number(bare[1]), total: Number(bare[1]) };
-  // Last resort: count the per-assertion "ok" lines the older suites print.
+  /**
+   * Last resort: count per-assertion lines directly.
+   *
+   * Two spellings, because the suites disagree: the older ones print "ok <m>",
+   * and ext-bridge-origin-pin-proof prints "  PASS  <m>" / "  FAIL  <m>" with
+   * no summary line at all. That suite ran 13 assertions and reported counts
+   * of `null` to the gate for its whole life — so it was in the parity
+   * reference for nothing, and an assertion could have been deleted from it
+   * without any number moving. Counting the FAIL lines too keeps the
+   * denominator honest when something is actually failing.
+   */
   const oks = (out.match(/^\s*ok\b/gim) || []).length;
-  return oks > 0 ? { passed: oks, total: oks } : null;
+  if (oks > 0) return { passed: oks, total: oks };
+  const passLines = (out.match(/^\s*PASS\s/gim) || []).length;
+  const failLines = (out.match(/^\s*FAIL\s/gim) || []).length;
+  if (passLines + failLines > 0) return { passed: passLines, total: passLines + failLines };
+  return null;
 };
 
 // ── lint: a committed MANIFEST that may only shrink (GATE-SPEC amendment) ──

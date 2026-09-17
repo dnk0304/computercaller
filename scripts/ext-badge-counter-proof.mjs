@@ -287,6 +287,31 @@ try {
   const indicator = () => sw.evaluate(() => lastIndicator);
   const title = () => sw.evaluate(() => chrome.action.getTitle({}));
   /** Put the worker in a known signed-in, socket-up state with no pair. */
+  /**
+   * P5a: the DETERMINISTIC SIGN-IN ARM (R-C).
+   *
+   * `signedIn = true` alone is not a signed-in worker, it is a variable the
+   * worker is free to overwrite — and it does. `refreshAuthAndIndicator()`
+   * (background.js:486) runs `signedIn = !!(await getToken())` on every auth
+   * transition, and with no token in chrome.storage.local that resolves FALSE,
+   * calls `clearRelayFacts()` and repaints the dot as "signed-out". It is
+   * asynchronous, so whether it lands before or after the next assertion is a
+   * race with the box's load. That is the whole "signed-out family" of
+   * failures: 42/42 on an idle machine, 34-41/42 on a busy one, and the reason
+   * the gate carries `attempts: 2` for these harnesses.
+   *
+   * Seeding a token makes the worker's own auth answer AGREE with the test's
+   * intent instead of contradicting it a few milliseconds later. The assertion
+   * is unchanged and is not weakened: the indicator rule under test reads
+   * held/paired/phonePresent, none of which this touches. It removes a race
+   * with an unrelated subsystem, which is the opposite of hiding a failure —
+   * a genuine regression in the indicator rule still fails exactly as before.
+   */
+  const armSignedIn = () => sw.evaluate(async () => {
+    await new Promise((r) => chrome.storage.local.set({ [self.CC.TOKEN_KEY]: 'e2e-harness-token' }, r));
+  });
+  await armSignedIn();
+
   const armIndicator = () => sw.evaluate(async () => {
     signedIn = true; wsOpen = true;
     phonePresent = false; paired = false; held = false;
