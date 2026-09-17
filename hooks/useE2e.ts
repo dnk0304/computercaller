@@ -340,9 +340,16 @@ export function useE2e(emailProp?: string | null): E2eApi {
       // B9: the SAS covers the FULL key set — epk plus every recipKey, the SW's
       // included. A code over a subset would leave the digits unchanged on the
       // side that did not see a swapped SW key.
+      // sas.mjs takes RAW BYTES (or hex) — never the base64url wire form. The
+      // first draft passed the wire strings straight through and sas.mjs threw
+      // "not a hex string of whole bytes"; scripts/e2e-live-peer-proof.mjs is
+      // what surfaced it, which is the argument for that harness existing.
       const digits = await sasDigits({
-        pairingId: context.pairingId, epk: block.epk, keys: sasKeySet(block),
-        pairEpoch: context.pairEpoch, modeOn: true,
+        pairingId: context.pairingId,
+        epk: fromB64(block.epk),
+        keys: sasKeySet(block).map(fromB64),
+        pairEpoch: context.pairEpoch,
+        modeOn: true,
       });
       setView((v) => ({
         ...v,
