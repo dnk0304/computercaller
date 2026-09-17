@@ -260,7 +260,7 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
   // measured API level / backend / StrongBox facts are lifted out of the
   // script's logcat line into `counts` so the gate JSON carries them (N-3
   // allows derived counts, never captured stdout).
-  const r2 = step('instrumented-crypto-suite', 'tools/run-agreement-test.ps1 (ECDH + SAS + counter + session + accept)', () => {
+  const r2 = step('instrumented-crypto-suite', 'tools/run-agreement-test.ps1 (ECDH + SAS + counter + session + accept + lifecycle)', () => {
     if (!deviceUp) return 'SKIPPED: no device/emulator attached';
     return execSync('powershell -ExecutionPolicy Bypass -File tools/run-agreement-test.ps1',
       { ...gradleOpts, maxBuffer: 1 << 24 });
@@ -268,7 +268,7 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
   const ok2 = skipped ||
     (/KEY AGREEMENT: PASS/.test(r2._out) && /SAS VECTORS: PASS/.test(r2._out) &&
       /COUNTER FAIL-CLOSED: PASS/.test(r2._out) && /SESSION: PASS/.test(r2._out) &&
-      /ACCEPT: PASS/.test(r2._out));
+      /ACCEPT: PASS/.test(r2._out) && /LIFECYCLE: PASS/.test(r2._out));
   const instrumentedTotal = Number(/INSTRUMENTED TOTAL: (\d+) tests/.exec(r2._out)?.[1] ?? -1);
   const facts = /api=(\d+) backend=(\S+) strongBoxDeclared=(\S+)/.exec(r2._out);
   finish(r2, {
@@ -280,6 +280,7 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
       // GATE1 Addendum A1 condition 3 names this a P4 acceptance criterion.
       counterFailClosed: ok2 && !skipped ? 'PASS' : (skipped ? 'SKIPPED' : 'FAIL'),
       acceptHandshake: ok2 && !skipped ? 'PASS' : (skipped ? 'SKIPPED' : 'FAIL'),
+      lifecycle: ok2 && !skipped ? 'PASS' : (skipped ? 'SKIPPED' : 'FAIL'),
       instrumentedTests: skipped ? 0 : instrumentedTotal,
       deviceApi: facts ? Number(facts[1]) : null,
       backend: facts ? facts[2] : null,
