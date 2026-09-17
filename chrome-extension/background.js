@@ -27,6 +27,7 @@ import './config.js';
 import {
   loadOrCreateDeviceKey,
   publicIdentity,
+  wipeDeviceKeyRecord,
   registerDeviceKey as registerSwDeviceKey,
 } from './e2e/sw-key.js';
 import {
@@ -1740,6 +1741,12 @@ Object.assign(self, {
   GREEN,
   // P3 additions, so the new proofs can drive the E2E paths the same way.
   noteE2eBlock,
+  publicIdentity,
+  loadOrCreateDeviceKey,
+  // (e)/M-C is proved by DOING the wipe, so the proof needs a way to do it.
+  // Not a test-only path in production: it is also the honest implementation
+  // of an explicit "forget this device" action, which 13.8 requires to exist.
+  wipeDeviceKeyRecord,
   ensureSession,
   openIfSealed,
   isSealedEnvelope,
