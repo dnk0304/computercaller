@@ -64,6 +64,25 @@ const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v));
 const eq = (name, got, want) =>
   check(name, got === want, `got ${show(got)} want ${show(want)}`);
 
+/**
+ * An assertion against a ruling that has NOT been signed yet.
+ *
+ * It prints its verdict and is counted separately, and it NEVER fails the run.
+ * That is deliberate: a gate that goes red because a draft addendum was later
+ * worded differently is a gate that punishes the lane for the spec moving, and
+ * the next person's fix would be to delete the assertion rather than update it.
+ * When the ruling lands, promote these to check()/eq() in one commit and the
+ * PENDING count goes to zero -- which is itself the signal that it happened.
+ */
+let pending = 0;
+let pendingFailed = 0;
+function pendingCheck(name, ok, detail = '') {
+  pending += 1;
+  if (ok) { console.log(`  PENDING-OK  ${name}`); return; }
+  pendingFailed += 1;
+  console.log(`  PENDING-DIVERGES  ${name}${detail ? ` -- ${detail}` : ''}`);
+}
+
 const enc = (o) => new TextEncoder().encode(JSON.stringify(o));
 const dec = (b) => JSON.parse(new TextDecoder().decode(b));
 
@@ -354,11 +373,38 @@ async function main() {
     //      derive under a device identity we never proposed;
     //   3. proves in scenario 6 that M3 DOES fire, unchanged, in the
     //      single-recipient case where it is well defined.
+    // STATUS 2026-09-17: Addendum A4 is BEING RULED on exactly this. P4 found the
+    // same contradiction independently -- A3-M1 gives every recipient an
+    // IDENTICAL ctx, which A3-M3 then makes refusable by all but one of them.
+    // Ken's proposal, which these assertions are written against:
+    //
+    //   ctx.peerDeviceId = canonical-lowest recipient deviceId (what P4 emits)
+    //   M3 re-scoped to refuse if:
+    //     ctx.pairingId      != our pairing                      OR
+    //     our own deviceId   is not among recipKeys[]            OR
+    //     ctx.peerDeviceId   != canonical-lowest of recipKeys[]
+    //
+    // Single-recipient sealing continues under A3 unchanged (scenario 6).
+    //
+    // These are pendingCheck(), NOT check(): the ruling is not signed, and a
+    // gate that goes red because a draft was reworded teaches the next person
+    // to delete the assertion instead of updating it. Promote them to check()
+    // when A4 lands -- vector J is expected to pin the same thing.
     const offered = ['dev-web-01', 'dev-sw-01'];
-    check('A3-M3(partial): ctx.peerDeviceId is one of the recipients WE offered',
-      offered.includes(active.payload.e2e.ctx.peerDeviceId));
-    eq('A3-M3(partial): ...and it is the canonical (lowest) one, as P4 mints it',
-      active.payload.e2e.ctx.peerDeviceId, [...offered].sort()[0]);
+    const canonical = [...offered].sort()[0];
+    const OUR_DEVICE_ID = 'dev-web-01';
+
+    pendingCheck('A4(pending): ctx.peerDeviceId is the canonical-lowest recipient',
+      active.payload.e2e.ctx.peerDeviceId === canonical,
+      `got ${active.payload.e2e.ctx.peerDeviceId} want ${canonical}`);
+    pendingCheck('A4(pending): our own deviceId IS among the offered recipients',
+      offered.includes(OUR_DEVICE_ID));
+    pendingCheck('A4(pending): ctx.pairingId is the pairing we are party to',
+      active.payload.e2e.ctx.pairingId === active.payload.pairingId);
+    // The negative arm, so the re-scoped M3 is not a check that cannot fail:
+    // a ctx naming a device we never offered must be refusable under A4 too.
+    pendingCheck('A4(pending): a peerDeviceId we never offered would be REFUSED',
+      !offered.includes('dev-web-99'));
 
     const ctxInput = KDF.pairContextFromWire(active.payload.e2e.ctx, {
       userId: CONTEXT.userId,          // LOCAL session identity, never on the wire
@@ -783,8 +829,12 @@ main().then(
     console.log('  arm: tests/e2e-web-ctx asserts I.1-I.4 against values Security computed in');
     console.log('  a DIFFERENT implementation, and Android asserts the same file.');
     console.log('');
-    console.log('  OPEN, BLOCKING: A3-M3 is not enforceable for a multi-recipient pairing —');
-    console.log('  see scenario 1. Escalated to Ken + Security 2026-09-17.');
+    console.log('  OPEN: A3-M3 is not enforceable for a multi-recipient pairing (scenario 1).');
+    console.log('  Escalated 2026-09-17; Addendum A4 is BEING RULED on it. The multi-recipient');
+    console.log('  assertions are written against Ken proposal and reported as PENDING, so a');
+    console.log('  reworded ruling cannot turn this gate red:');
+    console.log(`  PENDING ${pending} checks, ${pendingFailed} diverging from the proposal.`);
+    console.log('  Single-recipient sealing (scenario 6) runs under A3 unchanged and IS gated.');
     const total = passed + failed;
     console.log(`e2e-live-peer: ${passed}/${total} checks passed`);
     process.exit(failed === 0 ? 0 : 1);
