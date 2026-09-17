@@ -1,10 +1,70 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Phone, Delete, Video, MessageSquare } from 'lucide-react';
+import { Phone, Delete, Video, MessageSquare, Grid3x3 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
 import { useFreeTier } from '@/hooks/freeTierContext';
+import { useExtensionShell } from '@/lib/extensionBridge';
+import { useDialpadOpen, usePrefersReducedMotion } from '@/lib/dialpadPref';
+
+/**
+ * The collapse container shared by BOTH Dial surfaces — the extension's
+ * compact pad (below) and /app phone mode's own pad (PhoneModeShell's
+ * DialerView). Exported rather than duplicated: the two pads are the same
+ * control at two densities and they must open and close identically.
+ *
+ * `grid-template-rows: 0fr -> 1fr` is the height transition that does not need
+ * a measured pixel height, so the pad can be whatever tall it is at whatever
+ * text size without JS measuring it. The inner wrapper carries the
+ * `overflow: hidden` + `min-height: 0` that make the clip work.
+ *
+ * `visibility` is the other half, and it is not decoration: clipped-but-
+ * visible content is still focusable, still read by screen readers, and still
+ * has a bounding box. Hiding it takes the 12 keys out of the tab order and out
+ * of the a11y tree when the pad is closed. It flips to visible immediately on
+ * open (delay 0) and only AFTER the collapse finishes on close (delay =
+ * duration), so the keys do not blink out from under the animation.
+ *
+ * Inline styles, not a stylesheet rule, because the two surfaces load
+ * different CSS (app/extension/extension.css is the extension's alone) and one
+ * behaviour defined twice is one behaviour that will drift.
+ */
+export function CollapsePanel({
+  open,
+  id,
+  animate = true,
+  children,
+}: {
+  open: boolean;
+  id: string;
+  /**
+   * False until the user has actually worked the toggle this session, so a
+   * remembered-open pad simply IS open on load instead of sliding itself open
+   * every time the popup is used. Motion answers an action; it does not
+   * narrate a page load.
+   */
+  animate?: boolean;
+  children: React.ReactNode;
+}) {
+  const reduced = usePrefersReducedMotion();
+  const ms = reduced || !animate ? 0 : 180;
+
+  return (
+    <div
+      id={id}
+      data-cc-pad-open={open ? 'true' : 'false'}
+      style={{
+        display: 'grid',
+        gridTemplateRows: open ? '1fr' : '0fr',
+        visibility: open ? 'visible' : 'hidden',
+        transition: `grid-template-rows ${ms}ms ease-out, visibility 0s linear ${open ? 0 : ms}ms`,
+      }}
+    >
+      <div style={{ minHeight: 0, overflow: 'hidden' }}>{children}</div>
+    </div>
+  );
+}
 
 interface DialpadProps {
   /**
@@ -33,8 +93,17 @@ interface DialpadProps {
   autoFocus?: boolean;
 }
 
+const PAD_PANEL_ID = 'cc-ext-keypad';
+
 export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: DialpadProps) => {
   const { makeCall } = usePhone();
+  // Per-account keypad preference. The email comes from the extension shell
+  // handshake, which is the same source PhoneModeHeader's theme and text-size
+  // choices read — one identity for all three, so they remember together.
+  // Off the extension (window.parent === window) it stays null and the pref
+  // falls back to the shared `last` mirror; see lib/dialpadPref.ts.
+  const { email } = useExtensionShell();
+  const [padOpen, togglePad, padAnimate] = useDialpadOpen(email);
   const { guard } = useFreeTier();
   // Guarded dial — free-tier daily cap opens the block modal instead of dialing.
   const dial = (n: string) => { if (guard('call')) makeCall(n); };
@@ -90,6 +159,44 @@ export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: 
     { digit: '#', letters: '' },
   ];
 
+  // Grid.
+  // On the compact (extension) surface this is the block the keypad
+  // button collapses — see CollapsePanel above and the button in the
+  // action row below. /app's non-compact render is untouched: the pad is
+  // always open there, so `padOpen` is not consulted on that branch.
+  const keypadGrid = (
+      <div className={clsx(
+        "grid grid-cols-3 transition-all",
+        isCompact ? "gap-x-4 gap-y-3 mb-4" : "gap-x-8 gap-y-6 mb-10"
+      )}>
+        {keys.map((key) => (
+          <button
+            key={key.digit}
+            onClick={() => handlePress(key.digit)}
+            className={clsx(
+              "rounded-full bg-slate-50 hover:bg-slate-100 active:bg-blue-50 active:scale-95 transition-all duration-200 flex flex-col items-center justify-center shadow-sm hover:shadow border border-slate-100 group",
+              isCompact ? "w-12 h-12" : "w-16 h-16 md:w-20 md:h-20"
+            )}
+          >
+            <span className={clsx(
+              "font-medium text-slate-700 group-active:text-blue-600 transition-colors",
+              isCompact ? "text-lg" : "text-2xl"
+            )}>
+              {key.digit}
+            </span>
+            {key.letters && (
+              <span className={clsx(
+                "font-bold text-slate-400 tracking-widest group-active:text-blue-400",
+                isCompact ? "text-[8px]" : "text-[10px]"
+              )}>
+                {key.letters}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+  );
+
   return (
     <div className={clsx(
       "flex flex-col items-center justify-center w-full mx-auto transition-all",
@@ -124,37 +231,15 @@ export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: 
         )}
       </div>
 
-      {/* Grid */}
-      <div className={clsx(
-        "grid grid-cols-3 transition-all",
-        isCompact ? "gap-x-4 gap-y-3 mb-4" : "gap-x-8 gap-y-6 mb-10"
-      )}>
-        {keys.map((key) => (
-          <button
-            key={key.digit}
-            onClick={() => handlePress(key.digit)}
-            className={clsx(
-              "rounded-full bg-slate-50 hover:bg-slate-100 active:bg-blue-50 active:scale-95 transition-all duration-200 flex flex-col items-center justify-center shadow-sm hover:shadow border border-slate-100 group",
-              isCompact ? "w-12 h-12" : "w-16 h-16 md:w-20 md:h-20"
-            )}
-          >
-            <span className={clsx(
-              "font-medium text-slate-700 group-active:text-blue-600 transition-colors",
-              isCompact ? "text-lg" : "text-2xl"
-            )}>
-              {key.digit}
-            </span>
-            {key.letters && (
-              <span className={clsx(
-                "font-bold text-slate-400 tracking-widest group-active:text-blue-400",
-                isCompact ? "text-[8px]" : "text-[10px]"
-              )}>
-                {key.letters}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      {/* The pad itself. Compact = the extension surface, where it is
+          collapsible and starts collapsed; /app renders it unconditionally. */}
+      {isCompact ? (
+        <CollapsePanel open={padOpen} id={PAD_PANEL_ID} animate={padAnimate}>
+          {keypadGrid}
+        </CollapsePanel>
+      ) : (
+        keypadGrid
+      )}
 
       {/* ── Controls ──────────────────────────────────────────────────────
           Two separate rows, because the two variants answer different
@@ -165,16 +250,30 @@ export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: 
           means neither reads as primary. */}
       {isCompact ? (
         <div className="cc-dialpad-actions flex w-full items-center gap-2 px-1">
+          {/* Keypad toggle — FIRST in the row (Dennis 2026-09-17: "reduced
+              into a button thats next to the message button thats next to the
+              call button"). Same 36px box as Message so the two secondaries
+              read as a pair and Call stays the only primary.
+
+              aria-pressed, not aria-expanded: this is the same toggle idiom
+              the dashboard's own dialpad button already uses
+              (Dashboard.tsx), and a surface should not speak two dialects of
+              the same control. aria-controls points at the panel. */}
           <button
             type="button"
-            onClick={() => number && dial(number)}
-            disabled={!number}
-            aria-label="Call"
-            title={number ? `Call ${number}` : 'Enter a number first'}
-            className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-full text-[13px] font-semibold text-white transition-all enabled:bg-gradient-to-br enabled:from-[#35c977] enabled:via-[#22a89a] enabled:to-[#1e8fb2] enabled:hover:brightness-105 enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45 focus-visible:ring-offset-1"
+            onClick={togglePad}
+            aria-pressed={padOpen}
+            aria-controls={PAD_PANEL_ID}
+            aria-label={padOpen ? 'Hide keypad' : 'Show keypad'}
+            title={padOpen ? 'Hide keypad' : 'Show keypad'}
+            className={clsx(
+              'cc-keypad-toggle flex h-9 w-11 flex-shrink-0 items-center justify-center rounded-full border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45',
+              padOpen
+                ? 'border-slate-400 bg-slate-100 text-slate-900'
+                : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50',
+            )}
           >
-            <Phone className="h-4 w-4 fill-current" aria-hidden="true" />
-            Call
+            <Grid3x3 className="h-4 w-4" aria-hidden="true" />
           </button>
 
           {/* AC-4 — Send message. Hands the display value up; the shell routes
@@ -192,6 +291,18 @@ export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: 
               <MessageSquare className="h-4 w-4" aria-hidden="true" />
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={() => number && dial(number)}
+            disabled={!number}
+            aria-label="Call"
+            title={number ? `Call ${number}` : 'Enter a number first'}
+            className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-full text-[13px] font-semibold text-white transition-all enabled:bg-gradient-to-br enabled:from-[#35c977] enabled:via-[#22a89a] enabled:to-[#1e8fb2] enabled:hover:brightness-105 enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45 focus-visible:ring-offset-1"
+          >
+            <Phone className="h-4 w-4 fill-current" aria-hidden="true" />
+            Call
+          </button>
 
           {/* Backspace is hidden (not just disabled) on an empty display —
               there is nothing to delete, and the slot is worth more as
