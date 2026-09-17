@@ -143,7 +143,7 @@ function acceptFrame(overrides = {}) {
   const block = readAcceptBlock(acceptFrame());
   const ctx = pairContextFromWire(block.ctx, {
     userId: LOCAL_USER_ID,
-    deviceId: OWN_DEVICE_ID,
+    recipientDeviceIds: [OWN_DEVICE_ID],
     pairingId: OWN_PAIRING_ID,
   });
 
@@ -204,7 +204,7 @@ function acceptFrame(overrides = {}) {
 {
   const drift = { ...I.positiveI1.ctxWire, pairEpoch: I.negativeI2EpochDrift.pairEpoch };
   const ctx = pairContextFromWire(drift, {
-    userId: LOCAL_USER_ID, deviceId: OWN_DEVICE_ID, pairingId: OWN_PAIRING_ID,
+    userId: LOCAL_USER_ID, recipientDeviceIds: [OWN_DEVICE_ID], pairingId: OWN_PAIRING_ID,
   });
   eq('I.2: the context bytes end in 2b, not 2a',
     toHex(ctx.contextBytes), I.negativeI2EpochDrift.contextBytesHex);
@@ -250,7 +250,7 @@ function acceptFrame(overrides = {}) {
 {
   const ctx = pairContextFromWire(I.positiveI1.ctxWire, {
     userId: I.negativeI3UserIdDrift.localUserId,   // ONE character different
-    deviceId: OWN_DEVICE_ID, pairingId: OWN_PAIRING_ID,
+    recipientDeviceIds: [OWN_DEVICE_ID], pairingId: OWN_PAIRING_ID,
   });
   const SK = fromHex(V.traffic.sessionKeyHex);
   const keys = await trafficKeys({
@@ -263,7 +263,10 @@ function acceptFrame(overrides = {}) {
 }
 
 // ── I.4 — parser negatives. All MUST refuse; none may coerce. ──────────────
-const local = { userId: LOCAL_USER_ID, deviceId: OWN_DEVICE_ID, pairingId: OWN_PAIRING_ID };
+// A4 DELETED the `deviceId` argument; the page passes `recipientDeviceIds`
+// instead. This file's pairing has ONE recipient, so the canonical peer IS us
+// and every I-vector assertion below is unchanged in meaning.
+const local = { userId: LOCAL_USER_ID, pairingId: OWN_PAIRING_ID, recipientDeviceIds: [OWN_DEVICE_ID] };
 
 for (const bad of I.negativeI4Parser.badPairEpoch) {
   await throws(
@@ -304,15 +307,36 @@ await throws('A3-M4: a mode=1 block carrying no ctx is refused at ingest', () =>
   return pairContextFromWire(block.ctx, local);
 });
 
-// A3-M3 — own-identity checks. Refused by IDENTITY, not left to fail as a tag
-// error later: "the frames do not decrypt" and "this block is not addressed to
-// us" want different words in the log, and only one of them is actionable.
-await throws('A3-M3: ctx.peerDeviceId that is not our deviceId is refused',
+// A3-M3, AS RE-SCOPED BY A4. The "ctx.peerDeviceId must be our OWN deviceId"
+// clause is DELETED — it refused every recipient but the canonical one and made
+// multi-recipient pairing impossible. What replaces it for the page lane is
+// (c): ctx.peerDeviceId must be the canonical (byte-wise lowest) member of the
+// wraps[] set we hold.
+//
+// On THIS pairing the two readings coincide, because there is exactly one
+// recipient and the canonical peer is therefore us — which is precisely why
+// vector I could never discriminate between them, and why vector J exists.
+// The assertion below is the same rejection with the correct reason behind it.
+await throws('A3-M3(c): a ctx.peerDeviceId that is not the canonical recipient is refused',
   () => pairContextFromWire(
     { ...I.positiveI1.ctxWire, peerDeviceId: I.negativeI4Parser.peerDeviceIdMismatch.ctxPeerDeviceId },
     local,
   ));
-await throws('A3-M3: ctx.pairingId that is not our pairing is refused',
+// And the deleted clause is really deleted, not merely unused: passing the old
+// argument THROWS. A caller still passing `deviceId` believes a refusal is in
+// force that no longer exists, and silence would let that belief survive.
+await throws('A4-M1: passing the DELETED `deviceId` argument throws',
+  () => pairContextFromWire(I.positiveI1.ctxWire, { userId: LOCAL_USER_ID, deviceId: OWN_DEVICE_ID }),
+  (e) => /is not an input/.test(e.message));
+// A4-R3: omitting recipientDeviceIds (the SW lane) SKIPS (c) — it must never
+// fall back to the caller's own id. So the same ctx the page refuses above is
+// accepted here, and that difference is the lane scoping working.
+check('A4-R3: without the recipient set, (c) is SKIPPED rather than guessed',
+  pairContextFromWire(
+    { ...I.positiveI1.ctxWire, peerDeviceId: I.negativeI4Parser.peerDeviceIdMismatch.ctxPeerDeviceId },
+    { userId: LOCAL_USER_ID, pairingId: OWN_PAIRING_ID },
+  ).peerDeviceId === I.negativeI4Parser.peerDeviceIdMismatch.ctxPeerDeviceId);
+await throws('A3-M3(a): ctx.pairingId that is not our pairing is refused',
   () => pairContextFromWire(
     { ...I.positiveI1.ctxWire, pairingId: I.negativeI4Parser.pairingIdMismatch.ctxPairingId },
     local,
@@ -320,15 +344,16 @@ await throws('A3-M3: ctx.pairingId that is not our pairing is refused',
 // ...and when we do NOT independently know the pairingId, the check is SKIPPED
 // rather than compared against itself. A check that cannot fail is worse than
 // no check, because it reads like one that can.
-check('A3-M3: pairingId is not checked when we do not know it',
-  pairContextFromWire(I.positiveI1.ctxWire, { userId: LOCAL_USER_ID, deviceId: OWN_DEVICE_ID, pairingId: null })
+check('A3-M3(a): pairingId is not checked when we do not know it',
+  pairContextFromWire(I.positiveI1.ctxWire,
+    { userId: LOCAL_USER_ID, recipientDeviceIds: [OWN_DEVICE_ID], pairingId: null })
     .pairingId === OWN_PAIRING_ID);
 
 // The LOCAL userId is required — never taken from the wire, never defaulted.
 await throws('A3: a missing local userId is refused',
-  () => pairContextFromWire(I.positiveI1.ctxWire, { deviceId: OWN_DEVICE_ID }));
+  () => pairContextFromWire(I.positiveI1.ctxWire, { recipientDeviceIds: [OWN_DEVICE_ID] }));
 await throws('A3: an empty local userId is refused',
-  () => pairContextFromWire(I.positiveI1.ctxWire, { userId: '', deviceId: OWN_DEVICE_ID }));
+  () => pairContextFromWire(I.positiveI1.ctxWire, { userId: '', recipientDeviceIds: [OWN_DEVICE_ID] }));
 // A userId ON THE WIRE must not be honoured. This is the one that would look
 // harmless in review: it changes nothing observable until a relay uses it.
 {

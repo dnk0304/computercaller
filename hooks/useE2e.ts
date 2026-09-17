@@ -56,7 +56,7 @@ import {
   type WebDeviceKey,
   type WebKeyStore,
 } from '@/lib/e2e/webKey';
-import { resolvePairContextA4, type ResolvedA4Context } from '@/lib/e2e/pairCtxA4';
+import { pairContextFromWire, canonicalPeerDeviceId } from '@/lib/e2e/kdf.mjs';
 import {
   createComputerSession,
   indexedDbSeqStore,
@@ -201,7 +201,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
   // never in storage (the brief, and §13.10's "SK lives only in memory").
   const sessionRef = useRef<ComputerSession | null>(null);
   const keyRef = useRef<WebDeviceKey | null>(null);
-  const swRef = useRef<SwKeyResult>({ status: 'unknown', recipient: null });
+  const swRef = useRef<SwKeyResult>({ status: 'unknown', recipient: null, pairingId: null });
   const latchedRef = useRef(false);
   const downgradeDropsRef = useRef(0);
   /** The session userId, fetched once. Local identity — never from the wire. */
@@ -341,7 +341,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
       return true;
     }
 
-    let context: ResolvedA4Context;
+    let context: ReturnType<typeof pairContextFromWire>;
     try {
       // ONE call, and every A3/A4 receiver rule this lane can evaluate is
       // inside it:
@@ -361,11 +361,31 @@ export function useE2e(emailProp?: string | null): E2eApi {
       // carries only its own wrap) and must SKIP (c) rather than substitute its
       // own deviceId — that substitution is the A3-M1/A3-M3 contradiction A4
       // exists to remove.
-      context = resolvePairContextA4({
-        ctxWire: block.ctx,
+      // P1.2 landed A4 in the FROZEN shared module, so the local copy this lane
+      // carried while the ruling was in flight is deleted rather than kept as a
+      // second opinion — a duplicated predicate is how A3 happened.
+      //
+      // `recipientDeviceIds` is what switches check (c) on, and passing it is a
+      // LANE decision: the page holds the full wraps[] on ACCEPT_PAIRING /
+      // PAIRING_ACTIVE, so it MUST run the canonical-peer check. The extension
+      // SW gets PAIR_STATE, which carries only its own wrap, so it omits this
+      // and relies on (b) — the wrap opening under KEK(ctx, own static key).
+      // There is no `deviceId` argument any more: A4 DELETED that refusal and
+      // the shared function now THROWS if you pass one, which is the right
+      // shape — a caller still passing it believes in a rule that is gone.
+      context = pairContextFromWire(block.ctx, {
         userId,
-        pairingId: typeof payload.pairingId === 'string' ? payload.pairingId : null,
-        wraps: block.wraps,
+        // R-T: the relay frame is the primary source; the SW bridge's pairingId
+        // is a FALLBACK for when the frame does not carry one, and it is
+        // tolerated absent because the P3 lane is adding it now and this build
+        // must work against an SW with or without it, in either deploy order.
+        // The frame WINS whenever both are present — a bridge message is a
+        // value another process chose, and preferring it would be the same
+        // mistake as taking userId off the wire.
+        pairingId: typeof payload.pairingId === 'string'
+          ? payload.pairingId
+          : swRef.current.pairingId,
+        recipientDeviceIds: block.wraps.map((w) => w.deviceId),
       });
     } catch (e) {
       fail('e2e-setup-failed', `ctx refused: ${(e as Error).message}`);
@@ -464,7 +484,8 @@ export function useE2e(emailProp?: string | null): E2eApi {
       // is the concern that motivated the ruling.
       console.error(
         '[e2e] wrap did not open — aborting the pairing (A4-M3). ' +
-        `canonicalPeer=${context.canonicalPeerDeviceId} ownDeviceId=${key.deviceId}`,
+        `canonicalPeer=${canonicalPeerDeviceId(block.wraps.map((w) => w.deviceId))} ` +
+        `ownDeviceId=${key.deviceId}`,
       );
       fail('e2e-setup-failed', `could not open our wrap: ${(e as Error).message}`);
       return true;

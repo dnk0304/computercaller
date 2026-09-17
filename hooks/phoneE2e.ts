@@ -133,31 +133,63 @@ export interface SwKeyMessage {
   v?: unknown;
   deviceId?: unknown;
   pub?: unknown;
+  /**
+   * R-T, page -> SW hand-over: the SW's reply gains `pairingId`, so the page can
+   * learn the pairing it is party to from the bridge as well as from the relay
+   * frame.
+   *
+   * OPTIONAL AND TOLERATED ABSENT, which is the whole contract: the P3 lane is
+   * adding it now, so a P2 build will meet both a v1 message that carries it
+   * and a v1 message that does not, in either deployment order. Absent means
+   * "this SW has not been updated yet" and MUST NOT change the key result — it
+   * is not an error and it is not a reason to refuse a pairing.
+   *
+   * It is a HINT, never an authority: `pairingId` still has to agree with the
+   * relay's, and A3-M3(a) compares ctx.pairingId against the value the page
+   * independently knows. A bridge message is a value another process chose, so
+   * adopting it in place of the frame would be the same class of mistake as
+   * taking `userId` off the wire.
+   */
+  pairingId?: unknown;
 }
 
 export interface SwKeyResult {
   status: SwKeyStatus;
   recipient: E2eRecipient | null;
+  /**
+   * R-T. The pairingId the SW reported, when it reported one. `null` whenever
+   * the field was absent or malformed — never a guess, and never a default.
+   */
+  pairingId: string | null;
+}
+
+/** The relay listener charset, reused: one string, one charset, no normalisation. */
+function readBridgePairingId(value: unknown): string | null {
+  return typeof value === 'string' && DEVICE_ID_RE.test(value) ? value : null;
 }
 
 /** `null` in, `unknown` out — an absent message is NOT a null message. */
 export function readSwKey(message: SwKeyMessage | null | undefined): SwKeyResult {
-  if (!message || typeof message !== 'object') return { status: 'unknown', recipient: null };
+  if (!message || typeof message !== 'object') return { status: 'unknown', recipient: null, pairingId: null };
   // An unknown v is IGNORED, never guessed — the contract P3 published and P2
   // confirmed. Treating a v2 message as v1 is how two lanes silently disagree.
-  if (message.v !== 1) return { status: 'unknown', recipient: null };
-  if (message.deviceId === null && message.pub === null) return { status: 'absent', recipient: null };
+  if (message.v !== 1) return { status: 'unknown', recipient: null, pairingId: null };
+  // The pairingId is read BEFORE the key arms, because a keyless SW can still
+  // know which pairing it is in — the two facts are independent.
+  const bridgePairingId = readBridgePairingId(message.pairingId);
+  if (message.deviceId === null && message.pub === null) return { status: 'absent', recipient: null, pairingId: bridgePairingId };
   // Anything that is not the pinned shape is REJECTED, not inferred (A1: "Reject
   // any other length at import — do not infer"). A malformed key is closer to
   // "absent" than to "present": we positively heard from the SW and it did not
   // give us something usable.
   if (typeof message.deviceId !== 'string' || !DEVICE_ID_RE.test(message.deviceId)) {
-    return { status: 'absent', recipient: null };
+    return { status: 'absent', recipient: null, pairingId: bridgePairingId };
   }
-  if (!isPinned(message.pub)) return { status: 'absent', recipient: null };
+  if (!isPinned(message.pub)) return { status: 'absent', recipient: null, pairingId: bridgePairingId };
   return {
     status: 'present',
     recipient: { kind: 'extension', deviceId: message.deviceId, pub: message.pub },
+    pairingId: bridgePairingId,
   };
 }
 

@@ -44,7 +44,7 @@ import * as KDF from '../lib/e2e/kdf.mjs';
 import * as SESSION from '../lib/e2e/session.mjs';
 import { sasDigits } from '../lib/e2e/sas.mjs';
 import * as WEBKEY from '../lib/e2e/webKey.ts';
-import { resolvePairContextA4, canonicalPeerDeviceId } from '../lib/e2e/pairCtxA4.ts';
+import { canonicalPeerDeviceId } from '../lib/e2e/kdf.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -348,15 +348,14 @@ async function main() {
     // A4-R3 re-scopes M3 to (a) pairingId, (b) the wrap opening under
     // KEK(ctx, our static key) — the CRYPTOGRAPHIC membership proof — and
     // (c) canonical-peer, ONLY where the receiver holds wraps[]. The page does.
-    const ctxInput = resolvePairContextA4({
-      ctxWire: active.payload.e2e.ctx,
+    const OFFERED = active.payload.e2e.wraps.map((w) => w.deviceId);
+    const ctxInput = KDF.pairContextFromWire(active.payload.e2e.ctx, {
       userId: CONTEXT.userId,          // LOCAL session identity, never on the wire
       pairingId: active.payload.pairingId,
-      wraps: active.payload.e2e.wraps, // we hold the set -> (c) applies
+      recipientDeviceIds: OFFERED,     // we hold the set -> (c) applies
     });
     eq('A4(c): ctx.peerDeviceId is the canonical-lowest of wraps[].deviceId',
-      ctxInput.canonicalPeerDeviceId,
-      canonicalPeerDeviceId(active.payload.e2e.wraps));
+      ctxInput.peerDeviceId, canonicalPeerDeviceId(OFFERED));
     check('A4(c): and the canonical peer is NOT this device — which under the '
       + 'DELETED A3-M3 clause is exactly the block the page used to refuse',
       ctxInput.canonicalPeerDeviceId !== 'dev-web-01');
@@ -364,11 +363,9 @@ async function main() {
     // The steering negative, so (c) is not a check that cannot fail.
     let steerRefused = false;
     try {
-      resolvePairContextA4({
-        ctxWire: { ...active.payload.e2e.ctx, peerDeviceId: 'dev-web-01' },
-        userId: CONTEXT.userId,
-        pairingId: active.payload.pairingId,
-        wraps: active.payload.e2e.wraps,
+      KDF.pairContextFromWire({ ...active.payload.e2e.ctx, peerDeviceId: 'dev-web-01' }, {
+        userId: CONTEXT.userId, pairingId: active.payload.pairingId,
+        recipientDeviceIds: active.payload.e2e.wraps.map((w) => w.deviceId),
       });
     } catch { steerRefused = true; }
     check('A4(c): a relay steering ctx.peerDeviceId off the canonical peer is REFUSED',
@@ -377,8 +374,8 @@ async function main() {
     // A4-R3's SW shape, on the same bytes: no wraps[] -> (c) SKIPPED, and the
     // context is IDENTICAL. Asserted equal, not merely both present -- that
     // identity is the ruling.
-    const swSide = resolvePairContextA4({
-      ctxWire: active.payload.e2e.ctx, userId: CONTEXT.userId, pairingId: null,
+    const swSide = KDF.pairContextFromWire(active.payload.e2e.ctx, {
+      userId: CONTEXT.userId, pairingId: null,
     });
     eq('A4-R3: the SW path (no wraps[]) derives the IDENTICAL context',
       SESSION.toBase64Url(swSide.contextBytes),
@@ -389,8 +386,7 @@ async function main() {
     const ourWrap = active.payload.e2e.wraps.find((w) => w.deviceId === 'dev-web-01').wrap;
     const sk = await SESSION.openWrap({
       wrap: ourWrap, kid: active.payload.e2e.kid, epk: SESSION.fromBase64Url(active.payload.e2e.epk),
-      ourPrivateKey: web.priv, ourPublicSec1: web.pub, ourDeviceId: 'dev-web-01',
-      pairingId: CONTEXT.pairingId, context: ctxInput.contextBytes, pairEpoch,
+      ourPrivateKey: web.priv, ourPublicSec1: web.pub, ourDeviceId: 'dev-web-01', pairingId: CONTEXT.pairingId, context: ctxInput.contextBytes, pairEpoch,
     });
     // Opening the wrap is already the proof: the KEK is derived from the pair
     // context, so a context the two sides disagreed about could not unwrap SK
@@ -613,13 +609,13 @@ async function main() {
       wireCtx.peerDeviceId, 'dev-web-01');
 
     // The positive: full M3 enforcement ON, and it pairs.
-    const ctx = resolvePairContextA4({
-      ctxWire: wireCtx, userId: CONTEXT.userId,
-      pairingId: active.payload.pairingId, wraps: active.payload.e2e.wraps,
+    const ctx = KDF.pairContextFromWire(wireCtx, {
+      userId: CONTEXT.userId, pairingId: active.payload.pairingId,
+      recipientDeviceIds: active.payload.e2e.wraps.map((w) => w.deviceId),
     });
     eq('A4(1:1): with ONE recipient the canonical peer IS us — single-recipient '
       + 'sealing continues under A3 unchanged (A4 scope)',
-      ctx.canonicalPeerDeviceId, 'dev-web-01');
+      canonicalPeerDeviceId(active.payload.e2e.wraps.map((w) => w.deviceId)), 'dev-web-01');
     const ourWrap = active.payload.e2e.wraps.find((w) => w.deviceId === 'dev-web-01').wrap;
     const sk = await SESSION.openWrap({
       wrap: ourWrap, kid: active.payload.e2e.kid, epk: SESSION.fromBase64Url(active.payload.e2e.epk),
@@ -640,19 +636,18 @@ async function main() {
     // A3-M3 negatives, against the block AS IT ARRIVED.
     let m3dev = false;
     try {
-      resolvePairContextA4({
-        ctxWire: { ...wireCtx, peerDeviceId: 'dev-web-99' },
+      KDF.pairContextFromWire({ ...wireCtx, peerDeviceId: 'dev-web-99' }, {
         userId: CONTEXT.userId, pairingId: active.payload.pairingId,
-        wraps: active.payload.e2e.wraps,
+        recipientDeviceIds: active.payload.e2e.wraps.map((w) => w.deviceId),
       });
     } catch { m3dev = true; }
     check('A4(c): a ctx naming a peer that is not the canonical one is refused', m3dev);
 
     let m3pair = false;
     try {
-      resolvePairContextA4({
-        ctxWire: wireCtx, userId: CONTEXT.userId, pairingId: 'pair-00000000',
-        wraps: active.payload.e2e.wraps,
+      KDF.pairContextFromWire(wireCtx, {
+        userId: CONTEXT.userId, pairingId: 'pair-00000000',
+        recipientDeviceIds: active.payload.e2e.wraps.map((w) => w.deviceId),
       });
     } catch { m3pair = true; }
     check('A4(a): a ctx.pairingId that is not our pairing is refused', m3pair);
@@ -668,9 +663,9 @@ async function main() {
     check('A3-M4: ...and it really has no ctx', active2.payload.e2e.ctx === undefined);
     let m4 = false;
     try {
-      resolvePairContextA4({
-        ctxWire: active2.payload.e2e.ctx, userId: CONTEXT.userId,
-        pairingId: active2.payload.pairingId, wraps: active2.payload.e2e.wraps,
+      KDF.pairContextFromWire(active2.payload.e2e.ctx, {
+        userId: CONTEXT.userId, pairingId: active2.payload.pairingId,
+        recipientDeviceIds: active2.payload.e2e.wraps.map((w) => w.deviceId),
       });
     } catch { m4 = true; }
     check('A3-M4: a mode=1 block with NO ctx is REFUSED, never derived from local', m4);
@@ -706,9 +701,9 @@ async function main() {
     const a42 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 42, modeOn: true });
     phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a42.block });
     const first = await browser.wait('PAIRING_ACTIVE');
-    const ctx42 = resolvePairContextA4({
-      ctxWire: first.payload.e2e.ctx, userId: CONTEXT.userId,
-      pairingId: first.payload.pairingId, wraps: first.payload.e2e.wraps,
+    const ctx42 = KDF.pairContextFromWire(first.payload.e2e.ctx, {
+      userId: CONTEXT.userId, pairingId: first.payload.pairingId,
+      recipientDeviceIds: first.payload.e2e.wraps.map((w) => w.deviceId),
     });
     const admitted = await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
@@ -720,9 +715,9 @@ async function main() {
     const a43 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 43, modeOn: true });
     phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a43.block });
     const second = await browser.wait('PAIRING_ACTIVE');
-    const ctx43 = resolvePairContextA4({
-      ctxWire: second.payload.e2e.ctx, userId: CONTEXT.userId,
-      pairingId: second.payload.pairingId, wraps: second.payload.e2e.wraps,
+    const ctx43 = KDF.pairContextFromWire(second.payload.e2e.ctx, {
+      userId: CONTEXT.userId, pairingId: second.payload.pairingId,
+      recipientDeviceIds: second.payload.e2e.wraps.map((w) => w.deviceId),
     });
     await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
@@ -740,9 +735,9 @@ async function main() {
 
     // It parses. It is a perfectly well-formed block and its ctx is valid --
     // which is the point: nothing upstream of the floor has grounds to refuse.
-    const ctxReplay = resolvePairContextA4({
-      ctxWire: replay.payload.e2e.ctx, userId: CONTEXT.userId,
-      pairingId: replay.payload.pairingId, wraps: replay.payload.e2e.wraps,
+    const ctxReplay = KDF.pairContextFromWire(replay.payload.e2e.ctx, {
+      userId: CONTEXT.userId, pairingId: replay.payload.pairingId,
+      recipientDeviceIds: replay.payload.e2e.wraps.map((w) => w.deviceId),
     });
     check('FLOOR: the replayed ctx parses cleanly (nothing else can catch this)',
       ctxReplay.pairEpoch === 42n);
@@ -762,9 +757,9 @@ async function main() {
     const a44 = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 44, modeOn: true });
     phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: a44.block });
     const fourth = await browser.wait('PAIRING_ACTIVE');
-    const ctx44 = resolvePairContextA4({
-      ctxWire: fourth.payload.e2e.ctx, userId: CONTEXT.userId,
-      pairingId: fourth.payload.pairingId, wraps: fourth.payload.e2e.wraps,
+    const ctx44 = KDF.pairContextFromWire(fourth.payload.e2e.ctx, {
+      userId: CONTEXT.userId, pairingId: fourth.payload.pairingId,
+      recipientDeviceIds: fourth.payload.e2e.wraps.map((w) => w.deviceId),
     });
     const rekeyed = await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
@@ -817,9 +812,9 @@ main().then(
     console.log('  on 2026-09-17 is now Addendum A4 (RATIFIED (1) AMENDED). The assertions are');
     console.log('  GATED again, not pending. Scenario 1 is the multi-recipient case under A4;');
     console.log('  scenario 6 is the single-recipient case, which A4 leaves under A3 unchanged.');
-    console.log('  STILL PENDING Ken P1.2: A4-M1 deletes the own-deviceId clause from the shared');
-    console.log('  lib/e2e/kdf.mjs and freezes vector J; this lane applies A4 behind ONE local');
-    console.log('  function (lib/e2e/pairCtxA4.ts) until then. See tests/e2e-web-ctx-a4.');
+    console.log('  A4-M1 IS LANDED: the own-deviceId clause is deleted from the shared');
+    console.log('  module and vectors J/K are frozen. This lane now calls the SHARED');
+    console.log('  lib/e2e/kdf.mjs (P1.2, dfb67d0). See tests/e2e-web-ctx-a4 for J/K1/K2.');
     const total = passed + failed;
     console.log(`e2e-live-peer: ${passed}/${total} checks passed`);
     process.exit(failed === 0 ? 0 : 1);

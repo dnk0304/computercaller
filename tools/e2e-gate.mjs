@@ -767,6 +767,13 @@ if (WEB) {
     // Android lane's E2eKdfVectorsTest asserts, so a drift in either lane fails
     // its own build instead of surfacing as "Encrypted mode never pairs".
     ['kdf-vectors', 'tests/kdf-vectors.test.mjs', true],
+    // Ken R-X(2). A STRUCTURAL guard over the same frozen file: unique vector
+    // ids, an allowlist of top-level keys, and a reviewed manifest of the
+    // duplicate-value groups. It exists because a rebase merged two spellings
+    // of the same Security values into this file with NO conflict and every
+    // value-level test stayed green — the duplicates were individually correct,
+    // there were just supposed to be one of each.
+    ['kdf-vectors-schema', 'tests/kdf-vectors-schema.test.mjs', true],
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {
