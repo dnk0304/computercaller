@@ -52,7 +52,7 @@ const { resetRoom: resetRoomCore, createResetRateLimiter } = require('./lib/room
 // roomReset-core above: the real implementation lives in a module so
 // tests/e2e-passthrough.test.mjs exercises it rather than a mirror of it.
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
-const { validateE2eBlock, e2eRequestKeys } = require('./lib/e2eBlock-core.js');
+const { validateE2eBlock, e2eRequestKeys, e2eAcceptKeys } = require('./lib/e2eBlock-core.js');
 
 // Bundle A (2026-05-28) — Phase 4 security review fix (H7).
 // Every server.js log site that previously included the raw phoneToken (and
@@ -581,7 +581,11 @@ function startRelay(httpServer) {
       room = {
         token,
         lobby: new Set(),
-        active: { browser: null, phone: null },
+        // P1(b) — the live pair's e2e block, or null. Declared here rather than
+        // sprouting on first Accept so every reader can rely on the key
+        // existing, and so the two places that REPLACE room.active wholesale
+        // are visibly obliged to say what happens to it.
+        active: { browser: null, phone: null, e2e: null },
         pendingPairing: null,
         frameBuffer: [],
       };
@@ -736,6 +740,14 @@ function startRelay(httpServer) {
   function terminateActivePair(room, reason) {
     const { browser, phone } = room.active;
     if (!browser && !phone) return;
+    // P1(b) — captured before either of the two wholesale reassignments below
+    // can drop it. The e2e stash lives and dies with the RESUME CLAIM: a blip
+    // that will silently re-form the same pair must re-send the same block
+    // (same kid), and a deliberate teardown must not leave key material behind.
+    // Tying it to `reason === 'socket_closed'` rather than a second rule of its
+    // own means there is exactly one condition to get right, and it is already
+    // the one that arms room.resumable a few lines down.
+    const priorE2e = room.active.e2e ?? null;
 
     // Connection-stability fix (2026-06-16). socket_closed = a transient blip,
     // not a user leaving. By default we KEEP the surviving side in `active` and
@@ -750,7 +762,10 @@ function startRelay(httpServer) {
       // Exactly one side closed (its close handler called us). The OTHER side
       // is the survivor — keep it in active; drop only the closed slot.
       const droppedRole = !phoneOpen ? 'phone' : 'browser';
-      room.active = { browser: browserOpen ? browser : null, phone: phoneOpen ? phone : null };
+      // The pair is HELD, not gone — the surviving side keeps its session, so it
+      // keeps its key material too. Dropping the block here would make every
+      // panel close silently downgrade the next resume to plaintext.
+      room.active = { browser: browserOpen ? browser : null, phone: phoneOpen ? phone : null, e2e: priorE2e };
       // FORGE-L — panel-close hold. Two ways this claim earns the extended,
       // listener-gated lifetime described at LISTENER_HOLD_GRACE_MS:
       //
@@ -868,7 +883,12 @@ function startRelay(httpServer) {
     }
 
     console.log(`[Relay][${redactToken(room.token)}] terminateActivePair: ${reason}`);
-    room.active = { browser: null, phone: null };
+    // Same single condition that arms room.resumable below: the block survives
+    // exactly as long as the claim that will re-form this pair does. LEAVE_ACTIVE
+    // ('user_left'), resume_expired and every other deliberate reason clear it.
+    // Reset lobby / sign-out never reach here — roomReset-core replaces
+    // room.active wholesale AND deletes the room, so the stash goes with it.
+    room.active = { browser: null, phone: null, e2e: reason === 'socket_closed' ? priorE2e : null };
     // Fix 2: a genuine (non-soft-hold) teardown means the pair is gone — a
     // fresh Connect+Accept triggers the web quick-sync backfill, so any
     // buffered frames are moot. Drop them to bound memory.
@@ -1051,8 +1071,16 @@ function startRelay(httpServer) {
     // does NOT set these: a genuine first connect must stay a first connect.
     const gapMs = Date.now() - (claim.heldSince ?? claim.droppedAt);
     const resumeMark = { resumed: true, held, gapMs };
-    if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName, ...resumeMark })}`);
-    if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', ...resumeMark })}`);
+    // P1(b) — the SAME e2e block, same kid, same bytes. This is a resume, not a
+    // re-pair: no new Accept happened, so no new key material exists, and the
+    // returning socket has none of its own. Minting or omitting a block here
+    // would silently downgrade every reconnect to plaintext while the UI still
+    // said Encrypted. The stash is the same OBJECT the Accept path sent, so
+    // byte-identity is structural rather than something a copy has to maintain
+    // (tests/e2e-resume-carries-block.test.mjs asserts it as bytes).
+    const e2eResume = room.active.e2e ? { e2e: room.active.e2e } : {};
+    if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName, ...e2eResume, ...resumeMark })}`);
+    if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', ...e2eResume, ...resumeMark })}`);
     console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, heldFor=${gapMs}ms, droppedRole=${claim.droppedRole}, panelHold=${claim.panelHold === true}, survivorHeld=${held})`);
 
     // Fix 2: replay phone→browser frames buffered during the blip, in order,
@@ -1233,8 +1261,37 @@ function startRelay(httpServer) {
     // completed normal handshake also supersedes any stale resume claim.
     room.pairIdentity = { ua: pending.ua, ip: pending.ip, deviceLabel: pending.deviceLabel, deviceName };
     room.resumable = null;
-    safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName })}`);
-    safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: pending.ua, ip: pending.ip })}`);
+
+    // P1(b) — the phone's sealed key material. Same opaque treatment as the
+    // request block: size cap + the 65-byte 0x04 encoding pin on epk and every
+    // recipKey, nothing about their meaning. `wraps` and `kid` are bounded, not
+    // pinned — a wrap is ciphertext, not a point.
+    //
+    // recipKeys is the FULL static key set (phone + web + SW), not this
+    // recipient's key: B9's SAS covers the whole set, so every party needs the
+    // whole list to compute the code it is being asked to compare.
+    const acceptCheck = validateE2eBlock(payload?.e2e, e2eAcceptKeys);
+    if (acceptCheck.reason) {
+      console.log(
+        `[Relay][${redactToken(room.token)}] type=ACCEPT_PAIRING e2e=${acceptCheck.reason}` +
+        (acceptCheck.bytes !== undefined ? ` bytes=${acceptCheck.bytes}` : '') +
+        ' — block dropped, pairing continues plaintext',
+      );
+    }
+    // The stash. ONE object, shared by both PAIRING_ACTIVE payloads, by
+    // PAIR_STATE, and by every later resume — so "the resume re-sends the same
+    // block" is true by construction (same reference, same JSON) rather than by
+    // a copy that has to be kept in step.
+    room.active.e2e = acceptCheck.block;
+
+    const browserActive = { deviceName };
+    const phoneActive = { ua: pending.ua, ip: pending.ip };
+    if (room.active.e2e) {
+      browserActive.e2e = room.active.e2e;
+      phoneActive.e2e = room.active.e2e;
+    }
+    safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify(browserActive)}`);
+    safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify(phoneActive)}`);
     console.log(`[Relay][${redactToken(room.token)}] Pairing ${pending.id} ACTIVE — browser ↔ phone`);
     // FORGE-O: the one moment green is actually earned. The listener gets no
     // PAIRING_ACTIVE of its own (it is not an active slot), so this is how it
