@@ -397,5 +397,52 @@
       "keySource": "traffic.computerToPhoneKeyHex",
       "mustOpen": false
     }
+  },
+  "noncePrefix": {
+    "_comment": "GATE1 Addendum A2 — RATIFIED (A) 2026-09-17T15:50Z. ADDED by E2E-P2; nothing above this key was regenerated. The nonce prefix is DERIVED and never transmitted; it contributes ZERO nonce uniqueness (A2 strikes A1's defence-in-depth rationale) — the persist-before-emit counter is the sole control. L=4 and expand-32-then-truncate are the same bytes.",
+    "vector": "E",
+    "labels": {
+      "np2c": "cc-e2e-v1/np2c",
+      "nc2p": "cc-e2e-v1/nc2p"
+    },
+    "infoNp2cHex": "63632d6532652d76312f6e703263110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
+    "infoNc2pHex": "63632d6532652d76312f6e633270110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
+    "np2cHex": "6fa67348",
+    "nc2pHex": "4a786847"
+  },
+  "aeadDerived": {
+    "_comment": "A2 vectors F and G — the same frame as A1 vector A, sealed with the DERIVED prefix instead of the supplied one, so the two differ in exactly ONE input and a divergence localises immediately. Vector A stays as-is: it is the \"given a prefix, seal correctly\" test. H is the negative (np2c != nc2p, neither all-zero) and is asserted in code, not stored as bytes.",
+    "p2c": {
+      "vector": "F",
+      "frameType": "SMS_RECEIVED",
+      "kid": "kid-01",
+      "seq": 7,
+      "direction": 1,
+      "directionName": "p2c",
+      "pairEpoch": 42,
+      "aadHex": "210c534d535f524543454956454422066b69642d3031230000000000000007240125000000000000002a",
+      "noncePrefixHex": "6fa67348",
+      "nonceHex": "6fa673480000000000000007",
+      "keyHex": "b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060",
+      "plaintextUtf8": "hi",
+      "plaintextHex": "00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "ciphertextHex": "9675ba5ab30c62bb4802c19f4bcd250612e6b7fead8e8aa4c7fff702cec36d68fb85220b16a4c823d2597780d8e664a977b9d0881ed2f41d7a9e402378f3928c6450b5bb8934fe688c6f728943ac10ce"
+    },
+    "c2p": {
+      "vector": "G",
+      "frameType": "SMS_RECEIVED",
+      "kid": "kid-01",
+      "seq": 7,
+      "direction": 2,
+      "directionName": "c2p",
+      "pairEpoch": 42,
+      "aadHex": "210c534d535f524543454956454422066b69642d3031230000000000000007240225000000000000002a",
+      "noncePrefixHex": "4a786847",
+      "nonceHex": "4a7868470000000000000007",
+      "keyHex": "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d",
+      "plaintextUtf8": "hi",
+      "plaintextHex": "00000002686900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "ciphertextHex": "cd13472e5c80869dbf16635b09461270aca7bc49e9549c68604006478c1f47cb70941551e372c46296b740ef341c36a1ec28b4163695ea8951def0e477445214a80182070c9bbdc9c67ebfde834f95f0"
+    }
   }
 }
