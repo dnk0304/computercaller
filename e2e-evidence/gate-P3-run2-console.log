@@ -1,0 +1,60 @@
+$ node tools/e2e-gate.mjs --phase "P3" --parallel-harnesses
+
+e2e-gate P3 lane=web
+root=C:\Users\D\worktrees\computercaller\e2e-p3
+base=445138a
+
+  PASS  git-identity-clean-base-ancestry ({"dirtyPaths":0,"baseIsAncestor":true})
+  PASS  scope-diff-vs-base ({"changed":70,"android":0,"nonAndroid":70,"offLane":0})
+  PASS  node-check:server.js
+  PASS  node-check:chrome-extension/background.js
+  PASS  node-check:chrome-extension/shell.js
+  PASS  tsc-noEmit ({"errors":0})
+  PASS  lint ({"problems":176,"errors":55,"warnings":121,"grown":0,"shrunk":0,"manifestGrown":0})
+  PASS  build ({"routes":68})
+  PASS  check-extension
+  PASS  relay:pairing-persist ({"passed":84,"total":84})
+  PASS  relay:pair-state ({"passed":22,"total":22})
+  PASS  relay:dock-resume ({"passed":26,"total":26})
+  PASS  relay:reset-room ({"passed":21,"total":21})
+  PASS  relay:listener-heartbeat ({"passed":11,"total":11})
+  PASS  relay:relink-kill-frame-buffer ({"passed":18,"total":18})
+  PASS  relay:call-separation ({"passed":16,"total":16})
+  PASS  relay:www-origin ({"passed":8,"total":8})
+  PASS  relay:repro-resume-sync ({"passed":9,"total":9})
+  PASS  relay:session-superseded ({"passed":29,"total":29})
+  PASS  relay:log-redaction ({"passed":43,"total":43})
+  PASS  relay:devicekey-authz ({"passed":61,"total":61})
+  PASS  relay:e2e-kill-switch.test.mjs ({"passed":47,"total":47})
+  PASS  relay:e2e-listener-wrap.test.mjs ({"passed":48,"total":48})
+  PASS  relay:e2e-pair-state-ctx.test.mjs ({"passed":55,"total":55})
+  PASS  relay:e2e-passthrough.test.mjs ({"passed":75,"total":75})
+  PASS  relay:e2e-reset-room-epoch.test.mjs ({"passed":28,"total":28})
+  PASS  relay:e2e-resume-carries-block.test.mjs ({"passed":57,"total":57})
+  PASS  relay:e2e-sw-a3-ctx.test.mjs ({"passed":28,"total":28})
+  PASS  relay:e2e-sw-chokepoint.test.mjs ({"passed":27,"total":27})
+  PASS  relay:e2e-sw-nonce-prefix.test.mjs ({"passed":17,"total":17})
+  PASS  relay:e2e-sw-session.test.mjs ({"passed":19,"total":19})
+  PASS  relay:e2e-sw-vendor-drift.test.mjs ({"passed":3,"total":3})
+  PASS  unit:sas-vectors ({"passed":65,"total":65})
+  PASS  unit:padding-property ({"passed":46,"total":46})
+  PASS  unit:kdf-vectors ({"passed":246,"total":246})
+  PASS  unit:bridge-origin-pin
+  PASS  harness-dev-server ({"port":3301,"pid":43284})
+  PASS  clarity-scope ({"exit":0,"buildChecked":1,"runtimeChecked":1})
+  PASS  harness-env ({"dbUrlSet":1,"jwtSet":1,"ccBaseUrlSet":1})
+  PASS  harness:ext-templates-scroll-call-message-proof ({"passed":26,"total":26})
+  PASS  harness:app-in-call-shots ({"passed":47,"total":47})
+  PASS  harness:ext-in-call-shots ({"passed":47,"total":47})
+  PASS  harness:ext-shell-theme-proof ({"passed":20,"total":20})
+  PASS  harness:ext-layering-shots ({"passed":14,"total":14})
+  PASS  harness:ext-badge-counter-proof ({"passed":42,"total":42,"attempts":2})
+  FAIL  harness:ext-sw-lifetime-proof ({"attempts":2})
+  PASS  harness-mode ({"parallel":1,"harnesses":7})
+  PASS  baseline-parity ({"reference":16,"regressed":0})
+
+FAIL — 47/48 steps; first failure: harness:ext-sw-lifetime-proof
+evidence: C:/Users/D/worktrees/computercaller/e2e-p3/e2e-evidence/gate-P3-9abcfb2.json
+logs (LOCAL, never committed): C:/Users/D/worktrees/computercaller/e2e-p3/.e2e-gate-logs
+
+error: script "e2e:gate" exited with code 1
