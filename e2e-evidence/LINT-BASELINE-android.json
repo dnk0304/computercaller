@@ -1,0 +1,164 @@
+{
+  "_note": "Android lint baseline for the E2E programme, generated on BASE_SHA 445138a6c58c12b2848cb4c24371b0d443e51c27 by P4 (s1). May only SHRINK. Regenerate with: gradlew.bat :app:lintDebug --continue ; node tools/lint-manifest.mjs --generate",
+  "_owners": {
+    "MissingPermission": "forge-backend — pre-existing on the call/SMS/contacts handlers; each site DOES gate on a runtime permission check upstream, lint cannot see it. Not an E2E deliverable.",
+    "_default": "forge-backend — pre-existing at BASE_SHA; not an E2E programme deliverable."
+  },
+  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "generatedUtc": "2026-09-17T01:32:07Z",
+  "lintVersion": "lint 8.13.2",
+  "total": 183,
+  "severities": {
+    "MissingPermission": "Error",
+    "NewApi": "Error",
+    "BatteryLife": "Warning",
+    "GradleDependency": "Warning",
+    "NewerVersionAvailable": "Warning",
+    "Deprecated": "Warning",
+    "PluralsCandidate": "Warning",
+    "PermissionImpliesUnsupportedChromeOsHardware": "Error",
+    "WakelockTimeout": "Warning",
+    "ObsoleteSdkInt": "Warning",
+    "UseCompoundDrawables": "Warning",
+    "Overdraw": "Warning",
+    "UnusedResources": "Warning",
+    "UselessParent": "Warning",
+    "TooManyViews": "Warning",
+    "IconLauncherShape": "Warning",
+    "IconDuplicates": "Warning",
+    "ButtonStyle": "Warning",
+    "UseKtx": "Warning",
+    "ContentDescription": "Warning"
+  },
+  "files": {
+    "app/build.gradle.kts": {
+      "GradleDependency": 10,
+      "NewerVersionAvailable": 4
+    },
+    "app/src/main/AndroidManifest.xml": {
+      "Deprecated": 1,
+      "PermissionImpliesUnsupportedChromeOsHardware": 5
+    },
+    "app/src/main/java/com/dnkdialer/companion/CallHandler.kt": {
+      "MissingPermission": 2,
+      "NewApi": 1
+    },
+    "app/src/main/java/com/dnkdialer/companion/MainActivity.kt": {
+      "BatteryLife": 1,
+      "ObsoleteSdkInt": 1,
+      "UseKtx": 6
+    },
+    "app/src/main/java/com/dnkdialer/companion/MmsHandler.kt": {
+      "UseKtx": 7
+    },
+    "app/src/main/java/com/dnkdialer/companion/NotificationListenerService.kt": {
+      "UseKtx": 1
+    },
+    "app/src/main/java/com/dnkdialer/companion/PermissionChecker.kt": {
+      "BatteryLife": 1,
+      "UseKtx": 2
+    },
+    "app/src/main/java/com/dnkdialer/companion/PhoneService.kt": {
+      "ObsoleteSdkInt": 4,
+      "UseKtx": 3,
+      "WakelockTimeout": 1
+    },
+    "app/src/main/java/com/dnkdialer/companion/SignInActivity.kt": {
+      "UseKtx": 1
+    },
+    "app/src/main/java/com/dnkdialer/companion/SmsHandler.kt": {
+      "ObsoleteSdkInt": 1,
+      "UseKtx": 1
+    },
+    "app/src/main/java/com/dnkdialer/companion/TokenStore.kt": {
+      "UseKtx": 3
+    },
+    "app/src/main/res/drawable/bg_hero_card.xml": {
+      "UnusedResources": 1
+    },
+    "app/src/main/res/drawable/bg_row_group.xml": {
+      "UnusedResources": 1
+    },
+    "app/src/main/res/drawable/ic_cc_clock.xml": {
+      "UnusedResources": 1
+    },
+    "app/src/main/res/layout/activity_main.xml": {
+      "ButtonStyle": 2,
+      "ContentDescription": 6,
+      "TooManyViews": 1,
+      "UseCompoundDrawables": 1
+    },
+    "app/src/main/res/layout/activity_permissions_required.xml": {
+      "Overdraw": 1,
+      "UselessParent": 1
+    },
+    "app/src/main/res/layout/activity_settings.xml": {
+      "ContentDescription": 10,
+      "Overdraw": 1
+    },
+    "app/src/main/res/layout/activity_signin.xml": {
+      "Overdraw": 1
+    },
+    "app/src/main/res/layout/activity_synced_data.xml": {
+      "ButtonStyle": 2,
+      "Overdraw": 1
+    },
+    "app/src/main/res/layout/item_missing_permission.xml": {
+      "UnusedResources": 1
+    },
+    "app/src/main/res/mipmap-anydpi-v26": {
+      "ObsoleteSdkInt": 1
+    },
+    "app/src/main/res/mipmap-hdpi/ic_launcher.png": {
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-hdpi/ic_launcher_round.png": {
+      "IconDuplicates": 1,
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-mdpi/ic_launcher.png": {
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-mdpi/ic_launcher_round.png": {
+      "IconDuplicates": 1,
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-xhdpi/ic_launcher.png": {
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-xhdpi/ic_launcher_round.png": {
+      "IconDuplicates": 1,
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-xxhdpi/ic_launcher.png": {
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png": {
+      "IconDuplicates": 1,
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png": {
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png": {
+      "IconDuplicates": 1,
+      "IconLauncherShape": 1
+    },
+    "app/src/main/res/values-night/themes.xml": {
+      "ObsoleteSdkInt": 1
+    },
+    "app/src/main/res/values/colors.xml": {
+      "UnusedResources": 14
+    },
+    "app/src/main/res/values/dimens.xml": {
+      "UnusedResources": 10
+    },
+    "app/src/main/res/values/strings.xml": {
+      "PluralsCandidate": 2,
+      "UnusedResources": 52
+    },
+    "app/src/main/res/values/themes.xml": {
+      "ObsoleteSdkInt": 1
+    }
+  }
+}
