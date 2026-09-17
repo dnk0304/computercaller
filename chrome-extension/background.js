@@ -24,6 +24,9 @@
 // (not bare `CC`), so importing it for its side effect is exactly equivalent to
 // the importScripts it replaces.
 import './config.js';
+// P5a-SW (a): the pure "what does a null token mean" rule. See that file's
+// header for why a null is not automatically a sign-out.
+import { tokenAbsenceVerdict } from './auth-absence.js';
 import {
   loadOrCreateDeviceKey,
   publicIdentity,
@@ -154,15 +157,55 @@ const AMBER = '#d97706';
 const BADGE_RED = '#dc2626';
 
 // ── Token ──────────────────────────────────────────────────────────────────
+/**
+ * P5a-SW (a). The three facts tokenAbsenceVerdict() needs, maintained HERE —
+ * beside the only three functions that can change them — rather than at the
+ * call sites that read a null and have to guess what it meant.
+ *
+ *   authHydrated  flipped by the first getToken() that completes, ever.
+ *   tokenEverSeen flipped by any non-null read or a store.
+ *   tokenRevoked  set ONLY by markTokenRevoked(): explicit sign-out, or 401/409
+ *                 from the token endpoint. Cleared by a successful store.
+ *
+ * Module scope, so all three die with the worker — which is correct: they
+ * describe what THIS worker lifetime knows, and a respawn genuinely knows
+ * nothing until its first read lands.
+ */
+let authHydrated = false;
+let tokenEverSeen = false;
+let tokenRevoked = false;
+
+/** The facts snapshot handed to the pure rule. */
+function authFacts() {
+  return { hydrated: authHydrated, everSeen: tokenEverSeen, cleared: tokenRevoked };
+}
+
+/**
+ * The ONLY way `cleared` becomes true. Two callers, both authoritative: the
+ * 'signed-out' message from the popup, and mintTicket's 401/409. Nothing on
+ * the wire and no timeout may reach this — a transient failure that could set
+ * it would reintroduce the exact repaint this fix removes.
+ */
+function markTokenRevoked() {
+  tokenRevoked = true;
+}
+
 function getToken() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(self.CC.TOKEN_KEY, (o) => resolve(o?.[self.CC.TOKEN_KEY] || null));
+    chrome.storage.local.get(self.CC.TOKEN_KEY, (o) => {
+      const token = o?.[self.CC.TOKEN_KEY] || null;
+      authHydrated = true;
+      if (token) tokenEverSeen = true;
+      resolve(token);
+    });
   });
 }
 function clearToken() {
   return new Promise((resolve) => chrome.storage.local.remove(self.CC.TOKEN_KEY, resolve));
 }
 function storeToken(token) {
+  tokenEverSeen = true;
+  tokenRevoked = false;   // a fresh token supersedes any earlier revocation
   return new Promise((resolve) =>
     chrome.storage.local.set({ [self.CC.TOKEN_KEY]: token }, resolve),
   );
@@ -485,10 +528,25 @@ function refreshIndicator() {
   return applyIndicator('signed-in-disconnected');
 }
 
-/** Re-read the token and re-render. Cheap; called on every auth transition. */
+/**
+ * Re-read the token and re-render. Cheap; called on every auth transition.
+ *
+ * P5a-SW (a): a null no longer means "signed out" on its own. When the rule
+ * says KEEP, this function paints NOTHING — the last committed indicator
+ * stands, which is the honest rendering of "we do not know yet" and needs no
+ * new visual state for the user to misread. `signedIn` is likewise left alone
+ * rather than being asserted in either direction.
+ */
 async function refreshAuthAndIndicator() {
-  signedIn = !!(await getToken());
-  if (!signedIn) clearRelayFacts();
+  const token = await getToken();
+  if (token) {
+    signedIn = true;
+  } else if (tokenAbsenceVerdict(authFacts()) === 'clear') {
+    signedIn = false;
+    clearRelayFacts();
+  } else {
+    return;   // unknown yet — keep the last painted state
+  }
   refreshIndicator();
 }
 
@@ -833,6 +891,11 @@ async function mintTicket(token) {
     // Token invalid or session superseded — drop it; the user must re-run the
     // handoff from the popup. Returning null stops the reconnect loop cleanly.
     await clearToken();
+    // P5a-SW (a): a 401/409 from the token endpoint is one of the only two
+    // authoritative revocations. Recording it is what lets the keepalive path
+    // treat every OTHER null as "unknown yet" without ever getting stuck
+    // showing signed-in for a session the server has already refused.
+    markTokenRevoked();
     signedIn = false;
     refreshIndicator();
     return null;
@@ -849,8 +912,20 @@ async function connect() {
   connecting = true;
   try {
     const token = await getToken();
-    signedIn = !!token;
-    if (!token) { connecting = false; refreshIndicator(); return; }   // not signed in — idle
+    if (!token) {
+      // P5a-SW (a). This is the keepalive path: the `cc-keepalive` alarm calls
+      // connect() every 30 s, so this branch runs constantly and used to
+      // repaint 'signed-out' on EVERY transient null — over a live session.
+      connecting = false;
+      if (tokenAbsenceVerdict(authFacts()) === 'clear') {
+        signedIn = false;
+        refreshIndicator();       // genuinely signed out — idle, no retry
+      } else {
+        scheduleReconnect();      // unknown yet — keep the paint, come back
+      }
+      return;
+    }
+    signedIn = true;
     const ticket = await mintTicket(token);
     if (!ticket) { connecting = false; return; }          // token dropped
 
@@ -948,7 +1023,11 @@ function scheduleReconnect(ceilingMs = MAX_BACKOFF_MS) {
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     const token = await getToken();
-    if (token) connect();   // only retry if still signed in
+    // P5a-SW (a): "still signed in" is no longer "a token is present right
+    // now". A null we are not entitled to call a sign-out must come back — the
+    // scheduled retry IS the retry half of the keep verdict, and dropping it
+    // here would park the listener forever on one unlucky read.
+    if (token || tokenAbsenceVerdict(authFacts()) === 'keep') connect();
   }, delay);
 }
 
@@ -1818,6 +1897,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     localUserId().then((uid) => clearEpochFloors(uid)).catch(() => {});
     cachedUserId = null;
     try { ws && ws.close(); } catch (_) {}
+    // P5a-SW (a): the other authoritative revocation. Without this the
+    // keepalive path would keep the pre-sign-out paint alive on its next null.
+    markTokenRevoked();
     signedIn = false;
     clearRelayFacts();
     refreshIndicator();
@@ -1892,6 +1974,13 @@ Object.assign(self, {
   refreshIndicator,
   repaintBadge,
   serialize,
+  // P5a-SW (b): the badge proof's arm now VERIFIES the seeded token through
+  // the worker's own auth path instead of asserting `signedIn = true` as a
+  // fiction the worker is free to overwrite. authFacts is published so the
+  // harness can read WHY a verdict came out the way it did when it fails.
+  refreshAuthAndIndicator,
+  authFacts,
+  tokenAbsenceVerdict,
   GREEN,
   // P3 additions, so the new proofs can drive the E2E paths the same way.
   noteE2eBlock,
