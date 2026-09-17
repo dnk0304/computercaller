@@ -33,15 +33,17 @@
  * obtains the `sw` handle it was already asserting against.
  */
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * The ID Chrome assigns an unpacked extension: SHA-256 of the absolute path,
- * first 16 bytes, each nibble mapped 0-f → a-p. Deterministic, so it is a
- * usable last resort when no worker and no page has surfaced the ID yet.
- * Chrome hashes the path in the platform's native encoding — UTF-16LE on
- * Windows, UTF-8 elsewhere.
+ * The classic path-hash extension ID: SHA-256 of the absolute path, first 16
+ * bytes, each nibble mapped 0-f → a-p.
+ *
+ * Exported for diagnostics only. It does NOT reliably reproduce the ID Chrome
+ * assigns a `--load-extension` extension, so discoverExtensionId() does not use
+ * it — see the note at the bottom of that function.
  */
 export function unpackedExtensionId(extDir) {
   const enc = process.platform === 'win32' ? 'utf16le' : 'utf8';
@@ -65,20 +67,46 @@ export async function discoverExtensionId(ctx, extDir = null) {
   // chrome://extensions-internals renders the installed-extension list as JSON.
   // It is a real browser page, so it works even when nothing of the extension
   // is running yet.
+  //
+  // MATCH ON THE PATH, not on "the first plausible id". Every Chrome profile
+  // ships component extensions, and the first entry in that list is the Chrome
+  // Web Store (ahfgeienlihckogmohjhadlkjgocpleb). Taking it produced a
+  // beautifully specific and completely wrong error — "extension ahfgeien… is
+  // installed but its service worker did not start" — for an extension that
+  // has no service worker and was never under test.
+  const want = extDir ? path.resolve(extDir).replace(/\\/g, '/').toLowerCase() : null;
   try {
     const probe = await ctx.newPage();
     try {
       await probe.goto('chrome://extensions-internals', { timeout: 10_000 });
       const raw = await probe.evaluate(() => document.body.innerText);
       const parsed = JSON.parse(raw);
-      const hit = (Array.isArray(parsed) ? parsed : []).find((e) => /^[a-p]{32}$/.test(e?.id || ''));
-      if (hit) return hit.id;
+      const all = (Array.isArray(parsed) ? parsed : []).filter((e) => /^[a-p]{32}$/.test(e?.id || ''));
+      const samePath = want && all.find((e) => String(e.path || '').replace(/\\/g, '/').toLowerCase() === want);
+      if (samePath) return samePath.id;
+      // No path match: take the loaded-from-disk entry rather than whatever
+      // came first. `location` is a string here — COMPONENT for the two Chrome
+      // ships (Web Store, PDF Viewer), COMMAND_LINE for a --load-extension one.
+      const unpacked = all.find((e) => /COMMAND_LINE|UNPACKED/i.test(String(e.location || '')));
+      if (unpacked) return unpacked.id;
     } finally {
       await probe.close().catch(() => {});
     }
-  } catch { /* fall through to the computed ID */ }
+  } catch { /* nothing else to try */ }
 
-  return extDir ? unpackedExtensionId(extDir) : null;
+  /**
+   * Deliberately NOT falling back to unpackedExtensionId() here.
+   *
+   * Chrome's ID for a --load-extension extension is not the plain path hash
+   * that function computes (measured: it returns `emnnnlj…` where Chrome
+   * assigned `helkcjjl…`), so using it would hand the caller a well-formed,
+   * confidently-wrong ID — which is exactly how this helper's first version
+   * spent 90 seconds waiting for the Chrome Web Store's non-existent service
+   * worker and then blamed the extension under test. Returning null makes the
+   * caller say "the extension did not load", which is the true statement when
+   * chrome://extensions-internals lists nothing.
+   */
+  return null;
 }
 
 /**
