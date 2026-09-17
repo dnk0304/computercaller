@@ -3,6 +3,7 @@
   "frozenAt": "E2E-P0 (design freeze). Changing any value here is a breaking protocol change and requires a new info string.",
   "info": "cc-sas-v1",
   "hash": "SHA-256",
+  "curve": "P-256 (secp256r1/prime256v1). Gate 1 R1 2026-09-17: X25519 WITHDRAWN as the wire curve - AndroidKeyStore cannot hold it on any current release. Public keys are uncompressed SEC1 points: exactly 65 bytes, first byte 0x04, base64url on the wire and hex in this file. The SAS layout is unchanged; the epk and every key are simply 65 bytes long now (see v6-3key-p256).",
   "kdf": "HKDF (RFC 5869), salt = UTF8(pairingId), info = \"cc-sas-v1\"",
   "digits": "be32(OKM[0..4]) mod 100000, zero-padded to 5",
   "layout": [
@@ -92,6 +93,21 @@
       "modeOn": true,
       "transcriptHex": "014104bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0204200101010101010101010101010101010101010101010101010101010101010101200202020202020202020202020202020202020202020202020202020202020202200303030303030303030303030303030303030303030303030303030303030303200505050505050505050505050505050505050505050505050505050505050505030000000068c9fa000401",
       "digits": "17477"
+    },
+    {
+      "id": "v6-3key-p256",
+      "note": "GENUINE P-256. Phone + web + extension SW, three real uncompressed SEC1 points (65 bytes, 0x04-prefixed) and a real ephemeral P-256 epk, generated with node:crypto createECDH('prime256v1') and each proved on-curve by a successful ECDH against it. This is the encoding Gate 1 R1 pins for the wire, WebCrypto raw export, AndroidKeyStore and the service worker. v5 pins the 65-byte FRAMING with placeholder bytes; this vector pins the framing over bytes that are actually curve points, so a party that rejects invalid points still reproduces the digits.",
+      "pairingId": "pair-p256-0000000000000006",
+      "epk": "04ced3e75e9fd425cb75a57c11b1b1ad5890a4898b2020f39487cc191b7f6383e5e3208b88f2bdcdb0065f0035eb8860cecd861057bafee21c22d8d6598c99598f",
+      "keys": [
+        "04e609ec5ecd07fa7579244d6cf253b7aaa78c476f862f43625fd1caec7ca431beec73e734d1d4adedbf6139c7c988fa4c798340f1f880520e874073e9cb6f4ecb",
+        "04fd440a6577dd6f5d1f51253567a29338de75a63af06aef39be0c5266aac4a8f8468a7d5f640af323fc901d6ce17a500cb22bb0f037a2ebfcf66624b5330fc3fc",
+        "0494d23b5536027ac4b9407fb1c9c433244bc3db08d4daab1829650c212f1c4f26b2c2db2f092484af6d3e675aa974572cecf18e8e477992ad8a326b0ec87b6343"
+      ],
+      "pairEpoch": 1758153600,
+      "modeOn": true,
+      "transcriptHex": "014104ced3e75e9fd425cb75a57c11b1b1ad5890a4898b2020f39487cc191b7f6383e5e3208b88f2bdcdb0065f0035eb8860cecd861057bafee21c22d8d6598c99598f0203410494d23b5536027ac4b9407fb1c9c433244bc3db08d4daab1829650c212f1c4f26b2c2db2f092484af6d3e675aa974572cecf18e8e477992ad8a326b0ec87b63434104e609ec5ecd07fa7579244d6cf253b7aaa78c476f862f43625fd1caec7ca431beec73e734d1d4adedbf6139c7c988fa4c798340f1f880520e874073e9cb6f4ecb4104fd440a6577dd6f5d1f51253567a29338de75a63af06aef39be0c5266aac4a8f8468a7d5f640af323fc901d6ce17a500cb22bb0f037a2ebfcf66624b5330fc3fc030000000068cb4b800401",
+      "digits": "79729"
     }
   ]
 }

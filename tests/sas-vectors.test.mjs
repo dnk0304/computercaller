@@ -37,7 +37,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { hkdfSync } from 'node:crypto';
+import { hkdfSync, createECDH } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -100,6 +100,53 @@ check('v1 and v2 differ ONLY in modeOn',
   byId['v1-2key-mode-off'].pairEpoch === byId['v2-2key-mode-on'].pairEpoch);
 check('the frozen set covers the 2-, 3- and 4-key cases',
   [2, 3, 4].every((n) => VECTORS.vectors.some((v) => v.keys.length === n)));
+
+// ── 3b. the P-256 encoding pin (Gate 1 R1) ─────────────────────────────────
+// X25519 is withdrawn as the wire curve: AndroidKeyStore cannot hold it, so the
+// phone's private key could not live behind the Keystore at all. Everything is
+// P-256 now, and the encoding is pinned to uncompressed SEC1 — 65 bytes, first
+// byte 0x04 — because that is the one shape WebCrypto `raw`, AndroidKeyStore and
+// the SW all agree on, and P1's relay shape check (`e2e=badkey`) rejects anything
+// else on the wire. v5 pins the 65-byte FRAMING using placeholder bytes; v6 pins
+// it over bytes that are genuinely on the curve, so an implementation that
+// validates points (as it must) can still reproduce the frozen digits from it.
+{
+  const v6 = byId['v6-3key-p256'];
+  check('v6-3key-p256 is present in the frozen set', Boolean(v6));
+  const points = [v6.epk, ...v6.keys];
+  eq('v6: epk + 3 static keys', points.length, 4);
+  for (const [i, hex] of points.entries()) {
+    const bytes = fromHex(hex);
+    eq(`v6: point ${i} is 65 bytes`, bytes.length, 65);
+    eq(`v6: point ${i} is 0x04-prefixed (uncompressed SEC1)`, bytes[0], 0x04);
+  }
+  check('v6: the three static keys are distinct', new Set(v6.keys).size === 3);
+  // On-curve, proved by using them: computeSecret REJECTS a point that is not on
+  // prime256v1. A vector of 65 pretty bytes that no real implementation would
+  // accept would pin an encoding nobody can produce.
+  for (const [i, hex] of points.entries()) {
+    let onCurve = true;
+    try {
+      const probe = createECDH('prime256v1');
+      probe.generateKeys();
+      probe.computeSecret(Buffer.from(hex, 'hex'));
+    } catch { onCurve = false; }
+    check(`v6: point ${i} is genuinely on P-256`, onCurve, hex.slice(0, 16));
+  }
+  // Negative control: an off-curve 65-byte 0x04 point must FAIL the same probe,
+  // or the on-curve assertions above are vacuous.
+  {
+    let offCurveRejected = false;
+    try {
+      const probe = createECDH('prime256v1');
+      probe.generateKeys();
+      probe.computeSecret(Buffer.from('04' + 'bb'.repeat(64), 'hex'));
+    } catch { offCurveRejected = true; }
+    check('v6 control: an off-curve 0x04 point IS rejected by the same probe', offCurveRejected);
+  }
+  check('the frozen set declares the curve pin',
+    typeof VECTORS.curve === 'string' && /P-256/.test(VECTORS.curve) && /WITHDRAWN/.test(VECTORS.curve));
+}
 
 // ── 4. the key list is a canonical SET, not an ordered list ─────────────────
 {

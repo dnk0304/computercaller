@@ -42,53 +42,78 @@ Out of scope: account takeover, phoneToken theft, billing, IP logs, abuse, exten
 
 ## 2. Keys and key exchange (Security primitives, Forge mechanics)
 
-**Primitives (Security ruling, Forge concurs):** X25519 → HKDF-SHA-256 (`info = "cc-e2e-v1"‖userId‖phoneDeviceId‖peerDeviceId‖pairEpoch`, salt = pairingId; transcript binding) → **AES-256-GCM** (chosen because the extension SW must decrypt with the panel closed → key must be a non-extractable WebCrypto CryptoKey; XChaCha20-Poly1305 is not in WebCrypto and would put raw key bytes in JS heap). Two directional keys per pair (`K_p2c`, `K_c2p`); nonce = 32-bit random per-session prefix ‖ 64-bit counter; AAD = type‖kid‖seq‖direction; rekey on every Accept, Reset lobby, sign-out, 2^32 frames or 30 days. Rejected: RSA, hand-rolled crypto, deriving keys from phoneToken, silent negotiation. Open check at sign-off: Chrome X25519 `deriveBits` on non-extractable keys — else fall back to ECDH P-256.
+**Primitives (Security ruling R1, 2026-09-17 — supersedes the X25519 line below):** ECDH **P-256** → HKDF-SHA-256 (`info = "cc-e2e-v1"‖userId‖phoneDeviceId‖peerDeviceId‖pairEpoch`, salt = pairingId; transcript binding) → **AES-256-GCM** (chosen because the extension SW must decrypt with the panel closed → key must be a non-extractable WebCrypto CryptoKey; XChaCha20-Poly1305 is not in WebCrypto and would put raw key bytes in JS heap). Two directional keys per pair (`K_p2c`, `K_c2p`); nonce = 32-bit random per-session prefix ‖ 64-bit counter; AAD = type‖kid‖seq‖direction; rekey on every Accept, Reset lobby, sign-out, 2^32 frames or 30 days. Rejected: RSA, hand-rolled crypto, deriving keys from phoneToken, silent negotiation. The sign-off check on `deriveBits` over non-extractable keys was run at P0(e) and passes for P-256 (evidence below).
 
-**RESOLVED at P0(e) — the curve is X25519.** Measured, not assumed, by
-`scripts/e2e-derivebits-probe.mjs` in a real Chromium on 2026-09-17. The probe
-asks for exactly what production asks for — `generateKey(..., extractable:false)`,
-then `deriveBits`, then a deliberate `exportKey` that MUST throw — because a probe
-that only generated a key would report "X25519 available" for a browser that hands
-the private key to anyone, and §9.2 blocks the claim on "keys recoverable by us".
+### 2.1 CURVE — **P-256 everywhere.** X25519 is WITHDRAWN. (Gate 1 R1, 2026-09-17, binding)
 
-```
-Chromium        : 145.0.7632.6
-Secure context  : true
+P0(e) measured both curves in a real browser and chose X25519. Gate 1 overruled
+that, and the reason is worth stating plainly because it is not a curve-quality
+argument: **both curves give ~128-bit security, and neither is the risk. The risk
+is where the phone's private key lives.** AndroidKeyStore holds NIST curves only
+— X25519 is not storable in it on any current Android release — so an X25519 wire
+curve would force the phone's long-term private key into application memory,
+which is the key an attacker holding the physical device is most likely to reach.
+(`PURPOSE_AGREE_KEY` is also API 31+ against minSdk 26, so API 26–30 has no
+Keystore-backed ECDH at all; that constraint is a P4 matter and does not change
+the curve.) Choosing P-256 buys hardware key custody on the device that needs it
+most, at no cryptographic cost.
 
-X25519          : generateKey(extractable:false) OK
-                  deriveBits(256)                OK (256 bits)
-                  both sides agree               OK
-                  private key export REFUSED     OK
-                  public key exportable          OK
+The P0(e) probe evidence below is unchanged and now supports the **primary**
+choice rather than a fallback.
 
-P-256 (ECDH)    : generateKey(extractable:false) OK
-                  deriveBits(256)                OK (256 bits)
-                  both sides agree               OK
-                  private key export REFUSED     OK
-                  public key exportable          OK
+**Encoding — PINNED, one shape everywhere.** A public key is an **uncompressed
+SEC1 point: exactly 65 bytes, first byte `0x04`**, carried **base64url** on the
+wire and hex in `tests/sas-vectors.json`. This is the single encoding for
+WebCrypto (`exportKey('raw')` / `importKey('raw')` on P-256 produces exactly
+this), AndroidKeyStore, and the extension service worker — chosen because it is
+the only representation all three produce natively, so no party has to re-encode
+and no party may invent a second form. Compressed points (`0x02`/`0x03`), DER/SPKI
+wrappers and JWK are **not** accepted on the wire.
 
-HKDF-SHA256     : OK
-AES-GCM         : round-trip OK, non-extractable OK
+The relay enforces this shape and nothing else: it is a byte-carrier and does not
+validate key bytes. P1 checks that every `pub`/`epk` is exactly 65 bytes starting
+`0x04`; anything else → the `e2e` block is dropped, logged `e2e=badkey`, and the
+pairing continues in plaintext. Never a crash, never a silent modification.
 
-DECISION        : X25519
-```
+**Controls the ENDPOINTS must apply (the relay cannot and must not):**
 
-Two honest caveats on the evidence, neither of which changes the decision:
+1. **Point validation on every received key**, before any ECDH. Reject a point
+   that is not on P-256, the point at infinity / identity, and any small-order or
+   otherwise invalid point. WebCrypto's `importKey('raw', …, {name:'ECDH',
+   namedCurve:'P-256'})` performs this validation and throws — so the rule is
+   "import, and never bypass the import"; Android's `KeyFactory`/`ECPublicKey`
+   path validates equivalently. A hand-rolled coordinate copy would skip exactly
+   this check, which is why raw-coordinate handling is forbidden.
+2. **Reject an all-zero shared secret.** If `deriveBits` ever yields all zero
+   bytes, abort the pairing and surface the failure — never derive a key from it
+   and never fall back to plaintext silently. This is the invalid-curve /
+   degenerate-point outcome, and treating it as a normal secret is how such an
+   attack succeeds.
+3. **The phone's private key is non-exportable and Keystore-wrapped.** Generated
+   in AndroidKeyStore with `setUserAuthenticationRequired(false)`, StrongBox when
+   present, and never extracted. Web and SW keys are non-extractable WebCrypto
+   `CryptoKey`s in IndexedDB — the raw private bytes never exist in the JS heap.
+4. **Zero derived material after use.** Shared secrets and any transient key
+   bytes are overwritten (`Arrays.fill(secret, 0)` on Android; on the web the
+   derived key is imported as a non-extractable `CryptoKey` and the intermediate
+   `ArrayBuffer` dropped) so a heap dump does not yield a live key.
 
-1. This is Playwright's bundled Chromium 145, not branded Chrome. They share the
-   WebCrypto implementation, but the *shipping floor* is a separate question:
-   X25519 in WebCrypto is recent, so P4/P5a must confirm the minimum Chrome
-   version we actually support, not just the newest.
-2. The probe runs in a page context. The extension **service worker** is a
-   different global, and it is the leg that must unwrap with the panel closed.
-   `crypto.subtle` is available there, but a SW-context run belongs in P3's SW
-   harness, exactly as the SAS has one.
+**Vectors.** `tests/sas-vectors.json` carries **`v6-3key-p256`**: three genuine
+65-byte `0x04` P-256 static points plus a genuine ephemeral P-256 `epk`, each
+proved on-curve by a successful ECDH against it, with digits computed through
+`lib/e2e/sas.mjs` (WebCrypto) and independently cross-checked with
+`node:crypto.hkdfSync`. P4's instrumented `SasVectorsTest` asserts the same file.
 
-**P-256 also passes every check**, so the fallback is live rather than
-theoretical — if a supported browser turns out to lack X25519, the fallback is a
-parameter change, not a redesign. The SAS transcript already length-prefixes the
-epk, so a 65-byte uncompressed P-256 point needs no layout change (vector v5
-pins exactly that shape).
+**Correction (Gate 1 F-1).** The P0 text claimed "vector v5 pins exactly that
+shape — a 65-byte uncompressed P-256 point". That was false and is withdrawn.
+v5's `epk` is `04` followed by 64 bytes of `bb`: it pins the **framing** — that
+the SAS layout's `u8` length prefix carries a 65-byte epk correctly, alongside
+`u8(n)=4` and out-of-order keys — using placeholder bytes that are **not** a
+point on P-256. That distinction matters now that P-256 is primary: an
+implementation which correctly validates points (control 1 above) would reject
+v5's epk outright and could not reproduce its digits from real key material. v6
+is the vector that pins the encoding over bytes that are actually curve points;
+v5 remains frozen and valid as a pure framing vector.
 
 **Identity binding — no new user step (Dennis 20:24):** device = (userId, deviceId, publicKey). Phone: Android Keystore (`setUserAuthenticationRequired(false)`, StrongBox if present), registered on login. Web: non-extractable CryptoKey in IndexedDB, on session bootstrap. Extension SW: its own key in SW IndexedDB (SW is `chrome-extension://`, a second device on the same computer; the panel iframe is computercaller.com and shares the web key). New table `DeviceKey` (userId, deviceId, kind, publicKey, label, createdAt, lastSeen, revokedAt) — a revocation ledger, not the trust root; Security to decide whether the phone pins against it at Accept (defends relay key-swap; costs one REST call).
 
