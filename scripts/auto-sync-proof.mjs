@@ -198,7 +198,63 @@ console.log('\n(g) no SyncSetupPanel in the connect flow; "Sync now" in Settings
   );
 }
 
-console.log('\n(h) the relay is untouched and still the authority');
+console.log('\n(h) the pill reads "Syncing..." during the run and "Active" after (PIXEL-S2 (c))');
+{
+  const status = code('components/ConnectionStatus.tsx');
+  const hook = code('hooks/usePhoneBridge.ts');
+
+  // The label must hang off the SAME flag section (f) proves the bar hangs off,
+  // or the two surfaces can disagree about one session.
+  check('the pill reads quietSyncing off the hook', /\bquietSyncing,/.test(status));
+  check('the hook actually exposes it', /\bquietSyncing,/.test(hook));
+  check('syncing is only meaningful while paired', /const syncingNow = active && syncing;/.test(status));
+  check('paired + in flight renders the syncing label', /syncingNow\s*\?\s*'Syncing…'/.test(status));
+  check('paired + done renders "Active"', /:\s*'Active'/.test(status));
+  check('"Ready" is gone from the paired branch', !/'Ready'/.test(status));
+
+  // Both surfaces, one component, one prop.
+  check(
+    'the compact pill (extension header) takes it',
+    /<CompactDevicePill[\s\S]{0,200}syncing=\{!!quietSyncing\}/.test(status),
+  );
+  check(
+    'ActivePill (dashboard header) takes the same flag',
+    /<ActivePill[\s\S]{0,200}syncing=\{!!quietSyncing\}/.test(status),
+  );
+  check(
+    'and both render the same two words',
+    /\{syncing \? 'Syncing…' : 'Active'\}/.test(status),
+  );
+
+  // NO TIMERS. The state is derived from the sync flags, so a skipped run
+  // ("nothing to sync") lands on Active with no delay to tune.
+  check(
+    'no timer was added to drive the label',
+    (status.match(/setTimeout|setInterval/g) || []).length ===
+      (status.match(/setInterval\(\(\) => setNow/g) || []).length,
+    "the only timer in this file is RequestingPill's countdown",
+  );
+
+  // The three GET_* responses are what lower the flag; section (f) proves the
+  // teardown. This proves nothing else can lower it early.
+  check(
+    'quietSyncing is lowered in exactly two places — the run teardown and cancelSync',
+    (hook.match(/setQuietSyncing\(false\)/g) || []).length === 2 &&
+      /endAutoSyncRun\s*=\s*useCallback\([\s\S]{0,600}?setQuietSyncing\(false\)/.test(hook) &&
+      /cancelSync\s*=\s*useCallback\([\s\S]{0,900}?setQuietSyncing\(false\)/.test(hook),
+    'a third clear would let the label say Active while frames are still in flight',
+  );
+
+  // The dot keeps its meaning (the connection IS up); motion is the extra
+  // signal, and motion-safe means reduced-motion users still get the word.
+  check(
+    'the syncing dot pulses only under motion-safe',
+    /syncingNow[\s\S]{0,120}motion-safe:animate-pulse/.test(status),
+  );
+  check('the pill still announces its transitions', /aria-live="polite"/.test(status));
+}
+
+console.log('\n(i) the relay is untouched and still the authority');
 {
   const server = readFileSync(join(ROOT, 'server.js'), 'utf8');
   check('gateBrowserSyncFrame still present', /function gateBrowserSyncFrame\(/.test(server));
