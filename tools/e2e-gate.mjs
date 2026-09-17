@@ -47,6 +47,11 @@ const flag = (name, def = null) => {
   return eq ? eq.slice(name.length + 3) : def;
 };
 const has = (name) => argv.includes(`--${name}`);
+/**
+ * R-B: run the Playwright harnesses concurrently instead of one after another.
+ * OPT-IN, and deliberately not the default — see the note at the harness loop.
+ */
+const PARALLEL_HARNESSES = has('parallel-harnesses');
 
 const PHASE = (flag('phase', 'P0') || 'P0').toUpperCase();
 const BASELINE = has('baseline');
@@ -307,6 +312,64 @@ function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_
     return record(name, cmd, exit, ms, counts, { log: log.replace(/\\/g, '/') });
   }
   return record(name, cmd, exit, ms, counts);
+}
+
+/**
+ * Async twin of run(), used ONLY by --parallel-harnesses (R-B). Same contract —
+ * same retry semantics, same log file on failure, same record() entry — but it
+ * spawns rather than spawnSync so several can be in flight at once.
+ *
+ * It is a separate function rather than a rewrite of run() on purpose: run() is
+ * the path every PASS on this branch was measured through, and converting the
+ * whole gate to async to add an opt-in flag would put every step's evidence at
+ * risk for a runtime optimisation.
+ */
+function runAsyncStep(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false, attempts = 1 } = {}) {
+  const blocker = needs.find((n) => steps.some((st) => st.name === n && st.exit !== 0));
+  if (blocker) { skip(name, cmd, `not run — depends on "${blocker}", which failed`); return Promise.resolve(); }
+
+  const t0 = Date.now();
+  const once = () => new Promise((resolve) => {
+    const child = spawn(cmd, {
+      cwd, shell: true,
+      env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
+    });
+    let out = '';
+    let timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, timeout);
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { out += d.toString(); });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      timer = null;
+      resolve({ out, exit: signal ? 124 : (code ?? 1) });
+    });
+    child.on('error', () => { clearTimeout(timer); resolve({ out, exit: 1 }); });
+  });
+
+  return (async () => {
+    let out = '';
+    let exit = 1;
+    let counts = null;
+    let used = 0;
+    for (let i = 0; i < Math.max(1, attempts); i++) {
+      used = i + 1;
+      const r = await once();
+      out = r.out;
+      exit = r.exit;
+      try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
+      if (exit === 0) break;
+    }
+    const ms = Date.now() - t0;
+    if (used > 1) counts = { ...(counts || {}), attempts: used };
+    if (exit !== 0) {
+      mkdirSync(LOGDIR, { recursive: true });
+      const log = join(LOGDIR, `${PHASE}-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.log`);
+      writeFileSync(log, out);
+      record(name, cmd, exit, ms, counts, { log: log.replace(/\\/g, '/') });
+      return;
+    }
+    record(name, cmd, exit, ms, counts);
+  })();
 }
 
 /**
@@ -660,9 +723,13 @@ if (WEB) {
   // ── 7. relay suites ──────────────────────────────────────────────────────
   const RELAY = ['pairing-persist', 'pair-state', 'dock-resume', 'reset-room', 'listener-heartbeat',
     'relink-kill-frame-buffer', 'call-separation', 'www-origin', 'repro-resume-sync',
-    'session-superseded', 'log-redaction'];
+    'session-superseded', 'log-redaction',
+    // P1 — B8 authorization over the real ccpix DB. Not matched by the
+    // `tests/e2e-*.test.mjs` sweep below, so it is named explicitly; a security
+    // suite the gate never runs is a security suite that stops being true.
+    'devicekey-authz'];
   /** P0 DELIVERS these; BASE_SHA predates them. Only --baseline may excuse them. */
-  const P0_NEW = new Set(['session-superseded']);
+  const P0_NEW = new Set(['session-superseded', 'devicekey-authz']);
   for (const base of RELAY) {
     const rel = resolveIn('tests', base);
     if (!rel) {
@@ -739,10 +806,30 @@ if (WEB) {
         record('harness-env', 'assert DATABASE_URL reaches the harness env', dbUrl.startsWith('postgresql://') ? 0 : 1, 0,
           { dbUrlSet: dbUrl ? 1 : 0, jwtSet: process.env.JWT_SECRET ? 1 : 0, ccBaseUrlSet: 1 });
 
-        for (const h of HARNESS) {
-          const rel = `scripts/${h}.mjs`;
-          if (!existsSync(join(ROOT, rel))) { record(`harness:${h}`, `node ${rel}`, 1, 0, { missing: 1 }); continue; }
-          run(`harness:${h}`, `node ${rel}`, {
+        /**
+         * R-B asked P1 to deliver --parallel-harnesses to bring the runtime
+         * under the ceiling. It is delivered, and it is OPT-IN, because the two
+         * standing rulings pull against each other:
+         *
+         *   R-B wants the harnesses faster.
+         *   R-C records that these same harnesses are FLAKY UNDER LOAD —
+         *   ext-badge-counter-proof and ext-shell-theme-proof lose checks when
+         *   the box is busy — and the source fix is Pixel's, unfixed until P5a.
+         *
+         * Running them concurrently is deliberately adding load to the exact
+         * harnesses whose load sensitivity is the known open defect. Making that
+         * the default would trade a runtime number for a gate that goes red at
+         * random, which R-C already identifies as the worse failure. So the flag
+         * exists and the sequential path stays the default until P5a fixes the
+         * flake at source; the measured comparison is in the P1 résumé.
+         */
+        const harnessSpecs = HARNESS.map((h) => ({ h, rel: `scripts/${h}.mjs` }))
+          .filter(({ h, rel }) => {
+            if (existsSync(join(ROOT, rel))) return true;
+            record(`harness:${h}`, `node ${rel}`, 1, 0, { missing: 1 });
+            return false;
+          });
+        const harnessOpts = () => ({
             needs: ['harness-dev-server', 'harness-env'],
             parse: passLine,
             env: harnessEnv,
@@ -765,7 +852,16 @@ if (WEB) {
             attempts: 2,
             timeout: 8 * 60_000,
           });
+        const tHarness = Date.now();
+        if (PARALLEL_HARNESSES) {
+          await Promise.all(harnessSpecs.map(({ h, rel }) => runAsyncStep(`harness:${h}`, `node ${rel}`, harnessOpts(rel))));
+        } else {
+          for (const { h, rel } of harnessSpecs) run(`harness:${h}`, `node ${rel}`, harnessOpts(rel));
         }
+        // Recorded either way so the sequential/parallel comparison is a number
+        // in the JSON rather than a claim in a résumé.
+        record('harness-mode', PARALLEL_HARNESSES ? 'parallel' : 'sequential', 0, Date.now() - tHarness,
+          { parallel: PARALLEL_HARNESSES ? 1 : 0, harnesses: harnessSpecs.length });
       } else {
         runClarityScope(null);
       }
