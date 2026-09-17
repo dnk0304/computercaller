@@ -168,6 +168,28 @@ const LEGACY_RELAY_PORT = process.env.LEGACY_RELAY_PORT === '1';
 // path misbehaves in prod.
 const LEGACY_RESUME_TEARDOWN = process.env.LEGACY_RESUME_TEARDOWN === '1';
 
+/**
+ * N-1 KILL SWITCH. `E2E_PAIRING_ENABLED=false` turns off SAS-BLOCKING encrypted
+ * pairing. Default ON — a safety switch that has to be remembered is not a
+ * safety switch, and this one exists to be flipped during an incident.
+ *
+ * What it does NOT do, deliberately (B6): it never strips an e2e block, and it
+ * never forwards a MODIFIED one. A relay that quietly removed key material
+ * would be indistinguishable on the wire from an attacker doing the same thing,
+ * which would make the downgrade attack the SAS exists to catch into a
+ * first-party feature. So a mode=1 request is REFUSED OUTRIGHT — the browser is
+ * told, in as many words, that encrypted pairing is unavailable, and the user
+ * decides what to do about it.
+ *
+ * mode=0 requests are forwarded with their block INTACT. mode=0 means "seal if
+ * you can, but do not block on the SAS", so the phone may still encrypt; only
+ * the mode that would hold a pairing hostage to a verification step is refused.
+ *
+ * Live pairs are untouched: this gates the handshake, not the data plane.
+ * Flipping it mid-incident must not drop anyone who is already connected.
+ */
+const E2E_PAIRING_ENABLED = process.env.E2E_PAIRING_ENABLED !== 'false';
+
 // One Prisma client for the whole relay process. server.js is a long-lived
 // custom server (not Next.js runtime), so it can't import the TS singleton from
 // lib/db.ts directly — instantiating here is fine because we never hot-reload
@@ -544,6 +566,41 @@ function startRelay(httpServer) {
     // answer 200.
     return result || { closed: 0, phones: 0, browsers: 0, listeners: 0 };
   }
+
+  /**
+   * Is a pairing HANDSHAKE mid-flight for this user? Published for
+   * POST /api/devicekeys/register, which returns 409 when it is.
+   *
+   * Why registering mid-handshake is refused: the browser has already sent its
+   * key set and the phone is about to compute a SAS over it. A key that lands
+   * between those two moments changes the set under the user — the digits they
+   * are being asked to compare would no longer describe the pairing they are
+   * approving. Refusing for the ~30 s a handshake lasts costs nothing.
+   *
+   * An ACTIVE pair is deliberately NOT blocked. Its SK and its SAS were minted
+   * at Accept over the keys that existed then; a new key does not retroactively
+   * change them and only takes effect at the NEXT Accept. Blocking there would
+   * mean a user with a live pair could never add a device.
+   *
+   * Same single-process globalThis pattern as __resetRelayRoom above: the
+   * Next.js Route Handlers run in THIS Node process.
+   */
+  async function pairingInFlightForUser(userId) {
+    let user;
+    try {
+      user = await db.user.findUnique({ where: { id: userId }, select: { phoneToken: true } });
+    } catch (e) {
+      // Fail OPEN on a DB error: this is a courtesy guard, not an authz check,
+      // and it must never be the reason a user cannot register a device key.
+      console.error(`[Relay] pairingInFlightForUser: lookup failed for ${userId}: ${e.message}`);
+      return false;
+    }
+    if (!user || !user.phoneToken) return false;
+    const room = rooms.get(user.phoneToken);
+    return !!(room && room.pendingPairing);
+  }
+
+  globalThis.__relayPairingInFlight = pairingInFlightForUser;
 
   // eslint-disable-next-line no-undef
   globalThis.__resetRelayRoom = resetRelayRoomForUser;
@@ -1160,6 +1217,15 @@ function startRelay(httpServer) {
       );
     }
     const e2eBlock = e2eCheck.block;
+
+    // N-1 — refuse, never silently downgrade. Checked against the VALIDATED
+    // block: a block we already dropped for shape is not a mode=1 request, it
+    // is a malformed one, and it has already fallen back to plaintext.
+    if (!E2E_PAIRING_ENABLED && e2eBlock && e2eBlock.mode === 1) {
+      console.log(`[Relay][${redactToken(room.token)}] type=BROWSER_REQUEST_PAIRING e2e=kill-switch — mode=1 REFUSED (E2E_PAIRING_ENABLED=false)`);
+      safeSend(browserWs, `PAIRING_E2E_UNAVAILABLE:${JSON.stringify({ reason: 'kill-switch' })}`);
+      return;
+    }
 
     const pairingId = crypto.randomUUID();
     const expiresAt = Date.now() + PAIRING_TTL_MS;

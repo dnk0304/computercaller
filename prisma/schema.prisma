@@ -141,6 +141,10 @@ model User {
   // onDelete: Cascade so deleting a user removes their counters. Additive
   // virtual relation field (no column on User) → `prisma db push` clean.
   usageCounters       UsageCounter[]
+  // E2E device keys (P1(e), 2026-09-17). onDelete: Cascade so deleting a user
+  // removes every key row with them (C-4). Additive virtual relation field (no
+  // column on User) → `prisma db push` clean.
+  deviceKeys          DeviceKey[]
   // freeTierGrandfathered (2026-09-13, dispatch forge/cardfirst-revert).
   // Boolean @default(false) → additive migration, zero data loss, every
   // existing row valid the instant it is added.
@@ -660,4 +664,57 @@ model FeatureVote {
   @@unique([suggestionId, voterKey])
   @@index([suggestionId])
   @@index([voterKey])
+}
+
+// ---------------------------------------------------------------------------
+// DeviceKey (E2E P1(e), 2026-09-17) — the REVOCATION LEDGER, not the trust root.
+//
+// What this table is for: recording which public key each of a user's devices
+// presented, and when a key stopped being valid. What it is NOT for: being the
+// thing that makes a key trustworthy. Trust comes from the SAS the user compares
+// (B9) and from the sealing itself. If this table were the trust root, anyone
+// who could write a row could substitute a key — so nothing in the pairing path
+// may treat a row here as permission.
+//
+// publicKey is IMMUTABLE. Rotation is a NEW ROW, never an UPDATE of this column
+// (N-4): the old row gets revokedAt and the new key arrives beside it. Mutating
+// a key in place would destroy the only evidence that a substitution happened,
+// which is the one question this table exists to answer.
+//
+// THE UNIQUE CONSTRAINT IS PARTIAL, and it has to be. The brief asks for
+// @@unique([userId, deviceId]) AND for rotation to leave the old row in place.
+// Those are contradictory as written — a plain unique makes the second row
+// impossible. The invariant we actually want is "at most one LIVE key per
+// (userId, deviceId)", so the migration creates
+//   CREATE UNIQUE INDEX ... ON "DeviceKey"("userId","deviceId") WHERE "revokedAt" IS NULL
+// which enforces exactly that while letting any number of revoked rows accumulate
+// as history. Prisma's schema language cannot express a partial unique index, so
+// it is declared in the migration SQL and mirrored here as a plain @@index; the
+// constraint is enforced by Postgres, and tests/devicekey-authz.test.js asserts
+// both halves (a second live row is refused, a revoked row does not block one).
+model DeviceKey {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The device's own stable identifier. Same value the extension listener puts
+  // in `?deviceId=` and the one that keys `wraps[]` in the e2e block.
+  deviceId  String
+  // 'phone' | 'web' | 'extension'. A string rather than a Prisma enum so adding
+  // a device class later is an app-code change, not a migration on a table that
+  // by then holds every user's keys.
+  kind      String
+  // Uncompressed SEC1 P-256 point, base64url — 65 bytes, 0x04-prefixed
+  // (E2E-SPEC §2.1, Gate 1 R1). NEVER UPDATED. See the rotation note above.
+  publicKey String
+  // Optional human label for a future device list ("Dennis's Pixel").
+  label     String?
+  createdAt DateTime  @default(now())
+  lastSeen  DateTime?
+  // NULL = live. Set = revoked, and the row is kept as evidence.
+  revokedAt DateTime?
+
+  // Mirrors the partial unique index created in the migration (see above).
+  @@index([userId, deviceId])
+  // The list endpoint's query: a user's live keys, newest first.
+  @@index([userId, revokedAt])
 }
