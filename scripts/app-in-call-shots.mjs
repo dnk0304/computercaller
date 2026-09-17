@@ -23,6 +23,7 @@
  * Run against a dev server on :3123 (PORT=3123 bun run dev).
  */
 import { chromium } from 'playwright';
+import { Reaper } from './lib/reap.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -99,7 +100,12 @@ const cookies = [
   { name: 'idle_token', value: signIdleToken(user.id, secret), domain: host, path: '/', httpOnly: true, secure: false, sameSite: 'Lax' },
 ];
 
+// P5a(c) / WORKTREE_STANDARD rule 14: record the browser PID at launch and
+// kill that PID tree in the finally — success path and failure path alike.
+const reaper = new Reaper().installExitHook('app-in-call-shots');
+const beforeLaunch = reaper.mark();
 const browser = await chromium.launch({ headless: true });
+reaper.adoptBrowser(beforeLaunch);
 
 async function surface(width, height, theme = 'light') {
   const ctx = await browser.newContext({
@@ -425,5 +431,6 @@ try {
   if (failed.length) process.exitCode = 1;
 } finally {
   await browser.close();
+  reaper.reapAndReport('app-in-call-shots');
   await db.$disconnect();
 }

@@ -32,6 +32,7 @@
  * Env: CC_OUT_TAG (default "layering/shell").
  */
 import { chromium } from 'playwright';
+import { Reaper } from './lib/reap.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -145,12 +146,21 @@ const MEASURE = `(() => {
 
 for (const [name, os_, choice, expected] of COMBOS) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-prof-'));
+  // P5a(c) / WORKTREE_STANDARD rule 14. This loop launches a FRESH persistent
+  // context per combination and had no teardown guard at all: an assertion
+  // throwing at combo 2 of 4 left that Chromium, and every later one, running
+  // forever — a standing contributor to the orphan pile that makes these same
+  // harnesses flaky. The exit hook covers the throw path (and Ctrl-C); the
+  // close + reap at the bottom of the loop covers the normal path.
+  const reaper = new Reaper().installExitHook('ext-shell-theme-proof');
+  const beforeLaunch = reaper.mark();
   const ctx = await chromium.launchPersistentContext(profile, {
     headless: false,
     channel: 'chromium',
     colorScheme: os_,
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
   });
+  reaper.adoptBrowser(beforeLaunch);
 
 
   const page = await ctx.newPage();
@@ -224,6 +234,7 @@ for (const [name, os_, choice, expected] of COMBOS) {
   console.log(`  -> ${coldFile}`);
 
   await ctx.close();
+  reaper.reapAndReport(`ext-shell-theme-proof:${name}`);
   fs.rmSync(profile, { recursive: true, force: true });
 }
 

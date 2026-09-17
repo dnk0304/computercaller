@@ -18,6 +18,7 @@
  * Run against a dev server on :3123 (PORT=3123 bun run dev).
  */
 import { chromium } from 'playwright';
+import { Reaper } from './lib/reap.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -77,7 +78,12 @@ const bridgeStub = `
 })();
 `;
 
+// P5a(c) / WORKTREE_STANDARD rule 14: record the browser PID at launch and
+// kill that PID tree in the finally — success path and failure path alike.
+const reaper = new Reaper().installExitHook('ext-templates-scroll-call-message-proof');
+const beforeLaunch = reaper.mark();
 const browser = await chromium.launch({ headless: true });
+reaper.adoptBrowser(beforeLaunch);
 
 async function surface(width, height) {
   const ctx = await browser.newContext({ viewport: { width, height }, bypassCSP: true });
@@ -291,6 +297,7 @@ try {
   }
 } finally {
   await browser.close();
+  reaper.reapAndReport('ext-templates-scroll-call-message-proof');
 }
 
 const failed = results.filter((r) => !r.pass);

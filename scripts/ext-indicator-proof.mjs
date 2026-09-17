@@ -14,6 +14,8 @@
  * Run: node scripts/ext-indicator-proof.mjs
  */
 import { chromium } from 'playwright';
+import { awaitServiceWorker } from './lib/ext-sw.mjs';
+import { Reaper } from './lib/reap.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -31,11 +33,16 @@ const check = (name, pass, detail = '') => {
 };
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-ind-proof-'));
+// P5a(c) / WORKTREE_STANDARD rule 14: record what we spawn so we can kill it
+// by PID in the finally below — on the failure path as well as the success one.
+const reaper = new Reaper().installExitHook('ext-indicator-proof');
+const beforeLaunch = reaper.mark();
 const ctx = await chromium.launchPersistentContext(userDataDir, {
   headless: false,
   args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
   ignoreDefaultArgs: ['--disable-extensions'],
 });
+reaper.adoptBrowser(beforeLaunch);
 
 /** Title is applyIndicator's externally readable output. */
 const TITLE = {
@@ -49,12 +56,12 @@ try {
   // first listener is attached, and waitForEvent then blocks for its whole
   // timeout on an event that already fired. (Seen while another Chromium was
   // running alongside this one.)
-  let sw = null;
-  for (let i = 0; i < 60 && !sw; i++) {
-    sw = ctx.serviceWorkers()[0];
-    if (!sw) await new Promise((r) => setTimeout(r, 500));
-  }
-  if (!sw) throw new Error('service worker never registered');
+  // P5a(a): wake the MV3 worker instead of polling for one that is registered
+  // but idle. `ctx.serviceWorkers()` lists only RUNNING workers, so the old
+  // 60x500ms poll reported "service worker never registered" for a perfectly
+  // healthy extension whenever nothing had happened to start it. The
+  // assertions below are unchanged. See scripts/lib/ext-sw.mjs.
+  const sw = await awaitServiceWorker(ctx, null, { extDir: EXT });
   const extId = new URL(sw.url()).host;
   await new Promise((r) => setTimeout(r, 1200));
 
@@ -235,6 +242,7 @@ try {
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
   fs.writeFileSync(path.join(EVIDENCE, 'E-indicator-proof.json'), JSON.stringify(results, null, 2));
   await ctx.close();
+  reaper.reapAndReport('ext-indicator-proof');
   fs.rmSync(userDataDir, { recursive: true, force: true });
   if (failed.length) process.exitCode = 1;
 }

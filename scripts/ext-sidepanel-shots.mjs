@@ -22,6 +22,8 @@
  * behaviour Chrome actually stored.
  */
 import { chromium } from 'playwright';
+import { awaitServiceWorker } from './lib/ext-sw.mjs';
+import { Reaper } from './lib/reap.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,11 +47,16 @@ const check = (name, pass, detail = '') => {
 };
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-shot-profile-'));
+// P5a(c) / WORKTREE_STANDARD rule 14: record what we spawn so we can kill it
+// by PID in the finally below — on the failure path as well as the success one.
+const reaper = new Reaper().installExitHook('ext-sidepanel-shots');
+const beforeLaunch = reaper.mark();
 const ctx = await chromium.launchPersistentContext(userDataDir, {
   headless: false,
   args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
   ignoreDefaultArgs: ['--disable-extensions'],
 });
+reaper.adoptBrowser(beforeLaunch);
 
 const sessionStub = (status) => `
   (() => {
@@ -87,12 +94,12 @@ async function shot(name, url, width, height, { authed = true, settle = 3500, ac
 }
 
 try {
-  let sw = null;
-  for (let i = 0; i < 60 && !sw; i++) {
-    sw = ctx.serviceWorkers()[0];
-    if (!sw) await new Promise((r) => setTimeout(r, 500));
-  }
-  if (!sw) throw new Error('service worker never registered');
+  // P5a(a): wake the MV3 worker instead of polling for one that is registered
+  // but idle. `ctx.serviceWorkers()` lists only RUNNING workers, so the old
+  // 60x500ms poll reported "service worker never registered" for a perfectly
+  // healthy extension whenever nothing had happened to start it. The
+  // assertions below are unchanged. See scripts/lib/ext-sw.mjs.
+  const sw = await awaitServiceWorker(ctx, null, { extDir: EXT });
   const extId = new URL(sw.url()).host;
   check('service worker registered', true, extId);
   check('extension ID is the pinned one', extId === 'helkcjjlidcceiifjccolmppanfmcjjg', extId);
@@ -174,4 +181,5 @@ try {
   if (failed.length) process.exitCode = 1;
 } finally {
   await ctx.close();
+  reaper.reapAndReport('ext-sidepanel-shots');
 }

@@ -27,6 +27,8 @@
  * turns "mine failed" into evidence.
  */
 import { chromium } from 'playwright';
+import { awaitServiceWorker } from './lib/ext-sw.mjs';
+import { Reaper } from './lib/reap.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -50,11 +52,15 @@ const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-swmod-probe-'));
 // Playwright's default --disable-extensions wins unless removed from the
 // default args, and branded Chrome blocks --load-extension under automation,
 // so this must be the BUNDLED Chromium via launchPersistentContext.
+// P5a(c) / WORKTREE_STANDARD rule 14: kill the browser we start, by PID.
+const reaper = new Reaper().installExitHook('ext-sw-module-load-probe');
+const beforeLaunch = reaper.mark();
 const ctx = await chromium.launchPersistentContext(userDataDir, {
   headless: false,
   args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
   ignoreDefaultArgs: ['--disable-extensions'],
 });
+reaper.adoptBrowser(beforeLaunch);
 
 try {
   // WAKE IT, don't just wait for it. An MV3 worker is event-driven: it is
@@ -64,24 +70,19 @@ try {
   // that ambiguity is what made the first three runs of this probe
   // uninterpretable. Opening an extension page is how a user wakes it too, so
   // this is the real path rather than a test trick.
-  let sw = ctx.serviceWorkers()[0] || null;
-  if (!sw) {
-    const [, id] = /chrome-extension:\/\/([a-p]+)/.exec(
-      ctx.backgroundPages()[0]?.url() || '',
-    ) || [];
-    try {
-      const nudge = await ctx.newPage();
-      await nudge.goto(`chrome-extension://${id || 'x'}/popup.html`, { timeout: 10_000 }).catch(() => {});
-      await nudge.close().catch(() => {});
-    } catch { /* the wait below is the real mechanism; this only hurries it */ }
+  // P5a(a): this probe already did the wake by hand; the logic now lives in
+  // scripts/lib/ext-sw.mjs so every ext-* harness gets the same behaviour
+  // (and the same three-way diagnosis in the failure message) instead of this
+  // one file being the only place that knew. Same 90s budget, same assertion.
+  let sw = null;
+  let swError = null;
+  try {
+    sw = await awaitServiceWorker(ctx, null, { extDir: EXT, timeoutMs: 90_000, settleMs: 1500 });
+  } catch (e) {
+    swError = e;
   }
-  for (let i = 0; i < 180 && !sw; i += 1) {
-    sw = ctx.serviceWorkers()[0];
-    if (!sw) await new Promise((r) => setTimeout(r, 500));
-  }
-  check('the service worker registers at all', !!sw);
-  if (!sw) throw new Error('never registered — nothing below can be measured');
-  await new Promise((r) => setTimeout(r, 1500));
+  check('the service worker registers at all', !!sw, swError ? String(swError.message) : '');
+  if (!sw) throw swError || new Error('never registered — nothing below can be measured');
 
   // The config.js side effect. In the classic worker this came from
   // importScripts; in the module worker from `import './config.js'`. If this is
@@ -186,6 +187,7 @@ try {
   check('(e) M-C: an IndexedDB wipe yields a NEW deviceId on the next read', regen.changed === true, regen);
 } finally {
   await ctx.close();
+  reaper.reapAndReport('ext-sw-module-load-probe');
   try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch { /* temp dir */ }
 }
 

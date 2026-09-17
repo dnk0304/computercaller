@@ -1,6 +1,6 @@
 /**
  * MV3 service-worker / WebSocket survival measurement
- * (forge/ext-badge-sidepanel, deliverable 5).
+ * (forge/ext-badge-sidepanel, deliverable 5; control arm rebuilt in E2E-P5a.)
  *
  * Dennis's ask was "it just retracts and KEEPS MAINTAINING THE CONNECTION".
  * That deserves a measured answer rather than a citation, because the honest
@@ -21,30 +21,51 @@
  *   'idle' — no socket at all
  * The difference between them is the number the question is really asking for.
  *
- * !! RESULT AS OF 2026-09-15: THIS HARNESS CANNOT ANSWER THE QUESTION. !!
+ * ── THE CONTROL PROBLEM, AND WHAT P5a CHANGED ─────────────────────────────
  *
- * Both arms survived the whole run identically (240s and 360s; worker never
- * torn down, never respawned) -- INCLUDING the idle arm that had no socket at
- * all. A harness whose control arm behaves exactly like its test arm has not
- * measured its subject; it has measured its own instrument.
+ * As of 2026-09-15 this harness could not answer the question. Both arms
+ * survived identically (240s and 360s; worker never torn down) INCLUDING the
+ * idle arm that had no socket at all. A harness whose control arm behaves
+ * exactly like its test arm has not measured its subject; it has measured its
+ * own instrument.
  *
  * The instrument is the cause: Playwright auto-attaches a CDP session to every
  * service worker it discovers, and an attached debugger is precisely what stops
- * Chrome evicting an MV3 worker -- the same reason a worker "never dies" while
+ * Chrome evicting an MV3 worker — the same reason a worker "never dies" while
  * its DevTools pane is open. Detaching is not an option either:
  * ctx.serviceWorkers() is the only way to observe the worker at all.
  *
- * A real measurement needs an out-of-band observer: have the WORKER timestamp
- * its own wake/suspend into storage.session and read that back from a page with
- * no debugger ever attached, or measure by hand on a real profile with the
- * DevTools pane CLOSED.
+ * That state of affairs was recorded in e2e/LEARNINGS.md as base-inherent and
+ * the step was left FAILING (it also ran 31 minutes and timed out twice in the
+ * P3 gate — gate-P3-9abcfb2.json, exit 124, attempts 2). P5a deliverable (b)
+ * makes the control HONEST instead:
  *
- * Kept in the tree with this note so the next person does not spend the same
- * hour rediscovering it.
+ *   1. The idle arm no longer waits six minutes hoping for a natural eviction
+ *      that CDP has already suppressed. It waits a bounded window and then
+ *      tries to FORCE the teardown through the debugger that is suppressing it
+ *      — `ServiceWorker.stopWorker` over a CDP session.
+ *   2. If the worker CAN be stopped and the socket arm survives the same
+ *      treatment differently, that is a real measurement and the run reports a
+ *      verdict.
+ *   3. If the worker cannot be evicted at all under CDP, the run says WARN,
+ *      prints the reason, and exits 0 — Ken's ruling. It never prints a PASS it
+ *      has not earned, and it never fails the gate for a limitation of the
+ *      instrument that no change to this branch can remove.
+ *
+ * The one thing that is NOT allowed here is the old vacuous pass: "both arms
+ * survived 360s" reported as evidence of survival.
+ *
+ * A fully real measurement still needs an out-of-band observer: have the WORKER
+ * timestamp its own wake/suspend into storage.session and read that back from a
+ * page with no debugger ever attached, or measure by hand on a real profile
+ * with the DevTools pane CLOSED. That is a product-side change and is out of
+ * scope for a harness-only slice.
  *
  * Run: node scripts/ext-sw-lifetime-proof.mjs [seconds] [ws|idle|both]
  */
 import { chromium } from 'playwright';
+import { awaitServiceWorker } from './lib/ext-sw.mjs';
+import { Reaper } from './lib/reap.mjs';
 import { WebSocketServer } from 'ws';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -56,7 +77,15 @@ const EXT = path.join(ROOT, 'chrome-extension');
 const EVIDENCE = path.join(ROOT, 'evidence');
 fs.mkdirSync(EVIDENCE, { recursive: true });
 
-const RUN_S = Number(process.argv[2] || 360);
+/**
+ * 90s per arm, not 360. The old default spent six minutes per arm waiting for
+ * an eviction that CDP had already made impossible, so the whole 12 minutes
+ * bought nothing — and it overran the gate's 8-minute per-harness budget, was
+ * killed at 124, retried, and cost the P3 gate 31 minutes to learn nothing.
+ * The forced-eviction probe answers the same question in seconds; the sampling
+ * window that remains is there to catch a NATURAL eviction if one ever happens.
+ */
+const RUN_S = Number(process.argv[2] || 90);
 /** 'ws' | 'idle' | 'both' — run one arm at a time when iterating. */
 const ONLY = process.argv[3] || 'both';
 const PORT = 41777;
@@ -79,64 +108,150 @@ wss.on('connection', (socket) => {
 
 const report = { runSeconds: RUN_S, arms: {} };
 
+/**
+ * Try to tear the worker down on purpose, through the very debugger that is
+ * preventing it from being torn down on its own.
+ *
+ * Returns {evicted, method, reason} — never throws. `evicted:false` with a
+ * reason is a legitimate, reportable outcome (it is the WARN path); an
+ * exception here would turn an instrument limitation into a harness crash.
+ */
+async function forceEvict(ctx, swUrl) {
+  const gone = () => !ctx.serviceWorkers().some((w) => w.url() === swUrl);
+  const settle = async (ms) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (gone()) return true;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return gone();
+  };
+
+  let page = null;
+  try {
+    page = ctx.pages()[0] || await ctx.newPage();
+    const cdp = await ctx.newCDPSession(page);
+    try {
+      /**
+       * The ServiceWorker domain reports every version it knows about. We need
+       * the versionId of OUR script, and it arrives on an event rather than a
+       * return value, so listen before enabling.
+       */
+      const versions = [];
+      cdp.on('ServiceWorker.workerVersionUpdated', (e) => {
+        for (const v of e.versions || []) versions.push(v);
+      });
+      await cdp.send('ServiceWorker.enable');
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const mine = [...versions].reverse().find((v) => v.scriptURL === swUrl)
+        || [...versions].reverse().find((v) => (v.scriptURL || '').startsWith('chrome-extension://'));
+
+      if (mine?.versionId != null) {
+        await cdp.send('ServiceWorker.stopWorker', { versionId: String(mine.versionId) });
+        if (await settle(10_000)) return { evicted: true, method: 'CDP ServiceWorker.stopWorker' };
+      }
+
+      // Older/newer protocol shapes: stopAllWorkers takes no arguments and is
+      // worth one attempt before concluding eviction is impossible.
+      try {
+        await cdp.send('ServiceWorker.stopAllWorkers');
+        if (await settle(10_000)) return { evicted: true, method: 'CDP ServiceWorker.stopAllWorkers' };
+      } catch { /* not in this protocol build */ }
+
+      return {
+        evicted: false,
+        method: 'CDP ServiceWorker.stopWorker',
+        reason: mine?.versionId == null
+          ? 'the ServiceWorker domain reported no version for the extension worker, so there was nothing to stop'
+          : `stopWorker(versionId=${mine.versionId}) returned, but the worker was still listed 10s later — `
+            + "Playwright's auto-attached debug session keeps re-activating it",
+      };
+    } finally {
+      await cdp.detach().catch(() => {});
+    }
+  } catch (e) {
+    return { evicted: false, method: 'CDP ServiceWorker.stopWorker', reason: `CDP session failed: ${e.message}` };
+  }
+}
+
 async function arm(name, openSocket) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cc-life-${name}-`));
+  // P5a(c) / WORKTREE_STANDARD rule 14: record the browser and kill it by PID.
+  const reaper = new Reaper().installExitHook(`ext-sw-lifetime-proof:${name}`);
+  const beforeLaunch = reaper.mark();
   const ctx = await chromium.launchPersistentContext(dir, {
     headless: false,
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
     ignoreDefaultArgs: ['--disable-extensions'],
   });
-  let sw = null;
-  for (let i = 0; i < 120 && !sw; i++) {
-    sw = ctx.serviceWorkers()[0];
-    if (!sw) await new Promise((r) => setTimeout(r, 500));
-  }
-  if (!sw) throw new Error(`[${name}] service worker never registered`);
-  const swUrl = sw.url();
+  reaper.adoptBrowser(beforeLaunch);
 
-  if (openSocket) {
-    await sw.evaluate((port) => {
-      // Held on the global so it is not collected.
-      self.__probeWs = new WebSocket(`ws://127.0.0.1:${port}`);
-    }, PORT);
-    await new Promise((r) => setTimeout(r, 1500));
-  }
+  try {
+    // P5a(a): wake it rather than polling for an idle worker that will never
+    // appear in ctx.serviceWorkers(). See scripts/lib/ext-sw.mjs.
+    const sw = await awaitServiceWorker(ctx, null, { extDir: EXT });
+    const swUrl = sw.url();
 
-  const samples = [];
-  const t0 = Date.now();
-  let firstGoneAt = null;
-  let everCameBack = false;
-
-  for (let t = 0; t < RUN_S; t += 5) {
-    await new Promise((r) => setTimeout(r, 5000));
-    const alive = ctx.serviceWorkers().some((w) => w.url() === swUrl);
-    const elapsed = Math.round((Date.now() - t0) / 1000);
-    samples.push({ t: elapsed, swAlive: alive, serverSeesOpen });
-    if (!alive && firstGoneAt === null) {
-      firstGoneAt = elapsed;
-      console.log(`  [${name}] worker GONE at ~${elapsed}s (server sees socket open: ${serverSeesOpen})`);
+    if (openSocket) {
+      await sw.evaluate((port) => {
+        // Held on the global so it is not collected.
+        self.__probeWs = new WebSocket(`ws://127.0.0.1:${port}`);
+      }, PORT);
+      await new Promise((r) => setTimeout(r, 1500));
     }
-    if (!alive) { /* keep sampling — the alarm may respawn it */ }
-    if (alive && firstGoneAt !== null) {
-      everCameBack = true;
-      console.log(`  [${name}] worker BACK at ~${elapsed}s`);
-    }
-    if (elapsed % 60 === 0) {
-      console.log(`  [${name}] ${elapsed}s  swAlive=${alive}  socketOpen=${serverSeesOpen}`);
-    }
-  }
 
-  await ctx.close();
-  fs.rmSync(dir, { recursive: true, force: true });
-  return {
-    survivedWholeRun: firstGoneAt === null,
-    firstGoneAtSeconds: firstGoneAt,
-    respawned: everCameBack,
-    finalServerSeesOpen: serverSeesOpen,
-    samples,
-  };
+    const samples = [];
+    const t0 = Date.now();
+    let firstGoneAt = null;
+    let everCameBack = false;
+
+    for (let t = 0; t < RUN_S; t += 5) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const alive = ctx.serviceWorkers().some((w) => w.url() === swUrl);
+      const elapsed = Math.round((Date.now() - t0) / 1000);
+      samples.push({ t: elapsed, swAlive: alive, serverSeesOpen });
+      if (!alive && firstGoneAt === null) {
+        firstGoneAt = elapsed;
+        console.log(`  [${name}] worker GONE at ~${elapsed}s (server sees socket open: ${serverSeesOpen})`);
+      }
+      if (!alive) { /* keep sampling — the alarm may respawn it */ }
+      if (alive && firstGoneAt !== null) {
+        everCameBack = true;
+        console.log(`  [${name}] worker BACK at ~${elapsed}s`);
+      }
+      if (elapsed % 60 === 0) {
+        console.log(`  [${name}] ${elapsed}s  swAlive=${alive}  socketOpen=${serverSeesOpen}`);
+      }
+    }
+
+    /**
+     * The honesty probe. Only meaningful if the worker was still alive at the
+     * end of the window — if it died naturally we already have our answer and
+     * forcing anything would tell us nothing.
+     */
+    const stillAlive = ctx.serviceWorkers().some((w) => w.url() === swUrl);
+    const forced = stillAlive
+      ? await forceEvict(ctx, swUrl)
+      : { evicted: null, method: 'not attempted', reason: 'the worker had already gone on its own' };
+    console.log(`  [${name}] forced-eviction probe: ${JSON.stringify(forced)}`);
+
+    return {
+      survivedWholeRun: firstGoneAt === null,
+      firstGoneAtSeconds: firstGoneAt,
+      respawned: everCameBack,
+      finalServerSeesOpen: serverSeesOpen,
+      forcedEviction: forced,
+      samples,
+    };
+  } finally {
+    await ctx.close().catch(() => {});
+    reaper.reapAndReport(`ext-sw-lifetime-proof:${name}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
+let exitCode = 0;
 try {
   if (ONLY === 'both' || ONLY === 'ws') {
     console.log(`\n=== ARM 1: listener WebSocket held open (${RUN_S}s) ===`);
@@ -154,22 +269,63 @@ try {
       survivedWholeRun: v.survivedWholeRun,
       firstGoneAtSeconds: v.firstGoneAtSeconds,
       respawned: v.respawned,
+      forcedEviction: v.forcedEviction,
     }));
   }
 
-  // THE control question, asserted rather than eyeballed. If the idle arm never
-  // died either, the run proves nothing and must say so in its OWN output --
-  // otherwise a future reader sees "survived 360s" and believes it.
-  if (report.arms.idle && report.arms.idle.survivedWholeRun) {
+  /**
+   * THE control question, asserted rather than eyeballed — and now with three
+   * possible answers instead of a silent pass.
+   */
+  const idle = report.arms.idle;
+  const ws = report.arms.withSocket;
+  if (!idle) {
+    report.verdict = 'PARTIAL — the idle control arm was not run (single-arm invocation). No lifetime claim is made.';
+    console.log(`\nWARN: ${report.verdict}`);
+  } else if (!idle.survivedWholeRun) {
+    // The control died on its own: the instrument is not suppressing eviction,
+    // so the comparison between the arms is real.
+    report.controlFailed = false;
+    report.verdict = ws
+      ? `CONCLUSIVE — idle worker evicted at ~${idle.firstGoneAtSeconds}s; socket arm `
+        + `${ws.survivedWholeRun ? `survived the whole ${RUN_S}s` : `was evicted at ~${ws.firstGoneAtSeconds}s`}.`
+      : `CONCLUSIVE for the idle arm — evicted at ~${idle.firstGoneAtSeconds}s.`;
+    console.log(`\n${report.verdict}`);
+    console.log('1/1 checks passed');
+  } else if (idle.forcedEviction?.evicted) {
+    // The worker CAN be stopped, so it is not immortal — but it did not die on
+    // its own inside the window, which means natural MV3 eviction is still
+    // suppressed by the attached debugger. Honest, and not a pass.
     report.controlFailed = true;
     report.verdict =
-      'INCONCLUSIVE - the idle control arm survived too. Playwright CDP '
-      + 'auto-attach suppresses MV3 worker eviction, so neither arm measures '
-      + 'real-world lifetime. See this file header for how to measure it properly.';
-    console.log('\nCONTROL FAILED: the idle worker never died either.');
-    console.log(report.verdict);
+      `INCONCLUSIVE — the idle control arm survived the full ${RUN_S}s window, so no natural-lifetime `
+      + `difference between the arms was observed. The worker WAS stoppable on demand `
+      + `(${idle.forcedEviction.method}), which confirms the harness can see a teardown when one happens: `
+      + 'the missing eviction is Chrome declining to evict a debugger-attached worker, not a blind instrument. '
+      + 'Real-world lifetime still needs the out-of-band observer described in this file header.';
+    console.log(`\nWARN: ${report.verdict}`);
+  } else {
+    report.controlFailed = true;
+    report.evictionForcible = false;
+    report.verdict =
+      `INCONCLUSIVE — the idle control arm survived the full ${RUN_S}s window AND could not be evicted on `
+      + `demand either (${idle.forcedEviction?.reason || 'no reason recorded'}). Under CDP the MV3 worker is `
+      + 'never torn down, so this harness cannot measure MV3 lifetime at all. Reported as WARN, exit 0, per '
+      + "Ken's ruling — a limitation of the instrument is not a failure of the branch, and it is never a PASS.";
+    console.log(`\nWARN: ${report.verdict}`);
+    console.log('WARN  eviction cannot be forced under CDP — this step measured nothing and says so.');
   }
+
+  // Exit 0 on every WARN path (Ken's ruling). A non-zero exit here is reserved
+  // for the harness itself breaking, which is the catch below.
+  exitCode = 0;
+} catch (e) {
+  console.error('FAIL  ext-sw-lifetime-proof crashed:', e?.stack || e);
+  report.verdict = `HARNESS ERROR — ${e?.message || e}`;
+  exitCode = 1;
 } finally {
   fs.writeFileSync(path.join(EVIDENCE, 'E-sw-lifetime.json'), JSON.stringify(report, null, 2));
   wss.close();
 }
+
+process.exit(exitCode);

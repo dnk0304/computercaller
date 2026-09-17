@@ -33,6 +33,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import net from 'node:net';
+// (c) The gate and the harnesses share ONE definition of "what did we spawn and
+// is it still alive" — scripts/lib/reap.mjs. Rule 12/14 live in that file.
+import { census, findLeaks } from '../scripts/lib/reap.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const T_START = Date.now();
@@ -505,15 +508,44 @@ function freePort(from = 3300) {
 // ── harness dev server (started by the gate, killed by the gate, by PID) ───
 let devProc = null;
 let devPort = null;
+/**
+ * (d) The server's own output, kept in a ring buffer.
+ *
+ * It used to be `stdio: 'ignore'`, and that is how a fresh worktree with a
+ * stale Prisma client turned into a two-hour diagnosis: the server printed
+ * "@prisma/client did not initialize yet" and died, the gate saw only a port
+ * that never opened, and EVERY extension harness then reported "signed-out" or
+ * "service worker never registered" — six misleading symptoms for one cause
+ * (e2e/LEARNINGS.md, P3-FU). The first compile is now allowed 120s and, if it
+ * does not finish, the FAIL carries the server's actual error text.
+ */
+let devLog = '';
+const DEV_LOG_MAX = 64 * 1024;
+const noteDev = (buf) => {
+  devLog = (devLog + buf.toString()).slice(-DEV_LOG_MAX);
+};
+/** The line worth surfacing, if there is one. */
+function devFailureHint() {
+  const prisma = /(@prisma\/client did not initialize yet[^\n]*|Prisma[^\n]*(?:generate|initialize|Client)[^\n]*|PrismaClientInitializationError[^\n]*)/i.exec(devLog);
+  if (prisma) return `${prisma[1].trim()} — run \`bunx prisma generate\` in this worktree (WORKTREE_STANDARD).`;
+  const err = /^(.*(?:Error|EADDRINUSE|MODULE_NOT_FOUND).*)$/m.exec(devLog);
+  if (err) return err[1].trim();
+  const tail = devLog.trim().split('\n').slice(-3).join(' | ');
+  return tail ? `no error line found; last output: ${tail}` : 'the server produced no output at all';
+}
 function startDevServer() {
   devPort = freePort(3300);
   if (!devPort) return { ok: false, why: 'no free port >= 3300' };
   const owner = portOwnerPid(devPort);
   if (owner) return { ok: false, why: `port ${devPort} owned by PID ${owner}` };
+  devLog = '';
   devProc = spawn('node', ['server.js'], {
-    cwd: ROOT, detached: false, stdio: 'ignore', shell: false,
+    cwd: ROOT, detached: false, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
     env: { ...process.env, PORT: String(devPort), NODE_ENV: 'production' },
   });
+  devProc.stdout.on('data', noteDev);
+  devProc.stderr.on('data', noteDev);
+  devProc.on('error', (e) => noteDev(Buffer.from(`spawn error: ${e.message}\n`)));
   return { ok: true };
 }
 function stopDevServer() {
@@ -523,9 +555,13 @@ function stopDevServer() {
   }
   devProc = null;
 }
-async function waitForDev(port, ms = 60_000) {
+async function waitForDev(port, ms = 120_000) {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
+    // Fail FAST, not at the deadline: if the server process has already exited
+    // there is nothing to wait for, and the two remaining minutes would only
+    // delay the error text we already have.
+    if (devProc && devProc.exitCode !== null) return false;
     const ok = await new Promise((res) => {
       const s = net.connect(port, '127.0.0.1');
       s.on('connect', () => { s.destroy(); res(true); });
@@ -812,8 +848,16 @@ if (WEB) {
       console.log(`  FAIL  harness-dev-server — ${started.why}`);
       runClarityScope(null);
     } else {
-      const up = await waitForDev(devPort);
-      record('harness-dev-server', `node server.js PORT=${devPort}`, up ? 0 : 1, 0, { port: devPort, pid: devProc?.pid ?? 0 });
+      const tDev = Date.now();
+      const up = await waitForDev(devPort, 120_000);
+      // (d) stale-Prisma guard. A dev server that never opened its port is the
+      // single cause behind the "every extension harness says signed-out"
+      // symptom, and the reason is always in ITS output, never in the harness's.
+      const why = up ? null : redact(devFailureHint());
+      record('harness-dev-server', `node server.js PORT=${devPort}`, up ? 0 : 1, Date.now() - tDev,
+        { port: devPort, pid: devProc?.pid ?? 0, ...(up ? {} : { timedOutMs: Date.now() - tDev }) },
+        up ? {} : { why });
+      if (!up) console.log(`  FAIL  harness-dev-server — first compile did not finish in 120s: ${why}`);
       if (up) {
         const origin = `http://127.0.0.1:${devPort}`;
 
@@ -891,11 +935,47 @@ if (WEB) {
             attempts: 2,
             timeout: 8 * 60_000,
           });
+        /**
+         * (c) WORKTREE_STANDARD rule 14, enforced rather than requested.
+         *
+         * A harness that returns while its Chromium is still running is a gate
+         * FAIL, not a note: sixty-odd orphaned chrome.exe crashed Dennis's PC
+         * this week, and the same orphans are the load that makes these very
+         * harnesses flaky. Detection is entirely PID-based — a survivor counts
+         * only if it appeared during this step AND its parent is dead or sits
+         * inside the gate's own process tree. Rule 12 holds: nothing is ever
+         * matched or killed by image name, and explorer.exe's tree (Dennis's
+         * own browser and terminals) is excluded transitively.
+         *
+         * The gate-owned dev server is allow-listed — it outlives every harness
+         * by design and stopDevServer kills it by PID below.
+         */
+        const allowPids = [devProc?.pid].filter(Boolean);
+        const assertNoLeaks = (label, before) => {
+          const { leaked, pids } = findLeaks(before, process.pid, { allow: allowPids });
+          record(`reap:${label}`, 'assert no browser/node survived the harness (by PID)',
+            leaked === 0 ? 0 : 1, 0, { leaked });
+          if (leaked) {
+            console.log(`  FAIL  reap:${label} — ${leaked} process(es) left running: `
+              + pids.map((p) => `${p.name}#${p.pid}(ppid ${p.ppid}, ${p.why})`).join(', '));
+          }
+        };
+
         const tHarness = Date.now();
         if (PARALLEL_HARNESSES) {
+          // In parallel mode a per-harness census would see its SIBLINGS' live
+          // browsers and call them leaks, so the assertion is made once, after
+          // the batch. Same rule, one measurement point — and it is recorded
+          // under a name that says so rather than pretending to be per-harness.
+          const beforeBatch = census();
           await Promise.all(harnessSpecs.map(({ h, rel }) => runAsyncStep(`harness:${h}`, `node ${rel}`, harnessOpts(rel))));
+          assertNoLeaks('harness-batch', beforeBatch);
         } else {
-          for (const { h, rel } of harnessSpecs) run(`harness:${h}`, `node ${rel}`, harnessOpts(rel));
+          for (const { h, rel } of harnessSpecs) {
+            const beforeStep = census();
+            run(`harness:${h}`, `node ${rel}`, harnessOpts(rel));
+            assertNoLeaks(h, beforeStep);
+          }
         }
         // Recorded either way so the sequential/parallel comparison is a number
         // in the JSON rather than a claim in a résumé.

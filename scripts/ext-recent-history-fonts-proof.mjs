@@ -23,6 +23,7 @@
  *   node scripts/ext-recent-history-fonts-proof.mjs before   (on the base ref)
  */
 import { chromium } from 'playwright';
+import { Reaper } from './lib/reap.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -159,7 +160,12 @@ const MEASURE = `
 })()
 `;
 
+// P5a(c) / WORKTREE_STANDARD rule 14: record the browser PID at launch and
+// kill that PID tree in the finally — success path and failure path alike.
+const reaper = new Reaper().installExitHook('ext-recent-history-fonts-proof');
+const beforeLaunch = reaper.mark();
 const browser = await chromium.launch({ headless: true });
+reaper.adoptBrowser(beforeLaunch);
 try {
   for (const width of [360, 400]) {
     for (const tab of ['Dial', 'Texts', 'Alerts']) {
@@ -259,6 +265,7 @@ try {
   }
 } finally {
   await browser.close();
+  reaper.reapAndReport('ext-recent-history-fonts-proof');
 }
 
 const failed = results.filter((r) => !r.pass);
