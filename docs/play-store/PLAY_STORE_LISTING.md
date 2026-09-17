@@ -87,7 +87,7 @@ HOW IT WORKS
 
 PRIVATE BY DESIGN
 
-• End-to-end encrypted relay between your phone and your browser.
+• Encrypted in transit (TLS) between your phone, our relay, and your browser.
 • Your messages and call history are NOT stored on our servers.
 • Your contacts stay on your phone.
 • We don't sell, share, or train AI on your data.
