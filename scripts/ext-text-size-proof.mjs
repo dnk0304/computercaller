@@ -643,8 +643,8 @@ try {
   fs.writeFileSync(path.join(EXT, 'manifest.json'), JSON.stringify(mf, null, 2));
 
   check(
-    'manifest name matches the icon wordmark (addendum (d))',
-    mf.name === 'COMPUTER CALLER' && mf.action.default_title === 'COMPUTER CALLER',
+    'manifest name is the product name in normal case (PIXEL-S2 (d))',
+    mf.name === 'Computer Caller' && mf.action.default_title === 'Computer Caller',
     `${mf.name} / ${mf.action.default_title}`,
   );
   for (const f of ['shell.css', 'shell.js']) {
