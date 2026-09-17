@@ -43,6 +43,21 @@ class PhoneService : Service() {
         const val EXTRA_PAIRING_ID = "pairing_id"
         /** Composed "ua · ip" string built by [buildBrowserIdentity]. */
         const val EXTRA_PAIRING_IDENTITY = "pairing_identity"
+
+        /**
+         * P4 (w1): an encrypted pairing was refused and the request declined.
+         * Carries [EXTRA_PAIRING_ID] and [EXTRA_E2E_MESSAGE].
+         *
+         * A refusal needs its own signal rather than riding on "cancelled":
+         * the user asked for a verified pairing and did not get one, and a
+         * dialog that just closes is indistinguishable from the peer going
+         * away — which is exactly how a downgrade attack would prefer to look.
+         */
+        const val ACTION_PAIRING_E2E_REFUSED =
+            "com.dnkdialer.companion.PAIRING_E2E_REFUSED"
+
+        /** User-facing copy for [ACTION_PAIRING_E2E_REFUSED]. Never technical. */
+        const val EXTRA_E2E_MESSAGE = "e2e_message"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dnk_dialer_service"
 
@@ -202,6 +217,45 @@ class PhoneService : Service() {
      * MainActivity comes to the foreground after the request arrived.
      */
     private val pendingRequestIdentities = mutableMapOf<String, String>()
+
+    // ---------------------------------------------------------------- E2E
+    //
+    // P4 (w1)-(w3). The whole encryption feature reaches this 4,000-line
+    // service through the four fields below and nothing else. That is
+    // deliberate: the sealing logic is complete and tested standalone in the
+    // E2e* classes, so the job here is wiring, and a wiring diff that spreads
+    // is a wiring diff nobody can review against the plaintext path it must
+    // not disturb.
+
+    /**
+     * The live session, or null when this pair is in the clear. One per pair:
+     * an Accept mints a new SK and a new kid and therefore a NEW session (§13.8
+     * and GATE1 Addendum A2 MUST (1) — a kid is never reused across SKs), never
+     * a reset of this one.
+     */
+    private var e2eSession: E2eSession? = null
+
+    /**
+     * Peer offers parsed out of PAIRING_REQUEST, keyed by pairingId, awaiting
+     * the user's decision. Stashed rather than acted on immediately because the
+     * negotiation is decided at ACCEPT (§13.1 C-1: local enforcement, at
+     * Accept), which may be minutes later or never.
+     */
+    private val pendingE2eOffers = mutableMapOf<String, E2eNegotiation.PeerOffer>()
+
+    /**
+     * §13.1: once this pair has been refused for a downgrade, a later weaker
+     * offer is not a fresh negotiation — it is the second step of the same
+     * attack. Survives for the life of the pairing series.
+     */
+    private val e2eDowngradeLatch = E2eNegotiation.DowngradeLatch()
+
+    /**
+     * True once this pair has successfully negotiated encryption. It is what
+     * the outbound chokepoint latches on: with it set, a §13.7 sealed frame
+     * that cannot be sealed is DROPPED rather than sent in the clear.
+     */
+    private var e2eLatchedOn: Boolean = false
 
     /**
      * v56 - snapshot of still-pending pairing requests (id -> identity).
@@ -2464,13 +2518,190 @@ class PhoneService : Service() {
                 "PhoneService",
                 "Cannot send $type — relay client not open. pairingId=$pairingId"
             )
+            pendingE2eOffers.remove(pairingId)
             return
         }
+
+        // P4 (w1)/(w2): the encryption decision, taken here because §13.1 C-1
+        // puts enforcement at Accept and uses only state this device holds — if
+        // it depended on the relay, a hostile relay could turn it off.
+        val body = mutableMapOf<String, Any>("pairingId" to pairingId)
+        if (accept) {
+            when (val outcome = negotiateAcceptE2e(pairingId)) {
+                is AcceptE2e.Sealed -> body["e2e"] = outcome.block
+                is AcceptE2e.Plaintext -> Unit // v55 behaviour, byte-for-byte
+                is AcceptE2e.Refuse -> {
+                    // Never a silent downgrade: a device that asked for
+                    // verification must not quietly get less than it asked for.
+                    // Decline instead, and tell the user why.
+                    android.util.Log.w("PhoneService", "E2E refused: ${outcome.logReason}")
+                    pendingE2eOffers.remove(pairingId)
+                    try {
+                        client?.sendResponse("DECLINE_PAIRING", mapOf("pairingId" to pairingId))
+                    } catch (e: Exception) {
+                        android.util.Log.e("PhoneService", "Failed to send DECLINE: ${e.message}", e)
+                    }
+                    broadcastE2eRefusal(pairingId, outcome.userMessage)
+                    return
+                }
+            }
+        }
+        pendingE2eOffers.remove(pairingId)
+
         try {
-            client?.sendResponse(type, mapOf("pairingId" to pairingId))
+            client?.sendResponse(type, body)
             android.util.Log.d("PhoneService", "$type sent for pairingId=$pairingId")
         } catch (e: Exception) {
             android.util.Log.e("PhoneService", "Failed to send $type: ${e.message}", e)
+        }
+    }
+
+    // ================================================================== E2E
+    //
+    // P4 (w1)/(w2). Everything below is wiring: the decisions belong to
+    // E2eNegotiation, the handshake to E2eAccept, the pin to E2eKeyPin and the
+    // teardown to E2eLifecycle, all of which are unit- and instrumented-tested
+    // on their own. Nothing here re-implements any of it.
+
+    /** What [negotiateAcceptE2e] decided. */
+    private sealed interface AcceptE2e {
+        /** Attach [block] to ACCEPT_PAIRING and seal from now on. */
+        data class Sealed(val block: com.google.gson.JsonObject) : AcceptE2e
+
+        /** Pair in the clear. v55 behaviour, unchanged byte for byte. */
+        data object Plaintext : AcceptE2e
+
+        /** Decline the pairing and tell the user [userMessage]. */
+        data class Refuse(val userMessage: String, val logReason: String) : AcceptE2e
+    }
+
+    /**
+     * Parse and stash the `e2e` block from a PAIRING_REQUEST.
+     *
+     * The payload arrives as Gson's `Map<String, Any>`, so the nested block is
+     * a `Map`, not a `JsonObject`. It is converted with `toJsonTree` rather
+     * than re-read field by field so that [E2eNegotiation.parsePeerOffer] — the
+     * tested parser — remains the only thing that interprets the shape.
+     */
+    private fun stashPeerOffer(pairingId: String, raw: Any?) {
+        val block = try {
+            if (raw == null) null else com.google.gson.Gson().toJsonTree(raw).asJsonObject
+        } catch (e: RuntimeException) {
+            // Not an object at all. parsePeerOffer(null) records it as ABSENT,
+            // which is the correct reading: nothing usable was offered.
+            null
+        }
+        val offer = E2eNegotiation.parsePeerOffer(block)
+        pendingE2eOffers[pairingId] = offer
+        android.util.Log.d(
+            "PhoneService",
+            "PAIRING_REQUEST e2e offer id=$pairingId advertisement=${offer.advertisement} " +
+                "recipients=${offer.recipients.size}" +
+                (offer.absentReason?.let { " reason=$it" } ?: "")
+        )
+    }
+
+    /**
+     * Decide, and when the answer is "sealed", perform the Accept handshake.
+     *
+     * The ordering is the point:
+     *  1. [E2eNegotiation.decide] against THIS device's stored setting and the
+     *     downgrade latch — local truth only, never read back from the server;
+     *  2. (w2) pin the advertised recipient keys against the DeviceKey registry;
+     *  3. [E2eAccept.prepare] mints SK/kid/epk and one wrap per recipient.
+     *
+     * Any failure in 2 or 3 is a REFUSAL when the mode is on, never a fallback
+     * to plaintext.
+     */
+    private fun negotiateAcceptE2e(pairingId: String): AcceptE2e {
+        val offer = pendingE2eOffers[pairingId]
+            ?: E2eNegotiation.parsePeerOffer(null).also {
+                android.util.Log.w("PhoneService", "no stashed e2e offer for $pairingId")
+            }
+        val localEnabled = E2eSettings.isEncryptedModeEnabled(this)
+
+        val decision = E2eNegotiation.decide(localEnabled, offer, e2eDowngradeLatch)
+        if (decision is E2eNegotiation.Decision.Abort) {
+            return AcceptE2e.Refuse(decision.userMessage, decision.logReason)
+        }
+        if (decision !is E2eNegotiation.Decision.Encrypted) return AcceptE2e.Plaintext
+
+        return try {
+            val epoch = E2ePairIdentity.nextPairEpoch(this)
+            val pairContext = E2ePairIdentity.contextFor(
+                this, pairingId, decision.recipients, epoch
+            )
+            val prepared = E2eAccept.prepare(this, decision, pairContext)
+            // Gate 1 Addendum A3 (proposal A, not yet ruled): carry the context
+            // the phone minted so the peers can rebuild §13.10.3's pairContext.
+            // Without it, phoneDeviceId and pairEpoch reach no one and nothing
+            // the phone seals is openable off-device. See
+            // e2e-evidence/PAIRCONTEXT-CHANNEL-GAP.md.
+            val block = E2ePairIdentity.withCtx(prepared.block, pairContext)
+                ?: throw E2eAccept.AcceptException(
+                    "the e2e block exceeds ${E2eNegotiation.MAX_BLOCK_BYTES} bytes once the A3 " +
+                        "ctx is attached; the relay would DROP it and the pairing would " +
+                        "silently continue in plaintext"
+                )
+            // A new Accept replaces whatever was live; the old SK is dropped,
+            // never carried across (§13.8).
+            e2eSession?.close()
+            e2eSession = prepared.session
+            e2eLatchedOn = true
+            android.util.Log.i(
+                "PhoneService",
+                "E2E armed kid=${prepared.session.kid} epoch=$epoch mode=" +
+                    (if (prepared.modeOn) "ON" else "UNVERIFIED") +
+                    " recipients=${decision.recipients.size} sas=${prepared.sasDigits ?: "-"}"
+            )
+            AcceptE2e.Sealed(block)
+        } catch (e: RuntimeException) {
+            // E2eAccept.AcceptException (oversized block, no recipients),
+            // E2eSeqStore.CounterUnsafeException (the counter cannot be proved
+            // safe) and E2eSession.KidReuseException all land here, and all
+            // three mean the same thing: we cannot seal this pairing.
+            //
+            // With the mode ON that is a refusal. With it merely available, the
+            // pairing proceeds in the clear and is badged Unencrypted — which
+            // is §13.1's row for "neither side required it".
+            val why = "${e.javaClass.simpleName}: ${e.message}"
+            if (decision.modeOn) {
+                e2eDowngradeLatch.latch()
+                AcceptE2e.Refuse(E2eNegotiation.ABORT_MESSAGE, "accept handshake failed — $why")
+            } else {
+                android.util.Log.w("PhoneService", "E2E unavailable, continuing plaintext — $why")
+                AcceptE2e.Plaintext
+            }
+        }
+    }
+
+    /** Tell any foreground UI that the pairing was refused, and why. */
+    private fun broadcastE2eRefusal(pairingId: String, message: String) {
+        sendBroadcast(
+            Intent(ACTION_PAIRING_E2E_REFUSED).apply {
+                setPackage(packageName)
+                putExtra(EXTRA_PAIRING_ID, pairingId)
+                putExtra(EXTRA_E2E_MESSAGE, message)
+            }
+        )
+    }
+
+    /**
+     * §13.8: the pair ended (RESET_ROOM, PAIRING_TERMINATED, LEAVE_ACTIVE).
+     * The SK is dropped; the device key is KEPT, because leaving a room is not
+     * losing a key and rotating here would force every OTHER pairing to
+     * re-verify for an event that is not a compromise.
+     *
+     * The downgrade latch is NOT cleared for a terminate — a peer that can make
+     * the pair terminate could otherwise reset the latch at will, which is the
+     * whole attack it exists to stop.
+     */
+    private fun tearDownE2e(reason: String) {
+        val outcome = E2eLifecycle.onPairEnded(e2eSession)
+        e2eSession = null
+        e2eLatchedOn = false
+        if (outcome.sessionClosed) {
+            android.util.Log.i("PhoneService", "E2E torn down ($reason): ${outcome.notes}")
         }
     }
 
@@ -3413,6 +3644,10 @@ class PhoneService : Service() {
         // chose to leave so an Accept tap on a stale notification
         // should not silently put them back in a pair.
         clearAllPendingPairings("user disconnect")
+        // The pair is over as far as this device is concerned — drop the SK.
+        // The DEVICE key is kept: disconnecting is not signing out, and
+        // rotating it here would make every other pairing re-verify.
+        tearDownE2e("relay disconnect")
         // Clear error BEFORE close() so the onClose callback below,
         // which may fire synchronously on some socket states, doesn't
         // re-arm FAILED on the way out.
@@ -3564,6 +3799,11 @@ class PhoneService : Service() {
         } else {
             android.util.Log.w("PhoneService", "leaveActivePair: relay client not open — nothing to send")
         }
+        // §13.8 names LEAVE_ACTIVE as an SK-dropping event. AFTER the frame
+        // goes out: LEAVE_ACTIVE itself is plaintext (a lobby/presence frame),
+        // but tearing down first would leave the chokepoint latched with no
+        // session for the moment in between.
+        tearDownE2e("LEAVE_ACTIVE")
         // Do NOT close the relay client. Do NOT null clientRelayUrl. Do
         // NOT touch the TokenStore. Phone stays in lobby, ready to
         // accept a new pairing. The PAIRING_TERMINATED reply (when the
@@ -3689,6 +3929,13 @@ class PhoneService : Service() {
                     val deviceLabel = (payload["deviceLabel"] as? String)?.takeIf { it.isNotBlank() }
                     val identity = buildBrowserIdentity(ua, ip, deviceLabel)
                     android.util.Log.d("PhoneService", "PAIRING_REQUEST id=$pairingId identity=$identity label=$deviceLabel")
+                    // P4 (w1): stash what the computer offered. The DECISION is
+                    // taken at Accept (§13.1 C-1), not here — this frame only
+                    // tells us what is available, and the user may never answer.
+                    // parsePeerOffer never throws: a malformed block, an old
+                    // computer, the kill switch and an over-4KB block are
+                    // indistinguishable from here and all mean the same thing.
+                    stashPeerOffer(pairingId, payload["e2e"])
                     // Post heads-up notification with Accept/Decline
                     // action buttons. Reuses the same channel + receiver
                     // wiring that was built for the old LAN PhoneServer
@@ -3744,10 +3991,29 @@ class PhoneService : Service() {
                     // over but we're still available for the next one.
                     isPairActive = false
                     updateNotification(getString(R.string.notif_ongoing_waiting))
+                    // §13.8: the pair is over, so the SK goes. Before the
+                    // pending-pairing sweep, so a request that arrives in the
+                    // same tick cannot be accepted against a dead session.
+                    tearDownE2e("PAIRING_TERMINATED: $reason")
                     // Drop any pending request notifications for this
                     // session — defensive; usually nothing is pending
                     // by the time TERMINATED arrives.
                     clearAllPendingPairings("pairing terminated: $reason")
+                }
+                /**
+                 * §13.8 names RESET_ROOM alongside PAIRING_TERMINATED as an
+                 * event that drops the SK. The relay does not send this frame
+                 * today — there is no RESET_ROOM anywhere in this module and
+                 * none in server.js at BASE — so this case is a no-op in
+                 * practice and exists so that the day it IS sent, the key is
+                 * dropped rather than silently outliving the room it belonged
+                 * to. It deliberately does NOT invent any other behaviour.
+                 */
+                "RESET_ROOM" -> {
+                    android.util.Log.d("PhoneService", "RESET_ROOM")
+                    isPairActive = false
+                    tearDownE2e("RESET_ROOM")
+                    clearAllPendingPairings("room reset")
                 }
                 // ------------------------------------------------------
                 "MAKE_CALL" -> {

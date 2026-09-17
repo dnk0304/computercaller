@@ -88,17 +88,38 @@ object E2eAccept {
         phoneDeviceId: String,
         peerDeviceId: String,
         pairEpoch: Long,
-    ): Prepared {
-        if (decision.recipients.isEmpty()) {
-            throw AcceptException("no recipients to seal to")
-        }
-        val pairContext = E2eKdf.PairContext(
+    ): Prepared = prepare(
+        ctx,
+        decision,
+        E2eKdf.PairContext(
             pairingId = pairingId,
             userId = userId,
             phoneDeviceId = phoneDeviceId,
             peerDeviceId = peerDeviceId,
             pairEpoch = pairEpoch,
-        )
+        ),
+    )
+
+    /**
+     * Assemble the Accept from an already-built context.
+     *
+     * Production goes through this overload, with the context coming from
+     * [E2ePairIdentity.contextFor] — the single place that decides what each
+     * field of §13.10.3 is fed on a real device, and the single place a ruling
+     * on the pairContext channel gap changes. The five-argument overload above
+     * is kept because the frozen-vector suites address the fields directly.
+     */
+    @JvmStatic
+    fun prepare(
+        ctx: Context,
+        decision: E2eNegotiation.Decision.Encrypted,
+        pairContext: E2eKdf.PairContext,
+    ): Prepared {
+        if (decision.recipients.isEmpty()) {
+            throw AcceptException("no recipients to seal to")
+        }
+        val pairingId = pairContext.pairingId
+        val pairEpoch = pairContext.pairEpoch
 
         val phonePub = E2eKeyAgreement.devicePublicSec1(ctx)
         val sk = E2eSessionKey.mint()

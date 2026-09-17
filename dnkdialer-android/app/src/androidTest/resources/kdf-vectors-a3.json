@@ -1,0 +1,53 @@
+{
+  "version": "cc-e2e-v1",
+  "addendum": "GATE1 Addendum A3 — pairContext channel: RATIFIED (A), AMENDED — 2026-09-17",
+  "source": "security/PROJECTS/computercaller/e2e/GATE1-ADDENDUM-A3.md, section 'Vector I'. Computed by Security in an independent HKDF/GCM implementation (a3-vectors-verify.mjs). Transcribed VERBATIM — never regenerated from P4's own code, which is the implementation under test. All three positive/negative key values were additionally re-derived from the addendum text before being committed.",
+  "note": "A3 says ADD vector I to tests/kdf-vectors.json. Same reason as kdf-vectors-a2.json: androidTest/resources/kdf-vectors.json is the byte-identical copy whose sha256 is the (c3) cross-lane proof, and the android lane must not edit the web lane's canonical file. Flagged to Ken for P0.2.",
+  "assertion": "wire ctx + LOCAL userId == the frozen local context, byte for byte. P4 asserts this through its ENCODE path (it builds ctx); P2/P3 assert through their DECODE path. That pairing is what makes vector I cross-implementation rather than two copies of one belief.",
+  "sessionKeyHex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+  "I1_positive": {
+    "ctxWire": {
+      "pairingId": "pair-7f3a9c21",
+      "phoneDeviceId": "dev-phone-01",
+      "peerDeviceId": "dev-web-01",
+      "pairEpoch": "42"
+    },
+    "localUserId": "user-0191aa",
+    "contextBytesHex": "110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002a",
+    "p2cKeyHex": "b12f964e487f7bf39a0b37df9715ca9e606c642c28bdf430f51b2051a4e0e060",
+    "c2pKeyHex": "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d",
+    "np2cHex": "6fa67348",
+    "nc2pHex": "4a786847"
+  },
+  "I2_negative_epoch_drift": {
+    "ctxWire": {
+      "pairingId": "pair-7f3a9c21",
+      "phoneDeviceId": "dev-phone-01",
+      "peerDeviceId": "dev-web-01",
+      "pairEpoch": "43"
+    },
+    "localUserId": "user-0191aa",
+    "contextBytesHex": "110b757365722d303139316161120c6465762d70686f6e652d3031130a6465762d7765622d303114000000000000002b",
+    "p2cKeyHex": "92bb769b26bd88b059fed952bc189b47fa293563324d61eb4d88438eeb713652",
+    "np2cHex": "13168906",
+    "requirement": "A2 vector F's ciphertext MUST FAIL AUTHENTICATION under this key/prefix — the A3-M2 replay case."
+  },
+  "I3_negative_userid_drift": {
+    "ctxWire": {
+      "pairingId": "pair-7f3a9c21",
+      "phoneDeviceId": "dev-phone-01",
+      "peerDeviceId": "dev-web-01",
+      "pairEpoch": "42"
+    },
+    "localUserId": "user-0191ab",
+    "p2cKeyHex": "838a45bc4c6cb537eb16efa37c51f949efb9b54c83e3f4fc2fe11636a838a65e",
+    "requirement": "One character of a NEVER-TRANSMITTED field diverges the key totally — proves userId is load-bearing and that a session-identity mismatch fails closed."
+  },
+  "I4_parser_negatives": {
+    "requirement": "All MUST throw/refuse at ctx ingest, never coerce.",
+    "pairEpochRejected": [42, "042", " 42", "-1", "4.2", "", "+1", "0x2a", "18446744073709551616"],
+    "pairEpochAccepted": ["0", "1", "42", "9223372036854775807"],
+    "strictness": "A3 rejects above 2^64-1; P4 rejects above 2^63-1 (Long.MAX_VALUE). Stricter, and deliberately so: pairEpoch is a count of Accepts by one phone, so 2^63 is unreachable, while a value above it would have to be carried as a negative Long and every downstream be64/AAD assertion would then be reasoning about a sign bit. Refusing is fail-closed; coercing would not be.",
+    "alsoRejected": "ctx absent on a mode=1 block; peerDeviceId != own deviceId; any of userId/phoneDeviceId/peerDeviceId over 255 UTF-8 bytes"
+  }
+}
