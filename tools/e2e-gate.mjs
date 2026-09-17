@@ -776,6 +776,18 @@ if (WEB) {
     }
     run(`unit:${name}`, `node ${rel}`, { parse: passLine, scrub: true });
   }
+  // E2E-P2 (g-node), Ken R-L. The live-peer harness: both ends driven for real
+  // over a socket, with the relay's OWN lib/e2eBlock-core.js doing the block
+  // validation and a drift guard over server.js. Named explicitly because it is
+  // a script, not a tests/e2e-*.test.mjs file, and so is matched by no sweep —
+  // and a cross-lane harness the gate never runs is a harness that stops being
+  // true. ONLY e2e-gate.mjs change made by P2; declared in the résumé.
+  if (existsSync(join(ROOT, 'scripts', 'e2e-live-peer-proof.mjs'))) {
+    run('unit:live-peer', 'node scripts/e2e-live-peer-proof.mjs', { parse: passLine, scrub: true });
+  } else if (!BASELINE) {
+    record('unit:live-peer', 'node scripts/e2e-live-peer-proof.mjs', 1, 0, { missing: 1 });
+  }
+
   if (existsSync(join(ROOT, 'scripts', 'ext-bridge-origin-pin-proof.mjs'))) {
     run('unit:bridge-origin-pin', 'node scripts/ext-bridge-origin-pin-proof.mjs', { parse: passLine, scrub: true });
   } else {
