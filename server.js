@@ -1475,6 +1475,27 @@ function startRelay(httpServer) {
           mode: block.mode,
           recipKeys: block.recipKeys,
           wrap: mine.wrap,
+          // GATE1 Addendum A3-M1. `ctx` is the pair context the endpoints derive
+          // their traffic keys from: {pairingId, phoneDeviceId, peerDeviceId,
+          // pairEpoch}. ACCEPT_PAIRING -> PAIRING_ACTIVE forwards the block
+          // whole, so those two recipients get it for free; THIS slice is an
+          // explicit allowlist, so without this line the listener — the one
+          // recipient whose whole job is decrypting with the panel closed —
+          // would derive from a context it cannot obtain, and every frame it
+          // received would fail authentication.
+          //
+          // Unlike `wrap`, ctx is pair-scoped and NOT device-scoped: every
+          // recipient gets the identical object. The relay is a byte-carrier
+          // here and validates nothing beyond what validateE2eBlock already
+          // enforces (shape + 4 KB cap) — the `pairEpoch` decimal-string rule,
+          // the peerDeviceId match and the epoch floor are all RECEIVER-side
+          // MUSTs (A3-M2..M4). A relay that parsed ctx would be a relay that
+          // could propose one.
+          //
+          // `block.ctx` is undefined on a block that carries none, and
+          // JSON.stringify drops an undefined value: a pre-A3 block's
+          // PAIR_STATE frame stays byte-identical to what shipped before.
+          ctx: block.ctx,
         };
       }
     }
