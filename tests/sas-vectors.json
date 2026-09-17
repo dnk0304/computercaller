@@ -1,0 +1,97 @@
+{
+  "version": "cc-sas-v1",
+  "frozenAt": "E2E-P0 (design freeze). Changing any value here is a breaking protocol change and requires a new info string.",
+  "info": "cc-sas-v1",
+  "hash": "SHA-256",
+  "kdf": "HKDF (RFC 5869), salt = UTF8(pairingId), info = \"cc-sas-v1\"",
+  "digits": "be32(OKM[0..4]) mod 100000, zero-padded to 5",
+  "layout": [
+    "0x01 || u8(len(epk))  || epk",
+    "0x02 || u8(n)         || for each K in the sorted, deduplicated key SET: u8(len(K)) || K",
+    "0x03 || be64(pairEpoch)",
+    "0x04 || modeByte      (0x01 if EITHER side advertises Encrypted mode ON, else 0x00)"
+  ],
+  "keySetRule": "ALL static public keys in the pairing - the phone plus every recipient (web, service worker, further computers) - deduplicated and sorted by UNSIGNED lexicographic byte comparison. One code per pairing, never one per recipient: under a per-recipient SAS the service worker has no UI to display its code on, so a swapped SW key would be invisible to the user while remaining the leg that decrypts notification bodies with the panel closed (AUDIT-SECURITY-v2 B9, correcting v1 B7).",
+  "modeByteRule": "The EFFECTIVE mode of the pair, which is the OR of both sides per-device settings (C-1). A computer advertises the OR of its own web and extension settings. Never read back from the server as truth.",
+  "consumers": [
+    "web page",
+    "chrome-extension service worker",
+    "Android app (instrumented SasVectorsTest, P4)"
+  ],
+  "vectors": [
+    {
+      "id": "v1-2key-mode-off",
+      "note": "Phone + web only, Encrypted mode OFF. The minimal pairing.",
+      "pairingId": "pair-0000000000000001",
+      "epk": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "keys": [
+        "0101010101010101010101010101010101010101010101010101010101010101",
+        "0202020202020202020202020202020202020202020202020202020202020202"
+      ],
+      "pairEpoch": 1,
+      "modeOn": false,
+      "transcriptHex": "0120aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa02022001010101010101010101010101010101010101010101010101010101010101012002020202020202020202020202020202020202020202020202020202020202020300000000000000010400",
+      "digits": "54443"
+    },
+    {
+      "id": "v2-2key-mode-on",
+      "note": "Identical to v1 except modeOn. The modeByte alone must move the digits.",
+      "pairingId": "pair-0000000000000001",
+      "epk": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "keys": [
+        "0101010101010101010101010101010101010101010101010101010101010101",
+        "0202020202020202020202020202020202020202020202020202020202020202"
+      ],
+      "pairEpoch": 1,
+      "modeOn": true,
+      "transcriptHex": "0120aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa02022001010101010101010101010101010101010101010101010101010101010101012002020202020202020202020202020202020202020202020202020202020202020300000000000000010401",
+      "digits": "06512"
+    },
+    {
+      "id": "v3-3key-mode-on",
+      "note": "Phone + web + extension service worker. The real Encrypted-mode shape (B9).",
+      "pairingId": "pair-0000000000000002",
+      "epk": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "keys": [
+        "0101010101010101010101010101010101010101010101010101010101010101",
+        "0202020202020202020202020202020202020202020202020202020202020202",
+        "0303030303030303030303030303030303030303030303030303030303030303"
+      ],
+      "pairEpoch": 42,
+      "modeOn": true,
+      "transcriptHex": "0120aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020320010101010101010101010101010101010101010101010101010101010101010120020202020202020202020202020202020202020202020202020202020202020220030303030303030303030303030303030303030303030303030303030303030303000000000000002a0401",
+      "digits": "50690"
+    },
+    {
+      "id": "v4-3key-sw-swapped",
+      "note": "v3 with ONLY the SW key swapped. Must differ from v3 - this is the attack B9 exists to catch.",
+      "pairingId": "pair-0000000000000002",
+      "epk": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "keys": [
+        "0101010101010101010101010101010101010101010101010101010101010101",
+        "0202020202020202020202020202020202020202020202020202020202020202",
+        "0404040404040404040404040404040404040404040404040404040404040404"
+      ],
+      "pairEpoch": 42,
+      "modeOn": true,
+      "transcriptHex": "0120aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa020320010101010101010101010101010101010101010101010101010101010101010120020202020202020202020202020202020202020202020202020202020202020220040404040404040404040404040404040404040404040404040404040404040403000000000000002a0401",
+      "digits": "44820"
+    },
+    {
+      "id": "v5-4key-mode-on",
+      "note": "Phone + two computers + SW, with a 65-byte uncompressed epk (the P-256 fallback shape). Exercises u8(n)=4, a non-32-byte epk, and keys supplied OUT of sorted order.",
+      "pairingId": "pair-0000000000000003",
+      "epk": "04bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "keys": [
+        "0303030303030303030303030303030303030303030303030303030303030303",
+        "0505050505050505050505050505050505050505050505050505050505050505",
+        "0101010101010101010101010101010101010101010101010101010101010101",
+        "0202020202020202020202020202020202020202020202020202020202020202"
+      ],
+      "pairEpoch": 1758067200,
+      "modeOn": true,
+      "transcriptHex": "014104bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0204200101010101010101010101010101010101010101010101010101010101010101200202020202020202020202020202020202020202020202020202020202020202200303030303030303030303030303030303030303030303030303030303030303200505050505050505050505050505050505050505050505050505050505050505030000000068c9fa000401",
+      "digits": "17477"
+    }
+  ]
+}
