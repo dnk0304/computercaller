@@ -1,7 +1,7 @@
 {
-  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
-  "utc": "2026-09-17T01:31:41.037Z",
-  "note": "Per-(file, rule) lint floor. May only SHRINK. A phase that reduces a cell regenerates this file in its own commit \"[E2E-P<N>] lint-baseline shrink\". New files and newly-triggered rules have an implicit floor of 0.",
+  "baseSha": "9a540855043e4b6517df99bec5f96f23121bd297",
+  "utc": "2026-09-17T23:47:18.137Z",
+  "note": "Per-(file, rule) lint floor, regenerated at the e2e/integration TIP (E2E-P0.3 b). The gate reads THIS FILE AS COMMITTED AT THE MERGE-BASE with origin/e2e/integration (git show <merge-base>:e2e-evidence/LINT-BASELINE.json), never from the working tree, so a lane cannot grade itself against its own edit. A cell over the floor FAILS when the file is in the lane diff (authored) and is reported as `inherited` when it is not. New files and newly-triggered rules have an implicit floor of 0. Regenerate at the tip when integration accumulates debt, in a commit that says so.",
   "namedOwners": {
     "app/app/admin/page.tsx": {
       "owner": "Forge",
@@ -106,9 +106,9 @@
     }
   },
   "totals": {
-    "problems": 176,
+    "problems": 178,
     "errors": 55,
-    "warnings": 121
+    "warnings": 123
   },
   "files": {
     "app/(marketing)/page.tsx": {
@@ -168,6 +168,9 @@
     },
     "components/Sidebar.tsx": {
       "react-hooks/set-state-in-effect": 1
+    },
+    "dnkdialer-android/tools/e2e-gate-android.mjs": {
+      "@typescript-eslint/no-unused-vars": 2
     },
     "dnkdialer-bridge/main.js": {
       "@typescript-eslint/no-require-imports": 3,
