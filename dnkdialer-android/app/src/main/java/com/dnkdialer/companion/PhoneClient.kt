@@ -41,6 +41,22 @@ class PhoneClient(
 
     private val gson = Gson()
 
+    /**
+     * P4 (w3) — the E2E chokepoint, injected by [PhoneService] once a pair has
+     * negotiated encryption, and null until then.
+     *
+     * It lives HERE rather than in PhoneService because this class holds the
+     * only literal `send()` to the socket and the only `onMessage`. A gate
+     * applied one layer up would be bypassed by the four call sites that reach
+     * `client?.sendResponse(...)` directly, and each of those sends a frame on
+     * §13.7's sealed list. A chokepoint with four ways around it is not one.
+     *
+     * @Volatile because it is written on the Accept worker and read on the
+     * socket's reader thread and on whichever thread emits a frame.
+     */
+    @Volatile
+    var frameGate: E2eFrameGate? = null
+
     override fun onOpen(handshake: ServerHandshake?) {
         android.util.Log.d("PhoneClient", "Connected to relay: $uri")
         onConnectionChange(true)
@@ -56,8 +72,28 @@ class PhoneClient(
 
             val command = message.substring(0, colonIndex)
             val jsonStr = message.substring(colonIndex + 1)
-            val payload = if (jsonStr.isNotEmpty()) {
-                gson.fromJson(jsonStr, Map::class.java) as? Map<String, Any>
+            // P4 (w3): unseal BEFORE parsing. The envelope is the body, so a
+            // sealed frame parsed as a payload would dispatch {e,kid,s,c} to a
+            // handler expecting the real fields — which reads as a malformed
+            // frame rather than as an encrypted one.
+            val gate = frameGate
+            val body = if (gate == null) {
+                jsonStr
+            } else {
+                when (val verdict = gate.inbound(command, jsonStr)) {
+                    is E2eFrameGate.Inbound.Deliver -> verdict.json
+                    is E2eFrameGate.Inbound.Drop -> {
+                        // §13.5: drop the frame, NEVER close the socket.
+                        android.util.Log.w(
+                            "PhoneClient", "dropped inbound $command: ${verdict.reason}"
+                        )
+                        return
+                    }
+                }
+            }
+
+            val payload = if (body.isNotEmpty()) {
+                gson.fromJson(body, Map::class.java) as? Map<String, Any>
             } else null
 
             onCommand(command, payload)
@@ -92,7 +128,27 @@ class PhoneClient(
 
     fun sendResponse(type: String, payload: Any) {
         val json = Gson().toJson(payload)
-        val msg = "$type:$json"
+        // P4 (w3): the single outbound chokepoint. A null body means DROP —
+        // §13.7 says a sealed frame that cannot be sealed must not leave in the
+        // clear, because the user has been told this pair is encrypted and a
+        // silent fallback on the one frame that failed is worse than losing it.
+        // Read the volatile ONCE: two reads could straddle the moment an Accept
+        // installs the gate, and "no gate" plus "gate said drop" are opposite
+        // outcomes that must not be decided from two different observations.
+        val gate = frameGate
+        val body = if (gate == null) {
+            json
+        } else {
+            gate.outbound(type, json) ?: run {
+                android.util.Log.e(
+                    "PhoneClient",
+                    "DROPPED outbound $type — ${gate.lastDropReason} " +
+                        "(total ${gate.droppedOutbound}). NOT sent in the clear."
+                )
+                return
+            }
+        }
+        val msg = "$type:$body"
         if (isOpen) {
             send(msg)
         }

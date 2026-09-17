@@ -201,9 +201,53 @@
                         app:thumbTint="@color/cc_switch_thumb"
                         app:trackTint="@color/cc_switch_track" />
                 </LinearLayout>
+
+                <!-- E2E programme, P4 (s5) — "Encrypted mode".
+                     Same row shape as the lobby toggle above, in the same
+                     group, because it is the same kind of thing: a persistent
+                     per-device switch about how this phone connects.
+                     In Part 1 the switch is ALWAYS disabled and there is no
+                     crypto behind it; settingsEncryptedModeReason carries the
+                     reason so a greyed control is never unexplained. -->
+                <View style="@style/CcRowHairline" />
+
+                <LinearLayout
+                    style="@style/CcRow"
+                    android:background="@null"
+                    android:clickable="false"
+                    android:focusable="false">
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView
+                            android:id="@+id/settingsEncryptedModeTitle"
+                            style="@style/CcRowTitle"
+                            android:text="@string/row_encrypted_mode_title" />
+                        <TextView
+                            android:id="@+id/settingsEncryptedModeSub"
+                            style="@style/CcRowSub"
+                            android:text="@string/row_encrypted_mode_sub" />
+                    </LinearLayout>
+
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/settingsEncryptedModeToggle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="@dimen/cc_touch_min"
+                        android:layout_marginStart="@dimen/space_12"
+                        android:minWidth="0dp"
+                        android:minHeight="@dimen/cc_touch_min"
+                        android:contentDescription="@string/row_encrypted_mode_title"
+                        android:showText="false"
+                        app:thumbTint="@color/cc_switch_thumb"
+                        app:trackTint="@color/cc_switch_track" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- The two footnotes below are in the SAME ORDER as the two rows in
+             the group above (lobby, then encrypted mode). They are stacked
+             under one group, so the order is the only thing telling the user
+             which line explains which row — do not reorder one without the
+             other. -->
         <TextView
             android:id="@+id/settingsLobbySubtitle"
             android:layout_width="match_parent"
@@ -211,6 +255,18 @@
             android:layout_marginTop="@dimen/space_8"
             android:layout_marginStart="2dp"
             android:text="@string/settings_lobby_subtitle"
+            android:textSize="@dimen/cc_text_meta"
+            android:textColor="@color/text_tertiary"
+            android:lineSpacingMultiplier="1.45" />
+
+        <!-- Why the Encrypted mode switch is greyed out. -->
+        <TextView
+            android:id="@+id/settingsEncryptedModeReason"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_8"
+            android:layout_marginStart="2dp"
+            android:text="@string/settings_encrypted_mode_waiting"
             android:textSize="@dimen/cc_text_meta"
             android:textColor="@color/text_tertiary"
             android:lineSpacingMultiplier="1.45" />

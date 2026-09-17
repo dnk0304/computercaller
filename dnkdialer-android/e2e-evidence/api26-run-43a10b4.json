@@ -1,0 +1,24 @@
+{
+  "phase": "P4",
+  "lane": "android",
+  "what": "Gate 1 R1 mandated control: the API 26-30 software fallback run on a REAL API 26 system image, not only via the forced test entry points on a modern emulator.",
+  "sha": "43a10b4",
+  "utc": "2026-09-17T12:12Z",
+  "avd": "e2e_api26",
+  "systemImage": "system-images;android-26;google_apis;x86_64",
+  "device": "emulator-5556",
+  "installedVersionCode": 58,
+  "measured": {
+    "api": 26,
+    "backend": "SOFTWARE_WRAPPED",
+    "keystoreBackend": "UNSUPPORTED",
+    "strongBoxDeclared": false,
+    "reason": "KeyProperties.PURPOSE_AGREE_KEY requires API 31; this device is API 26. No Keystore-backed key agreement is possible."
+  },
+  "results": {
+    "E2eKeyAgreementTest": { "tests": 10, "failures": 0 },
+    "E2eSasVectorsTest": { "tests": 7, "failures": 0 }
+  },
+  "note": "This is the run the forced entry points CANNOT substitute for: on API 36 the backend is ANDROID_KEYSTORE and the absence of PURPOSE_AGREE_KEY below 31 is unobservable. Here backend() genuinely selects SOFTWARE_WRAPPED and E2eKeyStore.capability() reports UNSUPPORTED with the API-level reason, so the fallback is exercised as the ONLY available path. The android gate's own `api26ImageRun` count stays false because the gate drives a single attached device; this file is the separate evidence. Reproduce with tools/run-agreement-test.ps1 against a booted e2e_api26 AVD.",
+  "result": "PASS"
+}

@@ -54,30 +54,12 @@ class DnkNotificationListenerService : NotificationListenerService() {
             }
         }
 
-        // Categories we forward to the web client. Anything outside this set
-        // is dropped unless the package is in ALWAYS_ALLOW_PACKAGES — keeps
-        // the notification strip focused on communication and silences the
-        // long tail of system/promo/transactional noise.
-        private val ALLOWED_CATEGORIES = setOf(
-            Notification.CATEGORY_MESSAGE,   // WhatsApp, Telegram, SMS, RCS, Discord, Messenger
-            Notification.CATEGORY_SOCIAL,    // Instagram, Twitter/X, Snapchat, LinkedIn
-            Notification.CATEGORY_EMAIL,     // Gmail, Outlook
-            Notification.CATEGORY_CALL,      // Call notifications from any app
-        )
-
-        // Package allowlist for apps that frequently post messaging-style
-        // notifications without setting a CATEGORY_* value. Bypasses the
-        // category filter — if the package matches, we forward regardless.
-        private val ALWAYS_ALLOW_PACKAGES = setOf(
-            "com.whatsapp",
-            "org.telegram.messenger",
-            "com.viber.voip",
-            "com.discord",
-            "com.facebook.orca",                  // Messenger
-            "com.instagram.android",              // Instagram DMs
-            "com.google.android.apps.messaging",  // Google Messages (SMS/RCS)
-            "com.samsung.android.messaging",      // Samsung Messages
-        )
+        // The category/package filter and the ongoing exclusion moved to
+        // NotificationBackfill so the live path, the removal path and the
+        // backfill sweep share ONE predicate. Two copies of a notification
+        // filter drift within a release, and they drift silently: the symptom
+        // is a notification that appears on one path and not the other, and
+        // nobody can say which behaviour was intended.
 
         // Per-package icon cache. Keyed by packageName; value is a base64-encoded
         // PNG of the app's launcher icon scaled to 48x48. Lives for the process
@@ -91,20 +73,39 @@ class DnkNotificationListenerService : NotificationListenerService() {
         // RemoteInput result key, sbn key (for matching back on reply), the
         // notification post timestamp, and the captured app icon (base64 PNG)
         // when available.
-        var onMessageNotification: (
-            (
-                appName: String,
-                packageName: String,
-                title: String,
-                body: String,
-                hasReply: Boolean,
-                replyKey: String,
-                notificationKey: String,
-                timestamp: Long,
-                icon: String?,
-                senderPersonUri: String?
-            ) -> Unit
-        )? = null
+        /**
+         * Everything the web client needs to render and optionally reply to a
+         * notification.
+         *
+         * A data class rather than the eleven positional parameters this became
+         * once (i) added `backfill`: `replyKey` and `notificationKey` are
+         * adjacent Strings, and so are `title` and `body`. Transposing a pair
+         * of those compiles, ships, and shows the wrong text on someone's
+         * desktop.
+         */
+        data class Payload(
+            val appName: String,
+            val packageName: String,
+            val title: String,
+            val body: String,
+            val hasReply: Boolean,
+            val replyKey: String,
+            val notificationKey: String,
+            /** `StatusBarNotification.postTime`, ms epoch. */
+            val timestamp: Long,
+            val icon: String?,
+            val senderPersonUri: String?,
+            /**
+             * True for a shade sweep, false for a live post. The web reads
+             * `payload.backfill === true` and merges by `postedAt` instead of
+             * notifying, badging or playing a sound (Forge-T).
+             */
+            val backfill: Boolean,
+        )
+
+        // Callback set by PhoneService so it can forward intercepted
+        // notifications.
+        var onMessageNotification: ((Payload) -> Unit)? = null
 
         // Fired when the user (or the source app) dismisses a notification.
         // PhoneService wires this to a NOTIFICATION_REMOVED frame so the web
@@ -135,42 +136,48 @@ class DnkNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        val pkg = sbn.packageName ?: return
-        if (pkg == packageName) return // never forward our own notifications
+        val payload = buildPayload(sbn, backfill = false) ?: return
+        onMessageNotification?.invoke(payload)
+    }
 
-        val notification = sbn.notification ?: return
-        val extras: Bundle = notification.extras ?: return
+    /**
+     * Turn one [StatusBarNotification] into a [Payload], or null when it must
+     * not be forwarded.
+     *
+     * THE one serializer. The live path and the backfill sweep both come
+     * through here, differing in exactly one boolean, so a change to what a
+     * notification looks like on the wire cannot reach one path and miss the
+     * other.
+     */
+    private fun buildPayload(sbn: StatusBarNotification, backfill: Boolean): Payload? {
+        val pkg = sbn.packageName ?: return null
+        val notification = sbn.notification ?: return null
+        val extras: Bundle = notification.extras ?: return null
 
-        // Skip ongoing/persistent notifications (progress bars, media players,
-        // navigation, downloads, foreground-service stickies). These are state
-        // displays, not events — forwarding them would spam the web client
-        // every time the player updates a progress tick.
-        if (notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return
+        if (!NotificationBackfill.isForwardable(
+                packageName = pkg,
+                category = notification.category,
+                flags = notification.flags,
+                isSelf = pkg == packageName,
+            )
+        ) {
+            return null
+        }
 
-        // Only forward communication-relevant notifications. Either the
-        // category is one we care about, OR the package is on the allowlist
-        // for apps that don't reliably set a category.
-        val category = notification.category
-        val isAllowedCategory = category in ALLOWED_CATEGORIES
-        val isAllowedPackage = pkg in ALWAYS_ALLOW_PACKAGES
-        if (!isAllowedCategory && !isAllowedPackage) return
-
-        val title = extractTitle(extras) ?: return
+        val title = extractTitle(extras) ?: return null
         val body = extractBody(extras)
-        if (title.isBlank() && body.isBlank()) return // skip empty
+        if (title.isBlank() && body.isBlank()) return null // skip empty
 
-        // Get app name from package manager
         val appName = try {
             packageManager.getApplicationLabel(
                 packageManager.getApplicationInfo(pkg, 0)
             ).toString()
         } catch (e: Exception) { pkg }
 
-        // Detect if notification has a reply RemoteInput action
+        // Detect if the notification carries a reply RemoteInput action.
         var hasReply = false
         var replyKey = ""
-        val actions = notification.actions ?: emptyArray()
-        for (action in actions) {
+        for (action in notification.actions ?: emptyArray()) {
             val remoteInputs = action.remoteInputs
             if (!remoteInputs.isNullOrEmpty()) {
                 hasReply = true
@@ -180,23 +187,45 @@ class DnkNotificationListenerService : NotificationListenerService() {
         }
 
         val notificationKey = sbn.key ?: "${pkg}_${sbn.id}"
+        // Cached for BOTH paths: a backfilled notification the user replies to
+        // must resolve the same way a live one does, and the shade entry can be
+        // dismissed between the backfill and the reply.
         replyCache[notificationKey] = sbn
 
-        // Capture the app icon (cached after first encode) so the web client
-        // can render proper per-app branding instead of a generic placeholder.
-        val icon = captureAppIcon(pkg)
-
-        // Surface the MessagingStyle sender's Person URI (e.g. "tel:+47…") when
-        // the posting app supplies one. Google/Samsung Messages attach a Person
-        // to each EXTRA_MESSAGES entry whose uri is the canonical phone number —
-        // PhoneService uses this as the primary key to merge RCS into the SMS
-        // thread (resolution priority (a)). Null for apps that don't set it.
-        val senderPersonUri = extractSenderPersonUri(extras)
-
-        onMessageNotification?.invoke(
-            appName, pkg, title, body, hasReply, replyKey, notificationKey, sbn.postTime, icon,
-            senderPersonUri
+        return Payload(
+            appName = appName,
+            packageName = pkg,
+            title = title,
+            body = body,
+            hasReply = hasReply,
+            replyKey = replyKey,
+            notificationKey = notificationKey,
+            timestamp = sbn.postTime,
+            icon = captureAppIcon(pkg),
+            senderPersonUri = extractSenderPersonUri(extras),
+            backfill = backfill,
         )
+    }
+
+    /**
+     * P4 (i): the notifications currently visible on the phone, newest first,
+     * capped, as backfill payloads.
+     *
+     * Returns an empty list rather than throwing when the listener is not
+     * connected — `getActiveNotifications()` throws if the service has been
+     * unbound, and a pairing must not fail because the shade could not be read.
+     */
+    fun activeNotificationPayloads(): List<Payload> {
+        val active = try {
+            activeNotifications ?: return emptyList()
+        } catch (t: Throwable) {
+            android.util.Log.w("NotifListener", "getActiveNotifications failed: ${t.message}")
+            return emptyList()
+        }
+        // Filter FIRST, then sort and cap. Capping before the filter would let
+        // 50 ongoing notifications crowd out every real one.
+        val payloads = active.mapNotNull { buildPayload(it, backfill = true) }
+        return NotificationBackfill.selectNewest(payloads) { it.timestamp }
     }
 
     /**
@@ -314,15 +343,18 @@ class DnkNotificationListenerService : NotificationListenerService() {
         // repeatedly and cause unnecessary relay churn if not filtered.
         val pkg = sbn.packageName ?: return
         val notification = sbn.notification ?: return
-        val category = notification.category
-
-        // Skip ongoing notifications (progress bars, media players, etc.)
-        if (notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return
-
-        // Only forward removal if this package would have been posted
-        val isAllowedCategory = category in ALLOWED_CATEGORIES
-        val isAllowedPackage = pkg in ALWAYS_ALLOW_PACKAGES
-        if (!isAllowedCategory && !isAllowedPackage) return
+        // The SAME predicate the post path used, so a removal is forwarded for
+        // exactly the notifications that were forwarded — including backfilled
+        // ones, since the shade is the source for both.
+        if (!NotificationBackfill.isForwardable(
+                packageName = pkg,
+                category = notification.category,
+                flags = notification.flags,
+                isSelf = pkg == packageName,
+            )
+        ) {
+            return
+        }
 
         val key = sbn.key ?: return
         onNotificationRemovedCb?.invoke(key)
