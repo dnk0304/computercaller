@@ -29,12 +29,13 @@
  */
 
 import { spawnSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import net from 'node:net';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const T_START = Date.now();
 const LOGDIR = join(ROOT, '.e2e-gate-logs');
 
 // ── arguments ──────────────────────────────────────────────────────────────
@@ -132,15 +133,43 @@ if (IS_WORKTREE) {
   }
   const lockPid = Number(readFileSync(lockPath, 'utf8').trim().split(/\s+/)[0]);
   if (!Number.isFinite(lockPid)) refuse('.e2e-lock is malformed (expected "<PID> <UTC> <agent>").');
-  if (!alive(lockPid)) {
-    refuse(`.e2e-lock holds PID ${lockPid}, which is dead. Reclaim it per RESUME-PROTOCOL v2 §1c before running the gate.`);
+
+  /**
+   * RESUME-PROTOCOL v2.1 lock liveness. A live PID proves NOTHING on this box:
+   * every specialist subagent runs inside Niki's long-lived claude.exe, so a
+   * task that died at 21:38 leaves a lock whose PID is still alive at 01:20.
+   * A lock is HELD only when its PID is alive AND it is fresh — mtime < 90 min,
+   * or the branch has a commit newer than the lock (the owner `touch`es the lock
+   * at every commit, so an active run is always one or the other).
+   */
+  const LOCK_MAX_AGE_MS = 90 * 60_000;
+  const lockMtime = statSync(lockPath).mtimeMs;
+  const lockAgeMin = Math.round((Date.now() - lockMtime) / 60_000);
+  const headMs = (() => {
+    const t = Number((spawnSync('git', ['log', '-1', '--format=%ct'], { cwd: ROOT, encoding: 'utf8' }).stdout || '').trim());
+    return Number.isFinite(t) ? t * 1000 : 0;
+  })();
+  const fresh = Date.now() - lockMtime < LOCK_MAX_AGE_MS || headMs > lockMtime;
+  const held = alive(lockPid) && fresh;
+
+  if (!held) {
+    refuse(
+      `.e2e-lock (PID ${lockPid}, ${lockAgeMin} min old) is STALE — ` +
+        `${alive(lockPid) ? 'its PID is alive, but' : 'its PID is dead and'} ` +
+        `the lock has not been touched for ${lockAgeMin} min and no commit is newer than it.\n` +
+        `            A live PID is NOT evidence of a live run: specialist subagents share the\n` +
+        `            long-lived claude.exe host PID, so a dead task leaves a live-PID lock.\n` +
+        `            Reclaim it per RESUME-PROTOCOL v2.1 §1c (note the reclaim in CHECKPOINTS.md),\n` +
+        `            then write a fresh lock and \`touch .e2e-lock\` at every commit.`
+    );
   }
+
   const mine = ancestry(process.pid);
   const envPid = Number(process.env.E2E_LOCK_PID || NaN);
   if (!mine.includes(lockPid) && envPid !== lockPid) {
     refuse(
-      `.e2e-lock holds live PID ${lockPid}, which is not in this run's process ancestry ` +
-        `(${mine.join(' < ')}). Another writer owns this worktree.\n` +
+      `.e2e-lock holds live, fresh PID ${lockPid} (${lockAgeMin} min old), which is not in ` +
+        `this run's process ancestry (${mine.join(' < ')}). Another writer owns this worktree.\n` +
         `            If YOU hold the lock, the shells between you and this process are\n` +
         `            short-lived and ancestry cannot prove it — assert it explicitly:\n` +
         `                E2E_LOCK_PID=${lockPid} bun run e2e:gate --phase ...`
@@ -160,8 +189,40 @@ function readBaseSha() {
 const BASE_SHA = readBaseSha();
 if (!BASE_SHA) refuse('e2e-evidence/BASE.md is missing or carries no 40-char BASE_SHA. Deliverable P0(a) must land first.');
 
+/**
+ * ── SCRUBBED env ───────────────────────────────────────────────────────────
+ * The gate loads `.env.local` so it can refuse without DATABASE_URL/JWT_SECRET
+ * (rule 7). That load is a `process.env` mutation, and every child inherited it
+ * — which is how `tests/www-origin.test.mjs` scored 4/8 under the gate and 8/8
+ * standalone: the suite asserts the relay's default origin handling, and
+ * NEXT_PUBLIC_APP_URL from .env.local overrode the default it was testing. The
+ * test was right; the gate was lying to it.
+ *
+ * So relay + unit steps run with an allowlist env carrying NOTHING about this
+ * app: the OS essentials a node process needs to start, resolve a binary and
+ * open a temp file, and nothing else. Harness steps get this plus exactly the
+ * app keys they need, passed EXPLICITLY (never leaked).
+ */
+const SCRUB_KEYS = [
+  // named in the gate spec amendment
+  'PATH', 'SystemRoot', 'TEMP', 'HOME', 'USERPROFILE',
+  'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ComSpec',
+  // OS-level necessities that carry no application configuration: without
+  // PATHEXT/ComSpec `shell: true` cannot resolve `node`, and TMP is TEMP's twin.
+  'PATHEXT', 'SystemDrive', 'windir', 'TMP', 'NUMBER_OF_PROCESSORS',
+];
+const SCRUBBED = Object.fromEntries(
+  SCRUB_KEYS.flatMap((k) => {
+    // Windows env keys are case-insensitive; process.env is not, when spread.
+    const hit = Object.keys(process.env).find((e) => e.toLowerCase() === k.toLowerCase());
+    return hit && process.env[hit] != null ? [[hit, process.env[hit]]] : [];
+  })
+);
+
 // ── step runner ────────────────────────────────────────────────────────────
 const steps = [];
+/** Repo paths this run wrote — recorded in the JSON so a resumer commits them. */
+const produced = [];
 let failed = null;
 const GITBASH = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files (x86)/Git/bin/bash.exe']
   .find((p) => existsSync(p)) || 'bash';
@@ -185,13 +246,19 @@ function skip(name, cmd, reason) {
  * never mirrored, never inlined into the JSON — N-3). `parse` may return a
  * counts object; it is the ONLY thing derived from output that survives.
  */
-function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000 } = {}) {
-  if (failed) return skip(name, cmd, `not run — "${failed}" already failed`);
+/**
+ * `needs` names a step this one genuinely depends on (harnesses need the build,
+ * not the lint). Independent steps keep running after a failure so ONE gate run
+ * reports everything that is broken instead of one symptom at a time.
+ */
+function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false } = {}) {
+  const blocker = needs.find((n) => steps.some((s) => s.name === n && s.exit !== 0));
+  if (blocker) return skip(name, cmd, `not run — depends on "${blocker}", which failed`);
   const t0 = Date.now();
   const r = spawnSync(cmd, {
     cwd, shell: true, encoding: 'utf8', timeout,
     maxBuffer: 256 * 1024 * 1024,
-    env: { ...process.env, ...env },
+    env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
   });
   const ms = Date.now() - t0;
   const out = `${r.stdout || ''}${r.stderr || ''}`;
@@ -207,11 +274,110 @@ function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_
   return record(name, cmd, exit, ms, counts);
 }
 
-/** Parse the repo's test convention: a final `N/M passed` line. */
+/**
+ * Parse the repo's pass line. There are three dialects in tree and the original
+ * regex only knew one, so the parity reference recorded 2 of 7 suites — useless
+ * as a regression baseline, because a suite it never recorded can never be seen
+ * to regress.
+ *   "22/22 passed"          pair-state, badge-counter
+ *   "8/8 checks passed"     five harnesses
+ *   "8 passed, 0 failed"    relay suites
+ */
 const passLine = (out) => {
-  const m = [...out.matchAll(/(\d+)\s*\/\s*(\d+)\s+passed/g)].pop();
-  return m ? { passed: Number(m[1]), total: Number(m[2]) } : null;
+  const slash = [...out.matchAll(/(\d+)\s*\/\s*(\d+)\s+(?:checks\s+)?passed/gi)].pop();
+  if (slash) return { passed: Number(slash[1]), total: Number(slash[2]) };
+  const pf = [...out.matchAll(/(\d+)\s+passed,\s*(\d+)\s+failed/gi)].pop();
+  if (pf) return { passed: Number(pf[1]), total: Number(pf[1]) + Number(pf[2]) };
+  return null;
 };
+
+// ── lint: a committed MANIFEST that may only shrink (GATE-SPEC amendment) ──
+const LINT_MANIFEST_PATH = join(ROOT, 'e2e-evidence', 'LINT-BASELINE.json');
+
+/**
+ * `eslint . -f json` → { "<repo-relative/path>": { "<ruleId>": count } }, sorted.
+ * Paths are forward-slashed and relative so the manifest is identical in every
+ * worktree and on every box.
+ */
+function eslintManifest() {
+  const r = spawnSync('bunx eslint . -f json', {
+    cwd: ROOT, shell: true, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024,
+    env: { ...process.env },
+  });
+  const raw = r.stdout || '';
+  const start = raw.indexOf('[');
+  if (start === -1) return null;
+  let results;
+  try { results = JSON.parse(raw.slice(start)); } catch { return null; }
+
+  const files = {};
+  let problems = 0, errors = 0, warnings = 0;
+  for (const f of results) {
+    if (!f.messages || f.messages.length === 0) continue;
+    const rel = String(f.filePath).replace(/\\/g, '/').replace(`${ROOT.replace(/\\/g, '/')}/`, '');
+    for (const m of f.messages) {
+      const rule = m.ruleId || '(fatal)';
+      files[rel] ??= {};
+      files[rel][rule] = (files[rel][rule] || 0) + 1;
+      problems++;
+      if (m.severity === 2) errors++; else warnings++;
+    }
+  }
+  // Deterministic key order — the manifest is diffed by humans and by git.
+  const sorted = {};
+  for (const k of Object.keys(files).sort()) {
+    sorted[k] = Object.fromEntries(Object.keys(files[k]).sort().map((r2) => [r2, files[k][r2]]));
+  }
+  return { files: sorted, problems, errors, warnings };
+}
+
+/**
+ * Compare a live manifest against the committed floor.
+ * PASS iff every (file, rule) cell is <= the floor AND every pair absent from
+ * the floor is 0 (a new file or a newly-triggered rule must be clean).
+ *
+ * A COUNT would be gameable — fix one unused var, add one `any`, total unchanged.
+ * The cell-wise rule cannot be gamed that way: the new cell has no floor, so its
+ * floor is 0.
+ */
+/**
+ * Plan NEW-mi-4: "lint 0, or every remaining item named with an owner."
+ * The react-hooks family cannot be fixed with no behaviour change, so it is
+ * NAMED instead — per file, with a human owner, in the manifest header. The
+ * mechanical remainder (unused vars, require-imports, img/alt) is a separate
+ * dispatch on feature/saas-multiuser and reaches the programme via the rebase.
+ */
+function namedOwners(files) {
+  const out = {};
+  for (const [file, rules] of Object.entries(files)) {
+    const hooks = Object.entries(rules).filter(([r]) => r.startsWith('react-hooks/'));
+    if (hooks.length === 0) continue;
+    out[file] = {
+      owner: 'Forge',
+      reason: 'react-hooks family — no fix exists that is provably behaviour-preserving; '
+            + 'named per plan NEW-mi-4 rather than suppressed.',
+      rules: Object.fromEntries(hooks),
+    };
+  }
+  return out;
+}
+
+function lintCompare(live, floor) {
+  const grown = [];
+  let shrunk = 0;
+  for (const [file, rules] of Object.entries(live.files)) {
+    for (const [rule, n] of Object.entries(rules)) {
+      const cap = floor?.files?.[file]?.[rule] ?? 0;
+      if (n > cap) grown.push(`${file} :: ${rule} ${cap} -> ${n}`);
+    }
+  }
+  for (const [file, rules] of Object.entries(floor?.files || {})) {
+    for (const [rule, cap] of Object.entries(rules)) {
+      if ((live.files?.[file]?.[rule] ?? 0) < cap) shrunk++;
+    }
+  }
+  return { grown, shrunk };
+}
 
 // ── port ownership (WORKTREE_STANDARD rule 13) ─────────────────────────────
 function portOwnerPid(port) {
@@ -265,6 +431,44 @@ async function waitForDev(port, ms = 60_000) {
   return false;
 }
 
+/**
+ * ── clarity scope ──────────────────────────────────────────────────────────
+ * Two halves in one script: STATIC (source + build output, always) and RUNTIME
+ * (fetch every route, assert the tag is PRESENT on marketing HTML and ABSENT
+ * from authed HTML — opt-in via CLARITY_SCOPE_BASE_URL).
+ *
+ * The baseline run scored this FAIL/skipped because the gate ran it with no
+ * base URL: the runtime half silently disabled itself. The presence half is the
+ * one that stops "we deleted Clarity entirely" reading as a green absence proof
+ * (the absence-only vacuity trap), so a skip is a FAIL, never a pass — Security
+ * f-2. The fix is to run it AFTER the gate-owned dev server, with the URL.
+ */
+function runClarityScope(baseUrl) {
+  if (!existsSync(join(ROOT, 'scripts', 'check-clarity-scope.mjs'))) return;
+  if (READ_ONLY && !existsSync(join(ROOT, '.next'))) {
+    skip('clarity-scope', 'node scripts/check-clarity-scope.mjs', 'read-only main checkout with no .next to inspect');
+    return;
+  }
+  run('clarity-scope', 'node scripts/check-clarity-scope.mjs', {
+    needs: ['build'],
+    env: baseUrl ? { CLARITY_SCOPE_BASE_URL: baseUrl } : {},
+    parse: (out, exit) => {
+      if (/runtime check skipped|skipping|no \.next/i.test(out)) {
+        throw new Error('a skipped half is a FAIL (Security f-2)');
+      }
+      return { exit, buildChecked: 1, runtimeChecked: baseUrl ? 1 : 0 };
+    },
+  });
+  // f-2: parse threw (or never ran) ⇒ a half was skipped ⇒ that is a FAIL.
+  const last = steps[steps.length - 1];
+  if (last.name === 'clarity-scope' && last.counts === null && last.exit === 0) {
+    last.exit = 1;
+    last.counts = { skipped: 1, runtimeChecked: baseUrl ? 1 : 0 };
+    if (!failed) failed = 'clarity-scope';
+    console.log('  FAIL  clarity-scope — a half was skipped; per Security f-2 that is a FAIL, not a pass');
+  }
+}
+
 // ── resolve a test/script file by bare name ────────────────────────────────
 function resolveIn(dir, base) {
   for (const ext of ['.test.mjs', '.test.js', '.test.ts', '.mjs', '.js']) {
@@ -288,7 +492,18 @@ const SHA = gitOut(['rev-parse', 'HEAD']);
   const t0 = Date.now();
   const porcelain = gitOut(['status', '--porcelain']).split('\n').filter(Boolean);
   const ALLOW = /(^|\/)(bun\.lock|\.e2e-lock|\.env\.local|\.e2e-gate-logs\/?|node_modules\/?)$/;
-  const dirty = porcelain.filter((l) => !ALLOW.test(l.slice(3).trim().replace(/^"|"$/g, '')));
+  /**
+   * The gate's OWN evidence is not "a dirty tree". The baseline run failed its
+   * own cleanliness check because it graded the artefacts it had just written —
+   * a gate that cannot be run twice is not a gate. These paths are allowed, and
+   * every one this run writes is listed in `produced` so the resumer knows
+   * exactly what to commit.
+   */
+  const OWN_OUTPUT = /^e2e-evidence\/(gate-P[^/]*\.json|BASELINE-harness\.json|LINT-BASELINE(-android)?\.json)$/;
+  const dirty = porcelain.filter((l) => {
+    const p = l.slice(3).trim().replace(/^"|"$/g, '');
+    return !ALLOW.test(p) && !OWN_OUTPUT.test(p);
+  });
   const anc = spawnSync('git', ['merge-base', '--is-ancestor', BASE_SHA, 'HEAD'], { cwd: ROOT });
   const ok = dirty.length === 0 && anc.status === 0;
   record('git-identity-clean-base-ancestry',
@@ -320,42 +535,79 @@ if (WEB) {
     parse: (out) => ({ errors: (out.match(/error TS\d+/g) || []).length }),
   });
 
-  // ── lint = 0 (brief (b); rule-9 "named excuses" retired) ─────────────────
-  run('lint', 'bun run lint', {
-    parse: (out) => {
-      const m = out.match(/(\d+)\s+problems?\s*\((\d+)\s+errors?,\s*(\d+)\s+warnings?\)/);
-      return m ? { problems: Number(m[1]), errors: Number(m[2]), warnings: Number(m[3]) } : { problems: 0 };
-    },
-  });
+  // ── lint: committed manifest that may only shrink ────────────────────────
+  // The brief asked for "lint 0". eslint is NOT 0 at BASE_SHA — 176 problems /
+  // 55 errors of pre-existing debt, of which ~24 are react-hooks-family items
+  // that cannot be fixed without a behaviour change. Demanding 0 paints the gate
+  // permanently red; declaring it 0 is a lie; a bare COUNT is gameable. So Ken's
+  // ruling: a committed per-(file, rule) manifest that may only shrink.
+  {
+    const t0 = Date.now();
+    const live = eslintManifest();
+    if (!live) {
+      record('lint', 'bunx eslint . -f json', 1, Date.now() - t0, { parsed: 0 });
+    } else if (BASELINE && !existsSync(LINT_MANIFEST_PATH)) {
+      // Generating the floor IS the baseline run's job.
+      mkdirSync(join(ROOT, 'e2e-evidence'), { recursive: true });
+      writeFileSync(LINT_MANIFEST_PATH, JSON.stringify({
+        baseSha: BASE_SHA,
+        utc: new Date().toISOString(),
+        note: 'Per-(file, rule) lint floor. May only SHRINK. A phase that reduces a cell '
+            + 'regenerates this file in its own commit "[E2E-P<N>] lint-baseline shrink". '
+            + 'New files and newly-triggered rules have an implicit floor of 0.',
+        namedOwners: namedOwners(live.files),
+        totals: { problems: live.problems, errors: live.errors, warnings: live.warnings },
+        files: live.files,
+      }, null, 2) + '\n');
+      produced.push('e2e-evidence/LINT-BASELINE.json');
+      record('lint', 'bunx eslint . -f json (generate manifest)', 0, Date.now() - t0,
+        { problems: live.problems, errors: live.errors, warnings: live.warnings, generated: 1 });
+    } else if (!existsSync(LINT_MANIFEST_PATH)) {
+      record('lint', 'bunx eslint . -f json', 1, Date.now() - t0,
+        { problems: live.problems, errors: live.errors, warnings: live.warnings, manifestMissing: 1 });
+    } else {
+      const floor = JSON.parse(readFileSync(LINT_MANIFEST_PATH, 'utf8'));
+      const { grown, shrunk } = lintCompare(live, floor);
+
+      // Floor of floors: the committed manifest itself may never have grown
+      // against its first committed version. Otherwise "shrink the manifest"
+      // becomes "rewrite the manifest".
+      const originRaw = (() => {
+        for (const rev of [`${BASE_SHA}:e2e-evidence/LINT-BASELINE.json`,
+          `${gitOut(['log', '--diff-filter=A', '--format=%H', '-1', '--', 'e2e-evidence/LINT-BASELINE.json'])}:e2e-evidence/LINT-BASELINE.json`]) {
+          if (rev.startsWith(':')) continue;
+          const r2 = spawnSync('git', ['show', rev], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+          if (r2.status === 0 && r2.stdout) return r2.stdout;
+        }
+        return null;
+      })();
+      let manifestGrown = [];
+      if (originRaw) {
+        try { manifestGrown = lintCompare(floor, JSON.parse(originRaw)).grown; } catch { manifestGrown = []; }
+      }
+
+      const ok = grown.length === 0 && manifestGrown.length === 0;
+      if (!ok) {
+        // N-3: the JSON carries counts; the NAMES go to the local log only.
+        mkdirSync(LOGDIR, { recursive: true });
+        writeFileSync(join(LOGDIR, `${PHASE}-lint.log`),
+          [...grown.map((g) => `GROWN ${g}`), ...manifestGrown.map((g) => `MANIFEST-GROWN ${g}`)].join('\n') + '\n');
+      }
+      record('lint', 'bunx eslint . -f json (vs e2e-evidence/LINT-BASELINE.json)', ok ? 0 : 1, Date.now() - t0,
+        {
+          problems: live.problems, errors: live.errors, warnings: live.warnings,
+          grown: grown.length, shrunk, manifestGrown: manifestGrown.length,
+        },
+        ok ? {} : { log: join(LOGDIR, `${PHASE}-lint.log`).replace(/\\/g, '/') });
+    }
+  }
 
   // ── 5. clean build ───────────────────────────────────────────────────────
   if (READ_ONLY) {
     skip('build', 'rm -rf .next && bun run build', 'read-only main checkout — never destroys another writer\'s .next');
   } else {
     try { rmSync(join(ROOT, '.next'), { recursive: true, force: true }); } catch { /* nothing to remove */ }
-    run('build', 'bun run build', { timeout: 20 * 60_000, parse: (out) => ({ routes: (out.match(/^[┌├└]\s/gm) || []).length }) });
-  }
-
-  // ── clarity scope, AFTER the build (Security f-2: "skipped" is a FAIL) ───
-  if (existsSync(join(ROOT, 'scripts', 'check-clarity-scope.mjs'))) {
-    if (READ_ONLY && !existsSync(join(ROOT, '.next'))) {
-      skip('clarity-scope', 'node scripts/check-clarity-scope.mjs', 'read-only and no .next present');
-    } else {
-      run('clarity-scope', 'node scripts/check-clarity-scope.mjs', {
-        parse: (out, exit) => {
-          const skipped = /skipping|skipped|no \.next/i.test(out);
-          if (skipped) throw new Error('skipped counts as FAIL (Security f-2)');
-          return { exit, buildChecked: 1 };
-        },
-      });
-      // f-2: a skip must not read as a pass.
-      const last = steps[steps.length - 1];
-      if (last.name === 'clarity-scope' && last.counts === null && last.exit === 0) {
-        last.exit = 1; last.counts = { skipped: 1 };
-        if (!failed) failed = 'clarity-scope';
-        console.log('  FAIL  clarity-scope — the build-output check was skipped; per Security f-2 that is a FAIL, not a pass');
-      }
-    }
+    run('build', 'bun run build', { needs: ['tsc-noEmit'], timeout: 20 * 60_000, parse: (out) => ({ routes: (out.match(/^[┌├└]\s/gm) || []).length }) });
   }
 
   // ── 6. extension packaging guard ─────────────────────────────────────────
@@ -374,10 +626,10 @@ if (WEB) {
       else record(`relay:${base}`, `node tests/${base}`, 1, 0, { missing: 1 });
       continue;
     }
-    run(`relay:${base}`, `node ${rel}`, { parse: passLine });
+    run(`relay:${base}`, `node ${rel}`, { parse: passLine, scrub: true });
   }
   for (const f of existsSync(join(ROOT, 'tests')) ? readdirSync(join(ROOT, 'tests')) : []) {
-    if (/^e2e-.*\.test\.mjs$/.test(f)) run(`relay:${f}`, `node tests/${f}`, { parse: passLine });
+    if (/^e2e-.*\.test\.mjs$/.test(f)) run(`relay:${f}`, `node tests/${f}`, { parse: passLine, scrub: true });
   }
 
   // ── 8. unit: SAS vectors (web + SW context), padding property, bridge pin ─
@@ -391,10 +643,10 @@ if (WEB) {
       else record(`unit:${name}`, `node ${rel}`, 1, 0, { missing: 1 });
       continue;
     }
-    run(`unit:${name}`, `node ${rel}`, { parse: passLine });
+    run(`unit:${name}`, `node ${rel}`, { parse: passLine, scrub: true });
   }
   if (existsSync(join(ROOT, 'scripts', 'ext-bridge-origin-pin-proof.mjs'))) {
-    run('unit:bridge-origin-pin', 'node scripts/ext-bridge-origin-pin-proof.mjs', { parse: passLine });
+    run('unit:bridge-origin-pin', 'node scripts/ext-bridge-origin-pin-proof.mjs', { parse: passLine, scrub: true });
   } else {
     record('unit:bridge-origin-pin', 'node scripts/ext-bridge-origin-pin-proof.mjs', 1, 0, { missing: 1 });
   }
@@ -403,29 +655,65 @@ if (WEB) {
   const HARNESS = ['app-in-call-shots', 'ext-in-call-shots', 'ext-badge-counter-proof',
     'ext-templates-scroll-call-message-proof', 'ext-shell-theme-proof', 'ext-layering-shots'];
   if (['P3', 'P4', 'P5A', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) HARNESS.splice(3, 0, 'ext-sw-lifetime-proof');
-  if (!failed) {
+  if (!steps.some((s2) => s2.name === 'build' && s2.exit !== 0)) {
     const started = startDevServer();
     if (!started.ok) {
       record('harness-dev-server', 'node server.js (gate-owned)', 1, 0, { why: 1 });
       console.log(`  FAIL  harness-dev-server — ${started.why}`);
+      runClarityScope(null);
     } else {
       const up = await waitForDev(devPort);
       record('harness-dev-server', `node server.js PORT=${devPort}`, up ? 0 : 1, 0, { port: devPort, pid: devProc?.pid ?? 0 });
       if (up) {
+        const origin = `http://127.0.0.1:${devPort}`;
+
+        // Clarity's runtime half needs a live server, so it belongs HERE, not
+        // next to the build. Its static/build half runs in the same invocation.
+        runClarityScope(origin);
+
+        /**
+         * The harnesses' env is BUILT, not inherited. The baseline run failed
+         * app-in-call-shots on Prisma "URL must start with postgresql://" and
+         * ext-layering-shots on ERR_CONNECTION_REFUSED at :3178 — two faces of
+         * one bug: whatever happened to be in the ambient env decided what the
+         * child saw. Now every key a harness reads is passed explicitly, and
+         * nothing else is. `CC_BASE_URL` is included because ext-layering-shots
+         * reads that name, not DEV_URL; the harness scripts are Pixel's files
+         * and the gate does not edit them to match its own assumptions.
+         */
+        const dbUrl = process.env.DATABASE_URL || '';
+        const harnessEnv = {
+          ...SCRUBBED,
+          DATABASE_URL: dbUrl,
+          JWT_SECRET: process.env.JWT_SECRET || '',
+          PORT: String(devPort),
+          DEV_URL: origin,
+          BASE_URL: origin,
+          CC_BASE_URL: origin,
+        };
+        // Assert before step 9 rather than discovering it as a Prisma error.
+        record('harness-env', 'assert DATABASE_URL reaches the harness env', dbUrl.startsWith('postgresql://') ? 0 : 1, 0,
+          { dbUrlSet: dbUrl ? 1 : 0, jwtSet: process.env.JWT_SECRET ? 1 : 0, ccBaseUrlSet: 1 });
+
         for (const h of HARNESS) {
           const rel = `scripts/${h}.mjs`;
           if (!existsSync(join(ROOT, rel))) { record(`harness:${h}`, `node ${rel}`, 1, 0, { missing: 1 }); continue; }
           run(`harness:${h}`, `node ${rel}`, {
+            needs: ['harness-dev-server', 'harness-env'],
             parse: passLine,
-            env: { PORT: String(devPort), DEV_URL: `http://127.0.0.1:${devPort}`, BASE_URL: `http://127.0.0.1:${devPort}` },
+            env: harnessEnv,
+            scrub: true,
             timeout: 8 * 60_000,
           });
         }
+      } else {
+        runClarityScope(null);
       }
       stopDevServer();
     }
   } else {
-    skip('harness-dev-server', 'node server.js (gate-owned)', `not run — "${failed}" already failed`);
+    skip('harness-dev-server', 'node server.js (gate-owned)', 'not run — depends on "build", which failed');
+    runClarityScope(null);
   }
 }
 
@@ -459,6 +747,7 @@ let baselineDiff = [];
 if (BASELINE) {
   mkdirSync(OUTDIR, { recursive: true });
   writeFileSync(BASELINE_PATH, JSON.stringify({ baseSha: BASE_SHA, utc: new Date().toISOString(), harnessPass }, null, 2) + '\n');
+  produced.push('e2e-evidence/BASELINE-harness.json');
   record('baseline-parity', `write ${BASELINE_PATH.replace(/\\/g, '/')}`, 0, 0, { recorded: harnessPass.length });
 } else if (existsSync(BASELINE_PATH)) {
   const ref = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
@@ -474,6 +763,8 @@ if (BASELINE) {
 
 // ── evidence JSON (NEW-MA-2: committed in the repo under e2e-evidence/) ────
 const result = failed ? 'FAIL' : 'PASS';
+const outFile = join(OUTDIR, `gate-${PHASE}-${SHA.slice(0, 7)}${LABEL ? `-${LABEL.replace(/[^a-z0-9]+/gi, '-')}` : ''}.json`);
+produced.push(outFile.replace(/\\/g, '/').replace(`${ROOT.replace(/\\/g, '/')}/`, ''));
 const evidence = {
   phase: PHASE,
   label: LABEL ? redact(LABEL) : null,
@@ -491,12 +782,14 @@ const evidence = {
   steps,
   harnessPass: harnessPass.map((h) => h.name),
   baselineDiff,
+  ms: Date.now() - T_START,
   failedStep: failed ? redact(failed) : null,
+  /** Repo paths this run wrote. A resumer commits exactly these — nothing else. */
+  produced,
   result,
 };
 
 mkdirSync(OUTDIR, { recursive: true });
-const outFile = join(OUTDIR, `gate-${PHASE}-${SHA.slice(0, 7)}${LABEL ? `-${LABEL.replace(/[^a-z0-9]+/gi, '-')}` : ''}.json`);
 writeFileSync(outFile, JSON.stringify(evidence, null, 2) + '\n');
 
 console.log(
