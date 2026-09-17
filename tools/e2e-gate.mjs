@@ -36,6 +36,9 @@ import net from 'node:net';
 // (c) The gate and the harnesses share ONE definition of "what did we spawn and
 // is it still alive" — scripts/lib/reap.mjs. Rule 12/14 live in that file.
 import { census, findLeaks } from '../scripts/lib/reap.mjs';
+// (E2E-P0.3) The moving-base decision and the authored/inherited lint split,
+// kept pure so tests/scope-base.test.mjs can pin them without a repository.
+import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const T_START = Date.now();
@@ -244,6 +247,36 @@ function readBaseSha() {
 }
 const BASE_SHA = readBaseSha();
 if (!BASE_SHA) refuse('e2e-evidence/BASE.md is missing or carries no 40-char BASE_SHA. Deliverable P0(a) must land first.');
+
+/**
+ * ── SCOPE_BASE: the MOVING base (E2E-P0.3) ─────────────────────────────────
+ *
+ * BASE_SHA answers "is this branch part of the programme?" and nothing else —
+ * step 1 still asserts it as an ancestor of HEAD, unchanged. It stopped being
+ * able to answer "what did THIS LANE change?" the moment lanes began branching
+ * from the integration TIP instead of from 445138a: scope-diff then reports
+ * every file every earlier lane landed, and the lint floor flags files that do
+ * not exist at 445138a at all.
+ *
+ * So scope-diff and the lint floor measure against
+ * `git merge-base origin/e2e/integration HEAD`. The decision itself lives in
+ * tools/lib/scope-base.mjs so it can be unit-tested with no repository
+ * (tests/scope-base.test.mjs); everything below is just gathering the facts.
+ */
+const INTEGRATION_REF = 'origin/e2e/integration';
+const SCOPE_BASE = (() => {
+  const g = (args) => (spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' }).stdout || '').trim();
+  // Fetch first: a stale remote-tracking ref would put the base BEHIND the tip
+  // the lane actually branched from, re-introducing the same false FAIL in
+  // miniature. A failed fetch is not fatal — chooseScopeBase falls back.
+  spawnSync('git', ['fetch', '--quiet', 'origin', 'e2e/integration'],
+    { cwd: ROOT, timeout: 180_000, stdio: 'ignore' });
+  const tipSha = g(['rev-parse', '--verify', '--quiet', `${INTEGRATION_REF}^{commit}`]);
+  const mergeBase = /^[0-9a-f]{40}$/.test(tipSha) ? g(['merge-base', INTEGRATION_REF, 'HEAD']) : null;
+  const baseIsAncestorOfMergeBase = /^[0-9a-f]{40}$/.test(mergeBase || '')
+    && spawnSync('git', ['merge-base', '--is-ancestor', BASE_SHA, mergeBase], { cwd: ROOT }).status === 0;
+  return chooseScopeBase({ baseSha: BASE_SHA, tipSha, mergeBase, baseIsAncestorOfMergeBase });
+})();
 
 /**
  * ── SCRUBBED env ───────────────────────────────────────────────────────────
@@ -737,7 +770,9 @@ function resolveIn(dir, base) {
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(
   `\ne2e-gate ${PHASE} lane=${LANE}${BASELINE ? ' [baseline]' : ''}${READ_ONLY ? ' [read-only main checkout]' : ''}\n` +
-  `root=${ROOT}\nbase=${BASE_SHA.slice(0, 7)}\n`
+  `root=${ROOT}\nbase=${BASE_SHA.slice(0, 7)} (programme identity)\n` +
+  `scope-base=${SCOPE_BASE.sha.slice(0, 7)} (${SCOPE_BASE.kind}` +
+  `${SCOPE_BASE.fellBack ? ` — FELL BACK: ${SCOPE_BASE.reason}` : ` vs ${INTEGRATION_REF}`})\n`
 );
 
 const gitOut = (a) => (spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' }).stdout || '').trim();
@@ -769,15 +804,28 @@ const SHA = gitOut(['rev-parse', 'HEAD']);
 }
 
 // ── 2. scope: a web phase touches no android, an android phase touches only android
+/** Repo paths in `SCOPE_BASE..HEAD` — filled by step 2, read by the lint floor. */
+let LANE_CHANGED = [];
 {
   const t0 = Date.now();
-  const changed = gitOut(['diff', '--name-only', `${BASE_SHA}..HEAD`]).split('\n').filter(Boolean);
+  // E2E-P0.3: measured against SCOPE_BASE (the merge-base with the integration
+  // tip), NOT BASE_SHA. Against BASE_SHA this step reported `android: 77` for a
+  // lane whose own diff has zero android files — it was grading the lane on
+  // every commit already merged into integration.
+  const changed = gitOut(['diff', '--name-only', `${SCOPE_BASE.sha}..HEAD`]).split('\n').filter(Boolean);
   const android = changed.filter((f) => f.startsWith('dnkdialer-android/'));
   const nonAndroid = changed.filter((f) => !f.startsWith('dnkdialer-android/'));
   const offSide = DEFAULT_LANE === 'android' ? nonAndroid : android;
-  record('scope-diff-vs-base', `git diff --name-only ${BASE_SHA.slice(0, 7)}..HEAD`,
+  record('scope-diff-vs-base', `git diff --name-only ${SCOPE_BASE.sha.slice(0, 7)}..HEAD`,
     offSide.length === 0 ? 0 : 1, Date.now() - t0,
-    { changed: changed.length, android: android.length, nonAndroid: nonAndroid.length, offLane: offSide.length });
+    {
+      changed: changed.length, android: android.length, nonAndroid: nonAndroid.length, offLane: offSide.length,
+      scopeBase: SCOPE_BASE.sha, scopeBaseKind: SCOPE_BASE.kind,
+      ...(SCOPE_BASE.fellBack ? { fellBackToBaseSha: 1, fallbackReason: redact(SCOPE_BASE.reason) } : {}),
+    });
+  // The lint floor uses the same file list, so the two steps can never disagree
+  // about what this lane touched.
+  LANE_CHANGED = changed;
 }
 
 if (WEB) {
@@ -818,43 +866,62 @@ if (WEB) {
       produced.push('e2e-evidence/LINT-BASELINE.json');
       record('lint', 'bunx eslint . -f json (generate manifest)', 0, Date.now() - t0,
         { problems: live.problems, errors: live.errors, warnings: live.warnings, generated: 1 });
-    } else if (!existsSync(LINT_MANIFEST_PATH)) {
-      record('lint', 'bunx eslint . -f json', 1, Date.now() - t0,
-        { problems: live.problems, errors: live.errors, warnings: live.warnings, manifestMissing: 1 });
     } else {
-      const floor = JSON.parse(readFileSync(LINT_MANIFEST_PATH, 'utf8'));
-      const { grown, shrunk } = lintCompare(live, floor);
-
-      // Floor of floors: the committed manifest itself may never have grown
-      // against its first committed version. Otherwise "shrink the manifest"
-      // becomes "rewrite the manifest".
-      const originRaw = (() => {
-        for (const rev of [`${BASE_SHA}:e2e-evidence/LINT-BASELINE.json`,
-          `${gitOut(['log', '--diff-filter=A', '--format=%H', '-1', '--', 'e2e-evidence/LINT-BASELINE.json'])}:e2e-evidence/LINT-BASELINE.json`]) {
-          if (rev.startsWith(':')) continue;
-          const r2 = spawnSync('git', ['show', rev], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-          if (r2.status === 0 && r2.stdout) return r2.stdout;
+      /**
+       * E2E-P0.3. The floor is read from the COMMIT at SCOPE_BASE, never from
+       * the working tree.
+       *
+       * Reading it from the working tree meant a lane could edit its own floor
+       * and grade itself against the edit; the old defence was a "floor of
+       * floors" diff against BASE_SHA's copy, which cannot survive a moving
+       * base (a legitimate regeneration at the integration tip necessarily
+       * contains files that do not exist at 445138a, so it read as GROWN and
+       * would fail every lane forever). `git show <scope-base>:<path>` removes
+       * the hole structurally instead: nothing this lane commits can change the
+       * blob it is measured against, so the floor-of-floors check is gone and
+       * the manifest is no longer rewritable into a pass.
+       */
+      const floorRev = `${SCOPE_BASE.sha}:e2e-evidence/LINT-BASELINE.json`;
+      const floorShow = spawnSync('git', ['show', floorRev],
+        { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      let floor = null;
+      if (floorShow.status === 0 && floorShow.stdout) {
+        try { floor = JSON.parse(floorShow.stdout); } catch { floor = null; }
+      }
+      if (!floor) {
+        record('lint', `git show ${floorRev.slice(0, 7)}...`, 1, Date.now() - t0,
+          { problems: live.problems, errors: live.errors, warnings: live.warnings, manifestMissingAtScopeBase: 1 });
+      } else {
+        const { grown, shrunk } = lintCompare(live, floor);
+        /**
+         * With a moving base a cell can exceed the floor for two unrelated
+         * reasons. The lane added a problem to a file it edited — its fault.
+         * Or an EARLIER lane landed debt on integration without regenerating
+         * the floor, and this lane merely inherited it — not its fault, and
+         * exactly the `dnkdialer-android/tools/e2e-gate-android.mjs` false FAIL
+         * that P5a-SW hit. The discriminator is this lane's own diff, the same
+         * list step 2 reported, so the two steps cannot contradict each other.
+         *
+         * A lane still cannot go green on its own mess: edit the file at all
+         * and every grown cell in it counts as authored again.
+         */
+        const { authored, inherited } = splitGrown(grown, LANE_CHANGED);
+        const ok = authored.length === 0;
+        if (grown.length) {
+          // N-3: the JSON carries counts; the NAMES go to the local log only.
+          mkdirSync(LOGDIR, { recursive: true });
+          writeFileSync(join(LOGDIR, `${PHASE}-lint.log`),
+            [...authored.map((g) => `AUTHORED ${g}`), ...inherited.map((g) => `INHERITED ${g}`)].join('\n') + '\n');
         }
-        return null;
-      })();
-      let manifestGrown = [];
-      if (originRaw) {
-        try { manifestGrown = lintCompare(floor, JSON.parse(originRaw)).grown; } catch { manifestGrown = []; }
+        record('lint', `bunx eslint . -f json (vs ${floorRev.slice(0, 7)}:e2e-evidence/LINT-BASELINE.json)`,
+          ok ? 0 : 1, Date.now() - t0,
+          {
+            problems: live.problems, errors: live.errors, warnings: live.warnings,
+            grown: authored.length, inherited: inherited.length, shrunk,
+            floorRev: SCOPE_BASE.sha,
+          },
+          ok ? {} : { log: join(LOGDIR, `${PHASE}-lint.log`).replace(/\\/g, '/') });
       }
-
-      const ok = grown.length === 0 && manifestGrown.length === 0;
-      if (!ok) {
-        // N-3: the JSON carries counts; the NAMES go to the local log only.
-        mkdirSync(LOGDIR, { recursive: true });
-        writeFileSync(join(LOGDIR, `${PHASE}-lint.log`),
-          [...grown.map((g) => `GROWN ${g}`), ...manifestGrown.map((g) => `MANIFEST-GROWN ${g}`)].join('\n') + '\n');
-      }
-      record('lint', 'bunx eslint . -f json (vs e2e-evidence/LINT-BASELINE.json)', ok ? 0 : 1, Date.now() - t0,
-        {
-          problems: live.problems, errors: live.errors, warnings: live.warnings,
-          grown: grown.length, shrunk, manifestGrown: manifestGrown.length,
-        },
-        ok ? {} : { log: join(LOGDIR, `${PHASE}-lint.log`).replace(/\\/g, '/') });
     }
   }
 
@@ -934,6 +1001,13 @@ if (WEB) {
     // wire-delivered ROOM_RESET can erase). Named for the same reason as the
     // line above — the sweep matches only tests/e2e-*.test.mjs.
     ['ext-pin-provenance', 'tests/ext-pin-provenance.test.mjs', true],
+    // P0.3. The moving-base decision (tools/lib/scope-base.mjs) and the
+    // authored/inherited lint split. Named explicitly — the sweep matches only
+    // tests/e2e-*.test.mjs, and this is the rule that decides what every other
+    // step considers "this lane's change". If it silently reverted to BASE_SHA
+    // nothing would crash; the gate would just start grading lanes on 77 files
+    // they never touched again.
+    ['scope-base', 'tests/scope-base.test.mjs', true],
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {
@@ -1168,7 +1242,21 @@ const evidence = {
   phase: PHASE,
   label: LABEL ? redact(LABEL) : null,
   sha: SHA,
+  /** Programme identity. Frozen; step 1 asserts it is an ancestor of HEAD. */
   baseSha: BASE_SHA,
+  /**
+   * E2E-P0.3 — the MOVING base that scope-diff and the lint floor are measured
+   * against. `kind: "merge-base"` is the normal case; `"base-sha"` means the
+   * branch does not descend from origin/e2e/integration and `reason` says why.
+   */
+  scopeBase: {
+    sha: SCOPE_BASE.sha,
+    kind: SCOPE_BASE.kind,
+    ref: INTEGRATION_REF,
+    integrationTip: SCOPE_BASE.integrationTip,
+    fellBackToBaseSha: SCOPE_BASE.fellBack,
+    reason: SCOPE_BASE.reason ? redact(SCOPE_BASE.reason) : null,
+  },
   utc: new Date().toISOString(),
   lane: LANE,
   mode: READ_ONLY ? 'read-only' : BASELINE ? 'baseline' : 'full',
