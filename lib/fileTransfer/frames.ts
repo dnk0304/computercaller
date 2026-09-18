@@ -1,0 +1,149 @@
+/**
+ * The FILE_* frame family. Shapes are FROZEN by the spec — FT-1 (relay) and
+ * FT-2 (Android) build against exactly these keys in parallel. Do not add,
+ * rename or reorder a field without Ken.
+ *
+ * Wire form is the relay's text form: `TYPE:{json}`.
+ */
+import type { FileFailedReason } from './reasons.ts';
+import { isFileFailedReason } from './reasons.ts';
+
+export const FILE_FRAME_TYPES = [
+  'FILE_OFFER',
+  'FILE_ACCEPT',
+  'FILE_REJECT',
+  'FILE_CHUNK',
+  'FILE_ACK',
+  'FILE_RESUME',
+  'FILE_DONE',
+  'FILE_FAILED',
+] as const;
+
+export type FileFrameType = (typeof FILE_FRAME_TYPES)[number];
+
+export interface FileOffer {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  sha256: string;
+  from: string;
+}
+export interface FileChunk { id: string; seq: number; n: number; data: string }
+export interface FileAck { id: string; upTo: number }
+export interface FileResume { id: string; upTo: number }
+export interface FileDone { id: string; sha256: string }
+export interface FileFailed { id: string; reason: FileFailedReason }
+export interface FileIdOnly { id: string }
+
+export type FileFrame =
+  | { type: 'FILE_OFFER'; payload: FileOffer }
+  | { type: 'FILE_ACCEPT'; payload: FileIdOnly }
+  | { type: 'FILE_REJECT'; payload: FileIdOnly }
+  | { type: 'FILE_CHUNK'; payload: FileChunk }
+  | { type: 'FILE_ACK'; payload: FileAck }
+  | { type: 'FILE_RESUME'; payload: FileResume }
+  | { type: 'FILE_DONE'; payload: FileDone }
+  | { type: 'FILE_FAILED'; payload: FileFailed };
+
+/**
+ * Head validation, Forge-Q style: take the text before the FIRST colon and
+ * validate it as a whole token. Never `startsWith` — `FILE_OFFERX:` and
+ * `FILE_ACCEPTED:` both pass a prefix test and neither is our frame.
+ */
+const HEAD = /^[A-Z][A-Z0-9_]{0,39}$/;
+
+export function frameHead(raw: string): string | null {
+  const colon = raw.indexOf(':');
+  if (colon <= 0) return null;
+  const head = raw.slice(0, colon);
+  return HEAD.test(head) ? head : null;
+}
+
+export function isFileFrameType(head: string | null): head is FileFrameType {
+  return head !== null && (FILE_FRAME_TYPES as readonly string[]).includes(head);
+}
+
+/** True for any inbound raw frame belonging to this family. Cheap, allocation-free. */
+export function isFileFrame(raw: unknown): boolean {
+  return typeof raw === 'string' && isFileFrameType(frameHead(raw));
+}
+
+export function serializeFrame(frame: FileFrame): string {
+  return `${frame.type}:${JSON.stringify(frame.payload)}`;
+}
+
+const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+const int = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/**
+ * Parse and VALIDATE. Returns null for anything malformed — a caller that gets
+ * null must ignore the frame, never guess at it. Field types are checked here
+ * so no downstream code has to trust the peer.
+ */
+export function parseFileFrame(raw: unknown): FileFrame | null {
+  if (typeof raw !== 'string') return null;
+  const type = frameHead(raw);
+  if (!isFileFrameType(type)) return null;
+  try {
+    return coerceFileFrame(type, JSON.parse(raw.slice(type.length + 1)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The same validation, for a payload that has ALREADY been parsed and unsealed
+ * by the host (usePhoneBridge hands `handleMessage` an object, not a string).
+ * Both entry points share one validator so the encrypted and plaintext paths
+ * cannot drift into accepting different things.
+ */
+export function coerceFileFrame(type: string, p: unknown): FileFrame | null {
+  if (!isFileFrameType(type)) return null;
+  if (typeof p !== 'object' || p === null || Array.isArray(p)) return null;
+  const o = p as Record<string, unknown>;
+  if (!str(o.id)) return null;
+
+  switch (type) {
+    case 'FILE_OFFER':
+      if (!str(o.name) || !int(o.size) || !str(o.mime) || !str(o.from)) return null;
+      if (!str(o.sha256) || !HEX64.test(o.sha256)) return null;
+      return {
+        type,
+        payload: {
+          id: o.id, name: o.name, size: o.size,
+          mime: o.mime, sha256: o.sha256, from: o.from,
+        },
+      };
+    case 'FILE_ACCEPT':
+    case 'FILE_REJECT':
+      return { type, payload: { id: o.id } };
+    case 'FILE_CHUNK':
+      if (!int(o.seq) || !int(o.n) || typeof o.data !== 'string') return null;
+      if (o.seq >= o.n) return null;
+      return { type, payload: { id: o.id, seq: o.seq, n: o.n, data: o.data } };
+    case 'FILE_ACK':
+    case 'FILE_RESUME':
+      if (!int(o.upTo)) return null;
+      return { type, payload: { id: o.id, upTo: o.upTo } };
+    case 'FILE_DONE':
+      if (!str(o.sha256) || !HEX64.test(o.sha256)) return null;
+      return { type, payload: { id: o.id, sha256: o.sha256 } };
+    case 'FILE_FAILED':
+      if (!isFileFailedReason(o.reason)) return null;
+      return { type, payload: { id: o.id, reason: o.reason } };
+  }
+}
+
+/** 16-byte random hex, generated by the sender (spec §Frames). */
+export function newTransferId(): string {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/** Total chunks for a file of `size` raw bytes at `chunkBytes` per chunk. */
+export function chunkCount(size: number, chunkBytes: number): number {
+  return size === 0 ? 1 : Math.ceil(size / chunkBytes);
+}
