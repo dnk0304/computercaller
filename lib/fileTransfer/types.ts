@@ -1,5 +1,6 @@
 import type { FileFailedReason } from './reasons.ts';
 import type { FileFrame, FileFrameType, FileOffer } from './frames.ts';
+import type { SaveFileHandle } from './fsAccess.ts';
 
 /**
  * The seam between the transfer state machines and the app's socket.
@@ -55,6 +56,13 @@ export interface TransferEvents {
 export interface ReceiverEvents extends TransferEvents {
   /** An offer arrived and is awaiting the user. FT-3b renders the dialog. */
   onOffer?(offer: FileOffer): void;
+  /**
+   * FT-3a.1 (c). Fired once, at verify time, with the handle of the file just
+   * written — the seam "Open" is built on. Typed structurally (`SaveFileHandle`
+   * lives in fsAccess.ts) rather than as the browser's FileSystemFileHandle so
+   * this stays testable with a stub.
+   */
+  onReceived?(id: string, name: string, handle: SaveFileHandle): void;
 }
 
 /** Anything that can route an inbound frame into a state machine. */

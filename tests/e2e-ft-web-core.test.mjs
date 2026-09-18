@@ -92,7 +92,7 @@ check('FILE_FAILED with a frozen reason is accepted',
 check('malformed JSON yields null, never a throw', parseFileFrame('FILE_ACK:{oops') === null);
 check('an array payload is rejected', parseFileFrame('FILE_ACK:[]') === null);
 check('a payload with no id is rejected', parseFileFrame('FILE_ACK:{"upTo":3}') === null);
-eq('every frozen reason parses', FILE_FAILED_REASONS.filter((r) => isFileFailedReason(r)).length, 9);
+eq('every frozen reason parses', FILE_FAILED_REASONS.filter((r) => isFileFailedReason(r)).length, 11);
 check('transfer ids are 32 hex chars', /^[0-9a-f]{32}$/.test(newTransferId()));
 check('transfer ids differ', newTransferId() !== newTransferId());
 

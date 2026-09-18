@@ -80,6 +80,9 @@ import {
   type RequestBlock,
   type SwKeyResult,
 } from './phoneE2e';
+import {
+  isMalformedRelayMark, isRelayMintedAbort,
+} from '@/lib/fileTransfer/relayAbort.ts';
 
 /** How long Connect waits for the SW's key before pairing without it (brief (b)). */
 export const SW_KEY_WAIT_MS = 1000;
@@ -520,6 +523,38 @@ export function useE2e(emailProp?: string | null): E2eApi {
       return { drop: false, payload: JSON.parse(new TextDecoder().decode(result.plaintext)) };
     }
     if (result.reason === 'shape') {
+      // ── FT-A1.1 §2.4 (MUST A1.1-M9): the ONE exception ──────────────────
+      // The relay holds no key, so the refusals only IT can author — tier,
+      // quota, too_large, size_mismatch, busy, relay_backpressure, timeout,
+      // connection_lost — are necessarily plaintext. Dropping them here left an
+      // encrypted pair with a transfer that just hangs until the 30 s stall
+      // clock relabels it "timed out", which is why option (C) was rejected.
+      //
+      // Admitted ABORT-ONLY. The predicate is the whole shape+subset decision
+      // (lib/fileTransfer/relayAbort.ts); the LIVENESS clause is applied one
+      // layer up in useFileTransfer, because this hook holds no transfer state
+      // and §2.5 puts liveness on the side that owns it.
+      //
+      // Three things this branch deliberately does NOT do, all of them MUSTs:
+      // it does not touch `mode`, it does not call the abort/downgrade path,
+      // and it does not mark the session. A transport refusal is not evidence
+      // about the crypto session, and treating it as one would hand a
+      // relay-position party a session kill switch.
+      if (isRelayMintedAbort(type, payload)) {
+        console.warn(
+          `[e2e] relay-minted FILE_FAILED accepted ABORT-ONLY (FT-A1.1 §2.4) reason=${
+            (payload as { reason: string }).reason}`,
+        );
+        return { drop: false, payload };
+      }
+      if (isMalformedRelayMark(type, payload)) {
+        // A top-level `relay` key that is NOT the minted shape — a peer-owned
+        // reason wearing the mark, `relay` on a FILE_CHUNK, an extra field.
+        // MUST A1.1-M7 says the relay rejects rather than strips these, so one
+        // arriving here is a tamper signal, not a protocol variant. It falls
+        // through to the same drop, but it is worth naming in the log.
+        console.warn(`[e2e] dropped a FILE_* frame carrying a bogus relay mark: ${type}`);
+      }
       // A PLAINTEXT frame while the pair is encrypted. C-1's downgrade latch:
       // dropped and counted, never processed and never answered.
       downgradeDropsRef.current += 1;
