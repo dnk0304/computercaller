@@ -1,0 +1,61 @@
+-- DeviceKey partial unique index — REPAIR + IDEMPOTENT RE-ASSERT (E2E-P1.3 (c)).
+--
+-- ── WHAT THIS IS NOT ──────────────────────────────────────────────────────
+-- It is NOT the first declaration of this index. 20260917120000_add_device_keys
+-- already creates it, and that migration is correct. Running `prisma migrate
+-- deploy` on a database that has never seen DeviceKey therefore produces the
+-- index with or without this file.
+--
+-- ── WHAT IT IS FOR ────────────────────────────────────────────────────────
+-- A database whose DeviceKey table arrived via `prisma db push` has the table,
+-- both plain indexes, and NO PARTIAL UNIQUE INDEX — because `db push` derives
+-- the database from schema.prisma, and Prisma's schema language cannot express
+-- `CREATE UNIQUE INDEX ... WHERE ...`. schema.prisma mirrors it as a plain
+-- @@index, which is a different object with none of the enforcement.
+--
+-- That is not hypothetical. The ccpix harness database is in exactly this
+-- state: no `_prisma_migrations` table at all (so it was pushed, never
+-- migrated) and the partial index present only because someone added it BY
+-- HAND. Every `devicekey-authz` run that has ever passed the rotation and
+-- one-live-key assertions passed against a hand-patched database. The index
+-- those assertions test was, until this file, not reproducible by any command
+-- in the repo on such a database.
+--
+-- So: idempotent, additive, and safe to run against a database in EITHER
+-- state — freshly migrated (the index exists; this is a no-op) or pushed (the
+-- index is missing; this creates it).
+--
+-- ── WHY THE INVARIANT IS PARTIAL, RESTATED ────────────────────────────────
+-- "At most one LIVE key per (userId, deviceId)" — not "one row ever". Rotation
+-- (N-4) is a NEW ROW, never an UPDATE of "publicKey": the old row keeps its key
+-- and gains a "revokedAt", so the evidence of a substitution survives. A plain
+-- UNIQUE("userId","deviceId") would make that second row impossible and force
+-- an in-place mutation, destroying the one thing this table exists to record.
+--
+-- ── IF THIS MIGRATION FAILS ───────────────────────────────────────────────
+-- Two ways, and both are the correct outcome rather than something to work
+-- around:
+--
+--   1. "relation \"DeviceKey\" does not exist" — the table is genuinely absent
+--      on a database that believes 20260917120000_add_device_keys is applied.
+--      Do NOT create the table by hand. Find out why the ledger disagrees with
+--      the schema before writing anything else to it.
+--
+--   2. "could not create unique index ... Key (userId, deviceId)=(...) is
+--      duplicated" — the database already holds TWO OR MORE LIVE rows for one
+--      (userId, deviceId). That is the invariant already violated, which can
+--      only have happened while no index was enforcing it. Failing loudly here
+--      is the point: silently picking a winner would delete evidence of a key
+--      substitution, which is the exact event this table exists to record.
+--      Find the offenders with the query in this folder's README, decide which
+--      row is live WITH the account owner, revoke the rest (set "revokedAt"),
+--      then re-run.
+--
+-- ROLLBACK: see README.md in this folder. One statement, no data loss.
+
+-- CreateIndex: THE INVARIANT — at most one LIVE key per (userId, deviceId).
+-- Partial, so any number of revoked rows may accumulate as rotation history.
+-- IF NOT EXISTS so a migrated database is unaffected and a pushed one is fixed.
+CREATE UNIQUE INDEX IF NOT EXISTS "DeviceKey_userId_deviceId_live_key"
+    ON "DeviceKey"("userId", "deviceId")
+    WHERE "revokedAt" IS NULL;
