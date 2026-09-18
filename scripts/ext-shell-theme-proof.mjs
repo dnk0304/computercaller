@@ -32,7 +32,8 @@
  * Env: CC_OUT_TAG (default "layering/shell").
  */
 import { chromium } from 'playwright';
-import { Reaper } from './lib/reap.mjs';
+import { Reaper, rmWhenUnlocked } from './lib/reap.mjs';
+import { finish } from './lib/finish.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -235,12 +236,19 @@ for (const [name, os_, choice, expected] of COMBOS) {
 
   await ctx.close();
   reaper.reapAndReport(`ext-shell-theme-proof:${name}`);
-  fs.rmSync(profile, { recursive: true, force: true });
+  rmWhenUnlocked(profile);  // (f) never rmSync a handle Chromium may still hold
 }
 
-server.close();
-fs.rmSync(EXT, { recursive: true, force: true });
+// (f) close() stops the server ACCEPTING but leaves established keep-alive
+// sockets open, and Chromium holds one — so the handle outlived the run and the
+// process never became exit-eligible on its own.
+try { server.closeAllConnections?.(); } catch { /* older node: best effort */ }
+// AWAITED. close() is asynchronous — it resolves only once the listening handle
+// is actually released — so the previous fire-and-forget left a live
+// TCPServerWrap behind. That is not a guess: the first run of the (f) exit
+// diagnostic printed exactly "still held open by: TCPServerWrap", which is the
+// whole reason the NOTE exists rather than a silent process.exit.
+await new Promise((r) => server.close(r));
+rmWhenUnlocked(EXT);  // (f) never rmSync a handle Chromium may still hold
 
-const failed = results.filter((r) => !r.pass);
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-process.exit(failed.length ? 1 : 0);
+finish('ext-shell-theme-proof', results);

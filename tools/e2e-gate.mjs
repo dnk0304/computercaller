@@ -36,6 +36,7 @@ import net from 'node:net';
 // (c) The gate and the harnesses share ONE definition of "what did we spawn and
 // is it still alive" — scripts/lib/reap.mjs. Rule 12/14 live in that file.
 import { census, findLeaks } from '../scripts/lib/reap.mjs';
+import { isGateWorktree, isGateMain } from './gate-location.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const T_START = Date.now();
@@ -100,11 +101,25 @@ function refuse(msg) {
 
 // ── location: a fixed e2e worktree, or the main checkout (read-only) ────────
 const NORM = ROOT.replace(/\\/g, '/');
-const IS_WORKTREE = /\/worktrees\/computercaller\/e2e-p[0-9a-z]+$/i.test(NORM);
-const IS_MAIN = /\/desktop\/computercaller$/i.test(NORM);
+/**
+ * (f2) ANY worktree under worktrees/computercaller, not just `e2e-p<N>`.
+ *
+ * The old pattern encoded the PHASE in the directory name, so the three `ft-*`
+ * lanes could not run the gate at all — it refused before reading a single
+ * flag. That was a naming convention doing an argument's job: `--phase` is
+ * already REQUIRED (P5a slice 1 (f)), so the phase has exactly one source and
+ * the directory name has none.
+ *
+ * What is still enforced is the part that actually matters: the run happens in
+ * a worktree of THIS repo (where .e2e-lock gives one writer) or in the main
+ * checkout (read-only). Only the phase-from-name coupling is removed.
+ */
+const IS_WORKTREE = isGateWorktree(NORM);
+const IS_MAIN = isGateMain(NORM);
 if (!IS_WORKTREE && !IS_MAIN) {
   refuse(
-    `must run from C:\\Users\\D\\worktrees\\computercaller\\e2e-p<N> or the main checkout.\n` +
+    `must run from a worktree under C:\\Users\\D\\worktrees\\computercaller\\ or the main checkout.\n` +
+      `            The phase comes from --phase, not from the directory name.\n` +
       `            Got: ${ROOT}`
   );
 }
@@ -399,6 +414,35 @@ function skip(name, cmd, reason) {
  * `<phase>-<step>.log`), and only when a retry was actually configured, so a
  * normal green run writes nothing new.
  */
+/**
+ * (f) Did this step print a complete verdict before it was killed?
+ *
+ * Keyed on the PARSED count, not on a substring: the parser is the same one
+ * `record()` floors against, so "it printed a summary" here means exactly what
+ * it means everywhere else in this file. A partial run that never reached its
+ * summary parses to null and is correctly NOT covered by this.
+ */
+/**
+ * (f) Run `fn` over `items` with at most `limit` in flight.
+ *
+ * Deliberately not a dependency and deliberately tiny: it keeps a fixed window
+ * of workers pulling from one shared cursor, so the Nth harness added to the
+ * list cannot raise the load the first N-1 run under.
+ */
+async function runPool(items, limit, fn) {
+  const queue = [...items];
+  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+      await fn(next);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function finishedButHung(out, counts) {
+  return Boolean(counts && Number.isFinite(counts.total) && counts.total > 0);
+}
+
 function keepFailedAttempt(name, index, exit, out, attempts) {
   if (exit === 0 || attempts <= 1 || index >= attempts - 1) return;
   try {
@@ -464,15 +508,43 @@ function runAsyncStep(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout =
       env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
     });
     let out = '';
-    let timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, timeout);
+    let settled = false;
+    const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+
+    /**
+     * (f) Resolve on 'exit' rather than 'close'.
+     *
+     * HONEST SCOPE: this is a robustness improvement, NOT the fix for the P5A
+     * timeouts, and it is not claimed as one. 'close' additionally waits for
+     * every inherited stdio pipe to shut, which a surviving Chromium could in
+     * principle hold — but tests/gate-child-exit.test.mjs measured that exact
+     * shape on Windows and 'close' still arrived in ~179ms, so that theory was
+     * DISPROVED rather than assumed. The real defect is the kill below.
+     *
+     * 'exit' is still the fact we want (the process ended), and the 250ms drain
+     * keeps the summary line the parser needs. Kept because it costs nothing
+     * and removes a dependency on grandchild behaviour we do not control.
+     */
+    let timer = setTimeout(() => {
+      killTree(child.pid);
+      done({ out, exit: 124 });
+    }, timeout);
+
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.stderr.on('data', (d) => { out += d.toString(); });
-    child.on('close', (code, signal) => {
+
+    child.on('exit', (code, signal) => {
       clearTimeout(timer);
       timer = null;
-      resolve({ out, exit: signal ? 124 : (code ?? 1) });
+      // 250ms to drain, then take what we have. Waiting on 'close' here would
+      // reintroduce the exact hang this replaces.
+      setTimeout(() => done({ out, exit: signal ? 124 : (code ?? 1) }), 250);
     });
-    child.on('error', () => { clearTimeout(timer); resolve({ out, exit: 1 }); });
+    child.on('close', (code, signal) => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      done({ out, exit: signal ? 124 : (code ?? 1) });
+    });
+    child.on('error', () => { if (timer) clearTimeout(timer); done({ out, exit: 1 }); });
   });
 
   return (async () => {
@@ -486,6 +558,25 @@ function runAsyncStep(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout =
       out = r.out;
       exit = r.exit;
       try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
+      /**
+       * (f) R-AE: a step that produced a COMPLETE summary and was still
+       * recorded as a timeout is a PASS-with-WARN, ONCE, and never a retry.
+       *
+       * This is the shape all three P5A timeouts had: the harness did the work
+       * and printed its verdict, and the budget expired around it. Retrying
+       * re-measures nothing and doubles the load that caused the overrun in the
+       * first place — which is exactly how one slow harness took two others
+       * down with it. The WARN keeps it visible so a step cannot quietly live
+       * here forever instead of being made faster or given a real budget.
+       */
+      if (exit === 124 && finishedButHung(out, counts)) {
+        console.log(`  WARN  ${name} — printed its summary (${counts?.passed}/${counts?.total}) `
+          + 'and then did not exit; treated as PASS, not retried (P5a f). '
+          + 'Its PID tree was killed; see reap: steps for survivors.');
+        exit = counts && counts.passed === counts.total ? 0 : 1;
+        counts = { ...(counts || {}), hungAfterSummary: 1 };
+        break;
+      }
       keepFailedAttempt(name, i, exit, out, attempts);
       if (exit === 0) break;
     }
@@ -709,6 +800,30 @@ function startDevServer() {
   devProc.on('error', (e) => noteDev(Buffer.from(`spawn error: ${e.message}\n`)));
   return { ok: true };
 }
+/**
+ * (f) THE FIX. Kill a timed-out step by its PID TREE.
+ *
+ * `child.kill()` on a step spawned with `shell: true` signals **cmd.exe only**.
+ * The node harness and its Chromium survive. So at the 8-minute budget the gate
+ * declared a timeout, LEFT THE WORK RUNNING, and started the retry on top of
+ * it — doubling the very load that caused the overrun. The orphan kept writing
+ * into the still-open pipe, which is precisely why three steps the gate called
+ * timeouts have a COMPLETE summary in their kept attempt-1 logs, and why that
+ * evidence reads like "finished, then hung" when it is really "never stopped".
+ *
+ * Pinned by tests/gate-child-exit.test.mjs with a positive control: the old
+ * kill lets the work write a marker AFTER the kill lands; the tree kill does
+ * not. By PID and only by PID (WORKTREE_STANDARD r12: never by image name).
+ *
+ * The companion half is the concurrency cap: ext-shell-theme-proof takes 409s
+ * standalone against a 480s budget, so at 8-way parallelism it overruns no
+ * matter how it is killed.
+ */
+function killTree(pid) {
+  if (!pid) return;
+  try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already gone */ }
+}
+
 function stopDevServer() {
   // Rule 12: never kill by image name. Only the PID we started.
   if (devProc && devProc.pid) {
@@ -1133,7 +1248,21 @@ if (WEB) {
           // the batch. Same rule, one measurement point — and it is recorded
           // under a name that says so rather than pretending to be per-harness.
           const beforeBatch = census();
-          await Promise.all(harnessSpecs.map(({ h, rel }) => runAsyncStep(`harness:${h}`, `node ${rel}`, harnessOpts(rel))));
+          /**
+           * (f) R-AE: CONCURRENCY IS CAPPED AT 6, measured rather than guessed.
+           *
+           * P5a slice 2 added an eighth harness to this block and the run that
+           * followed put THREE of them past the 8-minute budget — the first
+           * time that had happened with seven. Unbounded Promise.all makes the
+           * degree of parallelism an accident of how many harnesses happen to
+           * exist, so every harness added to the list silently raises the
+           * failure rate of every harness already in it.
+           *
+           * A fixed window keeps the runtime win R-B asked for while making the
+           * load a constant. 6 is the last count that ran clean on this box.
+           */
+          await runPool(harnessSpecs, 6, ({ h, rel }) =>
+            runAsyncStep(`harness:${h}`, `node ${rel}`, harnessOpts(rel)));
           assertNoLeaks('harness-batch', beforeBatch);
         } else {
           for (const { h, rel } of harnessSpecs) {

@@ -35,6 +35,7 @@
  */
 
 import { chromium } from 'playwright';
+import { exitAfterFlush } from './lib/finish.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Reaper } from './lib/reap.mjs';
@@ -216,6 +217,31 @@ async function open({ route, width = 1280, height = 800, theme = 'light', mode =
   return { ctx, page };
 }
 
+/**
+ * Wait for the FIRST element this harness cares about on a freshly loaded
+ * surface, then report whether it arrived.
+ *
+ * This exists because the gate caught me shipping the very defect (d1) is
+ * about. `(a) /app Settings renders the Encrypted mode row` asserted
+ * `locator.count() === 1`, which does not wait at all, after a fixed
+ * `settle(2500)`. Standalone that is plenty; inside the gate's parallel block —
+ * eight harnesses, a cold Next route and a server that has just started — it is
+ * not, and the check failed on attempt 1 while passing on attempt 2. Fixing the
+ * siblings' sleep-gated assertions and leaving my own would have been the
+ * dispatch failing at its own thesis.
+ *
+ * The timeout is generous on purpose: it is a CEILING on a condition, not a
+ * delay everyone pays. On an idle box it returns in milliseconds.
+ */
+async function appears(locator, ms = 45_000) {
+  try {
+    await locator.first().waitFor({ state: 'attached', timeout: ms });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function shot(page, name) {
   const file = path.join(SHOTS, `p5a-${name}.png`);
   await page.screenshot({ path: file, fullPage: false });
@@ -243,7 +269,9 @@ try {
   {
     const { ctx, page } = await open({ route: '/app/settings' });
     const row = page.locator('[data-cc-e2e-toggle="row"]');
-    check('(a) /app Settings renders the Encrypted mode row', (await row.count()) === 1);
+    // Wait for the condition; do not assume a fixed delay was enough. See
+    // appears(). This is the first assertion against a cold route.
+    check('(a) /app Settings renders the Encrypted mode row', await appears(row));
     check('(a) the row is labelled "Encrypted mode"',
       (await row.innerText()).includes(SETTING_LABEL));
     const sw = row.getByRole('switch');
@@ -279,6 +307,7 @@ try {
   {
     const { ctx, page } = await open({ route: '/app/settings', mode: 'on' });
     const sw = page.locator('[data-cc-e2e-toggle="row"]').getByRole('switch');
+    await appears(sw);
     check('(a) a stored ON setting is read back and rendered ON',
       (await sw.getAttribute('aria-checked')) === 'true');
     await ctx.close();
@@ -296,6 +325,7 @@ try {
     await page.goto(`${DEV}/app/settings`, { waitUntil: 'domcontentloaded' }).catch(() => {});
     await settle(page, 2500);
     const sw = page.locator('[data-cc-e2e-toggle="row"]').getByRole('switch');
+    await appears(sw);
     check('(a) ANOTHER account\'s ON setting does not leak into this account',
       (await sw.getAttribute('aria-checked')) === 'false');
     await ctx.close();
@@ -309,7 +339,7 @@ try {
     await settle(page, 300);
     const item = page.locator('[data-cc-e2e-toggle="menuitem"]');
     check(`(a) [${theme}] the extension account menu carries the Encrypted mode switch`,
-      (await item.count()) === 1);
+      await appears(item));
     check(`(a) [${theme}] it uses role="menuitemcheckbox" (correct ARIA inside a menu)`,
       (await item.getAttribute('role')) === 'menuitemcheckbox');
     check(`(a) [${theme}] default OFF on the extension surface too`,
@@ -327,7 +357,7 @@ try {
   {
     const { ctx, page } = await open({ route: '/app' });
     const chip = page.locator('[data-cc-e2e-chip]');
-    check('(c) /app header renders the encryption chip', (await chip.count()) >= 1);
+    check('(c) /app header renders the encryption chip', await appears(chip));
     check('(c) an unpaired/plaintext bridge reads "Not encrypted", in words',
       (await chip.first().getAttribute('data-cc-e2e-label')) === unencrypted.label,
       await chip.first().getAttribute('data-cc-e2e-label'));
@@ -657,3 +687,15 @@ try {
   }
   if (failed.length) process.exitCode = 1;
 }
+
+// ── E2E-P5a (f): EXIT, do not merely stop having work to do. ──────────────
+// Three harnesses in the P5A gate were recorded as timeouts with a COMPLETE
+// summary in their logs. The gate-side cause is fixed and is NOT a hang:
+// child.kill() on a shell:true step signals cmd.exe only, so the timeout never
+// stopped the work (tests/gate-child-exit.test.mjs). This is the other half:
+// once the summary is printed and the finally block has closed the browser and
+// reaped, nothing is left to wait for, so say so explicitly rather than hoping
+// the event loop drains. exitAfterFlush flushes stdout first — on Windows the
+// gate reads this over a pipe, where writes are async and a bare process.exit
+// can truncate the very summary line the gate parses.
+exitAfterFlush(process.exitCode ?? 0);
