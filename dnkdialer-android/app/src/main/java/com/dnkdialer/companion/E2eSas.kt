@@ -61,7 +61,16 @@ object E2eSas {
     const val INFO = "cc-sas-v1"
 
     private const val DIGIT_MODULUS = 100000
-    private const val DIGIT_LENGTH = 5
+    /**
+     * Frozen at 5 by E2E-SPEC §13.3 ("mod 100000, zero-padded to 5").
+     *
+     * Visible (was private) so the SAS UI can source the count from the frozen
+     * implementation instead of restating it. P5b's first cut hardcoded 6 from
+     * the brief and nothing caught it: a UI that repeats a frozen number is a
+     * second place for that number to be wrong, and the display is exactly
+     * where being wrong is invisible to every crypto test.
+     */
+    const val DIGIT_LENGTH = 5
 
     /** Bytes of OKM the digits are taken from. Four — `be32`, then mod. */
     private const val OKM_BYTES = 4

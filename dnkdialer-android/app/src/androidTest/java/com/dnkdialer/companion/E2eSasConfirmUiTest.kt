@@ -51,8 +51,8 @@ class E2eSasConfirmUiTest {
 
     private companion object {
         const val PAIRING_ID = "sas-ui-test-pairing"
-        const val DIGITS = "412908"
-        const val GROUPED = "412 908"
+        const val DIGITS = "41290"
+        const val GROUPED = "412 90"
     }
 
     @Before
@@ -70,7 +70,7 @@ class E2eSasConfirmUiTest {
         withSasShowing { activity ->
             val code = activity.findViewById<TextView>(R.id.homeSasCode)
             assertEquals(
-                "six ungrouped digits cannot be compared against a screen",
+                "ungrouped digits cannot be compared against a screen",
                 GROUPED, code.text.toString()
             )
             val spoken = code.contentDescription?.toString().orEmpty()
@@ -154,7 +154,7 @@ class E2eSasConfirmUiTest {
 
     @Test
     fun a_malformed_payload_is_refused_not_rendered() {
-        for (bad in listOf("", "41290", "4129081", "41290x", "abcdef")) {
+        for (bad in listOf("", "4129", "412908", "4129x", "abcde")) {
             val answer = captureVerdict {
                 withHome { scenario ->
                     sendSasRequired(bad)

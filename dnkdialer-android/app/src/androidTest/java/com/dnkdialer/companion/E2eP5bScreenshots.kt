@@ -72,13 +72,13 @@ class E2eP5bScreenshots {
                 broadcast(
                     Intent(E2eSasContract.ACTION_E2E_SAS_REQUIRED)
                         .putExtra(PhoneService.EXTRA_PAIRING_ID, "shot-sas")
-                        .putExtra(E2eSasContract.EXTRA_SAS_DIGITS, "412908")
+                        .putExtra(E2eSasContract.EXTRA_SAS_DIGITS, "41290")
                 )
                 scenario.onActivity { activity ->
                     val shown = CopyRules.visibleText(activity.window.decorView)
                     assertTrue(
                         "the SAS face is not on screen for the $suffix capture: $shown",
-                        shown.any { it.contains("412 908") }
+                        shown.any { it.contains("412 90") }
                     )
                     assertTrue(shown.any { it == "Same code on your computer?" })
                     CopyRules.assertNoEndToEndClaim(activity.window.decorView)

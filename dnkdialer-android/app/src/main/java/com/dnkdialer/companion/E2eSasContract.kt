@@ -70,11 +70,16 @@ object E2eSasContract {
     /** true = "Matches", false = "Doesn't match". Absent must be read as false. */
     const val EXTRA_SAS_MATCHED = "e2e_sas_matched"
 
-    /** §13.3 — six decimal digits, so the UI can reject a malformed payload. */
-    const val SAS_DIGIT_COUNT = 6
+    /**
+     * §13.3's digit count, taken FROM the frozen implementation rather than
+     * restated here. It is 5 ("mod 100000, zero-padded to 5"); the P5b brief
+     * said 6 and this file believed it, which is precisely why the number now
+     * has exactly one home.
+     */
+    const val SAS_DIGIT_COUNT = E2eSas.DIGIT_LENGTH
 
     /**
-     * Group the digits for display and for TalkBack: "412908" → "412 908".
+     * Group the digits for display and for TalkBack: "41290" → "412 90".
      *
      * One function, used for BOTH the visible text and the spoken description,
      * so the two can never drift — and because an ungrouped run of six digits
@@ -82,7 +87,7 @@ object E2eSasContract {
      * which cannot be checked against a screen. Grouping is what makes the
      * code confirmable, so it is part of the security feature and not styling.
      *
-     * Returns the input unchanged when it is not exactly six digits; the
+     * Returns the input unchanged when it is not exactly five digits; the
      * caller is expected to have refused such a payload already.
      */
     @JvmStatic

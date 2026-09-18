@@ -61,9 +61,11 @@ class E2eKeyChangeUiTest {
                 "the warning asserts a cause it cannot know",
                 body.contains("this is just", true) || body.contains("don't worry", true)
             )
-            for (cause in listOf("reinstall", "reset", "sign")) {
+            for (cause in listOf("reinstall", "reset")) {
                 assertTrue("benign cause '$cause' missing", body.contains(cause, true))
             }
+            // The remedy is to CHECK, not to click past the warning.
+            assertTrue("must send the user to pair again", body.contains("pair again", true))
             assertEquals(
                 ctx.getString(R.string.e2e_key_change_title),
                 activity.findViewById<TextView>(R.id.homeKeyChangeTitle).text.toString()
@@ -155,8 +157,12 @@ class E2eKeyChangeUiTest {
         val plaintext = ctx.getString(
             E2eStatusCopy.statusLine(E2eStatusCopy.State.PLAINTEXT)
         )
+        // Three frozen words (P5a parity, R-AH), not two: sealed-but-unverified
+        // means nobody confirmed a code, and calling it plain "Encrypted"
+        // claims a verification that did not happen.
         assertTrue(encrypted.contains("Encrypted", true))
-        assertEquals("both sealed states read as Encrypted in the line", encrypted, unverified)
+        assertTrue(unverified.contains("Encrypted, unverified", true))
+        assertFalse("unverified must not read as plain Encrypted", encrypted == unverified)
         assertTrue(
             "the unencrypted state must be NAMED — a bare \"Connected\" is what " +
                 "users read as safe",

@@ -63,10 +63,14 @@ object E2eStatusCopy {
     @JvmStatic
     @StringRes
     fun statusLine(state: State): Int = when (state) {
-        // Verified and unverified share the in-app word deliberately: both
-        // are encrypted, and the status line is not where the distinction is
-        // actionable. The badge carries it.
-        State.ENCRYPTED_VERIFIED, State.ENCRYPTED_UNVERIFIED -> R.string.status_connected_encrypted
+        // Three frozen words, not two (P5a parity, Ken R-AH). An earlier cut
+        // collapsed verified and unverified into one "Encrypted" on the
+        // grounds that the distinction was not actionable in the line. It is
+        // the opposite: sealed-but-unverified means NOBODY CONFIRMED A CODE,
+        // and saying "Encrypted" flat there claims a verification that did not
+        // happen — the one thing the SAS exists to make honest.
+        State.ENCRYPTED_VERIFIED -> R.string.status_connected_encrypted
+        State.ENCRYPTED_UNVERIFIED -> R.string.status_connected_encrypted_unverified
         State.PLAINTEXT -> R.string.status_connected_unencrypted
     }
 
@@ -74,8 +78,8 @@ object E2eStatusCopy {
     @JvmStatic
     @StringRes
     fun notificationText(state: State): Int = when (state) {
-        State.ENCRYPTED_VERIFIED, State.ENCRYPTED_UNVERIFIED ->
-            R.string.notif_ongoing_connected_encrypted
+        State.ENCRYPTED_VERIFIED -> R.string.notif_ongoing_connected_encrypted
+        State.ENCRYPTED_UNVERIFIED -> R.string.notif_ongoing_connected_encrypted_unverified
         // Unchanged from today. The shade's plaintext wording is the one the
         // user already knows, and P5b is not the place to renegotiate it.
         State.PLAINTEXT -> R.string.notif_ongoing_connected
