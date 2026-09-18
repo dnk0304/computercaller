@@ -237,5 +237,270 @@ check('the traffic catch-all no longer implies a pair',
   !/notePhonePresence\(true\);?\s*paired\s*=/.test(bg) &&
   /notePhonePresence\(true\)/.test(bg));
 
+
+// ── PART 4 — the sealed twin: the derivation is MODE-BLIND ──────────────────
+//
+// E2E-P6 (a). §13.7 keeps the frame TYPE and replaces only the BODY, so nothing
+// the relay does to derive PAIR_STATE can depend on whether a session is open.
+// This part runs the SAME scenario twice — plaintext bodies, then sealed bodies
+// — over the SAME mirror functions declared above, and requires the observable
+// result to be identical.
+//
+// SCOPE, stated so it cannot be overclaimed: this twins the MIRROR. It proves
+// the modelled state machine has no body-dependent branch. It is not evidence
+// about the shipped relay; P6 (g) is. See tests/lib/sealed-twin.mjs's header.
+
+import { twin, transcript, openBody, assertNoPlaintext } from './lib/sealed-twin.mjs';
+
+console.log('\nPART 4 — sealed twin (mode-blind derivation)');
+
+// Long enough that assertNoPlaintext's minLen floor cannot skip it, and
+// distinctive enough that a chance base64 collision is not credible.
+const CANARY = 'CANARY-PAIRSTATE-b0f3c1a97e4d-must-never-reach-a-listener';
+const LISTENER_DEVICE_ID = 'dev-listener-p6';
+
+/**
+ * Mirror of server.js derivePairState(room, forWs) INCLUDING the P1(c)/A3-M1
+ * splice. The three truth fields come from the PART 1 mirror unchanged — that
+ * shared call is the point: if the splice ever starts influencing them, this
+ * function and the one above stop agreeing and PART 4 goes red.
+ */
+function derivePairStateForWs(room, forWs = null) {
+  const state = derivePairState(room);
+  const block = state.paired ? (room.active.e2e ?? null) : null;
+  if (block && forWs && forWs.deviceId) {
+    const mine = (block.wraps || []).find((w) => w.deviceId === forWs.deviceId);
+    if (mine) {
+      state.e2e = {
+        kid: block.kid, epk: block.epk, mode: block.mode,
+        recipKeys: block.recipKeys, wrap: mine.wrap, ctx: block.ctx,
+      };
+    }
+  }
+  return state;
+}
+
+/** Mirror of server.js broadcastPairState's per-listener splice. */
+function broadcastPairStateTo(room, listeners) {
+  const base = `PAIR_STATE:${JSON.stringify(derivePairStateForWs(room))}`;
+  for (const l of listeners) {
+    const msg = l.deviceId
+      ? `PAIR_STATE:${JSON.stringify(derivePairStateForWs(room, l))}`
+      : base;
+    if (l.readyState === OPEN) l.sent.push(msg);
+  }
+}
+
+/** transcript() minus chosen keys, so an ADDITIVE difference can be pinned separately. */
+const stripKeys = (t, keys) => JSON.stringify(t.map((x) => {
+  const o = { ...x };
+  for (const k of keys) delete o[k];
+  return o;
+}));
+
+/**
+ * transcript() deliberately keeps only relay-owned fields, and PAIR_STATE's
+ * three truth fields are not on that list — so a bare transcript comparison of a
+ * listener would be an assertion that cannot fail. Re-attach them here, which is
+ * exactly what makes P4.2 a detector rather than a decoration.
+ */
+const pairTranscript = (sent) => transcript(sent).map((x, i) => {
+  const raw = sent[i];
+  const p = raw.startsWith('PAIR_STATE:') ? JSON.parse(raw.slice('PAIR_STATE:'.length)) : {};
+  return { ...x, phonePresent: p.phonePresent, paired: p.paired, held: p.held };
+});
+
+const scn = twin((mode) => {
+  const room = mkRoom();
+  const phone = ws('phone');
+  const browser = ws('browser');
+  room.active.phone = phone;
+  room.active.browser = browser;
+
+  const listener = ws('browser', { listener: true });
+  listener.deviceId = LISTENER_DEVICE_ID;
+  room.lobby.add(listener);
+
+  // Mode ON: the SW wrap rides on room.active.e2e exactly as ACCEPT_PAIRING
+  // stashes it. Mode OFF: no block at all — the A4.1 / §13.10 plaintext room.
+  const block = mode.block();
+  if (block) {
+    room.active.e2e = {
+      ...block,
+      recipKeys: [{ deviceId: LISTENER_DEVICE_ID, k: 'cmVjaXAta2V5LW9wYXF1ZQ' }],
+      wraps: [{ deviceId: LISTENER_DEVICE_ID, wrap: 'd3JhcHBlZC1zZXNzaW9uLWtleQ' }],
+      ctx: {
+        pairingId: 'p6-pair-0001', phoneDeviceId: 'dev-phone-p6',
+        peerDeviceId: LISTENER_DEVICE_ID, pairEpoch: '7',
+      },
+    };
+  }
+
+  broadcastPairStateTo(room, [listener]);
+
+  // A data-plane frame rides through the live pair. forwardDataPlane copies the
+  // wire bytes verbatim — it never parses the body — so the same array push
+  // models both arms.
+  const body = mode.body('PHONE_NOTIFICATION', { title: CANARY, text: `${CANARY}-body` });
+  browser.sent.push(`PHONE_NOTIFICATION:${JSON.stringify(body)}`);
+
+  return { room, phone, browser, listener, body };
+});
+
+// (1) Transcript equality — the data plane carries no e2e block at all, so the
+//     two arms must agree on every field transcript() keeps.
+{
+  const r = scn.agrees((o) => o.browser.sent);
+  check('P4.1 browser transcript is identical plaintext vs sealed', r.equal, r);
+}
+// …and the listener's, once the deliberately-ADDITIVE e2e key is set aside.
+{
+  const a = stripKeys(pairTranscript(scn.plain.listener.sent), ['sealed', 'hasE2eBlock']);
+  const b = stripKeys(pairTranscript(scn.sealed.listener.sent), ['sealed', 'hasE2eBlock']);
+  check('P4.2 listener transcript is identical once the additive e2e key is set aside',
+    a === b, { a, b });
+  // Pinned, not hidden: that additive difference is the ONLY one, and it is
+  // present exactly when mode is ON.
+  check('P4.3 the e2e block rides only on the sealed arm',
+    transcript(scn.plain.listener.sent)[0].hasE2eBlock === false &&
+    transcript(scn.sealed.listener.sent)[0].hasE2eBlock === true,
+    [transcript(scn.plain.listener.sent)[0], transcript(scn.sealed.listener.sent)[0]]);
+}
+
+// (2) (i) The derivation itself is identical WITH and WITHOUT the SW wrap.
+{
+  const pick = (o) => JSON.parse(o.listener.sent[0].slice('PAIR_STATE:'.length));
+  const p = pick(scn.plain), s = pick(scn.sealed);
+  check('P4.4 the three truth fields are byte-identical with and without the wrap',
+    p.phonePresent === s.phonePresent && p.paired === s.paired && p.held === s.held &&
+    JSON.stringify([p.phonePresent, p.paired, p.held]) === JSON.stringify([true, true, false]),
+    { p, s });
+  check('P4.5 the wrap is SINGULAR and the listener\'s own',
+    s.e2e.wrap === 'd3JhcHBlZC1zZXNzaW9uLWtleQ' && s.e2e.wraps === undefined, s.e2e);
+  check('P4.6 the A3-M1 ctx is spliced through verbatim',
+    JSON.stringify(s.e2e.ctx) === JSON.stringify({
+      pairingId: 'p6-pair-0001', phoneDeviceId: 'dev-phone-p6',
+      peerDeviceId: LISTENER_DEVICE_ID, pairEpoch: '7',
+    }), s.e2e.ctx);
+}
+
+// (3) Verbatim passthrough — the envelope out is the envelope in, to the byte,
+//     and it still opens. Half the point of a twin: a relay that "helpfully"
+//     re-serialised a body would break authentication, silently.
+{
+  const wire = scn.sealed.browser.sent[0];
+  const out = JSON.parse(wire.slice('PHONE_NOTIFICATION:'.length));
+  check('P4.7 the envelope out equals the envelope in',
+    JSON.stringify(out) === JSON.stringify(scn.sealed.body), { out, sent: scn.sealed.body });
+  let opened = null;
+  try { opened = openBody(scn.session, 'PHONE_NOTIFICATION', out); } catch (e) { opened = { err: String(e) }; }
+  check('P4.8 the forwarded envelope still opens after the relay handled it',
+    opened && opened.title === CANARY && opened.text === `${CANARY}-body`, opened);
+}
+
+// (4) No plaintext leak anywhere the relay can reach: the listener's frames, the
+//     browser's frames, the stashed e2e block, the lobby.
+{
+  const hay = JSON.stringify({
+    listener: scn.sealed.listener.sent,
+    browser: scn.sealed.browser.sent,
+    e2e: scn.sealed.room.active.e2e,
+    lobby: [...scn.sealed.room.lobby].map((s) => s.sent),
+  });
+  const res = assertNoPlaintext(hay, { title: CANARY, text: `${CANARY}-body` });
+  check('P4.9 no fragment of the sealed body survives in relay-reachable state', res.clean, res.leaked);
+  // The control arm. Without it, a broken assertNoPlaintext would pass P4.9 by
+  // never finding anything at all.
+  const ctrl = assertNoPlaintext(JSON.stringify({ browser: scn.plain.browser.sent }), { title: CANARY });
+  check('P4.10 …and the PLAINTEXT arm genuinely does leak it (the detector works)',
+    ctrl.clean === false && ctrl.leaked.includes(CANARY), ctrl);
+}
+
+// (5) (ii) A4.1 / §13.10 — a PAIR_STATE with NO e2e block is tolerated and
+//     degrades to counts-only. Never to a plaintext preview.
+{
+  const room = mkRoom();
+  room.active.phone = ws('phone');
+  room.active.browser = ws('browser');
+  const l = ws('browser', { listener: true });
+  l.deviceId = LISTENER_DEVICE_ID;            // declared, but no block exists
+  broadcastPairStateTo(room, [l]);
+  const state = JSON.parse(l.sent[0].slice('PAIR_STATE:'.length));
+  check('P4.11 a block-less PAIR_STATE is tolerated (still emitted, still paired)',
+    l.sent.length === 1 && state.paired === true, state);
+  check('P4.12 …and carries EXACTLY the three counts-only fields',
+    JSON.stringify(Object.keys(state).sort()) === JSON.stringify(['held', 'paired', 'phonePresent']),
+    Object.keys(state));
+  // The degradation that must never happen: a body preview smuggled in as a
+  // consolation prize for the listener that could not get keys.
+  for (const forbidden of ['title', 'text', 'body', 'preview', 'sender', 'message']) {
+    check(`P4.13 no \`${forbidden}\` preview field on a block-less PAIR_STATE`, state[forbidden] === undefined);
+  }
+  // A listener that declared NO deviceId gets the base frame — same three fields.
+  const l2 = ws('browser', { listener: true });
+  broadcastPairStateTo(room, [l2]);
+  check('P4.14 a deviceId-less listener gets the identical counts-only frame',
+    l2.sent[0] === l.sent[0], [l.sent[0], l2.sent[0]]);
+}
+
+// (6) Mode does not change the DECISION. Same room, same transitions, one with a
+//     block stashed and one without: the truth fields must move identically.
+{
+  const run = (withBlock) => {
+    const room = mkRoom();
+    const phone = ws('phone');
+    const browser = ws('browser');
+    room.active.phone = phone; room.active.browser = browser;
+    if (withBlock) room.active.e2e = { kid: 'kid-p6-0001', epk: 'x', mode: 1, recipKeys: [], wraps: [], ctx: {} };
+    const seen = [];
+    const snap = () => { const s = derivePairStateForWs(room); seen.push([s.phonePresent, s.paired, s.held]); };
+    snap();                                                            // paired
+    browser.readyState = CLOSED; snap();                               // browser died
+    room.active.browser = null;
+    room.resumable = { expiresAt: now() + RESUME_WINDOW_MS }; snap();   // held
+    room.resumable = { expiresAt: now() - 1 }; snap();                  // claim expired
+    room.active.phone = ws('phone', { readyState: CLOSED }); snap();    // gone
+    return JSON.stringify(seen);
+  };
+  const withBlock = run(true), without = run(false);
+  check('P4.15 the full transition sequence is identical with and without a session',
+    withBlock === without, { withBlock, without });
+  check('P4.16 …and it is not a constant (the sequence really moves)',
+    new Set(JSON.parse(without).map((x) => JSON.stringify(x))).size >= 4, without);
+}
+
+// (7) (iii) PART 3's worker mapping rule is unchanged by mode. `bg` is the
+//     already-comment-stripped background.js read in PART 3.
+{
+  check('P4.17 the worker never gates its green dot on an e2e block',
+    !/e2e[^\n]{0,60}\)\s*return applyIndicator\('connected'\)/.test(bg) &&
+    !/applyIndicator\('connected'\)[^\n]*e2e/.test(bg));
+  check('P4.18 the worker still requires `paired` (PART 3\'s rule, re-asserted under mode)',
+    /if\s*\(\s*paired\s*\)\s*return applyIndicator\('connected'\)/.test(bg));
+}
+
+// (8) PART 2's style, extended to the e2e path: assert against the REAL source
+//     that the splice exists and that the three truth fields do not read it.
+{
+  check('P4.19 server.js derivePairState takes a per-listener socket',
+    /function derivePairState\s*\(\s*room\s*,\s*forWs\s*=\s*null\s*\)/.test(code));
+  check('P4.20 server.js splices the A3-M1 ctx into the listener slice',
+    /state\.e2e\s*=\s*\{[\s\S]{0,600}?\bctx:\s*block\.ctx/.test(code));
+  check('P4.21 server.js hands the listener a SINGULAR wrap, never wraps[]',
+    /wrap:\s*mine\.wrap/.test(code) && !/state\.e2e\s*=\s*\{[\s\S]{0,600}?wraps:\s*block\.wraps/.test(code));
+  check('P4.22 the splice is gated on `paired`, so an unpaired room never emits keys',
+    /const block = paired \? room\.active\.e2e : null/.test(code));
+  // THE mode-blindness claim, asserted against the source: the three truth
+  // fields are computed BEFORE the block is even looked up. If a future edit
+  // moves an e2e read above them, this goes red.
+  check('P4.23 the three truth fields are computed before any e2e read', (() => {
+    const fn = code.slice(code.indexOf('function derivePairState'));
+    const body = fn.slice(0, fn.indexOf('\n  }'));
+    const held = body.indexOf('held:');
+    const firstE2e = body.indexOf('room.active.e2e');
+    return held !== -1 && firstE2e !== -1 && held < firstE2e;
+  })());
+}
+
 console.log(`\n${pass}/${pass + fail} passed`);
 process.exit(fail ? 1 : 0);

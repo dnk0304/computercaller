@@ -425,6 +425,148 @@ test('a null/absent userId is not rate-limited into a shared bucket', () => {
   assert.equal(limiter.check(null, 1).allowed, true);
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SEALED-PAIR TWIN — the reset teardown is MODE-BLIND (E2E-P6 (a))
+// ═══════════════════════════════════════════════════════════════════════════
+// Unlike the twins in the other relay suites, this one runs against the REAL
+// lib/roomReset-core.js, not a mirror — so it is evidence about the shipped
+// reset primitive rather than about a copy of it. What it is still not is
+// evidence about the relay AROUND that primitive (the RESET_ROOM branch below
+// is mirrored, and P6 (g) is what exercises `node server.js`).
+//
+// The claim: resetRoom routes and closes on ROLE, never on a frame body, so a
+// room full of sealed frames tears down byte-for-byte like a plaintext one —
+// and the sealed frames in the buffer are DESTROYED by the reset rather than
+// surviving into the next pair.
+import {
+  twin, transcript, openBody, assertNoPlaintext, e2eBlock,
+} from './lib/sealed-twin.mjs';
+
+const TWIN_CANARY = 'canary-reset-room-2b7e05-this-plaintext-must-never-survive';
+
+/**
+ * A fully-loaded room at the moment of reset: an active pair, a listener, a
+ * live resume claim holding the pair's identity, and three buffered frames
+ * waiting to replay onto whoever resumes next.
+ */
+function resetTwinScenario(mode) {
+  const { rooms, room, deps, logs } = makeWorld();
+  const phone = makeWs('phone');
+  const browser = makeWs('browser');
+  const listener = makeWs('browser', { listener: true });
+  room.active = { browser, phone };
+  room.lobby.add(listener);
+
+  const e2e = mode.block();
+  room.pairIdentity = e2e
+    ? { ua: 'Chrome', ip: '1.2.3.4', deviceName: 'Pixel', e2e }
+    : { ua: 'Chrome', ip: '1.2.3.4', deviceName: 'Pixel' };
+
+  const bodies = [], payloads = [];
+  for (let i = 0; i < 3; i++) {
+    const payload = { id: `msg-${i}`, text: `${TWIN_CANARY}-${i}` };
+    payloads.push(payload);
+    const body = mode.body('SMS_RECEIVED', payload);
+    bodies.push(body);
+    room.frameBuffer.push({ msg: `SMS_RECEIVED:${JSON.stringify(body)}`, at: 1_000 + i });
+  }
+  room.resumable = { droppedRole: 'browser', panelHold: true, expiresAt: 9e15, identity: room.pairIdentity };
+
+  // Prove the buffered envelopes were intact going IN — otherwise "nothing
+  // sealed survived" could be true because nothing sealed ever existed.
+  const bufferedBefore = room.frameBuffer.map((e) => e.msg);
+
+  const r = resetRoom(room, deps, 'frame');
+  return { rooms, room, phone, browser, listener, r, bodies, payloads, bufferedBefore, logs, e2e };
+}
+
+console.log('\nsealed-pair twin — reset teardown');
+
+{
+  const t = twin(resetTwinScenario);
+  const S = t.sealed, P = t.plain;
+
+  test('twin: every socket transcript is identical in plaintext and sealed modes', () => {
+    for (const [name, pick] of [['phone', (o) => o.phone.sent], ['browser', (o) => o.browser.sent], ['listener', (o) => o.listener.sent]]) {
+      const a = t.agrees(pick);
+      assert.equal(a.equal, true, `${name} transcript diverged\n  plain : ${a.plain}\n  sealed: ${a.sealed}`);
+    }
+    assert.deepEqual(S.r, P.r, 'the same sockets were closed and counted in both modes');
+  });
+
+  test('twin: close codes are unchanged by the mode — phone 1000, browser/listener 4010', () => {
+    for (const arm of [P, S]) {
+      assert.deepEqual(arm.phone.closes, [{ code: RESET_CLOSE_CODE_PHONE, reason: RESET_CLOSE_REASON }]);
+      assert.deepEqual(arm.browser.closes, [{ code: RESET_CLOSE_CODE_BROWSER, reason: RESET_CLOSE_REASON }]);
+      assert.deepEqual(arm.listener.closes, [{ code: RESET_CLOSE_CODE_BROWSER, reason: RESET_CLOSE_REASON }]);
+    }
+    assert.deepEqual(S.phone.closes, P.phone.closes);
+    assert.deepEqual(S.browser.closes, P.browser.closes);
+    assert.deepEqual(S.listener.closes, P.listener.closes);
+  });
+
+  test('twin: the buffered frames really WERE sealed envelopes going in', () => {
+    // The negative below ("nothing sealed survived") is only meaningful if
+    // something sealed existed. Open each one from the pre-reset snapshot.
+    assert.equal(S.bufferedBefore.length, 3);
+    S.bufferedBefore.forEach((msg, i) => {
+      const env = JSON.parse(msg.slice('SMS_RECEIVED:'.length));
+      assert.equal(JSON.stringify(env), JSON.stringify(S.bodies[i]), 'buffered verbatim');
+      assert.deepEqual(openBody(t.session, 'SMS_RECEIVED', env), S.payloads[i]);
+    });
+    assert.equal(transcript(S.bufferedBefore).every((x) => x.sealed === true), true);
+  });
+
+  test('twin: the reset DESTROYS the sealed buffer — nothing replays onto the next pair', () => {
+    assert.deepEqual(S.room.frameBuffer, [], 'frameBuffer cleared in sealed mode too');
+    assert.deepEqual(P.room.frameBuffer, []);
+    assert.equal(S.room.resumable, null, 'no claim left to re-form with');
+    assert.equal(S.room.pairIdentity, null, 'the e2e block went with the identity');
+    assert.equal(S.room.pendingPairing, null);
+    assert.equal(S.room.lobby.size, 0);
+    assert.equal(S.rooms.size, 0, 'room reaped in sealed mode exactly as in plaintext');
+    assert.equal(P.rooms.size, 0);
+  });
+
+  test('twin: no sealed CIPHERTEXT survives the reap either', () => {
+    const survivors = JSON.stringify({
+      room: { frameBuffer: S.room.frameBuffer, resumable: S.room.resumable, pairIdentity: S.room.pairIdentity, active: S.room.active },
+      rooms: [...S.rooms.keys()],
+      logs: S.logs,
+    });
+    for (const body of S.bodies) {
+      assert.equal(survivors.includes(body.c), false, 'a ciphertext blob outlived the reset');
+      assert.equal(survivors.includes(String(body.kid)), false, 'the kid outlived the reset');
+    }
+  });
+
+  test('twin: no plaintext leak anywhere the reset touched', () => {
+    // Secrets are the payloads themselves — never a decrypted value — so a
+    // broken open cannot empty the secret set and pass this vacuously.
+    const hay = JSON.stringify({
+      room: { frameBuffer: S.room.frameBuffer, resumable: S.room.resumable, pairIdentity: S.room.pairIdentity },
+      sent: { phone: S.phone.sent, browser: S.browser.sent, listener: S.listener.sent },
+      closes: { phone: S.phone.closes, browser: S.browser.closes, listener: S.listener.closes },
+      logs: S.logs,
+      bufferedBefore: S.bufferedBefore,
+    });
+    const leak = assertNoPlaintext(hay, S.payloads);
+    assert.equal(leak.clean, true, `plaintext leaked: ${JSON.stringify(leak.leaked)}`);
+  });
+
+  test('twin: the mode flag changes nothing about which frames the reset emits', () => {
+    // PAIRING_TERMINATED to the active pair, ROOM_RESET to everyone — all
+    // relay-generated, so all plaintext in both modes, by construction.
+    const types = (ws) => transcript(ws.sent).map((x) => `${x.type}${x.sealed ? '(sealed)' : ''}`).join(',');
+    assert.equal(types(S.phone), 'PAIRING_TERMINATED,ROOM_RESET');
+    assert.equal(types(S.phone), types(P.phone));
+    assert.equal(types(S.browser), types(P.browser));
+    assert.equal(types(S.listener), 'ROOM_RESET', 'the listener gets the notice, not a teardown');
+    assert.equal(types(S.listener), types(P.listener));
+    assert.equal(e2eBlock({ kid: t.session.kid }).kid, t.session.kid, 'e2e blocks are opaque shape-only to the relay');
+  });
+}
+
 console.log(`\n${passed} assertion group(s) passed.`);
 if (process.exitCode) console.error('SUITE FAILED');
 else console.log('reset-room.test.mjs OK');

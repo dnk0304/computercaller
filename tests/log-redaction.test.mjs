@@ -241,5 +241,147 @@ check('5.h: logNotifFrame does not parse the payload', !/JSON\.parse/.test(frame
 check('5.i: logNotifFrame prints a hash and a length only',
   /hash=/.test(frameFn) && /len=/.test(frameFn));
 
+// ===========================================================================
+// APPENDED — E2E-P6 (a): sealed-frame twin of the redaction suite.
+//
+// Everything above runs the REAL extracted helpers against PLAINTEXT canary
+// frames. This section runs the SAME real helpers against §13.7 SEALED frames
+// and holds the brief's line: a sealed frame may contribute its TYPE and a BYTE
+// COUNT to a log line and nothing else. Ciphertext in a log is not a content
+// leak, but it is a traffic-analysis and replay aid (it fingerprints a frame
+// across a resume), so `c`, `kid` and `s` are asserted absent too.
+//
+// Nothing above is modified: the mirror/no-mirror split, the canary set and the
+// static scan all keep their original meaning. (i)'s live-relay half is built
+// separately — no relay is started here.
+// ===========================================================================
+import { SEALED_FRAME_TYPES, sealBody, makeTestSession, e2eBlock } from './lib/sealed-twin.mjs';
+import nodeCrypto, { randomUUID } from 'node:crypto';
+
+console.log('\n── 6. SEALED frames: logs carry type + bytes and nothing else ──');
+
+const SEAL_CANARY = `CC-CANARY-${randomUUID()}`;
+const sealSession = makeTestSession({ kid: 'kid-p6-logredact-0001' });
+
+// A representative spread of the frozen allowlist: the two PII-heaviest frames,
+// a call frame, and a *_CHUNK frame (padding-exempt, so a different byte shape).
+const SEALED_UNDER_TEST = ['SMS_RECEIVED', 'PHONE_NOTIFICATION', 'CALL_INCOMING', 'MESSAGES_CHUNK'];
+check('6.pre: chosen types are all on the frozen sealed allowlist',
+  SEALED_UNDER_TEST.every((t) => SEALED_FRAME_TYPES.includes(t)),
+  SEALED_UNDER_TEST.filter((t) => !SEALED_FRAME_TYPES.includes(t)).join(','));
+
+const SEALED_PLAINTEXTS = {
+  SMS_RECEIVED: { address: CANARY.sender, body: `${CANARY.body} ${SEAL_CANARY}`, date: 1758000000000 },
+  PHONE_NOTIFICATION: { packageName: 'com.whatsapp', title: CANARY.notifTitle, text: `${CANARY.notifText} ${SEAL_CANARY}`, notificationKey: `0|com.whatsapp|${CANARY.number}` },
+  CALL_INCOMING: { number: CANARY.number, name: CANARY.contact, callId: `c-${SEAL_CANARY}` },
+  MESSAGES_CHUNK: { chunk: 2, total: 7, items: [{ address: CANARY.sender, body: `${CANARY.body} ${SEAL_CANARY}` }] },
+};
+
+// The wire frame a mode-ON client actually sends: TYPE survives, body is {e,kid,s,c}.
+const SEALED = SEALED_UNDER_TEST.map((type) => {
+  const env = sealBody(sealSession, type, SEALED_PLAINTEXTS[type]);
+  return { type, env, frame: `${type}:${JSON.stringify(env)}` };
+});
+check('6.pre2: every sealed body is a real {e,kid,s,c} envelope with real ciphertext',
+  SEALED.every(({ env }) => env.e === 1 && typeof env.c === 'string' && env.c.length > 40 && typeof env.s === 'number'));
+check('6.pre3: no sealed frame carries its plaintext on the wire',
+  SEALED.every(({ frame }) => !frame.includes(SEAL_CANARY)));
+
+// ── The other REAL log helpers, extracted the same way as frameType/frameLabel.
+// countDroppedLobbyFrame closes over a module-level Map; logNotifFrame closes
+// over DEBUG_NOTIF_RELAY, redactToken and console. Supplying those is the only
+// way to run the shipped bodies rather than a mirror of them.
+const countDroppedLobbyFrame = new Function(
+  `const droppedLobbyFrameCounts = new Map();\n${extractFn('frameType')}\n${extractFn('countDroppedLobbyFrame')}\nreturn countDroppedLobbyFrame;`,
+)();
+const notifLines = [];
+const logNotifFrame = new Function('crypto', 'console',
+  `const DEBUG_NOTIF_RELAY = true;\n${extractFn('redactToken')}\n${extractFn('logNotifFrame')}\nreturn logNotifFrame;`,
+)(nodeCrypto, { log: (s) => notifLines.push(String(s)) });
+
+// Every line the real helpers produced for the sealed frames.
+const producedLines = [];
+for (const { frame } of SEALED) {
+  producedLines.push(frameLabel(frame));
+  producedLines.push(countDroppedLobbyFrame('tok-p6-sealed-abcdef', frame).summary);
+  logNotifFrame('tok-p6-sealed-abcdef', 'Phone ->', frame);
+}
+producedLines.push(...notifLines);
+check('6.pre4: the produced-line set is not empty (scan is not vacuous)',
+  producedLines.length >= SEALED.length * 2 && notifLines.length >= 1, `${producedLines.length} lines`);
+
+// 6a — the label is EXACTLY type + bytes. Spelled as a whole-string match, not
+// a substring absence: "nothing else" is the claim, so anything appended to the
+// label (a kid, a seq, a hash of the ciphertext) fails here even if it is a
+// field this file never thought to list.
+for (const { type, frame } of SEALED) {
+  const label = frameLabel(frame);
+  check(`6a.${type}: label is exactly type + bytes`,
+    /^type=[A-Z][A-Z0-9_]{0,39} bytes=[1-9]\d*$/.test(label) && label.startsWith(`type=${type} `), label);
+}
+
+// 6b — ciphertext / kid / seq never reach ANY produced line. The ciphertext is
+// checked by full value and by 24-char prefix, so a truncated `c.slice(0,32)`
+// print is caught as well as a whole one.
+for (const { type, env } of SEALED) {
+  const probes = [
+    ['ciphertext', env.c],
+    ['ciphertext-prefix', env.c.slice(0, 24)],
+    ['kid', env.kid],
+    // Seq is a small integer, so it needs a boundary: the bare string "s=2"
+    // occurs inside "bytes=256". The needle is the seq printed AS a field.
+    ['seq', new RegExp(String.raw`(?:^|[^A-Za-z0-9])s\s*=\s*${env.s}(?![0-9])`)],
+    ['seq-json', new RegExp(String.raw`"s"\s*:\s*${env.s}(?![0-9])`)],
+  ];
+  for (const [what, needle] of probes) {
+    const hits = producedLines.filter((l) => (needle instanceof RegExp ? needle.test(l) : l.includes(needle)));
+    check(`6b.${type}: ${what} never reaches a log line`, hits.length === 0, hits.join(' | '));
+  }
+}
+
+// 6c — the canary: zero occurrences in every produced line. This is the
+// in-suite half of (i); the live-relay half is a separate deliverable.
+{
+  const hits = producedLines.filter((l) => l.includes(SEAL_CANARY));
+  check('6c: CC-CANARY-<uuid> appears 0 times across every produced line', hits.length === 0, hits.join(' | '));
+  const piiHits = producedLines.filter((l) => ALL_CANARIES.some((c) => l.includes(c)));
+  check('6c2: no plaintext-suite canary survives sealing into a log line', piiHits.length === 0, piiHits.join(' | '));
+}
+
+// 6d — the e2e BLOCK (epk / keys / ctx / wrap). It rides on the pairing frames,
+// not on a data frame, so it is checked twice: against the produced lines, and
+// statically against every log call site in server.js.
+{
+  const block = e2eBlock({ kid: sealSession.kid, keys: { wrap: 'WRAPKEY_zz9q1x7bvv', alg: 'A256GCM' }, ctx: 'CTX_p6_ha77lm' });
+  const blockFrame = `BROWSER_REQUEST_PAIRING:${JSON.stringify({ pairingId: 'pid-1', e2e: block })}`;
+  const blockLines = [frameLabel(blockFrame), countDroppedLobbyFrame('tok-p6-sealed-abcdef', blockFrame).summary];
+  const secrets = [block.epk, block.keys.wrap, block.ctx, block.kid];
+  const hits = blockLines.filter((l) => secrets.some((s) => l.includes(s)));
+  check('6d: e2e block (epk/keys/ctx/wrap) never reaches a produced log line', hits.length === 0, hits.join(' | '));
+
+  const E2E_FIELD_RE = /\$\{[^}]*\b(e2e|block|env|sealed|payload|p|parsed)\.(epk|kid|wrap|ctx|keys)\b/;
+  const CIPHER_FIELD_RE = /\$\{[^}]*\b(e2e|block|env|sealed|payload|p|parsed)\.c\b(?!\w)/;
+  const e2eSites = logLines.filter(([, l]) => E2E_FIELD_RE.test(l) || CIPHER_FIELD_RE.test(l));
+  check('6d2: no log call site in server.js interpolates an envelope/e2e field',
+    e2eSites.length === 0, e2eSites.map(([n, l]) => `L${n}: ${l.trim().slice(0, 90)}`).join(' | '));
+  // Controls — both regexes above are ABSENCE proofs and must be shown to fire.
+  check('6d2.control-1: the e2e field scan catches a deliberate leak',
+    E2E_FIELD_RE.test('rlog(`[Relay] pairing epk=${e2e.epk} kid=${e2e.kid}`);'));
+  check('6d2.control-2: the ciphertext field scan catches a deliberate leak',
+    CIPHER_FIELD_RE.test('rlog(`[Relay] sealed c=${payload.c}`);'));
+}
+
+// 6e — logNotifFrame is the one diagnostic that must keep working when the
+// payload is unparseable. It must still identify the frame, and still print
+// nothing but a hash and a length of the ENVELOPE.
+{
+  const notif = SEALED.find((s) => s.type === 'PHONE_NOTIFICATION');
+  const line = notifLines.find((l) => l.includes('PHONE_NOTIFICATION'));
+  check('6e: logNotifFrame still emits an arrival line for a sealed notification', !!line, notifLines.join(' | '));
+  check('6e2: that line is hash + len only', !!line && /hash=[0-9a-f]{8} len=[1-9]\d*$/.test(line), line);
+  check('6e3: that line carries no ciphertext, kid or canary', !!line &&
+    !line.includes(notif.env.c.slice(0, 24)) && !line.includes(notif.env.kid) && !line.includes(SEAL_CANARY), line);
+}
+
 console.log(`\n${fail === 0 ? 'OK' : 'FAIL'} log-redaction: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
