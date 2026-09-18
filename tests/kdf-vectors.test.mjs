@@ -50,7 +50,8 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { hkdfSync } from 'node:crypto';
+import { hkdfSync, createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -1342,6 +1343,163 @@ if (swResult.ok) {
     eq(`SW context: ${kind} kek`, hex, V.kek.recipients.find((r) => r.kind === kind).kekHex);
   }
   check('SW context: the u8 cap still throws', swResult.capThrew);
+}
+
+// ── vector L — FILE_OFFER, and the hint that lives OUTSIDE the AAD ─────────
+/**
+ * GATE1 Addendum FT-A1, transcribed by E2E-P1.3 (b).
+ *
+ * WHY IT IS HERE AND NOT ONLY IN THE LEDGER. Vector L was computed by Security
+ * in `ft-a1-vector-l-verify.mjs`, a clean-room file under
+ * `agent-memory/security/…`. D1-PREP was asked to transcribe it and could not:
+ * a gate run cannot read across the ledger boundary, so the vector that four
+ * lanes (FT-1, FT-2, FT-3b, P3.1) are coding against was pinned by nothing
+ * inside the repo. A frozen vector the code cannot be diffed against is not
+ * frozen — it is remembered.
+ *
+ * NOTHING WAS ADJUSTED. Every value in `aead.vectorL` is the verifier's output
+ * verbatim, and this block re-derives all of it through `lib/e2e/*`. A mismatch
+ * here is a FINDING about the implementation (or about the transcription), not
+ * a fixture to repair. That is the entire value of a clean-room vector:
+ * agreement is evidence precisely because the two sides never shared code.
+ *
+ * WHAT L PINS THAT A/F/G DO NOT.
+ *   - a 210 B body → the 256 B bucket. A/F/G all sit in the 64 B bucket, so
+ *     until L nothing in this file exercised a second rung of the §13.4 ladder.
+ *   - the `ft:{id,size}` hint is OUTSIDE the AAD. That is asserted here as an
+ *     ABSENCE — L's AAD is the frozen five-field layout and contains no trace
+ *     of the hint — and the absence is the whole security argument.
+ *   - L2: a relay that lowers `ft.size` produces a BYTE-IDENTICAL ciphertext.
+ *     The AEAD cannot defend the hint and must not be asked to; the receiver's
+ *     post-unseal compare against the SEALED body is what defends it.
+ */
+{
+  const L = V.aead.vectorL;
+  const LCTX = pairContext(L.context);
+  eq('L: contextBytesHex (its OWN pairing, not the shared fixture)', toHex(LCTX), L.contextBytesHex);
+  check('L: …and that context is genuinely distinct from the file\'s shared one',
+    L.contextBytesHex !== V.contextBytesHex);
+
+  const lKeys = await trafficKeys({
+    pairingId: L.context.pairingId,
+    sessionKey: fromHex(L.sessionKeyHex),
+    context: LCTX,
+    role: 'phone',
+  });
+  eq('L: k_p2c is DERIVED, not an input', toHex(lKeys.send.rawBytes), L.keyHex);
+  eq('L: the nonce prefix is DERIVED', toHex(lKeys.send.sessionPrefix), L.noncePrefixHex);
+  eq('L: nonceHex is prefix || be64(seq)', toHex(nonce(lKeys.send.sessionPrefix, L.seq)), L.nonceHex);
+  eq('L: the phone sends p2c', lKeys.send.direction, L.direction);
+
+  // Independent HKDF, the same cross-check A/F/G get: node:crypto against
+  // crypto.subtle. Two RFC 5869 implementations agreeing is the real evidence.
+  eq('L: k_p2c (node:crypto, independent)',
+    Buffer.from(hkdfSync('sha256', Buffer.from(L.sessionKeyHex, 'hex'),
+      Buffer.from(L.context.pairingId, 'utf8'),
+      Buffer.from(toHex(trafficInfo(LCTX, DIR_P2C)), 'hex'), 32)).toString('hex'),
+    L.keyHex);
+
+  const lAad = aad({
+    frameType: L.frameType, kid: L.kid, seq: L.seq, direction: lKeys.send.direction, pairEpoch: L.pairEpoch,
+  });
+  eq('L: aadHex', toHex(lAad), L.aadHex);
+
+  // THE ABSENCE. Stated as bytes, not as prose: neither the transfer id nor the
+  // declared size appears anywhere in the AAD. If a future change binds the
+  // hint, this is the assertion that goes red — and it should, because that is
+  // the ratified design being reversed rather than a test needing an update.
+  const aadHex = toHex(lAad);
+  check('L: the AAD contains no trace of the hint id (FT-A1 Q2: OUTSIDE)',
+    !aadHex.includes(Buffer.from(L.hint.ft.id, 'utf8').toString('hex')));
+  const sizeBe64 = (() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(L.hint.ft.size)); return b.toString('hex'); })();
+  const sizeBe32 = (() => { const b = Buffer.alloc(4); b.writeUInt32BE(L.hint.ft.size); return b.toString('hex'); })();
+  check('L: …nor of the declared size, as be64', !aadHex.includes(sizeBe64), sizeBe64);
+  check('L: …nor as be32 (the other width someone would reach for)',
+    !aadHex.includes(sizeBe32), sizeBe32);
+  eq('L: the AAD is exactly the frozen five-field layout (no sixth tag)',
+    toHex(aad({ frameType: L.frameType, kid: L.kid, seq: L.seq, direction: DIR_P2C, pairEpoch: L.pairEpoch })),
+    L.aadHex);
+
+  // §13.4 — the second bucket. FILE_OFFER is not *_CHUNK, so it pads.
+  const lPt = new TextEncoder().encode(L.plaintextUtf8);
+  eq('L: the body is 210 bytes', lPt.length, L.plaintextBytes);
+  eq('L: 210 + 4 lands in the 256 B bucket, not the 64 B one A/F/G use',
+    padPlaintext(L.frameType, lPt).length, L.bucketBytes);
+  eq('L: the §13.4 padded plaintext', toHex(padPlaintext(L.frameType, lPt)), L.paddedPlaintextHex);
+  check('L: …and that bucket is a rung A, F and G never reach',
+    L.bucketBytes !== A.paddedPlaintextHex.length / 2);
+
+  const lCt = await seal({
+    sender: lKeys.send, frameType: L.frameType, kid: L.kid, seq: L.seq, pairEpoch: L.pairEpoch,
+    plaintext: lPt,
+  });
+  eq('L: ciphertextHex', toHex(lCt), L.ciphertextHex);
+  eq('L: 272 bytes = 256 ciphertext || 16 tag', lCt.length, L.ciphertextBytes);
+  eq('L: ciphertext sha256 matches the GATE1 addendum line',
+    createHash('sha256').update(Buffer.from(lCt)).digest('hex'), L.ciphertextSha256);
+
+  // It opens on the computer's receive half — key, prefix and direction all
+  // moving together, the same proof F and G get.
+  const lComputer = await trafficKeys({
+    pairingId: L.context.pairingId, sessionKey: fromHex(L.sessionKeyHex), context: LCTX, role: 'computer',
+  });
+  const lOpened = await open({
+    receiver: lComputer.recv, frameType: L.frameType, kid: L.kid, seq: L.seq,
+    pairEpoch: L.pairEpoch, ciphertext: fromHex(L.ciphertextHex),
+  });
+  eq('L: round-trips to the sealed FILE_OFFER body', new TextDecoder().decode(lOpened), L.plaintextUtf8);
+  const lBody = JSON.parse(new TextDecoder().decode(lOpened));
+  eq('L: the sealed body is the authoritative size', lBody.size, L.sealedOffer.size);
+  eq('L: name/mime/sha256/from stay SEALED (FT-A1 (A))',
+    [lBody.name, lBody.mime, lBody.sha256, lBody.from].join('|'),
+    [L.sealedOffer.name, L.sealedOffer.mime, L.sealedOffer.sha256, L.sealedOffer.from].join('|'));
+
+  // ── L2, the claim the design rests on ────────────────────────────────────
+  // Re-sealing after tampering ONLY with the hint yields the same bytes,
+  // because the hint is not an input to the seal at all. Demonstrated rather
+  // than asserted from the frozen file, so it cannot pass by transcription.
+  const lCt2 = await seal({
+    sender: lKeys.send, frameType: L.frameType, kid: L.kid, seq: L.seq, pairEpoch: L.pairEpoch,
+    plaintext: lPt,
+  });
+  eq('L2: lowering ft.size changes NOTHING in the ciphertext', toHex(lCt2), toHex(lCt));
+  eq('L2: …and the frozen file says the same', L.cases.L2_relayLowersHint.ciphertextSha256, L.ciphertextSha256);
+  eq('L2: the hint the relay lowered still carries the RIGHT id — only size lies',
+    L.cases.L2_relayLowersHint.hint.id, L.sealedOffer.id);
+  check('L2: …and the lowered size genuinely differs from the sealed one',
+    L.cases.L2_relayLowersHint.hint.size !== L.sealedOffer.size);
+  eq('L2: the ruled outcome is a receiver REFUSAL, not a relay one',
+    `${L.cases.L2_relayLowersHint.relayGate}/${L.cases.L2_relayLowersHint.receiverCompare}`,
+    'admit/size_mismatch');
+
+  // ── the hint's shape (FT-A1 A-1) ─────────────────────────────────────────
+  eq('L: the hint is ft:{id,size} — A-1, not ft:{size}',
+    Object.keys(L.hint.ft).sort().join(','), 'id,size');
+  check('L: the hint id is 16 random bytes, lowercase hex', /^[0-9a-f]{32}$/.test(L.hint.ft.id));
+  eq('L: the honest hint agrees with the sealed body on BOTH fields',
+    `${L.hint.ft.id}/${L.hint.ft.size}`, `${L.sealedOffer.id}/${L.sealedOffer.size}`);
+  eq('L3: a stripped hint is refused by the RELAY (A-2, fail closed)',
+    L.cases.L3_hintStripped.relayGate, 'malformed_hint_refused');
+  eq('L5: the lying SENDER passes both checks — the hole A-3 closes with a wire meter',
+    `${L.cases.L5_lyingSender.relayGate}/${L.cases.L5_lyingSender.receiverCompare}`, 'admit/accept');
+  check('L4: the rejected AAD-bound counterfactual is frozen with a DIFFERENT ciphertext',
+    L.cases.L4_counterfactualAadBound.ciphertextSha256 !== L.ciphertextSha256);
+
+  // ── the clean-room verifier itself, run as part of this green ────────────
+  // Copying it into tools/ and never running it would make it documentation.
+  // It imports nothing from lib/e2e — that independence is the point.
+  {
+    const r = spawnSync(process.execPath, [join(ROOT, 'tools', 'ft-a1-vector-l-verify.mjs')],
+      { encoding: 'utf8' });
+    const out = `${r.stdout || ''}${r.stderr || ''}`;
+    eq('L: tools/ft-a1-vector-l-verify.mjs exits 0', r.status, 0);
+    check('L: …and reports ALL PASS', /vector L: ALL PASS/.test(out), out.slice(-400));
+    eq('L: the verifier ran all 14 cases', (out.match(/^ {2}PASS {2}L/gm) || []).length, 14);
+    check('L: the verifier and the frozen file agree on the ciphertext digest',
+      out.includes(L.ciphertextSha256));
+    check('L: …and on the derived k_p2c', out.includes(L.keyHex));
+    check('L: …and on the pairContext', out.includes(L.contextBytesHex));
+  }
 }
 
 // ── result ─────────────────────────────────────────────────────────────────

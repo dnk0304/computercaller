@@ -87,7 +87,14 @@
     "negativeI4Parser": {
       "id": "I4-ctx-ingest-must-refuse",
       "_comment": "All of these MUST throw/refuse at ctx ingest, never coerce. A3-M3: a receiver MUST refuse a block whose ctx.peerDeviceId is not its own deviceId and — wherever it independently knows the value — whose ctx.pairingId differs from the pairingId it is party to. A3-M4: a mode=1 block arriving with NO ctx MUST be refused, never derived-from-local, because deriving from a locally guessed context is precisely the silent divergence A3 exists to kill and would let a stripping relay force both sides into a guess.",
-      "badPairEpoch": [42, "042", " 42", "-1", "4.2", ""],
+      "badPairEpoch": [
+        42,
+        "042",
+        " 42",
+        "-1",
+        "4.2",
+        ""
+      ],
       "badPairEpochNote": "42 is the JSON NUMBER 42, not the string; absent is covered by missingPairEpoch below.",
       "missingPairEpoch": true,
       "missingCtxOnMode1": true,
@@ -100,7 +107,11 @@
         "ctxPairingId": "pair-00000000"
       },
       "oversizeFieldBytes": 256,
-      "oversizeFields": ["userId", "phoneDeviceId", "peerDeviceId"],
+      "oversizeFields": [
+        "userId",
+        "phoneDeviceId",
+        "peerDeviceId"
+      ],
       "oversizeNote": "A1's encode-time throw, re-asserted on the DECODE side: a 256-byte id arriving from the wire must be refused, not truncated to len & 0xff."
     }
   },
@@ -109,8 +120,12 @@
     "_assertion": "Two recipients, one ctx: both derive identical traffic keys and prefixes, ONE broadcast ciphertext opens for BOTH, and their KEKs still differ. J.3 proves A4 rekeys nothing already shipped — its steered k_p2c is byte-identical to vector I.1's frozen phoneToComputerKeyHex, so the single-recipient path is unchanged.",
     "_canonicalSetNote": "The canonical set is wraps[].deviceId, NOT recipKeys[]. recipKeys[] is the FULL static key set of the pairing — SEC1 public keys, and it INCLUDES THE PHONE (lib/e2eBlock-core.js:152-155); a lowest-of-recipKeys[] is neither a deviceId nor a recipient-only set. wraps[].deviceId is bounded 1..128 chars and already proven duplicate-free (lib/e2eBlock-core.js:169-173), and that uniqueness is what makes lowest a TOTAL order with no tie to break.",
     "wraps": [
-      { "deviceId": "dev-web-01" },
-      { "deviceId": "dev-ext-02" }
+      {
+        "deviceId": "dev-web-01"
+      },
+      {
+        "deviceId": "dev-ext-02"
+      }
     ],
     "wrapsOrderNote": "Deliberately ordered so the canonical lowest is NOT first in array order: an implementation that returned wraps[0] would pass a same-order fixture. Selection is order-independent, so a relay that re-orders wraps[] without editing it cannot steer the derivation.",
     "canonicalPeerDeviceId": "dev-ext-02",
@@ -204,8 +219,22 @@
       "idAUtf8Hex": "6465762defbfbd2d3031",
       "idB": "dev-𐀀-01",
       "idBUtf8Hex": "6465762df09080802d3031",
-      "wrapsOrderAB": [{ "deviceId": "dev-�-01" }, { "deviceId": "dev-𐀀-01" }],
-      "wrapsOrderBA": [{ "deviceId": "dev-𐀀-01" }, { "deviceId": "dev-�-01" }],
+      "wrapsOrderAB": [
+        {
+          "deviceId": "dev-�-01"
+        },
+        {
+          "deviceId": "dev-𐀀-01"
+        }
+      ],
+      "wrapsOrderBA": [
+        {
+          "deviceId": "dev-𐀀-01"
+        },
+        {
+          "deviceId": "dev-�-01"
+        }
+      ],
       "orderIndependent": true,
       "canonicalPeerDeviceId": "dev-�-01",
       "positiveK1_1": {
@@ -237,8 +266,22 @@
       "idAUtf8Hex": "6465762d7a2d3031",
       "idB": "dev-𐀀-01",
       "idBUtf8Hex": "6465762df09080802d3031",
-      "wrapsOrderAB": [{ "deviceId": "dev-z-01" }, { "deviceId": "dev-𐀀-01" }],
-      "wrapsOrderBA": [{ "deviceId": "dev-𐀀-01" }, { "deviceId": "dev-z-01" }],
+      "wrapsOrderAB": [
+        {
+          "deviceId": "dev-z-01"
+        },
+        {
+          "deviceId": "dev-𐀀-01"
+        }
+      ],
+      "wrapsOrderBA": [
+        {
+          "deviceId": "dev-𐀀-01"
+        },
+        {
+          "deviceId": "dev-z-01"
+        }
+      ],
       "orderIndependent": true,
       "canonicalPeerDeviceId": "dev-z-01",
       "positiveK2_1": {
@@ -271,8 +314,16 @@
     },
     "comparatorTruthTable": {
       "_comment": "Exactly one column is correct for BOTH rows, so no single wrong comparator satisfies the whole block and no subset of it passes by luck.",
-      "K1": { "unsignedUtf8": "dev-�-01", "signedBytes": "dev-�-01", "utf16CodeUnits": "dev-𐀀-01" },
-      "K2": { "unsignedUtf8": "dev-z-01", "signedBytes": "dev-𐀀-01", "utf16CodeUnits": "dev-z-01" },
+      "K1": {
+        "unsignedUtf8": "dev-�-01",
+        "signedBytes": "dev-�-01",
+        "utf16CodeUnits": "dev-𐀀-01"
+      },
+      "K2": {
+        "unsignedUtf8": "dev-z-01",
+        "signedBytes": "dev-𐀀-01",
+        "utf16CodeUnits": "dev-z-01"
+      },
       "correctColumn": "unsignedUtf8"
     }
   },
@@ -396,6 +447,103 @@
       "keyHex": "d519d9b52f5258e36a05e4c06a55e652a250c103743acb77ffcc6d7249bfac7d",
       "keySource": "traffic.computerToPhoneKeyHex",
       "mustOpen": false
+    },
+    "vectorL": {
+      "id": "L-p2c-FILE_OFFER-seq42-hint-outside-aad",
+      "_comment": "Vector L - GATE1 Addendum FT-A1, frozen 2026-09-18. Specified and computed by Security in `ft-a1-vector-l-verify.mjs` (clean-room, node:crypto only, 14/14 PASS); the copy in tools/ is byte-identical to the ledger original. Transcribed here by E2E-P1.3 (b) because the source is a LEDGER file that a gate run cannot read. NOTHING WAS ADJUSTED to make it agree with the repo: every value below is the verifier's output, and tests/kdf-vectors.test.mjs re-derives all of it through lib/e2e/* - a mismatch is a FINDING, not a fixture to repair.",
+      "_whatItPins": "The FILE_OFFER envelope hint `ft:{id,size}` lives OUTSIDE the AAD. The whole security argument rests on two facts this vector makes checkable: (1) tampering with the hint leaves the ciphertext BYTE-IDENTICAL (L2), so the AEAD cannot and must not be asked to defend it; (2) the receiver's post-unseal compare against the SEALED body is what actually defends it. A relay can make a transfer fail - which it can always do by dropping - and cannot make one proceed on a false size.",
+      "_selfContainedContext": "Unlike vectors A/F/G, L does NOT use the file's top-level `context`. It carries its own fixtures because Security generated it under its own pairing, and re-keying it to the shared context would be exactly the 'adjustment' the transcription forbids.",
+      "frameType": "FILE_OFFER",
+      "kid": "kid-ftA1",
+      "seq": 42,
+      "direction": 1,
+      "directionName": "p2c",
+      "pairEpoch": 7,
+      "context": {
+        "pairingId": "pair-ft-a1-0001",
+        "userId": "u_ftA1",
+        "phoneDeviceId": "ph_ftA1",
+        "peerDeviceId": "pe_ftA1",
+        "pairEpoch": 7
+      },
+      "sessionKeyHex": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c",
+      "contextBytesHex": "1106755f66744131120770685f66744131130770655f66744131140000000000000007",
+      "keyHex": "0d22299e2debc2b009accf4d46602522f4b839dab0f42c9af79bf57c9b5682ae",
+      "keySource": "HKDF(cc-e2e-v1/p2c) over this vector's OWN contextBytesHex - DERIVED, not an input",
+      "noncePrefixHex": "ed93f04c",
+      "nonceHex": "ed93f04c000000000000002a",
+      "aadHex": "210a46494c455f4f4646455222086b69642d6674413123000000000000002a2401250000000000000007",
+      "aadNote": "The frozen five-field layout, unchanged. The hint contributes NOTHING to it - that absence is the vector.",
+      "plaintextUtf8": "{\"id\":\"9f2c4b7e1a08d35c6e90b1f47a2d8c63\",\"name\":\"quarterly-report.pdf\",\"size\":734003200,\"mime\":\"application/pdf\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"from\":\"Pixel 8 Pro\"}",
+      "plaintextBytes": 210,
+      "paddedPlaintextHex": "000000d27b226964223a223966326334623765316130386433356336653930623166343761326438633633222c226e616d65223a22717561727465726c792d7265706f72742e706466222c2273697a65223a3733343030333230302c226d696d65223a226170706c69636174696f6e2f706466222c22736861323536223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2266726f6d223a22506978656c20382050726f227d000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "paddedPlaintextNote": "s13.4: 210 B + 4 B length prefix = 214 -> the 256 B bucket. FILE_OFFER is NOT *_CHUNK, so it pads.",
+      "bucketBytes": 256,
+      "ciphertextHex": "35aaf83ae993428f5e8aed3d74a47b51affaf8c06c47190483aa104aed617e266217f631a2c428929c17704ec43a7d525c496761b785a1a523c21ca1ef6e3ef6aab72db08a25155cfdf979b3de50f855e0b5dca76f6eaa41559fe27207f283a7d4a4d0c48bba12c3a46fc090048df55f0f87c81e18ac3050554578691246693d19397bdd8c7de60bc355fa93e0dd037a080b8f667ae5f0e387b54422e611f9040119e93ef3a09bd95a57f24279229f9fe68803d37ca6c867dddd622bed52d7195d5a55378ec7d1af03370426aa6bae8f6336c3a013d4a0580248c196def3ae97ac8bbcf9f4a9eafbd813fc0985c4b04772ca7568ada4196eeb11455b0ee0fd9075f40e4b78edf5ba9113df8694319f84",
+      "ciphertextBytes": 272,
+      "ciphertextNote": "272 bytes = 256 ciphertext || 16 tag",
+      "ciphertextSha256": "47e717f200ae340525f6d2798e29b073e5175af290cdd683274ccc44551910ec",
+      "sealedOffer": {
+        "id": "9f2c4b7e1a08d35c6e90b1f47a2d8c63",
+        "name": "quarterly-report.pdf",
+        "size": 734003200,
+        "mime": "application/pdf",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "from": "Pixel 8 Pro"
+      },
+      "hint": {
+        "ft": {
+          "id": "9f2c4b7e1a08d35c6e90b1f47a2d8c63",
+          "size": 734003200
+        }
+      },
+      "hintNote": "FT-A1 A-1: `ft:{id,size}`, not `ft:{size}`. Without `id` neither the SW nor the relay can author a FILE_FAILED and the relay has nothing to key a meter on. `id` is 16 random bytes with zero semantic content.",
+      "cases": {
+        "L1_honest": {
+          "hint": {
+            "id": "9f2c4b7e1a08d35c6e90b1f47a2d8c63",
+            "size": 734003200
+          },
+          "relayGate": "admit",
+          "receiverCompare": "accept"
+        },
+        "L2_relayLowersHint": {
+          "hint": {
+            "id": "9f2c4b7e1a08d35c6e90b1f47a2d8c63",
+            "size": 1024
+          },
+          "ciphertextSha256": "47e717f200ae340525f6d2798e29b073e5175af290cdd683274ccc44551910ec",
+          "ciphertextNote": "BYTE-IDENTICAL to L1: the hint is outside the AAD, so the AEAD sees no change",
+          "relayGate": "admit",
+          "receiverCompare": "size_mismatch"
+        },
+        "L3_hintStripped": {
+          "hint": null,
+          "relayGate": "malformed_hint_refused",
+          "relayGateNote": "FT-A1 A-2: fail CLOSED, or every sender bypasses tier+quota by omitting one field",
+          "receiverCompare": "size_mismatch"
+        },
+        "L4_counterfactualAadBound": {
+          "ciphertextSha256": "0690ff2f18753d839ac7ec40785e0958bc99028b6f4269c7f5eb9b8b022af41c",
+          "note": "The REJECTED design: ft.size moved INTO the AAD under tag 0x26. It works - the tampered hint fails the GCM tag - and it is rejected anyway, because it forks the frozen aad() layout for one frame type and buys nothing L2 does not already buy. Frozen here so the rejection stays checkable rather than remembered. 0x26 is NOT a ratified allocation.",
+          "differsFromL1": true
+        },
+        "L5_lyingSender": {
+          "sealedSize": 1024,
+          "hint": {
+            "id": "9f2c4b7e1a08d35c6e90b1f47a2d8c63",
+            "size": 1024
+          },
+          "plaintextUtf8": "{\"id\":\"9f2c4b7e1a08d35c6e90b1f47a2d8c63\",\"name\":\"quarterly-report.pdf\",\"size\":1024,\"mime\":\"application/pdf\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"from\":\"Pixel 8 Pro\"}",
+          "ciphertextHex": "35aaf825e993428f5e8aed3d74a47b51affaf8c06c47190483aa104aed617e266217f631a2c428929c17704ec43a7d525c496761b785a1a523c21ca1ef6e3ef6aab72db08a25155cfdf979b3de50f855e0b5daa4696ab6500ac6bf3b07a5c8abc1f6868f89ab16c6a2628e940984b95c5d90c65d06bb751a0e552c3e511d2a3d19397bdd8c7de60bc355fa93e0dd037a080b8f667ae5f0e387b54422e611f9040119e93ef3a09bd95a57f24279229f9fe68803d37ca6c867dddd2166ae55c4541c5a0967b1c38bf04d47557e9f75e1953e66b1cf31a9a0580248c196def3ae97ac8bbcf9f4a9eafbd813fc0985c4b04772ca7568ada4196eeb11455b0ee0fd90583218bd2a291d60b8398bbb913e60fe",
+          "relayGate": "admit",
+          "receiverCompare": "accept",
+          "note": "THE HOLE. Both values are lies told by the SAME party - the one the quota is charged to - so both checks pass and the sender then streams 700 MiB. Cost charged: 1 KiB. Repeatable.",
+          "closedBy": "FT-A1 A-3/A-4 + A1.1 metering: the relay meters ACTUAL FILE_CHUNK WIRE bytes per (room, ft.id) and aborts on overrun. Chunks are padding-exempt, so the count is exact and free."
+        }
+      },
+      "authority": "GATE1.md \"Addendum FT-A1 - FILE_OFFER hint + SW routing: AMENDED\" - 2026-09-18T00:00Z",
+      "verifier": "tools/ft-a1-vector-l-verify.mjs (14/14 PASS)"
     }
   }
 }

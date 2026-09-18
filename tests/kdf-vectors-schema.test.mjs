@@ -67,6 +67,36 @@ const nodes = [];           // {path, key, value}
   }
 })(V, '');
 
+/**
+ * PAYLOAD SUBTREES — where an `id` is DATA, not a fixture name (E2E-P1.3 (b)).
+ *
+ * Until vector L this file had one meaning for the key `id`: the name of a
+ * fixture. Vector L froze a FILE_OFFER, and a FILE_OFFER's body has its own
+ * `id` field — a 16-byte transfer id — as does its `ft:{id,size}` envelope
+ * hint. Those are the WIRE SHAPE. Renaming them to dodge this scan would
+ * falsify the vector, which is the one thing a transcription may not do.
+ *
+ * So the scan is narrowed by an explicit, reviewed allowlist rather than by a
+ * heuristic — the same discipline as the top-level allowlist below and the
+ * EXPECTED duplicate manifest further down. Adding a path here is a deliberate
+ * edit, and that edit is the review step.
+ */
+const PAYLOAD_SUBTREES = [
+  { path: 'aead.vectorL.sealedOffer', why: "the sealed FILE_OFFER body; its `id` is the transfer id" },
+  { path: 'aead.vectorL.hint', why: "the plaintext envelope hint ft:{id,size} — the transfer id again, on the outside" },
+  { path: 'aead.vectorL.cases', why: 'L1-L5 restate the same hint per case so each case reads standalone' },
+];
+const inPayload = (p) => PAYLOAD_SUBTREES.some((s) => p === s.path || p.startsWith(`${s.path}.`));
+
+// The allowlist must not be able to go stale silently: a path that no longer
+// exists is a rule protecting nothing, and it would keep protecting nothing
+// after someone deleted the vector it was written for.
+for (const s of PAYLOAD_SUBTREES) {
+  check(`payload allowlist: "${s.path}" still exists (${s.why})`,
+    nodes.some((n) => n.path === s.path),
+    'remove this entry, or restore the subtree it was narrowing the id scan for');
+}
+
 // ── 1. every vector id is unique across the whole file ────────────────────
 // A duplicated id means two fixtures answer to one name, so a failure report
 // citing that id does not identify which one broke.
@@ -75,6 +105,7 @@ const nodes = [];           // {path, key, value}
   let dupes = 0;
   for (const { path, key, value } of nodes) {
     if (key !== 'id' || typeof value !== 'string') continue;
+    if (inPayload(path)) continue;   // a transfer id, not a fixture name
     if (seen.has(value)) {
       dupes += 1;
       check(`ids unique: "${value}"`, false, `at ${path} and ${seen.get(value)}`);
@@ -167,6 +198,24 @@ const nodes = [];           // {path, key, value}
     // direction and a forgery in the other, and only the KEY separates them.
     { why: 'the tamper negative flips the direction byte and therefore lands exactly on vector G\'s AAD — the key is what makes one valid and the other a forgery',
       paths: ['aead.vectorG.aadHex', 'aead.tamper.tamperedAadHex'] },
+
+    // ── vector L (E2E-P1.3 (b)) ──────────────────────────────────────────
+    // L2 is the ONE claim the whole "hint outside the AAD" design rests on,
+    // and it is stated as an equality: a relay that lowers ft.size produces a
+    // ciphertext indistinguishable from the honest one. The duplicate here is
+    // not an accident of transcription — it IS the finding. If this group ever
+    // stops being a duplicate, the hint has moved inside the AAD and FT-A1's
+    // ruling has been silently reversed.
+    { why: 'L2: tampering with the hint leaves the ciphertext BYTE-IDENTICAL — the equality is the vector',
+      paths: ['aead.vectorL.ciphertextSha256', 'aead.vectorL.cases.L2_relayLowersHint.ciphertextSha256'] },
+    // One transfer id, restated in the sealed body, in the hint, and in each
+    // case that carries a hint. The restatement is deliberate: L1/L2/L5 must
+    // be readable without scrolling up, and L2's whole point is that the id
+    // MATCHES while the size does not.
+    { why: 'vector L restates its one transfer id in the sealed body, the hint, and each case that carries a hint',
+      paths: ['aead.vectorL.sealedOffer.id', 'aead.vectorL.hint.ft.id',
+              'aead.vectorL.cases.L1_honest.hint.id', 'aead.vectorL.cases.L2_relayLowersHint.hint.id',
+              'aead.vectorL.cases.L5_lyingSender.hint.id'] },
   ];
 
   const byValue = new Map();

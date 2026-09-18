@@ -393,8 +393,33 @@ bucket = smallest of 64, 128, 256, 512, 1024, 2048 that fits;
   transfer already discloses its size through the chunk count, so padding each
   chunk costs bandwidth and hides nothing.
 
+**The file-transfer family, and why the suffix rule needed no amendment
+(GATE1 Addendum FT-A1; transcribed in E2E-P1.3 (b)).**
+
+- **`FILE_CHUNK` is exempt** — it matches `*_CHUNK` by suffix, so the exemption
+  reaches it with **no spec change**. That is the point of having written the
+  rule as a suffix instead of a list: a list would have had to be edited by
+  whoever added file transfer, and an un-edited list fails OPEN (the chunk gets
+  padded, bandwidth doubles, nobody notices). The exemption is also what makes
+  FT-A1's **A-3 wire meter** exact and free: an unpadded chunk's wire length IS
+  its content length, so the relay can charge actual bytes without decrypting
+  anything.
+- **`FILE_OFFER` is NOT exempt and DOES pad.** It is the frame carrying the
+  filename, the mime type and the sender's device name, which is precisely the
+  short-secret shape buckets exist to hide — an unpadded offer leaks the
+  filename's length. **Vector L** (`tests/kdf-vectors.json` → `aead.vectorL`)
+  freezes the worked case: a 210-byte body, `+4` for the length prefix, into the
+  **256-byte bucket**, sealing to 272 bytes (256 ciphertext ‖ 16 tag). It is the
+  first vector in that file to land above the 64-byte bucket, so until it was
+  frozen nothing in the repo exercised a second rung of this ladder.
+- The `ft:{id,size}` **envelope hint rides OUTSIDE the sealed body and outside
+  the AAD**, so it contributes nothing to the bucket and nothing to the tag.
+  See §13.7.
+
 Pinned by `tests/padding-property.test.mjs` over 500 plaintexts including 1 B
-and 100 KB.
+and 100 KB, and — for the two file-transfer cases above — by
+`tests/kdf-vectors.test.mjs` (vector L) and the clean-room
+`tools/ft-a1-vector-l-verify.mjs`.
 
 ### 13.5 Dedupe / replay parameters — FROZEN
 
@@ -461,6 +486,157 @@ permission / audio / status frames, and — **mandatorily** — `GET_MESSAGES`,
 > frames would move billing enforcement to the client, which is the same as
 > deleting it. What leaks is a timestamp and a category — no content. This is an
 > accepted, documented trade, not an oversight.
+
+#### 13.7.1 `SEALED_PASSTHROUGH_FRAME_TYPES` — the file-transfer family
+
+*GATE1 Addendum FT-A1 (B), MUST B-1 — HIGH/BLOCKER. Transcribed verbatim in
+intent by E2E-P1.3 (b); the ledger text is `ADDENDUM-FT-A1.md`.*
+
+**The set (exhaustive, 8):** `FILE_OFFER` · `FILE_ACCEPT` · `FILE_REJECT` ·
+`FILE_CHUNK` · `FILE_ACK` · `FILE_RESUME` · `FILE_DONE` · `FILE_FAILED`.
+
+**The three rules, and each one is a MUST:**
+
+1. **`requiresSeal()` is TRUE for all eight.** A plaintext `FILE_*` frame
+   arriving while the session is OPEN is **dropped and counted**, exactly like
+   any other sealed frame in the clear. (The one narrow exception is the
+   relay-marked `FILE_FAILED` of §13.7.2.)
+2. **They are routed to the page SEALED — `INBOUND_ROUTE_SEALED` takes
+   precedence over UNSEAL.** The service worker forwards `{e,kid,s,c}`
+   **verbatim** and never calls `openIfSealed`. The SW never holds file bytes.
+3. **They are NOT added to `SEALED_FRAME_TYPES`.** That set also drives
+   `sealFrame()`/`unseal()`, so widening it would make the SW a file-transfer
+   endpoint. The passthrough set is **disjoint** from it, and `sealFrame()`'s
+   refusal is **not** widened.
+
+**Why this is a blocker and not a tidiness item.** Before FT-A1, `requiresSeal()`
+named no `FILE_*` frame at all, so `inboundDisposition()` branch 3 **delivered a
+plaintext `FILE_OFFER`/`FILE_CHUNK` while the session was OPEN**. A relay could
+strip `{e,kid,s,c}` and the page would render the filename, the size, the sender
+and every chunk in the clear — the P3 (c) downgrade guard reopened for the one
+frame family that carries whole documents. `inboundDisposition` is a pure
+function, so this is testable in node with no browser.
+
+**The `ft:{id,size}` hint (FT-A1 (A), A-1…A-6).** `FILE_OFFER` alone carries a
+plaintext envelope hint, **outside the sealed body and outside the AAD**:
+
+- `name`, `mime`, `sha256` and `from` stay **sealed**. The sealed `size` is
+  **authoritative**; the hint's `size` is **untrusted admission-control input
+  only**. *(This supersedes the earlier plaintext `size` on `FILE_OFFER`.)*
+- **A-1** the hint is `ft:{id,size}`, never `ft:{size}`. Without `id` neither the
+  SW nor the relay can author a `FILE_FAILED` (`coerceFileFrame` drops a payload
+  with no `id`) and the relay has nothing to key a meter on. `id` is 16 random
+  bytes with zero semantic content.
+- **A-2** the relay MUST **fail closed** on an absent or malformed hint —
+  otherwise every sender bypasses tier and quota by omitting one field.
+- **A-5** the receiver compares `ft.id`/`ft.size` against the sealed body
+  **before any prompt, any accept and any save picker**; a mismatch is
+  `FILE_FAILED size_mismatch`, **surfaced, never silent**.
+- **A-6** the 1 GiB receiver ceiling applies to the **sealed** size, never the
+  hint.
+- **A-3/A-4** the hint defends against a lying **relay**, not a lying **sender**.
+  A sender can seal `size:1024`, hint `1024`, and then stream 700 MiB: both
+  checks pass, because both values are lies told by the same party — the one the
+  quota is charged to. The relay therefore MUST meter **actual `FILE_CHUNK` wire
+  bytes** per `(room, ft.id)` and abort on overrun, and quota charges **metered
+  bytes**, not `ft.size`.
+
+**Why outside and not AAD-bound.** Binding the hint into the AAD works — the
+counterfactual was run — and is rejected anyway: it forks the frozen `aad()`
+layout for one frame type, which is the "Encrypted mode never pairs, all logs
+green" failure the framing exists to prevent, and it buys nothing. A relay that
+lowers the hint produces a **byte-identical ciphertext** and the receiver refuses
+regardless. **A tampering relay can only make a transfer fail, which it can
+always do by dropping it. No new power.** All of this is frozen as **vector L**.
+
+**Frozen and reaffirmed:** both §13.7 sets, `kdf.mjs aad()`, and the `*_CHUNK`
+padding exemption. **Logged, not blocking:** frame TYPE, direction and chunk
+count are relay-visible for file transfers and always were.
+
+#### 13.7.2 Relay-minted `FILE_FAILED` — shape, subset, origin rule
+
+*GATE1 Addendum FT-A1.1 (ii), MUSTs M1–M11; Addendum FT-A1.2, MUSTs M13–M15.*
+
+**Shape (frozen):** `FILE_FAILED:{"id":…,"reason":…,"relay":true}` — plaintext,
+one mint path under mode ON **and** OFF.
+
+**Relay-owned reasons (frozen, exhaustive, 8):** `tier` · `quota` · `too_large` ·
+`size_mismatch` · `busy` · `relay_backpressure` · `timeout` · `connection_lost`.
+
+**Peer-owned reasons** (`hash_mismatch`, `cancelled`, `oom`) stay **sealed**; a
+plaintext one is dropped **even when it carries the mark**.
+
+- **M1** `bad_hint` is a **counter only** — never a wire reason, never in
+  `FT_FAIL_REASONS`. **M2** it must be observable per token. **M3** a readable
+  `id` with a bad size still mints `size_mismatch`, which is itself a
+  relay-minted plaintext frame and therefore carries the mark.
+- **M4 (FROZEN)** the sender's own 60 s offer expiry is **strictly less than**
+  `FT_OFFER_TTL_MS` (90 s). The margin is what stops the relay racing an honest
+  sender.
+- **M5** `busy` moves from `FILE_REJECT` to a relay-minted `FILE_FAILED` and is
+  added to `FT_FAIL_REASONS` — `FILE_REJECT` is sealed-by-exclusion, so `busy`
+  would otherwise be **invisible under mode ON**.
+- **M6/M7 — the origin rule.** `relay:true` is stamped **only** by
+  `ftFailedFrame()`. The peer re-mint path needs an explicitly **un-marked**
+  variant. Every verbatim-forwarded `FILE_*` frame carrying a top-level `relay`
+  key is **REJECTED and counted — not stripped**. Stripping would make a forged
+  mark indistinguishable from an absent one, which is the whole property.
+- **M8** a **sealed** `FILE_FAILED` is still forwarded verbatim, never re-minted.
+- **M9 — the receiver's one exception.** `requiresSeal()` stays true for all
+  eight; before the branch-2 drop, a plaintext `FILE_FAILED` with
+  `relay === true`, a reason in the subset, and the `id` of a **LIVE** transfer
+  is **delivered**. It is **abort-only**: it never advances state, never creates
+  a record, is never accepted for an unknown id, causes **no persistent client
+  state change** (no quota cache, no tier cache, no feature flag), and **never
+  touches `mode` or `setAborted()`**. *Residual risk accepted:* a lying relay can
+  inject a false "limit reached" abort — a DoS with a misleading message, which
+  it can do anyway by dropping.
+- **M10** the copy must read as a **transport outcome, not an account
+  statement**; account truth comes over authenticated HTTPS.
+- **M11 (SW)** the service worker forwards a relay-marked plaintext
+  `FILE_FAILED` under the same origin rule, abort-only, **minus** the liveness
+  clause — the page owns transfer state and the SW must not begin tracking it.
+
+**Timer hierarchy (FROZEN, Addendum FT-A1.2).**
+
+| timer | owner | role |
+|---|---|---|
+| 60 s | sender, local | **PRIMARY** — the transfer's own expiry |
+| 60 s | SW marker | **INFORMATIONAL** — notification + page hand-off; **sends nothing** |
+| 90 s `FT_OFFER_TTL_MS` | relay | **BACKSTOP** — also frees the slot and the quota reservation |
+| 30 s `FT_STALL_MS` | sender | **post-ACCEPT only** |
+
+- **B-3 STRUCK.** The no-receiver timeout is the **relay's**. A MUST that cannot
+  be met without violating M6/M7/B9 is struck, not waived: the listener→relay
+  data-plane drop, `assertSwSendsNothing`, and the phone's B-1 guard against a
+  plaintext unmarked frame each independently make an SW-authored one
+  impossible.
+- **M13** the SW marker MUST never construct, seal, mark or send **any** frame.
+  `assertSwSendsNothing` and `assertSwMintsNoRelayMark` are the regression pins
+  and MUST NOT be relaxed for B-3.
+- **M14** the relay `timeout` fans out to **both** endpoints; the receiver copy
+  is admissible under M9 (abort-only, live id). An unknown id → **silent drop**.
+- **M15** `timeout` stays relay-owned: a **sealed** peer-authored `timeout` is
+  forwarded verbatim (M8); a **plaintext unmarked** `timeout` is **DROPPED**.
+- **`no_receiver` is NOT added** to the reason enum. The SW holds a marker
+  `{ft.id, receivedAt}` for ≤ 60 s plus a notification, replays the sealed
+  envelope verbatim if a page attaches, and on expiry the **relay** emits
+  `FILE_FAILED {id: ft.id, reason:'timeout'}`. The sender's own 30 s
+  post-ACCEPT stall timer fires first and independently, so the transfer already
+  fails correctly regardless.
+
+**Metering (RATIFIED, FT-A1.1).** Metered **wire** bytes are compared against
+`ftWireCeiling(raw size) = min(ceil(size × 1.40) + FT_CHUNK_WIRE_BYTES,
+ceil(1 GiB × 1.40) + FT_CHUNK_WIRE_BYTES)`. A raw-vs-wire comparison aborts every
+honest transfer at ~75 % with `size_mismatch`, and **a false-positive control is
+a disabled control**. **M12** `ftRawFromWire()` MUST NOT share the 1.40 constant
+— it under-charges quota by ~4.3 % on honest traffic. **The ceiling errs
+generous; the charge errs conservative**: invert the charge on the base64 floor
+of 4/3.
+
+The full wire truth these rules describe — every frame, the 11-reason enum, the
+constants — is transcribed in the repo at `docs/FILE-TRANSFER-SPEC.md`,
+Addendum B.
 
 ### 13.8 Key lifecycle (M-C) — FROZEN
 
@@ -1145,9 +1321,44 @@ the downgrade attack the SAS exists to catch into a first-party feature. A
 `mode=1` request is therefore REFUSED OUTRIGHT rather than silently downgraded.
 
 Default OFF: D1 ships the code dark and the variable is flipped afterwards in
-the environment with no redeploy. An unset or unrecognised value must leave the
-handshake dark — the failure mode of a misconfiguration must never be "the
-crypto feature turned itself on".
+the environment. An unset or unrecognised value must leave the handshake dark —
+the failure mode of a misconfiguration must never be "the crypto feature turned
+itself on".
 
-**Code owner: P1.3**, landing separately. D1-PREP recorded the measured truth
-for both values and holds; see `e2e/CHECKPOINTS.md`.
+**LANDED — E2E-P1.3 (a).** `server.js`:
+
+```js
+const E2E_PAIRING_ENABLED = process.env.E2E_PAIRING_ENABLED === '1';
+```
+
+- **Exactly one string.** No trimming, no case folding, no second member.
+  `"true"`, `"TRUE"`, `" 1 "`, `"01"`, `"0"`, `"false"`, `""`, unset and every
+  typo are OFF. D1-PREP's interim `['1','true']` ON-list is **superseded**: it
+  widened the ON side past the N-1.1 ack, which names `'true'` as a value that
+  must fail closed. A padded `" 1 "` from an env console therefore leaves the
+  feature dark and says so in the log — the safe way to be wrong.
+- **READ TIMING: once at module load, not per request.** Flipping the variable
+  takes a **relay restart**, not merely the next request; the boot log is the
+  confirmation the new value took. A switch whose state can change between the
+  block validation and the gate inside one handler is harder to reason about at
+  3am than one that cannot.
+- **Boot log, exactly one line, greppable:**
+
+  ```
+  [e2e] encrypted pairing DISABLED (E2E_PAIRING_ENABLED != '1')
+  [e2e] encrypted pairing ENABLED (E2E_PAIRING_ENABLED === '1')
+  ```
+
+  The OFF line names the **predicate**, not the env value. Echoing an
+  operator-supplied string into the one line an incident responder greps invites
+  reading a typo as a mode. **This supersedes the older
+  `[e2e] pairing disabled (E2E_PAIRING_ENABLED=0)` wording; any runbook step
+  that greps the old string matches nothing and must be updated.**
+- **Refusal copy (frozen, E2E-PLAN N-1):** a refused mode-ON client sees
+  **"Encrypted pairing temporarily unavailable"**. The wire frame is unchanged:
+  `PAIRING_E2E_UNAVAILABLE:{"reason":"kill-switch"}`. The copy names **no
+  update to either device** — no update clears an operator-thrown switch, and
+  copy that says otherwise sends the user to do something that cannot work.
+- Pinned by `tests/e2e-kill-switch.test.mjs`, which **extracts and evaluates the
+  shipped predicate** rather than re-typing it. Two earlier revisions of that
+  file tested a hand-copied predicate and certified the wrong answer both times.
