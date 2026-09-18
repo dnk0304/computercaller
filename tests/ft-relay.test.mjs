@@ -115,6 +115,7 @@ const FT_CONSTS = [
 const FT_FNS = [
   'frameType', 'frameLabel', 'isFileFrame', 'utcDayKey',
   'ftCountDrop', 'ftParse', 'ftSocketForRole', 'ftPeerSocket', 'ftFailedFrame',
+  'ftOfferMetadata',
   'ftAbort', 'ftReserveQuota', 'ftReleaseQuota', 'ftCommitQuota', 'ftHandleOffer',
   'handleFileFrame',
 ];
@@ -232,26 +233,53 @@ console.log('PART 1 — frozen frames and constants');
     R.isFileFrame('FILE_SOMETHING_ELSE:{}') === false);
 }
 {
-  // SEALED-MODE FORWARD COMPAT. Spec section 5 seals the FILE_OFFER body under
-  // E2E mode ON and carries a PLAINTEXT `size` alongside it, exactly so this
-  // chokepoint keeps working. So an offer with only `id` + `size` at the top
-  // level and everything else inside `e` must be ADMITTED — a relay that
-  // demands name/mime/sha256 rejects every sealed offer the day encryption is
-  // switched on, as `malformed`, which is the least debuggable possible
-  // spelling of "the protocol advanced without me". FT-2 flagged this exact
-  // seam open on 2026-09-18.
+  // THE ACCESSOR, and the shape-agnostic half of mode-ON readiness.
+  //
+  // Security FT-A1 (proposal R-AF: sealed frame + a plaintext `ft:{size}`
+  // envelope hint) is OPEN as of 2026-09-18, so NOTHING here asserts a mode-ON
+  // wire shape — that would be a test ratifying a proposal. What IS asserted is
+  // the property the ruling cannot change: the relay reads exactly ONE field out
+  // of a FILE_OFFER body, and an offer missing name/mime/sha256 is gated on size
+  // rather than rejected as malformed. A relay that demands all four rejects
+  // every sealed offer the day encryption is switched on, and does it as
+  // `malformed` — the least debuggable possible spelling of "the protocol
+  // advanced without me". FT-2 and FT-3a both flagged this seam.
+  //
+  // When FT-A1 lands, the mode-ON twin is written against ftOfferMetadata and
+  // that function is the only production code that moves.
   const R = buildRelay({ db: DB_ALWAYS_OK });
+  check('ftOfferMetadata returns size and mime and NEVER an account',
+    !('userId' in R.ftOfferMetadata({ size: 1, from: 'phone', userId: 'attacker' }))
+    && !('account' in R.ftOfferMetadata({ size: 1 })));
+  check('ftOfferMetadata reads size only from a safe positive integer',
+    R.ftOfferMetadata({ size: 4404019 }).size === 4404019
+    && R.ftOfferMetadata({ size: -1 }).size === null
+    && R.ftOfferMetadata({ size: '4404019' }).size === null
+    && R.ftOfferMetadata({}).size === null);
+  // Counted by LINE, not by occurrence: the accessor reads payload.size three
+  // times on one line (guard, guard, value), so an occurrence count would report
+  // 3 and this check would be a permanent false red.
+  {
+    const lines = stripComments(SERVER_SRC).split(String.fromCharCode(10))
+      .map((l, i) => [i + 1, l])
+      .filter(([, l]) => /payload\.size/.test(l));
+    const body = extractFn('ftOfferMetadata');
+    check('every read of payload.size in server.js is inside ftOfferMetadata',
+      lines.length > 0 && lines.every(([, l]) => body.includes(l.trim())),
+      lines.map(([n]) => `L${n}`).join(','));
+  }
   const phone = mkWs(); const browser = mkWs();
   const room = mkRoom(phone, browser);
   const id = newId();
   const sealed = `FILE_OFFER:${JSON.stringify({ id, size: 4404019, e: 'BASE64SEALEDBODY', kid: 'k1', s: 7 })}`;
   R.handleFileFrame(room, phone, sealed, 'phone', room.token);
   await new Promise((r) => setImmediate(r));
-  check('a SEALED FILE_OFFER (plaintext size only) is admitted',
+  check('an offer WITHOUT name/mime/sha256 is admitted, not rejected malformed',
     !!room.transfer && room.transfer.state === 'offered');
-  check('the sealed offer is forwarded byte-for-byte', lastOf(browser, 'FILE_OFFER') === sealed);
+  check('it is forwarded byte-for-byte — the relay reads nothing else',
+    lastOf(browser, 'FILE_OFFER') === sealed);
   check('the record holds no mime it was never given', room.transfer.mime === '');
-  check('and the size gate still read the plaintext size', room.transfer.size === 4404019);
+  check('and the size gate still read size through the accessor', room.transfer.size === 4404019);
 
   // A missing or nonsense size is still refused: it is the ONE field the relay
   // acts on, so it is the one field it must insist upon.

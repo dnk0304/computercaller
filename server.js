@@ -2027,6 +2027,50 @@ function startRelay(httpServer) {
   }
 
   /**
+   * THE ONE PLACE the relay reads anything out of a FILE_OFFER body.
+   *
+   * Spec line 176 flags the sealing of FILE_OFFER for Security sign-off. That
+   * ruling — Security FT-A1, proposal R-AF: a sealed frame plus ONE plaintext
+   * envelope hint `ft:{size}`, the receiver refusing if the sealed size
+   * disagrees with the hint — is OPEN as of 2026-09-18, and Ken's instruction is
+   * to HOLD the mode-ON shape. So this function implements the RULED plaintext
+   * path and guesses at nothing: no `ft` hint is read, because reading a field
+   * whose name is still a proposal is how a lane ends up shipping a wire format
+   * nobody ratified.
+   *
+   * WHEN FT-A1 LANDS, this is the only function that changes. `size` is read
+   * here and nowhere else; the chunk path, the abort path and every log line
+   * take it off the record this builds.
+   *
+   * So every read the gate performs goes through here. When the ruling arrives,
+   * changing where `size` lives is a change to THIS FUNCTION and nothing else:
+   * no second parse site in the chunk path, no third one in a log line, no
+   * chance of one of them being updated and another not. It already tolerates a
+   * body whose name/mime/sha256 have moved inside a seal — those are returned as
+   * null rather than treated as missing-and-therefore-malformed.
+   *
+   * WHAT IT DELIBERATELY DOES NOT RETURN: the account. The sender is
+   * `ws.userId`, proven at the WS upgrade by the relay ticket / phone token, and
+   * a quota gate that could be pointed at another account by a payload field is
+   * not a quota gate. The `from` field in the frame is a UI hint for the
+   * receiver and the relay must never resolve an identity from it — which is
+   * precisely why this accessor cannot hand one back, no matter how the sealing
+   * ruling lands.
+   *
+   * @returns {{size:number|null, mime:string|null, sealed:boolean}}
+   */
+  function ftOfferMetadata(payload) {
+    if (!payload || typeof payload !== 'object') return { size: null, mime: null, sealed: false };
+    // `e` is the E2E envelope's sealed-body field (spec section 13.10). Its presence
+    // is what tells us name/sha256 are not readable here and must not be
+    // required — it is NOT a permission to skip the size gate.
+    const sealed = typeof payload.e === 'string' && payload.e.length > 0;
+    const size = Number.isSafeInteger(payload.size) && payload.size > 0 ? payload.size : null;
+    const mime = typeof payload.mime === 'string' ? payload.mime.slice(0, 128) : null;
+    return { size, mime, sealed };
+  }
+
+  /**
    * FILE_OFFER — the single chokepoint. Tier, then size, then quota, in that
    * order: cheapest and most decisive first, so a trial account never causes a
    * DB write and an oversize pick never consumes a reservation it cannot use.
@@ -2055,19 +2099,14 @@ function startRelay(httpServer) {
       rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused busy id=${id} (in-flight id=${room.transfer.id})`);
       return;
     }
-    // The relay validates ONLY what it acts on: `size`, because the per-file cap
-    // and the daily quota are computed from it.
-    //
-    // name / mime / sha256 are deliberately NOT required. Spec section 5 seals the
-    // FILE_OFFER body under E2E mode ON and carries a PLAINTEXT `size` alongside
-    // it precisely so this chokepoint keeps working — at which point those three
-    // fields are inside `e` and absent from the top level. A relay that demands
-    // them would reject every sealed offer the moment encryption is turned on,
-    // and would do it as `malformed`, which is the least debuggable possible
-    // spelling of "the protocol advanced without me". `mime` is still recorded
-    // when present, for the drop-reason logs, and is blank when it is not.
-    const size = payload.size;
-    if (!Number.isSafeInteger(size) || size < 1) {
+    // Every read of the offer body goes through the ONE accessor — see
+    // ftOfferMetadata for why. `size` is the only field the relay acts on (the
+    // 1 GiB cap and the 2 GiB/day reservation are both computed from it), so it
+    // is the only field it insists upon; name/mime/sha256 may legitimately be
+    // inside the seal under mode ON.
+    const meta = ftOfferMetadata(payload);
+    const size = meta.size;
+    if (size === null) {
       safeSend(ws, `FILE_REJECT:${JSON.stringify({ id, reason: 'malformed' })}`);
       ftCountDrop(token, 'FILE_OFFER', 'malformed');
       return;
@@ -2079,10 +2118,13 @@ function startRelay(httpServer) {
       state: 'gating',
       from: role,
       size,
-      mime: typeof payload.mime === 'string' ? payload.mime.slice(0, 128) : '',
+      mime: meta.mime ?? '',
       startedAt: now,
       bytesForwarded: 0,
       lastActivityAt: now,
+      // The AUTHENTICATED account, from the socket. Never from the payload, and
+      // ftOfferMetadata cannot supply one even if a future frame shape carried
+      // a plausible-looking field.
       senderUserId: ws.userId,
       quotaDay: null,
       quotaSettled: false,
