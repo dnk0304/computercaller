@@ -40,11 +40,11 @@ import { formatBytes } from './ftFormat';
  * user reads after accepting is not a disclosure.
  */
 
-/** Verbatim copy. Exported so the proof harness asserts the rendered strings. */
-export const FT_OFFER_TRUST = 'Only accept files from people you trust.';
-export const FT_OFFER_NO_SCAN = 'Files are not scanned for viruses.';
-export const FT_OFFER_ACCEPT = 'Accept';
-export const FT_OFFER_DECLINE = 'Decline';
+/** Verbatim copy lives in ftCopy.ts (node-importable); re-exported here. */
+import {
+  FT_OFFER_TRUST, FT_OFFER_NO_SCAN, FT_OFFER_ACCEPT, FT_OFFER_DECLINE,
+} from './ftCopy';
+export { FT_OFFER_TRUST, FT_OFFER_NO_SCAN, FT_OFFER_ACCEPT, FT_OFFER_DECLINE };
 
 /** Title is built from the offer: `Accept report.pdf (4.2 MB)?` */
 export function offerTitle(offer: FileOffer): string {

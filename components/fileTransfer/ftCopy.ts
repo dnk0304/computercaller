@@ -21,8 +21,15 @@
  * restate the strings, so there is exactly one place a word can be changed.
  */
 
-import { failureCopy } from '@/lib/fileTransfer/reasons.ts';
-import type { FailureCopy } from '@/lib/fileTransfer/reasons.ts';
+/*
+ * RELATIVE, not the `@/` alias, and deliberately so: scripts/ft-ui-proof.mjs
+ * imports this module directly under plain `node` to assert the copy table
+ * without a browser, and node resolves neither tsconfig paths nor `@/`. Every
+ * verbatim user-facing string in this feature therefore lives in THIS file, so
+ * the proof needs exactly one import and can never drift from the product.
+ */
+import { failureCopy } from '../../lib/fileTransfer/reasons.ts';
+import type { FailureCopy } from '../../lib/fileTransfer/reasons.ts';
 
 /** The full wire enum (WIRE-TRUTH-v1), independent of what `reasons.ts` types today. */
 export const FT_WIRE_REASONS = [
@@ -79,3 +86,22 @@ export function ftFailureCopy(reason: string): FailureCopy {
   if (reason === 'size_mismatch' || reason === 'busy') return PENDING_COPY[reason];
   return failureCopy(reason);
 }
+
+/* ===========================================================================
+   Verbatim user-facing strings. Single source of truth for the components AND
+   the proof harness — see the import note above.
+   =========================================================================== */
+
+/**
+ * The trial lock, WEB + EXTENSION ONLY. Android must render its locked state
+ * with no tappable upgrade affordance (PLAY-TIER-COPY-RULING §1); these two
+ * tables are meant to disagree and must not be unified.
+ */
+export const FT_TIER_LOCK_COPY = 'Send files is included with a subscription — Upgrade';
+export const FT_SEND_LABEL = 'Send file';
+
+/** The accept dialog's two warning lines. */
+export const FT_OFFER_TRUST = 'Only accept files from people you trust.';
+export const FT_OFFER_NO_SCAN = 'Files are not scanned for viruses.';
+export const FT_OFFER_ACCEPT = 'Accept';
+export const FT_OFFER_DECLINE = 'Decline';

@@ -1106,3 +1106,98 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   background-color: transparent;
   filter: brightness(1.06);
 }
+
+/* ===========================================================================
+   FT-3b — file transfer on the extension surface.
+
+   Two different problems are solved below, and they need different selectors.
+
+   1. IN-FLOW parts (the progress row, the error banner, the send control) are
+      inside `.cc-ext`, so the blanket dark remaps further up this file already
+      carry them: `.cc-ext .bg-white` → --cc-card, `.text-slate-*` → --cc-ink /
+      --cc-sec / --cc-mut, `.border-slate-200` → --cc-hair. They need only the
+      layering and radius corrections that make them look native here.
+
+   2. PORTALLED parts (the accept dialog, the received toast) render into
+      document.body, OUTSIDE `.cc-ext` — so none of those remaps reach them,
+      and in dark mode they would paint a white panel with near-white text.
+      The hook is `html:has(.cc-ext)`, the same host-level pattern this file
+      already uses at the top for the page background: the panel is the only
+      thing on this document, so if `.cc-ext` exists anywhere, a portal at body
+      level belongs to it. (Note SasConfirmDialog portals the same way and has
+      NOT been given this treatment — that is a pre-existing gap in the E2E
+      lane, not something FT-3b introduced or is fixing here.)
+   --------------------------------------------------------------------------- */
+
+/* --- In-flow: layering + the radius ladder ------------------------------- */
+.cc-ext .cc-ft-progress,
+.cc-ext .cc-ft-error {
+  background: var(--cc-l1);
+  border-bottom: 1px solid var(--cc-hair);
+}
+.cc-ext .cc-ft-send,
+.cc-ext .cc-ft-lock {
+  border-radius: var(--r-btn);
+  border-color: var(--cc-chip-bd);
+  background: var(--cc-field);
+}
+.cc-ext .cc-ft-send:hover,
+.cc-ext .cc-ft-lock:hover {
+  background: var(--cc-zebra);
+}
+/* The lock sentence wraps to two lines in a ~400px panel. That is correct —
+   truncating a policy-relevant sentence to fit is not an option — but it needs
+   to wrap as a readable block rather than a ragged single line. */
+.cc-ext .cc-ft-lock {
+  align-items: flex-start;
+  line-height: 1.35;
+  text-wrap: pretty;
+}
+
+/* The bar rides the brand gradient here. `.cc-ext .bg-blue-600` above already
+   swaps Tailwind's blue for --cc-grad; this only restores the rounding the
+   gradient's `background-image` does not inherit. */
+.cc-ext .cc-ft-bar { border-radius: var(--r-pill); }
+
+.cc-ext .cc-ft-dropzone .cc-ft-drop-overlay {
+  border-radius: var(--r-panel);
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-drop-overlay {
+  background: rgba(24, 24, 27, 0.9);
+  border-color: var(--cc-chip-bd);
+  color: var(--cc-sec);
+}
+
+/* Error banner: rose-on-white is unreadable over --cc-l1 in dark. */
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-error {
+  background: #2a1417;
+  border-bottom-color: #4a2026;
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-error p { color: #fecdd3; }
+
+/* --- Portalled: the dialog and the toast --------------------------------- */
+html:has(.cc-ext) .cc-ft-panel,
+html:has(.cc-ext) .cc-ft-toast > div {
+  border-radius: var(--r-card);
+}
+html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel,
+html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-toast > div {
+  background: var(--cc-card);
+  border-color: var(--cc-hair);
+}
+html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel h2 { color: var(--cc-ink); }
+html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel p,
+html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-toast p { color: var(--cc-sec); }
+/* The Decline button — a light-on-light outline button over a dark panel. */
+html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-action="decline"],
+html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-toast [data-cc-ft-action="open-received"] {
+  background: var(--cc-field);
+  border-color: var(--cc-chip-bd);
+  color: var(--cc-ink);
+}
+/* The unsupported-browser note keeps amber semantics, darkened to sit on L3. */
+html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-unsupported] {
+  background: #2a2113;
+  border-color: #4a3a1c;
+  color: #fde68a;
+}

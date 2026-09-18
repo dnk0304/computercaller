@@ -40,9 +40,13 @@ import { Paperclip, Lock } from 'lucide-react';
  * a surface that works.
  */
 
-/** Verbatim. Web + extension only — see the header. */
-export const FT_TIER_LOCK_COPY = 'Send files is included with a subscription — Upgrade';
-export const FT_SEND_LABEL = 'Send file';
+/**
+ * Verbatim strings live in ftCopy.ts — the one module the proof harness can
+ * import under plain node — and are re-exported here so call sites still read
+ * them from the component that renders them.
+ */
+import { FT_TIER_LOCK_COPY, FT_SEND_LABEL } from './ftCopy';
+export { FT_TIER_LOCK_COPY, FT_SEND_LABEL };
 
 export interface SendFileControlProps {
   /** From the client entitlement — `entitlement?.allowed === true`. */
