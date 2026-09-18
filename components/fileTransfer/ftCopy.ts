@@ -28,7 +28,7 @@
  * verbatim user-facing string in this feature therefore lives in THIS file, so
  * the proof needs exactly one import and can never drift from the product.
  */
-import { failureCopy } from '../../lib/fileTransfer/reasons.ts';
+import { failureCopy, isFileFailedReason } from '../../lib/fileTransfer/reasons.ts';
 import type { FailureCopy } from '../../lib/fileTransfer/reasons.ts';
 
 /** The full wire enum (WIRE-TRUTH-v1), independent of what `reasons.ts` types today. */
@@ -83,6 +83,13 @@ const PENDING_COPY: Record<'size_mismatch' | 'busy', FailureCopy> = {
  * generic line rather than showing the user a raw enum token.
  */
 export function ftFailureCopy(reason: string): FailureCopy {
+  // lib FIRST, always. `failureCopy` returns a generic fallback for a reason it
+  // does not know, so "does lib know this?" is asked of the enum, not of the
+  // returned string. The moment FT-3a.1 adds size_mismatch and busy to
+  // FILE_FAILED_REASONS, lib wins here automatically and PENDING_COPY goes
+  // unread — no edit, and no window in which the two tables disagree. Deleting
+  // PENDING_COPY then is a tidy-up, not a fix.
+  if (isFileFailedReason(reason)) return failureCopy(reason);
   if (reason === 'size_mismatch' || reason === 'busy') return PENDING_COPY[reason];
   return failureCopy(reason);
 }
