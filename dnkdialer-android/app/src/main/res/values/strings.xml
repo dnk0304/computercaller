@@ -101,7 +101,13 @@
     <!-- Format strings — collapsed to a single short label.
          "Connected" reads at a glance; the client count goes in logs. -->
     <string name="status_connected_to_host">Connected</string>
-    <string name="status_clients_connected_one">Connected</string>
+    <!-- P5b (d): "Connected" on its own is GONE from the status line. An
+         active pair now names its encryption state through E2eStatusCopy
+         (status_connected_encrypted / status_connected_unencrypted), because a
+         bare "Connected" is precisely the reading a user takes as safe. The
+         string is deleted rather than kept "just in case": lint counted it as
+         newly unused the moment E2eStatusCopy took over, and a dead string that
+         still says the tempting wrong thing is how the wrong thing comes back. -->
     <string name="status_clients_connected_many">Connected · %1$d</string>
     <string name="status_error_format">%1$s</string>
     <string name="status_perms_denied_count">%1$d permissions required</string>

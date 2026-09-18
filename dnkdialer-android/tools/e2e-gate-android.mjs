@@ -144,7 +144,18 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
         .filter(Boolean).filter((l) => !l.endsWith('.e2e-lock')).length;
     } catch { return -1; }
   })();
-  finish(r, { counts: { dirtyFiles: dirtyNow, ancestorOk: r.exit === 0 ? 1 : 0 } });
+  // ancestorOk had the SAME defect dirtyFiles was fixed for: it was derived
+  // from the step's exit, so a run that failed only for a dirty tree reported
+  // "ancestorOk: 0" about an ancestry that was perfectly fine — a number
+  // contradicting its own check, and one that sends the next reader hunting a
+  // rebase problem that does not exist. Re-measured, like dirtyFiles.
+  const ancestorNow = (() => {
+    try {
+      execFileSync('git', ['-C', REPO_ROOT, 'merge-base', '--is-ancestor', BASE_SHA, 'HEAD']);
+      return 1;
+    } catch { return 0; }
+  })();
+  finish(r, { counts: { dirtyFiles: dirtyNow, ancestorOk: ancestorNow } });
 }
 
 // ---------------------------------------------------------------- step 2

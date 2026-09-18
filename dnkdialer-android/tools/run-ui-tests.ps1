@@ -52,57 +52,86 @@ $permissions = @(
     'POST_NOTIFICATIONS', 'CAMERA'
 )
 
+# ---------------------------------------------------------------- serial pin
+# This box runs more than one emulator: other E2E lanes are told to start their
+# own (FT-2's e2e_api26 on 5556 collided with this lane's Medium_Phone on 5554
+# mid-gate). Every bare `adb` call then fails with "more than one
+# device/emulator", and the gate reads that as the PRODUCT failing rather than
+# as two lanes sharing a host.
+#
+# So every adb call below is pinned with -s. The serial comes from
+# ANDROID_SERIAL when set (the caller knows which device is its own); a single
+# attached device is taken as unambiguous; anything else is a hard stop that
+# NAMES the candidates, because picking one by position would silently run this
+# lane's tests on another lane's emulator.
+$serial = $env:ANDROID_SERIAL
+if (-not $serial) {
+    $devices = @(& $adb devices | Select-String -Pattern '^(\S+)\s+device$' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value })
+    if ($devices.Count -eq 1) {
+        $serial = $devices[0]
+    } elseif ($devices.Count -eq 0) {
+        throw "no device/emulator attached"
+    } else {
+        throw "more than one device attached ($($devices -join ', ')) and ANDROID_SERIAL is not set - refusing to guess which one is this lane's"
+    }
+}
+Write-Host "device: $serial"
+# Prove the device answers before asserting anything about what it runs.
+$probe = ((& $adb -s $serial shell getprop ro.build.version.sdk) -join '').Trim()
+if ($probe -notmatch '^\d+$') { throw "device $serial did not answer getprop (got '$probe')" }
+
 Write-Host '== building app + test APKs =='
 & .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon -q
 if ($LASTEXITCODE -ne 0) { throw "assemble failed ($LASTEXITCODE)" }
 
 $THRESHOLD = 16777216
-if (((& $adb shell settings get global sys_storage_threshold_max_bytes) -join '').Trim() -ne "$THRESHOLD") {
+if (((& $adb -s $serial shell settings get global sys_storage_threshold_max_bytes) -join '').Trim() -ne "$THRESHOLD") {
     Write-Host "== lowering low-storage install threshold to $THRESHOLD =="
-    & $adb shell settings put global sys_storage_threshold_max_bytes $THRESHOLD | Out-Null
+    & $adb -s $serial shell settings put global sys_storage_threshold_max_bytes $THRESHOLD | Out-Null
 }
 
 Write-Host '== installing app + test APKs =='
-& $adb uninstall "$pkg.test" 2>&1 | Out-Null
-& $adb uninstall $pkg 2>&1 | Out-Null
+& $adb -s $serial uninstall "$pkg.test" 2>&1 | Out-Null
+& $adb -s $serial uninstall $pkg 2>&1 | Out-Null
 foreach ($apk in @(
     'app\build\outputs\apk\debug\app-debug.apk',
     'app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk')) {
-    $r = (& $adb install $apk) -join "`n"
+    $r = (& $adb -s $serial install $apk) -join "`n"
     if ($LASTEXITCODE -ne 0 -or $r -notmatch 'Success') {
         throw "adb install failed for ${apk}: $r"
     }
 }
 
 # Assert the device runs THIS build before asserting anything about it.
-$vc = (& $adb shell dumpsys package $pkg | Select-String 'versionCode=' | Select-Object -First 1) -join ''
+$vc = (& $adb -s $serial shell dumpsys package $pkg | Select-String 'versionCode=' | Select-Object -First 1) -join ''
 Write-Host "installed: $($vc.Trim())"
 if ($vc -notmatch 'versionCode=58') { throw "device is not running versionCode 58: $vc" }
 
 Write-Host '== device state: runtime permissions =='
 foreach ($p in $permissions) {
-    & $adb shell pm grant $pkg "android.permission.$p" 2>&1 | Out-Null
+    & $adb -s $serial shell pm grant $pkg "android.permission.$p" 2>&1 | Out-Null
 }
 # Prove it, rather than trusting that `pm grant` had anything to say. A silently
 # ungranted permission puts the blocking pane on screen and every hero-card
 # lookup returns null.
-$denied = (& $adb shell dumpsys package $pkg | Select-String 'granted=false') -join "`n"
+$denied = (& $adb -s $serial shell dumpsys package $pkg | Select-String 'granted=false') -join "`n"
 if ($denied -match 'android.permission.CAMERA') {
     throw "CAMERA is still denied: MainActivity will render the permissions pane, not the hero card"
 }
 
 Write-Host '== device state: battery-optimization exemption =='
-& $adb shell dumpsys deviceidle whitelist "+$pkg" | Out-Null
-$wl = (& $adb shell dumpsys deviceidle whitelist) -join "`n"
+& $adb -s $serial shell dumpsys deviceidle whitelist "+$pkg" | Out-Null
+$wl = (& $adb -s $serial shell dumpsys deviceidle whitelist) -join "`n"
 if ($wl -notmatch [regex]::Escape($pkg)) {
     throw "$pkg is not battery-whitelisted: MainActivity will raise the exemption dialog, which pauses it, which unregisters the SAS receiver, and every broadcast goes nowhere"
 }
 
-& $adb logcat -c | Out-Null
+& $adb -s $serial logcat -c | Out-Null
 $total = 0
 foreach ($cls in $classes) {
-    & $adb shell am force-stop $pkg | Out-Null
-    $out = (& $adb shell am instrument -w -e class $cls $runner) -join "`n"
+    & $adb -s $serial shell am force-stop $pkg | Out-Null
+    $out = (& $adb -s $serial shell am instrument -w -e class $cls $runner) -join "`n"
     Write-Host $out
 
     # `am instrument` exits 0 even when tests FAIL, and `-notmatch` on a STRING
@@ -127,10 +156,10 @@ Write-Host '== pulling screenshots =='
 $dest = 'docs\screenshots'
 New-Item -ItemType Directory -Force $dest | Out-Null
 $remote = "/sdcard/Android/data/$pkg/files/screenshots"
-foreach ($line in (& $adb shell ls $remote 2>$null)) {
+foreach ($line in (& $adb -s $serial shell ls $remote 2>$null)) {
     $name = $line.Trim()
     if ($name -like 'p5b-*.png') {
-        & $adb pull "$remote/$name" (Join-Path $dest $name) | Out-Null
+        & $adb -s $serial pull "$remote/$name" (Join-Path $dest $name) | Out-Null
         Write-Host "pulled $name"
     }
 }

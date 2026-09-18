@@ -40,41 +40,70 @@ $classes = @(
     "$pkg.E2eA4CanonicalPeerVectorsTest" # (a3) A4 vector J: the canonical peer
 )
 
+# ---------------------------------------------------------------- serial pin
+# This box runs more than one emulator: other E2E lanes are told to start their
+# own (FT-2's e2e_api26 on 5556 collided with this lane's Medium_Phone on 5554
+# mid-gate). Every bare `adb` call then fails with "more than one
+# device/emulator", and the gate reads that as the PRODUCT failing rather than
+# as two lanes sharing a host.
+#
+# So every adb call below is pinned with -s. The serial comes from
+# ANDROID_SERIAL when set (the caller knows which device is its own); a single
+# attached device is taken as unambiguous; anything else is a hard stop that
+# NAMES the candidates, because picking one by position would silently run this
+# lane's tests on another lane's emulator.
+$serial = $env:ANDROID_SERIAL
+if (-not $serial) {
+    $devices = @(& $adb devices | Select-String -Pattern '^(\S+)\s+device$' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value })
+    if ($devices.Count -eq 1) {
+        $serial = $devices[0]
+    } elseif ($devices.Count -eq 0) {
+        throw "no device/emulator attached"
+    } else {
+        throw "more than one device attached ($($devices -join ', ')) and ANDROID_SERIAL is not set - refusing to guess which one is this lane's"
+    }
+}
+Write-Host "device: $serial"
+# Prove the device answers before asserting anything about what it runs.
+$probe = ((& $adb -s $serial shell getprop ro.build.version.sdk) -join '').Trim()
+if ($probe -notmatch '^\d+$') { throw "device $serial did not answer getprop (got '$probe')" }
+
 Write-Host '== building app + test APKs =='
 & .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon -q
 if ($LASTEXITCODE -ne 0) { throw "assemble failed ($LASTEXITCODE)" }
 
 $THRESHOLD = 16777216
-if (((& $adb shell settings get global sys_storage_threshold_max_bytes) -join '').Trim() -ne "$THRESHOLD") {
+if (((& $adb -s $serial shell settings get global sys_storage_threshold_max_bytes) -join '').Trim() -ne "$THRESHOLD") {
     Write-Host "== lowering low-storage install threshold to $THRESHOLD =="
-    & $adb shell settings put global sys_storage_threshold_max_bytes $THRESHOLD | Out-Null
+    & $adb -s $serial shell settings put global sys_storage_threshold_max_bytes $THRESHOLD | Out-Null
 }
 
 Write-Host '== installing app + test APKs =='
-& $adb uninstall "$pkg.test" 2>&1 | Out-Null
-& $adb uninstall $pkg 2>&1 | Out-Null
+& $adb -s $serial uninstall "$pkg.test" 2>&1 | Out-Null
+& $adb -s $serial uninstall $pkg 2>&1 | Out-Null
 foreach ($apk in @(
     'app\build\outputs\apk\debug\app-debug.apk',
     'app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk')) {
-    $r = (& $adb install $apk) -join "`n"
+    $r = (& $adb -s $serial install $apk) -join "`n"
     if ($LASTEXITCODE -ne 0 -or $r -notmatch 'Success') {
         throw "adb install failed for ${apk}: $r"
     }
 }
 
 # Assert the device runs THIS build before asserting anything about it.
-$vc = (& $adb shell dumpsys package $pkg | Select-String 'versionCode=' | Select-Object -First 1) -join ''
+$vc = (& $adb -s $serial shell dumpsys package $pkg | Select-String 'versionCode=' | Select-Object -First 1) -join ''
 Write-Host "installed: $($vc.Trim())"
 if ($vc -notmatch 'versionCode=58') { throw "device is not running versionCode 58: $vc" }
 
-$api = ((& $adb shell getprop ro.build.version.sdk) -join '').Trim()
+$api = ((& $adb -s $serial shell getprop ro.build.version.sdk) -join '').Trim()
 Write-Host "device API level: $api"
 
-& $adb logcat -c | Out-Null
+& $adb -s $serial logcat -c | Out-Null
 $total = 0
 foreach ($cls in $classes) {
-    & $adb shell am force-stop $pkg | Out-Null
-    $out = (& $adb shell am instrument -w -e class $cls $runner) -join "`n"
+    & $adb -s $serial shell am force-stop $pkg | Out-Null
+    $out = (& $adb -s $serial shell am instrument -w -e class $cls $runner) -join "`n"
     Write-Host $out
 
     # `am instrument` exits 0 even when tests FAIL, and `-notmatch` on a STRING
@@ -98,7 +127,7 @@ Write-Host "INSTRUMENTED TOTAL: $total tests"
 # Surface the measured platform facts for the gate JSON / commit message.
 # They come from logcat, not $out: `am instrument` discards a PASSING test's
 # stdout, so the facts are only ever visible on the runs we do not want.
-$fact = ((& $adb logcat -d -s 'E2E-FACT:I') | Select-String 'api=') -join ' '
+$fact = ((& $adb -s $serial logcat -d -s 'E2E-FACT:I') | Select-String 'api=') -join ' '
 Write-Host "KEYSTORE FACTS: $fact"
 Write-Host "KEY AGREEMENT: PASS (API $api)"
 Write-Host "SAS VECTORS: PASS"
