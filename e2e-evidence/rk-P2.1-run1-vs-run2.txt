@@ -1,0 +1,79 @@
+E2E-P2.1 — why there were two gate runs, and what the first one is evidence of
+==============================================================================
+lane      e2e/p2.1-idb-error-state
+head      8d925fa  [E2E-P2.1] c regression: fresh-profile pairing + abort-then-pair-ended
+base      fc6bf86  (= origin/e2e/integration after P0.3 merged; this lane rebased onto it)
+scopeBase fc6bf86  merge-base, reported by the gate itself
+
+RESULT
+------
+Run 2 is the committed evidence: gate-P2.1-8d925fa.json, PASS 67/67, 0 failures,
+all 6 reap steps leaked:0.
+
+Run 1 scored 63/67 and is NOT committed. This file records what it showed,
+because "the second run passed" is only worth something if the first run's
+failures are accounted for rather than re-rolled away.
+
+RUN 1'S FOUR FAILURES
+---------------------
+  FAIL  git-identity-clean-base-ancestry   exit=1    dirtyPaths:2
+  FAIL  harness:ext-badge-counter-proof    exit=124
+  FAIL  reap:ext-badge-counter-proof       exit=1    leaked:1
+  FAIL  baseline-parity                    exit=1
+
+1. THE FIRST ONE WAS MINE, AND WAS FIXED RATHER THAN EXCUSED.
+   The two dirty paths were `.hb.pid` (my heartbeat's PID file) and
+   `gate-run.log` — I had redirected the gate's stdout INTO the worktree I was
+   asking it to certify as clean. Not a code defect, not base-inherent, and so
+   not excusable. Both moved outside the worktree; run 2 reports dirtyPaths:0.
+
+   Worth keeping as a rule: a step that grades the cleanliness of a tree can be
+   failed by the act of recording the run. THE LOG BELONGS OUTSIDE THE SUBJECT.
+   (I nearly repeated it: the first draft of this note was written into
+   e2e-evidence/ while run 2 was live. e2e-evidence/*.txt is not in the gate's
+   OWN_OUTPUT allowlist, so it would have been a dirty path. It landed seconds
+   after the check had already run, and was parked outside the worktree until
+   commit so the tree still matched exactly what the gate certified.)
+
+2. THE OTHER THREE ARE ONE EVENT, AND IT IS BASE-INHERENT.
+   ext-badge-counter-proof reported {"passed":32,"total":32,"attempts":2} — every
+   check it made PASSED and then the process did not exit. exit=124 is a TIMEOUT,
+   not an assertion. reap and baseline-parity are the same event counted twice
+   more: a timed-out step cannot appear in harnessPass, and the survivor the reap
+   census sees is the process that failed to exit.
+
+   MEASURED AT BASE, NOT ASSERTED: P0.3's committed gate-P0.3-637b6f9.json, run
+   on the commit that became this lane's base, shows
+       FAIL harness:ext-badge-counter-proof exit=124
+       FAIL reap:harness-batch              exit=1
+       FAIL baseline-parity                 exit=1
+   — the same step with the same exit code, while git-identity-clean-base-ancestry
+   PASSED there. So the badge family predates this lane and the dirty-tree failure
+   did not.
+
+   Root cause is already named and owned: scripts/lib/reap.mjs censuses survivors
+   immediately after taskkill /F with NO settle window, and each harness's
+   `finally` rmSyncs a Chrome profile dir a live chrome still holds. P0.3
+   diagnosed it; Ken relayed it to P5a-UI letter (f) as the R-AE family.
+
+   WHY IT DID NOT REPRODUCE IN RUN 2: run 1 was contended — the P5B android gate
+   was running on the same box from 04:00 and ~46 chrome processes were live. Run
+   2 started after P5B finished. That is consistent with P0.3's diagnosis (a
+   teardown race that loses under load), and it is the reason run 1 is kept: a
+   green run on a quiet box is not evidence that the race is gone, and nobody
+   should read 67/67 as retiring the R-AE ticket.
+
+NON-CAUSATION BY CONSTRUCTION (independent of either run)
+---------------------------------------------------------
+This lane's diff is 12 files: lib/e2e/idb.{mjs,d.mts}, lib/e2e/webKey.ts,
+lib/e2e/session.mjs, hooks/{phoneE2e,useE2e,usePhoneBridge}.ts,
+tests/e2e-web-{idb,error-state}.test.mjs,
+scripts/e2e-{idb-migration,live-peer}-proof.mjs, tools/e2e-gate.mjs.
+
+  - ext-badge-counter-proof imports playwright, ./lib/ext-sw.mjs, ./lib/reap.mjs
+    and node builtins. NONE is in this diff.
+  - chrome-extension/background.js is NOT in this diff (P5a-SW owns it).
+  - the single hunk in tools/e2e-gate.mjs registers unit:idb-migration in the
+    UNIT block, next to unit:live-peer — not in the harness runner, not in the
+    reap accounting.
+  - the gate's own scope-diff-vs-base PASSED: changed 12, android 0, offLane 0.
