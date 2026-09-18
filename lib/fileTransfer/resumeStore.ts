@@ -7,13 +7,36 @@
  * reuse goes through `ensureWritePermission` first.
  *
  * Nothing here is content: id, digest, byte count, filename, handle.
+ *
+ * ── THE OPEN PATH ──────────────────────────────────────────────────────────
+ * This file does NOT open a database. It cannot: P2.1 froze lib/e2e/idb.mjs as
+ * the only module under lib/ or hooks/ that may reach an IDBFactory, and
+ * tests/e2e-web-idb.test.mjs greps for a second one. This file used to BE that
+ * second one — it opened `cc-file-transfer` v1 with its own `onupgradeneeded`,
+ * which is the same shape as the two-owner bug idb.mjs was written to end, just
+ * not yet collided with. Records now live in the `cc-ft` database that idb.mjs
+ * owns, reached through `ccFtRead` / `ccFtWrite`.
+ *
+ * Two consequences worth knowing:
+ *   - Keys are OUT-OF-LINE (the transfer id passed as the second `put`
+ *     argument), because idb.mjs's one upgrade body creates every store the
+ *     same way. The old store used `keyPath: 'id'`; the record shape is
+ *     unchanged either way.
+ *   - Writes resolve on the TRANSACTION's `complete`, not the request's
+ *     `success`. A resume record that is not durable before the next chunk is
+ *     acknowledged is a resume point that can be behind the disk.
+ *
+ * The abandoned `cc-file-transfer` database is deliberately NOT deleted here:
+ * deleting a database needs the IDBFactory this file is no longer allowed to
+ * touch, and its contents are already self-expiring (stale handles whose
+ * permission grant died with the page that stored them).
  */
+import { CC_FT_STORE_RESUME, ccFtRead, ccFtWrite } from '../e2e/idb.mjs';
+
 import { RESUME_WINDOW_MS } from './constants.ts';
 import type { SaveFileHandle } from './fsAccess.ts';
 
-const DB_NAME = 'cc-file-transfer';
-const DB_VERSION = 1;
-const STORE = 'resume';
+const STORE = CC_FT_STORE_RESUME;
 
 export interface ResumeRecord {
   id: string;
@@ -29,53 +52,26 @@ export interface ResumeRecord {
   updatedAt: number;
 }
 
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
-      reject(new Error('IndexedDB unavailable'));
-      return;
-    }
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' });
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'));
-  });
-}
-
-function tx<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-  return openDb().then(
-    (db) =>
-      new Promise<T>((resolve, reject) => {
-        const t = db.transaction(STORE, mode);
-        const req = fn(t.objectStore(STORE));
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error ?? new Error('IndexedDB request failed'));
-        t.oncomplete = () => db.close();
-      }),
-  );
-}
-
 /**
  * Every call is best-effort: a browser with storage blocked must still be able
  * to transfer a file, it just cannot resume one. Never let this throw upward.
  */
-export async function putResume(record: ResumeRecord): Promise<void> {
+export async function putResume(record: ResumeRecord, factory?: IDBFactory): Promise<void> {
   try {
-    await tx('readwrite', (s) => s.put({ ...record, updatedAt: Date.now() }) as IDBRequest<IDBValidKey>);
+    await ccFtWrite(factory, STORE, (s) => {
+      s.put({ ...record, updatedAt: Date.now() }, record.id);
+    });
   } catch {
     /* resume is an optimisation, not a requirement */
   }
 }
 
-export async function getResume(id: string): Promise<ResumeRecord | null> {
+export async function getResume(id: string, factory?: IDBFactory): Promise<ResumeRecord | null> {
   try {
-    const rec = (await tx('readonly', (s) => s.get(id) as IDBRequest<ResumeRecord | undefined>)) ?? null;
+    const rec = (await ccFtRead<ResumeRecord | undefined>(factory, STORE, (s) => s.get(id))) ?? null;
     if (!rec) return null;
     if (Date.now() - rec.updatedAt > RESUME_WINDOW_MS) {
-      await deleteResume(id);
+      await deleteResume(id, factory);
       return null;
     }
     return rec;
@@ -84,20 +80,20 @@ export async function getResume(id: string): Promise<ResumeRecord | null> {
   }
 }
 
-export async function deleteResume(id: string): Promise<void> {
+export async function deleteResume(id: string, factory?: IDBFactory): Promise<void> {
   try {
-    await tx('readwrite', (s) => s.delete(id) as IDBRequest<undefined>);
+    await ccFtWrite(factory, STORE, (s) => { s.delete(id); });
   } catch {
     /* nothing to clean up we can reach */
   }
 }
 
 /** Drop records past the resume window so the store cannot grow without bound. */
-export async function pruneResume(now = Date.now()): Promise<number> {
+export async function pruneResume(now = Date.now(), factory?: IDBFactory): Promise<number> {
   try {
-    const all = await tx('readonly', (s) => s.getAll() as IDBRequest<ResumeRecord[]>);
+    const all = await ccFtRead<ResumeRecord[]>(factory, STORE, (s) => s.getAll());
     const stale = all.filter((r) => now - r.updatedAt > RESUME_WINDOW_MS);
-    for (const r of stale) await deleteResume(r.id);
+    for (const r of stale) await deleteResume(r.id, factory);
     return stale.length;
   } catch {
     return 0;
