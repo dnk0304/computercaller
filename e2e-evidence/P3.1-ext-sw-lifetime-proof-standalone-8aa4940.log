@@ -1,0 +1,18 @@
+
+=== ARM 1: listener WebSocket held open (90s) ===
+  [ws] forced-eviction probe: {"evicted":false,"method":"CDP ServiceWorker.stopWorker","reason":"stopWorker(versionId=0) returned, but the worker was still listed 10s later — Playwright's auto-attached debug session keeps re-activating it"}
+[reap] ext-sw-lifetime-proof:ws: spawned PIDs reaped: yes 0
+[reap] ext-sw-lifetime-proof:ws: WARNING — 1 process(es) SURVIVED the kill: 39588
+
+=== ARM 2: no socket at all (90s) ===
+  [idle] 60s  swAlive=true  socketOpen=false
+  [idle] forced-eviction probe: {"evicted":false,"method":"CDP ServiceWorker.stopWorker","reason":"stopWorker(versionId=0) returned, but the worker was still listed 10s later — Playwright's auto-attached debug session keeps re-activating it"}
+[reap] ext-sw-lifetime-proof:idle: spawned PIDs reaped: yes 1 (7972)
+[reap] ext-sw-lifetime-proof:idle: WARNING — 1 process(es) SURVIVED the kill: 47768
+
+=== RESULT ===
+withSocket  {"survivedWholeRun":true,"firstGoneAtSeconds":null,"respawned":false,"forcedEviction":{"evicted":false,"method":"CDP ServiceWorker.stopWorker","reason":"stopWorker(versionId=0) returned, but the worker was still listed 10s later — Playwright's auto-attached debug session keeps re-activating it"}}
+idle        {"survivedWholeRun":true,"firstGoneAtSeconds":null,"respawned":false,"forcedEviction":{"evicted":false,"method":"CDP ServiceWorker.stopWorker","reason":"stopWorker(versionId=0) returned, but the worker was still listed 10s later — Playwright's auto-attached debug session keeps re-activating it"}}
+
+WARN: INCONCLUSIVE — the idle control arm survived the full 90s window AND could not be evicted on demand either (stopWorker(versionId=0) returned, but the worker was still listed 10s later — Playwright's auto-attached debug session keeps re-activating it). Under CDP the MV3 worker is never torn down, so this harness cannot measure MV3 lifetime at all. Reported as WARN, exit 0, per Ken's ruling — a limitation of the instrument is not a failure of the branch, and it is never a PASS.
+WARN  eviction cannot be forced under CDP — this step measured nothing and says so.
