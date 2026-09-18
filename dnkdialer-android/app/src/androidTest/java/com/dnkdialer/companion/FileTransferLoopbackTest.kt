@@ -79,8 +79,21 @@ class FileTransferLoopbackTest {
         /** Queued bytes we pretend the socket holds — drives the watermark. */
         @Volatile var queued: Long = 0
 
+        /**
+         * Record the frame, then deliver it.
+         *
+         * `data` is STRIPPED from what we retain. The recorder keeps every
+         * frame for the assertions, and a 200 MB transfer is 4,267 chunks of
+         * 64 KB of base64 - so retaining payloads means the HARNESS holds
+         * ~273 MB of the file while the test asserts that nothing holds the
+         * file. The first run of this test failed on exactly that: "heap grew
+         * 294MB", all of it this queue.
+         *
+         * Delivery still gets the full payload, so the receiving side is
+         * unaffected; only what survives the call is trimmed.
+         */
         fun record(type: String, payload: Map<String, Any?>) {
-            sent.add(type to payload)
+            sent.add(type to if (type == FileTransfer.CHUNK) payload - "data" else payload)
             onFrame?.invoke(type, payload)
         }
 
@@ -259,7 +272,7 @@ class FileTransferLoopbackTest {
         // base64 String) and still 25x below the file. A design that buffered
         // the file would blow this by two orders of magnitude.
         assertTrue(
-            "heap grew ${growth / 1024 / 1024}MB sending a 200MB file — it is being buffered",
+            "heap grew ${growth / 1024 / 1024}MB sending a 200MB file - it is being buffered",
             growth < 8L * 1024 * 1024
         )
     }

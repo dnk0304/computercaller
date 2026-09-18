@@ -1,4 +1,4 @@
-# FT-2 (f) — instrumented run of FileTransferLoopbackTest.
+# FT-2 (f) - instrumented run of FileTransferLoopbackTest.
 #
 # Same install discipline as run-agreement-test.ps1, and repeated rather than
 # factored out for the same reason that file gives: both traps below are
@@ -30,7 +30,7 @@ $pkg = 'com.dnkdialer.companion'
 $runner = "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 $cls = "$pkg.FileTransferLoopbackTest"
 
-# FT-2 is v59 work but must NOT bump the code — vc58 is P5b's signed build and
+# FT-2 is v59 work but must NOT bump the code - vc58 is P5b's signed build and
 # Ken bumps at merge. So this asserts the code the branch actually carries
 # rather than a number this script wishes for.
 $expectedVc = (Select-String -Path 'app\build.gradle.kts' -Pattern '^\s*versionCode\s*=\s*(\d+)' |
@@ -51,7 +51,7 @@ if (((& $adb shell settings get global sys_storage_threshold_max_bytes) -join ''
 $free = ((& $adb shell df /data | Select-Object -Last 1) -join ' ') -split '\s+'
 Write-Host "== /data free: $($free[3]) KB =="
 if ([int64]$free[3] -lt 600000) {
-    throw "less than 600 MB free on /data — the 200 MB fixture will fail mid-transfer"
+    throw "less than 600 MB free on /data - the 200 MB fixture will fail mid-transfer"
 }
 
 Write-Host '== installing app + test APKs =='
@@ -76,7 +76,11 @@ if ($vc -notmatch "versionCode=$expectedVc") {
 $api = ((& $adb shell getprop ro.build.version.sdk) -join '').Trim()
 Write-Host "device API level: $api"
 
-& $adb logcat -c | Out-Null
+# API 26 emulators answer "failed to clear the 'main' log" and keep going. It
+# is not a failure worth stopping for, but it DOES mean the buffer may still
+# hold an earlier run's lines - so every grep below is anchored to this run's
+# class name rather than to a bare marker.
+try { & $adb logcat -c 2>&1 | Out-Null } catch { Write-Host 'logcat -c refused; buffer not cleared' }
 & $adb shell am force-stop $pkg | Out-Null
 $out = (& $adb shell am instrument -w -e class $cls $runner) -join "`n"
 Write-Host $out
@@ -90,7 +94,7 @@ if (-not $m.Success -or [int]$m.Groups[1].Value -lt 1) { throw "$cls ran ZERO te
 
 Write-Host "INSTRUMENTED TOTAL: $($m.Groups[1].Value) tests"
 
-# The memory number for the resume. It comes from logcat, not from $out:
+# The memory number for the resume. It comes from logcat, not from the $out variable:
 # `am instrument` discards a PASSING test's stdout, so a fact logged by a test
 # that passed is only ever visible here.
 $mem = ((& $adb logcat -d -s 'FT2-MEM:I') | Select-String '200MB send') -join ' '
