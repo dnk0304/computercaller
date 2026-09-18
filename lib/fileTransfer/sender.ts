@@ -28,6 +28,8 @@ export interface FileSender extends FrameSink {
   /** Called by the host when the socket reconnects, so the stall clock is fair. */
   noteReconnect(): void;
   readonly busy: boolean;
+  /** FT-3a.1 (b). The id in flight, or null — the MUST A1.1-M9 liveness clause. */
+  readonly liveId: string | null;
   dispose(): void;
 }
 
@@ -147,6 +149,7 @@ export function createFileSender(
 
   return {
     get busy() { return state !== 'idle' && state !== 'terminal'; },
+    get liveId() { return state === 'idle' || state === 'terminal' ? null : (id || null); },
 
     async send(f, from) {
       if (state !== 'idle' && state !== 'terminal') throw new Error('a transfer is already running');

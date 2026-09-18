@@ -54,9 +54,29 @@ export function isFileSystemAccessSupported(): boolean {
 
 /** Re-check a stored handle's permission before reusing it for resume. */
 export async function ensureWritePermission(handle: SaveFileHandle): Promise<boolean> {
+  return ensurePermission(handle, 'readwrite');
+}
+
+/**
+ * FT-3a.1 (c). Re-check READ permission before reusing a completed transfer's
+ * handle for "Open". Read, not readwrite: opening the file back needs no write
+ * capability, and asking for one would re-prompt for something we do not need.
+ */
+export async function ensureReadPermission(handle: SaveFileHandle): Promise<boolean> {
+  return ensurePermission(handle, 'read');
+}
+
+async function ensurePermission(handle: SaveFileHandle, mode: PermissionMode): Promise<boolean> {
+  // A handle whose implementation does not expose the permission API (some
+  // polyfills, and every test stub that does not care) is taken at its word —
+  // the real call sites all fail closed a step later, when the read itself
+  // throws, so treating "cannot ask" as "denied" would only break stubs.
   if (!handle.queryPermission) return true;
-  const existing = await handle.queryPermission({ mode: 'readwrite' });
-  if (existing === 'granted') return true;
-  if (!handle.requestPermission) return false;
-  return (await handle.requestPermission({ mode: 'readwrite' })) === 'granted';
+  try {
+    if ((await handle.queryPermission({ mode })) === 'granted') return true;
+    if (!handle.requestPermission) return false;
+    return (await handle.requestPermission({ mode })) === 'granted';
+  } catch {
+    return false;
+  }
 }

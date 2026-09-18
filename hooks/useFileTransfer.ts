@@ -25,6 +25,12 @@ import type { FileSender } from '@/lib/fileTransfer/sender.ts';
 import { createFileReceiver } from '@/lib/fileTransfer/receiver.ts';
 import type { FileReceiver } from '@/lib/fileTransfer/receiver.ts';
 import { isFileSystemAccessSupported } from '@/lib/fileTransfer/fsAccess.ts';
+import type { SaveFileHandle } from '@/lib/fileTransfer/fsAccess.ts';
+import { decideRelayAbort } from '@/lib/fileTransfer/relayAbort.ts';
+import {
+  HANDLE_RETENTION_MS, openReceivedFile,
+} from '@/lib/fileTransfer/openReceived.ts';
+import type { OpenReceivedDeps, OpenReceivedOutcome } from '@/lib/fileTransfer/openReceived.ts';
 import { failureCopy } from '@/lib/fileTransfer/reasons.ts';
 import type { FailureCopy, FileFailedReason } from '@/lib/fileTransfer/reasons.ts';
 import {
@@ -49,6 +55,19 @@ export interface FileTransferBridge {
  */
 export interface FileTransferBridgeSlot {
   bridge: FileTransferBridge | null;
+}
+
+/**
+ * FT-3a.1 (c). A transfer that finished, plus the handle "Open" needs. Held
+ * only until the UI dismisses the toast or HANDLE_RETENTION_MS elapses — a
+ * FileSystemFileHandle is a live capability over a user's file, not a piece of
+ * view state, so it is not kept for the life of the tab.
+ */
+export interface CompletedTransfer {
+  id: string;
+  name: string;
+  /** False once the handle has been released; FT-3b hides "Open". */
+  canOpen: boolean;
 }
 
 export interface FileTransferError {
@@ -84,6 +103,23 @@ export interface FileTransferApi {
   cancel(): void;
   dismissError(): void;
 
+  /**
+   * The last completed RECEIVE, while its handle is still held. FT-3b renders
+   * the "Open" button from this. There is no "Show in folder": the File System
+   * Access API exposes no reveal-in-file-manager call and a handle carries no
+   * path, so that control cannot be built on the web and the copy must not
+   * promise it.
+   */
+  completed: CompletedTransfer | null;
+  /**
+   * Open a completed receive in a new tab. Permission is re-checked on every
+   * call — a granted permission is a snapshot, not a property of the handle.
+   * `deps` is injected only by tests and the proof script.
+   */
+  openReceived(id: string, deps?: OpenReceivedDeps | null): Promise<OpenReceivedOutcome>;
+  /** Drop the retained handle (toast dismissed). Idempotent. */
+  dismissCompleted(): void;
+
   /** Called by usePhoneBridge for every inbound FILE_* frame. */
   handleFrame(type: string, payload: unknown): void;
   /** Called by usePhoneBridge on a reconnect edge, to drive FILE_RESUME. */
@@ -99,6 +135,44 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
   const [progress, setProgress] = useState<TransferProgress | null>(null);
   const [error, setError] = useState<FileTransferError | null>(null);
   const [mirror, setMirror] = useState<QuotaMirror>(() => emptyMirror());
+  /**
+   * The retained handle lives in STATE, not in a ref and not in a mutable box.
+   * Both of those were tried and both are correctly refused by the lint rules
+   * here: the state machines are built in a lazy `useState` initializer that
+   * runs during render, so a ref or a box captured by `onReceived` would be a
+   * mutable cell written from render-constructed code. State is the one cell
+   * React is happy to have written from a callback, and it makes the retention
+   * window an ordinary effect keyed on the record rather than a hand-managed
+   * timer — one fewer thing to leak on unmount.
+   *
+   * The handle never leaves this hook: what FT-3b sees is `{id, name, canOpen}`.
+   */
+  const [held, setHeld] = useState<{ id: string; name: string; handle: SaveFileHandle | null } | null>(null);
+
+  const releaseHandle = useCallback(() => {
+    setHeld((h) => (h && h.handle ? { ...h, handle: null } : h));
+  }, []);
+
+  const dismissCompleted = useCallback(() => setHeld(null), []);
+
+  // The retention window. A handle is a live capability over a user's file; it
+  // is dropped when the toast is dismissed or after HANDLE_RETENTION_MS,
+  // whichever comes first, rather than kept for the life of the tab so a button
+  // can stay enabled.
+  useEffect(() => {
+    if (!held || !held.handle) return undefined;
+    const id = held.id;
+    const t = setTimeout(
+      () => setHeld((h) => (h && h.id === id ? { ...h, handle: null } : h)),
+      HANDLE_RETENTION_MS,
+    );
+    return () => clearTimeout(t);
+  }, [held]);
+
+  const completed = useMemo<CompletedTransfer | null>(
+    () => (held ? { id: held.id, name: held.name, canOpen: held.handle !== null } : null),
+    [held],
+  );
   // The picker only exists in the browser, and the server must render the same
   // thing the client hydrates with. useSyncExternalStore is the tool for exactly
   // that: a constant server snapshot of `false`, the real capability on the
@@ -134,12 +208,46 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
     onFailed,
     onOffer: setPendingOffer,
     onDone: () => setPendingOffer(null),
+    onReceived: (id, name, handle) => setHeld({ id, name, handle }),
   }));
 
   useEffect(() => () => { sender.dispose(); receiver.dispose(); }, [sender, receiver]);
 
+  const openReceived = useCallback(
+    async (id: string, deps?: OpenReceivedDeps | null): Promise<OpenReceivedOutcome> => {
+      if (!held || held.id !== id || !held.handle) return 'gone';
+      const { handle } = held;
+      const outcome = deps === undefined
+        ? await openReceivedFile(handle)
+        : await openReceivedFile(handle, deps);
+      // A revoked permission or a vanished file is terminal for this handle —
+      // leaving the button live would just re-prompt on every click.
+      if (outcome === 'denied' || outcome === 'gone') releaseHandle();
+      return outcome;
+    },
+    [held, releaseHandle],
+  );
+
   const handleFrame = useCallback((type: string, payload: unknown) => {
     if (!isFileFrameType(type)) return;
+    // ── FT-A1.1 MUST A1.1-M9, the LIVENESS clause ─────────────────────────
+    // useE2e admitted this frame on shape + reason subset alone; this hook is
+    // the only layer that knows which transfers exist. A relay-minted abort for
+    // an id that is not live is DROPPED — that is what stops the exception
+    // being an id-guessing oracle and what stops it creating zombie transfers.
+    // Checked here rather than in the machines because it must hold on the mode
+    // OFF path too: the mark means the same thing either way.
+    const relay = decideRelayAbort(
+      type, payload, (id) => sender.liveId === id || receiver.liveId === id,
+    );
+    if (relay.action === 'drop') return;
+    if (relay.action === 'abort') {
+      // Re-built from the two scalars, so the mark itself never reaches a state
+      // machine and the frame can only ever mean "abort the transfer you named".
+      const abort = coerceFileFrame('FILE_FAILED', { id: relay.id, reason: relay.reason });
+      if (abort) { sender.handleFrame(abort); receiver.handleFrame(abort); }
+      return;
+    }
     const frame = coerceFileFrame(type, payload);
     // A malformed frame is dropped, never guessed at. The peer is not trusted
     // to have sent the field types it claims.
@@ -189,9 +297,10 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
     && progress.phase !== 'failed';
 
   return {
-    pendingOffer, progress, error, supported, busy,
+    pendingOffer, progress, error, supported, busy, completed,
     remainingBytesToday: remainingToday(mirror),
     checkPick, sendFile, acceptOffer, rejectOffer, cancel, dismissError,
+    openReceived, dismissCompleted,
     handleFrame, noteReconnect,
   };
 }

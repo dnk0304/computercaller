@@ -30,6 +30,14 @@ export interface FileReceiver extends FrameSink {
   /** The offer awaiting the user, or null. FT-3b renders this. */
   readonly pendingOffer: FileOffer | null;
   /**
+   * FT-3a.1 (b). The id of the transfer this machine currently has in flight —
+   * an offer awaiting the user counts, because tier/quota/busy refusals arrive
+   * exactly then. null when there is nothing to abort. This is the LIVENESS
+   * clause of MUST A1.1-M9, which the page (not the SW, and not the crypto
+   * latch) is the one that can answer.
+   */
+  readonly liveId: string | null;
+  /**
    * Accept and stream to disk. MUST be called synchronously from the click
    * handler — `showSaveFilePicker` requires the user gesture and a queued
    * microtask will have lost it.
@@ -227,6 +235,11 @@ export function createFileReceiver(
     await deleteResume(offer!.id);
     state = 'terminal';
     const done = progress('done');
+    // FT-3a.1 (c): hand the HANDLE — not the writable, which we just closed and
+    // which is a write lock on the user's file — to the host, so it can offer
+    // "Open" while the toast is up. The machine itself keeps nothing: a handle
+    // is a live capability, and its retention window is a UI decision.
+    if (handle) events.onReceived?.(offer!.id, offer!.name, handle);
     events.onProgress?.(done);
     events.onDone?.(done);
     offer = null; pending = null; handle = null;
@@ -234,6 +247,10 @@ export function createFileReceiver(
 
   return {
     get pendingOffer() { return pending; },
+    get liveId() {
+      if (state === 'idle' || state === 'terminal') return null;
+      return offer?.id ?? pending?.id ?? null;
+    },
 
     async receiveToDisk(incoming: FileOffer) {
       if (state === 'receiving' || state === 'verifying') throw new Error('a transfer is already running');

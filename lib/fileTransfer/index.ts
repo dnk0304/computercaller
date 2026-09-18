@@ -22,7 +22,14 @@ export { createFileReceiver } from './receiver.ts';
 export type { FileReceiver, ReceiverOptions } from './receiver.ts';
 export {
   getSaveFilePicker, isFileSystemAccessSupported, ensureWritePermission,
+  ensureReadPermission,
 } from './fsAccess.ts';
+export { isRelayMintedAbort, isMalformedRelayMark, decideRelayAbort } from './relayAbort.ts';
+export type { RelayMintedAbort, RelayAbortDecision } from './relayAbort.ts';
+export {
+  openReceivedFile, HANDLE_RETENTION_MS, OBJECT_URL_TTL_MS,
+} from './openReceived.ts';
+export type { OpenReceivedDeps, OpenReceivedOutcome } from './openReceived.ts';
 export type {
   SaveFileHandle, SaveFilePicker, SaveFilePickerOptions, FileSystemWritableFileStream,
 } from './fsAccess.ts';
