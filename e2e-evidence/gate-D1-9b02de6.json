@@ -1,0 +1,822 @@
+{
+  "phase": "D1",
+  "label": null,
+  "sha": "9b02de69b97266bd3228b5a2f62746f4a29d3fb1",
+  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "scopeBase": {
+    "sha": "07ba15f31a49327a18664609087c60ca675fcfc9",
+    "kind": "merge-base",
+    "ref": "origin/e2e/integration",
+    "integrationTip": "07ba15f31a49327a18664609087c60ca675fcfc9",
+    "fellBackToBaseSha": false,
+    "reason": null
+  },
+  "utc": "2026-09-18T08:35:31.643Z",
+  "lane": "web",
+  "mode": "full",
+  "env": {
+    "node": "v24.12.0",
+    "bun": "1.3.11",
+    "chrome": "C:\\Users\\D\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe"
+  },
+  "steps": [
+    {
+      "name": "git-identity-clean-base-ancestry",
+      "cmd": "git rev-parse HEAD && git status --porcelain && git merge-base --is-ancestor BASE_SHA HEAD",
+      "exit": 1,
+      "ms": 265,
+      "counts": {
+        "dirtyPaths": 10,
+        "baseIsAncestor": true
+      }
+    },
+    {
+      "name": "scope-diff-vs-base",
+      "cmd": "git diff --name-only 07ba15f..HEAD",
+      "exit": 0,
+      "ms": 224,
+      "counts": {
+        "changed": 133,
+        "android": 0,
+        "nonAndroid": 133,
+        "offLane": 0,
+        "scopeBase": "07ba15f31a49327a18664609087c60ca675fcfc9",
+        "scopeBaseKind": "merge-base"
+      }
+    },
+    {
+      "name": "node-check:server.js",
+      "cmd": "node --check server.js",
+      "exit": 0,
+      "ms": 548,
+      "counts": null
+    },
+    {
+      "name": "node-check:chrome-extension/background.js",
+      "cmd": "node --check chrome-extension/background.js",
+      "exit": 0,
+      "ms": 568,
+      "counts": null
+    },
+    {
+      "name": "node-check:chrome-extension/shell.js",
+      "cmd": "node --check chrome-extension/shell.js",
+      "exit": 0,
+      "ms": 292,
+      "counts": null
+    },
+    {
+      "name": "tsc-noEmit",
+      "cmd": "bunx tsc --noEmit -p .",
+      "exit": 0,
+      "ms": 15838,
+      "counts": {
+        "errors": 0
+      }
+    },
+    {
+      "name": "lint",
+      "cmd": "bunx eslint . -f json (vs 07ba15f:e2e-evidence/LINT-BASELINE.json)",
+      "exit": 0,
+      "ms": 309256,
+      "counts": {
+        "problems": 107,
+        "errors": 34,
+        "warnings": 73,
+        "grown": 0,
+        "inherited": 0,
+        "shrunk": 26,
+        "floorRev": "07ba15f31a49327a18664609087c60ca675fcfc9"
+      }
+    },
+    {
+      "name": "build",
+      "cmd": "bun run build",
+      "exit": 0,
+      "ms": 316472,
+      "counts": {
+        "routes": 68
+      }
+    },
+    {
+      "name": "check-extension",
+      "cmd": "\"C:/Program Files/Git/bin/bash.exe\" tools/check-extension.sh",
+      "exit": 0,
+      "ms": 2784,
+      "counts": null
+    },
+    {
+      "name": "check-no-identities",
+      "cmd": "\"C:/Program Files/Git/bin/bash.exe\" tools/check-no-identities.sh",
+      "exit": 0,
+      "ms": 1425,
+      "counts": null
+    },
+    {
+      "name": "relay:pairing-persist",
+      "cmd": "node tests/pairing-persist.test.mjs",
+      "exit": 0,
+      "ms": 383,
+      "counts": {
+        "passed": 84,
+        "total": 84
+      }
+    },
+    {
+      "name": "relay:pair-state",
+      "cmd": "node tests/pair-state.test.mjs",
+      "exit": 0,
+      "ms": 179,
+      "counts": {
+        "passed": 22,
+        "total": 22
+      }
+    },
+    {
+      "name": "relay:dock-resume",
+      "cmd": "node tests/dock-resume.test.mjs",
+      "exit": 0,
+      "ms": 502,
+      "counts": {
+        "passed": 26,
+        "total": 26
+      }
+    },
+    {
+      "name": "relay:reset-room",
+      "cmd": "node tests/reset-room.test.mjs",
+      "exit": 0,
+      "ms": 670,
+      "counts": {
+        "passed": 21,
+        "total": 21
+      }
+    },
+    {
+      "name": "relay:listener-heartbeat",
+      "cmd": "node tests/listener-heartbeat.test.mjs",
+      "exit": 0,
+      "ms": 265,
+      "counts": {
+        "passed": 11,
+        "total": 11
+      }
+    },
+    {
+      "name": "relay:relink-kill-frame-buffer",
+      "cmd": "node tests/relink-kill-frame-buffer.test.mjs",
+      "exit": 0,
+      "ms": 248,
+      "counts": {
+        "passed": 18,
+        "total": 18
+      }
+    },
+    {
+      "name": "relay:call-separation",
+      "cmd": "node tests/call-separation.test.mjs",
+      "exit": 0,
+      "ms": 818,
+      "counts": {
+        "passed": 16,
+        "total": 16
+      }
+    },
+    {
+      "name": "relay:www-origin",
+      "cmd": "node tests/www-origin.test.mjs",
+      "exit": 0,
+      "ms": 223,
+      "counts": {
+        "passed": 8,
+        "total": 8
+      }
+    },
+    {
+      "name": "relay:repro-resume-sync",
+      "cmd": "node tests/repro-resume-sync.mjs",
+      "exit": 0,
+      "ms": 708,
+      "counts": {
+        "passed": 9,
+        "total": 9
+      }
+    },
+    {
+      "name": "relay:session-superseded",
+      "cmd": "node tests/session-superseded.test.mjs",
+      "exit": 0,
+      "ms": 223,
+      "counts": {
+        "passed": 29,
+        "total": 29
+      }
+    },
+    {
+      "name": "relay:log-redaction",
+      "cmd": "node tests/log-redaction.test.mjs",
+      "exit": 0,
+      "ms": 218,
+      "counts": {
+        "passed": 43,
+        "total": 43
+      }
+    },
+    {
+      "name": "relay:devicekey-authz",
+      "cmd": "node tests/devicekey-authz.test.mjs",
+      "exit": 0,
+      "ms": 588,
+      "counts": {
+        "passed": 61,
+        "total": 61
+      }
+    },
+    {
+      "name": "relay:e2e-kill-switch.test.mjs",
+      "cmd": "node tests/e2e-kill-switch.test.mjs",
+      "exit": 0,
+      "ms": 987,
+      "counts": {
+        "passed": 53,
+        "total": 53
+      }
+    },
+    {
+      "name": "relay:e2e-listener-wrap.test.mjs",
+      "cmd": "node tests/e2e-listener-wrap.test.mjs",
+      "exit": 0,
+      "ms": 1730,
+      "counts": {
+        "passed": 48,
+        "total": 48
+      }
+    },
+    {
+      "name": "relay:e2e-pair-state-ctx.test.mjs",
+      "cmd": "node tests/e2e-pair-state-ctx.test.mjs",
+      "exit": 0,
+      "ms": 1192,
+      "counts": {
+        "passed": 55,
+        "total": 55
+      }
+    },
+    {
+      "name": "relay:e2e-passthrough.test.mjs",
+      "cmd": "node tests/e2e-passthrough.test.mjs",
+      "exit": 0,
+      "ms": 1098,
+      "counts": {
+        "passed": 75,
+        "total": 75
+      }
+    },
+    {
+      "name": "relay:e2e-reset-room-epoch.test.mjs",
+      "cmd": "node tests/e2e-reset-room-epoch.test.mjs",
+      "exit": 0,
+      "ms": 384,
+      "counts": {
+        "passed": 28,
+        "total": 28
+      }
+    },
+    {
+      "name": "relay:e2e-resume-carries-block.test.mjs",
+      "cmd": "node tests/e2e-resume-carries-block.test.mjs",
+      "exit": 0,
+      "ms": 628,
+      "counts": {
+        "passed": 57,
+        "total": 57
+      }
+    },
+    {
+      "name": "relay:e2e-sw-a3-ctx.test.mjs",
+      "cmd": "node tests/e2e-sw-a3-ctx.test.mjs",
+      "exit": 0,
+      "ms": 920,
+      "counts": {
+        "passed": 31,
+        "total": 31
+      }
+    },
+    {
+      "name": "relay:e2e-sw-a4-canonical-peer.test.mjs",
+      "cmd": "node tests/e2e-sw-a4-canonical-peer.test.mjs",
+      "exit": 0,
+      "ms": 1259,
+      "counts": {
+        "passed": 20,
+        "total": 20
+      }
+    },
+    {
+      "name": "relay:e2e-sw-chokepoint.test.mjs",
+      "cmd": "node tests/e2e-sw-chokepoint.test.mjs",
+      "exit": 0,
+      "ms": 1394,
+      "counts": {
+        "passed": 27,
+        "total": 27
+      }
+    },
+    {
+      "name": "relay:e2e-sw-nonce-prefix.test.mjs",
+      "cmd": "node tests/e2e-sw-nonce-prefix.test.mjs",
+      "exit": 0,
+      "ms": 1418,
+      "counts": {
+        "passed": 17,
+        "total": 17
+      }
+    },
+    {
+      "name": "relay:e2e-sw-passthrough.test.mjs",
+      "cmd": "node tests/e2e-sw-passthrough.test.mjs",
+      "exit": 0,
+      "ms": 819,
+      "counts": {
+        "passed": 112,
+        "total": 112
+      }
+    },
+    {
+      "name": "relay:e2e-sw-session.test.mjs",
+      "cmd": "node tests/e2e-sw-session.test.mjs",
+      "exit": 0,
+      "ms": 226,
+      "counts": {
+        "passed": 19,
+        "total": 19
+      }
+    },
+    {
+      "name": "relay:e2e-sw-vendor-drift.test.mjs",
+      "cmd": "node tests/e2e-sw-vendor-drift.test.mjs",
+      "exit": 0,
+      "ms": 530,
+      "counts": {
+        "passed": 3,
+        "total": 3
+      }
+    },
+    {
+      "name": "relay:e2e-web-ctx-a4.test.mjs",
+      "cmd": "node tests/e2e-web-ctx-a4.test.mjs",
+      "exit": 0,
+      "ms": 979,
+      "counts": {
+        "passed": 53,
+        "total": 53
+      }
+    },
+    {
+      "name": "relay:e2e-web-ctx.test.mjs",
+      "cmd": "node tests/e2e-web-ctx.test.mjs",
+      "exit": 0,
+      "ms": 1879,
+      "counts": {
+        "passed": 58,
+        "total": 58
+      }
+    },
+    {
+      "name": "relay:e2e-web-error-state.test.mjs",
+      "cmd": "node tests/e2e-web-error-state.test.mjs",
+      "exit": 0,
+      "ms": 495,
+      "counts": {
+        "passed": 63,
+        "total": 63
+      }
+    },
+    {
+      "name": "relay:e2e-web-idb.test.mjs",
+      "cmd": "node tests/e2e-web-idb.test.mjs",
+      "exit": 0,
+      "ms": 350,
+      "counts": {
+        "passed": 30,
+        "total": 30
+      }
+    },
+    {
+      "name": "relay:e2e-web-policy.test.mjs",
+      "cmd": "node tests/e2e-web-policy.test.mjs",
+      "exit": 0,
+      "ms": 778,
+      "counts": {
+        "passed": 109,
+        "total": 109
+      }
+    },
+    {
+      "name": "relay:e2e-web-session.test.mjs",
+      "cmd": "node tests/e2e-web-session.test.mjs",
+      "exit": 0,
+      "ms": 530,
+      "counts": {
+        "passed": 106,
+        "total": 106
+      }
+    },
+    {
+      "name": "relay:e2e-web-webkey.test.mjs",
+      "cmd": "node tests/e2e-web-webkey.test.mjs",
+      "exit": 0,
+      "ms": 900,
+      "counts": {
+        "passed": 124,
+        "total": 124
+      }
+    },
+    {
+      "name": "unit:sas-vectors",
+      "cmd": "node tests/sas-vectors.test.mjs",
+      "exit": 0,
+      "ms": 364,
+      "counts": {
+        "passed": 65,
+        "total": 65
+      }
+    },
+    {
+      "name": "unit:padding-property",
+      "cmd": "node tests/padding-property.test.mjs",
+      "exit": 0,
+      "ms": 281,
+      "counts": {
+        "passed": 46,
+        "total": 46
+      }
+    },
+    {
+      "name": "unit:kdf-vectors",
+      "cmd": "node tests/kdf-vectors.test.mjs",
+      "exit": 0,
+      "ms": 485,
+      "counts": {
+        "passed": 400,
+        "total": 400
+      }
+    },
+    {
+      "name": "unit:kdf-vectors-schema",
+      "cmd": "node tests/kdf-vectors-schema.test.mjs",
+      "exit": 0,
+      "ms": 213,
+      "counts": {
+        "passed": 11,
+        "total": 11
+      }
+    },
+    {
+      "name": "unit:ext-auth-absence",
+      "cmd": "node tests/ext-auth-absence.test.mjs",
+      "exit": 0,
+      "ms": 227,
+      "counts": {
+        "passed": 21,
+        "total": 21
+      }
+    },
+    {
+      "name": "unit:ext-pin-provenance",
+      "cmd": "node tests/ext-pin-provenance.test.mjs",
+      "exit": 0,
+      "ms": 257,
+      "counts": {
+        "passed": 24,
+        "total": 24
+      }
+    },
+    {
+      "name": "unit:scope-base",
+      "cmd": "node tests/scope-base.test.mjs",
+      "exit": 0,
+      "ms": 280,
+      "counts": {
+        "passed": 33,
+        "total": 33
+      }
+    },
+    {
+      "name": "unit:gate-phase-whitelist",
+      "cmd": "node tests/gate-phase-whitelist.test.mjs",
+      "exit": 0,
+      "ms": 9693,
+      "counts": {
+        "passed": 17,
+        "total": 17
+      }
+    },
+    {
+      "name": "unit:live-peer",
+      "cmd": "node scripts/e2e-live-peer-proof.mjs",
+      "exit": 0,
+      "ms": 1235,
+      "counts": {
+        "passed": 95,
+        "total": 95
+      }
+    },
+    {
+      "name": "unit:idb-migration",
+      "cmd": "node scripts/e2e-idb-migration-proof.mjs",
+      "exit": 0,
+      "ms": 100600,
+      "counts": {
+        "passed": 30,
+        "total": 30
+      }
+    },
+    {
+      "name": "unit:bridge-origin-pin",
+      "cmd": "node scripts/ext-bridge-origin-pin-proof.mjs",
+      "exit": 0,
+      "ms": 1851,
+      "counts": {
+        "passed": 13,
+        "total": 13
+      }
+    },
+    {
+      "name": "harness-dev-server",
+      "cmd": "node server.js PORT=5060",
+      "exit": 0,
+      "ms": 1562,
+      "counts": {
+        "port": 5060,
+        "pid": 24928
+      }
+    },
+    {
+      "name": "clarity-scope",
+      "cmd": "node scripts/check-clarity-scope.mjs",
+      "exit": 1,
+      "ms": 1509,
+      "counts": {
+        "exit": 1,
+        "buildChecked": 1,
+        "runtimeChecked": 1
+      },
+      "log": "C:/Users/D/worktrees/computercaller/e2e-d1/.e2e-gate-logs/D1-clarity-scope.log"
+    },
+    {
+      "name": "harness-env",
+      "cmd": "assert DATABASE_URL + CC_SHOT_EMAIL reach the harness env",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "dbUrlSet": 1,
+        "jwtSet": 1,
+        "ccBaseUrlSet": 1,
+        "shotEmailSet": 1
+      }
+    },
+    {
+      "name": "harness:app-in-call-shots",
+      "cmd": "node scripts/app-in-call-shots.mjs",
+      "exit": 1,
+      "ms": 155190,
+      "counts": {
+        "passed": 1,
+        "total": 1,
+        "attempts": 2
+      },
+      "log": "C:/Users/D/worktrees/computercaller/e2e-d1/.e2e-gate-logs/D1-harness-app-in-call-shots.log"
+    },
+    {
+      "name": "reap:app-in-call-shots",
+      "cmd": "assert no browser/node survived the harness (by PID)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "leaked": 0
+      }
+    },
+    {
+      "name": "harness:ext-in-call-shots",
+      "cmd": "node scripts/ext-in-call-shots.mjs",
+      "exit": 1,
+      "ms": 90439,
+      "counts": {
+        "passed": 1,
+        "total": 1,
+        "attempts": 2
+      },
+      "log": "C:/Users/D/worktrees/computercaller/e2e-d1/.e2e-gate-logs/D1-harness-ext-in-call-shots.log"
+    },
+    {
+      "name": "reap:ext-in-call-shots",
+      "cmd": "assert no browser/node survived the harness (by PID)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "leaked": 0
+      }
+    },
+    {
+      "name": "harness:ext-badge-counter-proof",
+      "cmd": "node scripts/ext-badge-counter-proof.mjs",
+      "exit": 124,
+      "ms": 960032,
+      "counts": {
+        "passed": 49,
+        "total": 49,
+        "attempts": 2
+      },
+      "log": "C:/Users/D/worktrees/computercaller/e2e-d1/.e2e-gate-logs/D1-harness-ext-badge-counter-proof.log"
+    },
+    {
+      "name": "reap:ext-badge-counter-proof",
+      "cmd": "assert no browser/node survived the harness (by PID)",
+      "exit": 1,
+      "ms": 0,
+      "counts": {
+        "leaked": 1
+      }
+    },
+    {
+      "name": "harness:ext-sw-lifetime-proof",
+      "cmd": "node scripts/ext-sw-lifetime-proof.mjs",
+      "exit": 0,
+      "ms": 820168,
+      "counts": {
+        "attempts": 2
+      }
+    },
+    {
+      "name": "reap:ext-sw-lifetime-proof",
+      "cmd": "assert no browser/node survived the harness (by PID)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "leaked": 0
+      }
+    },
+    {
+      "name": "harness:ext-templates-scroll-call-message-proof",
+      "cmd": "node scripts/ext-templates-scroll-call-message-proof.mjs",
+      "exit": 1,
+      "ms": 89135,
+      "counts": {
+        "passed": 0,
+        "total": 0,
+        "attempts": 2
+      },
+      "log": "C:/Users/D/worktrees/computercaller/e2e-d1/.e2e-gate-logs/D1-harness-ext-templates-scroll-call-message-proof.log"
+    },
+    {
+      "name": "reap:ext-templates-scroll-call-message-proof",
+      "cmd": "assert no browser/node survived the harness (by PID)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "leaked": 0
+      }
+    },
+    {
+      "name": "harness:ext-shell-theme-proof",
+      "cmd": "node scripts/ext-shell-theme-proof.mjs",
+      "exit": 0,
+      "ms": 288747,
+      "counts": {
+        "passed": 20,
+        "total": 20,
+        "attempts": 2
+      }
+    },
+    {
+      "name": "reap:ext-shell-theme-proof",
+      "cmd": "assert no browser/node survived the harness (by PID)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "leaked": 0
+      }
+    },
+    {
+      "name": "harness:ext-layering-shots",
+      "cmd": "node scripts/ext-layering-shots.mjs",
+      "exit": 1,
+      "ms": 18061,
+      "counts": {
+        "attempts": 2
+      },
+      "log": "C:/Users/D/worktrees/computercaller/e2e-d1/.e2e-gate-logs/D1-harness-ext-layering-shots.log"
+    },
+    {
+      "name": "reap:ext-layering-shots",
+      "cmd": "assert no browser/node survived the harness (by PID)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "leaked": 0
+      }
+    },
+    {
+      "name": "harness:e2e-ui-proof",
+      "cmd": "node scripts/e2e-ui-proof.mjs",
+      "exit": 1,
+      "ms": 183434,
+      "counts": {
+        "passed": 44,
+        "total": 45,
+        "attempts": 2
+      },
+      "log": "C:/Users/D/worktrees/computercaller/e2e-d1/.e2e-gate-logs/D1-harness-e2e-ui-proof.log"
+    },
+    {
+      "name": "reap:e2e-ui-proof",
+      "cmd": "assert no browser/node survived the harness (by PID)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "leaked": 0
+      }
+    },
+    {
+      "name": "harness-mode",
+      "cmd": "sequential",
+      "exit": 0,
+      "ms": 2635806,
+      "counts": {
+        "parallel": 0,
+        "harnesses": 8
+      }
+    },
+    {
+      "name": "baseline-parity",
+      "cmd": "diff vs C:/Users/D/worktrees/computercaller/e2e-d1/e2e-evidence/BASELINE-harness.json",
+      "exit": 1,
+      "ms": 0,
+      "counts": {
+        "reference": 16,
+        "regressed": 5
+      }
+    }
+  ],
+  "harnessPass": [
+    "relay:pairing-persist",
+    "relay:pair-state",
+    "relay:dock-resume",
+    "relay:reset-room",
+    "relay:listener-heartbeat",
+    "relay:relink-kill-frame-buffer",
+    "relay:call-separation",
+    "relay:www-origin",
+    "relay:repro-resume-sync",
+    "relay:session-superseded",
+    "relay:log-redaction",
+    "relay:devicekey-authz",
+    "relay:e2e-kill-switch.test.mjs",
+    "relay:e2e-listener-wrap.test.mjs",
+    "relay:e2e-pair-state-ctx.test.mjs",
+    "relay:e2e-passthrough.test.mjs",
+    "relay:e2e-reset-room-epoch.test.mjs",
+    "relay:e2e-resume-carries-block.test.mjs",
+    "relay:e2e-sw-a3-ctx.test.mjs",
+    "relay:e2e-sw-a4-canonical-peer.test.mjs",
+    "relay:e2e-sw-chokepoint.test.mjs",
+    "relay:e2e-sw-nonce-prefix.test.mjs",
+    "relay:e2e-sw-passthrough.test.mjs",
+    "relay:e2e-sw-session.test.mjs",
+    "relay:e2e-sw-vendor-drift.test.mjs",
+    "relay:e2e-web-ctx-a4.test.mjs",
+    "relay:e2e-web-ctx.test.mjs",
+    "relay:e2e-web-error-state.test.mjs",
+    "relay:e2e-web-idb.test.mjs",
+    "relay:e2e-web-policy.test.mjs",
+    "relay:e2e-web-session.test.mjs",
+    "relay:e2e-web-webkey.test.mjs",
+    "unit:sas-vectors",
+    "unit:padding-property",
+    "unit:kdf-vectors",
+    "unit:kdf-vectors-schema",
+    "unit:ext-auth-absence",
+    "unit:ext-pin-provenance",
+    "unit:scope-base",
+    "unit:gate-phase-whitelist",
+    "unit:live-peer",
+    "unit:idb-migration",
+    "unit:bridge-origin-pin",
+    "harness:ext-sw-lifetime-proof",
+    "harness:ext-shell-theme-proof"
+  ],
+  "baselineDiff": [
+    "harness:app-in-call-shots: passed at BASE_SHA, not passing now",
+    "harness:ext-in-call-shots: passed at BASE_SHA, not passing now",
+    "harness:ext-badge-counter-proof: passed at BASE_SHA, not passing now",
+    "harness:ext-templates-scroll-call-message-proof: passed at BASE_SHA, not passing now",
+    "harness:ext-layering-shots: passed at BASE_SHA, not passing now"
+  ],
+  "ms": 3440509,
+  "failedStep": "git-identity-clean-base-ancestry",
+  "produced": [
+    "e2e-evidence/gate-D1-9b02de6.json"
+  ],
+  "result": "FAIL"
+}

@@ -1602,6 +1602,22 @@ produced.push(outFile.replace(/\\/g, '/').replace(`${ROOT.replace(/\\/g, '/')}/`
 const evidence = {
   phase: PHASE,
   label: LABEL ? redact(LABEL) : null,
+  /**
+   * Ken R-AO. Which way the harnesses were run, recorded IN the evidence rather
+   * than inferred from a runtime number.
+   *
+   * A sequential run is slower by construction — the R-B 25-minute ceiling is
+   * waived for it — and without this field the next reader sees a long runtime
+   * and reads it as a regression. `--parallel-harnesses` is opt-in precisely
+   * because R-C records these harnesses as flaky under load, so the two modes
+   * are not interchangeable evidence and the JSON should say which one it is.
+   */
+  harnessMode: PARALLEL_HARNESSES ? 'parallel' : 'sequential',
+  /**
+   * R-AO breach note. Free-form, set via E2E_GATE_NOTE, and carried into the
+   * evidence so a contended run is never silently compared against a clean one.
+   */
+  note: process.env.E2E_GATE_NOTE ? redact(process.env.E2E_GATE_NOTE) : null,
   sha: SHA,
   /** Programme identity. Frozen; step 1 asserts it is an ancestor of HEAD. */
   baseSha: BASE_SHA,

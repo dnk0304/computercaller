@@ -304,12 +304,33 @@ blocker. Resolved:
 | 7 | v55/v57 | new web OFF | plaintext; **Unencrypted** + "Update your phone app" |
 | 8 | **v58 ON** | **new web OFF** | **effective ON.** SAS shown and blocking on BOTH. Encrypted (verified). The mode-OFF computer displays the SAS even though its own setting is off — a peer asking to verify is not an error state. |
 | 9 | **v58 OFF** | **new web ON** | **effective ON.** Symmetric with row 8. |
-| 10 | v58 ON | ext ON, web OFF (same computer) | **effective ON.** The computer advertises OR(web, ext) = ON. Both surfaces show the SAS. |
+| 10 | ~~v58 ON~~ | ~~ext ON, web OFF (same computer)~~ | **STRUCK (Security A5, F4 ACCEPTED).** The premise is false: there is no such state. See the note below. |
 | 11 | v58 ON | new web ON, SW key swapped | **digits diverge** — the SAS covers the whole key set (13.3), so the swap is visible to the user, not only to the phone's DeviceKey pin. |
 | 12 | v58 ON | new web ON, relay strips `e2e` | abort, and the digits would differ anyway (modeByte) |
 
-Rows 8–10 all resolve the same way and it is the only safe direction: **a device
+Rows 8–9 resolve the same way and it is the only safe direction: **a device
 that asked for verification never silently gets less than it asked for.**
+
+**Row 10 is STRUCK — Security A5, F4 ACCEPTED.** It described "ext ON, web OFF
+on the same computer" and had the computer advertise `OR(web, ext)`. That state
+cannot arise: **the computer side has ONE encrypted-mode setting — the page's —
+and it governs BOTH recipients.** The extension service worker does not hold a
+second, independently settable mode to be OR'd with; it is a recipient of the
+pairing the page's setting establishes. Row 10 therefore collapses into rows 8
+and 9, which already cover every real combination, and `OR(web, ext)` MUST NOT
+appear in any implementation.
+
+**M-A5-4 (MUST).** The mode is **never server-authoritative**. No relay or
+server field establishes, corrects or overrides either side's mode; each side
+knows its own setting locally and learns the peer's only from the peer's own
+advertised byte (§13.2 F5 note below).
+
+**F5 — what the `mode` byte on the wire actually is (Security A5).** The accept
+block's `mode` byte on the wire is the SENDER'S LOCAL SETTING at that moment (an
+advertisement); the effective session mode = OR(ownLocal, peerByte), computed
+locally, latched for the pair, never transmitted; §13.3's `modeByte` input to the
+SAS = the effective mode. Vector M pins the values (GATE1.md, Addendum A5);
+freezing it into `tests/kdf-vectors.json` is P2.2's job.
 
 ### 13.3 SAS transcript (B7 as corrected by B9) — FROZEN
 
@@ -341,6 +362,18 @@ fields on frames P1 already edits.
 Pinned by `tests/sas-vectors.json` (2-, 3- and 4-key vectors), asserted in the
 web/node lane, in a service-worker context, and — at P4 — by an instrumented
 Kotlin test against the same file.
+
+**B9 wording, amended (Security A5, F3 ACCEPT).** The SAS is **computed and
+displayed on the PAGE**, over the canonical key set that **includes the service
+worker's static key**. The SW is a **recipient, not a verifier**: it neither
+computes nor displays a code, and there is no second code anywhere.
+
+**M-A5-3 (MUST).** The SW's static key is read **live over the A4.1 bridge** at
+the moment the SAS is computed, and is **never page-cached**. If that read
+returns `unknown`, the page MUST NOT ship a 2-key SAS that claims to cover the
+SW — a code presented as covering a key it did not include is a false assurance
+about exactly the leg that decrypts notification bodies with the panel closed.
+Fail closed and say the SW key is unavailable instead.
 
 ### 13.4 Padding — FROZEN (m-E, M7 both gaps closed)
 
@@ -401,6 +434,13 @@ this spec as computer-side unless it says otherwise. This holds unless P6 (g)
 (cross-implementation) shows otherwise; if it does, this note is what must be
 corrected, and any phone-side resume MUST that was written assuming a
 `PAIR_STATE` handler is unenforceable as written until then.
+
+**(g) cross-implementation — what the term means (Security A5).** The web page
+and the extension service worker are **both COMPUTER-side**. "Cross-
+implementation" therefore means **phone ↔ computer**, never web ↔ SW: the two
+computer-side recipients share one pairing, one context and one mode, so
+comparing them against each other tests one implementation against itself. The
+phone leg is run by **P6.1**.
 
 ### 13.7 Sealed vs plaintext frame list — FROZEN
 
@@ -1088,3 +1128,26 @@ sealing on the **single-recipient** path continues under A3 unchanged — A4-R2'
 invariance proof (J.3 ≡ I.1) is what makes that safe rather than hopeful. A1 /
 A2 / A3 conditions carry over unchanged except A3-M3, superseded in full above.
 §13.3 is untouched.
+
+### 13.11 N-1 — encrypted-pairing kill switch (`E2E_PAIRING_ENABLED`)
+
+**N-1.1 — ACKED (Security A5).**
+
+> `E2E_PAIRING_ENABLED === '1'` enables NEW encrypted pairings; anything else
+> refuses them with the plan's copy; existing pairs continue; plaintext
+> untouched.
+
+The switch gates the **handshake only**, never the data plane, so flipping it
+mid-incident drops nobody who is already connected, and it never strips or
+modifies an `e2e` block — a relay that quietly removed key material would be
+indistinguishable on the wire from an attacker doing the same, which would turn
+the downgrade attack the SAS exists to catch into a first-party feature. A
+`mode=1` request is therefore REFUSED OUTRIGHT rather than silently downgraded.
+
+Default OFF: D1 ships the code dark and the variable is flipped afterwards in
+the environment with no redeploy. An unset or unrecognised value must leave the
+handshake dark — the failure mode of a misconfiguration must never be "the
+crypto feature turned itself on".
+
+**Code owner: P1.3**, landing separately. D1-PREP recorded the measured truth
+for both values and holds; see `e2e/CHECKPOINTS.md`.
