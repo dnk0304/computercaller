@@ -117,6 +117,61 @@ const KNOWN_PHASES = [
   'FT1', 'FT2', 'FT3',
   'MERGE',
 ];
+/**
+ * (b2, Ken's addendum after the P3.1 finding). The whitelist above stops an
+ * UNRECOGNISED phase from running a hollow gate. It does NOT stop a recognised
+ * one from doing the same thing by being missing from a phase-gated step's own
+ * membership list — which is the P3.1 finding, and which D1 itself hit: D1 was
+ * absent from both harness lists, so `--phase D1`, the production-deploy
+ * evidence run, silently skipped the Encrypted-mode UI proof.
+ *
+ * Two hand-maintained lists that must agree is a rule nobody can see. So the
+ * phase-gated harnesses are declared HERE, beside KNOWN_PHASES, and validated
+ * against it at startup:
+ *
+ *   - every phase named below must be a known phase (catches a typo that would
+ *     otherwise read as "this phase just doesn't run that step");
+ *   - every known phase must appear in `runs` or `skips` for each harness, so
+ *     adding a phase to KNOWN_PHASES FORCES a deliberate yes/no per step
+ *     instead of defaulting to a silent no.
+ *
+ * Absent is not passing; unrecognised is not passing; and now "nobody thought
+ * about it" is not passing either.
+ */
+const PHASE_HARNESSES = {
+  'ext-sw-lifetime-proof': {
+    runs:  ['P3', 'P3.1', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'D1'],
+    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'FT1', 'FT2', 'FT3', 'MERGE'],
+  },
+  'e2e-ui-proof': {
+    // The Encrypted-mode UI surfaces exist from P5a onwards; running it earlier
+    // would report a not-yet-built feature as a failure.
+    runs:  ['P5A', 'P5B', 'P6', 'D1'],
+    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P3', 'P3.1',
+            'P4', 'P4.1', 'FT1', 'FT2', 'FT3', 'MERGE'],
+  },
+};
+for (const [harness, { runs, skips }] of Object.entries(PHASE_HARNESSES)) {
+  const declared = [...runs, ...skips];
+  const unknown = declared.filter((p) => !KNOWN_PHASES.includes(p));
+  const undecided = KNOWN_PHASES.filter((p) => !declared.includes(p));
+  const both = runs.filter((p) => skips.includes(p));
+  if (unknown.length || undecided.length || both.length) {
+    console.error(
+      `\ne2e-gate: REFUSING TO RUN — PHASE_HARNESSES["${harness}"] does not cover KNOWN_PHASES.\n`
+      + (unknown.length ? `    not a known phase: ${unknown.join(', ')}\n` : '')
+      + (undecided.length ? `    known phase with no decision: ${undecided.join(', ')}\n` : '')
+      + (both.length ? `    listed in BOTH runs and skips: ${both.join(', ')}\n` : '')
+      + '\n    Every known phase must be explicitly listed as running or skipping this\n'
+      + '    harness. A phase that is merely missing would skip it silently, which is\n'
+      + '    the defect this table exists to make impossible.\n',
+    );
+    process.exit(2);
+  }
+}
+/** True when PHASE should run this phase-gated harness. */
+const phaseRuns = (harness) => PHASE_HARNESSES[harness].runs.includes(PHASE);
+
 if (!KNOWN_PHASES.includes(PHASE)) {
   console.error(
     `\ne2e-gate: REFUSING TO RUN — unrecognised --phase "${PHASE_RAW}".\n`
@@ -1301,11 +1356,11 @@ if (WEB) {
    * UI and the SW, so its gate must be a SUPERSET of the phases that built
    * them, never a subset.
    */
-  if (['P3', 'P4', 'P5A', 'P5B', 'P6', 'P7', 'P8', 'D1'].includes(PHASE)) HARNESS.splice(3, 0, 'ext-sw-lifetime-proof');
+  if (phaseRuns('ext-sw-lifetime-proof')) HARNESS.splice(3, 0, 'ext-sw-lifetime-proof');
   // P5a slice 2 — the Encrypted-mode UI proof. Added from P5A onwards, where
   // the surfaces it asserts first exist; running it at P0-P4 would report a
   // missing feature as a failure.
-  if (['P5A', 'P5B', 'P6', 'P7', 'P8', 'D1'].includes(PHASE)) HARNESS.push('e2e-ui-proof');
+  if (phaseRuns('e2e-ui-proof')) HARNESS.push('e2e-ui-proof');
   if (!steps.some((s2) => s2.name === 'build' && s2.exit !== 0)) {
     const started = startDevServer();
     if (!started.ok) {

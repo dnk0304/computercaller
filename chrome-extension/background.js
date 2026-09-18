@@ -52,6 +52,11 @@ import {
   inboundDisposition,
   INBOUND_UNSEAL,
   INBOUND_DROP_PLAINTEXT,
+  INBOUND_ROUTE_SEALED,
+  INBOUND_DELIVER_RELAY_ABORT,
+  INBOUND_DROP_RELAY_MARK,
+  ftHintId,
+  PENDING_OFFER_TTL_MS,
   CtxRefused,
 } from './e2e/sw-session.js';
 
@@ -827,6 +832,192 @@ function broadcastUnread(unread) {
   }
 }
 
+// ── P3.1 / FT-A1 §2 — sealed FILE_* passthrough ─────────────────────────────
+//
+// Read this whole block before adding anything to it.
+//
+// The page — /app in the side panel or the pop-out — holds its OWN socket and
+// runs the entire transfer there. This worker's socket is the notification side
+// channel and it exists here for exactly one reason: a sealed FILE_OFFER can
+// arrive while no page is open, and something has to keep it alive long enough
+// for the user to open one.
+//
+// What this worker does NOT do, and must never be extended to do:
+//   · it does not UNSEAL a FILE_* frame (it forwards `{e,kid,s,c}` verbatim);
+//   · it does not SEAL one (`sealFrame()` refuses every type outside §13.7's
+//     frozen list, and that refusal is not widened);
+//   · it does not hold file bytes — a FILE_CHUNK is forwarded as the opaque
+//     envelope it arrived as and is never parsed, buffered or stored;
+//   · it does not originate FILE_ACCEPT / REJECT / ACK / RESUME. The page owns
+//     every reply because the page owns the transfer.
+// The last one is not a preference: `assertSwSendsNothing()` pins it, and the
+// relay drops anything a `?role=listener` socket sends anyway (server.js, the
+// `if (ws.listener) return` short-circuit above the whole data plane).
+const FILE_PASSTHROUGH_MSG = 'file-passthrough';
+const FT_NOTIF_PREFIX = 'cc-ft';
+
+/**
+ * The single pending sealed offer. One at a time — one transfer per room, by
+ * rule — and a second offer replaces the first, failing it with `timeout`.
+ *
+ * MODULE MEMORY, NOT `storage.session`, AND THAT IS THE DELIBERATE CHOICE.
+ * MUST B-4 says the marker holds only `{ft.id, receivedAt}` plus the opaque
+ * envelope and must not leak across an MV3 eviction. Module memory gives that
+ * for free: an eviction discards the marker and the envelope together, which is
+ * the SAFE direction — no replay happens, and the sender's own 30 s stall timer
+ * fails the transfer correctly and independently. Writing it to storage would
+ * buy a rescue we do not need and put an untrusted opaque blob in a durable
+ * store, and it would add an `cc_e2e_*` key that the P3 storage-surface
+ * assertion would then have to be widened for.
+ *
+ * @type {{id: string, receivedAt: number, envelope: object, timer: any} | null}
+ */
+let pendingSealedOffer = null;
+
+/** Push one file-transfer event down every open presence port, verbatim. */
+function forwardFileFrameToPage(frameType, payload) {
+  let delivered = 0;
+  for (const port of presencePorts) {
+    // `catch {}` rather than this file's older `catch (_) {}` so the addition
+    // raises no new no-unused-vars warning against the lint floor.
+    try { port.postMessage({ type: FILE_PASSTHROUGH_MSG, frameType, payload }); delivered += 1; }
+    catch { /* port closed between the presence check and here */ }
+  }
+  return delivered;
+}
+
+/** Forget the marker and stop its timer. Never emits anything by itself. */
+function clearPendingOffer() {
+  if (!pendingSealedOffer) return null;
+  const was = pendingSealedOffer;
+  try { clearTimeout(was.timer); } catch { /* not a timer host */ }
+  pendingSealedOffer = null;
+  return was;
+}
+
+/**
+ * MUST B-3, as far as it can honestly be taken — and a flag where it cannot.
+ *
+ * B-3 says the worker emits `FILE_FAILED {id, reason:'timeout'}` **to the
+ * phone**. It cannot, and the gap is structural rather than a missing line:
+ *
+ *   1. NO CHANNEL. `server.js` short-circuits `if (ws.listener) return` at the
+ *      top of the browser message handler, above pairing and above the data
+ *      plane, so every frame this socket sends is dropped by the relay before
+ *      it can be routed anywhere. The listener socket is receive-only by
+ *      construction, which is also why the extension is allowed to hold one.
+ *   2. NO SEND PATH. `assertSwSendsNothing()` (tests/e2e-sw-chokepoint claim 3)
+ *      pins that this worker calls `.send(` on no socket at all.
+ *   3. IT WOULD BE DROPPED ANYWAY. The frame would be plaintext, and a
+ *      plaintext FILE_FAILED under mode ON is refused by the phone's own B-1
+ *      guard unless it carries `relay:true` — which only the relay may mint
+ *      (FT-A1.1 M6) and which this worker must never forge. Sealing it instead
+ *      is forbidden by FT-A1 §2.1/§2.2.
+ *
+ * So the refusal is emitted to the PAGE, which is the party that owns transfer
+ * state and holds a socket that can actually speak. A page that attaches after
+ * the marker died learns the offer is dead instead of being handed a stale
+ * envelope to prompt on. Flagged to Ken + Security as an FT-A1 §2.3 amendment;
+ * §2.3 already notes the sender's 30 s stall fires first and independently, so
+ * nothing is left unhandled on the wire — only the reason arrives later.
+ */
+function expirePendingOffer() {
+  const was = clearPendingOffer();
+  if (!was) return null;
+  // Authored here, so it is authored in full and with no `relay` mark: this
+  // worker is not the relay. `assertSwMintsNoRelayMark()` pins that.
+  const payload = { id: was.id, reason: 'timeout' };
+  forwardFileFrameToPage('FILE_FAILED', payload);
+  try { chrome.notifications.clear(`${FT_NOTIF_PREFIX}:${was.id}`); } catch { /* none raised */ }
+  trace('ft-offer-expired', { id: was.id });
+  return payload;
+}
+
+/** Expire lazily too: a throttled worker's timers are not a correctness basis. */
+function pendingOfferIfLive(now = Date.now()) {
+  if (!pendingSealedOffer) return null;
+  if (now - pendingSealedOffer.receivedAt >= PENDING_OFFER_TTL_MS) { expirePendingOffer(); return null; }
+  return pendingSealedOffer;
+}
+
+/**
+ * A sealed FILE_* frame, routed. Never opened.
+ *
+ * With a page attached this is a pure forward. With none, only FILE_OFFER is
+ * worth holding: the other seven are moves inside a transfer no page is running
+ * and a replayed FILE_CHUNK would be file bytes held in a worker.
+ */
+function routeSealedFileFrame(frameType, envelope) {
+  if (presenceCount > 0 && forwardFileFrameToPage(frameType, envelope) > 0) {
+    // A page is here and took it. Any offer we were holding is now moot.
+    if (frameType === 'FILE_OFFER') clearPendingOffer();
+    return 'forwarded';
+  }
+  if (frameType !== 'FILE_OFFER') return 'no-page';
+
+  // MUST A-1 / MUST B-2: the id comes from the plaintext hint and nowhere else
+  // — the real one is sealed and this worker does not open it. No hint means no
+  // name for the refusal we would later have to author, so there is nothing to
+  // hold: drop and count, exactly as the relay does for `bad_hint`.
+  const id = ftHintId(envelope);
+  if (!id) {
+    noteDrop('ft-hint-missing').catch(() => {});
+    trace('ft-offer-no-hint', {});
+    return 'dropped';
+  }
+  // One at a time. The one being replaced fails with `timeout` rather than
+  // vanishing, so the page (and the trace) sees a terminal state for it.
+  if (pendingSealedOffer) expirePendingOffer();
+  const receivedAt = Date.now();
+  pendingSealedOffer = {
+    id,
+    receivedAt,
+    envelope,     // opaque. Never parsed, never logged, never written to disk.
+    timer: setTimeout(() => { expirePendingOffer(); }, PENDING_OFFER_TTL_MS),
+  };
+  // Leaks nothing the wire did not already carry: the frame TYPE travels in the
+  // clear on every frame (FT-A1 §0/Q1), so "a file is waiting" is a restatement
+  // of what the relay already saw. The name is sealed and is not named here.
+  try {
+    chrome.notifications.create(`${FT_NOTIF_PREFIX}:${id}`, {
+      type: 'basic',
+      iconUrl: 'icon128.png',
+      title: 'A file is waiting',
+      message: 'Open ComputerCaller to receive it.',
+      contextMessage: 'ComputerCaller',
+      priority: 2,
+      buttons: [{ title: 'Open ComputerCaller' }],
+    });
+  } catch { /* notifications unavailable — the marker still stands */ }
+  trace('ft-offer-pending', { id });
+  return 'pending';
+}
+
+/**
+ * A page attached. Replay the held offer once, if it is still inside its TTL.
+ *
+ * VERBATIM, and still sealed: the page unseals it with its own session and
+ * applies MUST A-5's compare. Consumed on replay — a marker that survived being
+ * delivered would prompt again on the next panel open.
+ */
+function replayPendingOfferTo(port) {
+  const live = pendingOfferIfLive();
+  if (!live) return false;
+  try { port.postMessage({ type: FILE_PASSTHROUGH_MSG, frameType: 'FILE_OFFER', payload: live.envelope }); }
+  catch { return false; }
+  clearPendingOffer();
+  try { chrome.notifications.clear(`${FT_NOTIF_PREFIX}:${live.id}`); } catch { /* none */ }
+  trace('ft-offer-replayed', { id: live.id });
+  return true;
+}
+
+/** Test/diagnostics accessor. Returns no envelope — it is not ours to publish. */
+function pendingOfferForTest() {
+  return pendingSealedOffer
+    ? { id: pendingSealedOffer.id, receivedAt: pendingSealedOffer.receivedAt }
+    : null;
+}
+
 // ── Deep links carried by a notification ────────────────────────────────────
 // Kept in storage.session, not a Map: the SW is routinely torn down between
 // raising a notification and the user clicking it, and a click that lands on a
@@ -1575,6 +1766,36 @@ function handleFrame(msg) {
     trace('e2e-drop-plaintext', { type });
     return;
   }
+  // P3.1 / FT-A1.1 M7, receiver half. A `relay` mark on a shape the relay
+  // cannot have produced — a sealed frame, a non-FILE_FAILED type, a peer-owned
+  // reason, or `relay` set to anything but true. Counted separately from the
+  // plain downgrade because the two say different things: one is a stripper,
+  // this one is a forged or forwarded provenance mark, and a spike in either
+  // should be legible on its own.
+  if (disposition === INBOUND_DROP_RELAY_MARK) {
+    noteDrop('bad-relay-mark').catch(() => {});
+    trace('ft-drop-relay-mark', { type });
+    return;
+  }
+  // P3.1 / FT-A1 MUST B-1. Routed, NOT opened — above notePhonePresence and
+  // above deliverFrame, because nothing in this worker may see a file frame's
+  // contents and the surest way to guarantee that is for the frame never to
+  // reach the code that reads bodies.
+  if (disposition === INBOUND_ROUTE_SEALED) {
+    notePhonePresence(true);          // a phone frame is still a phone frame
+    routeSealedFileFrame(type, data);
+    return;
+  }
+  // FT-A1.1 M9. Plaintext, relay-MINTED, relay-owned reason: forwarded to the
+  // page, which applies the liveness clause this worker deliberately does not
+  // track. Abort-only semantics are the page's; nothing here may act on it.
+  if (disposition === INBOUND_DELIVER_RELAY_ABORT) {
+    notePhonePresence(true);
+    forwardFileFrameToPage(type, data);
+    // The transfer named in the abort is over, so a marker for it is stale.
+    if (pendingSealedOffer && pendingSealedOffer.id === data.id) clearPendingOffer();
+    return;
+  }
 
   // Catch-all, DEMOTED (FORGE-O). A phone→browser data frame proves a phone is
   // on the other end, so it still repairs `phonePresent` if a presence frame was
@@ -1833,6 +2054,12 @@ chrome.runtime.onConnect.addListener((port) => {
   readUnread().then((unread) => {
     try { port.postMessage({ type: 'unread', unread }); } catch (_) {}
   });
+  // P3.1 / MUST B-2: the rescue this whole marker exists for. A sealed offer
+  // held while no page was open is replayed VERBATIM to the first page that
+  // attaches inside the 60 s TTL; the page unseals it and prompts. Outside the
+  // TTL there is nothing to replay — `pendingOfferIfLive` has already expired
+  // it and told the page so.
+  replayPendingOfferTo(port);
   port.onMessage.addListener((msg) => {
     // The surface reports which tab the user is looking at. This is the ONLY
     // thing that zeroes a counter — the SW never guesses that a message was
@@ -2118,6 +2345,12 @@ for (const [name, get, set] of [
   ['paired', () => paired, (v) => { paired = v; }],
   ['held', () => held, (v) => { held = v; }],
   ['presenceCount', () => presenceCount, (v) => { presenceCount = v; }],
+  // P3.1. The downgrade guard and the FILE_* passthrough are both scoped to
+  // `open`/`aborted`, so a harness that cannot set the mode can only ever test
+  // the branch where the rule does not apply — which is the branch that passes
+  // by default. Published for the same reason as the rest of this list, and it
+  // is not key material: `e2eSession`, SK and the wrap stay absent.
+  ['e2eMode', () => e2eMode, (v) => { e2eMode = v; }],
   ['lastIndicator', () => lastIndicator, (v) => { lastIndicator = v; }],
   ['badgeChipColor', () => badgeChipColor, (v) => { badgeChipColor = v; }],
 ]) {
@@ -2160,6 +2393,16 @@ Object.assign(self, {
   setCountsOnly,
   COUNTS_ONLY_BODY,
   COUNTS_ONLY_TITLE,
+  // P3.1: the passthrough surface, so a harness can drive routing and the
+  // marker's lifetime without a relay. No envelope is published — see
+  // pendingOfferForTest.
+  routeSealedFileFrame,
+  forwardFileFrameToPage,
+  replayPendingOfferTo,
+  expirePendingOffer,
+  pendingOfferIfLive,
+  pendingOfferForTest,
+  FILE_PASSTHROUGH_MSG,
   e2eStateForTest: () => ({ mode: e2eMode, why: e2eWhy, kid: e2eKid, deviceId: swDeviceId }),
 });
 

@@ -33,6 +33,7 @@
  * quietly hollow again.
  */
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -119,6 +120,41 @@ check('the refusal lists the known phases so the caller can self-correct',
   /known phases:/.test(bogus.out) && /MERGE/.test(bogus.out));
 check('the refusal explains WHY silence was the danger (the 62/69 incident)',
   /62 of\s*\n?\s*.*69 steps|62 of 69/.test(bogus.out.replace(/\s+/g, ' ')));
+
+// ── COVERAGE: a RECOGNISED phase must not silently skip a phase-gated step ──
+/**
+ * Ken's addendum, after the P3.1 finding. The whitelist only catches phases
+ * nobody recognises. The more dangerous case is a phase that IS recognised but
+ * is missing from an individual step's membership list — it runs a gate that
+ * is quietly narrower than the caller asked for, and reports PASS.
+ *
+ * D1 itself was in that state: absent from both harness lists, so the
+ * production-deploy evidence run skipped the Encrypted-mode UI proof.
+ *
+ * tools/e2e-gate.mjs now declares PHASE_HARNESSES beside KNOWN_PHASES and
+ * refuses to start unless every known phase is explicitly listed as running or
+ * skipping each phase-gated harness. Asserted here by READING that source —
+ * the run itself cannot show a step that was never scheduled.
+ */
+{
+  const src = readFileSync(GATE, 'utf8');
+  check('the gate declares a PHASE_HARNESSES coverage table', /const PHASE_HARNESSES = \{/.test(src));
+  check('it refuses when a known phase has no decision for a harness',
+    /known phase with no decision/.test(src) && /PHASE_HARNESSES\[/.test(src));
+  check('the harness lists are DERIVED from that table, not hand-maintained',
+    /phaseRuns\('ext-sw-lifetime-proof'\)/.test(src) && /phaseRuns\('e2e-ui-proof'\)/.test(src));
+  check('no phase-gated harness is still gated on a hardcoded phase array',
+    !/\['P5A', 'P5B', 'P6', 'P7', 'P8'(, 'D1')?\]\.includes\(PHASE\)\) HARNESS/.test(src));
+
+  // The two phases whose omission actually cost something.
+  const table = src.slice(src.indexOf('const PHASE_HARNESSES'), src.indexOf('const phaseRuns'));
+  const swRuns = /'ext-sw-lifetime-proof':\s*\{\s*runs:\s*\[([^\]]*)\]/.exec(table)?.[1] || '';
+  const uiRuns = /'e2e-ui-proof':\s*\{\s*(?:\/\/[^\n]*\n\s*)*runs:\s*\[([^\]]*)\]/.exec(table)?.[1] || '';
+  check("D1 runs e2e-ui-proof (it is the Encrypted-mode proof D1 exists to evidence)",
+    /'D1'/.test(uiRuns), uiRuns.trim());
+  check('D1 runs ext-sw-lifetime-proof', /'D1'/.test(swRuns), swRuns.trim());
+  check('P3.1 runs ext-sw-lifetime-proof (the P3.1 finding)', /'P3\.1'/.test(swRuns), swRuns.trim());
+}
 
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
