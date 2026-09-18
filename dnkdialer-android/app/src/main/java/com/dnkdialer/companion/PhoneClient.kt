@@ -153,4 +153,42 @@ class PhoneClient(
             send(msg)
         }
     }
+
+    /**
+     * FT-2 (a) — bytes this socket has accepted but not yet written to the
+     * network. The sender-side watermark (spec §1) defers the next file chunk
+     * above [FileTransfer.OUTBOUND_WATERMARK_BYTES].
+     *
+     * The FT-2 brief specifies OkHttp's `queueSize()`; this module is on
+     * Java-WebSocket 1.5.4, whose equivalent is `WebSocketImpl.outQueue` — a
+     * public final BlockingQueue of the frames still to go out. Summing its
+     * `remaining()` is the same number by a different name.
+     *
+     * `hasBufferedData()` is the only method on the WebSocket *interface* and
+     * it is deliberately NOT what this uses: it is true whenever anything at
+     * all is queued, which during a healthy transfer is almost always, so a
+     * watermark built on it throttles a fast link down to one chunk per poll.
+     * We need a byte count to tell "flowing" from "backing up" apart.
+     *
+     * Returns 0 when the connection is not an impl we can read — a watermark
+     * that cannot measure must not block the transfer, because the ACK window
+     * still bounds the peer and an unmeasurable queue is not evidence of a
+     * full one.
+     */
+    fun queuedBytes(): Long {
+        val impl = try {
+            connection as? org.java_websocket.WebSocketImpl
+        } catch (e: Exception) {
+            null
+        } ?: return 0L
+        var total = 0L
+        try {
+            // Weakly-consistent iteration: a frame drained mid-count just
+            // makes the estimate slightly high, which errs toward deferring.
+            for (buf in impl.outQueue) total += buf.remaining().toLong()
+        } catch (e: Exception) {
+            return 0L
+        }
+        return total
+    }
 }

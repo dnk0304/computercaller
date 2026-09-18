@@ -81,6 +81,27 @@ class E2eFrameGate(
             "NOTIFICATION_REPLY", "NOTIFICATION_DISMISS",
             "NOTIFICATION_REPLY_SENT", "NOTIFICATION_REPLY_FAILED",
             "NOTIFICATION_REMOVED",
+
+            // FT-2 — file transfer. FILE_CHUNK is content, so it seals like
+            // MESSAGES_CHUNK. It is also `*_CHUNK`, so §13.4's suffix rule
+            // makes it padding-EXEMPT with no amendment: a fixed-count bulk
+            // transfer already discloses its size through `n` in every chunk,
+            // so padding costs bandwidth and hides nothing.
+            //
+            // FILE_OFFER is deliberately ABSENT. Spec §5 wants it sealed, but
+            // it also needs its `size` readable by the relay's quota/tier gate
+            // under mode ON, which means a partial seal — and this module has
+            // no wire shape for one (see the CALL_STATUS note above, same
+            // problem, same ruling: not invented here). Until that ruling
+            // lands, FILE_OFFER goes plaintext, which leaks the filename to
+            // the relay. Flagged to Ken as an FT-2 open decision; it is a
+            // metadata leak, not a content leak, and the chunks are sealed.
+            //
+            // The control frames (ACCEPT/REJECT/ACK/RESUME/DONE/FAILED) carry
+            // only an opaque id and an enum and stay plaintext BY DESIGN —
+            // §2 rule 1 has the relay enforce accept-before-chunks, which it
+            // cannot do on frames it cannot read.
+            FileTransfer.CHUNK,
         )
 
         /**
