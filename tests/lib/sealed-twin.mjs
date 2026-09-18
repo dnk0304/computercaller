@@ -200,6 +200,44 @@ export function assertNoPlaintext(haystack, secrets, { minLen = 6 } = {}) {
 }
 
 /**
+ * Fields the relay itself produces on essentially any frame.
+ *
+ * `state` is in this list and stays in it even though it is a BODY field on the
+ * CALL_* frames (ringing/active/dialing). That is deliberate and is not a
+ * mistake to tidy away: keeping it makes the leak OBSERVABLE, so a twin can
+ * assert the difference in both directions — the clear arm exposes the call's
+ * state to the relay and the sealed arm does not. Dropping it would define the
+ * question away and silently turn a real information-exposure assertion into a
+ * tautology.
+ */
+const GENERIC_RELAY_OWNED_FIELDS = ['pairingId', 'reason', 'code', 'deviceName', 'state', 'ua', 'since', 'count'];
+
+/**
+ * Per-frame-type relay-owned fields, ADDED to the generic list above.
+ *
+ * WHY THIS TABLE EXISTS — a defect found by the P6 (a) twins, worth recording.
+ * `transcript()` used to keep one fixed global list and silently drop every
+ * other field. PAIR_STATE's entire payload is three relay-COMPUTED truth fields
+ * — `phonePresent`, `paired`, `held` — and none of them were on that list. So a
+ * transcript comparison over a PAIR_STATE socket compared `{type:'PAIR_STATE'}`
+ * against `{type:'PAIR_STATE'}` and **could not fail**: a planted bug that set
+ * `held = true` whenever an e2e block was present stayed green through it.
+ *
+ * That is the worst failure a test helper can have — not a wrong answer, but an
+ * assertion with no way to go red — and it is exactly the shape that makes a
+ * whole suite worthless while looking healthy. A fixed allowlist over a
+ * heterogeneous frame set will always have this hole somewhere; the fix is for
+ * the helper to know what each frame type's relay-owned fields actually are.
+ */
+const RELAY_OWNED_FIELDS_BY_TYPE = {
+  // derivePairState's three computed truths — the whole point of the frame.
+  PAIR_STATE: ['phonePresent', 'paired', 'held'],
+  PAIRING_ACTIVE: ['pairEpoch'],
+  PAIRING_REQUEST: ['pairEpoch'],
+  ROOM_RESET: ['pairEpoch'],
+};
+
+/**
  * Reduce a socket's `sent` array to the TRANSCRIPT: what the relay decided,
  * with the payload bodies removed.
  *
@@ -220,8 +258,8 @@ export function transcript(sent) {
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
       const sealed = payload.e === ENVELOPE_VERSION && typeof payload.c === 'string';
       const keep = {};
-      // Relay-owned fields survive into the transcript; client body does not.
-      for (const k of ['pairingId', 'reason', 'code', 'deviceName', 'state', 'ua', 'since', 'count']) {
+      const fields = [...GENERIC_RELAY_OWNED_FIELDS, ...(RELAY_OWNED_FIELDS_BY_TYPE[type] || [])];
+      for (const k of fields) {
         if (payload[k] !== undefined) keep[k] = payload[k];
       }
       return { type, sealed, hasE2eBlock: payload.e2e !== undefined, ...keep };
