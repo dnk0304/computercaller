@@ -100,18 +100,11 @@ function refuse(msg) {
 
 // ── location: a fixed e2e worktree, or the main checkout (read-only) ────────
 const NORM = ROOT.replace(/\\/g, '/');
-// FT-1 (2026-09-18): the file-transfer programme's lanes live in
-// worktrees/computercaller/ft-<n>, so an e2e-p<N>-only pattern refused to run
-// the gate for ANY of them — exit 2 before a single step, which reads as a
-// tooling outage rather than "your lane is not on the list". The rule this
-// guard actually enforces is "a dedicated worktree under
-// worktrees/computercaller, never somebody's live working tree", and ft-<n>
-// satisfies it exactly as e2e-p<N> does.
-const IS_WORKTREE = /\/worktrees\/computercaller\/(e2e-p|ft-)[0-9a-z.]+$/i.test(NORM);
+const IS_WORKTREE = /\/worktrees\/computercaller\/e2e-p[0-9a-z]+$/i.test(NORM);
 const IS_MAIN = /\/desktop\/computercaller$/i.test(NORM);
 if (!IS_WORKTREE && !IS_MAIN) {
   refuse(
-    `must run from C:\\Users\\D\\worktrees\\computercaller\\{e2e-p<N>|ft-<n>} or the main checkout.\n` +
+    `must run from C:\\Users\\D\\worktrees\\computercaller\\e2e-p<N> or the main checkout.\n` +
       `            Got: ${ROOT}`
   );
 }
