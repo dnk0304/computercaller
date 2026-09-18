@@ -382,6 +382,15 @@ async function scenario(name, bytes, opts = {}) {
   const refusals = s.link.sent.filter((r) => frameHead(r) === 'FILE_FAILED').map((r) => parseFileFrame(r).payload.id);
   check('a second concurrent offer is refused', refusals.some((id) => id.startsWith('other')), refusals);
 
+  // A REPLAY of the offer already in flight is NOT a second transfer. The
+  // relay's frameBuffer re-sends buffered frames on resume, so this arrives on
+  // every reconnect; refusing it would cancel the transfer the reconnect exists
+  // to rescue. (Caught by scripts/ft-web-proof.mjs arm 2, not by review.)
+  const failedBefore = countOf(s.link, 'FILE_FAILED');
+  s.receiver.handleFrame({ type: 'FILE_OFFER', payload: first });
+  eq('a replayed offer for the SAME id is ignored, not refused',
+    countOf(s.link, 'FILE_FAILED'), failedBefore);
+
   // A duplicate chunk (legitimate: the relay's frameBuffer replays on resume)
   // must be ignored silently rather than corrupting the digest.
   await s.link.pump(20000);

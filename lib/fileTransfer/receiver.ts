@@ -330,7 +330,14 @@ export function createFileReceiver(
     handleFrame(frame: FileFrame) {
       switch (frame.type) {
         case 'FILE_OFFER':
-          // One transfer per room: an offer arriving mid-transfer is refused.
+          // A REPLAY of the offer we are already receiving is legitimate and
+          // must be ignored, not refused: the relay's frameBuffer re-sends
+          // buffered frames on resume, so the offer routinely arrives a second
+          // time on the new socket. Refusing it cancels the very transfer the
+          // reconnect was meant to save.
+          if (offer && frame.payload.id === offer.id) return;
+          // One transfer per room: an offer for a DIFFERENT id mid-transfer is
+          // refused.
           if (state === 'receiving' || state === 'verifying') {
             transport.send('FILE_FAILED', { id: frame.payload.id, reason: 'cancelled' });
             return;
