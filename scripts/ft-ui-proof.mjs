@@ -12,15 +12,19 @@
  * in usePhoneBridge's `handleMessage`, which routes it to the real
  * `useFileTransfer` state machines. Nothing here fixtures a component's props.
  *
- * ── WHY TWO OF THE ELEVEN REASONS ARE NODE-ARM ONLY ─────────────────────────
- * `size_mismatch` and `busy` are in the frozen wire enum (WIRE-TRUTH-v1) but
- * NOT in lib/fileTransfer/reasons.ts, and `coerceFileFrame` validates
- * FILE_FAILED through `isFileFailedReason` — so a frame carrying either reason
- * is dropped before any component can see it. Driving them through the browser
- * arm would therefore assert nothing, and a check that cannot fail is worse
- * than an absent one. They are asserted at the module level and the lib/ gap is
- * filed as a one-line request for Forge. The day it lands, move the two names
- * from RELAY_NODE_ONLY into WIRE_DRIVEN below and the browser arm covers them.
+ * ── ALL ELEVEN REASONS ARE NOW WIRE-DRIVEN ──────────────────────────────────
+ * `size_mismatch` and `busy` used to be node-arm only: they are in the frozen
+ * wire enum but were missing from lib/fileTransfer/reasons.ts, and
+ * `coerceFileFrame` validates FILE_FAILED through `isFileFailedReason`, so
+ * frames carrying them were dropped before any component could see them.
+ * FT-3a.1 added both, so the browser arm now covers the whole enum.
+ *
+ * ── M10 ─────────────────────────────────────────────────────────────────────
+ * The eight RELAY-OWNED reasons are transport outcomes, not account statements
+ * (Security A1.1-M10, binding per R-AN). Their copy is re-pinned below to the
+ * "The transfer was stopped: <cause>." frame, and the banner is asserted to
+ * carry NO upgrade affordance — the tappable Upgrade belongs on the locked
+ * control, which is a pre-flight offer, never on a refusal.
  *
  * ── THE PORT ────────────────────────────────────────────────────────────────
  * Ephemeral, always. The port is obtained by binding :0 and reading back what
@@ -54,7 +58,7 @@ import { Reaper } from './lib/reap.mjs';
  */
 import {
   ftFailureCopy, FT_WIRE_REASONS, FT_RELAY_OWNED_REASONS,
-  FT_TIER_LOCK_COPY, FT_OFFER_TRUST, FT_OFFER_NO_SCAN,
+  FT_TIER_LOCK_COPY, FT_PICKER_HINT, FT_OFFER_TRUST, FT_OFFER_NO_SCAN,
 } from '../components/fileTransfer/ftCopy.ts';
 
 /**
@@ -107,9 +111,9 @@ fs.mkdirSync(SHOTS, { recursive: true });
 /**
  * minChecks — a FLOOR, not a target. A run reporting fewer means assertions
  * silently stopped executing, which is the failure mode a bare "N/N passed"
- * hides. Node arm 22 + browser arm 49, measured at this commit.
+ * hides. Node arm 47 + browser arm 49, measured at this commit.
  */
-export const MIN_CHECKS = 71;
+export const MIN_CHECKS = 96;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -117,9 +121,8 @@ const check = (name, pass, detail = '') => {
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
 };
 
-/** The nine reasons the wire can actually deliver today. See the header. */
-const RELAY_NODE_ONLY = ['size_mismatch', 'busy'];
-const WIRE_DRIVEN = FT_WIRE_REASONS.filter((r) => !RELAY_NODE_ONLY.includes(r));
+/** All eleven now reach the UI — FT-3a.1 completed the enum. */
+const WIRE_DRIVEN = FT_WIRE_REASONS;
 
 // ── node arm: the copy table ───────────────────────────────────────────────
 for (const reason of FT_WIRE_REASONS) {
@@ -132,16 +135,50 @@ for (const reason of FT_WIRE_REASONS) {
 }
 check('copy: enum is the frozen eleven', FT_WIRE_REASONS.length === 11, String(FT_WIRE_REASONS.length));
 check('copy: relay-owned subset is the frozen eight', FT_RELAY_OWNED_REASONS.length === 8, String(FT_RELAY_OWNED_REASONS.length));
-check('copy:quota verbatim', ftFailureCopy('quota').message.startsWith('Daily limit reached (2 GB)'), ftFailureCopy('quota').message);
-check('copy:quota names midnight UTC', ftFailureCopy('quota').message.includes('resets at midnight UTC'));
-check('copy:too_large verbatim', ftFailureCopy('too_large').message.startsWith('Files up to 1 GB'), ftFailureCopy('too_large').message);
-check('copy:tier is the web/ext string with an upgrade action',
-  ftFailureCopy('tier').message === FT_TIER_LOCK_COPY && ftFailureCopy('tier').action === 'upgrade',
+// M10: every relay-owned reason is framed as a transport outcome.
+for (const reason of FT_RELAY_OWNED_REASONS) {
+  check(`m10:${reason} uses the stopped-transfer frame`,
+    ftFailureCopy(reason).message.startsWith('The transfer was stopped:'),
+    ftFailureCopy(reason).message);
+}
+// M10: and none of them asserts a fact about the account, or sells anything.
+for (const reason of FT_RELAY_OWNED_REASONS) {
+  check(`m10:${reason} offers no upgrade action`, ftFailureCopy(reason).action !== 'upgrade');
+}
+check('m10:quota verbatim',
+  ftFailureCopy('quota').message
+    === 'The transfer was stopped: the daily transfer limit (2 GB) was reached. It resets at midnight UTC.',
+  ftFailureCopy('quota').message);
+check('m10:tier verbatim',
+  ftFailureCopy('tier').message
+    === 'The transfer was stopped: sending files is included with a subscription.',
   ftFailureCopy('tier').message);
-check('copy:tier is NOT the Android no-link string',
+check('m10:too_large verbatim',
+  ftFailureCopy('too_large').message === 'The transfer was stopped: files must be 1 GB or smaller.',
+  ftFailureCopy('too_large').message);
+check('m10:size_mismatch verbatim',
+  ftFailureCopy('size_mismatch').message === 'The transfer was stopped: the file changed size while sending.',
+  ftFailureCopy('size_mismatch').message);
+check('m10:busy verbatim',
+  ftFailureCopy('busy').message === 'The transfer was stopped: another transfer is already running.',
+  ftFailureCopy('busy').message);
+// The failure table must NOT reuse the locked control's offer sentence.
+check('m10: no relay-owned failure string is the tier lock sentence',
+  FT_RELAY_OWNED_REASONS.every((r) => ftFailureCopy(r).message !== FT_TIER_LOCK_COPY));
+check('m10:tier failure is NOT the Android no-link string',
   !ftFailureCopy('tier').message.includes('is not available on this account'));
-check('copy:size_mismatch renders despite the lib gap', ftFailureCopy('size_mismatch').message.length > 0);
-check('copy:busy renders despite the lib gap', ftFailureCopy('busy').message.length > 0);
+// Peer-owned reasons keep their own wording and must NOT be reframed.
+for (const reason of ['hash_mismatch', 'cancelled', 'oom']) {
+  check(`m10:${reason} is peer-owned and keeps its wording`,
+    !ftFailureCopy(reason).message.startsWith('The transfer was stopped:'),
+    ftFailureCopy(reason).message);
+}
+// Pre-flight strings are not failure copy and survive M10 untouched.
+check('preflight: the locked control keeps its tappable offer sentence',
+  FT_TIER_LOCK_COPY === 'Send files is included with a subscription — Upgrade', FT_TIER_LOCK_COPY);
+check('preflight: the picker hint survives', FT_PICKER_HINT === 'Files up to 1 GB', FT_PICKER_HINT);
+check('copy: "show in folder" appears nowhere in the copy table',
+  FT_WIRE_REASONS.every((r) => !/show in folder/i.test(ftFailureCopy(r).message)));
 check('copy: an unknown reason falls back, never shows the raw token',
   !ftFailureCopy('not_a_reason').message.includes('not_a_reason'));
 check('copy:cancelled carries no action', ftFailureCopy('cancelled').action === undefined);
@@ -467,8 +504,10 @@ try {
     await sendFrame(page, 'FILE_FAILED', { id: 'd'.repeat(32), reason: 'tier' });
     const tierBanner = page.locator('[data-cc-ft-error="tier"]');
     await tierBanner.waitFor({ timeout: 5000 });
-    check('banner:tier offers Upgrade on web/extension',
-      (await tierBanner.locator('[data-cc-ft-action="upgrade"]').count()) === 1);
+    check('banner:tier offers NO upgrade affordance (M10)',
+      (await tierBanner.locator('[data-cc-ft-action="upgrade"]').count()) === 0);
+    check('banner:tier renders the stopped-transfer frame',
+      (await tierBanner.innerText()).includes('The transfer was stopped:'));
     check('banner: alerts are announced', (await tierBanner.getAttribute('role')) === 'alert');
     await shot(page, 'ext-error-tier-light-360');
     await ctx.close();

@@ -1,9 +1,8 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback } from 'react';
 
 import { usePhone } from '@/hooks';
-import { useUpgrade } from '@/hooks/upgradeModalContext';
 import type { FileTransferApi } from '@/hooks/useFileTransfer';
 
 import { FileOfferDialog } from './FileOfferDialog';
@@ -27,15 +26,17 @@ import { FileReceivedToast } from './FileReceivedToast';
  * It also keeps the hook contract in one place: if FT-3a's surface changes,
  * this file is the only thing that has to follow.
  *
- * ── THE RECEIVED-TOAST LATCH ────────────────────────────────────────────────
- * `progress` does not clear itself on completion — it sits at `phase: 'done'`.
- * Rendering the toast directly off that would show it forever, and clearing it
- * from an effect would be a state write in an effect (the thing
- * `react-hooks/set-state-in-effect` exists to stop). So the toast is latched BY
- * TRANSFER ID, derived during render: a dismissal that does not name the
- * current transfer is not a dismissal, so the next completed receive shows its
- * own toast without any reset step. This is the same shape SasConfirmDialog
- * uses to key its decision by the SAS digits, and for the same reason.
+ * ── THE RECEIVED TOAST ──────────────────────────────────────────────────────
+ * Driven by FT-3a.1's `completed` record rather than by `progress.phase`. The
+ * hook holds that record only while the file handle is still live, which is
+ * exactly the window in which "Open" can work — so the toast's lifetime and the
+ * button's capability come from one source instead of being guessed at from a
+ * terminal phase.
+ *
+ * `dismissCompleted()` clears it in the hook. There is no local latch: the
+ * earlier version keyed a dismissal by transfer id because `progress` never
+ * cleared itself, and keeping that on top of a hook that DOES clear would be
+ * two pieces of state free to disagree about whether the toast is showing.
  */
 
 export interface FileTransferLayerProps {
@@ -48,12 +49,13 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
   // be mounted on a surface whose provider predates FT-3a without crashing.
   const phone = usePhone() as unknown as { fileTransfer?: FileTransferApi };
   const ft = phone?.fileTransfer;
-  const { openUpgrade } = useUpgrade();
-
-  const [dismissedToastId, setDismissedToastId] = useState<string | null>(null);
-
-  const onUpgrade = useCallback(() => openUpgrade('fileTransfer'), [openUpgrade]);
-
+  /*
+   * No useUpgrade() here any more. M10 took the Upgrade button off the failure
+   * banner, so this layer has no route into the pricing modal — the only
+   * tappable upgrade on the surface is the locked control, which wires its own.
+   * Dropping the hook keeps that structural: the layer cannot grow the button
+   * back without someone re-adding the dependency and noticing why it went.
+   */
   // acceptOffer MUST run synchronously off the click — showSaveFilePicker needs
   // the user gesture, and a gesture does not survive an await. The promise is
   // deliberately floated: failures come back through `error`, not a throw here.
@@ -61,16 +63,17 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
   const onDecline = useCallback(() => { ft?.rejectOffer(); }, [ft]);
   const onCancel = useCallback(() => { ft?.cancel(); }, [ft]);
   const onDismissError = useCallback(() => { ft?.dismissError(); }, [ft]);
+  const onDismissCompleted = useCallback(() => { ft?.dismissCompleted(); }, [ft]);
+  const completedId = ft?.completed?.id ?? null;
+  // Bound to the id so the handler cannot outlive the transfer it names.
+  const onOpenReceived = useCallback(
+    () => (completedId && ft ? ft.openReceived(completedId) : Promise.resolve('gone' as const)),
+    [ft, completedId],
+  );
 
   if (!ft) return null;
 
-  const { pendingOffer, progress, error, supported } = ft;
-
-  const receivedDone =
-    progress && progress.phase === 'done' && progress.direction === 'receive'
-      ? progress
-      : null;
-  const showToast = receivedDone !== null && dismissedToastId !== receivedDone.id;
+  const { pendingOffer, progress, error, supported, completed } = ft;
 
   return (
     <>
@@ -79,7 +82,6 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
       <FileTransferError
         reason={error?.reason ?? null}
         onDismiss={onDismissError}
-        onUpgrade={onUpgrade}
         onRetry={onDismissError}
       />
 
@@ -92,13 +94,12 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
         onDecline={onDecline}
       />
 
-      {showToast && receivedDone && (
+      {completed && (
         <FileReceivedToast
-          name={receivedDone.name}
-          size={receivedDone.size}
-          onDismiss={() => setDismissedToastId(receivedDone.id)}
-          /* onOpen is intentionally absent — the receiver does not surface the
-             file handle yet. See FileReceivedToast's header. */
+          name={completed.name}
+          onDismiss={onDismissCompleted}
+          /* Omitted, not disabled, once the handle has been released. */
+          onOpen={completed.canOpen ? onOpenReceived : undefined}
         />
       )}
     </>

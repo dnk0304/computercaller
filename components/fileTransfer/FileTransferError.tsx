@@ -9,14 +9,17 @@ import { ftFailureCopy, isRelayOwnedReason } from './ftCopy';
  * components/fileTransfer/FileTransferError.tsx — FT-3b (a)/(b)/(c). The
  * failure banner, rendering the copy table by reason.
  *
- * ── THE UPGRADE AFFORDANCE IS PLATFORM-SPECIFIC ─────────────────────────────
- * `tier` is the one reason whose copy carries `action: 'upgrade'`, and this
- * banner makes it a real button into the existing pricing modal. That is
- * correct HERE and would be a policy violation on Android: the Play Payments
- * anti-steering clause forbids a tappable element leading to an external
- * checkout, which is exactly what Whop is (PLAY-TIER-COPY-RULING §1). Web and
- * the extension are not distributed through Play, so they keep the link, and
- * the Android strings are deliberately different. Do not "unify" these tables.
+ * ── THERE IS NO UPGRADE BUTTON HERE, AND THAT IS THE POINT ──────────────────
+ * An earlier version made `tier` a button into the pricing modal. Security
+ * A1.1-M10 (binding, R-AN) removed it: a FILE_FAILED frame reports that a
+ * transfer stopped, and turning that report into a sales prompt both overstates
+ * what the frame knows and puts a checkout route on a failure surface. The
+ * tappable Upgrade lives on the LOCKED CONTROL (SendFileControl), which is a
+ * pre-flight offer the client makes on its own behalf — not a refusal.
+ *
+ * So this banner renders `retry` and nothing else. `ftFailureCopy` gives `tier`
+ * no action at all, which is what keeps the button from coming back by
+ * accident.
  *
  * ── WHY THE BANNER, NOT A TOAST ─────────────────────────────────────────────
  * A failed transfer is a state the user has to act on — retry, upgrade, or pick
@@ -36,13 +39,11 @@ import { ftFailureCopy, isRelayOwnedReason } from './ftCopy';
 export interface FileTransferErrorProps {
   reason: string | null;
   onDismiss: () => void;
-  /** Opens the existing pricing modal. Wired only for `action: 'upgrade'`. */
-  onUpgrade: () => void;
   /** Clears the error and returns the user to the send control. */
   onRetry: () => void;
 }
 
-export function FileTransferError({ reason, onDismiss, onUpgrade, onRetry }: FileTransferErrorProps) {
+export function FileTransferError({ reason, onDismiss, onRetry }: FileTransferErrorProps) {
   if (!reason) return null;
   const copy = ftFailureCopy(reason);
 
@@ -56,16 +57,6 @@ export function FileTransferError({ reason, onDismiss, onUpgrade, onRetry }: Fil
       <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-rose-600" aria-hidden="true" />
       <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-rose-900">{copy.message}</p>
 
-      {copy.action === 'upgrade' && (
-        <button
-          type="button"
-          onClick={onUpgrade}
-          data-cc-ft-action="upgrade"
-          className="flex-shrink-0 rounded-lg bg-rose-600 px-2.5 py-1 text-[12px] font-semibold text-white transition-colors hover:bg-rose-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40"
-        >
-          Upgrade
-        </button>
-      )}
 
       {copy.action === 'retry' && (
         <button
