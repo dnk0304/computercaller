@@ -37,6 +37,14 @@
  * store. Type-stripped by node 24 on import; no build step (R-A).
  */
 
+import {
+  CC_E2E_DB_NAME,
+  CC_E2E_DB_VERSION,
+  CC_E2E_STORE_DEVICE_KEY,
+  ccE2eRead,
+  ccE2eWrite,
+} from './idb.mjs';
+
 /**
  * Record format version. Bump ONLY with a migration; readers must fail loudly.
  *
@@ -79,9 +87,16 @@ export const PAIR_EPOCH_DECIMAL = /^(0|[1-9][0-9]{0,19})$/;
  */
 export const MAX_UINT64 = BigInt('18446744073709551615');
 
-export const WEB_KEY_DB_NAME = 'cc-e2e';
-export const WEB_KEY_DB_VERSION = 1;
-export const WEB_KEY_STORE_NAME = 'deviceKey';
+/**
+ * Re-exported from lib/e2e/idb.mjs, which OWNS the `cc-e2e` database. The names
+ * are kept because callers and tests use them, but they are no longer a second
+ * declaration of the truth: this file used to declare version 1 while
+ * session.mjs declared its own version 1 with a DIFFERENT schema, and whichever
+ * opened first settled the database for the other. See the idb.mjs header.
+ */
+export const WEB_KEY_DB_NAME = CC_E2E_DB_NAME;
+export const WEB_KEY_DB_VERSION = CC_E2E_DB_VERSION;
+export const WEB_KEY_STORE_NAME = CC_E2E_STORE_DEVICE_KEY;
 /** Single-row store: there is one web device key per browser profile. */
 export const WEB_KEY_RECORD_ID = 'self';
 
@@ -471,58 +486,25 @@ export function memoryWebKeyStore(): WebKeyStore {
   };
 }
 
-function idbRequest<T>(req: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB request failed'));
-  });
-}
-
-function openDb(factory: IDBFactory): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = factory.open(WEB_KEY_DB_NAME, WEB_KEY_DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(WEB_KEY_STORE_NAME)) {
-        db.createObjectStore(WEB_KEY_STORE_NAME);
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'));
-    req.onblocked = () => reject(new Error('IndexedDB open blocked by another tab'));
-  });
-}
-
 /**
- * The real store. `indexedDB` is absent in a SW-less node run and can THROW on
- * access in a profile with site data blocked, so the caller gets a clear error
- * rather than a stack from deep inside a transaction.
+ * The real store. Every open goes through lib/e2e/idb.mjs, so this file no
+ * longer knows the database version and cannot disagree with session.mjs about
+ * it. Writes resolve on the TRANSACTION's `complete` (idb.mjs's ccE2eWrite),
+ * which is stricter than the request-level `success` this used to resolve on —
+ * it matters for the A3-M2 epoch floor, whose whole contract is that it is
+ * durable BEFORE the epoch it admits is used.
  */
 export function indexedDbWebKeyStore(factory?: IDBFactory): WebKeyStore {
-  const resolve = (): IDBFactory => {
-    const f = factory ?? (globalThis as { indexedDB?: IDBFactory }).indexedDB;
-    if (!f) throw new Error('IndexedDB is unavailable in this context');
-    return f;
-  };
-  const withStore = async <T>(
-    mode: IDBTransactionMode,
-    fn: (store: IDBObjectStore) => IDBRequest<T>,
-  ): Promise<T> => {
-    const db = await openDb(resolve());
-    try {
-      const tx = db.transaction(WEB_KEY_STORE_NAME, mode);
-      const out = await idbRequest(fn(tx.objectStore(WEB_KEY_STORE_NAME)));
-      return out;
-    } finally {
-      db.close();
-    }
-  };
   return {
-    get: () => withStore('readonly', (s) => s.get(WEB_KEY_RECORD_ID)),
-    put: (record) =>
-      withStore('readwrite', (s) => s.put(record, WEB_KEY_RECORD_ID)).then(() => undefined),
-    clear: () =>
-      withStore('readwrite', (s) => s.delete(WEB_KEY_RECORD_ID)).then(() => undefined),
+    get: () => ccE2eRead<WebDeviceKeyRecord | undefined>(
+      factory, WEB_KEY_STORE_NAME, (s) => s.get(WEB_KEY_RECORD_ID),
+    ),
+    put: (record) => ccE2eWrite(
+      factory, WEB_KEY_STORE_NAME, (s) => { s.put(record, WEB_KEY_RECORD_ID); },
+    ),
+    clear: () => ccE2eWrite(
+      factory, WEB_KEY_STORE_NAME, (s) => { s.delete(WEB_KEY_RECORD_ID); },
+    ),
   };
 }
 

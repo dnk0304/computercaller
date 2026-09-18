@@ -955,6 +955,17 @@ if (WEB) {
     record('unit:live-peer', 'node scripts/e2e-live-peer-proof.mjs', 1, 0, { missing: 1 });
   }
 
+  // E2E-P2.1. The `cc-e2e` schema proved against REAL IndexedDB in a real
+  // Chromium, because the bug it guards was a disagreement about IndexedDB's
+  // own upgrade semantics that every injected-factory unit suite passed
+  // straight through. Arm 0 asserts the ORIGINAL defect, so a green run also
+  // proves the harness can still tell the two states apart.
+  if (existsSync(join(ROOT, 'scripts', 'e2e-idb-migration-proof.mjs'))) {
+    run('unit:idb-migration', 'node scripts/e2e-idb-migration-proof.mjs', { parse: passLine, scrub: true });
+  } else if (!BASELINE) {
+    record('unit:idb-migration', 'node scripts/e2e-idb-migration-proof.mjs', 1, 0, { missing: 1 });
+  }
+
   if (existsSync(join(ROOT, 'scripts', 'ext-bridge-origin-pin-proof.mjs'))) {
     run('unit:bridge-origin-pin', 'node scripts/ext-bridge-origin-pin-proof.mjs', { parse: passLine, scrub: true });
   } else {
