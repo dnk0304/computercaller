@@ -252,5 +252,120 @@ const isActive = (room, phone, browser) => room.active.phone === phone && room.a
   void phone;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// (g) SEALED-PAIR TWIN — the dock/resume is MODE-BLIND (E2E-P6 (a))
+// ═══════════════════════════════════════════════════════════════════════════
+// §13.7 keeps the frame TYPE and replaces only the BODY with `{e,kid,s,c}`, so
+// every decision above — arm the claim, refuse to promote a listener, replay the
+// buffer — is made on bytes that did not change. This section runs the SAME
+// mirror functions twice (plaintext bodies, then real AES-256-GCM sealed
+// bodies) and requires the transcripts to be identical.
+//
+// SCOPE: this proves the MIRROR has no body-dependent branch. It is NOT
+// evidence about the shipped relay — see the header of tests/lib/sealed-twin.mjs
+// and P6 (g), which exercises `node server.js` itself.
+import {
+  twin, transcript, openBody, assertNoPlaintext,
+} from './lib/sealed-twin.mjs';
+
+const TWIN_CANARY = 'canary-dock-resume-8f3a1c-this-plaintext-must-never-survive';
+
+/**
+ * Pop-out closes (claim armed) → three phone frames land in the buffer while no
+ * browser is active → the side panel joins and resumes. This is case (b)'s
+ * ordering with a frame buffer riding across the resume, which is where a
+ * body-reading branch would show up.
+ *
+ * The buffer push is done inline because this file's mirror set has no
+ * phoneDataFrame (pairing-persist owns that one); the push is exactly what the
+ * relay's lobby-phone branch does — `{ msg, at }`, untouched.
+ */
+function dockTwinScenario(mode) {
+  NOW = 1_000_000;
+  const { room, phone, browser: popout } = pairedRoom();
+  const e2e = mode.block();
+  if (e2e) room.pairIdentity = { ...room.pairIdentity, e2e };
+
+  browserSocketClosed(room, popout);
+
+  const bodies = [];
+  const payloads = [];
+  for (let i = 0; i < 3; i++) {
+    const payload = { id: `msg-${i}`, text: `${TWIN_CANARY}-${i}` };
+    payloads.push(payload);
+    const body = mode.body('SMS_RECEIVED', payload);
+    bodies.push(body);
+    NOW += 10;
+    room.frameBuffer.push({ msg: `SMS_RECEIVED:${JSON.stringify(body)}`, at: now() });
+  }
+
+  NOW += 800;
+  const claimIdentity = room.resumable ? room.resumable.identity : null;
+  const panel = makeWs('browser');
+  const resumed = browserJoin(room, panel);
+  return { room, phone, popout, panel, resumed, bodies, payloads, claimIdentity, e2e };
+}
+
+console.log('\n(g) sealed-pair twin — dock resume');
+{
+  const t = twin(dockTwinScenario);
+  const S = t.sealed, P = t.plain;
+
+  // 1. Transcript equality — any body-dependent branch diverges here.
+  const panelAgree = t.agrees((o) => o.panel.sent);
+  check('g1: panel transcript identical in plaintext and sealed modes', panelAgree.equal);
+  if (!panelAgree.equal) { console.log(`       plain : ${panelAgree.plain}`); console.log(`       sealed: ${panelAgree.sealed}`); }
+  check('g2: phone transcript identical (PEER_RECONNECTING, no teardown)', t.agrees((o) => o.phone.sent).equal);
+  check('g3: the resume itself happened in both modes', P.resumed === true && S.resumed === true);
+  check('g4: same pair state in both modes', isActive(P.room, P.phone, P.panel) && isActive(S.room, S.phone, S.panel));
+  check('g5: claim consumed in both modes', P.room.resumable === null && S.room.resumable === null);
+  check('g6: buffer drained in both modes', P.room.frameBuffer.length === 0 && S.room.frameBuffer.length === 0);
+
+  // 2. Verbatim passthrough — the relay changed not one byte across the resume.
+  const replayed = S.panel.sent.filter((m) => m.startsWith('SMS_RECEIVED:'))
+    .map((m) => JSON.parse(m.slice('SMS_RECEIVED:'.length)));
+  check('g7: every buffered sealed frame came out the far side, in order',
+    replayed.length === S.bodies.length
+    && replayed.every((env, i) => JSON.stringify(env) === JSON.stringify(S.bodies[i])));
+  let opened = [];
+  let openOk = true;
+  try { opened = replayed.map((env) => openBody(t.session, 'SMS_RECEIVED', env)); }
+  catch (e) { openOk = false; console.log(`       open failed: ${e.message}`); }
+  check('g8: each replayed envelope still OPENS (AEAD intact — nothing rewritten)',
+    openOk && opened.length === 3 && opened.every((p, i) => p.text === `${TWIN_CANARY}-${i}`));
+  check('g9: counters survive the resume with no gaps (s = 0,1,2)',
+    replayed.map((e) => e.s).join(',') === '0,1,2');
+  check('g10: one kid throughout — the resume did not re-key',
+    new Set(replayed.map((e) => e.kid)).size === 1 && replayed[0].kid === t.session.kid);
+
+  // 3. No plaintext leak anywhere the relay kept state.
+  const hay = JSON.stringify({
+    frameBuffer: S.room.frameBuffer,
+    resumable: S.room.resumable,
+    pairIdentity: S.room.pairIdentity,
+    panelSent: S.panel.sent,
+    phoneSent: S.phone.sent,
+    popoutSent: S.popout.sent,
+  });
+  const leak = assertNoPlaintext(hay, S.payloads);
+  check(`g11: no plaintext survives in room state or any transcript${leak.clean ? '' : ` — LEAKED ${JSON.stringify(leak.leaked)}`}`, leak.clean);
+
+  // 4. The e2e block survives the drop→arm→resume chain, same kid.
+  check('g12: the claim carried the e2e block verbatim across the drop',
+    !!S.claimIdentity && JSON.stringify(S.claimIdentity.e2e) === JSON.stringify(S.e2e));
+  // The rebuilt pairIdentity is composed field-by-field from the claim
+  // (ua/ip/deviceLabel/deviceName), so the opaque e2e block is NOT carried into
+  // the post-resume identity. Not a body read — the relay never needs it — but
+  // recorded here so the behaviour is asserted rather than assumed.
+  check('g12b: post-resume pairIdentity keeps only relay-owned identity fields',
+    S.room.pairIdentity.e2e === undefined && S.room.pairIdentity.deviceName === 'Pixel');
+  check('g13: the kid held by the claim is the kid the frames still use',
+    !!S.claimIdentity && S.claimIdentity.e2e.kid === t.session.kid);
+  check('g14: plaintext mode attaches no e2e block at all', P.claimIdentity && P.claimIdentity.e2e === undefined);
+  check('g15: no sealed envelope leaked into the plaintext arm',
+    transcript(P.panel.sent).every((x) => x.sealed === false)
+    && transcript(S.panel.sent).filter((x) => x.type === 'SMS_RECEIVED').every((x) => x.sealed === true));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

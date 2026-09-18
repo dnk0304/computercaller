@@ -218,6 +218,167 @@ function makeIndex(entries) {
   check('the comment-stripper left the source intact', src.length > 10000, String(src.length));
 }
 
+
+// ── 8. the sealed twin: supersede is MODE-BLIND (E2E-P6 (a)) ────────────────
+//
+// §13.7 keeps the frame TYPE and replaces only the BODY, and supersede never
+// reads a body at all — it reads an index keyed by userId. So an ON session
+// being superseded must be closed with the same frame, the same code, the same
+// reason and in the same order as a plaintext one, and the frames the doomed
+// socket was still holding must die WITH it.
+//
+// SCOPE: this twins the MIRROR above, so it proves the modelled sweep has no
+// body-dependent branch. It is not evidence about the shipped relay — P6 (g)
+// is. See tests/lib/sealed-twin.mjs's header for why that line matters.
+
+import { twin, transcript, openBody, assertNoPlaintext } from './lib/sealed-twin.mjs';
+
+// Long enough to clear assertNoPlaintext's minLen floor; distinctive enough
+// that a chance collision inside base64 is not a credible explanation.
+const CANARY = 'CANARY-SUPERSEDE-4e7a1d process this and you have leaked it';
+
+/**
+ * Two sockets for the same user, one of them still holding undelivered frames.
+ * The buffer lives ON THE SOCKET, which is the whole security property: there
+ * is no path by which supersede could hand it to anyone, because supersede
+ * never looks at it.
+ */
+const supersedeScenario = twin((mode) => {
+  const doomed = makeWs('browser');                       // u1, about to be kicked
+  const sibling = makeWs('browser');                      // u1, also kicked
+  const survivor = makeWs('browser', { userId: 'u2' });   // different user, untouched
+  const phone = makeWs('phone');                          // never in the index
+
+  const bodies = [
+    mode.body('SMS_RECEIVED', { from: '+4791234567', body: CANARY }),
+    mode.body('PHONE_NOTIFICATION', { title: `${CANARY}-title`, text: `${CANARY}-text` }),
+  ];
+  // Frames the doomed socket had queued but not flushed when the sweep fires.
+  doomed.buffer = [
+    `SMS_RECEIVED:${JSON.stringify(bodies[0])}`,
+    `PHONE_NOTIFICATION:${JSON.stringify(bodies[1])}`,
+  ];
+
+  const index = makeIndex([['u1', [doomed, sibling]], ['u2', [survivor]]]);
+  const kicked = supersedeWebSessions(index, 'u1');
+
+  return { doomed, sibling, survivor, phone, index, kicked, bodies };
+});
+
+// (1) Transcript equality — the sweep's output is relay-generated end to end, so
+//     the two arms must agree on every field, not merely on the frame types.
+{
+  const r = supersedeScenario.agrees((o) => o.doomed.sent);
+  check('8.1 the doomed socket\'s transcript is identical plaintext vs sealed', r.equal, JSON.stringify(r));
+  const r2 = supersedeScenario.agrees((o) => o.sibling.sent);
+  check('8.2 the sibling socket\'s transcript is identical too', r2.equal, JSON.stringify(r2));
+  const r3 = supersedeScenario.agrees((o) => o.survivor.sent);
+  check('8.3 the surviving user\'s (empty) transcript is identical too', r3.equal, JSON.stringify(r3));
+  // The control arm: without this, an always-empty transcript would satisfy
+  // 8.1–8.3 while the sweep did nothing at all.
+  check('8.4 …and those transcripts are NOT empty',
+    transcript(supersedeScenario.sealed.doomed.sent).length === 1 &&
+    transcript(supersedeScenario.sealed.doomed.sent)[0].type === 'SESSION_SUPERSEDED',
+    JSON.stringify(transcript(supersedeScenario.sealed.doomed.sent)));
+}
+
+// (2) Mode does not change the DECISION: same count, same frame, same close.
+{
+  const p = supersedeScenario.plain, s = supersedeScenario.sealed;
+  check('8.5 the same number of sockets is kicked', p.kicked === s.kicked && s.kicked === 2, String(s.kicked));
+  check('8.6 the sealed session gets the byte-identical contract frame',
+    s.doomed.sent[0] === SUPERSEDE_FRAME && s.doomed.sent[0] === p.doomed.sent[0], s.doomed.sent[0]);
+  check('8.7 the sealed session closes with the same code and reason',
+    JSON.stringify(s.doomed.closes) === JSON.stringify(p.doomed.closes) &&
+    JSON.stringify(s.doomed.closes[0]) === JSON.stringify([SUPERSEDE_CLOSE_CODE, SUPERSEDE_CLOSE_REASON]),
+    JSON.stringify(s.doomed.closes));
+  check('8.8 frame-before-close order is preserved under mode',
+    JSON.stringify(s.doomed.events.map((e) => e[0])) === JSON.stringify(p.doomed.events.map((e) => e[0])) &&
+    s.doomed.events[0][0] === 'send' && s.doomed.events[1][0] === 'close',
+    JSON.stringify(s.doomed.events.map((e) => e[0])));
+  check('8.9 the snapshot-not-live-set behaviour is unchanged (both u1 sockets swept)',
+    s.sibling.closes.length === 1 && s.sibling.sent.length === 1, JSON.stringify(s.sibling.closes));
+  check('8.10 another user is still untouched under mode',
+    s.survivor.sent.length === 0 && s.survivor.closes.length === 0);
+  check('8.11 the phone is still never in the index, so still never kicked',
+    s.phone.sent.length === 0 && s.phone.closes.length === 0);
+}
+
+// (3) THE security property: the superseded socket's buffered sealed frames are
+//     not handed to the surviving session. The sweep has no mechanism to do so,
+//     and this asserts that absence rather than trusting it.
+{
+  const s = supersedeScenario.sealed;
+  check('8.12 the doomed socket really was holding sealed frames', s.doomed.buffer.length === 2);
+  check('8.13 no buffered frame was handed to the surviving session',
+    s.survivor.sent.length === 0 && s.survivor.buffer === undefined, JSON.stringify(s.survivor.sent));
+  check('8.14 no buffered frame was handed to the sibling either',
+    s.sibling.sent.length === 1 && s.sibling.sent[0] === SUPERSEDE_FRAME && s.sibling.buffer === undefined,
+    JSON.stringify(s.sibling.sent));
+  // Nothing anywhere in the index other than the doomed socket itself.
+  const reachable = [];
+  for (const [, set] of s.index) for (const ws of set) if (ws !== s.doomed) reachable.push(...(ws.buffer || []), ...ws.sent);
+  check('8.15 no SMS_RECEIVED / PHONE_NOTIFICATION frame is reachable from any other socket',
+    reachable.every((m) => m === SUPERSEDE_FRAME), JSON.stringify(reachable));
+  // A closed socket cannot be sent to, so even the doomed one can no longer emit.
+  check('8.16 the doomed socket is CLOSED and cannot flush its buffer',
+    s.doomed.readyState === CLOSED && safeSend(s.doomed, s.doomed.buffer[0]) === false, String(s.doomed.readyState));
+  check('8.17 …and the attempt did not append anything', s.doomed.sent.length === 1, String(s.doomed.sent.length));
+}
+
+// (4) Verbatim passthrough — the sweep did not touch a single byte of a body,
+//     so every buffered envelope still opens.
+{
+  const s = supersedeScenario.sealed;
+  check('8.18 the buffered envelopes are byte-identical to what was queued',
+    s.doomed.buffer[0] === `SMS_RECEIVED:${JSON.stringify(s.bodies[0])}` &&
+    s.doomed.buffer[1] === `PHONE_NOTIFICATION:${JSON.stringify(s.bodies[1])}`);
+  let ok = false, detail = '';
+  try {
+    const a = openBody(supersedeScenario.session, 'SMS_RECEIVED', JSON.parse(s.doomed.buffer[0].slice('SMS_RECEIVED:'.length)));
+    const b = openBody(supersedeScenario.session, 'PHONE_NOTIFICATION', JSON.parse(s.doomed.buffer[1].slice('PHONE_NOTIFICATION:'.length)));
+    ok = a.body === CANARY && b.title === `${CANARY}-title`;
+    detail = JSON.stringify([a, b]);
+  } catch (e) { detail = String(e); }
+  check('8.19 both buffered envelopes still open after the sweep', ok, detail);
+}
+
+// (5) No plaintext leak anywhere the sweep can reach.
+{
+  const s = supersedeScenario.sealed;
+  const hay = JSON.stringify({
+    index: [...s.index].map(([u, set]) => [u, [...set].map((w) => ({ sent: w.sent, closes: w.closes, buffer: w.buffer || [] }))]),
+    survivor: { sent: s.survivor.sent, closes: s.survivor.closes },
+  });
+  const secrets = { from: '+4791234567', body: CANARY, title: `${CANARY}-title`, text: `${CANARY}-text` };
+  const res = assertNoPlaintext(hay, secrets);
+  check('8.20 no fragment of a sealed body survives anywhere the sweep can reach', res.clean, JSON.stringify(res.leaked));
+  // Control arm: the PLAINTEXT scenario genuinely does leak, so 8.20 is a
+  // detector and not a decoration.
+  const p = supersedeScenario.plain;
+  const pHay = JSON.stringify({ buffer: p.doomed.buffer });
+  const ctrl = assertNoPlaintext(pHay, secrets);
+  check('8.21 …and the plaintext arm genuinely does leak it (the detector works)',
+    ctrl.clean === false && ctrl.leaked.includes(CANARY), JSON.stringify(ctrl.leaked));
+}
+
+// (6) The drift guard, extended: assert against the REAL source that supersede
+//     touches no buffer and no body. `src` is re-read here because section 7's
+//     copy is block-scoped.
+{
+  const s2 = readFileSync(SERVER_JS, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const fn = s2.slice(s2.indexOf('function supersedeWebSessions'));
+  const body = fn.slice(0, fn.indexOf('\n  }'));
+  check('8.22 the supersede body was actually located', body.length > 100 && body.includes('SESSION_SUPERSEDED'), String(body.length));
+  check('8.23 supersede never reads frameBuffer', !/frameBuffer/.test(body), body.match(/frameBuffer/g) || '');
+  check('8.24 supersede never reads an e2e block or envelope field',
+    !/\.e2e\b/.test(body) && !/\bJSON\.parse\(/.test(body), body.match(/\.e2e\b|JSON\.parse\(/g) || '');
+  check('8.25 supersede never moves a socket between users',
+    !/\.set\(/.test(body) && !/\.add\(/.test(body), body.match(/\.set\(|\.add\(/g) || '');
+}
+
 const total = passed + failed;
 console.log(`session-superseded: ${passed}/${total} checks passed`);
 process.exit(failed === 0 ? 0 : 1);
