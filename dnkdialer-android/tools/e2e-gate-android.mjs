@@ -32,7 +32,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE_ROOT = resolve(HERE, '..');
 const REPO_ROOT = resolve(MODULE_ROOT, '..');
 
-const BASE_SHA = '445138a6c58c12b2848cb4c24371b0d443e51c27';
+/**
+ * Each phase's own base. The scope rule ("no non-android files in this lane's
+ * diff") is only meaningful against the commit the lane STARTED from.
+ *
+ * P5b branches off the MERGED e2e/integration tip (3c2d204 — P4 merged in),
+ * which already carries P1/P2/P3's web and extension work. Measured against
+ * P4's base the scope step reports dozens of "violations" that belong to other
+ * phases and none to this one — a red step that says nothing about the lane it
+ * is gating is worse than no step, because the next reader learns to ignore it.
+ */
+const BASE_SHA_BY_PHASE = {
+  P4: '445138a6c58c12b2848cb4c24371b0d443e51c27',
+  P5B: '3c2d204',
+};
 const EXPECTED_VERSION_CODE = 58;
 const EXPECTED_VERSION_NAME = '1.0.34';
 // P5b: the phase is an argument now. The steps are the same android-lane
@@ -46,6 +59,12 @@ const PHASE = (() => {
   return v.toUpperCase();
 })();
 const LANE = 'android';
+
+const BASE_SHA = (() => {
+  const v = BASE_SHA_BY_PHASE[PHASE];
+  if (!v) throw new Error(`no BASE_SHA recorded for phase ${PHASE} — add one rather than guessing`);
+  return v;
+})();
 
 const LOG_DIR = join(tmpdir(), `e2e-gate-${PHASE.toLowerCase()}-logs`);
 mkdirSync(LOG_DIR, { recursive: true });
