@@ -26,6 +26,8 @@ import {
   SAS_DIGIT_COUNT,
   UPDATE_PHONE,
   UPDATE_COMPUTER,
+  PAIRING_UNAVAILABLE_LABEL,
+  PAIRING_UNAVAILABLE_DETAIL,
   groupSasDigits,
   sasSpokenLabel,
   settingAvailability,
@@ -71,6 +73,7 @@ export function runCopyCases(check) {
     ABORT_SETUP_FAILED, ABORT_KEY_MISMATCH, SETTING_LABEL,
     ...Object.values(SETTING_BLOCKED_REASONS),
     SAS_QUESTION, SAS_CONFIRM_LABEL, SAS_REJECT_LABEL, UPDATE_PHONE, UPDATE_COMPUTER,
+    PAIRING_UNAVAILABLE_LABEL, PAIRING_UNAVAILABLE_DETAIL,
   ];
   for (const st of E2E_STATES) {
     for (const err of [undefined, ...E2E_ERRORS]) {
@@ -156,16 +159,43 @@ export function runCopyCases(check) {
   check('indicator: a bare error with no code still raises the banner (never silent)',
     encryptionIndicator({ state: 'error', peer: { supports: true } }).banner === true);
 
-  // m-G: the fix belongs to whichever end is behind, and the copy must say
-  // which one. Both directions asserted, or the peer-specific half is theatre.
-  check('m-G: unavailable + peer CAN do it -> tells the user to update THIS COMPUTER',
-    encryptionIndicator({ state: 'error', error: 'e2e-unavailable', peer: { supports: true } })
-      .detail.includes(UPDATE_COMPUTER));
-  check('m-G: unavailable + peer CANNOT -> tells the user to update THE PHONE',
-    encryptionIndicator({ state: 'error', error: 'e2e-unavailable', peer: { supports: false } })
-      .detail.includes(UPDATE_PHONE));
+  // m-G, RE-POINTED BY E2E-P1.3 (a). m-G's rule is right — "the fix belongs to
+  // whichever end is behind, and the copy must say which one" — but it was
+  // asserted against the WRONG state. `e2e-unavailable` has one producer: the
+  // relay's N-1 kill switch. No update to either end clears an operator-thrown
+  // switch, so "Update this computer" / "Update your phone app" named a fix
+  // that cannot work, and the peer-capability branch behind it was the theatre
+  // m-G was written to prevent.
+  //
+  // The capability case is `state:'unencrypted'`, and that is where m-G now
+  // lives. The kill-switch case is asserted below on its own terms.
   check('m-G: unencrypted + incapable phone -> names the phone as the thing to update',
     encryptionIndicator({ state: 'unencrypted', peer: { supports: false } }).detail.includes(UPDATE_PHONE));
+  check('m-G: unencrypted + CAPABLE phone -> does NOT tell anyone to update',
+    (() => { const d = encryptionIndicator({ state: 'unencrypted', peer: { supports: true } }).detail;
+      return !d.includes(UPDATE_PHONE) && !d.includes(UPDATE_COMPUTER); })());
+
+  // N-1 refusal copy (E2E-PLAN froze the label; E2E-P1.3 (a) moved it here).
+  check('N-1: the kill-switch banner carries the frozen label verbatim',
+    encryptionIndicator({ state: 'error', error: 'e2e-unavailable', peer: { supports: true } })
+      .label === PAIRING_UNAVAILABLE_LABEL);
+  check('N-1: the kill-switch banner detail is the frozen sentence verbatim',
+    encryptionIndicator({ state: 'error', error: 'e2e-unavailable', peer: { supports: true } })
+      .detail === PAIRING_UNAVAILABLE_DETAIL);
+  // The whole point of dropping the parameter: a relay refusal reads the same
+  // whatever the peer can do. If this ever diverges, the misattribution is back.
+  check('N-1: the refusal copy does NOT vary with peer capability',
+    (() => {
+      const a = encryptionIndicator({ state: 'error', error: 'e2e-unavailable', peer: { supports: true } });
+      const b = encryptionIndicator({ state: 'error', error: 'e2e-unavailable', peer: { supports: false } });
+      return a.label === b.label && a.detail === b.detail; })());
+  check('N-1: the refusal never tells the user to update either end',
+    (() => { const i = encryptionIndicator({ state: 'error', error: 'e2e-unavailable', peer: { supports: false } });
+      return !`${i.label} ${i.detail}`.includes(UPDATE_PHONE)
+        && !`${i.label} ${i.detail}`.includes(UPDATE_COMPUTER); })());
+  // "temporarily" is the honest word for the first rung of a rollback ladder.
+  check('N-1: the refusal says the condition is temporary, not permanent',
+    /temporarily/i.test(PAIRING_UNAVAILABLE_LABEL));
   check('indicator: the setup-failed banner carries the frozen sentence verbatim',
     encryptionIndicator({ state: 'error', error: 'e2e-setup-failed', peer: { supports: true } })
       .detail.includes(ABORT_SETUP_FAILED));

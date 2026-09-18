@@ -177,6 +177,18 @@ export const UPDATE_PHONE = 'Update your phone app';
 export const UPDATE_COMPUTER = 'Update this computer';
 
 /**
+ * N-1's frozen words (E2E-PLAN: mode-ON clients get "Encrypted pairing
+ * temporarily unavailable"). Exported so the copy tests can assert the
+ * sentence VERBATIM rather than re-typing it — the same discipline
+ * {@link ABORT_SETUP_FAILED} and {@link ABORT_KEY_MISMATCH} already get. A
+ * frozen string that only exists inline is a string nothing can pin.
+ */
+export const PAIRING_UNAVAILABLE_LABEL = 'Encrypted pairing temporarily unavailable';
+export const PAIRING_UNAVAILABLE_DETAIL =
+  'Encrypted pairing is turned off on the server right now. '
+  + 'You can pair without encryption, or try again later.';
+
+/**
  * THE INDEPENDENCE RULE (P5a slice 1's finding, made structural).
  *
  * This function takes ONLY e2e state. It never sees `lobbyState`, and no caller
@@ -212,7 +224,12 @@ export function encryptionIndicator(view: {
         banner: false,
       };
     case 'error':
-      return errorIndicator(view.error, view.peer.supports);
+      // E2E-P1.3 (a): `view.peer.supports` is deliberately NOT forwarded. No
+      // error state's copy depends on the peer's capability any more — the one
+      // that used to (`e2e-unavailable`) was misattributing a relay refusal to
+      // a version gap. Passing an argument nothing reads is a claim about a
+      // dependency that does not exist, so the parameter is gone.
+      return errorIndicator(view.error);
     case 'unencrypted':
     default:
       return {
@@ -233,16 +250,32 @@ export function encryptionIndicator(view: {
  * six cases, and describing an encryption refusal as a lost connection sends
  * the user to reconnect, which cannot fix any of them.
  */
-function errorIndicator(error: E2eErrorName | undefined, peerSupports: boolean): EncryptionIndicator {
+function errorIndicator(error: E2eErrorName | undefined): EncryptionIndicator {
   const base = { tone: 'attention' as const, lock: false, banner: true };
   switch (error) {
     case 'e2e-key-mismatch':
       return { ...base, label: 'Device not verified', detail: `${ABORT_KEY_MISMATCH}. ${SETTING_BLOCKED_REASONS.keyChanged}` };
+    // E2E-P1.3 (a). `e2e-unavailable` has exactly ONE producer — useE2e's
+    // `onE2eUnavailable`, reached only by the relay's N-1 kill switch
+    // (PAIRING_E2E_UNAVAILABLE). It is an operator-thrown switch, not a
+    // version gap, so the old copy here ("Update this computer" / "Update your
+    // phone app") named a fix that cannot work: no update on either end
+    // re-enables a feature the relay is refusing. That copy belongs to the
+    // CAPABILITY case, and it already lives there — see the `unencrypted`
+    // branch above, which is the state a peer that cannot do this produces.
+    //
+    // E2E-PLAN N-1 froze the words: mode-ON clients get "Encrypted pairing
+    // temporarily unavailable". "temporarily" is load-bearing and honest —
+    // the switch is the first rung of the D1 rollback ladder and is expected
+    // to be flipped back — and it is why the next action is "try again later"
+    // rather than any act the user can perform now. `peerSupports` is
+    // deliberately NOT read: the peer's capability has no bearing on a relay
+    // refusal, and branching on it would re-introduce the same misdirection.
     case 'e2e-unavailable':
       return {
         ...base,
-        label: 'Encryption unavailable',
-        detail: `This pairing can't be encrypted. ${peerSupports ? UPDATE_COMPUTER : UPDATE_PHONE} to use Encrypted mode.`,
+        label: PAIRING_UNAVAILABLE_LABEL,
+        detail: PAIRING_UNAVAILABLE_DETAIL,
       };
     case 're-pair-needed':
       return { ...base, label: 'Pair again', detail: "This browser's keys were cleared, so the encrypted session ended. Pair again to start a new one." };

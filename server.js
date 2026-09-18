@@ -188,10 +188,32 @@ const LEGACY_RESUME_TEARDOWN = process.env.LEGACY_RESUME_TEARDOWN === '1';
  * enabled"), so nothing would have caught it. A kill switch whose documented
  * OFF value means ON is worse than no kill switch: it is a false sense of one.
  *
- * So the predicate is now an explicit ON-list. "1" and "true" enable it;
- * anything else — including unset, "0", "", "no", and a typo — leaves it off.
- * The asymmetry is deliberate: the failure mode of an unrecognised value must
- * be "the feature stayed dark", never "the feature went live".
+ * ── WHY IT IS NOW ONE EXACT STRING (E2E-P1.3 (a)) ─────────────────────────
+ * D1-PREP replaced the defect with a trimmed, case-folded ON-list of `['1',
+ * 'true']`. That fixed the default, but it widened the ON side, and Security
+ * ratified the narrow form instead: GATE2-PRE-A5 "N-1.1 — ack" reads
+ * `E2E_PAIRING_ENABLED === '1'` enables NEW encrypted pairings, anything else
+ * refuses them — "an allow-list on one exact string, fail-closed on
+ * absent/typo/`'true'`". `'true'` is named there as a value that must FAIL
+ * CLOSED, so the ON-list contradicted the ruling it was written to satisfy.
+ *
+ * So: exactly `'1'`. Unset, "", "0", "false", "no", "true", "TRUE", " 1 " and
+ * every typo leave it OFF. The asymmetry is the whole point — the failure mode
+ * of an unrecognised value must be "the feature stayed dark", never "the
+ * feature went live" — and a single literal is the only predicate with no
+ * second value to reason about at 3am. The padding case is deliberate too:
+ * if a Coolify env value ever arrives as " 1 " the feature stays dark and the
+ * boot log says so, which is the safe way to be wrong.
+ *
+ * READ TIMING: read ONCE at module load (boot), not per request. Flipping the
+ * env var therefore takes a relay restart, not merely a request — D1-PLAN §2
+ * step 6's flip is an env change plus a restart, and the boot log below is the
+ * confirmation that the new value took. Per-request reads were NOT introduced
+ * here: a switch whose state can change between the validation and the gate
+ * inside one handler is harder to reason about than one that cannot.
+ *
+ * Refs: E2E-PLAN N-1; GATE2-PRE-A5 N-1.1 ack; FIRE "E2E P1.3 / the D1-FINAL
+ * lane" (2026-09-18), which narrows D1-PREP's 612837a to the ratified form.
  *
  * What it does NOT do, deliberately (B6): it never strips an e2e block, and it
  * never forwards a MODIFIED one. A relay that quietly removed key material
@@ -208,17 +230,18 @@ const LEGACY_RESUME_TEARDOWN = process.env.LEGACY_RESUME_TEARDOWN === '1';
  * Live pairs are untouched: this gates the handshake, not the data plane.
  * Flipping it mid-incident must not drop anyone who is already connected.
  */
-const E2E_PAIRING_ENABLED = ['1', 'true'].includes(
-  String(process.env.E2E_PAIRING_ENABLED ?? '').trim().toLowerCase(),
-);
+const E2E_PAIRING_ENABLED = process.env.E2E_PAIRING_ENABLED === '1';
 // Say which way the switch is set, once, at boot. D1-PLAN §2 step 5 verifies
 // the deploy by reading this line out of the relay log — a switch whose state
 // you cannot observe from outside the process is not operable during an
-// incident, which is the one moment it exists for.
+// incident, which is the one moment it exists for. The OFF line names the
+// PREDICATE rather than echoing the value, because the interesting fact during
+// an incident is "it is not the one string that turns this on", and echoing an
+// arbitrary env value into a log line invites someone to read a typo as a mode.
 console.log(
   E2E_PAIRING_ENABLED
-    ? '[e2e] pairing enabled (E2E_PAIRING_ENABLED=1)'
-    : `[e2e] pairing disabled (E2E_PAIRING_ENABLED=${process.env.E2E_PAIRING_ENABLED ?? 'unset'})`,
+    ? "[e2e] encrypted pairing ENABLED (E2E_PAIRING_ENABLED === '1')"
+    : "[e2e] encrypted pairing DISABLED (E2E_PAIRING_ENABLED != '1')",
 );
 
 // One Prisma client for the whole relay process. server.js is a long-lived
@@ -1296,7 +1319,7 @@ function startRelay(httpServer) {
     // block: a block we already dropped for shape is not a mode=1 request, it
     // is a malformed one, and it has already fallen back to plaintext.
     if (!E2E_PAIRING_ENABLED && e2eBlock && e2eBlock.mode === 1) {
-      console.log(`[Relay][${redactToken(room.token)}] type=BROWSER_REQUEST_PAIRING e2e=kill-switch — mode=1 REFUSED (E2E_PAIRING_ENABLED=false)`);
+      console.log(`[Relay][${redactToken(room.token)}] type=BROWSER_REQUEST_PAIRING e2e=kill-switch — mode=1 REFUSED (E2E_PAIRING_ENABLED != '1')`);
       safeSend(browserWs, `PAIRING_E2E_UNAVAILABLE:${JSON.stringify({ reason: 'kill-switch' })}`);
       return;
     }
