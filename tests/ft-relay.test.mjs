@@ -115,8 +115,8 @@ const FT_CONSTS = [
 const FT_FNS = [
   'frameType', 'frameLabel', 'isFileFrame', 'utcDayKey',
   'ftCountDrop', 'ftParse', 'ftSocketForRole', 'ftPeerSocket', 'ftFailedFrame',
-  'ftOfferMetadata',
-  'ftAbort', 'ftReserveQuota', 'ftReleaseQuota', 'ftCommitQuota', 'ftHandleOffer',
+  'ftOfferMetadata', 'ftFrameId', 'ftWireCeiling', 'ftRawFromWire',
+  'ftAbort', 'ftReserveQuota', 'ftSettleQuota', 'ftHandleOffer',
   'handleFileFrame',
 ];
 
@@ -202,10 +202,16 @@ console.log('PART 1 — frozen frames and constants');
     !R.FT_FRAME_TYPES.has('FILE_DECLINE'));
 
   const REASONS = ['hash_mismatch', 'connection_lost', 'relay_backpressure', 'cancelled',
-    'timeout', 'too_large', 'oom', 'quota', 'tier'];
-  check('FILE_FAILED reason vocabulary is exactly the frozen 9',
+    'timeout', 'too_large', 'oom', 'quota', 'tier',
+    // FT-A1 MUST A-7. Frozen after this; FT-2 seals against it.
+    'size_mismatch'];
+  check('FILE_FAILED reason vocabulary is exactly the frozen 10 (A-7 adds size_mismatch)',
     R.FT_FAIL_REASONS.size === REASONS.length && REASONS.every((r) => R.FT_FAIL_REASONS.has(r)),
     `got ${[...R.FT_FAIL_REASONS].join(',')}`);
+  check('size_mismatch IS mintable — a relay-side tamper/lie must be nameable',
+    payloadOf(R.ftFailedFrame('abc12345', 'size_mismatch')).reason === 'size_mismatch');
+  check('no_receiver is NOT in the enum (FT-A1 section 2.3 — timeout already says it)',
+    !R.FT_FAIL_REASONS.has('no_receiver'));
   check('an off-vocabulary reason is normalised, never minted',
     payloadOf(R.ftFailedFrame('abc12345', 'because_i_said_so')).reason === 'cancelled');
 
@@ -248,14 +254,15 @@ console.log('PART 1 — frozen frames and constants');
   // When FT-A1 lands, the mode-ON twin is written against ftOfferMetadata and
   // that function is the only production code that moves.
   const R = buildRelay({ db: DB_ALWAYS_OK });
-  check('ftOfferMetadata returns size and mime and NEVER an account',
-    !('userId' in R.ftOfferMetadata({ size: 1, from: 'phone', userId: 'attacker' }))
-    && !('account' in R.ftOfferMetadata({ size: 1 })));
+  const OID = 'a1b2c3d4e5f60718a1b2c3d4e5f60718';
+  check('ftOfferMetadata NEVER returns an account, however the frame is shaped',
+    !('userId' in R.ftOfferMetadata({ id: OID, size: 1, from: 'phone', userId: 'attacker' }))
+    && !('account' in R.ftOfferMetadata({ id: OID, size: 1 })));
   check('ftOfferMetadata reads size only from a safe positive integer',
-    R.ftOfferMetadata({ size: 4404019 }).size === 4404019
-    && R.ftOfferMetadata({ size: -1 }).size === null
-    && R.ftOfferMetadata({ size: '4404019' }).size === null
-    && R.ftOfferMetadata({}).size === null);
+    R.ftOfferMetadata({ id: OID, size: 4404019 }).size === 4404019
+    && R.ftOfferMetadata({ id: OID, size: -1 }).ok === false
+    && R.ftOfferMetadata({ id: OID, size: '4404019' }).ok === false
+    && R.ftOfferMetadata({ id: OID }).ok === false);
   // Counted by LINE, not by occurrence: the accessor reads payload.size three
   // times on one line (guard, guard, value), so an occurrence count would report
   // 3 and this check would be a permanent false red.
@@ -284,10 +291,194 @@ console.log('PART 1 — frozen frames and constants');
   // A missing or nonsense size is still refused: it is the ONE field the relay
   // acts on, so it is the one field it must insist upon.
   const room2 = mkRoom(phone, browser);
-  R.handleFileFrame(room2, phone, `FILE_OFFER:${JSON.stringify({ id: newId(), e: 'X' })}`, 'phone', room2.token);
+  R.handleFileFrame(room2, phone, `FILE_OFFER:${JSON.stringify({ id: newId() })}`, 'phone', room2.token);
   await new Promise((r) => setImmediate(r));
-  check('an offer with no plaintext size is refused malformed',
-    payloadOf(lastOf(phone, 'FILE_REJECT'))?.reason === 'malformed' && room2.transfer === null);
+  check('an offer with no size is refused size_mismatch and arms nothing',
+    payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'size_mismatch' && room2.transfer === null);
+}
+
+// ── FT-A1 — the sealed FILE_OFFER hint, and the lying sender ───────────────
+console.log('\nFT-A1 — envelope hint ft:{id,size}, fail-closed, and the wire meter');
+{
+  // Vector L's frozen values, from
+  // security/PROJECTS/computercaller/e2e/ADDENDUM-FT-A1.md section 4. The
+  // ciphertext itself is the receiver's fixture; what FT-1 asserts is the RELAY
+  // behaviour around L2, L3 and L5, which is what the addendum assigns to it.
+  const L = {
+    kid: 'kid-ftA1',
+    seq: 42,
+    c: 'Nar4OumTQo9eiu09dKR7Ua_6',
+    ftId: '9f2c4b7e1a08d35c6e90b1f47a2d8c63',
+    ftSize: 734003200,
+  };
+  const sealedOffer = (ft) => `FILE_OFFER:${JSON.stringify(ft === undefined
+    ? { e: 1, kid: L.kid, s: L.seq, c: L.c }
+    : { e: 1, kid: L.kid, s: L.seq, c: L.c, ft })}`;
+
+  // L1 — honest sealed offer, paid tier, nothing used: ADMIT.
+  {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    const frame = sealedOffer({ id: L.ftId, size: L.ftSize });
+    R.handleFileFrame(room, phone, frame, 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    check('L1: an honest sealed offer is admitted', !!room.transfer && room.transfer.state === 'offered');
+    check('L1: the record is keyed on ft.id — the only id the relay can read', room.transfer.id === L.ftId);
+    check('L1: the gate read ft.size', room.transfer.size === L.ftSize);
+    check('L1: the sealed frame is forwarded VERBATIM — the relay re-encodes nothing',
+      lastOf(browser, 'FILE_OFFER') === frame);
+    check('L1: the relay holds no mime, because mime is sealed', room.transfer.mime === '');
+  }
+
+  // L2 — a lowered hint. The relay CANNOT detect this; that is the receiver's
+  // compare against the sealed body, and the identical L1/L2 ciphertext hash is
+  // the proof the hint is outside the authenticated data. What FT-1 must prove
+  // is that the relay still METERS, so tampering the hint DOWN shrinks the
+  // ceiling and can never buy headroom.
+  {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    R.handleFileFrame(room, phone, sealedOffer({ id: L.ftId, size: 1024 }), 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    check('L2: a lowered hint is admitted by the relay (catching it is the receiver job)', !!room.transfer);
+    check('L2: but the ceiling shrinks with it — tampering DOWN never buys headroom',
+      R.ftWireCeiling(1024) < R.ftWireCeiling(L.ftSize));
+  }
+
+  // L3 — the hint is stripped or malformed. FAIL CLOSED. This is the hole that
+  // would otherwise make the whole gate decorative: with no hint and no
+  // refusal, every sender skips tier and quota by omitting one field.
+  //
+  // Split in two by whether the relay can NAME the refused transfer.
+  //
+  // MUST A-2 says "do not forward + emit FILE_FAILED to the sender". When the
+  // unreadable part IS the id, there is nothing to put in that frame — and
+  // FT-A1 s1.2 establishes that a FILE_FAILED without a valid id is dropped by
+  // the receiver's own `coerceFileFrame`, so emitting one would be noise on the
+  // wire that no peer will ever act on. The relay therefore refuses and counts,
+  // and the sender's 60 s offer expiry is the backstop, which is the same
+  // reasoning FT-A1 s2.3 applies to the SW's unsendable failure. FLAGGED for
+  // Security as a deviation from the literal text of A-2.
+  for (const [name, ft] of [
+    ['size negative', { id: L.ftId, size: -1 }],
+    ['size over 1 GiB', { id: L.ftId, size: 1073741825 }],
+    ['size not an integer', { id: L.ftId, size: 1.5 }],
+    ['size a string', { id: L.ftId, size: '10' }],
+    ['size missing', { id: L.ftId }],
+  ]) {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    R.handleFileFrame(room, phone, sealedOffer(ft), 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    check(`L3 (${name}): REFUSED size_mismatch, never forwarded, nothing armed`,
+      payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'size_mismatch'
+      && countOf(browser, 'FILE_OFFER') === 0
+      && room.transfer === null);
+  }
+  for (const [name, ft] of [
+    ['hint absent entirely', undefined],
+    ['hint not an object', 'nope'],
+    ['hint an array', []],
+    ['ft.id not 32 hex', { id: 'short', size: 10 }],
+    ['ft.id uppercase hex', { id: L.ftId.toUpperCase(), size: 10 }],
+  ]) {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    R.handleFileFrame(room, phone, sealedOffer(ft), 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    check(`L3 (${name}): REFUSED, never forwarded, nothing armed`,
+      countOf(browser, 'FILE_OFFER') === 0 && room.transfer === null);
+    check(`L3 (${name}): no unnameable FILE_FAILED is invented`,
+      countOf(phone, 'FILE_FAILED') === 0);
+    check(`L3 (${name}): the refusal is COUNTED as a bad hint, not as a stray frame`,
+      R.ftDropCounts.get(room.token)?.get('FILE_OFFER/bad_hint') === 1);
+  }
+  {
+    // POSITIVE CONTROL for the whole L3 loop. Ten refusals prove nothing if the
+    // relay refuses every sealed offer — the loop would be green against a relay
+    // that had file transfer switched off entirely.
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    R.handleFileFrame(room, phone, sealedOffer({ id: L.ftId, size: L.ftSize }), 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    check('L3 control: the same frame WITH a valid hint IS forwarded — the refusal is the hint, not the seal',
+      countOf(browser, 'FILE_OFFER') === 1);
+  }
+
+  // Sealed chunks carry NO id (sealed by exclusion, FT-A1 s1.7). They must still
+  // flow — matched to the room's single transfer by frame TYPE, which is
+  // plaintext on the wire and authenticated in the AAD.
+  {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    R.handleFileFrame(room, phone, sealedOffer({ id: L.ftId, size: 4 * 1024 * 1024 }), 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ e: 1, kid: L.kid, s: 43, c: 'AAAA' })}`, 'browser', room.token);
+    check('a sealed, id-less FILE_ACCEPT is matched by TYPE and forwarded',
+      room.transfer.state === 'accepted' && countOf(phone, 'FILE_ACCEPT') === 1);
+    const chunk = `FILE_CHUNK:${JSON.stringify({ e: 1, kid: L.kid, s: 44, c: 'A'.repeat(600) })}`;
+    R.handleFileFrame(room, phone, chunk, 'phone', room.token);
+    check('a sealed, id-less FILE_CHUNK is forwarded verbatim', lastOf(browser, 'FILE_CHUNK') === chunk);
+    check('and is METERED at its real wire length',
+      room.transfer.bytesForwarded === Buffer.byteLength(chunk, 'utf8'));
+    const failed = `FILE_FAILED:${JSON.stringify({ e: 1, kid: L.kid, s: 45, c: 'BBBB' })}`;
+    R.handleFileFrame(room, phone, failed, 'phone', room.token);
+    check('a sealed FILE_FAILED is forwarded VERBATIM, never re-minted as plaintext',
+      lastOf(browser, 'FILE_FAILED') === failed);
+  }
+  {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    R.handleFileFrame(room, browser, 'FILE_ACK:{"id":"zzz","upTo":1}', 'browser', room.token);
+    check('an id that is PRESENT but malformed is dropped, never treated as absent',
+      countOf(phone, 'FILE_ACK') === 0);
+  }
+
+  // L5 — THE LYING SENDER. Hint and sealed size agree (both 1 KiB, both lies
+  // told by the same party), so the relay gate admits AND the receiver compare
+  // passes. Only the wire meter can stop it.
+  {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    R.handleFileFrame(room, phone, sealedOffer({ id: L.ftId, size: 1024 }), 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ e: 1, kid: L.kid, s: 43, c: 'AAAA' })}`, 'browser', room.token);
+    check('L5: the 1 KiB lie IS admitted — both of the controls in (A) are satisfied', !!room.transfer);
+    let forwarded = 0;
+    for (let seq = 0; seq < 200 && room.transfer; seq++) {
+      R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ e: 1, kid: L.kid, s: 100 + seq, c: 'A'.repeat(65536) })}`, 'phone', room.token);
+      forwarded = countOf(browser, 'FILE_CHUNK');
+    }
+    check('L5b: the wire meter aborts the stream', room.transfer === null);
+    check('L5b: within a chunk or two, not after 700 MiB', forwarded <= 2, `${forwarded} chunks got through`);
+    check('L5b: both ends are told size_mismatch',
+      payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'size_mismatch'
+      && payloadOf(lastOf(browser, 'FILE_FAILED'))?.reason === 'size_mismatch');
+  }
+
+  // THE UNIT CONVERSION. Comparing WIRE bytes against a RAW hint directly is the
+  // bug that aborts every honest transfer at about three quarters through, with
+  // size_mismatch, looking exactly like an attack.
+  {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const raw = 100 * 1024 * 1024;
+    check('the ceiling is in WIRE bytes and exceeds the RAW hint by the base64 factor',
+      R.ftWireCeiling(raw) > raw * 1.3 && R.ftWireCeiling(raw) < raw * 1.5, String(R.ftWireCeiling(raw)));
+    check('the ceiling is capped at the 1 GiB per-file limit in the SAME units',
+      R.ftWireCeiling(R.FT_MAX_FILE_BYTES) === R.ftWireCeiling(R.FT_MAX_FILE_BYTES * 2));
+    check('ftRawFromWire inverts it and never exceeds the per-file cap',
+      R.ftRawFromWire(0) === 0
+      && R.ftRawFromWire(Math.ceil(raw * R.FT_WIRE_OVERHEAD_FACTOR)) === raw
+      && R.ftRawFromWire(Number.MAX_SAFE_INTEGER) === R.FT_MAX_FILE_BYTES);
+  }
 }
 
 // ── PART 2 — chunk size vs the relay's real maxPayload ──────────────────────
@@ -435,8 +626,8 @@ console.log('\nPART 5 — backpressure and declared-size enforcement');
   const { R, room, phone, browser, id } = await armedTransfer({ size: 1024 * 1024 });
   const fat = `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 1, data: 'A'.repeat(2 * 1024 * 1024) })}`;
   R.handleFileFrame(room, phone, fat, 'phone', room.token);
-  check('a chunk past declared size x1.40 aborts as too_large',
-    room.transfer === null && payloadOf(lastOf(browser, 'FILE_FAILED'))?.reason === 'too_large');
+  check('a chunk past the metered ceiling aborts as size_mismatch (A-3 / Ken Addendum 2)',
+    room.transfer === null && payloadOf(lastOf(browser, 'FILE_FAILED'))?.reason === 'size_mismatch');
   check('the over-size chunk was not forwarded', countOf(browser, 'FILE_CHUNK') === 0);
 }
 {
@@ -731,30 +922,40 @@ try {
   check('the new day holds 1 GiB', (await readBytes(D2)) === BigInt(GiB));
   check('yesterday is untouched by today', (await readBytes(D1)) === BigInt(R.FT_DAILY_QUOTA_BYTES));
 
-  // Release targets the day the reservation was MADE on, never "today". A
-  // transfer opened at 23:59:50 and failed at 00:00:10 must refund yesterday.
-  const recAcrossMidnight = { senderUserId: userId, quotaDay: D1, size: GiB, quotaSettled: false };
-  R.ftReleaseQuota(recAcrossMidnight);
+  // SETTLE targets the day the reservation was MADE on, never "today". A
+  // transfer opened at 23:59:50 and failed at 00:00:10 must settle yesterday.
+  // bytesForwarded 0 = nothing was metered = the reservation is fully released,
+  // which is the FILE_FAILED-before-any-chunk case.
+  const recAcrossMidnight = { senderUserId: userId, quotaDay: D1, size: GiB, bytesForwarded: 0, quotaSettled: false };
+  R.ftSettleQuota(recAcrossMidnight);
   await new Promise((r) => setTimeout(r, 250));
-  check('a failure refunds the day it was charged to', (await readBytes(D1)) === BigInt(GiB));
+  check('a failure with nothing metered fully refunds the day it charged', (await readBytes(D1)) === BigInt(GiB));
   check('and does NOT touch the current day', (await readBytes(D2)) === BigInt(GiB));
 
-  check('the release is marked settled', recAcrossMidnight.quotaSettled === true);
-  R.ftReleaseQuota(recAcrossMidnight);       // second call — must be a no-op
+  check('the settle is marked settled', recAcrossMidnight.quotaSettled === true);
+  R.ftSettleQuota(recAcrossMidnight);       // second call — must be a no-op
   await new Promise((r) => setTimeout(r, 250));
-  check('a double release refunds ONCE, not twice', (await readBytes(D1)) === BigInt(GiB));
+  check('a double settle refunds ONCE, not twice', (await readBytes(D1)) === BigInt(GiB));
 
-  // Commit is "leave it where it is".
-  const recDone = { senderUserId: userId, quotaDay: D2, size: GiB, quotaSettled: false };
-  R.ftCommitQuota(recDone);
-  check('commit marks the record settled', recDone.quotaSettled === true);
-  R.ftReleaseQuota(recDone);
-  await new Promise((r) => setTimeout(r, 250));
-  check('a committed transfer can never be refunded afterwards', (await readBytes(D2)) === BigInt(GiB));
+  // MUST A-4, the whole point: the charge is what was METERED, not what was
+  // hinted. A transfer that hinted 1 GiB and moved nothing pays nothing; one
+  // that hinted 1 KiB and moved 700 MiB pays for 700 MiB.
+  {
+    const wire700 = Math.ceil(700 * 1024 * 1024 * R.FT_WIRE_OVERHEAD_FACTOR);
+    const liar = { senderUserId: userId, quotaDay: D2, size: 1024, bytesForwarded: wire700, quotaSettled: false };
+    const before = await readBytes(D2);
+    R.ftSettleQuota(liar);
+    await new Promise((r) => setTimeout(r, 250));
+    const charged = (await readBytes(D2)) - before;
+    check('vector L5: a sender that hinted 1 KiB and streamed 700 MiB is charged ~700 MiB, not 1 KiB',
+      charged > BigInt(699 * 1024 * 1024) && charged <= BigInt(701 * 1024 * 1024), String(charged));
+    check('the settle records the raw figure it charged',
+      liar.settledRaw > 699 * 1024 * 1024 && liar.settledRaw <= 701 * 1024 * 1024, String(liar.settledRaw));
+  }
 
   // The floor: a refund must never drive a counter negative.
-  const recHuge = { senderUserId: userId, quotaDay: D2, size: 8 * GiB, quotaSettled: false };
-  R.ftReleaseQuota(recHuge);
+  const recHuge = { senderUserId: userId, quotaDay: D2, size: 8 * GiB, bytesForwarded: 0, quotaSettled: false };
+  R.ftSettleQuota(recHuge);
   await new Promise((r) => setTimeout(r, 250));
   check('an over-large refund floors at zero, never negative', (await readBytes(D2)) === 0n);
 
@@ -774,7 +975,7 @@ try {
     R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
     R.handleFileFrame(room, browser, `FILE_FAILED:${JSON.stringify({ id, reason: 'hash_mismatch' })}`, 'browser', room.token);
     await new Promise((r) => setTimeout(r, 300));
-    check('FILE_FAILED released the reservation', (await readBytes(today)) === before);
+    check('FILE_FAILED with nothing metered releases the whole reservation', (await readBytes(today)) === before);
     check('and the peer was told', payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'hash_mismatch');
   }
   {
@@ -786,10 +987,20 @@ try {
     R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'b.bin', size: 7 * 1024 * 1024, mime: 'application/octet-stream', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
     await new Promise((r) => setTimeout(r, 300));
     R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+    // Stream ~1 MiB of real wire bytes, then finish. The charge must reflect
+    // THOSE bytes, not the 7 MiB that was hinted.
+    const data = 'A'.repeat(300 * 1024);
+    for (let seq = 0; seq < 4; seq++) {
+      R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq, n: 4, data })}`, 'phone', room.token);
+    }
+    const metered = room.transfer.bytesForwarded;
+    check('the relay metered the ACTUAL wire bytes of every chunk',
+      metered > 1_200_000 && metered < 1_300_000, String(metered));
     R.handleFileFrame(room, phone, `FILE_DONE:${JSON.stringify({ id, sha256: sha() })}`, 'phone', room.token);
     await new Promise((r) => setTimeout(r, 300));
-    check('FILE_DONE COMMITS the bytes — they stay on the counter',
-      (await readBytes(today)) === before + BigInt(7 * 1024 * 1024));
+    const charged = (await readBytes(today)) - before;
+    check('FILE_DONE charges METERED bytes, not the 7 MiB hint (MUST A-4)',
+      charged < BigInt(2 * 1024 * 1024) && charged > BigInt(800 * 1024), String(charged));
   }
 
   // The janitor's delete is a ranged one against the day index.

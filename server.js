@@ -374,6 +374,13 @@ const FT_FRAME_TYPES = new Set([
 const FT_FAIL_REASONS = new Set([
   'hash_mismatch', 'connection_lost', 'relay_backpressure', 'cancelled',
   'timeout', 'too_large', 'oom', 'quota', 'tier',
+  // FT-A1 MUST A-7 (Security, 2026-09-18). A tamper/lie signal that the enum
+  // had no word for. Reusing `cancelled` would label it user action and
+  // `hash_mismatch` would label it corruption; both hide the one event the
+  // control exists to surface. FT-1 owns the enum, FT-3a/3b carry the copy, and
+  // this MUST land before FT-2 seals FILE_OFFER — otherwise every mismatch is
+  // dropped by the receiver's own validator and presents as a 30 s hang.
+  'size_mismatch',
 ]);
 
 /** 1 GiB hard per-file cap (Addendum A DECIDED). Checked at FILE_OFFER. */
@@ -1904,8 +1911,41 @@ function startRelay(httpServer) {
     let payload;
     try { payload = JSON.parse(s.slice(colon + 1)); } catch { return { type, payload: null }; }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { type, payload: null };
-    if (typeof payload.id !== 'string' || !/^[0-9a-fA-F]{8,64}$/.test(payload.id)) return { type, payload: null };
+    // NOTE an id is NOT required here, and that changed with FT-A1.
+    //
+    // Under Encrypted mode ON every FILE_* frame except FILE_OFFER is "sealed by
+    // exclusion" and arrives as {e,kid,s,c} with NO readable id — the id is
+    // inside the ciphertext. Requiring one would have dropped every chunk of
+    // every encrypted transfer as malformed. FT-A1 section 1.7 is explicit that the
+    // relay drives its per-room record from the frame TYPE alone, which is
+    // plaintext on the wire and authenticated in the AAD, so an id-less frame is
+    // matched to the room's single in-flight transfer rather than by key.
+    //
+    // ftFrameId() below is where "is there a usable id, and is it well-formed"
+    // is decided, so a MALFORMED id is still rejected — it just is not confused
+    // with an ABSENT one.
     return { type, payload };
+  }
+
+  /**
+   * The transfer id a FILE_* frame identifies, or null when the frame carries
+   * none (the sealed case, see ftParse).
+   *
+   * Under mode OFF the id is the top-level `id`. Under mode ON, FILE_OFFER's id
+   * is in the plaintext envelope hint `ft.id` (FT-A1 MUST A-1) and no other
+   * FILE_* frame carries one at all.
+   *
+   * @returns {string|null|false}  a valid id, null when absent, false when present-but-malformed
+   */
+  function ftFrameId(payload) {
+    if (typeof payload.id === 'string') {
+      return /^[0-9a-fA-F]{8,64}$/.test(payload.id) ? payload.id : false;
+    }
+    const ft = payload.ft;
+    if (ft && typeof ft === 'object' && typeof ft.id === 'string') {
+      return /^[0-9a-f]{32}$/.test(ft.id) ? ft.id : false;
+    }
+    return null;
   }
 
   /** The ACTIVE socket for a role, or null. */
@@ -1936,7 +1976,7 @@ function startRelay(httpServer) {
     const rec = room.transfer;
     if (!rec) return;
     room.transfer = null;
-    ftReleaseQuota(rec);
+    ftSettleQuota(rec);
     if (!notify) return;
     const frame = ftFailedFrame(rec.id, reason);
     for (const role of ['phone', 'browser']) {
@@ -1994,9 +2034,20 @@ function startRelay(httpServer) {
   }
 
   /**
-   * Release a reservation. Idempotent via `rec.quotaSettled` — a transfer that
-   * is aborted twice (say a stall sweep racing an inbound FILE_FAILED) must
-   * refund once, not twice.
+   * TERMINAL SETTLE — the one place a transfer's quota reaches its final value,
+   * whether it ended in FILE_DONE or FILE_FAILED.
+   *
+   * FT-A1 MUST A-4 + Ken's Addendum 2: the daily quota is charged on METERED
+   * bytes, not on the hinted size, and a transfer aborted at the meter still
+   * pays for what it burned. That makes DONE and FAILED the same operation:
+   * adjust the reservation to what was actually relayed. A transfer that failed
+   * before a single chunk settles to zero — a full refund, which is the
+   * "released on FILE_FAILED" behaviour Addendum A asked for — and one that
+   * streamed 700 MiB against a 1 KiB lie settles to 700 MiB, which is the
+   * abuse budget vector L5 exists to protect.
+   *
+   * Idempotent via `rec.quotaSettled`: a stall sweep racing an inbound
+   * FILE_FAILED must settle once, not twice.
    *
    * The decrement targets the day the reservation was MADE on (`rec.quotaDay`),
    * never "today". A transfer that starts at 23:59:50 UTC and fails at 00:00:10
@@ -2006,24 +2057,31 @@ function startRelay(httpServer) {
    * GREATEST(0, …) because a refund must never drive a counter negative, which
    * would hand the account free quota tomorrow if a row somehow double-refunded.
    */
-  function ftReleaseQuota(rec) {
+  function ftSettleQuota(rec) {
     if (!rec || rec.quotaSettled || !rec.quotaDay || !rec.senderUserId) return;
     rec.quotaSettled = true;
     const { senderUserId, quotaDay, size } = rec;
-    db.$executeRawUnsafe(
-      `UPDATE "FileQuota" SET "bytes" = GREATEST(0::bigint, "bytes" - $3::bigint), "updatedAt" = now()
-       WHERE "userId" = $1 AND "day" = $2`,
-      senderUserId,
-      quotaDay,
-      String(size),
-    ).catch((e) => {
-      console.error(`[Relay] FileQuota release failed (user=${senderUserId} day=${quotaDay}): ${e.message}`);
+    // MUST A-4: the account is charged what it actually MOVED, never what it
+    // claimed it would move. The reservation made at FILE_OFFER was admission
+    // control on an untrusted number; this is the correction to the truth.
+    // `bytesForwarded` IS the MUST A-3 meter: every FILE_CHUNK's actual wire
+    // length, summed, for this (room, id). It is deliberately one field and not
+    // a second `metered` counter alongside it — two names for one quantity is
+    // how one of them stops being incremented.
+    const actual = ftRawFromWire(rec.bytesForwarded);
+    const delta = actual - size;                 // negative = refund the unused part
+    rec.settledRaw = actual;
+    if (delta === 0) return;
+    const sql = delta > 0
+      ? `UPDATE "FileQuota" SET "bytes" = "bytes" + $3::bigint, "updatedAt" = now()
+         WHERE "userId" = $1 AND "day" = $2`
+      // GREATEST(0, ...) because a refund must never drive a counter negative,
+      // which would hand the account free quota tomorrow.
+      : `UPDATE "FileQuota" SET "bytes" = GREATEST(0::bigint, "bytes" - $3::bigint), "updatedAt" = now()
+         WHERE "userId" = $1 AND "day" = $2`;
+    db.$executeRawUnsafe(sql, senderUserId, quotaDay, String(Math.abs(delta))).catch((e) => {
+      console.error(`[Relay] FileQuota settle failed (user=${senderUserId} day=${quotaDay}): ${e.message}`);
     });
-  }
-
-  /** Commit: the bytes simply STAY on the counter. Marks the record settled. */
-  function ftCommitQuota(rec) {
-    if (rec) rec.quotaSettled = true;
   }
 
   /**
@@ -2060,14 +2118,84 @@ function startRelay(httpServer) {
    * @returns {{size:number|null, mime:string|null, sealed:boolean}}
    */
   function ftOfferMetadata(payload) {
-    if (!payload || typeof payload !== 'object') return { size: null, mime: null, sealed: false };
-    // `e` is the E2E envelope's sealed-body field (spec section 13.10). Its presence
-    // is what tells us name/sha256 are not readable here and must not be
-    // required — it is NOT a permission to skip the size gate.
-    const sealed = typeof payload.e === 'string' && payload.e.length > 0;
+    const none = { id: null, size: null, mime: null, sealed: false, ok: false };
+    if (!payload || typeof payload !== 'object') return none;
+
+    // A sealed frame is the E2E envelope {e,kid,s,c}. `c` is the ciphertext and
+    // `e` is the version marker — a NUMBER (1), not a string; vector L's
+    // envelope is {"e":1,"kid":"kid-ftA1","s":42,"c":"..."}. Keying the check on
+    // `c` being a non-empty string is what makes it independent of how `e` is
+    // spelled if the envelope version ever moves.
+    const sealed = typeof payload.c === 'string' && payload.c.length > 0 && payload.e !== undefined;
+
+    if (sealed) {
+      // MUST A-2 — FAIL CLOSED on a missing or malformed hint. This is the hole
+      // that would otherwise make the entire gate decorative: with no hint and
+      // no refusal, EVERY sender bypasses tier and quota by omitting one field.
+      // Vector L3.
+      // `sealed: true` is carried on the REFUSAL too. Returning the bare `none`
+      // here reported every bad hint as an ordinary malformed plaintext frame,
+      // so the one counter that distinguishes "someone is stripping hints" from
+      // "a client sent junk" never moved. A refusal that cannot be told apart
+      // from noise is a refusal nobody will ever notice firing.
+      const bad = { id: null, size: null, mime: null, sealed: true, ok: false };
+      const ft = payload.ft;
+      if (!ft || typeof ft !== 'object' || Array.isArray(ft)) return bad;
+      if (typeof ft.id !== 'string' || !/^[0-9a-f]{32}$/.test(ft.id)) return bad;
+      if (!Number.isSafeInteger(ft.size) || ft.size < 0 || ft.size > FT_MAX_FILE_BYTES) return bad;
+      // mime is SEALED under mode ON and the relay does not get one. It never
+      // needed it — it is a log-line nicety, not an input to any decision.
+      return { id: ft.id, size: ft.size, mime: null, sealed: true, ok: true };
+    }
+
+    // Mode OFF: the body is the plaintext FileOffer.
+    const id = typeof payload.id === 'string' && /^[0-9a-fA-F]{8,64}$/.test(payload.id) ? payload.id : null;
     const size = Number.isSafeInteger(payload.size) && payload.size > 0 ? payload.size : null;
     const mime = typeof payload.mime === 'string' ? payload.mime.slice(0, 128) : null;
-    return { size, mime, sealed };
+    if (id === null || size === null) return none;
+    return { id, size, mime, sealed: false, ok: true };
+  }
+
+  /**
+   * MUST A-3 — the wire-byte ceiling for a transfer that declared `size` RAW
+   * bytes, and the single most unit-sensitive number in this file.
+   *
+   * `size` is RAW file bytes. The meter counts WIRE bytes: base64 is +33 %
+   * before the JSON envelope, before any E2E seal. Comparing the two directly —
+   * which is what "metered bytes exceeding the hint" reads like in English —
+   * would abort every HONEST transfer at roughly three quarters of the way
+   * through, with `size_mismatch`, and the bug would look exactly like an
+   * attack. So the hint is converted into its wire equivalent first, and the
+   * slack is one whole chunk on top (a transfer is not over budget for
+   * overshooting by less than the quantum it sends in).
+   *
+   * The second term applies the 1 GiB PER-FILE cap in the same units, so a
+   * sender that hints 1 GiB and then streams forever is stopped at the cap
+   * rather than at 1.4x the cap.
+   */
+  function ftWireCeiling(size) {
+    const hinted = Math.ceil(size * FT_WIRE_OVERHEAD_FACTOR) + FT_CHUNK_WIRE_BYTES;
+    const hardCap = Math.ceil(FT_MAX_FILE_BYTES * FT_WIRE_OVERHEAD_FACTOR) + FT_CHUNK_WIRE_BYTES;
+    return Math.min(hinted, hardCap);
+  }
+
+  /**
+   * MUST A-4 — the RAW-byte equivalent of what was actually relayed, which is
+   * what the daily quota is charged on.
+   *
+   * `ft.size` is an admission-control ESTIMATE supplied by the party being
+   * charged; vector L5 is the attack where a sender hints 1 KiB, passes the
+   * gate and the receiver's compare (both values are lies told by the same
+   * party), and streams 700 MiB for 1 KiB of quota. The meter is the truth.
+   *
+   * Inverting the wire overhead is itself an estimate, but it is an estimate
+   * derived from a MEASUREMENT rather than from the sender's claim, and it errs
+   * within one chunk of the real figure. It is clamped to the per-file cap so a
+   * settle can never charge more than a file is allowed to be.
+   */
+  function ftRawFromWire(wireBytes) {
+    if (!wireBytes) return 0;
+    return Math.min(Math.ceil(wireBytes / FT_WIRE_OVERHEAD_FACTOR), FT_MAX_FILE_BYTES);
   }
 
   /**
@@ -2085,30 +2213,47 @@ function startRelay(httpServer) {
    * one-per-room rule would be decided by which DB round-trip returned first.
    */
   async function ftHandleOffer(room, ws, role, payload, token) {
-    const id = payload.id;
+    // THE ACCESSOR RUNS FIRST, before any other check, because under mode ON it
+    // is also where the transfer's ID comes from. Under mode OFF the id is the
+    // plaintext `id`; under mode ON it is `ft.id`, and there is no other
+    // readable one — so nothing that needs to NAME this transfer (the busy
+    // reject, the no-peer failure) can run ahead of it.
+    //
+    // It FAILS CLOSED when a sealed offer's hint is absent or malformed
+    // (MUST A-2, vector L3). That refusal is the whole gate: without it, every
+    // sender skips tier and quota by omitting one field.
+    const meta = ftOfferMetadata(payload);
+    if (!meta.ok) {
+      // size_mismatch, not a bare `malformed` reject: under mode ON this IS the
+      // tamper signal. L3 is literally "the relay strips ft", and the receiver
+      // answers that same case with that same reason. One event, one word, both
+      // ends of the wire.
+      //
+      // When the id itself is the unreadable part there is nothing to name, and
+      // a FILE_FAILED without a valid id is dropped by the receiver's own
+      // validator anyway — so the frame is not invented. The sender's 60 s offer
+      // expiry is the backstop, which is the same reasoning FT-A1 section 2.3 uses
+      // for the SW's unsendable failure.
+      const nameable = ftFrameId(payload);
+      if (nameable) safeSend(ws, ftFailedFrame(nameable, 'size_mismatch'));
+      ftCountDrop(token, 'FILE_OFFER', meta.sealed ? 'bad_hint' : 'malformed');
+      rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused (hint absent or malformed) sealed=${meta.sealed} nameable=${!!nameable}`);
+      return;
+    }
+    const id = meta.id;
+    const size = meta.size;
+
     const dest = ftPeerSocket(room, role);
     if (!dest) {
       safeSend(ws, ftFailedFrame(id, 'connection_lost'));
       return;
     }
-    // One transfer per room at a time. Refused with FILE_REJECT (an offer that
-    // was never armed did not FAIL, it was declined) so the sender's UI can say
-    // "busy" rather than rendering a transfer error.
+    // One transfer per room at a time, keyed by the transfer id. Refused with
+    // FILE_REJECT (an offer that was never armed did not FAIL, it was declined)
+    // so the sender's UI can say "busy" rather than render a transfer error.
     if (room.transfer) {
       safeSend(ws, `FILE_REJECT:${JSON.stringify({ id, reason: 'busy' })}`);
       rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused busy id=${id} (in-flight id=${room.transfer.id})`);
-      return;
-    }
-    // Every read of the offer body goes through the ONE accessor — see
-    // ftOfferMetadata for why. `size` is the only field the relay acts on (the
-    // 1 GiB cap and the 2 GiB/day reservation are both computed from it), so it
-    // is the only field it insists upon; name/mime/sha256 may legitimately be
-    // inside the seal under mode ON.
-    const meta = ftOfferMetadata(payload);
-    const size = meta.size;
-    if (size === null) {
-      safeSend(ws, `FILE_REJECT:${JSON.stringify({ id, reason: 'malformed' })}`);
-      ftCountDrop(token, 'FILE_OFFER', 'malformed');
       return;
     }
 
@@ -2158,11 +2303,11 @@ function startRelay(httpServer) {
 
     // The await above yielded; the room may have been reset or the pair torn
     // down underneath us. Re-check both, and refund if we are too late.
-    if (room.transfer !== rec) { ftReleaseQuota(rec); return; }
+    if (room.transfer !== rec) { ftSettleQuota(rec); return; }
     const destNow = ftPeerSocket(room, role);
     if (!destNow || destNow.readyState !== WebSocket.OPEN) {
       room.transfer = null;
-      ftReleaseQuota(rec);
+      ftSettleQuota(rec);
       safeSend(ws, ftFailedFrame(id, 'connection_lost'));
       return;
     }
@@ -2200,27 +2345,49 @@ function startRelay(httpServer) {
       return true;
     }
 
+    // The id this frame names, or null when it carries none. Under Encrypted
+    // mode ON every FILE_* frame except FILE_OFFER is sealed by exclusion and
+    // has no readable id (FT-A1 section 1.7) — those are matched to the room's
+    // single in-flight transfer by TYPE, which is plaintext on the wire and
+    // authenticated in the AAD. `false` means an id was present and malformed,
+    // which is never matched to anything.
+    const frameId = ftFrameId(payload);
+    // NOTE the malformed-id drop is BELOW the FILE_OFFER branch, not above it.
+    // A sealed offer whose ft.id is malformed must reach ftHandleOffer so that
+    // MUST A-2's fail-closed refusal runs and is COUNTED as a bad hint; dropping
+    // it here would look identical in the logs to a stray frame and would hide
+    // the one event the hint gate exists to surface.
     if (type === 'FILE_OFFER') {
       ftHandleOffer(room, ws, role, payload, token).catch((e) => {
         console.error(`[Relay][${redactToken(token)}] FILE_OFFER gate crashed: ${e.message}`);
-        if (room.transfer && room.transfer.id === payload.id) ftAbort(room, 'cancelled');
+        if (room.transfer && room.transfer.id === frameId) ftAbort(room, 'cancelled');
       });
+      return true;
+    }
+
+    if (frameId === false) {
+      ftCountDrop(token, type, 'bad_id');
+      rlog(`[Relay][${redactToken(token)}] FILE frame dropped (malformed id): ${frameLabel(msg)}`);
       return true;
     }
 
     const rec = room.transfer;
     const dest = ftPeerSocket(room, role);
 
-    // Every remaining frame type is about an EXISTING transfer. No record, or a
-    // record for a different id, means the frame is stale (a late ACK after an
-    // abort, a chunk from a cancelled transfer) or forged. Drop and count.
-    if (!rec || rec.id !== payload.id) {
+    // Every remaining frame type is about an EXISTING transfer. No record — or a
+    // record for a DIFFERENT id, when the frame names one at all — means the
+    // frame is stale (a late ACK after an abort, a chunk from a cancelled
+    // transfer) or forged. Drop and count.
+    if (!rec || (frameId !== null && rec.id !== frameId)) {
       ftCountDrop(token, type, 'no_record');
       rlog(`[Relay][${redactToken(token)}] FILE frame dropped (no matching transfer): ${frameLabel(msg)}`);
       // A resume for a transfer the relay no longer knows about is the one case
       // the sender must hear about, or its UI hangs waiting for chunks that will
-      // never come (deliverable (d)).
-      if (type === 'FILE_RESUME') safeSend(ws, ftFailedFrame(payload.id, 'connection_lost'));
+      // never come (deliverable (d)). With a sealed, id-less resume there is
+      // nothing to name, so the failure is addressed to the id the relay would
+      // have used — and when there is none, the sender's own stall timer is the
+      // backstop and no frame is invented.
+      if (type === 'FILE_RESUME' && frameId) safeSend(ws, ftFailedFrame(frameId, 'connection_lost'));
       return true;
     }
 
@@ -2242,7 +2409,7 @@ function startRelay(httpServer) {
       case 'FILE_REJECT': {
         if (isSender) { ftCountDrop(token, type, 'bad_state'); return true; }
         room.transfer = null;
-        ftReleaseQuota(rec);
+        ftSettleQuota(rec);
         safeSend(dest, msg);
         rlog(`[Relay][${redactToken(token)}] FILE_REJECT id=${rec.id} — record dropped, quota released`);
         return true;
@@ -2268,15 +2435,31 @@ function startRelay(httpServer) {
           ftAbort(room, 'relay_backpressure');
           return true;
         }
-        // Declared-size enforcement. A sender cannot declare 1 MB and push 200.
+        // MUST A-3 — THE WIRE METER. This is the control that defends against a
+        // LYING SENDER, which is the party the quota is charged to and therefore
+        // the party with the motive. Vector L5: a sender seals `size: 1024` AND
+        // hints `ft.size: 1024`, so the relay's admission gate passes and the
+        // receiver's compare passes too — both values are lies told by the same
+        // party — and then it streams 700 MiB for 1 KiB of quota, indefinitely.
+        // Nothing in the hint/sealed compare can see that; only counting the
+        // bytes as they go past can.
+        //
+        // FILE_CHUNK is padding-exempt (`_CHUNK` suffix), so the count is exact
+        // and costs no crypto and no parsing.
         const wire = Buffer.byteLength(msg, 'utf8');
-        // Floored at one full chunk: see FT_CHUNK_WIRE_BYTES. A percentage
-        // ceiling with no floor is a size-blind rule that only misbehaves at the
-        // small end, where nothing would ever have tested it.
-        const ceiling = Math.max(Math.ceil(rec.size * FT_WIRE_OVERHEAD_FACTOR), FT_CHUNK_WIRE_BYTES);
+        // ftWireCeiling converts the RAW hint into WIRE bytes before comparing.
+        // Comparing them directly would abort every honest transfer at about
+        // three quarters through — and it would look like an attack.
+        const ceiling = ftWireCeiling(rec.size);
         if (rec.bytesForwarded + wire > ceiling) {
-          rlog(`[Relay][${redactToken(token)}] FILE_CHUNK over declared size id=${rec.id} declared=${rec.size} forwarded=${rec.bytesForwarded}`);
-          ftAbort(room, 'too_large');
+          rlog(`[Relay][${redactToken(token)}] FILE_CHUNK over metered ceiling id=${rec.id} hinted=${rec.size} metered=${rec.bytesForwarded} ceiling=${ceiling}`);
+          // `size_mismatch` per Ken's Addendum 2, which is the binding text and
+          // is also the more precise word: what happened is that the declared
+          // size and the actual stream disagree. Security's A-3 says `quota`;
+          // that reason is kept for the case it describes exactly — the account
+          // having no allowance left — rather than being overloaded onto this.
+          // The metered bytes are CHARGED on the way out: ftAbort settles.
+          ftAbort(room, 'size_mismatch');
           return true;
         }
         rec.bytesForwarded += wire;
@@ -2325,19 +2508,28 @@ function startRelay(httpServer) {
       case 'FILE_DONE': {
         if (!isSender) { ftCountDrop(token, type, 'bad_state'); return true; }
         room.transfer = null;
-        ftCommitQuota(rec);   // bytes STAY on the counter
+        ftSettleQuota(rec);  // charge what was METERED, not what was hinted
         safeSend(dest, msg);
         rlog(`[Relay][${redactToken(token)}] FILE_DONE id=${rec.id} bytes=${rec.bytesForwarded} — quota committed`);
         return true;
       }
 
       case 'FILE_FAILED': {
-        // Either side, terminal. Normalise the reason so a client-authored
-        // string can never widen the frozen vocabulary on its way through.
+        // Either side, terminal.
         room.transfer = null;
-        ftReleaseQuota(rec);
-        safeSend(dest, ftFailedFrame(rec.id, payload.reason));
-        rlog(`[Relay][${redactToken(token)}] FILE_FAILED id=${rec.id} reason=${payload.reason} — quota released`);
+        ftSettleQuota(rec);
+        // A SEALED failure is forwarded VERBATIM. Its reason is inside the
+        // ciphertext, so re-minting the frame would (a) invent a reason the
+        // sender never gave and (b) turn a sealed frame into a plaintext one —
+        // which the receiver is required to DROP while the session is ON
+        // (FT-A1 MUST B-1's downgrade guard). The relay would have silently
+        // converted "the transfer failed" into "nothing ever arrived".
+        //
+        // A PLAINTEXT failure is normalised, so a client-authored string can
+        // never widen the frozen vocabulary on its way through.
+        const sealed = typeof payload.c === 'string' && payload.e !== undefined;
+        safeSend(dest, sealed ? msg : ftFailedFrame(rec.id, payload.reason));
+        rlog(`[Relay][${redactToken(token)}] FILE_FAILED id=${rec.id} sealed=${sealed} — quota settled`);
         return true;
       }
 

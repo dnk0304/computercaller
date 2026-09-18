@@ -1,0 +1,48 @@
+FT-1 gate-equivalent steps, run individually (e2e-gate.mjs refuses an ft-* root; ticketed to P5a-UI (f2))
+tip=1480eb94b5b8099652930c25ecdbc460e50e0ddc  base=9a54085  utc=2026-09-18T01:27:25Z
+
+PASS  node-check:server.js
+PASS  node-check:chrome-extension/background.js
+PASS  node-check:chrome-extension/shell.js
+PASS  tsc-noEmit (0 errors)
+      relay:pairing-persist.test.mjs :: 84 passed, 0 failed
+      relay:pair-state.test.mjs :: 22/22 passed
+      relay:dock-resume.test.mjs :: 26 passed, 0 failed
+      relay:reset-room.test.mjs :: reset-room.test.mjs OK
+      relay:listener-heartbeat.test.mjs :: listener-heartbeat.test.mjs OK
+      relay:relink-kill-frame-buffer.test.mjs :: 18 passed, 0 failed
+      relay:call-separation.test.mjs :: 16 passed, 0 failed
+      relay:www-origin.test.mjs :: 8 passed, 0 failed
+      relay:repro-resume-sync.mjs :: 9 repro assertions passed
+      relay:session-superseded.test.mjs :: session-superseded: 29/29 checks passed
+      relay:log-redaction.test.mjs :: OK log-redaction: 59 passed, 0 failed
+      relay:devicekey-authz.test.mjs :: devicekey-authz: 61 passed, 0 failed (61 checks)
+      relay:ft-relay.test.mjs :: OK ft-relay: 140 passed, 0 failed
+      relay:e2e-kill-switch.test.mjs :: e2e-kill-switch: 47 passed, 0 failed (47 checks)
+      relay:e2e-listener-wrap.test.mjs :: e2e-listener-wrap: 48 passed, 0 failed (48 checks)
+      relay:e2e-pair-state-ctx.test.mjs :: e2e-pair-state-ctx: 55 passed, 0 failed (55 checks)
+      relay:e2e-passthrough.test.mjs :: e2e-passthrough: 75 passed, 0 failed (75 checks)
+      relay:e2e-reset-room-epoch.test.mjs :: e2e-reset-room-epoch: 28 passed, 0 failed (28 checks)
+      relay:e2e-resume-carries-block.test.mjs :: e2e-resume-carries-block: 57 passed, 0 failed (57 checks)
+      relay:e2e-sw-a3-ctx.test.mjs :: 31/31 checks passed
+      relay:e2e-sw-a4-canonical-peer.test.mjs :: 20/20 checks passed
+      relay:e2e-sw-chokepoint.test.mjs :: 27/27 checks passed
+      relay:e2e-sw-nonce-prefix.test.mjs :: 17/17 checks passed
+      relay:e2e-sw-session.test.mjs :: 19/19 checks passed
+      relay:e2e-sw-vendor-drift.test.mjs :: 3/3 checks passed
+      relay:e2e-web-ctx-a4.test.mjs :: e2e-web-ctx-a4: 53/53 checks passed
+      relay:e2e-web-ctx.test.mjs :: e2e-web-ctx: 58/58 checks passed
+      relay:e2e-web-policy.test.mjs :: e2e-web-policy: 109/109 checks passed
+      relay:e2e-web-session.test.mjs :: e2e-web-session: 106/106 checks passed
+      relay:e2e-web-webkey.test.mjs :: e2e-web-webkey: 124/124 checks passed
+      unit:sas-vectors :: sas-vectors: 65/65 checks passed
+      unit:padding-property :: padding-property: 46/46 checks passed
+      unit:kdf-vectors :: kdf-vectors: 400/400 checks passed
+      unit:kdf-vectors-schema :: kdf-vectors-schema: 11/11 checks passed
+      unit:ext-auth-absence :: PASS ext-auth-absence
+      unit:ext-pin-provenance :: PASS ext-pin-provenance
+      unit:live-peer :: e2e-live-peer: 70/70 checks passed
+      unit:bridge-origin-pin :: ALL GREEN
+PASS  build
+
+DONE 2026-09-18T01:36:07Z
