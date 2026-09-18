@@ -262,18 +262,41 @@ class FileTransferLoopbackTest {
         // FILE_DONE repeats the hash the offer promised.
         assertEquals(expectedSha, peer.last(FileTransfer.DONE)!!["sha256"])
 
-        val growth = rec.peakUsedBytes - baseline
+        // The assertion is on the LIVE SET after a GC, not on peak allocation.
+        //
+        // `totalMemory - freeMemory` counts allocated-but-not-yet-collected, and
+        // this transfer deliberately produces 4,267 short-lived 64 KB base64
+        // strings - about 273 MB of garbage. The heap floats some of that
+        // between collections no matter how little is RETAINED, so a peak-based
+        // bound measures the GC's scheduling, not our design. The first version
+        // of this assertion did exactly that and reported 16 MB of "buffering"
+        // that was entirely floating garbage.
+        //
+        // What "never loads the whole file into memory" actually means is that
+        // nothing is still REACHABLE afterwards. That is the live set.
+        System.gc(); Thread.sleep(300); System.runFinalization(); System.gc(); Thread.sleep(300)
+        val rt2 = Runtime.getRuntime()
+        val liveAfter = rt2.totalMemory() - rt2.freeMemory()
+        val retained = liveAfter - baseline
+        val peakGrowth = rec.peakUsedBytes - baseline
         android.util.Log.i(
             "FT2-MEM",
-            "200MB send: baseline=${baseline / 1024 / 1024}MB peak=${rec.peakUsedBytes / 1024 / 1024}MB " +
-                "growth=${growth / 1024}KB chunks=$declaredN"
+            "200MB send: baseline=${baseline / 1024}KB peakUsed=${rec.peakUsedBytes / 1024}KB " +
+                "peakGrowth=${peakGrowth / 1024}KB retainedAfterGC=${retained / 1024}KB " +
+                "chunks=$declaredN"
         )
-        // 8 MB is ~40x the theoretical working set (2 chunks of bytes + one
-        // base64 String) and still 25x below the file. A design that buffered
-        // the file would blow this by two orders of magnitude.
+
+        // Retention: a design that held the file would retain ~200 MB+ here.
         assertTrue(
-            "heap grew ${growth / 1024 / 1024}MB sending a 200MB file - it is being buffered",
-            growth < 8L * 1024 * 1024
+            "retained ${retained / 1024}KB after GC having sent a 200MB file - it is being held",
+            retained < 8L * 1024 * 1024
+        )
+        // Allocation shape: floating garbage is fine, but the peak must stay at
+        // chunk scale rather than file scale. 64 MB is a third of the file and
+        // ~1000x one chunk - comfortably between "streaming" and "buffering".
+        assertTrue(
+            "peak grew ${peakGrowth / 1024 / 1024}MB - that is file-scale, not chunk-scale",
+            peakGrowth < 64L * 1024 * 1024
         )
     }
 
