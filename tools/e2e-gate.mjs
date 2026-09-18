@@ -39,6 +39,7 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // (E2E-P0.3) The moving-base decision and the authored/inherited lint split,
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
+import { harnessesFor } from './lib/harness-list.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
 // longer encodes the phase in the worktree name.
 import { isGateWorktree, isGateMain } from './gate-location.mjs';
@@ -364,6 +365,16 @@ const MIN_CHECKS_OVERRIDE = {
   // written), and until this commit it reported no count at all — see the
   // last-resort branch of passLine(). Measured: 13 assertions.
   'unit:bridge-origin-pin': 13,
+  // FT-3b (g). The file-transfer harnesses post-date BASELINE-harness.json, so
+  // the floor cannot be read from it. Measured totals at the commit that
+  // registers them: ft-ui-proof 96 (FT-3b (d)), ft-web-proof 26 (FT-3a).
+  'harness:ft-ui-proof': 96,
+  'harness:ft-web-proof': 26,
+  // The phase-list test itself. Measured 33. Not decoration: with FT3 removed
+  // from the FT list the mutant drops to 31 TOTAL (two `scripts/<h>.mjs exists`
+  // checks stop being generated), so the floor catches the deletion even if
+  // someone also deletes the four checks that go red.
+  'unit:harness-list': 33,
 };
 const MIN_CHECKS = (() => {
   const table = {};
@@ -1173,6 +1184,11 @@ if (WEB) {
     // nothing would crash; the gate would just start grading lanes on 77 files
     // they never touched again.
     ['scope-base', 'tests/scope-base.test.mjs', true],
+    // FT-3b (g). WHICH harnesses each phase runs (tools/lib/harness-list.mjs).
+    // Named explicitly for the same reason as the lines above — the sweep
+    // matches only tests/e2e-*.test.mjs — and because a step quietly absent
+    // from a phase's list is the one failure mode the gate cannot report.
+    ['harness-list', 'tests/harness-list.test.mjs', true],
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {
@@ -1212,13 +1228,11 @@ if (WEB) {
   }
 
   // ── 9. harnesses against a dev server the gate owns ──────────────────────
-  const HARNESS = ['app-in-call-shots', 'ext-in-call-shots', 'ext-badge-counter-proof',
-    'ext-templates-scroll-call-message-proof', 'ext-shell-theme-proof', 'ext-layering-shots'];
-  if (['P3', 'P4', 'P5A', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) HARNESS.splice(3, 0, 'ext-sw-lifetime-proof');
-  // P5a slice 2 — the Encrypted-mode UI proof. Added from P5A onwards, where
-  // the surfaces it asserts first exist; running it at P0-P4 would report a
-  // missing feature as a failure.
-  if (['P5A', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) HARNESS.push('e2e-ui-proof');
+  // FT-3b (g). The per-phase list lives in tools/lib/harness-list.mjs, pure,
+  // so tests/harness-list.test.mjs can assert WHICH steps a phase runs. It was
+  // a local const here, which meant a step missing from a phase failed nothing
+  // — the P3.1 "the phase list silently skipped a step" lesson.
+  const HARNESS = harnessesFor(PHASE);
   if (!steps.some((s2) => s2.name === 'build' && s2.exit !== 0)) {
     const started = startDevServer();
     if (!started.ok) {
