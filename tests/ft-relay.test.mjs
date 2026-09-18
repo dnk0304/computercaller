@@ -231,6 +231,36 @@ console.log('PART 1 — frozen frames and constants');
   check('isFileFrame does not swallow a non-member FILE_-prefixed frame',
     R.isFileFrame('FILE_SOMETHING_ELSE:{}') === false);
 }
+{
+  // SEALED-MODE FORWARD COMPAT. Spec section 5 seals the FILE_OFFER body under
+  // E2E mode ON and carries a PLAINTEXT `size` alongside it, exactly so this
+  // chokepoint keeps working. So an offer with only `id` + `size` at the top
+  // level and everything else inside `e` must be ADMITTED — a relay that
+  // demands name/mime/sha256 rejects every sealed offer the day encryption is
+  // switched on, as `malformed`, which is the least debuggable possible
+  // spelling of "the protocol advanced without me". FT-2 flagged this exact
+  // seam open on 2026-09-18.
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const phone = mkWs(); const browser = mkWs();
+  const room = mkRoom(phone, browser);
+  const id = newId();
+  const sealed = `FILE_OFFER:${JSON.stringify({ id, size: 4404019, e: 'BASE64SEALEDBODY', kid: 'k1', s: 7 })}`;
+  R.handleFileFrame(room, phone, sealed, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('a SEALED FILE_OFFER (plaintext size only) is admitted',
+    !!room.transfer && room.transfer.state === 'offered');
+  check('the sealed offer is forwarded byte-for-byte', lastOf(browser, 'FILE_OFFER') === sealed);
+  check('the record holds no mime it was never given', room.transfer.mime === '');
+  check('and the size gate still read the plaintext size', room.transfer.size === 4404019);
+
+  // A missing or nonsense size is still refused: it is the ONE field the relay
+  // acts on, so it is the one field it must insist upon.
+  const room2 = mkRoom(phone, browser);
+  R.handleFileFrame(room2, phone, `FILE_OFFER:${JSON.stringify({ id: newId(), e: 'X' })}`, 'phone', room2.token);
+  await new Promise((r) => setImmediate(r));
+  check('an offer with no plaintext size is refused malformed',
+    payloadOf(lastOf(phone, 'FILE_REJECT'))?.reason === 'malformed' && room2.transfer === null);
+}
 
 // ── PART 2 — chunk size vs the relay's real maxPayload ──────────────────────
 console.log('\nPART 2 — chunk size fits under the relay frame cap');

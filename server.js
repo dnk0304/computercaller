@@ -2055,11 +2055,19 @@ function startRelay(httpServer) {
       rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused busy id=${id} (in-flight id=${room.transfer.id})`);
       return;
     }
+    // The relay validates ONLY what it acts on: `size`, because the per-file cap
+    // and the daily quota are computed from it.
+    //
+    // name / mime / sha256 are deliberately NOT required. Spec section 5 seals the
+    // FILE_OFFER body under E2E mode ON and carries a PLAINTEXT `size` alongside
+    // it precisely so this chokepoint keeps working — at which point those three
+    // fields are inside `e` and absent from the top level. A relay that demands
+    // them would reject every sealed offer the moment encryption is turned on,
+    // and would do it as `malformed`, which is the least debuggable possible
+    // spelling of "the protocol advanced without me". `mime` is still recorded
+    // when present, for the drop-reason logs, and is blank when it is not.
     const size = payload.size;
-    if (!Number.isSafeInteger(size) || size < 1
-        || typeof payload.mime !== 'string'
-        || typeof payload.name !== 'string'
-        || typeof payload.sha256 !== 'string') {
+    if (!Number.isSafeInteger(size) || size < 1) {
       safeSend(ws, `FILE_REJECT:${JSON.stringify({ id, reason: 'malformed' })}`);
       ftCountDrop(token, 'FILE_OFFER', 'malformed');
       return;
@@ -2071,7 +2079,7 @@ function startRelay(httpServer) {
       state: 'gating',
       from: role,
       size,
-      mime: String(payload.mime).slice(0, 128),
+      mime: typeof payload.mime === 'string' ? payload.mime.slice(0, 128) : '',
       startedAt: now,
       bytesForwarded: 0,
       lastActivityAt: now,
