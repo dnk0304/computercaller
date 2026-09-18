@@ -86,13 +86,21 @@ export function parseFileFrame(raw: unknown): FileFrame | null {
   if (typeof raw !== 'string') return null;
   const type = frameHead(raw);
   if (!isFileFrameType(type)) return null;
-
-  let p: unknown;
   try {
-    p = JSON.parse(raw.slice(type.length + 1));
+    return coerceFileFrame(type, JSON.parse(raw.slice(type.length + 1)));
   } catch {
     return null;
   }
+}
+
+/**
+ * The same validation, for a payload that has ALREADY been parsed and unsealed
+ * by the host (usePhoneBridge hands `handleMessage` an object, not a string).
+ * Both entry points share one validator so the encrypted and plaintext paths
+ * cannot drift into accepting different things.
+ */
+export function coerceFileFrame(type: string, p: unknown): FileFrame | null {
+  if (!isFileFrameType(type)) return null;
   if (typeof p !== 'object' || p === null || Array.isArray(p)) return null;
   const o = p as Record<string, unknown>;
   if (!str(o.id)) return null;

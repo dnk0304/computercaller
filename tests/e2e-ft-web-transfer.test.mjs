@@ -19,7 +19,7 @@ import { join } from 'node:path';
 
 import { createFileSender } from '../lib/fileTransfer/sender.ts';
 import { createFileReceiver } from '../lib/fileTransfer/receiver.ts';
-import { parseFileFrame, frameHead } from '../lib/fileTransfer/frames.ts';
+import { parseFileFrame, serializeFrame, frameHead } from '../lib/fileTransfer/frames.ts';
 import { CHUNK_RAW_BYTES, SENDER_ACK_WINDOW, RECEIVER_ACK_EVERY, MAX_FILE_BYTES } from '../lib/fileTransfer/constants.ts';
 
 let passed = 0;
@@ -87,8 +87,13 @@ function makeLink() {
     receiver: null,
     maxUnacked: 0,
   };
+  // The transport speaks (type, payload) like the app's real send chokepoint.
+  // The harness serialises to the WIRE form and the other end parses it back
+  // with the production parser, so the frames are exercised as text, not as
+  // objects handed straight across.
   const transportFor = (queue) => ({
-    send(raw) {
+    send(type, payload) {
+      const raw = serializeFrame({ type, payload });
       link.sent.push(raw);
       if (!link.open) return;              // dropped on the floor, like a dead socket
       queue.push(raw);

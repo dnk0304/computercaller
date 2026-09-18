@@ -1,5 +1,5 @@
 import type { FileFailedReason } from './reasons.ts';
-import type { FileFrame, FileOffer } from './frames.ts';
+import type { FileFrame, FileFrameType, FileOffer } from './frames.ts';
 
 /**
  * The seam between the transfer state machines and the app's socket.
@@ -9,8 +9,14 @@ import type { FileFrame, FileOffer } from './frames.ts';
  * happening in exactly ONE place. Nothing in lib/fileTransfer opens a socket.
  */
 export interface FileTransport {
-  /** Hand a `TYPE:{json}` frame to the app's outbound chokepoint. */
-  send(raw: string): void;
+  /**
+   * Hand a frame to the app's outbound chokepoint, in the shape that chokepoint
+   * already speaks (`sendCommand(type, payload)` on the web). Deliberately NOT a
+   * pre-serialised string: the chokepoint seals the PAYLOAD, so handing it a
+   * string would force it to re-parse what we just stringified, and would put a
+   * second frame-encoder in the codebase for the encrypted path to disagree with.
+   */
+  send(type: FileFrameType, payload: object): void;
   /** `socket.bufferedAmount`, or 0 when the socket is not reachable. */
   bufferedAmount(): number;
   /** False while disconnected; the pump parks instead of spinning. */

@@ -13,7 +13,7 @@
 import { CHUNK_RAW_BYTES, RECEIVER_ACK_EVERY, STALL_TIMEOUT_MS } from './constants.ts';
 import { base64ToBytes } from './base64.ts';
 import { Sha256 } from './sha256.ts';
-import { chunkCount, serializeFrame } from './frames.ts';
+import { chunkCount } from './frames.ts';
 import type { FileFrame, FileOffer } from './frames.ts';
 import type { FileFailedReason } from './reasons.ts';
 import { sanitizeFilename } from './sanitizeFilename.ts';
@@ -146,7 +146,7 @@ export function createFileReceiver(
   const sendAck = () => {
     if (upTo === lastAcked) return;
     lastAcked = upTo;
-    transport.send(serializeFrame({ type: 'FILE_ACK', payload: { id: offer!.id, upTo } }));
+    transport.send('FILE_ACK', { id: offer!.id, upTo });
   };
 
   /**
@@ -166,7 +166,7 @@ export function createFileReceiver(
     }
     writable = null;
     if (announce && transport.isOpen() && id) {
-      transport.send(serializeFrame({ type: 'FILE_FAILED', payload: { id, reason } }));
+      transport.send('FILE_FAILED', { id, reason });
     }
     if (id) await deleteResume(id);
     events.onProgress?.(progress('failed', reason));
@@ -240,7 +240,7 @@ export function createFileReceiver(
       const pick = options.picker ?? getSaveFilePicker();
       if (!pick) {
         // No File System Access API: refuse honestly rather than buffer.
-        transport.send(serializeFrame({ type: 'FILE_REJECT', payload: { id: incoming.id } }));
+        transport.send('FILE_REJECT', { id: incoming.id });
         pending = null;
         events.onFailed?.(incoming.id, 'oom');
         return;
@@ -252,13 +252,13 @@ export function createFileReceiver(
       } catch {
         // The user dismissed the picker, or permission was denied. Treat both as
         // a decline: the sender must not be left waiting.
-        transport.send(serializeFrame({ type: 'FILE_REJECT', payload: { id: incoming.id } }));
+        transport.send('FILE_REJECT', { id: incoming.id });
         pending = null;
         handle = null;
         return;
       }
       if (!(await ensureWritePermission(handle))) {
-        transport.send(serializeFrame({ type: 'FILE_REJECT', payload: { id: incoming.id } }));
+        transport.send('FILE_REJECT', { id: incoming.id });
         pending = null; handle = null;
         return;
       }
@@ -296,16 +296,16 @@ export function createFileReceiver(
       }
 
       state = 'receiving';
-      transport.send(serializeFrame({ type: 'FILE_ACCEPT', payload: { id: incoming.id } }));
+      transport.send('FILE_ACCEPT', { id: incoming.id });
       if (keepExisting) {
-        transport.send(serializeFrame({ type: 'FILE_RESUME', payload: { id: incoming.id, upTo } }));
+        transport.send('FILE_RESUME', { id: incoming.id, upTo });
       }
       armStall();
       events.onProgress?.(progress('transferring'));
     },
 
     reject(id: string) {
-      transport.send(serializeFrame({ type: 'FILE_REJECT', payload: { id } }));
+      transport.send('FILE_REJECT', { id });
       if (pending?.id === id) pending = null;
     },
 
@@ -323,7 +323,7 @@ export function createFileReceiver(
       void drain().then(() => {
         if (state !== 'receiving' || !offer) return;
         acceptedSeq = upTo;
-        transport.send(serializeFrame({ type: 'FILE_RESUME', payload: { id: offer.id, upTo } }));
+        transport.send('FILE_RESUME', { id: offer.id, upTo });
       });
     },
 
@@ -332,9 +332,7 @@ export function createFileReceiver(
         case 'FILE_OFFER':
           // One transfer per room: an offer arriving mid-transfer is refused.
           if (state === 'receiving' || state === 'verifying') {
-            transport.send(serializeFrame({
-              type: 'FILE_FAILED', payload: { id: frame.payload.id, reason: 'cancelled' },
-            }));
+            transport.send('FILE_FAILED', { id: frame.payload.id, reason: 'cancelled' });
             return;
           }
           pending = frame.payload;

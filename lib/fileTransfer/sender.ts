@@ -14,7 +14,7 @@ import {
 } from './constants.ts';
 import { bytesToBase64 } from './base64.ts';
 import { Sha256 } from './sha256.ts';
-import { chunkCount, newTransferId, serializeFrame } from './frames.ts';
+import { chunkCount, newTransferId } from './frames.ts';
 import type { FileFrame } from './frames.ts';
 import type { FileFailedReason } from './reasons.ts';
 import type { FileTransport, FrameSink, TransferEvents, TransferPhase, TransferProgress } from './types.ts';
@@ -75,7 +75,7 @@ export function createFileSender(
     state = 'terminal';
     clearTimers();
     if (announce && transport.isOpen()) {
-      transport.send(serializeFrame({ type: 'FILE_FAILED', payload: { id, reason } }));
+      transport.send('FILE_FAILED', { id, reason });
     }
     events.onProgress?.(progress('failed', sentBytes, reason));
     events.onFailed?.(id, reason);
@@ -91,7 +91,7 @@ export function createFileSender(
     if (state !== 'sending') return;
     state = 'finishing';
     clearTimers();
-    transport.send(serializeFrame({ type: 'FILE_DONE', payload: { id, sha256: sha } }));
+    transport.send('FILE_DONE', { id, sha256: sha });
     state = 'terminal';
     const done = progress('done', total);
     events.onProgress?.(done);
@@ -116,10 +116,7 @@ export function createFileSender(
         const slice = file.slice(start, Math.min(start + CHUNK_RAW_BYTES, total));
         const bytes = new Uint8Array(await slice.arrayBuffer());
         if (state !== 'sending' || !file) return;             // cancelled while awaiting the read
-        transport.send(serializeFrame({
-          type: 'FILE_CHUNK',
-          payload: { id, seq: nextSeq, n: chunks(), data: bytesToBase64(bytes) },
-        }));
+        transport.send('FILE_CHUNK', { id, seq: nextSeq, n: chunks(), data: bytesToBase64(bytes) });
         nextSeq++;
         emit('transferring', Math.min(total, nextSeq * CHUNK_RAW_BYTES));
       }
@@ -177,13 +174,10 @@ export function createFileSender(
 
       state = 'offered';
       startedAt = Date.now();
-      transport.send(serializeFrame({
-        type: 'FILE_OFFER',
-        payload: {
-          id, name: f.name, size: total,
-          mime: f.type || 'application/octet-stream', sha256: sha, from,
-        },
-      }));
+      transport.send('FILE_OFFER', {
+        id, name: f.name, size: total,
+        mime: f.type || 'application/octet-stream', sha256: sha, from,
+      });
       emit('offered', 0);
       armStall();
     },

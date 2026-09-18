@@ -18,6 +18,7 @@ import { Sha256, sha256Hex } from '../lib/fileTransfer/sha256.ts';
 import { bytesToBase64, base64ToBytes } from '../lib/fileTransfer/base64.ts';
 import {
   parseFileFrame, serializeFrame, frameHead, isFileFrame, chunkCount, newTransferId,
+  coerceFileFrame, isFileFrameType,
 } from '../lib/fileTransfer/frames.ts';
 import { sanitizeFilename, deduplicateFilename, partialFilename } from '../lib/fileTransfer/sanitizeFilename.ts';
 import {
@@ -94,6 +95,33 @@ check('a payload with no id is rejected', parseFileFrame('FILE_ACK:{"upTo":3}') 
 eq('every frozen reason parses', FILE_FAILED_REASONS.filter((r) => isFileFailedReason(r)).length, 9);
 check('transfer ids are 32 hex chars', /^[0-9a-f]{32}$/.test(newTransferId()));
 check('transfer ids differ', newTransferId() !== newTransferId());
+
+// The host (usePhoneBridge) hands an ALREADY-parsed, already-unsealed payload,
+// so it takes the coerce entry point instead. Both must accept and reject
+// exactly the same things, or the encrypted and plaintext paths drift apart.
+for (const raw of [
+  serializeFrame({ type: 'FILE_OFFER', payload: offer }),
+  'FILE_CHUNK:{"id":"a","seq":4,"n":5,"data":"AAA="}',
+  'FILE_ACK:{"id":"a","upTo":7}',
+  'FILE_DONE:{"id":"a","sha256":"' + sha + '"}',
+  'FILE_FAILED:{"id":"a","reason":"tier"}',
+  'FILE_ACCEPT:{"id":"a"}',
+  'FILE_OFFER:{"id":"a"}',
+  'FILE_CHUNK:{"id":"a","seq":9,"n":5,"data":""}',
+  'FILE_FAILED:{"id":"a","reason":"nope"}',
+  'FILE_ACK:{"id":"a","upTo":-3}',
+]) {
+  const head = frameHead(raw);
+  const viaParse = parseFileFrame(raw);
+  const viaCoerce = coerceFileFrame(head, JSON.parse(raw.slice(head.length + 1)));
+  eq(`parse and coerce agree on ${raw.slice(0, 34)}`, viaCoerce, viaParse);
+}
+check('coerce rejects a type outside the family', coerceFileFrame('SMS_RECEIVED', { id: 'a' }) === null);
+check('coerce rejects a null payload', coerceFileFrame('FILE_ACCEPT', null) === null);
+check('coerce rejects a string payload', coerceFileFrame('FILE_ACCEPT', 'a') === null);
+check('isFileFrameType accepts all eight', ['FILE_OFFER', 'FILE_ACCEPT', 'FILE_REJECT', 'FILE_CHUNK',
+  'FILE_ACK', 'FILE_RESUME', 'FILE_DONE', 'FILE_FAILED'].every(isFileFrameType));
+check('isFileFrameType rejects a near-miss', !isFileFrameType('FILE_ACCEPTED'));
 
 // ── 4. chunk arithmetic, including the 1 GB shape (allocating nothing) ─────
 eq('chunk count at the 1 GB cap', chunkCount(MAX_FILE_BYTES, CHUNK_RAW_BYTES), 21846);
