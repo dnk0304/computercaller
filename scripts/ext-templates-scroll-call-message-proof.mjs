@@ -17,8 +17,10 @@
  *
  * Run against a dev server on :3123 (PORT=3123 bun run dev).
  */
-import { chromium } from 'playwright';
+import { chromium } from 'playwright';
+import { exitAfterFlush } from './lib/finish.mjs';
 import { Reaper } from './lib/reap.mjs';
+import { settle } from './lib/settle.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -102,9 +104,9 @@ async function surface(width, height) {
   }));
   await page.addInitScript(bridgeStub);
   await page.goto(`${DEV}/extension`, { waitUntil: 'domcontentloaded' }).catch(() => {});
-  await page.waitForTimeout(3000);
+  await settle(page, 3000);
   await page.getByRole('button', { name: 'Skip for now' }).click({ timeout: 4000 }).catch(() => {});
-  await page.waitForTimeout(400);
+  await settle(page, 400);
   return { ctx, page };
 }
 
@@ -119,11 +121,11 @@ async function shot(page, name) {
 /** Open the Texts tab and land in a thread, where the composer + strip live. */
 async function openThread(page, number = '4791234567') {
   await page.getByRole('tab', { name: /dial/i }).click();
-  await page.waitForTimeout(300);
+  await settle(page, 300);
   await page.getByPlaceholder('Enter Number').fill(number);
-  await page.waitForTimeout(250);
+  await settle(page, 250);
   await page.getByRole('button', { name: 'Send a message to this number' }).click();
-  await page.waitForTimeout(900);
+  await settle(page, 900);
 }
 
 try {
@@ -149,7 +151,7 @@ try {
     await page.mouse.move(cx, cy);
     const before = await strip.evaluate((el) => el.scrollLeft);
     await page.mouse.wheel(0, 240);
-    await page.waitForTimeout(250);
+    await settle(page, 250);
     const afterWheel = await strip.evaluate((el) => el.scrollLeft);
     check('VERTICAL MOUSE WHEEL scrolls the strip right',
       afterWheel > before, `scrollLeft ${before} → ${afterWheel}`);
@@ -161,7 +163,7 @@ try {
     await page.mouse.down();
     await page.mouse.move(cx - 90, cy, { steps: 8 });
     await page.mouse.up();
-    await page.waitForTimeout(250);
+    await settle(page, 250);
     const afterDrag = await strip.evaluate((el) => el.scrollLeft);
     check('MOUSE DRAG pans the strip',
       afterDrag > beforeDrag, `scrollLeft ${beforeDrag} → ${afterDrag}`);
@@ -172,14 +174,14 @@ try {
     // --- ARROW BUTTON. The affordance that needs no gesture at all.
     const beforeArrow = await strip.evaluate((el) => el.scrollLeft);
     await page.locator('[title="Scroll templates right"]').click();
-    await page.waitForTimeout(500);
+    await settle(page, 500);
     const afterArrow = await strip.evaluate((el) => el.scrollLeft);
     check('the right ARROW BUTTON scrolls the strip',
       afterArrow > beforeArrow, `scrollLeft ${beforeArrow} → ${afterArrow}`);
 
     // --- The last chip must become reachable, not just "scrollLeft moved".
     await strip.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-    await page.waitForTimeout(400);
+    await settle(page, 400);
     const lastVisible = await strip.evaluate((el) => {
       const chips = el.querySelectorAll('button');
       const last = chips[chips.length - 1];
@@ -194,7 +196,7 @@ try {
 
     // A chip TAP still inserts (the drag threshold did not break the click).
     await page.locator('[role="toolbar"][aria-label="Insert template"] button').last().click();
-    await page.waitForTimeout(400);
+    await settle(page, 400);
     const draft = await page.getByRole('textbox', { name: 'Message body' }).inputValue();
     check('a plain chip tap still inserts its body', draft.length > 0, draft.slice(0, 40));
     await ctx.close();
@@ -212,7 +214,7 @@ try {
     check('composer starts at one line', h0 < 48, `${Math.round(h0)}px`);
 
     await ta.fill('x'.repeat(600));
-    await page.waitForTimeout(400);
+    await settle(page, 400);
     const grown = await ta.evaluate((el) => ({
       h: el.getBoundingClientRect().height,
       cap: parseFloat(getComputedStyle(el).maxHeight),
@@ -235,7 +237,7 @@ try {
       el.setSelectionRange(el.value.length, el.value.length);
       el.scrollTop = el.scrollHeight;
     });
-    await page.waitForTimeout(200);
+    await settle(page, 200);
     const caretVisible = await ta.evaluate((el) =>
       el.scrollTop + el.clientHeight >= el.scrollHeight - 2);
     check('the caret at the end of a long message is in view', caretVisible);
@@ -255,7 +257,7 @@ try {
     const { ctx, page } = await surface(400, 600);
     await page.evaluate((f) => window.__ccSend(f),
       frame('CALL_ADD', { callId: 'm1', number: '+4790011223', isIncoming: false, state: 'active' }));
-    await page.waitForTimeout(900);
+    await settle(page, 900);
 
     const banner = page.locator('[data-call-banner]');
     check('call banner is up for an active call', (await banner.count()) === 1);
@@ -275,7 +277,7 @@ try {
     await shot(page, 'P-04-banner-with-message-button-400x600');
 
     await msgBtn.click();
-    await page.waitForTimeout(800);
+    await settle(page, 800);
     check('Message opens the thread for the in-call number',
       (await page.getByRole('textbox', { name: 'Message body' }).count()) === 1);
     check('the thread is for the number we are in a call with',
@@ -288,7 +290,7 @@ try {
 
     // Origin tab = Dial: Back must land on Dial, not Texts.
     await page.getByRole('button', { name: /back to dial/i }).click();
-    await page.waitForTimeout(600);
+    await settle(page, 600);
     check('Back from the banner-opened thread returns to DIAL',
       (await page.getByRole('tab', { name: /dial/i }).getAttribute('aria-selected')) === 'true');
     check('banner survives the trip back', (await banner.count()) === 1);
@@ -298,11 +300,27 @@ try {
 } finally {
   await browser.close();
   reaper.reapAndReport('ext-templates-scroll-call-message-proof');
+  // P5a: the summary MUST be inside the finally. It used to sit after this
+  // block, which meant a throw anywhere above propagated past it and the
+  // "N/N checks passed" line never printed at all — so tools/e2e-gate.mjs's
+  // passLine() parsed nothing and recorded the vague "declares N checks but
+  // reported NO count at all" floor violation instead of the real error. A
+  // partial count is evidence; no count is a second mystery on top of the
+  // first. Exit code is still set by the failure list below.
+  const failed = results.filter((r) => !r.pass);
+  console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
+  for (const f of failed) console.log(`  FAIL ${f.name} ${f.detail}`);
+  if (failed.length) process.exitCode = 1;
 }
 
-const failed = results.filter((r) => !r.pass);
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-if (failed.length) {
-  for (const f of failed) console.log(`  FAIL ${f.name} ${f.detail}`);
-  process.exit(1);
-}
+// ── E2E-P5a (f): EXIT, do not merely stop having work to do. ──────────────
+// Three harnesses in the P5A gate were recorded as timeouts with a COMPLETE
+// summary in their logs. The gate-side cause is fixed and is NOT a hang:
+// child.kill() on a shell:true step signals cmd.exe only, so the timeout never
+// stopped the work (tests/gate-child-exit.test.mjs). This is the other half:
+// once the summary is printed and the finally block has closed the browser and
+// reaped, nothing is left to wait for, so say so explicitly rather than hoping
+// the event loop drains. exitAfterFlush flushes stdout first — on Windows the
+// gate reads this over a pipe, where writes are async and a bare process.exit
+// can truncate the very summary line the gate parses.
+exitAfterFlush(process.exitCode ?? 0);
