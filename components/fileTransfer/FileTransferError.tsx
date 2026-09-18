@@ -57,7 +57,6 @@ export function FileTransferError({ reason, onDismiss, onRetry }: FileTransferEr
       <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-rose-600" aria-hidden="true" />
       <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-rose-900">{copy.message}</p>
 
-
       {copy.action === 'retry' && (
         <button
           type="button"
