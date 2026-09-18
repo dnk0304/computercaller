@@ -355,7 +355,7 @@ const FRAME_BUFFER_MAX = 200;
 const FT_FRAME_TYPES = new Set([
   'FILE_OFFER',   // {id,name,size,mime,sha256,from}  sender → receiver
   'FILE_ACCEPT',  // {id}                             receiver → sender
-  'FILE_REJECT',  // {id,reason}                      receiver → sender (also relay → sender on busy)
+  'FILE_REJECT',  // {id,reason}                      receiver → sender ONLY (FT-A1.1 M5: the relay mints none)
   'FILE_CHUNK',   // {id,seq,n,data}                  sender → receiver
   'FILE_ACK',     // {id,upTo}                        receiver → sender
   'FILE_RESUME',  // {id,upTo}                        receiver → sender (post-reconnect)
@@ -367,9 +367,11 @@ const FT_FRAME_TYPES = new Set([
  * The FROZEN `FILE_FAILED.reason` vocabulary. A reason outside this set is a
  * protocol violation: the relay refuses to MINT one, and normalises an inbound
  * unknown reason to 'cancelled' rather than forwarding an arbitrary string that
- * a client will switch on. `FILE_REJECT.reason` is deliberately NOT frozen here
- * — it is receiver-authored UX ('user_declined', 'panel_closed', …) plus the
- * one relay-minted value 'busy'.
+ * a client will switch on. FT-A1.1 section 2.2 splits this further: see
+ * FT_RELAY_OWNED_REASONS for the subset the relay itself may author.
+ * `FILE_REJECT.reason` is deliberately NOT frozen here
+ * — it is receiver-authored UX ('user_declined', 'panel_closed', …) and, as of
+ * FT-A1.1 M5, nothing else: 'busy' moved to the relay-minted FILE_FAILED path.
  */
 const FT_FAIL_REASONS = new Set([
   'hash_mismatch', 'connection_lost', 'relay_backpressure', 'cancelled',
@@ -381,7 +383,52 @@ const FT_FAIL_REASONS = new Set([
   // this MUST land before FT-2 seals FILE_OFFER — otherwise every mismatch is
   // dropped by the receiver's own validator and presents as a 30 s hang.
   'size_mismatch',
+  // FT-A1.1 MUST A1.1-M5. `busy` used to be minted as FILE_REJECT — which is
+  // sealed-by-exclusion under mode ON, so a plaintext one is dropped by the
+  // receiver's downgrade guard and "another transfer is already running" was
+  // invisible the moment encryption went on, no matter how the origin question
+  // was ruled. It is a relay-minted refusal like every other, so it lives here.
+  'busy',
 ]);
+
+/**
+ * The EXHAUSTIVE, frozen set of reasons the RELAY may author (FT-A1.1 section 2.2).
+ *
+ * Everything else — hash_mismatch, cancelled, oom — is peer-owned and must stay
+ * sealed under mode ON; a plaintext one is the receiver's to drop.
+ *
+ * This set is what `relay:true` is allowed to be stamped on. Keeping it separate
+ * from FT_FAIL_REASONS is the point: the mark asserts WHO wrote the frame, so a
+ * reason only a peer can legitimately give must never carry it, even by accident
+ * through the normalise-to-`cancelled` fallback.
+ *
+ * `connection_lost` is in the subset (it is already relay-authored today: no
+ * peer socket at FILE_OFFER, no sender at FILE_RESUME). `bad_hint` is NOT —
+ * M1 keeps it a counter and off the wire entirely.
+ */
+const FT_RELAY_OWNED_REASONS = new Set([
+  'tier', 'quota', 'too_large', 'size_mismatch', 'busy',
+  'relay_backpressure', 'timeout', 'connection_lost',
+]);
+
+/**
+ * FT-A1.1 MUST A1.1-M12. The base64 FLOOR, 4/3, used to invert the meter into
+ * raw bytes for the CHARGE — and deliberately NOT the same constant as
+ * FT_WIRE_OVERHEAD_FACTOR.
+ *
+ * The two conversions have OPPOSITE correct directions of error and must never
+ * share a number. The CEILING errs generous (1.40 plus a whole chunk): a false
+ * abort has no attacker behind it and costs a real user their transfer, and a
+ * control that fires on honest traffic is a control someone switches off. The
+ * CHARGE errs conservative: under-billing favours the one party with a motive to
+ * lie about size.
+ *
+ * Sharing 1.40 for both meant an honest transfer (true ratio about 1.34) was
+ * charged roughly 0.96x of what it actually moved — a silent ~4.3 % discount on
+ * the abuse control itself, which would have grown with any future raise to the
+ * ceiling factor.
+ */
+const FT_WIRE_B64_FACTOR = 4 / 3;
 
 /** 1 GiB hard per-file cap (Addendum A DECIDED). Checked at FILE_OFFER. */
 const FT_MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1_073_741_824
@@ -1959,9 +2006,25 @@ function startRelay(httpServer) {
   }
 
   /** Mint a FILE_FAILED frame. Refuses to emit a reason outside the frozen set. */
-  function ftFailedFrame(id, reason) {
+  function ftFailedFrame(id, reason, { relay = true } = {}) {
     const r = FT_FAIL_REASONS.has(reason) ? reason : 'cancelled';
-    return `FILE_FAILED:${JSON.stringify({ id, reason: r })}`;
+    // FT-A1.1 MUST A1.1-M6 — the ONE mint site, and therefore the one place the
+    // origin mark can be applied. Under mode ON a relay-authored frame is
+    // necessarily plaintext (the relay holds no keys), so without a mark the
+    // receiver's downgrade guard cannot tell a legitimate refusal from an
+    // injected one and correctly drops both — which would hide exactly the
+    // events the tier, quota and tamper controls exist to surface.
+    //
+    // `relay:false` is the RE-MINT path (M7): a plaintext peer failure is rebuilt
+    // here from two scalars, which is what strips every other field the peer put
+    // on it. That rebuild must not inherit the mark, and it must not copy a
+    // `relay` field out of the payload either — the caller says which it is.
+    //
+    // The subset check is not decoration. `r` may have just been normalised to
+    // `cancelled`, which is PEER-owned; stamping that would have the relay
+    // claiming authorship of a reason only a peer can legitimately give.
+    const mark = relay && FT_RELAY_OWNED_REASONS.has(r);
+    return `FILE_FAILED:${JSON.stringify(mark ? { id, reason: r, relay: true } : { id, reason: r })}`;
   }
 
   /**
@@ -2195,7 +2258,10 @@ function startRelay(httpServer) {
    */
   function ftRawFromWire(wireBytes) {
     if (!wireBytes) return 0;
-    return Math.min(Math.ceil(wireBytes / FT_WIRE_OVERHEAD_FACTOR), FT_MAX_FILE_BYTES);
+    // Inverted on the base64 FLOOR (4/3), never on the ceiling's 1.40 — see
+    // FT_WIRE_B64_FACTOR. Dividing by the larger number returns FEWER raw bytes
+    // than were really moved, which is the wrong direction of error for a charge.
+    return Math.min(Math.ceil(wireBytes / FT_WIRE_B64_FACTOR), FT_MAX_FILE_BYTES);
   }
 
   /**
@@ -2248,11 +2314,12 @@ function startRelay(httpServer) {
       safeSend(ws, ftFailedFrame(id, 'connection_lost'));
       return;
     }
-    // One transfer per room at a time, keyed by the transfer id. Refused with
-    // FILE_REJECT (an offer that was never armed did not FAIL, it was declined)
-    // so the sender's UI can say "busy" rather than render a transfer error.
+    // One transfer per room at a time, keyed by the transfer id.
     if (room.transfer) {
-      safeSend(ws, `FILE_REJECT:${JSON.stringify({ id, reason: 'busy' })}`);
+      // M5: FILE_FAILED, not FILE_REJECT. FILE_REJECT is receiver-authored and
+      // sealed-by-exclusion, so a relay-minted plaintext one is invisible under
+      // mode ON. Every relay refusal goes through the one marked mint path.
+      safeSend(ws, ftFailedFrame(id, 'busy'));
       rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused busy id=${id} (in-flight id=${room.transfer.id})`);
       return;
     }
@@ -2339,6 +2406,21 @@ function startRelay(httpServer) {
     // send one. A lobby/duplicate socket streaming chunks would bypass the whole
     // state machine, so these are dropped rather than passed to the resume
     // passthrough that non-file data frames get.
+    // FT-A1.1 MUST A1.1-M7 — a peer may not claim relay authorship. Checked for
+    // EVERY FILE_* type, before anything else looks at the frame.
+    //
+    // REJECTED, not stripped, and the distinction is load-bearing: stripping
+    // means re-serialising a frame the relay has promised to forward
+    // byte-for-byte, and a re-serialiser on the passthrough path is how a relay
+    // eventually starts parsing chunk bodies. Refusing costs an attacker one
+    // frame and costs an honest client nothing, because no honest client sends
+    // this field.
+    if (Object.prototype.hasOwnProperty.call(payload, 'relay')) {
+      ftCountDrop(token, type, 'peer_claimed_relay');
+      rlog(`[Relay][${redactToken(token)}] FILE frame REJECTED (peer set the relay origin mark): ${frameLabel(msg)}`);
+      return true;
+    }
+
     if (ws !== ftSocketForRole(room, role)) {
       ftCountDrop(token, type, 'not_active');
       rlog(`[Relay][${redactToken(token)}] FILE frame dropped (socket not active ${role}): ${frameLabel(msg)}`);
@@ -2528,7 +2610,11 @@ function startRelay(httpServer) {
         // A PLAINTEXT failure is normalised, so a client-authored string can
         // never widen the frozen vocabulary on its way through.
         const sealed = typeof payload.c === 'string' && payload.e !== undefined;
-        safeSend(dest, sealed ? msg : ftFailedFrame(rec.id, payload.reason));
+        // M7: the re-mint IS the stripper — it rebuilds the frame from two
+        // scalars and discards everything else the peer attached, including any
+        // `relay` key. `{relay:false}` keeps it from acquiring the mark on the
+        // way through: this frame's author is the peer, not us.
+        safeSend(dest, sealed ? msg : ftFailedFrame(rec.id, payload.reason, { relay: false }));
         rlog(`[Relay][${redactToken(token)}] FILE_FAILED id=${rec.id} sealed=${sealed} — quota settled`);
         return true;
       }

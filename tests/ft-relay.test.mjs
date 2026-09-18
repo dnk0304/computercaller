@@ -110,7 +110,7 @@ const FT_CONSTS = [
   'FT_QUOTA_RETENTION_DAYS', 'FT_CHUNK_RAW_BYTES', 'FT_CHUNK_WIRE_BYTES',
   'FT_DEST_BACKPRESSURE_BYTES',
   'FT_STALL_MS', 'FT_OFFER_TTL_MS', 'FT_SWEEP_MS', 'FT_WIRE_OVERHEAD_FACTOR',
-  'FT_TIERS_ALLOWED',
+  'FT_TIERS_ALLOWED', 'FT_RELAY_OWNED_REASONS', 'FT_WIRE_B64_FACTOR',
 ];
 const FT_FNS = [
   'frameType', 'frameLabel', 'isFileFrame', 'utcDayKey',
@@ -203,9 +203,9 @@ console.log('PART 1 — frozen frames and constants');
 
   const REASONS = ['hash_mismatch', 'connection_lost', 'relay_backpressure', 'cancelled',
     'timeout', 'too_large', 'oom', 'quota', 'tier',
-    // FT-A1 MUST A-7. Frozen after this; FT-2 seals against it.
-    'size_mismatch'];
-  check('FILE_FAILED reason vocabulary is exactly the frozen 10 (A-7 adds size_mismatch)',
+    // FT-A1 MUST A-7. FT-A1.1 M5 adds `busy`.
+    'size_mismatch', 'busy'];
+  check('FILE_FAILED reason vocabulary is exactly the frozen 11 (A-7 size_mismatch, M5 busy)',
     R.FT_FAIL_REASONS.size === REASONS.length && REASONS.every((r) => R.FT_FAIL_REASONS.has(r)),
     `got ${[...R.FT_FAIL_REASONS].join(',')}`);
   check('size_mismatch IS mintable — a relay-side tamper/lie must be nameable',
@@ -474,10 +474,145 @@ console.log('\nFT-A1 — envelope hint ft:{id,size}, fail-closed, and the wire m
       R.ftWireCeiling(raw) > raw * 1.3 && R.ftWireCeiling(raw) < raw * 1.5, String(R.ftWireCeiling(raw)));
     check('the ceiling is capped at the 1 GiB per-file limit in the SAME units',
       R.ftWireCeiling(R.FT_MAX_FILE_BYTES) === R.ftWireCeiling(R.FT_MAX_FILE_BYTES * 2));
-    check('ftRawFromWire inverts it and never exceeds the per-file cap',
+    check('ftRawFromWire never exceeds the per-file cap and is zero at zero',
       R.ftRawFromWire(0) === 0
-      && R.ftRawFromWire(Math.ceil(raw * R.FT_WIRE_OVERHEAD_FACTOR)) === raw
       && R.ftRawFromWire(Number.MAX_SAFE_INTEGER) === R.FT_MAX_FILE_BYTES);
+  }
+}
+
+// ── FT-A1.1 — origin marking, the busy move, and the split factors ─────────
+console.log('\nFT-A1.1 — relay-minted refusals, origin mark, and the charge factor');
+{
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+
+  // M1 — bad_hint is a COUNTER, never a wire reason. Adding it to the enum would
+  // widen the frozen vocabulary with something that can never be rendered (there
+  // is no transfer to attach it to) and would hand a probing sender a free
+  // oracle separating "hint malformed" from "hint absent" from "tier refused".
+  check('M1: bad_hint is NOT in the frozen reason enum', !R.FT_FAIL_REASONS.has('bad_hint'));
+  check('M1: bad_hint is not relay-ownable either', !R.FT_RELAY_OWNED_REASONS.has('bad_hint'));
+  check('M1: ftFailedFrame refuses to mint it, normalising to cancelled',
+    payloadOf(R.ftFailedFrame('abc12345', 'bad_hint')).reason === 'cancelled');
+
+  // M4 — the two timers, frozen in this order. Inverting them makes the relay
+  // the first to time out and re-opens the unnamed-refusal case as a silent hang
+  // with no explanation from either end.
+  check('M4: the sender 60 s offer expiry is strictly under FT_OFFER_TTL_MS',
+    60_000 < R.FT_OFFER_TTL_MS && R.FT_OFFER_TTL_MS === 90_000);
+
+  // section 2.2 — the relay-owned subset, exhaustive and frozen.
+  const OWNED = ['tier', 'quota', 'too_large', 'size_mismatch', 'busy',
+    'relay_backpressure', 'timeout', 'connection_lost'];
+  check('the relay-owned subset is exactly the frozen 8',
+    R.FT_RELAY_OWNED_REASONS.size === OWNED.length && OWNED.every((r) => R.FT_RELAY_OWNED_REASONS.has(r)),
+    [...R.FT_RELAY_OWNED_REASONS].join(','));
+  check('connection_lost IS relay-owned (it is already relay-authored today)',
+    R.FT_RELAY_OWNED_REASONS.has('connection_lost'));
+  check('every relay-owned reason is also a valid wire reason',
+    OWNED.every((r) => R.FT_FAIL_REASONS.has(r)));
+  for (const peer of ['hash_mismatch', 'cancelled', 'oom']) {
+    check(`${peer} stays PEER-owned — the relay may never claim it`,
+      !R.FT_RELAY_OWNED_REASONS.has(peer));
+  }
+
+  // M6 — the mark, at the one mint site.
+  for (const r of OWNED) {
+    check(`M6: a minted ${r} carries relay:true`, payloadOf(R.ftFailedFrame('abc12345', r)).relay === true);
+  }
+  for (const r of ['hash_mismatch', 'cancelled', 'oom']) {
+    check(`M6: a peer-owned ${r} is NEVER marked, even asked to be`,
+      payloadOf(R.ftFailedFrame('abc12345', r, { relay: true })).relay === undefined);
+  }
+  check('M6: the normalise-to-cancelled fallback cannot smuggle the mark on',
+    payloadOf(R.ftFailedFrame('abc12345', 'not_a_reason', { relay: true })).relay === undefined);
+  check('M7: the explicit unmarked variant produces no relay key at all',
+    !('relay' in payloadOf(R.ftFailedFrame('abc12345', 'quota', { relay: false }))));
+
+  // M7 — a peer FAILURE is re-minted UNMARKED; the re-mint is the stripper.
+  {
+    const R2 = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    const id = newId();
+    R2.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'x', size: 4096, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    R2.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+    R2.handleFileFrame(room, browser, `FILE_FAILED:${JSON.stringify({ id, reason: 'hash_mismatch' })}`, 'browser', room.token);
+    const fwd = payloadOf(lastOf(phone, 'FILE_FAILED'));
+    check('M7: a forwarded PEER failure carries no relay mark', fwd.relay === undefined);
+    check('M7: and keeps its peer-owned reason', fwd.reason === 'hash_mismatch');
+  }
+
+  // M7 — a peer CLAIMING the mark is REJECTED, not stripped. Stripping would
+  // mean re-serialising a frame the relay promised to forward byte-for-byte, and
+  // a re-serialiser on the passthrough path is how a relay starts parsing bodies.
+  for (const type of ['FILE_OFFER', 'FILE_ACCEPT', 'FILE_REJECT', 'FILE_CHUNK',
+    'FILE_ACK', 'FILE_RESUME', 'FILE_DONE', 'FILE_FAILED']) {
+    const R2 = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    const id = newId();
+    // Arm a live transfer first, so the rejection cannot be mistaken for the
+    // ordinary "no matching record" drop every one of these would otherwise hit.
+    R2.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'x', size: 4096, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    R2.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+    const beforeB = browser.sent.length; const beforeP = phone.sent.length;
+    const sender = type === 'FILE_ACCEPT' || type === 'FILE_ACK' || type === 'FILE_RESUME' || type === 'FILE_REJECT' ? browser : phone;
+    const senderRole = sender === browser ? 'browser' : 'phone';
+    R2.handleFileFrame(room, sender, `${type}:${JSON.stringify({ id, reason: 'quota', seq: 0, n: 1, data: 'QQ', upTo: 0, sha256: sha(), relay: true })}`, senderRole, room.token);
+    check(`M7: a peer-set relay mark on ${type} is REJECTED, nothing forwarded`,
+      browser.sent.length === beforeB && phone.sent.length === beforeP);
+    check(`M7: and the rejection is counted as peer_claimed_relay for ${type}`,
+      R2.ftDropCounts.get(room.token)?.get(`${type}/peer_claimed_relay`) === 1);
+    check(`M7: the live transfer survives a rejected ${type}`, room.transfer !== null);
+  }
+  {
+    // POSITIVE CONTROL: the same frames WITHOUT the relay key flow normally, so
+    // the eight rejections above are about the mark and not about the shape.
+    const R2 = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = mkWs(); const browser = mkWs();
+    const room = mkRoom(phone, browser);
+    const id = newId();
+    R2.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'x', size: 4096, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    R2.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+    R2.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 1, data: 'QQ' })}`, 'phone', room.token);
+    check('M7 control: the same frames without a relay key are forwarded normally',
+      countOf(browser, 'FILE_OFFER') === 1 && countOf(browser, 'FILE_CHUNK') === 1);
+  }
+
+  // The refusals that actually reach a user go out marked.
+  {
+    const R2 = buildRelay({ db: DB_ALWAYS_OK });
+    const phone = { userId: 'u1', tier: 'trial', readyState: 1, bufferedAmount: 0, sent: [] };
+    const browser = { userId: 'u1', tier: 'trial', readyState: 1, bufferedAmount: 0, sent: [] };
+    const room = mkRoom(phone, browser);
+    R2.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id: newId(), name: 'x', size: 4096, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    const f = payloadOf(lastOf(phone, 'FILE_FAILED'));
+    check('a tier refusal reaches the sender MARKED, so mode ON can deliver it',
+      f.reason === 'tier' && f.relay === true);
+  }
+
+  // M12 — the two factors are different numbers, in the right directions.
+  check('M12: the charge factor is the base64 floor 4/3, not the ceiling 1.40',
+    Math.abs(R.FT_WIRE_B64_FACTOR - 4 / 3) < 1e-12 && R.FT_WIRE_B64_FACTOR < R.FT_WIRE_OVERHEAD_FACTOR);
+  {
+    // An honest 100 MiB transfer moves about 4/3 of its raw bytes on the wire.
+    // Inverting on 1.40 charged ~0.96x of that — a silent discount on the one
+    // number that IS the abuse control.
+    const raw = 100 * 1024 * 1024;
+    const honestWire = Math.ceil(raw * 4 / 3);
+    const charged = R.ftRawFromWire(honestWire);
+    check('M12: an honest transfer is charged at least what it actually moved',
+      charged >= raw, `charged ${charged} for ${raw}`);
+    const wouldHaveBeen = Math.ceil(honestWire / R.FT_WIRE_OVERHEAD_FACTOR);
+    check('M12: the old shared-factor inversion under-charged by about 4 %',
+      wouldHaveBeen < raw && (raw - wouldHaveBeen) / raw > 0.03,
+      `${wouldHaveBeen} vs ${raw}`);
+    check('M12: the CEILING still errs generous — it keeps 1.40 plus a chunk',
+      R.ftWireCeiling(raw) > honestWire);
   }
 }
 
@@ -580,8 +715,14 @@ console.log('\nPART 4 — consent gate and concurrency');
   const id2 = newId();
   R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id: id2, name: 'y', size: 1024, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
   await new Promise((r) => setImmediate(r));
-  check('a second concurrent offer is refused', payloadOf(lastOf(phone, 'FILE_REJECT'))?.reason === 'busy');
-  check('the refusal names the SECOND id, not the live one', payloadOf(lastOf(phone, 'FILE_REJECT'))?.id === id2);
+  // M5: busy is a relay-minted FILE_FAILED now, not a FILE_REJECT. FILE_REJECT
+  // is sealed-by-exclusion, so a plaintext relay-minted one is dropped by the
+  // receiver's downgrade guard and "busy" was invisible under mode ON.
+  check('a second concurrent offer is refused with FILE_FAILED busy',
+    payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'busy');
+  check('the relay mints NO FILE_REJECT at all — that frame is receiver-authored',
+    countOf(phone, 'FILE_REJECT') === 0 && countOf(browser, 'FILE_REJECT') === 0);
+  check('the refusal names the SECOND id, not the live one', payloadOf(lastOf(phone, 'FILE_FAILED'))?.id === id2);
   check('the live transfer is untouched by the refusal', room.transfer.id === id);
   check('the second offer never reached the peer', countOf(browser, 'FILE_OFFER') === 1);
 
@@ -941,16 +1082,25 @@ try {
   // hinted. A transfer that hinted 1 GiB and moved nothing pays nothing; one
   // that hinted 1 KiB and moved 700 MiB pays for 700 MiB.
   {
-    const wire700 = Math.ceil(700 * 1024 * 1024 * R.FT_WIRE_OVERHEAD_FACTOR);
+    // The HONEST wire ratio for 700 MiB of real bytes is 4/3 (base64), not the
+    // ceiling's generous 1.40 — using the ceiling factor here would model a
+    // stream that never happens and make the charge look 5 % too high.
+    const wire700 = Math.ceil(700 * 1024 * 1024 * 4 / 3);
     const liar = { senderUserId: userId, quotaDay: D2, size: 1024, bytesForwarded: wire700, quotaSettled: false };
     const before = await readBytes(D2);
     R.ftSettleQuota(liar);
     await new Promise((r) => setTimeout(r, 250));
     const charged = (await readBytes(D2)) - before;
+    // The counter moves by the DELTA from the 1 KiB admission reservation, so the
+    // total borne by the account is `charged + 1024`. Asserting the delta as if
+    // it were the total would be off by exactly the size of the lie — small
+    // here, and exactly the kind of off-by-the-interesting-quantity that makes a
+    // test agree with a bug.
     check('vector L5: a sender that hinted 1 KiB and streamed 700 MiB is charged ~700 MiB, not 1 KiB',
-      charged > BigInt(699 * 1024 * 1024) && charged <= BigInt(701 * 1024 * 1024), String(charged));
-    check('the settle records the raw figure it charged',
-      liar.settledRaw > 699 * 1024 * 1024 && liar.settledRaw <= 701 * 1024 * 1024, String(liar.settledRaw));
+      charged + 1024n >= BigInt(700 * 1024 * 1024) && charged + 1024n <= BigInt(701 * 1024 * 1024),
+      String(charged + 1024n));
+    check('M12: the charge is at least the true raw figure, never under it',
+      liar.settledRaw >= 700 * 1024 * 1024 && liar.settledRaw <= 701 * 1024 * 1024, String(liar.settledRaw));
   }
 
   // The floor: a refund must never drive a counter negative.
