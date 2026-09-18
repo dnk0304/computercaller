@@ -89,12 +89,35 @@ fs.mkdirSync(EVIDENCE, { recursive: true });
 const RUN_S = Number(process.argv[2] || 90);
 /** 'ws' | 'idle' | 'both' — run one arm at a time when iterating. */
 const ONLY = process.argv[3] || 'both';
-const PORT = 41777;
+/**
+ * EPHEMERAL PORT, not a fixed one (D1-PREP).
+ *
+ * This was `41777`, hardcoded. A fixed port makes the harness fail for a
+ * reason that has nothing to do with what it measures: under
+ * `--parallel-harnesses`, and across the several lane worktrees that share
+ * this box, any other copy of this harness — or a leaked node from an earlier
+ * run, which the P3 lane recorded reaping off exactly this port — already owns
+ * 41777, and the WebSocketServer throws EADDRINUSE at module load. The run
+ * then reports FAIL for the one outcome this file is explicit about never
+ * reporting dishonestly.
+ *
+ * Port 0 asks the OS for a free port and we read back the one it gave us, so
+ * two copies can run side by side. The port number is not part of the
+ * measurement — nothing here asserts on it — so nothing is lost by letting the
+ * OS choose.
+ */
+const PORT = 0;
 
 // ---- stand-in relay ---------------------------------------------------------
 let serverSeesOpen = false;
 let lastPongAt = 0; // eslint-disable-line @typescript-eslint/no-unused-vars -- written by the pong handler below purely to keep that listener registered; deleting it would delete the listener and change the probe.
 const wss = new WebSocketServer({ port: PORT });
+// Resolved once the server is listening; `PORT` above is only the REQUEST.
+const listeningPort = await new Promise((resolve, reject) => {
+  wss.once('listening', () => resolve(wss.address().port));
+  wss.once('error', reject);
+});
+console.log(`stand-in relay listening on ephemeral port ${listeningPort}`);
 wss.on('connection', (socket) => {
   serverSeesOpen = true;
   lastPongAt = Date.now();
@@ -203,7 +226,7 @@ async function arm(name, openSocket) {
       await sw.evaluate((port) => {
         // Held on the global so it is not collected.
         self.__probeWs = new WebSocket(`ws://127.0.0.1:${port}`);
-      }, PORT);
+      }, listeningPort);
       await new Promise((r) => setTimeout(r, 1500));
     }
 
