@@ -1289,11 +1289,23 @@ if (WEB) {
   // ── 9. harnesses against a dev server the gate owns ──────────────────────
   const HARNESS = ['app-in-call-shots', 'ext-in-call-shots', 'ext-badge-counter-proof',
     'ext-templates-scroll-call-message-proof', 'ext-shell-theme-proof', 'ext-layering-shots'];
-  if (['P3', 'P4', 'P5A', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) HARNESS.splice(3, 0, 'ext-sw-lifetime-proof');
+  /**
+   * D1-PREP (b2), second half. The whitelist above stops an UNRECOGNISED phase
+   * from silently running a narrower gate. It does not stop a RECOGNISED one
+   * from doing the same thing by being missing from a membership list — and D1
+   * was missing from both lists below.
+   *
+   * That is the worse version of the bug, because D1 is the production-deploy
+   * evidence run: it would have reported PASS while skipping the Encrypted-mode
+   * UI proof, which is the single thing D1 exists to evidence. D1 ships the P5a
+   * UI and the SW, so its gate must be a SUPERSET of the phases that built
+   * them, never a subset.
+   */
+  if (['P3', 'P4', 'P5A', 'P5B', 'P6', 'P7', 'P8', 'D1'].includes(PHASE)) HARNESS.splice(3, 0, 'ext-sw-lifetime-proof');
   // P5a slice 2 — the Encrypted-mode UI proof. Added from P5A onwards, where
   // the surfaces it asserts first exist; running it at P0-P4 would report a
   // missing feature as a failure.
-  if (['P5A', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) HARNESS.push('e2e-ui-proof');
+  if (['P5A', 'P5B', 'P6', 'P7', 'P8', 'D1'].includes(PHASE)) HARNESS.push('e2e-ui-proof');
   if (!steps.some((s2) => s2.name === 'build' && s2.exit !== 0)) {
     const started = startDevServer();
     if (!started.ok) {
@@ -1337,10 +1349,35 @@ if (WEB) {
           DEV_URL: origin,
           BASE_URL: origin,
           CC_BASE_URL: origin,
+          /**
+           * D1-PREP (a). The screenshot harnesses mint a REAL session for a
+           * REAL user, and as of dispatch forge/w-strip-email-literals they
+           * REFUSE to guess who: `requireShotEmail()` throws when
+           * CC_SHOT_EMAIL is unset, because the default used to be a personal
+           * address hardcoded in the repo.
+           *
+           * SCRUBBED strips everything not named here, so before this line the
+           * variable could not reach a harness even when the operator had set
+           * it — and every shot harness died on the throw. That failure is a
+           * MERGE INTERACTION, not a fault in either branch: the product branch
+           * made the value mandatory, the e2e branch owns the gate that runs
+           * these harnesses, and neither half fails on its own.
+           *
+           * The gate passes the operator's value through rather than inventing
+           * one. Supplying a default here would re-introduce exactly the
+           * hardcoded identity that dispatch removed.
+           */
+          CC_SHOT_EMAIL: process.env.CC_SHOT_EMAIL || '',
         };
         // Assert before step 9 rather than discovering it as a Prisma error.
-        record('harness-env', 'assert DATABASE_URL reaches the harness env', dbUrl.startsWith('postgresql://') ? 0 : 1, 0,
-          { dbUrlSet: dbUrl ? 1 : 0, jwtSet: process.env.JWT_SECRET ? 1 : 0, ccBaseUrlSet: 1 });
+        // CC_SHOT_EMAIL is asserted for the same reason and in the same place:
+        // a missing value is an operator/env fact, and it should be named once
+        // here rather than rediscovered as six identical harness stack traces.
+        const shotEmailSet = Boolean(harnessEnv.CC_SHOT_EMAIL);
+        record('harness-env', 'assert DATABASE_URL + CC_SHOT_EMAIL reach the harness env',
+          (dbUrl.startsWith('postgresql://') && shotEmailSet) ? 0 : 1, 0,
+          { dbUrlSet: dbUrl ? 1 : 0, jwtSet: process.env.JWT_SECRET ? 1 : 0, ccBaseUrlSet: 1,
+            shotEmailSet: shotEmailSet ? 1 : 0 });
 
         /**
          * R-B asked P1 to deliver --parallel-harnesses to bring the runtime
