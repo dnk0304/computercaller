@@ -664,13 +664,35 @@ export async function admitSeq({ kid, direction, seq, pairEpoch }) {
   return { ok: true };
 }
 
-/** Bump and return the exported drop counter (§13.5: it must be observable). */
-export async function noteDrop(reason) {
-  const all = (await sessionGet(DROPS_KEY)) || { total: 0, byReason: {} };
-  all.total = (all.total || 0) + 1;
-  all.byReason[reason] = (all.byReason[reason] || 0) + 1;
-  await sessionSet(DROPS_KEY, all);
-  return all;
+/**
+ * Bump and return the exported drop counter (§13.5: it must be observable).
+ *
+ * SERIALISED, and that is a FIX, not decoration (found by P3.1's burst arms).
+ * The body is a read-modify-write across two awaits on `chrome.storage.session`.
+ * Two drops in the same tick both read the same value, both write value+1, and
+ * the counter records ONE. That is not a rare interleaving: the shape that
+ * produces it is a burst — a relay stripping envelopes off a run of frames, or
+ * a chunk stream arriving marked — which is precisely and only the case the
+ * counter exists to make visible. A counter that under-reports during an attack
+ * and is exact at rest converts a tamper campaign into an invisible one, which
+ * is the outcome FT-A1.1 M2 names.
+ *
+ * The queue is a tail promise rather than a lock because every caller is
+ * fire-and-forget (`noteDrop(x).catch(() => {})`): there is nothing to block,
+ * only an order to keep. A rejected link must not poison the chain, hence the
+ * `catch` on the tail rather than on the returned promise.
+ */
+let dropQueue = Promise.resolve();
+export function noteDrop(reason) {
+  const next = dropQueue.then(async () => {
+    const all = (await sessionGet(DROPS_KEY)) || { total: 0, byReason: {} };
+    all.total = (all.total || 0) + 1;
+    all.byReason[reason] = (all.byReason[reason] || 0) + 1;
+    await sessionSet(DROPS_KEY, all);
+    return all;
+  });
+  dropQueue = next.catch(() => {});
+  return next;
 }
 
 /** Read the drop counter. Exported so a harness can assert it. */
@@ -791,13 +813,80 @@ export const MANDATORY_PLAINTEXT_FRAME_TYPES = Object.freeze(new Set([
  */
 export function requiresSeal(frameType) {
   if (MANDATORY_PLAINTEXT_FRAME_TYPES.has(frameType)) return false;
+  // FT-A1 MUST B-1. Sealed when ON, but ROUTED not opened — see the set below.
+  // This is why the two sets are asked in this order and never merged: the
+  // downgrade rule is the same for both, the disposition is not.
+  if (SEALED_PASSTHROUGH_FRAME_TYPES.has(frameType)) return true;
   return SEALED_FRAME_TYPES.has(frameType);
+}
+
+// ── FT-A1 §2 / FT-A1.1 §2.5 — the file-transfer passthrough family ──────────
+
+/**
+ * Sealed when the session is ON, but ROUTED to the page rather than opened.
+ *
+ * THIS SET IS DISJOINT FROM `SEALED_FRAME_TYPES` ON PURPOSE, and merging them
+ * would be a regression, not a tidy-up. `SEALED_FRAME_TYPES` is §13.7's FROZEN
+ * list and it is simultaneously (a) the set the downgrade guard protects, (b)
+ * the set `sealFrame()` is willing to seal, and (c) the set the unseal path
+ * serves. FILE_* needs exactly (a) and must never get (b) or (c): a worker that
+ * opened a FILE_CHUNK would be holding file bytes, and the whole 1 GB design
+ * rests on it never doing that — this worker is evicted on a 30 s idle timer.
+ *
+ * So the FILE family gets the DROP rule via `requiresSeal()` above and a
+ * disposition of its own (`INBOUND_ROUTE_SEALED`) below. §13.7's list gains no
+ * entry and `sealFrame()`'s refusal is not widened.
+ *
+ * Before FT-A1 this hole was live and exploitable: `requiresSeal()` named no
+ * FILE_* type, so a relay that stripped `{e,kid,s,c}` off a FILE_OFFER while
+ * the session was OPEN got the body — filename, size, sender — delivered in the
+ * clear, and every subsequent chunk with it. The one frame family that carries
+ * whole documents was the one family with no downgrade guard.
+ */
+export const SEALED_PASSTHROUGH_FRAME_TYPES = Object.freeze(new Set([
+  'FILE_OFFER', 'FILE_ACCEPT', 'FILE_REJECT', 'FILE_CHUNK',
+  'FILE_ACK', 'FILE_RESUME', 'FILE_DONE', 'FILE_FAILED',
+]));
+
+/**
+ * The eight reasons the RELAY is allowed to author (FT-A1.1 §2.2, frozen).
+ *
+ * The relay cannot seal — it holds no session key — so its own refusals are
+ * necessarily plaintext, and a strict B-1 receiver would drop every one of
+ * them. That is not an acceptable outcome: "timeout" as the only visible result
+ * of a tier or quota refusal hides the exact events the controls exist to
+ * surface. Hence the one narrow exception in `inboundDisposition()`.
+ *
+ * `hash_mismatch`, `cancelled` and `oom` are PEER-owned and deliberately
+ * absent. A plaintext one of those, marked or not, is a downgrade and is
+ * dropped — the peer can seal, so it has no excuse.
+ *
+ * Transcribed from file-transfer/WIRE-TRUTH-v1.md. Kept as a literal here
+ * rather than imported from `lib/fileTransfer/reasons.ts` because that is
+ * TypeScript on the web lane and this file must load in an MV3 worker with no
+ * build step (R-A). A test asserts the two lists match.
+ */
+export const RELAY_OWNED_FAIL_REASONS = Object.freeze(new Set([
+  'tier', 'quota', 'too_large', 'size_mismatch',
+  'busy', 'relay_backpressure', 'timeout', 'connection_lost',
+]));
+
+/** True when the frame body carries a top-level `relay` key of its own. */
+function carriesRelayMark(data) {
+  return !!data && typeof data === 'object'
+    && Object.prototype.hasOwnProperty.call(data, 'relay');
 }
 
 /** What the inbound chokepoint decided to do with a frame. */
 export const INBOUND_DELIVER = 'deliver';
 export const INBOUND_UNSEAL = 'unseal';
 export const INBOUND_DROP_PLAINTEXT = 'drop-plaintext-while-on';
+/** FT-A1 MUST B-1 — forward the envelope VERBATIM; never call openIfSealed. */
+export const INBOUND_ROUTE_SEALED = 'route-sealed';
+/** FT-A1.1 M9 — a relay-MINTED plaintext FILE_FAILED. Abort-only, page-owned. */
+export const INBOUND_DELIVER_RELAY_ABORT = 'deliver-relay-abort';
+/** FT-A1.1 M7, receiver half — a `relay` mark on a shape that cannot be honest. */
+export const INBOUND_DROP_RELAY_MARK = 'drop-bad-relay-mark';
 
 /**
  * THE INBOUND CHOKEPOINT, as a pure decision.
@@ -825,6 +914,38 @@ export const INBOUND_DROP_PLAINTEXT = 'drop-plaintext-while-on';
  * every un-paired user.
  */
 export function inboundDisposition({ mode, frameType, data }) {
+  // ── FT-A1 §2 / FT-A1.1 §2.5: the file family, decided FIRST and in full ──
+  //
+  // It is lifted above the general branches rather than threaded through them
+  // because its sealed case is the OPPOSITE of theirs: every other sealed type
+  // is opened here, and these are the types that must not be. Leaving that to a
+  // later `if` inside the unseal branch is how a refactor eventually opens one.
+  if (SEALED_PASSTHROUGH_FRAME_TYPES.has(frameType)) {
+    const on = mode === 'open' || mode === 'aborted';
+    const marked = carriesRelayMark(data);
+    if (isSealedEnvelope(data)) {
+      // A sealed frame carrying `relay` cannot be honest from either author:
+      // the relay stamps the mark only on frames it MINTS (M6) and it mints
+      // nothing sealed (it has no key), and it must REJECT rather than forward
+      // any peer frame carrying the key (M7). So this shape means the mark
+      // survived a path that promised to reject it. Drop it — and do not
+      // "helpfully" strip the key and route the rest, because the page would
+      // then treat a frame with a broken provenance story as ordinary.
+      return marked ? INBOUND_DROP_RELAY_MARK : INBOUND_ROUTE_SEALED;
+    }
+    // Mode OFF / counts-only: plaintext FILE_* is simply how the product works
+    // without a session, and the relay mints its refusals plaintext in BOTH
+    // modes (FT-A1.1 §2.1, one mint path). Unchanged, byte for byte.
+    if (!on) return INBOUND_DELIVER;
+    // M9, the one narrow exception, and every clause of it is load-bearing.
+    // The SW applies all of them EXCEPT liveness: it does not track transfer
+    // state and must not start — the page owns that, and the page applies it.
+    if (marked
+      && frameType === 'FILE_FAILED'
+      && data.relay === true
+      && RELAY_OWNED_FAIL_REASONS.has(data.reason)) return INBOUND_DELIVER_RELAY_ABORT;
+    return marked ? INBOUND_DROP_RELAY_MARK : INBOUND_DROP_PLAINTEXT;
+  }
   if (isSealedEnvelope(data)) return INBOUND_UNSEAL;
   // 'aborted' (A4-M3) sits with 'open', not with 'counts-only'. In an aborted
   // pairing the PHONE is still sealing — the abort is our side's refusal, not
@@ -835,6 +956,70 @@ export function inboundDisposition({ mode, frameType, data }) {
   // works, and dropping there would break every such user.
   if ((mode === 'open' || mode === 'aborted') && requiresSeal(frameType)) return INBOUND_DROP_PLAINTEXT;
   return INBOUND_DELIVER;
+}
+
+// ── FT-A1 §2.3 — the page-closed pending-offer marker ──────────────────────
+
+/** MUST B-2. 60 s: long enough to cover "user clicks the notification". */
+export const PENDING_OFFER_TTL_MS = 60_000;
+
+/** `ft.id` is 16 random bytes rendered as 32 lowercase hex. Nothing else. */
+const FT_HINT_ID_RE = /^[0-9a-f]{32}$/;
+
+/**
+ * Read `ft.id` off a sealed FILE_OFFER envelope, or return null.
+ *
+ * THE VALUE IS A HINT FROM AN UNTRUSTED PARTY (FT-A1 §0/Q2): `ft` rides
+ * OUTSIDE the AAD and is not authenticated. The worker is allowed to use it for
+ * exactly one thing — naming a transfer in a refusal it is about to author —
+ * and for nothing else. It is never compared to a key, never used to size an
+ * allocation, and never shown to the user. The receiver that CAN check it (the
+ * page, which unseals) does so under MUST A-5; the worker cannot and does not.
+ *
+ * A missing or malformed hint returns null, and the caller's only correct
+ * response is to drop and count. There is no id to name, so there is no frame
+ * to author — the same reasoning FT-A1.1 M1 applies to the relay's `bad_hint`.
+ */
+export function ftHintId(envelope) {
+  const ft = envelope && typeof envelope === 'object' ? envelope.ft : null;
+  if (!ft || typeof ft !== 'object') return null;
+  return typeof ft.id === 'string' && FT_HINT_ID_RE.test(ft.id) ? ft.id : null;
+}
+
+/**
+ * Pin the claim this worker's file path makes: **it never mints `relay:true`.**
+ *
+ * The `relay` mark is trust-on-relay, not cryptography (FT-A1.1 §2.4). Its
+ * entire value comes from exactly one party being able to set it. A worker that
+ * stamped the mark on a frame of its own — even honestly, even once, even only
+ * on the page-facing port — would turn the receiver's one provenance signal
+ * into a signal two parties can produce, and the page's M9 exception would then
+ * be admitting frames on the word of whichever of them was compromised.
+ *
+ * Written as a source assertion rather than a comment for the reason the
+ * neighbouring `assertSwSendsNothing` gives: a comment cannot fail. Comments
+ * and strings are stripped first so that the prose ABOUT the mark — of which
+ * this file has a great deal — does not trip its own proof.
+ */
+export function assertSwMintsNoRelayMark(source) {
+  const code = String(source)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+  // `relay: true`, `relay:!0`, `"relay": true` — an object literal assigning a
+  // truthy relay mark. A READ (`data.relay === true`) is what the disposition
+  // does for a living and must not match, hence the property-KEY shape.
+  const re = /(^|[{,(\s])relay\s*:\s*(?:true|!0|1)\b/;
+  if (re.test(code)) {
+    throw new Error(
+      'the service worker now MINTS a relay:true mark. Only the relay may set it '
+      + '(FT-A1.1 M6) — its whole value is that exactly one party can. Route the '
+      + 'frame instead, or delete this assertion deliberately, not by accident.',
+    );
+  }
+  return true;
 }
 
 /**
