@@ -4778,6 +4778,8 @@ export function usePhoneBridge() {
     e2e: e2eApi.e2e,
     e2eLocalMode: e2eApi.localMode,
     setE2eLocalMode: e2eApi.setLocalMode,
+    // E2E-P2.1: the explicit user act that clears a sticky encryption error.
+    dismissE2eError: e2eApi.dismissError,
 
     // Full MMS media fetch (on-demand). Returns a base64-encoded media payload
     // plus its MIME type — caller composes the `data:` URL when rendering.

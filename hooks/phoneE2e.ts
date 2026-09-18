@@ -423,6 +423,76 @@ export const E2E_VIEW_INITIAL: E2eView = {
 };
 
 /**
+ * ── WHAT CLEARS AN ERROR, AND WHAT DOES NOT ────────────────────────────────
+ *
+ * `state:'error'` is the ONLY signal a user gets that encryption refused
+ * something: a downgrade dropped, a replayed epoch, a wrap that would not open,
+ * the relay's kill switch. Every one of those is followed, within a tick, by
+ * the pair being torn down — `fail()` returns `true` and usePhoneBridge calls
+ * LEAVE_ACTIVE and then `onPairEnded()`.
+ *
+ * `onPairEnded` used to reset the view to E2E_VIEW_INITIAL, which is
+ * `state:'unencrypted'`. So the error the abort had just set was wiped by the
+ * teardown the abort itself caused, and P5a's error UI rendered a state that no
+ * longer existed by the time React re-rendered. A refusal that erases its own
+ * evidence is indistinguishable, to the user, from nothing having happened —
+ * and "nothing happened" is exactly the wrong reading of a refused pairing.
+ *
+ * The rule, and it is the whole rule:
+ *
+ *   CLEARS an error        | an explicit USER act (dismiss/retry, mode off,
+ *                          | sign-out), or a NEW pairing outcome at an accept
+ *   ------------------------+-------------------------------------------------
+ *   PRESERVES an error     | everything the RELAY or the NETWORK can cause:
+ *                          | onPairEnded, LEAVE_ACTIVE, RESET_ROOM, a socket
+ *                          | close, a PAIRING_TERMINATED echo, an SW restart
+ *                          | notification
+ *
+ * The split is the same one A3-M2 draws for the epoch floor, for the same
+ * reason: a signal that anything on the wire can clear defends against nothing,
+ * because the event it warns about can simply be preceded by a disconnect.
+ *
+ * These are pure so they can be driven exhaustively without React.
+ */
+
+/**
+ * The pair is over. Everything PAIR-SCOPED goes — the SAS digits, the kid, the
+ * drop counters, `peer.supports` — and an error, if one is showing, STAYS.
+ *
+ * `mode` rides along with the error for the same reason `fail()` preserves it:
+ * "you asked for encryption and the pair refused" and "the pair was never
+ * encrypted" are different sentences, and the badge says so.
+ *
+ * `peer.kind` is preserved unconditionally. It is the extension SW's key status,
+ * which is a property of the BROWSER, not of the pair that just ended.
+ */
+export function viewAfterPairEnded(v: E2eView): E2eView {
+  if (v.state === 'error') {
+    return {
+      ...E2E_VIEW_INITIAL,
+      mode: v.mode,
+      state: 'error',
+      error: v.error,
+      peer: { supports: false, kind: v.peer.kind },
+    };
+  }
+  return { ...E2E_VIEW_INITIAL, peer: { supports: false, kind: v.peer.kind } };
+}
+
+/**
+ * An explicit user act: the dismiss/retry control, or turning encrypted mode
+ * off. This is one of only two ways an error leaves the screen.
+ *
+ * A no-op when there is no error, so a stray dismiss cannot wipe a LIVE
+ * encrypted session's SAS digits — the control is rendered next to an error and
+ * a double click on it must not cost the user their verification state.
+ */
+export function viewAfterErrorDismissed(v: E2eView): E2eView {
+  if (v.state !== 'error') return v;
+  return { ...E2E_VIEW_INITIAL, peer: { ...v.peer } };
+}
+
+/**
  * Per-DEVICE setting, keyed per account — the same convention as
  * lib/extensionTheme.ts, and for the same reason: a shared browser profile is
  * the normal case for this product, and one person's choice of encrypted mode

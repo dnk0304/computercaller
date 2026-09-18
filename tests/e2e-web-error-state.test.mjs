@@ -1,0 +1,249 @@
+/**
+ * tests/e2e-web-error-state.test.mjs — `state:'error'` is STICKY (E2E-P2.1 (b)).
+ *
+ * The defect: `onPairEnded()` reset the view to E2E_VIEW_INITIAL, which is
+ * `state:'unencrypted'`. Every refusal — downgrade, replayed epoch, a wrap that
+ * would not open, the relay kill switch — calls `fail()` (which sets
+ * `state:'error'`) and then returns `true`, and `true` makes usePhoneBridge
+ * LEAVE_ACTIVE and call `onPairEnded()`. So the error was erased by the
+ * teardown the error itself caused, within the same tick, and P5a's error UI
+ * rendered a state that no longer existed. A refusal that erases its own
+ * evidence reads, to the user, as nothing having happened.
+ *
+ * Two halves are tested here and BOTH are needed:
+ *   1. the pure transitions (viewAfterPairEnded / viewAfterErrorDismissed),
+ *      driven exhaustively over every E2eState and every E2eError; and
+ *   2. that the HOOK actually calls them. A pure function nobody wired up is a
+ *      pure function that passes its own tests while the bug ships, which is
+ *      how this lane's IndexedDB defect survived two green suites.
+ */
+
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  E2E_VIEW_INITIAL,
+  viewAfterPairEnded,
+  viewAfterErrorDismissed,
+} from '../hooks/phoneE2e.ts';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+let pass = 0;
+let fail = 0;
+const failures = [];
+function check(name, ok, detail) {
+  if (ok) { pass += 1; return; }
+  fail += 1;
+  const line = `${name}${detail ? ` — ${detail}` : ''}`;
+  failures.push(line);
+  console.log(`  FAIL  ${line}`);
+}
+function eq(name, got, want) {
+  check(name, JSON.stringify(got) === JSON.stringify(want),
+    `got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+}
+
+const ALL_ERRORS = [
+  'e2e-setup-failed',
+  'e2e-key-mismatch',
+  'e2e-unavailable',
+  're-pair-needed',
+  'e2e-seq-fail-closed',
+  'e2e-epoch-replayed',
+];
+
+/** A view in the state `fail()` leaves behind. */
+function erroredView(error, overrides = {}) {
+  return {
+    mode: 'on',
+    state: 'error',
+    error,
+    peer: { supports: true, kind: 'present' },
+    sas: { digits: '123456', confirmed: true },
+    debug: { drops: 3, downgradesDropped: 2, kid: 'kid-1' },
+    ...overrides,
+  };
+}
+
+/** A view for a healthy, verified, encrypted pair. */
+function liveView(overrides = {}) {
+  return {
+    mode: 'on',
+    state: 'encrypted-verified',
+    peer: { supports: true, kind: 'present' },
+    sas: { digits: '654321', confirmed: true },
+    debug: { drops: 0, downgradesDropped: 0, kid: 'kid-9' },
+    ...overrides,
+  };
+}
+
+// ── 1. THE NON-CLEARING PATHS: everything the relay or the network can cause ──
+//
+// onPairEnded is the single funnel. usePhoneBridge calls it from leaveActive,
+// and the relay-driven teardowns (RESET_ROOM -> close 4010, PAIRING_TERMINATED,
+// a bare socket close) all reach the same place — asserted by source below.
+for (const error of ALL_ERRORS) {
+  const out = viewAfterPairEnded(erroredView(error));
+  eq(`onPairEnded PRESERVES state:'error' (${error})`, out.state, 'error');
+  eq(`onPairEnded PRESERVES the error code (${error})`, out.error, error);
+}
+
+{
+  const out = viewAfterPairEnded(erroredView('e2e-epoch-replayed'));
+  eq('onPairEnded keeps mode alongside the error', out.mode, 'on');
+  // Everything PAIR-scoped must still go: the pair really is over.
+  eq('onPairEnded clears the SAS digits', out.sas.digits, null);
+  eq('onPairEnded clears sas.confirmed', out.sas.confirmed, false);
+  eq('onPairEnded clears the kid', out.debug.kid, null);
+  eq('onPairEnded clears the drop counters', out.debug.drops, 0);
+  eq('onPairEnded clears downgradesDropped', out.debug.downgradesDropped, 0);
+  eq('onPairEnded clears peer.supports', out.peer.supports, false);
+  // peer.kind is a property of the BROWSER (the extension SW's key), not of the
+  // pair, so it survives a teardown.
+  eq('onPairEnded PRESERVES peer.kind', out.peer.kind, 'present');
+  eq('the view shape is unchanged', Object.keys(out).sort().join(','),
+    'debug,error,mode,peer,sas,state');
+}
+
+{
+  // A teardown with NO error behaves exactly as before — this fix must not
+  // invent an error where there was none.
+  const out = viewAfterPairEnded(liveView());
+  eq('onPairEnded on a healthy pair resets to initial state', out.state, E2E_VIEW_INITIAL.state);
+  eq('onPairEnded on a healthy pair resets mode', out.mode, E2E_VIEW_INITIAL.mode);
+  check('onPairEnded on a healthy pair carries no error', out.error === undefined);
+  eq('onPairEnded on a healthy pair still keeps peer.kind', out.peer.kind, 'present');
+}
+
+{
+  // Repeated teardowns (PAIRING_TERMINATED echoes leaveActive; both fire) must
+  // not erode the error. Idempotence is the property that makes the funnel safe.
+  let v = erroredView('e2e-unavailable');
+  for (let i = 0; i < 5; i += 1) v = viewAfterPairEnded(v);
+  eq('onPairEnded is idempotent: error survives 5 teardowns', v.state, 'error');
+  eq('onPairEnded is idempotent: code survives', v.error, 'e2e-unavailable');
+}
+
+// ── 2. THE CLEARING PATHS: explicit user acts ───────────────────────────────
+for (const error of ALL_ERRORS) {
+  const out = viewAfterErrorDismissed(erroredView(error));
+  eq(`dismiss clears state (${error})`, out.state, E2E_VIEW_INITIAL.state);
+  check(`dismiss clears the error code (${error})`, out.error === undefined);
+}
+
+{
+  const out = viewAfterErrorDismissed(erroredView('re-pair-needed'));
+  eq('dismiss resets mode', out.mode, E2E_VIEW_INITIAL.mode);
+  eq('dismiss keeps peer.kind', out.peer.kind, 'present');
+  eq('dismiss clears the SAS digits', out.sas.digits, null);
+}
+
+{
+  // A dismiss with no error showing must be a NO-OP. The control sits next to
+  // the banner; a double-click must not cost a live session its SAS digits.
+  const live = liveView();
+  const out = viewAfterErrorDismissed(live);
+  check('dismiss on a live encrypted pair is a no-op (identity)', out === live);
+  eq('dismiss on a live pair keeps the SAS digits', out.sas.digits, '654321');
+  eq('dismiss on a live pair keeps the state', out.state, 'encrypted-verified');
+}
+
+{
+  const un = { ...E2E_VIEW_INITIAL };
+  check('dismiss on an unencrypted view is a no-op', viewAfterErrorDismissed(un) === un);
+}
+
+// Dismiss then teardown: nothing comes back from the dead.
+{
+  const out = viewAfterPairEnded(viewAfterErrorDismissed(erroredView('e2e-key-mismatch')));
+  eq('a dismissed error does not return on the next teardown', out.state,
+    E2E_VIEW_INITIAL.state);
+  check('a dismissed error has no code on the next teardown', out.error === undefined);
+}
+
+// ── 3. THE WIRING. A pure function nobody called is the real failure mode. ───
+const useE2e = readFileSync(join(ROOT, 'hooks', 'useE2e.ts'), 'utf8');
+const bridge = readFileSync(join(ROOT, 'hooks', 'usePhoneBridge.ts'), 'utf8');
+
+check('useE2e imports viewAfterPairEnded', /\bviewAfterPairEnded\b/.test(useE2e));
+check('useE2e imports viewAfterErrorDismissed', /\bviewAfterErrorDismissed\b/.test(useE2e));
+check('onPairEnded calls viewAfterPairEnded', useE2e.includes('setView(viewAfterPairEnded)'));
+
+/**
+ * THE REGRESSION ITSELF: onPairEnded must not reset the view unconditionally.
+ * The old line was
+ *   setView((v) => ({ ...E2E_VIEW_INITIAL, peer: { ... kind: v.peer.kind } }));
+ * and it is what erased the error. onSignOut legitimately still uses
+ * E2E_VIEW_INITIAL (sign-out IS an explicit user act), so the assertion is
+ * scoped to the onPairEnded body rather than to the file.
+ */
+{
+  const i = useE2e.indexOf('const onPairEnded = useCallback');
+  check('onPairEnded exists in useE2e.ts', i > 0);
+  // Comments MUST be stripped first. The body carries a comment explaining why
+  // it is not `setView(E2E_VIEW_INITIAL)` any more, and the first draft of this
+  // assertion matched that explanation and reported the bug as still present.
+  // A grep-proof that reads the prose describing the invariant is measuring the
+  // documentation, not the code.
+  const body = useE2e.slice(i, i + 900)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  check('onPairEnded does NOT spread E2E_VIEW_INITIAL (the erasing bug)',
+    !body.includes('E2E_VIEW_INITIAL'),
+    'onPairEnded still resets the view unconditionally');
+  // Prove the detector can fire, or "no match" means nothing.
+  check('the E2E_VIEW_INITIAL detector fires on the ORIGINAL buggy line',
+    'setView((v) => ({ ...E2E_VIEW_INITIAL, peer: { supports: false, kind: v.peer.kind } }));'
+      .includes('E2E_VIEW_INITIAL'));
+}
+
+check('useE2e exposes dismissError on the API', /\bdismissError\(\): void;/.test(useE2e));
+check('dismissError calls viewAfterErrorDismissed',
+  useE2e.includes('setView(viewAfterErrorDismissed)'));
+check('turning encrypted mode OFF clears a showing error',
+  useE2e.includes("if (mode === 'off') setView(viewAfterErrorDismissed);"));
+check('usePhoneBridge exposes the dismiss to the UI',
+  /dismissE2eError:\s*e2eApi\.dismissError/.test(bridge));
+
+/** A NEW successful pairing clears the error — the second clearing path. */
+{
+  const i = useE2e.indexOf('const onPairingActive = useCallback');
+  const body = useE2e.slice(i, useE2e.indexOf('const onE2eUnavailable'));
+  const clears = (body.match(/error:\s*undefined/g) || []).length;
+  check('a new pairing outcome clears the error (accept sets error: undefined)',
+    clears >= 2, `found ${clears} clearing sites, expected the mode-off branch and the success branch`);
+}
+
+/**
+ * An SW restart notification must NOT clear an error. The extension-bridge
+ * effect only ever narrows to `peer`, so the assertion is that its setView
+ * spreads the previous view and touches neither `state` nor `error`.
+ */
+{
+  const i = useE2e.indexOf("data.type !== 'e2e-pubkey'");
+  const body = useE2e.slice(i, i + 400);
+  check('the SW-key listener spreads the previous view', body.includes('...v'));
+  check('the SW-key listener does not set state', !/\bstate:/.test(body));
+  check('the SW-key listener does not set error', !/\berror:/.test(body));
+}
+
+/**
+ * RESET_ROOM and a socket close reach the error rule through the SAME funnel.
+ * There is exactly one onPairEnded call site, so proving the funnel is proving
+ * that all three teardowns are covered. If a second call site ever appears,
+ * this fires and someone re-reads the table.
+ */
+{
+  const sites = (bridge.match(/e2eRef\.current\.onPairEnded\(\)/g) || []).length;
+  eq('onPairEnded has exactly ONE call site (the single teardown funnel)', sites, 1);
+}
+
+const total = pass + fail;
+if (fail > 0) {
+  console.log(`\ne2e-web-error-state: ${failures.length} FAILED`);
+  for (const f of failures) console.log(`  - ${f}`);
+}
+console.log(`e2e-web-error-state: ${pass}/${total} checks passed`);
+process.exit(fail > 0 ? 1 : 0);

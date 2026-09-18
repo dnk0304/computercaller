@@ -73,6 +73,8 @@ import {
   readEncryptedMode,
   readSwKey,
   sasKeySet,
+  viewAfterErrorDismissed,
+  viewAfterPairEnded,
   writeEncryptedMode,
   type E2eError,
   type E2eView,
@@ -167,6 +169,11 @@ export interface E2eApi {
   onSignOut(): void;
   /** A new pair / new epoch: drop the session so the next accept rebuilds it. */
   onPairEnded(): void;
+  /**
+   * The explicit user act that clears `state:'error'`. Nothing the relay or the
+   * network can cause clears it — see the table in hooks/phoneE2e.ts.
+   */
+  dismissError(): void;
 }
 
 /**
@@ -221,6 +228,12 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // therefore only ever changes at an accept.
     writeEncryptedMode(email, mode);
     setLocalModeState(mode);
+    // Turning encrypted mode OFF is one of the explicit user acts that clears a
+    // showing error: the user has answered the refusal by deciding not to ask
+    // for encryption, and leaving the banner up would be arguing with them.
+    // Turning it ON does NOT clear — the previous refusal is still the last
+    // thing that happened, and the next accept will clear it or repeat it.
+    if (mode === 'off') setView(viewAfterErrorDismissed);
   }, [email]);
 
   // ── the extension bridge: P3 emits, P2 consumes (agreed via Ken) ─────────
@@ -560,14 +573,31 @@ export function useE2e(emailProp?: string | null): E2eApi {
   const onPairEnded = useCallback(() => {
     sessionRef.current = null;
     latchedRef.current = false;
-    setView((v) => ({ ...E2E_VIEW_INITIAL, peer: { supports: false, kind: v.peer.kind } }));
+    // NOT `setView(E2E_VIEW_INITIAL)`. A refusal sets state:'error' and then
+    // aborts the pair, and the abort lands here — so resetting unconditionally
+    // meant the error was erased by the teardown it had itself caused, and the
+    // user saw nothing at all. viewAfterPairEnded carries the rule and its
+    // table; this line must stay a call to it. See hooks/phoneE2e.ts.
+    setView(viewAfterPairEnded);
+  }, []);
+
+  /**
+   * The explicit user act that clears an error — the dismiss/retry control.
+   * "Retry" is this plus re-initiating a pairing: there is no separate retry
+   * path, because a retry that did not first clear the error would render the
+   * OLD failure over the new attempt.
+   */
+  const dismissError = useCallback(() => {
+    setView(viewAfterErrorDismissed);
   }, []);
 
   return useMemo(() => ({
     e2e: view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
+    dismissError,
   }), [view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
-    onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded]);
+    onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
+    dismissError]);
 }
 
 function fromB64(value: string): Uint8Array {
