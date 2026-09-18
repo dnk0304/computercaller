@@ -110,6 +110,13 @@ function fakeFactory({ stores, failOpen = false, holdComplete = false } = {}) {
           objectStoreNames: { contains: (n) => data.has(n) },
           close() {},
           transaction(storeName) {
+            // A real IDBDatabase throws NotFoundError for a store the schema
+            // does not have. Modelled, because "resumeStore asks for a store
+            // that is not in CC_FT_STORES" is a live failure mode and a fake
+            // that silently invented the store would hide it.
+            if (!data.has(storeName)) {
+              throw new Error(`fake: no object store ${JSON.stringify(storeName)}`);
+            }
             const tx = { oncomplete: null, onabort: null, onerror: null, error: null };
             tx.objectStore = (n) => objectStore(n, tx);
             return tx;
