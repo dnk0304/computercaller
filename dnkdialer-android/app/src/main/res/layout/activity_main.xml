@@ -591,6 +591,86 @@
                         android:background="@drawable/bg_pill_outline"
                         android:stateListAnimator="@null" />
                 </LinearLayout>
+
+                <!-- ========== HERO FACE 4 — KEY CHANGED / TOFU (P5b d) ==========
+                     This computer has paired before and is now offering a
+                     DIFFERENT key. M-C: the phone cannot tell a reinstall from
+                     a substitution, so the copy lists the benign causes and
+                     asserts none of them — a confident "this is just a
+                     reinstall" trains users straight through a real attack.
+
+                     "Not now" is first in reading order and is NOT the
+                     gradient button. Trusting a new key is the consequential
+                     answer, so it does not get the affordance that makes a tap
+                     feel routine. Stacked for the same large-text reason as
+                     the SAS face. -->
+                <LinearLayout
+                    android:id="@+id/homeHeroKeyChange"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center_horizontal"
+                    android:paddingTop="26dp"
+                    android:paddingBottom="26dp"
+                    android:paddingStart="@dimen/cc_hero_padding"
+                    android:paddingEnd="@dimen/cc_hero_padding"
+                    android:visibility="gone"
+                    tools:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/homeKeyChangeTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="@string/e2e_key_change_title"
+                        android:textSize="@dimen/cc_text_hero"
+                        android:textColor="@color/text_primary"
+                        android:textStyle="bold"
+                        android:letterSpacing="-0.019" />
+
+                    <TextView
+                        android:id="@+id/homeKeyChangeBody"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center"
+                        android:text="@string/e2e_key_change_body"
+                        android:textSize="@dimen/cc_text_sub"
+                        android:textColor="@color/text_secondary"
+                        android:lineSpacingMultiplier="1.5" />
+
+                    <androidx.appcompat.widget.AppCompatButton
+                        android:id="@+id/keyChangeNotNowButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:minHeight="@dimen/cc_pill_height"
+                        android:paddingTop="@dimen/space_8"
+                        android:paddingBottom="@dimen/space_8"
+                        android:text="@string/e2e_key_change_not_now"
+                        android:textSize="@dimen/cc_text_button"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_primary"
+                        android:fontFamily="sans-serif-medium"
+                        android:background="@drawable/bg_pill_outline"
+                        android:stateListAnimator="@null" />
+
+                    <androidx.appcompat.widget.AppCompatButton
+                        android:id="@+id/keyChangeTrustButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:minHeight="@dimen/cc_pill_height"
+                        android:paddingTop="@dimen/space_8"
+                        android:paddingBottom="@dimen/space_8"
+                        android:text="@string/e2e_key_change_trust"
+                        android:textSize="@dimen/cc_text_button"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_primary"
+                        android:fontFamily="sans-serif-medium"
+                        android:background="@drawable/bg_pill_outline"
+                        android:stateListAnimator="@null" />
+                </LinearLayout>
             </FrameLayout>
         </com.google.android.material.card.MaterialCardView>
 

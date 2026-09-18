@@ -146,6 +146,24 @@ class MainActivity : AppCompatActivity() {
      * [heroSasFace]'s visibility so Back is untouched everywhere else.
      */
     private var sasBackCallback: androidx.activity.OnBackPressedCallback? = null
+
+    /** P5b (d) — the fourth hero face: the TOFU key-change warning. */
+    private lateinit var heroKeyChangeFace: View
+
+    /** The pairing whose key-change warning is on screen, or null. */
+    private var keyChangePairingId: String? = null
+
+    /**
+     * P5b (d) — this pair's encryption state, as words in the status line.
+     *
+     * Held here rather than read from PhoneService because `e2eVerified` and
+     * the session are private fields with no accessor. Set by the service's
+     * ACTION_E2E_STATE broadcast, and optimistically by a confirmed SAS so
+     * the line is right the instant the user answers rather than a round trip
+     * later. Cleared whenever the pair ends, because a stale "Encrypted" on a
+     * dead pair is the one wrong answer that actively misleads.
+     */
+    private var e2eState: E2eStatusCopy.State = E2eStatusCopy.State.PLAINTEXT
     private lateinit var heroTitle: TextView
     private lateinit var heroBody: TextView
     private lateinit var deviceDot: View
@@ -368,6 +386,21 @@ class MainActivity : AppCompatActivity() {
                     showSasConfirm(pairingId, digits)
                 }
 
+                // P5b (d) — this computer's key is not the one we saw before.
+                E2eTofuContract.ACTION_E2E_KEY_CHANGED -> {
+                    val pairingId = intent.getStringExtra(PhoneService.EXTRA_PAIRING_ID) ?: return
+                    showKeyChangeWarning(pairingId)
+                }
+
+                // P5b (d) — the pair's encryption state, for the status line.
+                E2eTofuContract.ACTION_E2E_STATE -> {
+                    e2eState = E2eStatusCopy.stateOf(
+                        encrypted = intent.getBooleanExtra(E2eTofuContract.EXTRA_ENCRYPTED, false),
+                        verified = intent.getBooleanExtra(E2eTofuContract.EXTRA_VERIFIED, false),
+                    )
+                    updateStatus()
+                }
+
                 // P5b (c)/(d) — a refusal the user must be told about. Nothing
                 // listened for this before P5b; see showE2eRefusal.
                 PhoneService.ACTION_PAIRING_E2E_REFUSED -> {
@@ -573,6 +606,17 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<View>(R.id.sasNoMatchButton).setOnClickListener {
             dispatchSasVerdict(matched = false)
+        }
+
+        // P5b (d) — the key-change answers. Same one-path-two-booleans shape
+        // as the SAS: "Not now" is a refusal, not a cancel, and it travels the
+        // same broadcast as "Trust".
+        heroKeyChangeFace = findViewById(R.id.homeHeroKeyChange)
+        findViewById<View>(R.id.keyChangeTrustButton).setOnClickListener {
+            dispatchKeyChangeVerdict(trusted = true)
+        }
+        findViewById<View>(R.id.keyChangeNotNowButton).setOnClickListener {
+            dispatchKeyChangeVerdict(trusted = false)
         }
 
         // ---- v56 row groups ------------------------------------------------
@@ -1068,13 +1112,25 @@ class MainActivity : AppCompatActivity() {
                 status.contains("Connected to relay") && pairActive &&
                     phoneService?.getIsCallInProgress() == true ->
                     getString(R.string.status_call_in_progress) to ConnState.LIVE
+                // P5b (d) — an ACTIVE pair names its encryption state in
+                // words. The dot's tint is an accent, never the signal: a
+                // colour-blind user, a monochrome display and the notification
+                // shade all see the word and none of them see the tint
+                // (WCAG 1.4.1). "Not encrypted" is spelled out rather than
+                // left as a bare "Connected", because the absence of a word is
+                // not a signal — a plain "Connected" is exactly what a user
+                // reads as safe.
                 status.contains("Connected to relay") && pairActive ->
-                    getString(R.string.status_clients_connected_one) to ConnState.LIVE
+                    getString(E2eStatusCopy.statusLine(e2eState)) to ConnState.LIVE
                 // Relay open + no active pair → LOBBY. Phone is sitting
                 // waiting for a browser to send a pairing request that
                 // the user must Accept.
-                status.contains("Connected to relay") ->
+                status.contains("Connected to relay") -> {
+                    // No pair, no encryption state. A stale "Encrypted" on a
+                    // dead pair is the one wrong answer that actively misleads.
+                    e2eState = E2eStatusCopy.State.PLAINTEXT
                     getString(R.string.pair_lobby_status) to ConnState.WAITING
+                }
                 status.contains("Waiting") ->
                     getString(R.string.pair_lobby_status) to ConnState.WAITING
                 else ->
@@ -2164,6 +2220,8 @@ class MainActivity : AppCompatActivity() {
             // of the user, which is the whole ballgame.
             addAction(E2eSasContract.ACTION_E2E_SAS_REQUIRED)
             addAction(PhoneService.ACTION_PAIRING_E2E_REFUSED)
+            addAction(E2eTofuContract.ACTION_E2E_KEY_CHANGED)
+            addAction(E2eTofuContract.ACTION_E2E_STATE)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(pairingForegroundReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -2353,6 +2411,16 @@ class MainActivity : AppCompatActivity() {
     private fun dispatchSasVerdict(matched: Boolean, pairingIdOverride: String? = null) {
         val id = pairingIdOverride ?: sasPairingId ?: return
         hideSasConfirm()
+        // Optimistic, and corrected by the service's ACTION_E2E_STATE if it
+        // disagrees. A confirmed SAS means this pair IS encrypted and
+        // verified; waiting a round trip to say so would leave the status line
+        // reading "Not encrypted" for the moment right after the user
+        // personally verified it, which reads as the check having failed.
+        e2eState = if (matched) {
+            E2eStatusCopy.State.ENCRYPTED_VERIFIED
+        } else {
+            E2eStatusCopy.State.PLAINTEXT
+        }
         sendBroadcast(
             Intent(E2eSasContract.ACTION_E2E_SAS_RESULT).apply {
                 setPackage(packageName)
@@ -2383,6 +2451,71 @@ class MainActivity : AppCompatActivity() {
      * Rendered in the hero card's own error line, never as "disconnected": the
      * phone is fine, the relay is fine, and this pairing was refused on purpose.
      */
+    /**
+     * P5b (d) — this computer's key is not the one the phone saw last time.
+     *
+     * Blocking for the same reasons the SAS is, and reusing the same Back
+     * callback: both faces are questions the user must answer, and a second
+     * mechanism for the second question would be a second thing to get wrong.
+     *
+     * "One-time" is not enforced here. Only the Accept path knows whether this
+     * key has already been trusted, so it decides whether to ask at all;
+     * remembering in the UI would mean the question stopped being asked
+     * whenever the Activity was not running, which is most of the time.
+     */
+    private fun showKeyChangeWarning(pairingId: String) {
+        if (isFinishing || isDestroyed) return
+        if (!::heroKeyChangeFace.isInitialized) {
+            android.util.Log.d("MainActivity", "showKeyChangeWarning: hero not inflated, skipping")
+            return
+        }
+        keyChangePairingId = pairingId
+
+        heroRequestFace.visibility = View.GONE
+        heroSasFace.visibility = View.GONE
+        heroDefaultFace.visibility = View.GONE
+        heroKeyChangeFace.visibility = View.VISIBLE
+        sasBackCallback?.isEnabled = true
+
+        heroKeyChangeFace.announceForAccessibility(
+            "${getString(R.string.e2e_key_change_title)}. " +
+                getString(R.string.e2e_key_change_body)
+        )
+        findViewById<TextView>(R.id.homeKeyChangeTitle).sendAccessibilityEvent(
+            android.view.accessibility.AccessibilityEvent.TYPE_VIEW_FOCUSED
+        )
+        android.util.Log.d("MainActivity", "Key-change warning surfaced for $pairingId")
+    }
+
+    /** Take the key-change face down and restore the card's default face. */
+    private fun hideKeyChangeWarning() {
+        if (!::heroKeyChangeFace.isInitialized) return
+        heroKeyChangeFace.visibility = View.GONE
+        heroDefaultFace.visibility = View.VISIBLE
+        keyChangePairingId = null
+        if (sasPairingId == null) sasBackCallback?.isEnabled = false
+    }
+
+    /**
+     * Send the user's key-change answer.
+     *
+     * "Not now" is a REFUSAL, not a cancel: the key is not pinned and the
+     * pairing does not continue. It is deliberately not called "Later", because
+     * the user is declining to trust a key and the button should say so.
+     */
+    private fun dispatchKeyChangeVerdict(trusted: Boolean) {
+        val id = keyChangePairingId ?: return
+        hideKeyChangeWarning()
+        sendBroadcast(
+            Intent(E2eTofuContract.ACTION_E2E_KEY_CHANGE_RESULT).apply {
+                setPackage(packageName)
+                putExtra(PhoneService.EXTRA_PAIRING_ID, id)
+                putExtra(E2eTofuContract.EXTRA_TRUSTED, trusted)
+            }
+        )
+        android.util.Log.d("MainActivity", "Key-change verdict for $id: trusted=$trusted")
+    }
+
     private fun showE2eRefusal(message: String) {
         hideSasConfirm()
         val error = findViewById<TextView>(R.id.connectionErrorText)

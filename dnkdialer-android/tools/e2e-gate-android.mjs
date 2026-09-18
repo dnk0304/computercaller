@@ -35,10 +35,19 @@ const REPO_ROOT = resolve(MODULE_ROOT, '..');
 const BASE_SHA = '445138a6c58c12b2848cb4c24371b0d443e51c27';
 const EXPECTED_VERSION_CODE = 58;
 const EXPECTED_VERSION_NAME = '1.0.34';
-const PHASE = 'P4';
+// P5b: the phase is an argument now. The steps are the same android-lane
+// steps either way — what changes is which phase's evidence file this run is
+// filed as, and a hardcoded 'P4' would have silently filed P5b's gate as P4's.
+const PHASE = (() => {
+  const i = process.argv.indexOf('--phase');
+  const v = i > -1 ? process.argv[i + 1] : null;
+  if (!v) return 'P4';
+  if (!/^P[0-9]+[A-Za-z]?$/.test(v)) throw new Error(`--phase: unrecognised phase '${v}'`);
+  return v.toUpperCase();
+})();
 const LANE = 'android';
 
-const LOG_DIR = join(tmpdir(), 'e2e-gate-p4-logs');
+const LOG_DIR = join(tmpdir(), `e2e-gate-${PHASE.toLowerCase()}-logs`);
 mkdirSync(LOG_DIR, { recursive: true });
 
 const steps = [];
@@ -295,6 +304,46 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
   });
 }
 
+// ------------------------------------ step 11f: Encrypted-mode UI (P5b b-d)
+{
+  // The UI suite is its own step rather than more classes inside the crypto
+  // step, because it proves a different thing and a merged step would hide
+  // which half broke. It is also the only step that needs DEVICE STATE
+  // (permissions + battery whitelist); run-ui-tests.ps1 asserts both and
+  // fails loudly rather than letting a paused Activity read as a UI bug.
+  // Re-derived rather than reusing 11e's `deviceUp`, which is block-scoped.
+  const adb = process.env.ANDROID_HOME
+    ? join(process.env.ANDROID_HOME, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb')
+    : null;
+  const deviceUp = (() => {
+    try {
+      return /\bdevice\b/.test(execFileSync(adb, ['devices'], { encoding: 'utf8' }).split('\n').slice(1).join('\n'));
+    } catch { return false; }
+  })();
+  const r = step('instrumented-encrypted-mode-ui', 'tools/run-ui-tests.ps1 (settings toggle + SAS confirm + key-change + screenshots)', () => {
+    if (!deviceUp) return 'SKIPPED: no device/emulator attached';
+    return execSync('powershell -ExecutionPolicy Bypass -File tools/run-ui-tests.ps1',
+      { ...gradleOpts, maxBuffer: 1 << 24 });
+  });
+  const skipped = !deviceUp;
+  const ok = skipped || /ENCRYPTED MODE UI: PASS/.test(r._out);
+  const uiTotal = Number(/UI INSTRUMENTED TOTAL: (\d+) tests/.exec(r._out)?.[1] ?? -1);
+  finish(r, {
+    exit: skipped ? 0 : (ok ? 0 : 1),
+    counts: {
+      skipped: skipped ? 1 : 0,
+      encryptedModeUi: ok && !skipped ? 'PASS' : (skipped ? 'SKIPPED' : 'FAIL'),
+      uiInstrumentedTests: skipped ? 0 : uiTotal,
+      screenshots: skipped ? 0 : (() => {
+        try {
+          return readdirSync(join(MODULE_ROOT, 'docs/screenshots'))
+            .filter((f) => f.startsWith('p5b-') && f.endsWith('.png')).length;
+        } catch { return 0; }
+      })(),
+    },
+  });
+}
+
 // ------------------------------------------------------------------ emit
 const result = steps.every((s) => s.exit === 0) ? 'PASS' : 'FAIL';
 const sha = (() => { try { return git(['rev-parse', 'HEAD']); } catch { return 'unknown'; } })();
@@ -308,8 +357,8 @@ const payload = {
   lane: LANE,
   note:
     'Produced by tools/e2e-gate-android.mjs, the documented stand-in for ' +
-    '`bun run e2e:gate --phase P4 --lane android` (P0 owns the real gate and it ' +
-    'lives on e2e/p0-design-freeze; merging it here would violate P4 scope). ' +
+    `\`bun run e2e:gate --phase ${PHASE} --lane android\` (P0 owns the real gate and it ` +
+    'lives on e2e/p0-design-freeze; merging it here would violate the lane scope rule). ' +
     'Same JSON shape as E2E-P0-GATE-SPEC.md.',
   env: {
     node: process.version,

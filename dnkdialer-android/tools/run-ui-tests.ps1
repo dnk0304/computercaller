@@ -88,15 +88,14 @@ foreach ($p in $permissions) {
 # lookup returns null.
 $denied = (& $adb shell dumpsys package $pkg | Select-String 'granted=false') -join "`n"
 if ($denied -match 'android.permission.CAMERA') {
-    throw "CAMERA is still denied — MainActivity will render the permissions pane, not the hero card"
+    throw "CAMERA is still denied: MainActivity will render the permissions pane, not the hero card"
 }
 
 Write-Host '== device state: battery-optimization exemption =='
 & $adb shell dumpsys deviceidle whitelist "+$pkg" | Out-Null
 $wl = (& $adb shell dumpsys deviceidle whitelist) -join "`n"
 if ($wl -notmatch [regex]::Escape($pkg)) {
-    throw "$pkg is not battery-whitelisted — MainActivity will raise the exemption dialog, " +
-          "which pauses it, which unregisters the SAS receiver, and every broadcast goes nowhere"
+    throw "$pkg is not battery-whitelisted: MainActivity will raise the exemption dialog, which pauses it, which unregisters the SAS receiver, and every broadcast goes nowhere"
 }
 
 & $adb logcat -c | Out-Null
