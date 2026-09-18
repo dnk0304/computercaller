@@ -1,0 +1,140 @@
+{
+  "phase": "P4.1",
+  "sha": "1f036d2c691085e86e781fdad61a02df81826ad0",
+  "baseSha": "321333e55c020a74f34c44ca6906d85f1cb3b364",
+  "baseShaSource": "scope-base (merge-base)",
+  "programmeBaseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "scopeBase": {
+    "sha": "321333e55c020a74f34c44ca6906d85f1cb3b364",
+    "kind": "merge-base",
+    "integrationTip": "321333e55c020a74f34c44ca6906d85f1cb3b364",
+    "fellBackToBaseSha": false,
+    "reason": null
+  },
+  "utc": "2026-09-18T04:33:13Z",
+  "lane": "android",
+  "note": "Produced by tools/e2e-gate-android.mjs, the documented stand-in for `bun run e2e:gate --phase P4.1 --lane android` (P0 owns the real gate and it lives on e2e/p0-design-freeze; merging it here would violate the lane scope rule). Same JSON shape as E2E-P0-GATE-SPEC.md.",
+  "env": {
+    "node": "v24.12.0",
+    "bun": "1.3.11",
+    "chrome": null,
+    "gradle": "9.0-milestone-1"
+  },
+  "steps": [
+    {
+      "name": "repo-state",
+      "cmd": "git rev-parse HEAD; git status --porcelain; merge-base",
+      "exit": 0,
+      "ms": 368,
+      "counts": {
+        "dirtyFiles": 0,
+        "ancestorOk": 1
+      }
+    },
+    {
+      "name": "scope-non-android-diff",
+      "cmd": "git diff 321333e55c020a74f34c44ca6906d85f1cb3b364..HEAD -- . ':(exclude)dnkdialer-android/'",
+      "exit": 0,
+      "ms": 252,
+      "counts": {
+        "nonAndroidFiles": 1,
+        "violations": 0
+      }
+    },
+    {
+      "name": "assembleDebug",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\e2e-p41\\dnkdialer-android\\gradlew.bat\" :app:assembleDebug",
+      "exit": 0,
+      "ms": 103010,
+      "counts": {}
+    },
+    {
+      "name": "aapt-badging-versionCode",
+      "cmd": "aapt dump badging app-debug.apk",
+      "exit": 0,
+      "ms": 106,
+      "counts": {
+        "versionCode": 58,
+        "versionName": "1.0.34"
+      }
+    },
+    {
+      "name": "testDebugUnitTest",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\e2e-p41\\dnkdialer-android\\gradlew.bat\" :app:testDebugUnitTest",
+      "exit": 0,
+      "ms": 102397,
+      "counts": {
+        "tests": 155,
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0
+      }
+    },
+    {
+      "name": "lintDebug-vs-manifest",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\e2e-p41\\dnkdialer-android\\gradlew.bat\" :app:lintDebug --continue; lint-manifest --check",
+      "exit": 0,
+      "ms": 110755,
+      "counts": {
+        "issues": 183,
+        "grownCells": 0
+      }
+    },
+    {
+      "name": "instrumented-E2eKeyStoreTest",
+      "cmd": "tools/run-keystore-test.ps1",
+      "exit": 0,
+      "ms": 169899,
+      "counts": {
+        "skipped": 0,
+        "processDeathProof": "PASS"
+      }
+    },
+    {
+      "name": "instrumented-crypto-suite",
+      "cmd": "tools/run-agreement-test.ps1 (ECDH + SAS + counter + session + accept + lifecycle + frozen KDF vectors)",
+      "exit": 0,
+      "ms": 144065,
+      "counts": {
+        "skipped": 0,
+        "ecdh": "PASS",
+        "sasVectors": "PASS",
+        "counterFailClosed": "PASS",
+        "acceptHandshake": "PASS",
+        "lifecycle": "PASS",
+        "frozenKdfVectors": "PASS",
+        "instrumentedTests": 94,
+        "deviceApi": 36,
+        "backend": "ANDROID_KEYSTORE",
+        "strongBoxDeclared": false,
+        "api26ImageRun": false
+      }
+    },
+    {
+      "name": "instrumented-peer-capability",
+      "cmd": "tools/run-peer-capability-test.ps1 (advertise -> force-stop -> Settings reads PEER_SUPPORTED)",
+      "exit": 0,
+      "ms": 74952,
+      "counts": {
+        "skipped": 0,
+        "peerCapabilityProcessDeath": "PASS",
+        "peerCapabilityTests": 6
+      }
+    },
+    {
+      "name": "instrumented-encrypted-mode-ui",
+      "cmd": "tools/run-ui-tests.ps1 (settings toggle + SAS confirm + key-change + screenshots)",
+      "exit": 0,
+      "ms": 321862,
+      "counts": {
+        "skipped": 0,
+        "encryptedModeUi": "PASS",
+        "uiInstrumentedTests": 20,
+        "screenshots": 6
+      }
+    }
+  ],
+  "harnessPass": [],
+  "baselineDiff": [],
+  "result": "PASS"
+}
