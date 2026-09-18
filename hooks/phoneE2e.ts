@@ -411,7 +411,42 @@ export interface E2eView {
   peer: { supports: boolean; kind: SwKeyStatus };
   sas: { digits: string | null; confirmed: boolean };
   /** Debug surface. Dropped frames are not an error the user can act on. */
-  debug: { drops: number; downgradesDropped: number; kid: string | null };
+  debug: {
+    drops: number;
+    downgradesDropped: number;
+    /**
+     * FT-A1.1 §2.4 — relay-minted FILE_FAILED frames ADMITTED under mode ON.
+     *
+     * The downgrade latch kills every plaintext FILE_* while the pair is
+     * encrypted, which is correct for a peer-authored frame and wrong for the
+     * refusals only the relay can author: it holds no key and cannot seal one.
+     * That accepted exception is the single hole in an otherwise absolute rule,
+     * so the number of times it fires is worth being able to read.
+     *
+     * It is a COUNTER, not a signal. It must never be shown to a user (m-G),
+     * must never gate anything, and must never be read as evidence about the
+     * crypto session — a transport refusal says nothing about the keys, and
+     * treating it as if it did would hand a relay-position party a session
+     * kill switch. It sits beside `downgradesDropped` and deliberately does
+     * NOT fold into it: one counts frames refused, the other frames admitted,
+     * and a single number covering both would hide the exception inside the
+     * rule.
+     */
+    relayAbortsAccepted: number;
+    kid: string | null;
+  };
+}
+
+/**
+ * Record one admitted relay-minted abort.
+ *
+ * Pure, so the property that matters — that this touches the debug surface and
+ * NOTHING else — is checkable by comparing the rest of the view, rather than
+ * asserted in prose. FT-3a.1's `isRelayMintedAbort` branch in useE2e.ts calls
+ * this in place of its console.warn.
+ */
+export function withRelayAbortAccepted(view: E2eView): E2eView {
+  return { ...view, debug: { ...view.debug, relayAbortsAccepted: view.debug.relayAbortsAccepted + 1 } };
 }
 
 export const E2E_VIEW_INITIAL: E2eView = {
@@ -419,7 +454,7 @@ export const E2E_VIEW_INITIAL: E2eView = {
   state: 'unencrypted',
   peer: { supports: false, kind: 'unknown' },
   sas: { digits: null, confirmed: false },
-  debug: { drops: 0, downgradesDropped: 0, kid: null },
+  debug: { drops: 0, downgradesDropped: 0, relayAbortsAccepted: 0, kid: null },
 };
 
 /**

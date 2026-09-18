@@ -75,6 +75,7 @@ import {
   sasKeySet,
   viewAfterErrorDismissed,
   viewAfterPairEnded,
+  withRelayAbortAccepted,
   writeEncryptedMode,
   type E2eError,
   type E2eView,
@@ -174,6 +175,11 @@ export interface E2eApi {
    * network can cause clears it — see the table in hooks/phoneE2e.ts.
    */
   dismissError(): void;
+  /**
+   * (j) FT-A1.1 §2.4 — one admitted relay-minted FILE_FAILED. Diagnostics only:
+   * it never gates, and `debug.relayAbortsAccepted` is never user-visible (m-G).
+   */
+  noteRelayAbortAccepted(): void;
 }
 
 /**
@@ -211,6 +217,8 @@ export function useE2e(emailProp?: string | null): E2eApi {
   const swRef = useRef<SwKeyResult>({ status: 'unknown', recipient: null, pairingId: null });
   const latchedRef = useRef(false);
   const downgradeDropsRef = useRef(0);
+  /** FT-A1.1 §2.4 accepted exceptions. Diagnostics only — never gates. */
+  const relayAbortsAcceptedRef = useRef(0);
   /** The session userId, fetched once. Local identity — never from the wire. */
   const userIdRef = useRef<string | null>(null);
   /** One store instance for the life of the hook, so the floor write and the
@@ -533,6 +541,18 @@ export function useE2e(emailProp?: string | null): E2eApi {
       return { drop: false, payload: JSON.parse(new TextDecoder().decode(result.plaintext)) };
     }
     if (result.reason === 'shape') {
+      // FT-A1.1 §2.4's ONE accepted exception lands HERE, immediately above the
+      // latch, and is counted rather than logged.
+      //
+      // FT-3a.1 (ft/3a-web-logic @ b07daf2) owns the predicate — it is
+      // `isRelayMintedAbort(type, payload)` from lib/fileTransfer/relayAbort.ts,
+      // which is NOT on this branch yet. So (j) ships the counter and leaves
+      // the predicate's call site to the merge: FT-3a.1's branch currently ends
+      // in a console.warn, and the resolution is to replace that warn with
+      // `noteRelayAbortAccepted()` and keep its `return { drop: false, payload }`.
+      // The merge will conflict in this exact hunk; that is the intended seam
+      // and the resolution is the two lines above.
+      //
       // A PLAINTEXT frame while the pair is encrypted. C-1's downgrade latch:
       // dropped and counted, never processed and never answered.
       downgradeDropsRef.current += 1;
@@ -549,6 +569,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     sessionRef.current = null;
     latchedRef.current = false;
     downgradeDropsRef.current = 0;
+    relayAbortsAcceptedRef.current = 0;
     userIdRef.current = null;
     setView(E2E_VIEW_INITIAL);
 
@@ -591,13 +612,30 @@ export function useE2e(emailProp?: string | null): E2eApi {
     setView(viewAfterErrorDismissed);
   }, []);
 
+  /**
+   * (j) FT-A1.1 §2.4 — record one ADMITTED relay-minted FILE_FAILED.
+   *
+   * Diagnostics only. It moves a counter on the debug surface and nothing else:
+   * it does not touch `mode`, does not enter the abort/downgrade path, and does
+   * not mark the session. A transport refusal is not evidence about the crypto
+   * session, and treating it as one would hand a relay-position party a session
+   * kill switch — which is precisely why this is a number and not a signal.
+   *
+   * It replaces FT-3a.1's console.warn at the same site. A warn is invisible in
+   * production and unassertable in a test; a counter is neither.
+   */
+  const noteRelayAbortAccepted = useCallback(() => {
+    relayAbortsAcceptedRef.current += 1;
+    setView(withRelayAbortAccepted);
+  }, []);
+
   return useMemo(() => ({
     e2e: view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
-    dismissError,
+    dismissError, noteRelayAbortAccepted,
   }), [view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
-    dismissError]);
+    dismissError, noteRelayAbortAccepted]);
 }
 
 function fromB64(value: string): Uint8Array {
