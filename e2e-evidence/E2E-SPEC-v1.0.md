@@ -390,6 +390,18 @@ gets implemented fail-open, at which point the pin is decorative.
 The registry is a *check*, never a second source of truth: the seal still goes
 only to keys advertised in the pairing frame.
 
+**Note (P4.1 finding, transcribed in D1-PREP (c4)) — `PAIR_STATE` is a
+computer-side frame.** The phone has **no `PAIR_STATE` handler**. Resume on the
+phone is served by the **persisted advertisement / pair record**, not by a
+`PAIR_STATE` frame, so nothing in the phone's resume path depends on receiving
+one. `PAIR_STATE` — and with it §13.10.9's per-listener `wrap`, the only
+per-socket builder in the relay — is addressed to the computer-side listeners
+(the page and the extension service worker). Read every `PAIR_STATE` MUST in
+this spec as computer-side unless it says otherwise. This holds unless P6 (g)
+(cross-implementation) shows otherwise; if it does, this note is what must be
+corrected, and any phone-side resume MUST that was written assuming a
+`PAIR_STATE` handler is unenforceable as written until then.
+
 ### 13.7 Sealed vs plaintext frame list — FROZEN
 
 **Sealed:** PHONE_NOTIFICATION, SMS_RECEIVED, MESSAGES(+_CHUNK),
@@ -431,6 +443,13 @@ Approved by Dennis 2026-09-17. History stays on the device; we store nothing
 server-side. This is already what ships, so it is a confirmation rather than a
 change — and it is what lets §9.1's "we do not store your content" survive
 scrutiny.
+
+**Note (P4.1 finding, transcribed in D1-PREP (c4)).** Because history is
+device-only, the phone's resume path reads its **own persisted advertisement /
+pair record** rather than any server- or relay-delivered state. That is the
+mechanism referred to in §13.6's note: the phone has no `PAIR_STATE` handler,
+and resume does not require one. `PAIR_STATE` is a computer-side frame unless
+P6 (g) shows otherwise.
 
 ### 13.10 Key schedule + AEAD — FROZEN (GATE1 Addendum A1, which calls it §13.9)
 
@@ -898,6 +917,43 @@ deliberately addressed this device. A relay cannot forge it without `SK`.
 > its own `deviceId`." It refuses every recipient except the canonical one and
 > makes multi-recipient pairing impossible. It is **removed** from
 > `pairContextFromWire()`, not merely relaxed.
+
+**A4.1-M2 (MUST, normative; GATE1 Addendum A4.1, RATIFIED 2026-09-17T23:00:39Z).**
+No control may be gated on clause (a), and clause (a) MUST NOT be described
+anywhere in this spec as a membership or authenticity check.
+
+> The `cc_e2e_own_pairing` pin is a consistency pin only; it is clearable by a
+> wire-delivered `ROOM_RESET` and confers no authenticity. The SW's membership
+> proof is A4 clause (b).
+
+The reasoning, recorded so it is not rediscovered as a finding. A
+relay-position attacker can **erase the TOFU pin at will**: `ROOM_RESET`
+arrives on the wire and clears it, after which a new epoch's `ctx` bearing any
+`pairingId` is pinned with no comparison. Clause (a) therefore has **no**
+adversarial strength against the threat model it sits in — it catches the
+*benign* failure (a `ctx` or wrap surviving from a different pairing in the
+same browser session: stale room, two tabs, a re-pair mid-flight) and nothing
+more.
+
+That is acceptable **only** because clause (b) is untouched. The own wrap must
+open under `KEK(ctx, own static key)` and `ctx` binds `pairingId`, so a foreign
+`pairingId` fails the unwrap and lands in `setAborted()` (A4-M3, sticky) —
+never counts-only, never plaintext. **Clause (b) is the sole anchor.**
+
+Re-TOFU is therefore **by design and survivable**, not a gap. The same
+`ROOM_RESET` also calls `clearAborted()`, and after a browser restart the pin
+re-TOFUs from the first `ctx` of the same epoch — both are survivable because
+the next block re-fails the unwrap and re-aborts, and because both landing
+states (abort, counts-only) hide bodies. Since (a) is non-authoritative,
+re-TOFU loses nothing. Severity: **Informational**; no fix dispatched.
+
+This is also why the pin stays in `storage.session` while the epoch floor stays
+in `storage.local`: the floor is a safety control whose failure is catastrophic
+and silent, so it must outlive the browser; the pin is a consistency hint whose
+failure is a *false refusal*, and a pin surviving browser exit would convert a
+legitimate re-pair into a permanent unexplained counts-only state for a check
+that was never authoritative. Moving it to `storage.local` requires a fresh
+ruling, not a storage swap.
 
 **Residual risk, stated plainly.** A relay that **rewrites** `wraps[].deviceId`
 (renaming, not re-keying) can move the canonical peer and desynchronise
