@@ -21,13 +21,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
-import tls from 'node:tls';
 import https from 'node:https';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { withRealRelay } from './lib/real-relay.mjs';
-import { mintSecret, seedEntitledUser, relayUrls } from './lib/relay-auth.mjs';
+import { mintSecret, seedEntitledUser } from './lib/relay-auth.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CWD = path.resolve(HERE, '..');
@@ -43,7 +42,7 @@ let pass = 0, fail = 0;
 const results = [];
 function ok(msg) { pass++; console.log(`ok   ${msg}`); results.push({ ok: true, msg }); }
 function bad(msg) { fail++; console.log(`FAIL ${msg}`); results.push({ ok: false, msg }); }
-function check(cond, msg) { cond ? ok(msg) : bad(msg); return !!cond; }
+function check(cond, msg) { if (cond) ok(msg); else bad(msg); return !!cond; }
 
 const adb = (...args) => spawnSync(ADB, ['-s', SERIAL, ...args], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 const sh = (cmd) => adb('shell', cmd).stdout ?? '';

@@ -91,7 +91,6 @@ function stillTrue(cond, what) {
   }
 }
 
-const te = new TextEncoder();
 const USER_ID = 'user-a41';
 const PHONE_DEVICE_ID = 'phone-a41';
 const OWN_DEVICE_ID = 'sw-a41';
