@@ -84,13 +84,11 @@ function sleepSync(ms) {
  */
 export function rmWhenUnlocked(dir, { timeoutMs = 5000, intervalMs = 150 } = {}) {
   const t0 = Date.now();
-  let lastErr;
   for (;;) {
     try {
       rmSync(dir, { recursive: true, force: true });
       return { removed: true, waitedMs: Date.now() - t0 };
     } catch (e) {
-      lastErr = e;
       if (Date.now() - t0 >= timeoutMs) {
         return { removed: false, waitedMs: Date.now() - t0, error: `${e?.code || e?.message || e}` };
       }
