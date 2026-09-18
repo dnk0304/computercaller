@@ -49,3 +49,18 @@ export function usePhone(): PhoneBridgeReturn {
   }
   return context;
 }
+
+/**
+ * The same bridge, or null when there is no provider — for a component that can
+ * legitimately render on BOTH a paired surface and a signed-out one.
+ *
+ * The extension's account menu is exactly that: app/extension/(surface)/layout
+ * deliberately does not mount PhoneModeProvider / PhoneProvider for a
+ * signed-OUT panel, while <PhoneModeHeader> renders in both. A throwing
+ * usePhone() there takes the whole header down — which is why this exists and
+ * why the throwing version stays the default everywhere else: a component that
+ * NEEDS the bridge should fail loudly, not silently render an inert control.
+ */
+export function usePhoneOptional(): PhoneBridgeReturn | null {
+  return useContext(PhoneContext);
+}

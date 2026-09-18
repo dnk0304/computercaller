@@ -22,12 +22,22 @@
  *
  * Run against a dev server on :3123 (PORT=3123 bun run dev).
  */
-import { chromium } from 'playwright';
+import { chromium } from 'playwright';
 import { exitAfterFlush } from './lib/finish.mjs';
 import { Reaper } from './lib/reap.mjs';
 import { settle } from './lib/settle.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+
+// CC_SHOT_EMAIL is now REQUIRED (2026-09-17, dispatch
+// forge/w-strip-email-literals): the personal address that used to be the
+// default was a hardcoded literal in the repo. Set it when running shots.
+function requireShotEmail() {
+  const v = process.env.CC_SHOT_EMAIL;
+  if (!v) throw new Error('CC_SHOT_EMAIL must be set (screenshot account email)');
+  return v;
+}
+
 
 // /app is cookie-gated by proxy.ts. Same approach as PIXEL-G's
 // app-header-mark-shots.mjs: mint a REAL session for a real user with the
@@ -91,7 +101,7 @@ const bridgeStub = `
 `;
 
 const user = await db.user.findFirst({
-  where: { email: process.env.CC_SHOT_EMAIL || 'dennis.kotlenko@gmail.com' },
+  where: { email: requireShotEmail() },
   select: { id: true, email: true, sessionVersion: true },
 });
 if (!user) throw new Error('no user to mint a session for');

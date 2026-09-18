@@ -22,6 +22,16 @@
 
 'use strict';
 
+// Identity fixtures are SYNTHETIC and the allowlist/admin identities come from
+// the environment (2026-09-17, dispatch forge/w-strip-email-literals). The
+// hardcoded email fallbacks were removed from lib/entitlement-core.js after they
+// shipped to every visitor in a public client chunk, so these suites must now
+// supply the env they exercise. Real personal addresses never appear in tests.
+process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.test';
+process.env.ENTITLEMENT_ALLOWLIST =
+  process.env.ENTITLEMENT_ALLOWLIST || 'admin@example.test,reviewer@example.test';
+
+
 /* eslint-disable @typescript-eslint/no-require-imports -- this test targets the
    plain-CJS entitlement core (see lib/entitlement-core.js header) and follows
    the repo's runner-less CJS test convention. */
@@ -166,7 +176,7 @@ const baseUser = { isAdmin: false, email: NOT_ALLOWLISTED, subscription: null };
   // 5. admin → allowed regardless of subscription (NO-LOCKOUT short-circuit).
   {
     const db = makeDb({
-      user: { isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null },
+      user: { isAdmin: true, email: 'admin@example.test', subscription: null },
       freeAccess: false,
     });
     const d = await browserGateDecision(db, 'u5', NOW);
@@ -177,7 +187,7 @@ const baseUser = { isAdmin: false, email: NOT_ALLOWLISTED, subscription: null };
   // 5b. ENTITLEMENT_ALLOWLIST email (non-admin) → allowed (NO-LOCKOUT).
   {
     const db = makeDb({
-      user: { isAdmin: false, email: 'reviewer@computercaller.com', subscription: null },
+      user: { isAdmin: false, email: 'reviewer@example.test', subscription: null },
       freeAccess: false,
     });
     const d = await browserGateDecision(db, 'u5b', NOW);

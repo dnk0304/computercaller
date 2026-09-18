@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS proof script — require() is the only import form available. */
 /**
  * Proof harness — free-access DURATION auto-lapse (dispatch forge/free-access-
  * duration, 2026-08-26). Drives the REAL entitlement core (no mocks of the

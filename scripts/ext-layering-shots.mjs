@@ -20,11 +20,21 @@
  * Env: CC_BASE_URL (default http://localhost:3178), CC_OUT_TAG (default
  * "layering").
  */
-import { chromium } from 'playwright';
+import { chromium } from 'playwright';
 import { exitAfterFlush } from './lib/finish.mjs';
 import { Reaper } from './lib/reap.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+
+// CC_SHOT_EMAIL is now REQUIRED (2026-09-17, dispatch
+// forge/w-strip-email-literals): the personal address that used to be the
+// default was a hardcoded literal in the repo. Set it when running shots.
+function requireShotEmail() {
+  const v = process.env.CC_SHOT_EMAIL;
+  if (!v) throw new Error('CC_SHOT_EMAIL must be set (screenshot account email)');
+  return v;
+}
+
 
 const MODE = process.argv[2] || 'ext';
 const BASE = process.env.CC_BASE_URL || 'http://localhost:3178';
@@ -180,7 +190,7 @@ try {
       const { PrismaClient } = await import('@prisma/client');
       const db = new PrismaClient();
       const user = await db.user.findFirst({
-        where: { email: process.env.CC_SHOT_EMAIL || 'dennis.kotlenko@gmail.com' },
+        where: { email: requireShotEmail() },
         select: { id: true, email: true, sessionVersion: true },
       });
       const secret = process.env.JWT_SECRET;

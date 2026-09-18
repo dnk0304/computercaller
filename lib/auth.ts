@@ -1,3 +1,9 @@
+// SERVER ONLY (2026-09-17, dispatch forge/w-strip-email-literals). This module
+// reads JWT secrets, touches the DB and re-exports the entitlement core. A
+// 'use client' import of it (even transitively, via lib/google) previously
+// shipped hardcoded email literals to every visitor in a public bundle. This
+// import makes that a BUILD FAILURE instead of a silent leak.
+import 'server-only';
 import jwt from 'jsonwebtoken';
 import { db } from '@/lib/db';
 import { isIdleTokenValid } from '@/lib/idleSession';
@@ -251,20 +257,21 @@ export async function validateSessionWithIdle(
  * env-driven email allowlist. Rollback is zero-rebuild: edit AUTH_ALLOWLIST in
  * Coolify and redeploy-free for the next request.
  *
- * NO-LOCKOUT GUARANTEE: when AUTH_ALLOWLIST is unset/empty/whitespace, we fall
- * back to a HARDCODED default that always includes Dennis + the Play reviewer.
- * A missing or fat-fingered env var can therefore never lock Dennis out, and
- * the reviewer@ account stays allowed so Google Play "App access" review keeps
- * working. Ken sets AUTH_ALLOWLIST explicitly in Coolify to the same value, but
- * the built-in default is the safety net.
+ * FAIL-CLOSED (changed 2026-09-17, dispatch forge/w-strip-email-literals): when
+ * AUTH_ALLOWLIST is unset/empty/whitespace, NOBODY is allowed while waitlist
+ * mode is on. The previous hardcoded fallback embedded two real email addresses
+ * as a string literal in the repo — the same exposure class that leaked the
+ * entitlement literals into a public client chunk (see lib/entitlement-core.js).
+ * The addresses now live ONLY in the AUTH_ALLOWLIST env var, which IS set in
+ * Coolify. Note this gate only applies while WAITLIST_MODE is on; with signups
+ * open (today's public state) isEmailAllowed returns early above and this
+ * branch is not reached.
  *
  * Enforced at ALL FIVE interactive auth entry points (login, register,
  * google/callback, apk-login, apk-google-login) BEFORE any user create/link/
  * session issue. The phone bearer (phoneToken) flow, /api/auth/me, relay,
  * logout are NOT gated — they are not interactive logins.
  */
-const AUTH_ALLOWLIST_FALLBACK = 'dennis.kotlenko@gmail.com,reviewer@computercaller.com';
-
 export function isEmailAllowed(email: string | null | undefined): boolean {
   if (!email) return false;
 
@@ -287,7 +294,8 @@ export function isEmailAllowed(email: string | null | undefined): boolean {
   }
 
   const raw = process.env.AUTH_ALLOWLIST?.trim();
-  const list = (raw && raw.length > 0 ? raw : AUTH_ALLOWLIST_FALLBACK)
+  if (!raw) return false;
+  const list = raw
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);

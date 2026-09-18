@@ -187,17 +187,15 @@ export async function verifyIdToken(idToken: string): Promise<GoogleIdTokenClaim
 }
 
 /**
- * Sanitise a `next` redirect target. Must start with a single `/` and NOT
- * a second `/` (no scheme-relative `//evil.com/x` URLs) and not contain
- * a CR/LF. Anything else falls back to `/app`.
+ * Re-exported from lib/nextPath.ts, which owns the implementation. It was moved
+ * out of this file on 2026-09-17 because this module transitively pulls in
+ * lib/auth → lib/db + lib/entitlement-core, and the 'use client' LoginForm
+ * imported sanitiseNext from here — shipping that whole server chain (and its
+ * hardcoded email literals) into a public client bundle. Client callers MUST
+ * import from '@/lib/nextPath'; this re-export exists only so existing
+ * server-side callers keep working.
  */
-export function sanitiseNext(next: string | null | undefined): string {
-  if (!next || typeof next !== 'string') return '/app';
-  if (!next.startsWith('/')) return '/app';
-  if (next.startsWith('//')) return '/app';
-  if (/[\r\n]/.test(next)) return '/app';
-  return next;
-}
+export { sanitiseNext } from './nextPath';
 
 /** Sign a 10-minute state JWT for the OAuth round-trip. */
 export function signOAuthState(payload: Omit<OAuthStatePayload, 'purpose'>): string {

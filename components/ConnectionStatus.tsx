@@ -59,6 +59,11 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
     leaveActive,
     // Dispatch FORGE-J (2026-09-15) — "Reset lobby".
     resetRoom,
+    // FORGE-U's auto-sync in-flight flag (PIXEL-S2 (c)). Already exposed by
+    // hooks/usePhoneBridge.ts as `quietSyncing` — "the auto-connect quicksync
+    // is running, show the quiet banner, not the modal". No new selector and no
+    // hook logic change: this component only READS it.
+    quietSyncing,
     // Existing fields kept for the notification-permission banner
     isConnected,
     phoneName,
@@ -67,6 +72,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
   } = phone as ReturnType<typeof usePhone> & {
     lobbyState?: LobbyState;
     phonePresentInLobby?: boolean;
+    quietSyncing?: boolean;
     lastBrowserRequest?: {
       ua?: string;
       ip?: string;
@@ -156,6 +162,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
         {notificationBanner}
         <CompactDevicePill
           state={state}
+          syncing={!!quietSyncing}
           phoneName={phoneName}
           phonePresent={!!phonePresentInLobby}
           reasonText={lastBrowserRequest?.reasonText}
@@ -174,6 +181,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
       {state === 'active' ? (
         <ActivePill
           phoneName={phoneName}
+          syncing={!!quietSyncing}
           onDisconnect={() => leaveActive?.()}
           onReset={onReset}
         />
@@ -224,7 +232,9 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
  *     competes with the pop-out control for the same 20px of header.
  *
  * States → dot / word / trailing:
- *   active     ● emerald   "Ready"              ✕ Disconnect
+ *   active + auto-sync in flight
+ *              ● emerald † "Syncing…"           ✕ Disconnect  († pulse, motion-safe)
+ *   active     ● emerald   "Active"             ✕ Disconnect
  *   requesting ● amber †   "Connecting"         —            († pulse, motion-safe)
  *   lobby      ● slate     "Waiting for phone"  Connect (text button, if present)
  *              ● slate     "Phone nearby"       ← when phonePresent (FORGE-O)
@@ -232,6 +242,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
  */
 function CompactDevicePill({
   state,
+  syncing,
   phoneName,
   phonePresent,
   reasonText,
@@ -240,6 +251,8 @@ function CompactDevicePill({
   onReset,
 }: {
   state: LobbyState;
+  /** FORGE-U auto-sync in flight. Only meaningful while `state === 'active'`. */
+  syncing: boolean;
   phoneName: string | null;
   phonePresent: boolean;
   reasonText: string | undefined;
@@ -251,8 +264,24 @@ function CompactDevicePill({
   const connecting = state === 'requesting';
   const failed = state === 'declined' || state === 'timeout' || state === 'rejected';
 
+  // PIXEL-S2 (c): paired is now TWO states, not one. The pill has always said
+  // one word for "the phone answered and everything after that", which left the
+  // 5-40s the auto-sync takes looking identical to an idle, finished session —
+  // so a user who tapped Accept and then found an empty Texts list had no way to
+  // tell "still arriving" from "nothing there". SyncProgressBar was already
+  // showing the counts; what was missing was the label at the top saying which
+  // of the two you are in.
+  //
+  // DERIVED, NEVER TIMED. `syncing` is FORGE-U's own in-flight flag: it goes
+  // false when the three GET_* responses complete, or immediately when the run
+  // is skipped (already synced this epoch / survivor-held), so "nothing to sync"
+  // lands on "Active" with no intermediate flash and no timer to get wrong.
+  const syncingNow = active && syncing;
+
   const dotClass = active
-    ? 'bg-emerald-500'
+    ? syncingNow
+      ? 'bg-emerald-500 motion-safe:animate-pulse'
+      : 'bg-emerald-500'
     : connecting
       ? 'bg-amber-500 motion-safe:animate-pulse'
       : failed
@@ -260,7 +289,9 @@ function CompactDevicePill({
         : 'bg-slate-400';
 
   const word = active
-    ? 'Ready'
+    ? syncingNow
+      ? 'Syncing…'
+      : 'Active'
     : connecting
       ? 'Connecting'
       : state === 'declined'
@@ -520,10 +551,13 @@ function RequestingPill({
  */
 function ActivePill({
   phoneName,
+  syncing,
   onDisconnect,
   onReset,
 }: {
   phoneName: string | null;
+  /** FORGE-U auto-sync in flight — see the note in CompactDevicePill. */
+  syncing: boolean;
   onDisconnect: () => void;
   onReset?: () => void;
 }) {
@@ -537,7 +571,18 @@ function ActivePill({
           <span className="text-sm font-semibold text-slate-700">
             {phoneName || 'Phone Connected'}
           </span>
-          <span className="text-xs text-emerald-600 font-medium">Ready</span>
+          {/* PIXEL-S2 (c): the same two-state label as the compact pill, out of
+              the same flag. Both surfaces go through this component precisely so
+              they cannot end up describing the same session differently. */}
+          <span
+            className={
+              syncing
+                ? 'text-xs font-medium text-emerald-700'
+                : 'text-xs font-medium text-emerald-600'
+            }
+          >
+            {syncing ? 'Syncing…' : 'Active'}
+          </span>
         </div>
       </div>
       <div className="hidden md:flex items-center gap-1.5" role="status" aria-label="Connection details">

@@ -15,6 +15,16 @@
 
 'use strict';
 
+// Identity fixtures are SYNTHETIC and the allowlist/admin identities come from
+// the environment (2026-09-17, dispatch forge/w-strip-email-literals). The
+// hardcoded email fallbacks were removed from lib/entitlement-core.js after they
+// shipped to every visitor in a public client chunk, so these suites must now
+// supply the env they exercise. Real personal addresses never appear in tests.
+process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.test';
+process.env.ENTITLEMENT_ALLOWLIST =
+  process.env.ENTITLEMENT_ALLOWLIST || 'admin@example.test,reviewer@example.test';
+
+
 /* eslint-disable @typescript-eslint/no-require-imports -- this test targets the
    plain-CJS tier/entitlement core (see lib/tiers-core.js header) and follows the
    repo's runner-less CJS test convention. */
@@ -162,7 +172,7 @@ eq('admin → pro limits', r.limits, TIER_LIMITS.pro);
 eq('admin not grandfathered', r.grandfathered, false);
 eq('admin no upgrade path', r.upgrade.reason, null);
 
-r = ent({ isAdmin: false, email: 'dennis.kotlenko@gmail.com', subscription: null });
+r = ent({ isAdmin: false, email: 'admin@example.test', subscription: null });
 eq('allowlisted → pro', r.tier, 'pro');
 
 // ⭐ NEW LIMITED TRIAL: a trialing NEW row → 'trial' tier REGARDLESS of planId,

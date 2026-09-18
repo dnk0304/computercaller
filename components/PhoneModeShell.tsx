@@ -47,13 +47,15 @@ import {
   X,
   Delete,
   FileText,
+  Grid3x3,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
 import { EncryptionBanner } from '@/components/EncryptionStatus';
 import { SasConfirmDialog } from '@/components/SasConfirmDialog';
 import { UsageMeter } from '@/components/UsageMeter';
-import { Dialpad } from '@/components/Dialpad';
+import { Dialpad, CollapsePanel } from '@/components/Dialpad';
+import { useDialpadOpen } from '@/lib/dialpadPref';
 import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterBar';
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
 import { CallHistoryEntries, useCallHistoryEntries } from '@/components/CallHistoryEntries';
@@ -349,6 +351,14 @@ function DialerView() {
   const { push } = usePhoneMode();
   const [digits, setDigits] = useState<string>('');
 
+  // Keypad collapsed/expanded, persisted (lib/dialpadPref.ts). Default
+  // collapsed: the pad is ~180px of this view and the Recent list below it is
+  // what the view is actually for most of the time — a redial is one tap, a
+  // fresh number is the rare case. No email source on /app phone mode, so the
+  // pref reads the shared `last` mirror and stays in step with whatever the
+  // same person chose in the extension.
+  const [padOpen, togglePad, padAnimate] = useDialpadOpen(null);
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const simList = (((phone as any).simList ?? []) as { id: number; name: string }[]);
 
@@ -420,6 +430,16 @@ function DialerView() {
             inputMode="tel"
             value={digits}
             onChange={(e) => setDigits(e.target.value.replace(/[^0-9+*#]/g, '').slice(0, 15))}
+            // Enter dials. This field is the ONLY dial affordance when the pad
+            // is collapsed, and a phone number field where Enter does nothing
+            // is a dead end — digits and Backspace are the input's own
+            // behaviour, Enter was the missing third.
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && digits) {
+                e.preventDefault();
+                call();
+              }
+            }}
             placeholder="Enter number"
             aria-label="Phone number to dial"
             className={clsx(
@@ -430,33 +450,59 @@ function DialerView() {
           />
         </div>
 
-        {/* Dialpad grid. Scaled tokens: keys h-14 w-14→h-12 w-12 (still 48px,
-            ≥iOS HIG 44px). gap-y-3→gap-y-2.5; gap-x-5→gap-x-4. max-w
-            unchanged so the cap still prevents oblong cells on wider narrow
-            viewports. */}
-        <div className="mx-auto grid w-full max-w-[260px] grid-cols-3 gap-x-4 gap-y-2.5 px-3 py-1.5">
-          {keys.map((k) => (
-            <button
-              key={k.d}
-              type="button"
-              onClick={() => dialKey(k.d)}
-              className="flex h-12 w-12 flex-col items-center justify-center rounded-full border border-slate-100 bg-slate-50 shadow-sm transition-all hover:bg-slate-100 active:scale-95 active:bg-blue-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-              aria-label={`Dial ${k.d}`}
-            >
-              <span className="text-lg font-medium text-slate-700">{k.d}</span>
-              {k.sub && (
-                <span className="text-[8px] font-bold tracking-widest text-slate-400">
-                  {k.sub}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        {/* The 12 keys, collapsed by default. Same CollapsePanel the
+            extension pad uses — one behaviour, two densities. */}
+        <CollapsePanel open={padOpen} id="cc-app-keypad" animate={padAnimate}>
+          {/* Dialpad grid. Scaled tokens: keys h-14 w-14→h-12 w-12 (still 48px,
+              ≥iOS HIG 44px). gap-y-3→gap-y-2.5; gap-x-5→gap-x-4. max-w
+              unchanged so the cap still prevents oblong cells on wider narrow
+              viewports. */}
+          <div className="mx-auto grid w-full max-w-[260px] grid-cols-3 gap-x-4 gap-y-2.5 px-3 py-1.5">
+            {keys.map((k) => (
+              <button
+                key={k.d}
+                type="button"
+                onClick={() => dialKey(k.d)}
+                className="flex h-12 w-12 flex-col items-center justify-center rounded-full border border-slate-100 bg-slate-50 shadow-sm transition-all hover:bg-slate-100 active:scale-95 active:bg-blue-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                aria-label={`Dial ${k.d}`}
+              >
+                <span className="text-lg font-medium text-slate-700">{k.d}</span>
+                {k.sub && (
+                  <span className="text-[8px] font-bold tracking-widest text-slate-400">
+                    {k.sub}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </CollapsePanel>
 
-        {/* Call + backspace row. Call button h-16→h-14 (56px, still well
-            above 44px HIG). Backspace stays h-10 (40px hit target — non-
-            critical control). */}
+        {/* Action row: keypad · message · Call · backspace. Call button
+            h-16→h-14 (56px, still well above 44px HIG); the three secondaries
+            stay h-10 (40px hit target — non-critical controls, and well above
+            the 24px floor). */}
         <div className="flex items-center justify-center gap-5 px-3 py-2">
+          {/* Keypad toggle. First in the row, ahead of Message and Call
+              (Dennis 2026-09-17). 40px box, matching Message and Backspace —
+              Call keeps the 56px primary slot to itself. aria-pressed matches
+              the extension pad's toggle and the dashboard's; a control that is
+              the same control on three surfaces gets one accessible idiom. */}
+          <button
+            type="button"
+            onClick={togglePad}
+            aria-pressed={padOpen}
+            aria-controls="cc-app-keypad"
+            aria-label={padOpen ? 'Hide keypad' : 'Show keypad'}
+            title={padOpen ? 'Hide keypad' : 'Show keypad'}
+            className={clsx(
+              'flex h-10 w-10 items-center justify-center rounded-full transition-colors active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
+              padOpen
+                ? 'bg-slate-200 text-slate-800'
+                : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700',
+            )}
+          >
+            <Grid3x3 className="h-4 w-4" aria-hidden="true" />
+          </button>
           {/* Send message. Took the symmetry spacer's slot — the extension's
               pad has had this pill since AC-4 and /app's had nothing. Opens
               the THREAD for the typed number (Dennis 14:04), so any history
@@ -935,10 +981,19 @@ function TextsView() {
         </div>
       </div>
 
-      {/* Thread list — divides for clean separation; tap row to open thread. */}
-      <ul className="cc-list flex-1 divide-y divide-slate-100 overflow-y-auto">
+      {/* Thread list — divides for clean separation; tap row to open thread.
+
+          `cc-card-list` is a MARKER, not a style (dispatch PIXEL-S addendum
+          (e), Dennis 2026-09-17 10:51: "in the text tab in the extension, i
+          would like to have the same pill design around each message chat
+          like the one we use for alerts"). It carries no rule on /app, where
+          this stays the flat divided list it has always been; inside .cc-ext
+          it turns each <li> into the same L3 card the Alerts tab uses — same
+          radius, padding, hairline and hover — out of app/extension/
+          extension.css. One list implementation, two surfaces. */}
+      <ul className="cc-list cc-card-list flex-1 divide-y divide-slate-100 overflow-y-auto">
         {filtered.length === 0 ? (
-          <li className="px-4 py-12 text-center text-sm text-slate-400">
+          <li className="cc-card-list-empty px-4 py-12 text-center text-sm text-slate-400">
             {search ? 'No results' : 'No messages yet'}
           </li>
         ) : (
@@ -1772,6 +1827,12 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
     if (!newest) return;
     if (newest.id === seenNewestIdRef.current) return;
     seenNewestIdRef.current = newest.id;
+    // v58 sync backfill: the phone replaying its shade. These are cards the
+    // user has already seen ON THE PHONE, and a sync can put one at the top of
+    // the list by postedAt — which is exactly the condition this effect reads
+    // as "something new arrived". Marking it seen (above) and returning here
+    // keeps the list fresh without a toast for history.
+    if (newest.backfill) return;
     // Don't toast if the user is already looking at the Bell tab or inside
     // a thread/compose (their context dominates the viewport).
     if (current.kind === 'bell' || current.kind === 'thread' || current.kind === 'compose') return;

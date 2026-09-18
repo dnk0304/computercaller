@@ -18,6 +18,16 @@
 //   Run: node tests/cardfirst-revert.test.js
 'use strict';
 
+// Identity fixtures are SYNTHETIC and the allowlist/admin identities come from
+// the environment (2026-09-17, dispatch forge/w-strip-email-literals). The
+// hardcoded email fallbacks were removed from lib/entitlement-core.js after they
+// shipped to every visitor in a public client chunk, so these suites must now
+// supply the env they exercise. Real personal addresses never appear in tests.
+process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.test';
+process.env.ENTITLEMENT_ALLOWLIST =
+  process.env.ENTITLEMENT_ALLOWLIST || 'admin@example.test,reviewer@example.test';
+
+
 /* eslint-disable @typescript-eslint/no-require-imports -- repo runner-less CJS convention. */
 const assert = require('node:assert').strict;
 const { evaluateEntitlement } = require('../lib/entitlement-core.js');
@@ -91,14 +101,14 @@ for (const v of ['disabled', 'none', 'nope', 'ofF!', 'undefined', 'null']) {
 const INVARIANT = [
   {
     name: 'admin (Dennis)',
-    input: { isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null },
+    input: { isAdmin: true, email: 'admin@example.test', subscription: null },
     expected: { allowed: true, state: 'admin', reason: 'admin', trialDaysLeft: null, tier: 'pro' },
   },
   {
     // Play-review blocker. The reviewer account is how Google's testers see the
     // app; a lockout here is a store rejection, not a bug report.
     name: 'reviewer allowlist (Play review)',
-    input: { isAdmin: false, email: 'reviewer@computercaller.com', subscription: null },
+    input: { isAdmin: false, email: 'reviewer@example.test', subscription: null },
     expected: {
       allowed: true, state: 'allowlisted', reason: 'entitlement_allowlist',
       trialDaysLeft: null, tier: 'pro',
@@ -106,7 +116,7 @@ const INVARIANT = [
   },
   {
     name: 'reviewer allowlist is case-insensitive',
-    input: { isAdmin: false, email: 'Reviewer@ComputerCaller.com', subscription: null },
+    input: { isAdmin: false, email: 'reviewer@example.test', subscription: null },
     expected: {
       allowed: true, state: 'allowlisted', reason: 'entitlement_allowlist',
       trialDaysLeft: null, tier: 'pro',
@@ -343,9 +353,9 @@ withFlag('off', () => {
   // Privileged admits outrank the flag even when NOT grandfathered — this is
   // the no-lockout guarantee, re-asserted at the exact branch the flag touches.
   eq('[off] admin with no subscription is still admitted',
-    ev({ isAdmin: true, email: 'dennis.kotlenko@gmail.com', subscription: null }).allowed, true);
+    ev({ isAdmin: true, email: 'admin@example.test', subscription: null }).allowed, true);
   eq('[off] reviewer with no subscription is still admitted',
-    ev({ isAdmin: false, email: 'reviewer@computercaller.com', subscription: null }).allowed, true);
+    ev({ isAdmin: false, email: 'reviewer@example.test', subscription: null }).allowed, true);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

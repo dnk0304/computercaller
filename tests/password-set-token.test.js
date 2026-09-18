@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Runner-less CommonJS test (repo convention: no Jest/Vitest) — require() is the only import form available. */
 // Unit tests for lib/passwordSetToken-core.js — the single-use, expiring
 // set-password token primitive behind the admin invite flow and (eventually)
 // forgot-password. Dispatch forge/admin-create-account, 2026-08-15.

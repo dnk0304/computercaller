@@ -647,7 +647,7 @@ export default function LandingPage() {
               {
                 icon: ShieldCheck,
                 title: 'Private by design',
-                desc: "End-to-end encrypted connection. Nothing about your calls, SMS, or contacts is stored on our servers.",
+                desc: "Encrypted in transit (TLS) between your phone, our relay, and your browser. Your calls, SMS, and contacts are never stored on our servers — they pass through and are gone.",
               },
             ].map(({ icon: Icon, title, desc }) => (
               <div

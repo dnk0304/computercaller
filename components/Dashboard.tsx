@@ -367,7 +367,7 @@ const MessengerBar: React.FC<MessengerBarProps> = ({ notifications }) => {
                 'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40'
               )}
             >
-              <img
+              <img /* eslint-disable-line @next/next/no-img-element -- runtime-variable source (data: URI, MMS media, or public SVG) with no known intrinsic size; next/image cannot optimize it and this layout must stay pixel-identical. */
                 src={app.icon}
                 alt=""
                 aria-hidden="true"
@@ -516,7 +516,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // Cross-route dashboard tab control — Quick Dial's SMS shortcut routes the
   // user to the messages tab with the dialled / active-call number pre-selected.
   // See hooks/dashboardTabContext.tsx for the navigation contract.
-  const { setActiveTab, setSelectedMessageNumber } = useDashboardTab();
+  useDashboardTab();
 
   // Defer expensive thread/callLog computations so they run in the background
   // without blocking the UI when messages or callLogs update.
@@ -594,10 +594,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   type SimEntry = { id: number; slot: number; name: string; number: string };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const simList: SimEntry[] = ((phone as any).simList ?? []) as SimEntry[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const selectedSimId: number | null = (phone as any).selectedSimId ?? null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const setSim: ((simId: number | null) => void) | undefined = (phone as any).setSim;
 
   // ---- Phone notifications ----------------------------------------------
   // Read from a dedicated NotificationContext so notification updates (200ms
@@ -647,8 +643,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
 
   // Favorites store: array of contact IDs.
   const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
-  const [showFavoritePicker, setShowFavoritePicker] = useState(false);
-  const [favoriteSearch, setFavoriteSearch] = useState('');
+  const [, setShowFavoritePicker] = useState(false);
+  const [, setFavoriteSearch] = useState('');
 
   // Compose textarea value (per-thread, lives in Dashboard scope so it survives
   // a quick navigate-away-and-back inside this column).
@@ -2283,8 +2279,7 @@ const PhoneLinkLayout: React.FC<PhoneLinkLayoutProps> = ({
                       className="w-full flex items-start gap-2 p-2 rounded-lg text-left hover:bg-slate-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                     >
                       {icon ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
+                        <img /* eslint-disable-line @next/next/no-img-element -- runtime-variable source (data: URI, MMS media, or public SVG) with no known intrinsic size; next/image cannot optimize it and this layout must stay pixel-identical. */
                           src={`data:image/png;base64,${icon}`}
                           alt=""
                           className="w-6 h-6 rounded-md flex-shrink-0"
@@ -3309,7 +3304,7 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
           title="View full image"
         >
           {thumbnailSrc ? (
-            <img
+            <img /* eslint-disable-line @next/next/no-img-element -- runtime-variable source (data: URI, MMS media, or public SVG) with no known intrinsic size; next/image cannot optimize it and this layout must stay pixel-identical. */
               src={thumbnailSrc}
               alt={caption || 'MMS image'}
               className="block w-full h-auto rounded-xl"
@@ -3357,7 +3352,7 @@ const MmsBubble: React.FC<MmsBubbleProps> = ({ message, isSent, getMmsMedia }) =
             >
               <X className="w-6 h-6" aria-hidden="true" />
             </button>
-            <img
+            <img /* eslint-disable-line @next/next/no-img-element -- runtime-variable source (data: URI, MMS media, or public SVG) with no known intrinsic size; next/image cannot optimize it and this layout must stay pixel-identical. */
               src={fullMediaSrc || thumbnailSrc!}
               alt={caption || 'Full image'}
               className="max-w-full max-h-full object-contain rounded-lg"
@@ -4735,7 +4730,7 @@ const NotificationToasts: React.FC<NotificationToastsProps> = ({ notifications, 
           tabIndex={0}
         >
           {getNotificationIcon(t.packageName) ? (
-            <img
+            <img /* eslint-disable-line @next/next/no-img-element -- runtime-variable source (data: URI, MMS media, or public SVG) with no known intrinsic size; next/image cannot optimize it and this layout must stay pixel-identical. */
               src={`data:image/png;base64,${getNotificationIcon(t.packageName)}`}
               alt=""
               className="w-9 h-9 rounded-full object-cover border border-slate-100 flex-shrink-0"
@@ -4914,7 +4909,7 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
                       {/* App icon */}
                       <div className="flex-shrink-0 mt-0.5">
                         {getNotificationIcon(notif.packageName) ? (
-                          <img
+                          <img /* eslint-disable-line @next/next/no-img-element -- runtime-variable source (data: URI, MMS media, or public SVG) with no known intrinsic size; next/image cannot optimize it and this layout must stay pixel-identical. */
                             src={`data:image/png;base64,${getNotificationIcon(notif.packageName)}`}
                             alt={notif.appName ?? 'notification'}
                             className="w-9 h-9 rounded-xl object-cover"

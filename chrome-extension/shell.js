@@ -42,6 +42,7 @@
  * postMessage contract with app/../lib/extensionBridge.ts:
  *   app   → shell : { source:'cc-ext', type:'ready' | 'open-popout' | 'sign-out' }
  *   app   → shell : { source:'cc-ext', type:'theme', theme:'light'|'dark' }
+ *   app   → shell : { source:'cc-ext', type:'size',  size:'small'|'medium'|'large' }
  *   login → shell : { source:'cc-ext', type:'login-ready' | 'signed-in' | 'google-sign-in' }
  *   shell → app   : { source:'cc-ext', type:'shell-hello', email, canPopout }
  * Inbound is accepted ONLY from one of our OWN two iframes' contentWindow AND
@@ -84,7 +85,7 @@ const THEME_KEY = 'cc_theme';
 function systemTheme() {
   try {
     return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  } catch (_) {
+  } catch {
     return 'light';
   }
 }
@@ -116,7 +117,7 @@ try {
     if (area !== 'local' || !changes[THEME_KEY]) return;
     applyShellTheme(changes[THEME_KEY].newValue);
   });
-} catch (_) {
+} catch {
   // Storage unavailable — (a) already painted a sane System theme and the
   // iframe's `theme` message below will still correct an override once it
   // loads. A colour preference is not worth a broken panel.
@@ -128,7 +129,55 @@ function receiveTheme(theme) {
   applyShellTheme(theme);
   try {
     chrome.storage.local.set({ [THEME_KEY]: theme });
-  } catch (_) {}
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// TEXT SIZE — the exact same wire, one dispatch later (PIXEL-S, 2026-09-17).
+//
+// The shell chrome the user sees before signing in (the lockup header, the
+// sign-in hero, the trust strip) is THIS document's type, not the iframe's. If
+// only the app frame followed the picker, choosing Large would grow everything
+// inside the panel and leave the sign-in screen at Small — the same split the
+// theme message was added to close.
+//
+// Mirrors applyShellTheme() line for line on purpose: same cache-then-correct
+// order, same chrome.storage.onChanged fan-out so two open surfaces cannot
+// disagree, same try/catch posture. There is no OS-level equivalent of
+// prefers-color-scheme for this setting, so the synchronous best guess is the
+// documented default rather than a media query.
+const SIZE_KEY = 'cc_size';
+const DEFAULT_SIZE = 'medium';
+
+/** @param {unknown} size 'small' | 'medium' | 'large'. */
+function applyShellSize(size) {
+  if (size !== 'small' && size !== 'medium' && size !== 'large') return;
+  document.documentElement.setAttribute('data-cc-size', size);
+}
+
+applyShellSize(DEFAULT_SIZE);
+
+try {
+  chrome.storage.local.get(SIZE_KEY, (got) => {
+    if (chrome.runtime.lastError) return;
+    applyShellSize(got && got[SIZE_KEY]);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[SIZE_KEY]) return;
+    applyShellSize(changes[SIZE_KEY].newValue);
+  });
+} catch {
+  // Storage unavailable — the default above is already painted and the frame's
+  // `size` message will still correct an override once it loads.
+}
+
+/** Inbound `size` from the app frame: stamp now, cache for the next open. */
+function receiveSize(size) {
+  if (size !== 'small' && size !== 'medium' && size !== 'large') return;
+  applyShellSize(size);
+  try {
+    chrome.storage.local.set({ [SIZE_KEY]: size });
+  } catch {}
 }
 
 // 1) Presence signal — the disconnect fires automatically when this page unloads.
@@ -149,7 +198,7 @@ try {
     }
   });
   presencePort.onDisconnect.addListener(() => { presencePort = null; });
-} catch (_) {}
+} catch {}
 
 const frame = document.getElementById('cc-frame');
 const overlay = document.getElementById('cc-signin');
@@ -299,7 +348,7 @@ function sendHello() {
       },
       self.CC.WEBAPP_ORIGIN,
     );
-  } catch (_) {}
+  } catch {}
 }
 
 /**
@@ -320,7 +369,7 @@ async function probeSession() {
   try {
     const body = await res.json();
     email = (body && body.user && body.user.email) || null;
-  } catch (_) {
+  } catch {
     // A 200 with an unreadable body still means authenticated; we just have no
     // email to show in the menu.
   }
@@ -355,7 +404,7 @@ async function completeSignIn() {
   try {
     const res = await chrome.runtime.sendMessage({ type: 'sign-in-complete' });
     minted = !!(res && res.ok);
-  } catch (_) {
+  } catch {
     // The SW was asleep or the channel closed. Non-fatal — see (1) above.
   }
   showOverlay(null);
@@ -383,7 +432,7 @@ async function startGoogleSignIn() {
   try {
     const res = await chrome.runtime.sendMessage({ type: 'google-sign-in' });
     ok = !!(res && res.ok);
-  } catch (_) {
+  } catch {
     // Document torn down, or the SW went away. The SW's flow continues either
     // way; reopening the popup picks up the finished session.
     return;
@@ -426,7 +475,7 @@ async function startPasswordWindowSignIn() {
   try {
     const res = await chrome.runtime.sendMessage({ type: 'password-sign-in' });
     ok = !!(res && res.ok);
-  } catch (_) {
+  } catch {
     // This document was torn down (popup lost focus to the new window) or the
     // SW went away mid-flight. The SW's flow continues either way.
     return;
@@ -452,15 +501,15 @@ async function signOut() {
   // is required because the cookie is SameSite=None in prod.
   try {
     await fetch(self.CC.LOGOUT_URL, { method: 'POST', credentials: 'include' });
-  } catch (_) {
+  } catch {
     // Network failure still clears the local token below; the cookie will be
     // rejected on its next use anyway if the session was revoked server-side.
   }
   // Durable ext-session token used by the background SW.
   try {
     await new Promise((r) => chrome.storage.local.remove(self.CC.TOKEN_KEY, r));
-  } catch (_) {}
-  try { await chrome.runtime.sendMessage({ type: 'signed-out' }); } catch (_) {}
+  } catch {}
+  try { await chrome.runtime.sendMessage({ type: 'signed-out' }); } catch {}
   clearFrame();
   currentEmail = null;
   showOverlay('anon');
@@ -469,7 +518,7 @@ async function signOut() {
 async function openPopout() {
   // Unchanged SW contract: {type:'open-popout'}. The trigger moved; the
   // message did not.
-  try { await chrome.runtime.sendMessage({ type: 'open-popout' }); } catch (_) {}
+  try { await chrome.runtime.sendMessage({ type: 'open-popout' }); } catch {}
   window.close();
 }
 
@@ -512,7 +561,7 @@ async function requestDock() {
         result = { ok: true, surface: 'sidepanel' };
       }
     }
-  } catch (_) { /* fall through */ }
+  } catch { /* fall through */ }
 
   // 2. The toolbar popup, for a build without the side panel. Only meaningful
   //    while a default_popup exists; it does not today, so this is inert unless
@@ -523,7 +572,7 @@ async function requestDock() {
         await chrome.action.openPopup();
         result = { ok: true, surface: 'popup' };
       }
-    } catch (_) { /* fall through */ }
+    } catch { /* fall through */ }
   }
 
   // 3. Last resort: let the worker try. Expected to fail for the gesture reason
@@ -532,14 +581,14 @@ async function requestDock() {
     try {
       const res = await chrome.runtime.sendMessage({ type: 'dock' });
       if (res && typeof res.surface === 'string' && res.ok) result = res;
-    } catch (_) {}
+    } catch {}
   }
 
   if (result.ok) {
     // Docked. Ask the worker to remove THIS window — see above on why not here.
-    try { await chrome.runtime.sendMessage({ type: 'dock-close' }); } catch (_) {}
+    try { await chrome.runtime.sendMessage({ type: 'dock-close' }); } catch {}
     // Belt and braces for a surface the worker could not identify (no sender.tab).
-    try { window.close(); } catch (_) {}
+    try { window.close(); } catch {}
     return;
   }
 
@@ -549,7 +598,7 @@ async function requestDock() {
       { source: NS, type: 'dock-result', ok: result.ok, surface: result.surface },
       self.CC.WEBAPP_ORIGIN,
     );
-  } catch (_) {}
+  } catch {}
 }
 
 /**
@@ -633,10 +682,10 @@ async function sendE2ePubKey(rid, pairingId) {
 function reportTabViewed(tab) {
   if (typeof tab !== 'string' || !tab) return;
   if (presencePort) {
-    try { presencePort.postMessage({ type: 'tab-viewed', tab }); return; } catch (_) {}
+    try { presencePort.postMessage({ type: 'tab-viewed', tab }); return; } catch {}
   }
   // Port lost (SW recycled). One-shot fallback so a view is never silently lost.
-  try { chrome.runtime.sendMessage({ type: 'tab-viewed', tab }); } catch (_) {}
+  try { chrome.runtime.sendMessage({ type: 'tab-viewed', tab }); } catch {}
 }
 
 // ---- Inbound from the hosted app -------------------------------------------
@@ -716,6 +765,10 @@ window.addEventListener('message', (event) => {
     // every /extension load, and again on every toggle. Already resolved to
     // light|dark on the sender's side.
     receiveTheme(data.theme);
+  } else if (data.type === 'size') {
+    // Posted by lib/extensionTextSize.ts: once from the blocking boot script
+    // on every /extension load, and again on every pick.
+    receiveSize(data.size);
   }
 });
 

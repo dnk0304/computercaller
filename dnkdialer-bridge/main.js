@@ -1,6 +1,6 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Electron main process — CommonJS by design (no "type": "module"); require() is the only working import form here. */
 const { app, BrowserWindow, ipcMain } = require('electron');
 const WebSocket = require('ws');
-const path = require('path');
 
 // State
 let mainWindow = null;

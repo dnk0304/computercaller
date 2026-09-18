@@ -43,7 +43,6 @@ import {
   getJwtSecret,
   authCookieSetOptions,
 } from '@/lib/auth';
-import { getClientIp } from '@/lib/ip';
 import { MIN_PASSWORD, MAX_PASSWORD_BYTES } from '@/lib/passwordPolicy';
 
 // Light per-user sliding window — the endpoint is authed, but each accepted

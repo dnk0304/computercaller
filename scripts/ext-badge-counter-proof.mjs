@@ -71,7 +71,13 @@ try {
   const reset = () => sw.evaluate(async () => {
     presenceCount = 0;
     badgeChipColor = null;
-    await new Promise((r) => chrome.storage.session.set({ cc_unread: { missedCalls: 0, newSms: 0, alerts: 0 } }, r));
+    // cc_alert_keys is zeroed with the counter it belongs to: leaving keys from
+    // a previous section behind would let a later dismissal decrement a count
+    // it never raised, which is the exact bug section 14 exists to catch.
+    await new Promise((r) => chrome.storage.session.set({
+      cc_unread: { missedCalls: 0, newSms: 0, alerts: 0 },
+      cc_alert_keys: [],
+    }, r));
     paintBadge({ missedCalls: 0, newSms: 0, alerts: 0 });
   });
   const badge = () => sw.evaluate(() => chrome.action.getBadgeText({}));
@@ -548,6 +554,131 @@ try {
   b = await badge();
   check('HELD pair + panel CLOSED: OUTGOING sms still silent',
     b === '' && (await notifCount()) === 0, { badge: b, notifs: await notifCount() });
+
+  // ---- 13. v58: a BACKFILL notification must be silent -------------------
+  //
+  // Dennis 2026-09-17: "when we sync phone, it should fetch all notifications
+  // that currently are visible on the phone as well." The phone answers by
+  // replaying its whole shade on sync as ordinary PHONE_NOTIFICATION frames
+  // tagged `backfill:true` with the original `postedAt`.
+  //
+  // Those are cards the user has ALREADY seen on the phone. A shade of twenty
+  // would otherwise fire twenty Chrome toasts and push the badge to twenty the
+  // moment they press sync — turning a convenience into a notification storm.
+  //
+  // What the badge must NOT do is asserted here. That the cards still REACH
+  // the Alerts list (merged by postedAt, deduped against what is on screen) is
+  // asserted in tests/notification-backfill.test.ts against the real merge
+  // function — the listener worker never holds that list, so this harness
+  // cannot see it and must not pretend to.
+  const BACKFILL = (id, postedAt) => 'PHONE_NOTIFICATION:' + JSON.stringify({
+    type: 'PHONE_NOTIFICATION', backfill: true, postedAt,
+    id, notificationKey: `0|com.whatsapp|${id}`,
+    packageName: 'com.whatsapp', appName: 'WhatsApp',
+    title: 'Ana', body: 'hei', text: 'hei', hasReply: true, replyKey: `rk-${id}`,
+  });
+  const LIVE_NOTIF = (id) => 'PHONE_NOTIFICATION:' + JSON.stringify({
+    type: 'PHONE_NOTIFICATION', id, notificationKey: `0|com.whatsapp|${id}`,
+    packageName: 'com.whatsapp', appName: 'WhatsApp',
+    title: 'Ana', body: 'hei', text: 'hei',
+  });
+
+  await reset();
+  await sw.evaluate(() => { presenceCount = 0; });
+  await armNotifSpy();
+  await feed([BACKFILL(401, Date.now() - 3_600_000), BACKFILL(402, Date.now() - 60_000), BACKFILL(403, Date.now())]);
+  b = await badge();
+  check('3 backfill frames, panel CLOSED ⇒ badge stays empty', b === '', b);
+  check('3 backfill frames ⇒ ZERO notifications raised', (await notifCount()) === 0, await notifCount());
+
+  // 13b. the control arm. Without it, a guard that swallowed the whole frame
+  // type would pass 13a trivially — and silently break live alerts.
+  await reset();
+  await armNotifSpy();
+  await feed([LIVE_NOTIF(404)]);
+  b = await badge();
+  check('LIVE notification (no backfill flag) ⇒ badge "1"', b === '1', b);
+  check('LIVE notification ⇒ notification raised', (await notifCount()) === 1, await notifCount());
+
+  // 13c. `backfill:false` and a nonsense value are NOT backfill. Only an
+  // explicit `true` may take the silent path — anything else is a pre-v58 APK
+  // or a mangled frame, and must fail toward notifying.
+  await reset();
+  await armNotifSpy();
+  await feed([
+    'PHONE_NOTIFICATION:' + JSON.stringify({ id: 405, title: 'App', text: 'ping', backfill: false }),
+    'PHONE_NOTIFICATION:' + JSON.stringify({ id: 406, title: 'App2', text: 'ping', backfill: 'true' }),
+  ]);
+  b = await badge();
+  check('backfill:false and backfill:"true" both stay on the LIVE path ⇒ "2"', b === '2', b);
+
+  // 13d. a backfill frame is still a real phone→browser data frame, so the
+  // catch-all must still read it as proof a phone is on the other end. A guard
+  // that returned before that would make sync turn the presence dot OFF.
+  await reset();
+  await sw.evaluate(() => { phonePresent = false; lastIndicator = null; });
+  await feed([BACKFILL(407, Date.now())]);
+  const bfState = await sw.evaluate(() => ({ phonePresent }));
+  check('a backfill frame still proves a phone is present', bfState.phonePresent === true, bfState);
+
+  // ---- 14. phone-side dismissal must take the badge back ------------------
+  //
+  // NOTIFICATION_REMOVED was handled in the page (usePhoneBridge drops the row)
+  // and nowhere else — so clearing your phone's shade while the panel was CLOSED
+  // left the pinned icon showing a count of alerts that no longer existed. The
+  // badge is only load-bearing when no surface is open, which is exactly the
+  // window in which it was never corrected.
+  const REMOVED = (key) => 'NOTIFICATION_REMOVED:' + JSON.stringify({ notificationKey: key });
+
+  await reset();
+  await armNotifSpy();
+  await feed([LIVE_NOTIF(501), LIVE_NOTIF(502)]);
+  b = await badge();
+  check('two alerts counted before the dismissal', b === '2', b);
+
+  await feed([REMOVED('0|com.whatsapp|501')]);
+  b = await badge();
+  check('phone-side dismiss while panel CLOSED ⇒ badge decrements to "1"', b === '1', b);
+  let cnt = await sw.evaluate(() => readUnread());
+  check('…and it came out of the alerts counter specifically', cnt.alerts === 1, cnt);
+
+  // 14b. a dismissal of a key that was never counted must change NOTHING.
+  // Decrementing blind would drive the badge below the number of things
+  // actually waiting, which hides real messages — strictly worse than stale.
+  await feed([REMOVED('0|com.whatsapp|never-seen')]);
+  b = await badge();
+  check('dismiss of a never-counted key ⇒ badge unchanged', b === '1', b);
+
+  // 14c. the same key twice (relay replay / phone retry) decrements once.
+  await feed([REMOVED('0|com.whatsapp|502'), REMOVED('0|com.whatsapp|502')]);
+  b = await badge();
+  cnt = await sw.evaluate(() => readUnread());
+  check('a repeated dismissal decrements exactly once, never below zero',
+    b === '' && cnt.alerts === 0, { badge: b, counts: cnt });
+
+  // 14d. a BACKFILL frame is never counted, so dismissing it must not decrement
+  // a live alert that is. This is the interaction between the two halves of
+  // this dispatch and the place a naive counter would go wrong.
+  await reset();
+  await feed([LIVE_NOTIF(601), BACKFILL(602, Date.now() - 60_000)]);
+  b = await badge();
+  check('one live + one backfill ⇒ badge "1"', b === '1', b);
+  await feed([REMOVED('0|com.whatsapp|602')]);
+  b = await badge();
+  check('dismissing the BACKFILLED card leaves the live count alone', b === '1', b);
+  await feed([REMOVED('0|com.whatsapp|601')]);
+  b = await badge();
+  check('dismissing the LIVE card clears it', b === '', b);
+
+  // 14e. viewing the Alerts tab retires every outstanding bump, so a dismissal
+  // arriving afterwards must not decrement a counter that is already zero.
+  await reset();
+  await feed([LIVE_NOTIF(701)]);
+  await sw.evaluate(async () => { await clearUnread('alerts'); await new Promise((r) => setTimeout(r, 200)); });
+  await feed([REMOVED('0|com.whatsapp|701')]);
+  cnt = await sw.evaluate(() => readUnread());
+  check('a dismissal after the tab was viewed cannot push alerts negative',
+    cnt.alerts === 0 && (await badge()) === '', cnt);
 } finally {
   await ctx.close();
   reaper.reapAndReport('ext-badge-counter-proof');

@@ -172,7 +172,8 @@ test('Bug B BEFORE: ACTIVE chip whose end-frame was lost is NOT cleared by B1 sw
   // pre-fix world: no resume-time expiry exists, so the chip persists.
   const calls = [{ callId: 'c1', number: '+34600', isIncoming: true,
                    startTime: NOW - 60000, state: 'active' }];
-  const touched = new Map([['c1', NOW - 30000]]); // last event 30s before resume
+  // (scenario: c1 last touched NOW - 30000, i.e. 30s before resume — unused on
+  // the pre-fix path below, which never consults the touched map at all.)
   // Pre-fix path = expiredRingingCallIds only (active rows ignored). We assert
   // the active row would survive that path → stale chip persists.
   const ringingOnly = calls.filter(c => c.state === 'ringing');

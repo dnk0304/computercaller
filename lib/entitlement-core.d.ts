@@ -106,10 +106,10 @@ export interface EntitlementInput {
 export function isEntitlementAllowed(email: string | null | undefined): boolean;
 
 /**
- * The single admin authority: isAdmin===true OR email === the hardcoded admin
- * email (case-insensitive, trimmed). Fail-safe for Dennis, fail-closed (→false
- * on any error/malformed input) for everyone else. Gates every /api/admin/*
- * route + the admin page.
+ * The single admin authority: isAdmin===true OR email === the ADMIN_EMAIL env
+ * var (case-insensitive, trimmed). Fail-closed throughout: ADMIN_EMAIL unset
+ * disables the email route to admin (DB flag only), and any error/malformed
+ * input → false. Gates every /api/admin/* route + the admin page.
  */
 export function isAdminUser(account: {
   isAdmin?: unknown;
@@ -149,8 +149,6 @@ export function grantStatus(
   expiresAt: Date | string | number | null | undefined,
   now?: Date | number,
 ): 'permanent' | 'active' | 'expired';
-
-export const ADMIN_EMAIL_FALLBACK: string;
 
 export function evaluateEntitlement(
   input: EntitlementInput,
@@ -195,4 +193,3 @@ export function resolveWhopCardState(action: string, data: unknown): boolean | n
  */
 export function resolveWhopCancellation(data: unknown): boolean | null;
 
-export const ENTITLEMENT_ALLOWLIST_FALLBACK: string;

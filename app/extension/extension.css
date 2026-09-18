@@ -239,14 +239,35 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   color: var(--cc-ink);
 }
 
+/* ---- Keypad toggle (PIXEL-S3). Targeted by its own class, not by
+       aria-label: the label flips between "Show keypad" and "Hide keypad" and
+       a theme rule must not depend on which half of a toggle you are looking
+       at. Two states, because "pressed" is the only signal that the pad below
+       is open once the pad itself is a 0px-tall clipped box.
+       The rule does not need the `:disabled` escape hatch above — this button
+       is never disabled; there is always a keypad to show. ---- */
+:where([data-cc-theme=dark]) .cc-ext .cc-keypad-toggle {
+  background-color: var(--cc-card);
+  border-color: var(--cc-chip-bd);
+  color: var(--cc-ink);
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-keypad-toggle[aria-pressed="true"] {
+  background-color: var(--cc-field);
+  border-color: var(--cc-ink);
+  color: var(--cc-ink);
+}
+
 /* ===========================================================================
    0.8× DENSITY
    Dennis: "the current look at 80% zoom is the new default". Header 48→40,
    rows 56→46, tabs 34→26, body text 14→12.5.
+
+   PIXEL-S: every value this section set in px now lives as a token in the
+   TYPE SIZE block at the foot of this file, multiplied by --cc-size. Small is
+   these exact numbers; the comments here still describe Small.
    =========================================================================== */
 
 /* ---- Header: one 40px row that must never wrap (AC-1) ---- */
-.cc-ext .cc-ext-header { height: 40px; }
 /* Belt and braces on the AC-1 pass condition: nothing in the header row is
    allowed to wrap, whatever a future edit puts in it. */
 .cc-ext .cc-ext-header,
@@ -258,16 +279,10 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
        touched. 26px still clears the 24×24 WCAG 2.2 AA target-size minimum,
        and each tab is a third of the panel wide (~130px), so the target is
        130×26, not 26×26. ---- */
-.cc-ext [role="tablist"] { height: 26px; top: 40px; }
-.cc-ext [role="tablist"] [role="tab"] { font-size: 11.5px; gap: 5px; }
-.cc-ext [role="tablist"] [role="tab"] svg { width: 13px; height: 13px; }
 
 /* ---- Body type ---- */
-.cc-ext { font-size: 12.5px; }
 /* Inputs stay ≥12px: below that Chrome renders them fuzzy at fractional
    device pixel ratios, and there is no zoom-to-fit rescue on a popup. */
-.cc-ext input,
-.cc-ext textarea { font-size: 12.5px; }
 
 /* ---------------------------------------------------------------------------
    SHORT PANEL. A side panel inherits the browser window's height, and a window
@@ -335,10 +350,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    Three classes deep, so it outranks Tailwind's single-class rules without
    !important. Inputs land on 12.5px, never below the 12px floor the body-type
    block above sets out. */
-.cc-ext .cc-msg-view .text-sm,
-.cc-ext .cc-msg-view .text-base { font-size: 12.5px; line-height: 1.35; }
-.cc-ext .cc-msg-view .text-xs { font-size: 11px; line-height: 1.4; }
-.cc-ext .cc-msg-view .text-\[11px\] { font-size: 10.5px; }
 /* Avatars — the one non-type token in this block. A 40px circle beside 12.5px
    type is the single loudest thing on the Texts tab and it is the reason the
    whole view read "bigger" before the sizes were even compared. Dial's row
@@ -530,8 +541,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    shadow reads as dirt". The form sits directly on --cc-page. */
 
 .cc-ext .cc-auth-title {
-  font-size: 17px;
-  font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--cc-ink);
   margin: 0 0 14px;
@@ -553,8 +562,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   border-radius: var(--r-pill);
   background: var(--cc-card);
   color: var(--cc-ink);
-  font-size: 12.5px;
-  font-weight: 600;
   font-family: inherit;
   cursor: pointer;
   transition: background-color 0.12s ease-out, border-color 0.12s ease-out;
@@ -569,7 +576,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   align-items: center;
   gap: 8px;
   margin: 14px 0;
-  font-size: 10.5px;
   color: var(--cc-mut);
 }
 .cc-ext .cc-auth-or::before,
@@ -585,8 +591,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 .cc-ext .cc-auth-label {
   display: block;
-  font-size: 11.5px;
-  font-weight: 600;
   color: var(--cc-sec);
   margin-bottom: 4px;
 }
@@ -602,7 +606,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   color: var(--cc-ink);
   /* 12.5px is the surface floor: below it Chrome renders inputs fuzzy at
      fractional device pixel ratios, and a popup has no zoom-to-fit rescue. */
-  font-size: 12.5px;
   font-family: inherit;
   transition: border-color 0.12s ease-out;
 }
@@ -626,8 +629,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   border-radius: var(--r-pill);
   background-image: var(--cc-grad);
   color: #fff;
-  font-size: 13px;
-  font-weight: 650;
   font-family: inherit;
   cursor: pointer;
   transition: filter 0.12s ease-out, transform 0.12s ease-out;
@@ -654,7 +655,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   border-radius: var(--r-btn);
   background: var(--cc-field);
   color: var(--cc-sec);
-  font-size: 11.5px;
   line-height: 1.4;
 }
 .cc-ext .cc-auth-note svg { flex-shrink: 0; }
@@ -679,7 +679,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   justify-content: space-between;
   gap: 10px;
   margin-top: 14px;
-  font-size: 11.5px;
 }
 .cc-ext .cc-auth-link {
   color: var(--cc-sec);
@@ -696,7 +695,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   flex-shrink: 0;
   padding: 9px 16px;
   border-top: 1px solid var(--cc-hair);
-  font-size: 10.5px;
   color: var(--cc-mut);
   text-align: center;
 }
@@ -914,7 +912,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   align-items: center;
   justify-content: center;
   background: var(--cc-field);
-  font-size: 10px;
   line-height: 1;
 }
 .cc-ext .cc-note-app {
@@ -924,13 +921,10 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10.5px;
-  font-weight: 600;
   color: var(--cc-sec);
 }
 .cc-ext .cc-note-time {
   flex-shrink: 0;
-  font-size: 10.5px;
   color: var(--cc-mut);
 }
 /* 20px, not the 26px header floor: this control is inside a card the user is
@@ -956,14 +950,11 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 .cc-ext .cc-note-title {
   margin: 3px 0 0;
-  font-size: 12.5px;
-  font-weight: 600;
   line-height: 1.3;
   color: var(--cc-ink);
 }
 .cc-ext .cc-note-body {
   margin: 2px 0 0;
-  font-size: 11px;
   line-height: 1.45;
   color: var(--cc-sec);
   /* Two lines is the glance; the rest is on the phone. A notification card
@@ -989,8 +980,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   border-radius: var(--r-pill);
   background: transparent;
   color: var(--cc-ink);
-  font-size: 11.5px;
-  font-weight: 600;
   font-family: inherit;
   cursor: pointer;
   transition: background-color 0.12s ease-out;
@@ -1007,7 +996,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   border-radius: var(--r-pill);
   background: var(--cc-l2);
   color: var(--cc-ink);
-  font-size: 12.5px;
   font-family: inherit;
 }
 .cc-ext .cc-note-reply-field::placeholder { color: var(--cc-mut); }
@@ -1105,4 +1093,242 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 .cc-ext .hover\:bg-blue-700:hover {
   background-color: transparent;
   filter: brightness(1.06);
+}
+
+/* ===========================================================================
+   TYPE SIZE — Small / Medium / Large, and the weight step
+   Dispatch PIXEL-S · Dennis 2026-09-17 10:41 / 10:42 / 10:45
+
+   Dennis: "normal size shall be 20% larger than now. Small shall be the
+   current size and large shall be 40% bigger than now."
+
+     small   1.00x   exactly the 0.8x density pass above — nothing moves
+     medium  1.20x   THE DEFAULT for everyone from this dispatch on
+     large   1.40x
+
+   ONE MULTIPLIER, APPLIED TO TYPE ONLY. `--cc-size` multiplies the font-size
+   tokens below and the two BAND HEIGHTS that have to follow taller type or
+   clip it (the 40px header row, the 26px tab strip). It deliberately does not
+   reach a single layout width, the panel width, or the dial pad: a side panel
+   is 360-400px and a type picker that reflows the column is a different
+   feature. Row heights are `min-height` floors already, so they grow with
+   their contents on their own.
+
+   THE GATE IS ON <html>, like the theme gate, because the boot script in
+   app/extension/layout.tsx stamps it before the React tree exists. `.cc-ext`
+   is still in every selector, so /app — which never renders that class —
+   cannot match, and the attribute is never stamped outside the extension
+   anyway. The `.cc-ext { --cc-size: 1 }` default is a SMALL fallback, never
+   medium: a bug that stamped the attribute one level too high must leave the
+   dashboard unchanged, not 20% larger.
+
+   WEIGHTS (Dennis 10:45: "make all text bolded out") step up exactly one
+   notch, --cc-w-1 through --cc-w-5. Contrast is a property of colour, not of
+   weight, and every body/label pair is measured in
+   scripts/ext-text-size-proof.mjs.
+   =========================================================================== */
+.cc-ext {
+  --cc-size: 1;
+
+  /* Type tokens, named by their SMALL value in px so the 0.8x pass above
+     stays readable against them. */
+  --cc-t-10: calc(10px * var(--cc-size));
+  --cc-t-105: calc(10.5px * var(--cc-size));
+  --cc-t-11: calc(11px * var(--cc-size));
+  --cc-t-115: calc(11.5px * var(--cc-size));
+  --cc-t-125: calc(12.5px * var(--cc-size));
+  --cc-t-13: calc(13px * var(--cc-size));
+  --cc-t-17: calc(17px * var(--cc-size));
+
+  /* Bands that carry type and therefore have to grow with it. */
+  --cc-hdr-h: calc(40px * var(--cc-size));
+  --cc-tabs-h: calc(26px * var(--cc-size));
+
+  /* Weight ladder, one step up from what this surface shipped. */
+  --cc-w-1: 500;   /* was 400 — inherited body */
+  --cc-w-2: 600;   /* was 500 — Tailwind font-medium */
+  --cc-w-3: 700;   /* was 600 — labels, row titles, font-semibold */
+  --cc-w-4: 750;   /* was 650 — the primary action */
+  --cc-w-5: 800;   /* was 700 — the one page title */
+
+  font-weight: var(--cc-w-1);
+}
+
+[data-cc-size=small] .cc-ext { --cc-size: 1; }
+[data-cc-size=medium] .cc-ext { --cc-size: 1.2; }
+[data-cc-size=large] .cc-ext { --cc-size: 1.4; }
+
+/* ---- the tokens applied ------------------------------------------------- */
+.cc-ext { font-size: var(--cc-t-125); }
+.cc-ext input,
+.cc-ext textarea { font-size: var(--cc-t-125); }
+
+.cc-ext .cc-ext-header { height: var(--cc-hdr-h); }
+.cc-ext [role="tablist"] { height: var(--cc-tabs-h); top: var(--cc-hdr-h); }
+.cc-ext [role="tablist"] [role="tab"] { font-size: var(--cc-t-115); }
+/* The tab glyph tracks its label — a 13px icon beside 16px type reads as a
+   mistake, and the strip has the height for it now. */
+.cc-ext [role="tablist"] [role="tab"] svg {
+  width: calc(13px * var(--cc-size));
+  height: calc(13px * var(--cc-size));
+}
+
+.cc-ext .cc-msg-view .text-sm,
+.cc-ext .cc-msg-view .text-base { font-size: var(--cc-t-125); line-height: 1.35; }
+.cc-ext .cc-msg-view .text-xs { font-size: var(--cc-t-11); line-height: 1.4; }
+.cc-ext .cc-msg-view .text-\[11px\] { font-size: var(--cc-t-105); }
+
+/* The stock Tailwind scale as it lands OUTSIDE .cc-msg-view — the header, the
+   dial column, the account menu. Two classes, so .cc-msg-view's three-class
+   rules above still win where both apply and Tailwind's one-class rules still
+   lose. Without this block the picker moved the inherited body text and left
+   every absolutely-sized utility at its Small value. */
+.cc-ext .text-\[10px\] { font-size: var(--cc-t-10); }
+.cc-ext .text-\[11px\] { font-size: var(--cc-t-11); }
+.cc-ext .text-\[12px\],
+.cc-ext .text-\[12\.5px\] { font-size: var(--cc-t-125); }
+.cc-ext .text-\[10\.5px\] { font-size: var(--cc-t-105); }
+.cc-ext .text-xs { font-size: var(--cc-t-11); }
+.cc-ext .text-sm,
+.cc-ext .text-base { font-size: var(--cc-t-125); }
+
+/* Auth surface */
+.cc-ext .cc-auth-title { font-size: var(--cc-t-17); font-weight: var(--cc-w-5); }
+.cc-ext .cc-auth-google { font-size: var(--cc-t-125); font-weight: var(--cc-w-3); }
+.cc-ext .cc-auth-or { font-size: var(--cc-t-105); }
+.cc-ext .cc-auth-label { font-size: var(--cc-t-115); font-weight: var(--cc-w-3); }
+.cc-ext .cc-auth-input { font-size: var(--cc-t-125); }
+.cc-ext .cc-auth-submit { font-size: var(--cc-t-13); font-weight: var(--cc-w-4); }
+.cc-ext .cc-auth-note { font-size: var(--cc-t-115); }
+.cc-ext .cc-auth-links { font-size: var(--cc-t-115); }
+.cc-ext .cc-auth-foot { font-size: var(--cc-t-105); }
+
+/* Alerts cards */
+.cc-ext .cc-note-glyph { font-size: var(--cc-t-10); }
+.cc-ext .cc-note-app { font-size: var(--cc-t-105); font-weight: var(--cc-w-3); }
+.cc-ext .cc-note-time { font-size: var(--cc-t-105); }
+.cc-ext .cc-note-title { font-size: var(--cc-t-125); font-weight: var(--cc-w-3); }
+.cc-ext .cc-note-body { font-size: var(--cc-t-11); }
+.cc-ext .cc-note-reply { font-size: var(--cc-t-115); font-weight: var(--cc-w-3); }
+.cc-ext .cc-note-reply-field { font-size: var(--cc-t-125); }
+
+/* ---- weights on the shared Tailwind utilities --------------------------- */
+/* Two classes each, so these outrank Tailwind's single-class rules without
+   !important and cannot escape .cc-ext — /app keeps its own weights. */
+.cc-ext .font-normal { font-weight: var(--cc-w-1); }
+.cc-ext .font-medium { font-weight: var(--cc-w-2); }
+.cc-ext .font-semibold { font-weight: var(--cc-w-3); }
+.cc-ext .font-bold { font-weight: var(--cc-w-5); }
+
+/* ---- the account menu grows with its own type --------------------------- */
+/* w-[210px] is pinned in the TSX because on /app-like surfaces a menu that
+   sizes to content jitters as the account state line changes. Inside .cc-ext
+   the type inside it now scales, so the box has to: at Large the three
+   "Small / Medium / Large" segments do not fit 210px and the labels wrap into
+   a second line inside a 28px button. 210 x 1.4 = 294px, which still clears
+   the 360px panel with the menu right-aligned. This is a POPOVER width, not a
+   column width — nothing in the scrolling layout moves. */
+.cc-ext .cc-menu { width: calc(210px * var(--cc-size)); }
+/* A segmented control's labels never wrap; it grows or it truncates. */
+.cc-ext .cc-menu [role="menuitemradio"] { white-space: nowrap; }
+
+/* ---- the header row fits at 360px x Large (addendum (a)) ---------------- */
+/*
+   THE ACTUAL BUG, found by the harness and worth writing down: the header is
+   a flex row whose middle slot is `flex min-w-0 flex-1`, but min-width:0 was
+   only on the SLOT, not on ConnectionStatus inside it. A flex item's default
+   min-width is auto, i.e. min-content — so the pill plus its reset button had
+   a 173px floor inside a 159px slot and simply painted 14px past the panel
+   edge. It never showed before because the header used to carry an 18px mark
+   where it now carries the 151px lockup; the lockup did not cause the
+   overflow, it revealed it.
+
+   One line fixes the class: the slot's children may shrink, which lets the
+   pill's own `truncate` finally engage. The reset button stays flex-shrink-0
+   and keeps every pixel.
+
+   Dennis's addendum (a) rule — "if it cannot fit, wordmark shrinks before
+   anything wraps" — is the BACKSTOP behind it, not the fix: the lockup is now
+   the one shrinkable object in the row (mark pinned, wordmark on an
+   aspect-ratio, see CcLockup), so a longer device name than any tested here
+   takes pixels off the wordmark rather than off the panel. */
+/* THE DEFICIT HAS TO REACH THE FLEX ROW, which is the non-obvious half.
+   ConnectionStatus's lobby pill ("Phone nearby · Connect · reset") is made of
+   flex-shrink-0 words: its min-content is ~194px at Large, and NOTHING in it
+   can truncate. The slot it sits in carries Tailwind's `min-w-0`, which caps
+   the slot at whatever is left over and lets the pill spill silently past the
+   panel edge — 5px at 360 x Large, and the user's only clue is a horizontal
+   scrollbar. Restoring `min-width: auto` on the slot propagates that real
+   floor up to the header row, so flexbox has a deficit to resolve instead of
+   an overflow to hide. */
+.cc-ext .cc-ext-header .cc-ext-conn { min-width: auto; }
+
+/* ...and the brand slot is no longer what resolves it. PIXEL-S2 (a) dropped
+   the wordmark from this header (Chrome's own title strip carries the name),
+   so the slot is now a bare 18px mark - ~35px wide, fixed, and never the
+   thing that has to give. The old `flex: 0 1 auto; min-width: 72px` existed
+   to let the wordmark shrink before anything wrapped; with no wordmark to
+   shrink, a shrinkable brand slot would only squash the mark. It is pinned
+   instead, and the ~37px it hands back go to the pill, which truncates. */
+.cc-ext .cc-ext-header .cc-ext-lockup { flex: 0 0 auto; }
+
+/* ---- hit targets ------------------------------------------------------- */
+/* Header controls never get SMALLER as the type grows. The floor is stated
+   rather than implied so a future density edit trips over it. Two controls on
+   this surface are below 24px WIDE and were before this dispatch — the 16px
+   "Reset lobby"/disconnect button inside ConnectionStatus and the 22px
+   avatar. Both live in a mouse-and-keyboard-only panel, both are reported in
+   the harness, and widening them is a ConnectionStatus change this dispatch
+   does not own. */
+.cc-ext .cc-ext-header button { min-height: 24px; }
+
+/* ===========================================================================
+   TEXTS — one card per conversation
+   Dennis 2026-09-17 10:51: "in the text tab in the extension, i would like to
+   have the same pill design around each message chat like the one we use for
+   alerts."
+
+   Same move Alerts made in PIXEL-Q: the list stops being ONE card with
+   hairline-separated rows and becomes a stack of L3 cards floating on L2.
+   Radius, padding, hairline and hover all come from the same tokens the
+   notification card uses, so the two tabs cannot drift.
+
+   The marker is a SECOND class on the same <ul>, not a new component: the
+   shared PhoneModeShell keeps one list implementation and /app keeps the flat
+   divided list it has always had, because every rule here is under .cc-ext.
+   =========================================================================== */
+.cc-ext .cc-list.cc-card-list {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  padding: 8px 8px 10px;
+}
+/* divide-y draws the rule this design replaces with a gap. */
+.cc-ext .cc-list.cc-card-list > * + * { border-top-width: 0; }
+
+.cc-ext .cc-card-list > li {
+  background: var(--cc-l3);
+  border: 1px solid var(--cc-hair-card);
+  border-radius: var(--r-card);
+  margin-bottom: 7px;
+  overflow: hidden;
+  transition: border-color 0.12s ease-out;
+}
+.cc-ext .cc-card-list > li:last-child { margin-bottom: 0; }
+
+/* The row button fills its card, so hover and focus highlight the card rather
+   than a square inside it. */
+.cc-ext .cc-card-list > li > button {
+  border-radius: var(--r-card);
+  padding: 7px 9px;
+}
+.cc-ext .cc-card-list > li:hover { border-color: var(--cc-chip-bd); }
+.cc-ext .cc-card-list > li:has(> button:focus-visible) { border-color: var(--cc-chip-bd); }
+
+/* The empty state is not an object — it is the absence of them. */
+.cc-ext .cc-card-list > li.cc-card-list-empty {
+  background: transparent;
+  border: 0;
+  margin: 0;
 }

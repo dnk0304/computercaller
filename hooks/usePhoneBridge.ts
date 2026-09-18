@@ -16,6 +16,7 @@ import type {
 import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
 import { isPlaceholderAddress, evictHealedPlaceholders } from '@/lib/messagePlaceholders';
 import { normalizePayload } from '@/lib/normalizePayload';
+import { applyNotifEvents, type NotifEvent } from '@/lib/notificationMerge';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 // E2E-P2: encrypted mode. All of it lives in useE2e/phoneE2e/lib/e2e — the
 // footprint HERE is five call sites, deliberately, so the Monday rebase of
@@ -42,6 +43,9 @@ import {
   type PermissionKey,
   type PermissionsStatus,
 } from '@/lib/permissionsStatus';
+import { decideAutoSync, type AutoSyncDecision } from '@/lib/autoSync';
+import { readSyncRangeDaysLastKnown } from '@/lib/syncRangePref';
+import { getLastKnownLimits } from '@/hooks/useEntitlement';
 
 const HAS_SYNCED_KEY = 'dnkdialer_has_synced';
 // Epoch-ms of the next UTC midnight — the free-tier daily-counter reset
@@ -163,38 +167,14 @@ export interface PhoneNotification {
   replyKey: string;
   notificationKey: string;
   read: boolean;
-}
-
-/**
- * Composite dedup window for mirrored phone notifications. Mirrors the SMS
- * MESSAGE_COMPOSITE_WINDOW_MS (10s) tolerance. The same logical messaging-app
- * notification that lands twice (group-summary + per-conversation child, or
- * cancel+repost on rapid delivery) always arrives within seconds of itself;
- * two genuinely-distinct messages with the same body in the same app are
- * virtually never <10s apart.
- */
-const NOTIFICATION_COMPOSITE_WINDOW_MS = 10000;
-
-/**
- * Composite identity signature for a mirrored phone notification:
- * packageName + normalized title + normalized body.
- *
- * Root-cause context (2026-06-18 duplicate-notification-card bug): WhatsApp
- * and other MessagingStyle apps post a group-SUMMARY notification AND a
- * per-conversation CHILD for the same logical message. Android forwards both
- * (the listener filter excludes neither), and both surface the SAME last
- * message via EXTRA_MESSAGES.last() → identical title+body but DIFFERENT
- * sbn.key. The web's primary dedup is keyed only on notificationKey, so the
- * two distinct keys produced TWO identical cards. This signature collapses
- * them: same package + same title + same body within the window = one card.
- *
- * Title/body are trimmed + collapsed-whitespace to absorb OEM formatting
- * noise. packageName is part of the key so two different apps that happen to
- * post identical text never merge.
- */
-function notificationCompositeSig(n: PhoneNotification): string {
-  const norm = (s: string) => (s || '').trim().replace(/\s+/g, ' ');
-  return `${n.packageName}|${norm(n.title)}|${norm(n.body)}`;
+  /**
+   * True when this card arrived as part of a v58 SYNC BACKFILL — the phone
+   * replaying its current shade — rather than as live news. Carried on the card
+   * (not just consumed at merge time) because anything that ANNOUNCES a new
+   * notification has to be able to tell the two apart: a sync of twenty cards
+   * must not fire twenty toasts for things the user already saw on the phone.
+   */
+  backfill?: boolean;
 }
 
 // Module-level icon cache — keyed by packageName, outside React state so
@@ -807,10 +787,7 @@ export function usePhoneBridge() {
 
   // Notification event buffer — flushed to React state every 200ms to batch
   // re-renders instead of re-rendering on every WebSocket notification event.
-  const notifPendingRef = useRef<Array<
-    | { type: 'add'; notif: PhoneNotification }
-    | { type: 'remove'; key: string }
-  >>([]);
+  const notifPendingRef = useRef<NotifEvent[]>([]);
 
   // WebSocket ref. Dispatch #32 (2026-05-25): reconnectTimeoutRef and
   // phoneUrlRef are GONE. There is no auto-reconnect anymore — if the relay
@@ -1107,6 +1084,29 @@ export function usePhoneBridge() {
   // + double GET_CALL_LOGS arriving simultaneously → freeze/crash.
   const quickSyncScheduledRef = useRef<boolean>(false);
 
+  // ── FORGE-U (2026-09-17): auto-sync on connect ───────────────────────────
+  // Dennis: "user doesnt need to click sync everytime it re-connects. It will
+  // just automatically show the bar that is loading messages, contacts and
+  // calls."
+  //
+  // The idempotency key is (pair epoch, phone). `pairEpochRef` is bumped by the
+  // two places a pair genuinely ENDS — the PAIRING_TERMINATED frame and the
+  // user's own leaveActive — so every reconnect that re-forms the SAME pair
+  // reuses the key and `decideAutoSync` refuses to re-pull, while a fresh
+  // Connect+Accept after a teardown gets a new key and syncs. The device name
+  // is folded in so swapping phones without a terminate frame (possible on a
+  // relay-side room reuse) still reads as a new pair.
+  //
+  // This is deliberately NOT "have we synced this browser session": that was
+  // the old `dnkdialer_has_synced` idea, and it is wrong in the direction that
+  // costs data — a genuine re-pair after a teardown has an empty cache and must
+  // re-pull. Epoch-scoped is the narrowest rule that is still correct.
+  const pairEpochRef = useRef<number>(0);
+  const autoSyncedEpochKeyRef = useRef<string | null>(null);
+  // The plan quietly shortened the requested window — one calm line in the UI
+  // (SyncProgressBar), never a modal. Cleared when the run ends.
+  const [syncLimitedByPlan, setSyncLimitedByPlan] = useState(false);
+
   // After a successful sync, don't auto-show the sync panel on reconnect —
   // the user can still open it manually via the Sync button. Persisted to
   // localStorage so it survives relay reconnects and page refreshes within
@@ -1215,6 +1215,51 @@ export function usePhoneBridge() {
     }
   };
 
+  /**
+   * Tear down an auto-sync run (the quiet progress bar, its scoped flags and
+   * its safety timeout). Idempotent — called from chunk-complete, cancel, the
+   * disconnect reset, and the run's own timeout.
+   */
+  const endAutoSyncRun = useCallback(() => {
+    autoConnectSyncInFlightRef.current = false;
+    autoConnectDoneRef.current = { messages: false, callLogs: false };
+    if (autoConnectTimeoutRef.current) {
+      clearTimeout(autoConnectTimeoutRef.current);
+      autoConnectTimeoutRef.current = null;
+    }
+    // Issue 1: clear the QUIET flag, not isSyncing — the auto-connect run
+    // never sets isSyncing anymore, and clearing isSyncing here would kill
+    // the manual modal if a quicksync completion raced a manual sync.
+    setQuietSyncing(false);
+    setSyncLimitedByPlan(false);
+  }, []);
+
+  /**
+   * Write the auto-sync frames to the socket with the SAME 300ms stagger the
+   * manual full sync uses. Android runs each of these as a content-provider
+   * query; three at once is the contention that times out a large database,
+   * which is why syncData has always staggered them and why this does too.
+   *
+   * Every send re-checks readyState: a 30-day pull is dispatched over ~600ms
+   * and a link that flaps inside that window must drop the remaining frames,
+   * not throw on a closing socket.
+   *
+   * This is the ONLY place the auto-sync path writes to the wire, and it
+   * writes exactly what lib/autoSync.ts built — so the relay's
+   * gateBrowserSyncFrame sees the identical frame shape it already gates, and
+   * the harness asserts the same bytes. No side channel (spec §13.7: GET_* stay
+   * mandatory-plaintext; the responses are what E2E seals).
+   */
+  const sendAutoSyncFrames = useCallback((frames: string[]) => {
+    frames.forEach((frame, i) => {
+      const send = () => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(frame);
+      };
+      if (i === 0) send();
+      else setTimeout(send, i * 300);
+    });
+  }, []);
+
   // Handle incoming message
   const handleMessage = useCallback((data: string) => {
     const parsed = parseMessage(data);
@@ -1277,18 +1322,9 @@ export function usePhoneBridge() {
     // auto-connect run is silent-completion by design (only manual syncData
     // toasts). Idempotent: safe to call from chunk-complete, cancel, and the
     // disconnect reset.
-    const endAutoConnectSync = () => {
-      autoConnectSyncInFlightRef.current = false;
-      autoConnectDoneRef.current = { messages: false, callLogs: false };
-      if (autoConnectTimeoutRef.current) {
-        clearTimeout(autoConnectTimeoutRef.current);
-        autoConnectTimeoutRef.current = null;
-      }
-      // Issue 1: clear the QUIET flag, not isSyncing — the auto-connect run
-      // never sets isSyncing anymore, and clearing isSyncing here would kill
-      // the manual modal if a quicksync completion raced a manual sync.
-      setQuietSyncing(false);
-    };
+    // FORGE-U: hoisted to hook level (endAutoSyncRun) so the "Sync now" action
+    // in Settings tears the same run down the same way. Body unchanged.
+    const endAutoConnectSync = endAutoSyncRun;
 
     switch (type) {
       // ---------- Single-session kick / server restart control plane ----------
@@ -1497,7 +1533,15 @@ export function usePhoneBridge() {
         // quiet-sync banner. `resumed` is set ONLY by the relay's
         // tryAutoResume — handleAcceptPairing never sets it, so a genuine
         // first connect keeps the visible sync exactly as today.
-        const isResume = payload.resumed === true;
+        // FORGE-U (2026-09-17): the resume branch now turns on `held`, not on
+        // `resumed` alone. A relay-confirmed resume where survivorHeld=FALSE
+        // means the pair was re-formed but nothing was held — the client's
+        // caches are empty and a gap-sized backfill would leave the user
+        // staring at a blank thread list. That case now takes the auto-sync
+        // path below, same as a fresh pair. survivorHeld=TRUE (a panel hold,
+        // data still in memory) keeps the silent backfill exactly as shipped.
+        // `held` absent is treated as held — see lib/autoSync.ts.
+        const isResume = payload.resumed === true && payload.held !== false;
         const heldForMs =
           typeof payload.gapMs === 'number' && Number.isFinite(payload.gapMs) && payload.gapMs > 0
             ? payload.gapMs
@@ -1554,56 +1598,89 @@ export function usePhoneBridge() {
             }
 
             {
-              const since6h = Date.now() - 6 * 60 * 60 * 1000;
+              // ── FORGE-U: AUTO-SYNC ON CONNECT ─────────────────────────────
+              // Was: a silent 6-hour catch-up, with the real sync left to the
+              // Sync button / SyncSetupPanel the user had to click on every
+              // reconnect. Dennis (2026-09-17 11:02): "That way user doesnt
+              // need to click sync everytime it re-connects."
+              //
+              // Now: contacts + messages + call logs, 30 days back by default,
+              // through the SAME frames and the SAME 300ms stagger the manual
+              // full sync uses (syncData) — Android gets three staggered
+              // content-provider queries, not three concurrent ones, which is
+              // what times out large databases. The window is the user's "Sync
+              // range" setting floored by the tier; the relay's
+              // gateBrowserSyncFrame clamps it again and is the real authority.
+              const epochKey = `${payload.deviceName ?? 'phone'}#${pairEpochRef.current}`;
+              const decision: AutoSyncDecision = decideAutoSync({
+                resumed: payload.resumed === true,
+                held: payload.held === true ? true : payload.held === false ? false : undefined,
+                epochKey,
+                lastEpochKey: autoSyncedEpochKeyRef.current,
+                limits: getLastKnownLimits(),
+                userDays: readSyncRangeDaysLastKnown(),
+              });
+
+              if (!decision.run) {
+                console.log('[PhoneBridge] auto-sync skipped —', decision.reason, { epochKey });
+                return;
+              }
+              autoSyncedEpochKeyRef.current = epochKey;
+
               // Reset chunk buffers — other quick-sync entry points
               // (syncAll, getCallLogs, manual quick sync) do this; this
               // PAIRING_ACTIVE path historically did not, so a prior
               // sync's leftover chunks could accumulate and produce
               // duplicate rows on merge. (Forge, 2026-06-01.)
+              contactsBufferRef.current = [];
               messagesBufferRef.current = [];
               callLogsBufferRef.current = [];
 
-              // Issue 2 (Forge 2026-06-11): make the count VISIBLE during this
-              // auto-connect quicksync. We turn ON the progress UI and scope a
-              // flag so the MESSAGES_CHUNK / CALL_LOGS_CHUNK handlers populate
-              // counts for THIS merge run only. We do NOT call syncData() and
-              // do NOT flip syncModeRef to 'replace' — WHAT gets pulled is
-              // unchanged (since6h, merge mode). Only the visual turns on.
+              // The count stays VISIBLE for this run (Issue 2, Forge
+              // 2026-06-11): the progress UI is turned on and a scoped flag
+              // makes the CHUNK handlers populate counts for THIS merge run
+              // only. We still do NOT flip syncModeRef to 'replace' — an
+              // auto-sync MERGES, so a reconnect can never wipe a thread the
+              // phone happens not to return this time.
               //
-              // Run = messages + callLogs (contacts are NOT fetched by the
-              // quicksync). Seed contacts complete=true / total=0 so the bar's
-              // contacts row reads "done", not a hung spinner — mirrors
-              // syncData's `complete: !opts.contacts` convention.
+              // The contacts row is only seeded "done" when we are NOT asking
+              // for contacts (a tier with contactSync:false); otherwise it is
+              // a real pending row, because now we do ask.
               autoConnectSyncInFlightRef.current = true;
               autoConnectDoneRef.current = { messages: false, callLogs: false };
               setSyncProgress({
-                contacts: { done: 0, total: 0, complete: true },
-                // total comes from the chunk's own 6h-window total_count when
-                // it lands; until then 0 → the bar shows an honest spinner.
+                contacts: { done: 0, total: 0, complete: !decision.contacts },
+                // total comes from the chunk's own window total_count when it
+                // lands; until then 0 → the bar shows an honest spinner.
                 messages: { done: 0, total: syncEstimate?.messages?.total ?? 0, complete: false },
                 callLogs: { done: 0, total: syncEstimate?.callLogs?.total ?? 0, complete: false },
               });
               setSyncTimedOut(false);
+              setSyncLimitedByPlan(decision.clampedByPlan);
               // Issue 1: QUIET signal, not isSyncing — the auto-connect run
               // shows a subtle inline banner (SyncProgressBar quiet branch),
               // never the big floating modal. isSyncing(true) stays exclusive
               // to the manual syncData path.
               setQuietSyncing(true);
               // Dedicated safety timeout — NOT syncTimeoutRef (chunk handlers
-              // clear that one on every chunk). If no completion in 15s (e.g. a
-              // link flap mid-run), tear the bar down so it never sticks.
+              // clear that one on every chunk). A 30-day pull over a slow link
+              // is legitimately slower than the old 6-hour one, so the bar gets
+              // 45s (the manual sync's budget) before it is torn down; 15s was
+              // sized for a window an order of magnitude smaller.
               if (autoConnectTimeoutRef.current) clearTimeout(autoConnectTimeoutRef.current);
               autoConnectTimeoutRef.current = setTimeout(() => {
                 autoConnectTimeoutRef.current = null;
                 if (autoConnectSyncInFlightRef.current) endAutoConnectSync();
-              }, 15000);
+              }, 45000);
 
-              wsRef.current.send(`GET_MESSAGES:${JSON.stringify({ since: since6h })}`);
-              setTimeout(() => {
-                if (wsRef.current?.readyState === WebSocket.OPEN) {
-                  wsRef.current.send(`GET_CALL_LOGS:${JSON.stringify({ since: since6h })}`);
-                }
-              }, 300);
+              console.log(
+                '[PhoneBridge] auto-sync on connect —',
+                decision.days,
+                'days since',
+                new Date(decision.since).toISOString(),
+                { contacts: decision.contacts, clampedByPlan: decision.clampedByPlan, epochKey }
+              );
+              sendAutoSyncFrames(decision.frames);
             }
           }, 2000);
         }
@@ -1699,6 +1776,12 @@ export function usePhoneBridge() {
         setPhoneNotifications([]);
         estimateRequestedRef.current = false;
         quickSyncScheduledRef.current = false;
+        // FORGE-U: the pair genuinely ENDED. Bump the epoch so the NEXT
+        // PAIRING_ACTIVE is a new (pair, epoch) and auto-syncs — the caches
+        // were just wiped three lines below, so a reconnect that reused the
+        // old key would leave the user with an empty app and no way back
+        // except the button this dispatch removed.
+        pairEpochRef.current += 1;
         // Issue 2: a disconnect mid-quicksync must tear the bar down and clear
         // the in-flight flag so a reconnect starts clean (and the bar isn't
         // left stuck on a half-finished auto-connect run).
@@ -2683,19 +2766,33 @@ export function usePhoneBridge() {
         if (payload.icon && payload.packageName) {
           _notifIconCache.set(payload.packageName, payload.icon);
         }
+        // v58 BACKFILL. On sync the phone replays everything currently in its
+        // shade as ordinary PHONE_NOTIFICATION frames carrying `backfill:true`
+        // and `postedAt` (StatusBarNotification.postTime). One serializer, one
+        // frame type — only the two extra fields distinguish a replay from
+        // news, so an older APK that sends neither keeps today's behaviour
+        // exactly (`backfill` absent ⇒ falsy ⇒ live path).
+        const backfill = payload.backfill === true;
         const notif: PhoneNotification = {
           id: payload.id ?? `notif_${Date.now()}`,
           appName: payload.appName ?? payload.packageName ?? 'Unknown',
           packageName: payload.packageName ?? '',
           title: payload.title ?? '',
           body: payload.body ?? '',
-          timestamp: payload.timestamp ?? Date.now(),
+          // postedAt is the phone's own clock reading for WHEN the notification
+          // was posted, which for a replay is minutes or hours before it
+          // arrived here. Falling back to `timestamp` and then to arrival time
+          // keeps a backfill frame from an APK that omitted postedAt merging at
+          // "now" rather than crashing — it just lands at the top, as today.
+          timestamp: (backfill ? payload.postedAt : undefined)
+            ?? payload.timestamp ?? Date.now(),
           hasReply: payload.hasReply === true,
           replyKey: payload.replyKey ?? '',
           notificationKey: payload.notificationKey ?? '',
           read: false,
+          backfill,
         };
-        notifPendingRef.current.push({ type: 'add', notif });
+        notifPendingRef.current.push({ type: 'add', notif, backfill });
         break;
       }
 
@@ -2841,7 +2938,10 @@ export function usePhoneBridge() {
     // clearAudioProbeTimer (CP2) is a useCallback with an EMPTY dep array —
     // stable for the lifetime of the hook — so listing it here does not
     // re-create handleMessage and does not reopen the loop described above.
-  }, [startCallTimer, stopCallTimer, clearAudioProbeTimer]);
+    // sendAutoSyncFrames (FORGE-U) is likewise an EMPTY-dep useCallback —
+    // stable for the hook's lifetime, so listing it changes nothing about how
+    // often handleMessage is re-created.
+  }, [startCallTimer, stopCallTimer, clearAudioProbeTimer, sendAutoSyncFrames, endAutoSyncRun]);
 
   // Mint a fresh 30s relay-ticket. Stable callback — used by both the
   // initial mount effect and the reconnect scheduler. Returns the new
@@ -3251,6 +3351,9 @@ export function usePhoneBridge() {
     setPhoneNotifications([]);
     estimateRequestedRef.current = false;
     quickSyncScheduledRef.current = false;
+    // FORGE-U: same reasoning as the PAIRING_TERMINATED bump — the user ended
+    // this pair, so the next one is a new epoch and must auto-sync.
+    pairEpochRef.current += 1;
     clearAllCalls();
     setContacts([]);
     setMessages([]);
@@ -4074,32 +4177,69 @@ export function usePhoneBridge() {
   const dismissSyncPanel = useCallback(() => setShowSyncPanel(false), []);
   const openSyncPanel    = useCallback(() => setShowSyncPanel(true),  []);
 
-  // Auto-open Full Sync on lobbyState→'active' edge (dispatch #34 item 8).
+  /**
+   * "Sync now" — the explicit re-pull that lives in Settings beside the Sync
+   * range control (dispatch FORGE-U). Same frames, same stagger, same quiet
+   * progress bar as the automatic run; the only difference is that it is
+   * unconditional, because the user asked.
+   *
+   * Changing the range setting deliberately does NOT call this: scrubbing
+   * through three options would fire three full syncs at the phone. This button
+   * is how a range change is applied.
+   *
+   * Returns false when there is no open socket, so the caller can stay silent
+   * rather than spin a bar for a request that never left.
+   */
+  const syncNow = useCallback((): boolean => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+    const decision = decideAutoSync({
+      resumed: false,
+      epochKey: 'manual',
+      lastEpochKey: null,
+      limits: getLastKnownLimits(),
+      userDays: readSyncRangeDaysLastKnown(),
+    });
+    if (!decision.run) return false;
+
+    contactsBufferRef.current = [];
+    messagesBufferRef.current = [];
+    callLogsBufferRef.current = [];
+    autoConnectSyncInFlightRef.current = true;
+    autoConnectDoneRef.current = { messages: false, callLogs: false };
+    setSyncProgress({
+      contacts: { done: 0, total: 0, complete: !decision.contacts },
+      messages: { done: 0, total: 0, complete: false },
+      callLogs: { done: 0, total: 0, complete: false },
+    });
+    setSyncTimedOut(false);
+    setSyncLimitedByPlan(decision.clampedByPlan);
+    setQuietSyncing(true);
+    if (autoConnectTimeoutRef.current) clearTimeout(autoConnectTimeoutRef.current);
+    autoConnectTimeoutRef.current = setTimeout(() => {
+      autoConnectTimeoutRef.current = null;
+      if (autoConnectSyncInFlightRef.current) endAutoSyncRun();
+    }, 45000);
+    console.log('[PhoneBridge] Sync now —', decision.days, 'days since', new Date(decision.since).toISOString());
+    sendAutoSyncFrames(decision.frames);
+    return true;
+  }, [sendAutoSyncFrames, endAutoSyncRun]);
+
+  // FORGE-U (2026-09-17) — the auto-open of the Full Sync panel on the
+  // lobbyState→'active' edge is GONE, and with it the Sync step of the connect
+  // flow on BOTH surfaces.
   //
-  // REVERSAL of dispatch #32's "no auto-modal" stance — see the comment
-  // block at the top of this file (around line 25) for the rationale shift.
-  // Dennis QA: "the full sync should also auto-pop up when we connect."
+  // Dennis (11:02): "That way user doesnt need to click sync everytime it
+  // re-connects. It will just automatically show the bar that is loading
+  // messages, contacts and calls." A panel that pops on connect and asks the
+  // user to press Start is exactly the click he is describing, so the panel no
+  // longer opens itself — the auto-sync in the PAIRING_ACTIVE handler does the
+  // pull and the existing SyncProgressBar is the whole of the UI.
   //
-  // Edge-trigger semantics: we ONLY fire on the transition INTO 'active',
-  // not on every render while already active. Without the ref, the effect
-  // would still happen to only fire on the dep change — but the ref makes
-  // the intent explicit and survives future refactors / lobbyState shape
-  // changes. Dismiss-then-stay-dismissed is enforced by the fact that
-  // re-pops require a fresh lobby→active transition, which only happens
-  // after the relay drops the pair and a new Connect+Accept lands.
-  //
-  // The panel itself (SyncSetupPanel) is mounted globally at
-  // app/app/layout.tsx, so this auto-open works in both desktop mode AND
-  // Phone Mode — Dennis's ask is universal "when we connect", not "when we
-  // connect in desktop mode".
-  const prevLobbyStateRef = useRef<LobbyState | null>(null);
-  useEffect(() => {
-    if (prevLobbyStateRef.current !== 'active' && lobbyState === 'active') {
-      console.log('[PhoneBridge] lobbyState→active edge — auto-opening Full Sync panel');
-      setShowSyncPanel(true);
-    }
-    prevLobbyStateRef.current = lobbyState;
-  }, [lobbyState]);
+  // SyncSetupPanel is NOT deleted: it stays mounted (app/app/layout.tsx,
+  // ExtensionProviders) and is still reachable by explicit user action —
+  // `openSyncPanel` from /app/settings' "Run Full Sync", for the user who wants
+  // a wider one-off window than their Sync range. Only the AUTOMATIC open is
+  // removed, which is the part that made it part of connecting.
 
   /**
    * Quick background sync — fetches only the last 6 hours of messages and
@@ -4566,41 +4706,9 @@ export function usePhoneBridge() {
       const pending = notifPendingRef.current;
       if (pending.length === 0) return;
       notifPendingRef.current = [];
-      setPhoneNotifications(prev => {
-        let result = [...prev];
-        for (const event of pending) {
-          if (event.type === 'add') {
-            // Dedup on TWO axes (remove any matching prior card, prepend new):
-            //   1. PRIMARY — exact notificationKey match. Collapses a true
-            //      in-place MessagingStyle update (same sbn.key re-posted).
-            //   2. CONTENT-IDENTITY (2026-06-18 duplicate-card fix) — same
-            //      package + normalized title + body within the composite
-            //      window. Collapses the group-summary-vs-child / cancel-repost
-            //      dup, where one logical WhatsApp message is forwarded under
-            //      TWO different sbn.keys (so axis 1 alone can't catch it).
-            // Newest frame wins the rendered slot (prepended); a genuinely
-            // different body in the same thread keeps its own card (the body
-            // component of the signature prevents over-collapsing).
-            const incomingSig = notificationCompositeSig(event.notif);
-            const incomingTs = event.notif.timestamp;
-            result = result.filter(n =>
-              n.notificationKey !== event.notif.notificationKey
-              && !(
-                notificationCompositeSig(n) === incomingSig
-                && Math.abs((n.timestamp ?? 0) - incomingTs) <= NOTIFICATION_COMPOSITE_WINDOW_MS
-              )
-            );
-            result = [event.notif, ...result];
-          } else {
-            // Removal stays keyed on the EXACT dismissed notificationKey — a
-            // real NOTIFICATION_REMOVED carries the precise sbn.key. Do NOT
-            // widen removal to the content composite (would over-remove a
-            // sibling card on a single dismissal).
-            result = result.filter(n => n.notificationKey !== event.key);
-          }
-        }
-        return result.slice(0, 50);
-      });
+      // The merge rules (both dedup axes, backfill ordering, the 50-card cap)
+      // live in lib/notificationMerge.ts and are unit-tested there.
+      setPhoneNotifications(prev => applyNotifEvents(prev, pending));
     }, 200);
     return () => window.clearInterval(id);
   }, []); // stable — no deps needed, setPhoneNotifications is a stable useState setter
@@ -4674,6 +4782,9 @@ export function usePhoneBridge() {
     // SyncProgressBar renders a thin passive top banner off this — never the
     // floating modal (that stays gated on isSyncing / manual syncData).
     quietSyncing,
+    // FORGE-U: the plan shortened the window this run asked for. One quiet
+    // line in SyncProgressBar ("Sync limited by your plan") — never a modal.
+    syncLimitedByPlan,
     showSyncPanel,
     syncEstimate,
     syncTimedOut,
@@ -4743,6 +4854,8 @@ export function usePhoneBridge() {
     syncData,
     dismissSyncPanel,
     openSyncPanel,
+    // FORGE-U: explicit re-pull with the current Sync range, from Settings.
+    syncNow,
     quickSync,
     // Sync preview (2026-05-26) — re-fires GET_SYNC_ESTIMATE with optional
     // since/until/types so the SyncSetupPanel can show live counts as the

@@ -405,7 +405,50 @@ function startRelay(httpServer) {
   // gate by URL path. This lets us mount the relay at /relay on the SAME
   // httpServer Next.js uses — no separate port to expose through Coolify,
   // no cross-origin LAN-IP gymnastics, single WSS endpoint over :443 in prod.
-  const wss = new WebSocketServer({ noServer: true });
+  // FORGE-V (2026-09-17) — explicit inbound frame cap.
+  //
+  // Without `maxPayload` ws@8.21 falls back to its 100 MiB default, so a peer
+  // that survives the auth gate could push 100 MiB frames that we materialise
+  // via `data.toString()` (and run through frame redaction/logging) BEFORE any
+  // tier or role gate looks at them. That is a free memory + CPU amplifier on
+  // the relay for every authenticated socket.
+  //
+  // Measured largest LEGITIMATE frame today:
+  //   MMS_MEDIA_CHUNK — 65536 base64 chars per slice + a ~200 B envelope
+  //     (dnkdialer-android/app/src/main/java/com/dnkdialer/companion/
+  //      PhoneService.kt:3988 `val chunkSize = 65536`)
+  //   Everything else is smaller and page-bounded: CONTACTS_CHUNK 50/page
+  //     (PhoneService.kt:3886), MESSAGES_CHUNK 25/page (:3948),
+  //     CALL_LOGS_CHUNK 25/page (:3911) — all via sendChunked (:3611).
+  //
+  // 1 MiB = ~16x the largest real frame. Generous headroom for a future page
+  // size bump or an unusually fat 25-row message page, while cutting the
+  // worst-case single-frame allocation by 100x. Over-cap frames are rejected
+  // by the ws receiver itself, before any application code touches the bytes:
+  // ws emits 'error' (RangeError) and closes the socket with 1009.
+  const RELAY_MAX_PAYLOAD_BYTES = 1024 * 1024; // 1 MiB
+  const wss = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_PAYLOAD_BYTES });
+
+  /**
+   * FORGE-V — one redacted line when a socket dies because it sent a frame
+   * over RELAY_MAX_PAYLOAD_BYTES.
+   *
+   * NOTE the signal is the 'error' event, NOT close code 1009. We are the
+   * RECEIVER: ws raises a RangeError on our receiver, *sends* a 1009 close
+   * frame and tears the socket down without waiting for the echo — so the
+   * offender sees 1009, but our own 'close' event fires with 1006 (no close
+   * frame received). Gating this on `ws.closeCode === 1009` would never fire.
+   * Verified against ws@8.21 in tests/ws-maxpayload.test.mjs (PART 1).
+   *
+   * The offending bytes are discarded by the receiver and never reach
+   * application code, so there is nothing to leak here and nothing is logged
+   * beyond role + redacted room. Called from the existing 'close' handlers on
+   * both peer paths.
+   */
+  function logIfOverMaxPayload(ws, token) {
+    if (!ws.overMaxPayload) return;
+    console.log(`[Relay] frame over maxPayload from role=${ws.role || 'unknown'} room=${redactToken(token)}`);
+  }
 
   // token -> Room
   const rooms = new Map();
@@ -1921,6 +1964,15 @@ function startRelay(httpServer) {
   }
 
   wss.on('connection', async (ws, req) => {
+    // FORGE-V — flag an over-maxPayload frame the moment the receiver rejects
+    // it. Attached synchronously, before the auth gate's first await, so a
+    // peer that opens and immediately blasts an oversized frame is still
+    // recorded (and never lands an unhandled 'error' on the socket). The
+    // per-path 'error' handlers below stay as they are; 'error' is multicast.
+    ws.on('error', (err) => {
+      if (err && err.code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH') ws.overMaxPayload = true;
+    });
+
     const { pathname, legacyToken, ticket, isListener, listenerDeviceId } = parseConnection(req);
 
     // Auth gate. Both paths produce a (userId, phoneToken) pair — the
@@ -2250,6 +2302,7 @@ function startRelay(httpServer) {
         // Stashed on the socket so terminateActivePair can report it too.
         ws.closeCode = closeCode;
         ws.closeReason = decodeCloseReason(closeReason);
+        logIfOverMaxPayload(ws, token);
         // F-A: defensive — phone branch will not have indexed itself, but
         // unindex is a no-op when absent.
         if (ws.authVia === 'relay-ticket') unindexWebSocket(ws.userId, ws);
@@ -2506,6 +2559,7 @@ function startRelay(httpServer) {
       // down. See the phone handler for the full rationale.
       ws.closeCode = closeCode;
       ws.closeReason = decodeCloseReason(closeReason);
+      logIfOverMaxPayload(ws, token);
       // F-A: scrub the userId → ws index so the next supersede call doesn't
       // try to re-kick a half-closed socket.
       if (ws.authVia === 'relay-ticket') unindexWebSocket(ws.userId, ws);

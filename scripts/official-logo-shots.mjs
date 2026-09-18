@@ -19,10 +19,20 @@
  *
  * usage: node scripts/brand-lockup-shots.mjs <outDir>
  */
-import { chromium } from 'playwright';
+import { chromium } from 'playwright';
 import { exitAfterFlush } from './lib/finish.mjs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+// CC_SHOT_EMAIL is now REQUIRED (2026-09-17, dispatch
+// forge/w-strip-email-literals): the personal address that used to be the
+// default was a hardcoded literal in the repo. Set it when running shots.
+function requireShotEmail() {
+  const v = process.env.CC_SHOT_EMAIL;
+  if (!v) throw new Error('CC_SHOT_EMAIL must be set (screenshot account email)');
+  return v;
+}
+
 
 const OUT = process.argv[2];
 const BASE = process.env.CC_BASE || 'http://localhost:3123';
@@ -40,7 +50,7 @@ const signIdleToken = (userId, secret) =>
 // under test is chrome (header, sidebar, menu), not user data.
 const user = {
   id: process.env.CC_SHOT_USER_ID || 'shot-user',
-  email: process.env.CC_SHOT_EMAIL || 'dennis.kotlenko@gmail.com',
+  email: requireShotEmail(),
   sessionVersion: 0,
 };
 const auth = signAccessToken({ userId: user.id, email: user.email, ver: user.sessionVersion ?? 0 });
@@ -74,7 +84,7 @@ async function shot(name, url, { width, height, scheme = 'light', authed = true,
   }
   if (storage) {
     await page.addInitScript((v) => {
-      try { localStorage.setItem('cc:theme:last', v); } catch (e) {}
+      try { localStorage.setItem('cc:theme:last', v); } catch {}
     }, storage);
   }
   await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
@@ -117,7 +127,7 @@ await shot('web-register', `${BASE}/auth/register`, { width: 1100, height: 900, 
 await shot('web-sidebar-collapsed', `${BASE}/app`, {
   width: 1440, height: 900,
   storage: null,
-  init: () => { try { localStorage.setItem('dnkdialer_sidebar_collapsed', '1'); } catch (e) {} },
+  init: () => { try { localStorage.setItem('dnkdialer_sidebar_collapsed', '1'); } catch {} },
 });
 
 await browser.close();
