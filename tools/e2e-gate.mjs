@@ -1416,6 +1416,54 @@ if (WEB) {
     record('unit:bridge-origin-pin', 'node scripts/ext-bridge-origin-pin-proof.mjs', 1, 0, { missing: 1 });
   }
 
+  // ── 8b. E2E-P6 proofs that drive the REAL relay ──────────────────────────
+  //
+  // These four are NOT scrubbed, and that is the whole difference between them
+  // and every step above.
+  //
+  // The relay suites run under SCRUBBED on purpose — the P0 baseline found
+  // .env.local leaking into tests/www-origin and producing four false FAILs.
+  // But these steps start an actual `node server.js` against an actual scratch
+  // Postgres, so a scrubbed env leaves them with no DATABASE_URL and the relay
+  // refuses to boot. Worse, the relay authenticates at the WS upgrade behind a
+  // fail-closed entitlement gate: without credentials every socket is closed
+  // 4401 before a single frame exists, and a harness counting `open` events
+  // would report healthy sockets while measuring nothing at all. So they get
+  // DATABASE_URL explicitly, the way devicekey-authz does, and nothing else
+  // from the ambient environment.
+  //
+  // Gated to P6 and later because they are P6 deliverables and did not exist at
+  // BASE_SHA; running them under an earlier --phase would report `missing` for
+  // a file that was never supposed to be there yet.
+  if (['P6', 'P7', 'P8', 'D1'].includes(PHASE)) {
+    const P6_REAL_RELAY = [
+      // (e) 10,000 frames across a resume, counters asserted on all three lanes.
+      ['p6:replay', 'scripts/e2e-replay-proof.mjs'],
+      // (i) CC-CANARY in an SMS + notification body: log, heap and store greps.
+      ['p6:canary', 'scripts/e2e-canary-proof.mjs'],
+      // (h) the tampering proxy in front of the real relay: strip, downgrade,
+      //     replayed epoch, forged same-origin pubkey.
+      ['p6:staging-relay', 'scripts/e2e-staging-relay-proof.mjs'],
+      // (g) cross-implementation. Emits its cross-match table as JSON.
+      ['p6:cross-impl', 'scripts/e2e-cross-impl-proof.mjs'],
+    ];
+    for (const [name, rel] of P6_REAL_RELAY) {
+      if (!existsSync(join(ROOT, rel))) {
+        // Never a silent skip. A P6 proof that is absent at --phase P6 is a
+        // deliverable that did not land, and the gate has to say so — the
+        // "gate step that ran nothing" failure is exactly what this avoids.
+        record(name, `node ${rel}`, 1, 0, { missing: 1 });
+        continue;
+      }
+      run(name, `node ${rel}`, {
+        parse: passLine,
+        env: { DATABASE_URL: process.env.DATABASE_URL || '' },
+        // Real relay boot + Chromium + 10k frames; the default 15 min is tight.
+        timeout: 30 * 60_000,
+      });
+    }
+  }
+
   // ── 9. harnesses against a dev server the gate owns ──────────────────────
   // FT-3b (g). The per-phase list lives in tools/lib/harness-list.mjs, pure,
   // so tests/harness-list.test.mjs can assert WHICH steps a phase runs. It was
