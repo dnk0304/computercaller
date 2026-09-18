@@ -45,6 +45,8 @@ import * as SESSION from '../lib/e2e/session.mjs';
 import { sasDigits } from '../lib/e2e/sas.mjs';
 import * as WEBKEY from '../lib/e2e/webKey.ts';
 import { canonicalPeerDeviceId } from '../lib/e2e/kdf.mjs';
+import * as IDB from '../lib/e2e/idb.mjs';
+import * as VIEW from '../hooks/phoneE2e.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -773,6 +775,82 @@ async function main() {
 
     browser.close(); phone.close();
     await relay.close();
+  }
+
+  // -- scenario 8: a REFUSAL survives the teardown it causes (E2E-P2.1 (b)) --
+  //
+  // Every abort in this harness's scenarios ends the same way in the real app:
+  // the hook sets state:'error', returns true, and usePhoneBridge LEAVE_ACTIVEs
+  // and calls onPairEnded(). onPairEnded used to reset the view, so the error
+  // was erased by the teardown the error itself caused and the user saw
+  // nothing. That is a LIVE-PEER concern and not only a unit one: the aborts
+  // scenarios 5 and 7 drive are exactly the ones whose evidence was vanishing.
+  {
+    // The states the refusals above actually produce, by the code fail() sets.
+    const refusals = [
+      ['e2e-unavailable', 'the kill switch (scenario 5)'],
+      ['e2e-epoch-replayed', 'a replayed epoch (scenario 7)'],
+      ['e2e-setup-failed', 'a wrap that would not open (A4-M3)'],
+      ['e2e-seq-fail-closed', 'a counter that could not be proven ahead'],
+      ['e2e-key-mismatch', 'a C-2 pin failure'],
+      ['re-pair-needed', 'an unreadable device-key record'],
+    ];
+    for (const [code, why] of refusals) {
+      const errored = {
+        mode: 'on', state: 'error', error: code,
+        peer: { supports: true, kind: 'present' },
+        sas: { digits: '123456', confirmed: true },
+        debug: { drops: 1, downgradesDropped: 1, kid: 'kid-x' },
+      };
+      const afterTeardown = VIEW.viewAfterPairEnded(errored);
+      check(`ABORT->PAIR-ENDED: the error still shows after teardown — ${why}`,
+        afterTeardown.state === 'error' && afterTeardown.error === code,
+        `state=${afterTeardown.state} error=${afterTeardown.error}`);
+      check(`ABORT->PAIR-ENDED: but the SAS digits are gone — ${why}`,
+        afterTeardown.sas.digits === null);
+      // ...and only the user can clear it.
+      const afterDismiss = VIEW.viewAfterErrorDismissed(afterTeardown);
+      check(`ABORT->PAIR-ENDED: an explicit dismiss clears it — ${why}`,
+        afterDismiss.state === 'unencrypted' && afterDismiss.error === undefined);
+    }
+  }
+
+  // -- scenario 9: the web surface has ONE IndexedDB (E2E-P2.1 (a)) ---------
+  //
+  // webKey.ts and session.mjs each opened `cc-e2e` at version 1 with a
+  // different schema, so whichever opened first settled the database and the
+  // other's stores were never created. ensureWebDeviceKey always runs first, so
+  // `seq` never existed and EVERY mode-ON pairing fail-closed -- including all
+  // of the ones above, which pass here only because this harness injects
+  // memory stores and so never meets the real factory.
+  //
+  // That is the point of asserting it HERE: this harness's own green run was
+  // one of the things that made the defect look impossible. The real-IndexedDB
+  // migration matrix is scripts/e2e-idb-migration-proof.mjs; what is checked
+  // here is that the two modules can no longer DISAGREE about which database
+  // they mean.
+  {
+    check('ONE-DB: webKey and session name the same database',
+      WEBKEY.WEB_KEY_DB_NAME === SESSION.SEQ_DB_NAME,
+      `${WEBKEY.WEB_KEY_DB_NAME} vs ${SESSION.SEQ_DB_NAME}`);
+    check('ONE-DB: webKey and session agree on the schema version',
+      WEBKEY.WEB_KEY_DB_VERSION === SESSION.SEQ_DB_VERSION,
+      `${WEBKEY.WEB_KEY_DB_VERSION} vs ${SESSION.SEQ_DB_VERSION}`);
+    check('ONE-DB: both modules defer to lib/e2e/idb.mjs for the name',
+      WEBKEY.WEB_KEY_DB_NAME === IDB.CC_E2E_DB_NAME
+      && SESSION.SEQ_DB_NAME === IDB.CC_E2E_DB_NAME);
+    check('ONE-DB: both modules defer to lib/e2e/idb.mjs for the version',
+      WEBKEY.WEB_KEY_DB_VERSION === IDB.CC_E2E_DB_VERSION
+      && SESSION.SEQ_DB_VERSION === IDB.CC_E2E_DB_VERSION);
+    // The schema must actually contain BOTH stores -- the whole failure was a
+    // schema that contained only one of them.
+    check('ONE-DB: the v2 schema carries the device-key store',
+      IDB.CC_E2E_STORES.includes(WEBKEY.WEB_KEY_STORE_NAME), IDB.CC_E2E_STORES.join(','));
+    check('ONE-DB: the v2 schema carries the seq store',
+      IDB.CC_E2E_STORES.includes(SESSION.SEQ_STORE_NAME), IDB.CC_E2E_STORES.join(','));
+    check('ONE-DB: a fresh profile gets a device key AND a seq store, not one of the two',
+      IDB.CC_E2E_STORES.length === 2
+      && WEBKEY.WEB_KEY_STORE_NAME !== SESSION.SEQ_STORE_NAME);
   }
 }
 

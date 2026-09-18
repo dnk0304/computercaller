@@ -126,6 +126,21 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>cc-e2e idb proof</titl
     catch (e) { return { opened: false, name: e?.name ?? null, message: String(e?.message ?? e) }; }
   };
 
+  /**
+   * The APP's order, through the one open path: ensureWebDeviceKey writes the
+   * device key first, then createComputerSession commits a seq floor. This is
+   * the exact sequence that used to fail — the first call settled the schema
+   * and the second found no 'seq' store.
+   */
+  window.pairLikeTheApp = async () => {
+    const keyRec = { v: 2, deviceId: 'web-dev-1', kind: 'web', createdAt: Date.now(), epochFloors: {} };
+    await idb.ccE2eWrite(undefined, idb.CC_E2E_STORE_DEVICE_KEY, (s) => { s.put(keyRec, 'self'); });
+    await idb.ccE2eWrite(undefined, idb.CC_E2E_STORE_SEQ, (s) => { s.put({ send: 0, recv: 0 }, 'pair-A'); });
+    const key = await idb.ccE2eRead(undefined, idb.CC_E2E_STORE_DEVICE_KEY, (s) => s.get('self'));
+    const seq = await idb.ccE2eRead(undefined, idb.CC_E2E_STORE_SEQ, (s) => s.get('pair-A'));
+    return { deviceId: key?.deviceId ?? null, seq: seq ?? null };
+  };
+
   window.ready = true;
 </script>`;
 
@@ -238,6 +253,23 @@ async function main() {
         after.stores.includes('futureStore'), JSON.stringify(after.stores));
       const back = await page.evaluate(() => window.readBack('deviceKey', 'self'));
       eq('future: the newer build\'s device key is intact', back.value?.deviceId, 'from-the-future');
+    });
+
+    // ── arm 5: a FRESH browser profile pairs end to end ─────────────────────
+    // The regression in one arm: on a cold profile, the device key and the seq
+    // floor must BOTH be writable and readable through the one factory, in the
+    // order the app uses them. Before the fix this threw NotFoundError on the
+    // second write and every mode-ON pairing aborted.
+    await arm(async (page, errs) => {
+      const out = await page.evaluate(() => window.pairLikeTheApp());
+      eq('fresh-profile pairing: the device key round-trips', out.deviceId, 'web-dev-1');
+      check('fresh-profile pairing: the seq floor round-trips', out.seq !== null,
+        JSON.stringify(out.seq));
+      eq('fresh-profile pairing: the seq send floor', out.seq?.send, 0);
+      const schema = await page.evaluate(() => window.describe());
+      eq('fresh-profile pairing: both stores exist', schema.stores, ['deviceKey', 'seq']);
+      eq('fresh-profile pairing: at the current schema version', schema.version, 2);
+      eq('fresh-profile pairing: no page errors', errs, []);
     });
   } finally {
     if (browser) await browser.close().catch(() => {});
