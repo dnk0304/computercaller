@@ -1,0 +1,81 @@
+/**
+ * FT-3b — the copy table the WEB and EXTENSION surfaces render.
+ *
+ * WHY THIS FILE EXISTS AND NOT JUST `lib/fileTransfer/reasons.ts`:
+ *
+ * 1. The wire enum is ELEVEN reasons (WIRE-TRUTH-v1). `reasons.ts` ships nine —
+ *    `size_mismatch` and `busy` are missing, and because `coerceFileFrame`
+ *    validates FILE_FAILED through `isFileFailedReason`, a refusal carrying
+ *    either reason is DROPPED before any UI can see it. That is a lib/ fix and
+ *    lib/ is not this lane; it is filed as a one-line request for Forge. Until
+ *    it lands, `ftFailureCopy` still renders both, so the day the enum grows
+ *    this table needs no edit.
+ *
+ * 2. The tier string is PLATFORM-SPECIFIC. Android must not carry a tappable
+ *    upgrade affordance (Play Payments anti-steering — PLAY-TIER-COPY-RULING),
+ *    but web and the extension are not under Play policy and deliberately keep
+ *    the link. Web/ext copy therefore cannot be shared with the Android
+ *    strings.xml table, and the two are meant to disagree.
+ *
+ * For the nine reasons `reasons.ts` already owns we DELEGATE to it rather than
+ * restate the strings, so there is exactly one place a word can be changed.
+ */
+
+import { failureCopy } from '@/lib/fileTransfer/reasons.ts';
+import type { FailureCopy } from '@/lib/fileTransfer/reasons.ts';
+
+/** The full wire enum (WIRE-TRUTH-v1), independent of what `reasons.ts` types today. */
+export const FT_WIRE_REASONS = [
+  'hash_mismatch',
+  'connection_lost',
+  'relay_backpressure',
+  'cancelled',
+  'timeout',
+  'too_large',
+  'oom',
+  'quota',
+  'tier',
+  'size_mismatch',
+  'busy',
+] as const;
+
+export type FtWireReason = (typeof FT_WIRE_REASONS)[number];
+
+/**
+ * The eight reasons the relay is allowed to author (WIRE-TRUTH-v1). They arrive
+ * stamped `relay:true` and are abort-only. The receiver NEVER mints these; a
+ * peer frame carrying a top-level `relay` key is rejected by the relay itself.
+ */
+export const FT_RELAY_OWNED_REASONS: readonly FtWireReason[] = [
+  'tier', 'quota', 'too_large', 'size_mismatch',
+  'busy', 'relay_backpressure', 'timeout', 'connection_lost',
+];
+
+export function isRelayOwnedReason(reason: string): reason is FtWireReason {
+  return (FT_RELAY_OWNED_REASONS as readonly string[]).includes(reason);
+}
+
+/**
+ * Copy for the two reasons `reasons.ts` does not type yet. Kept byte-identical
+ * to what the Forge one-liner should paste into that file, so folding them in
+ * is a move, not a rewrite.
+ */
+const PENDING_COPY: Record<'size_mismatch' | 'busy', FailureCopy> = {
+  size_mismatch: {
+    message: 'The file details did not match and it was refused. Try sending it again.',
+    action: 'retry',
+  },
+  busy: {
+    message: 'Another transfer is already running. Wait for it to finish, then try again.',
+  },
+};
+
+/**
+ * Render copy for ANY reason string off the wire — the nine `reasons.ts` owns,
+ * the two it does not yet, and an unknown twelfth, which falls back to the
+ * generic line rather than showing the user a raw enum token.
+ */
+export function ftFailureCopy(reason: string): FailureCopy {
+  if (reason === 'size_mismatch' || reason === 'busy') return PENDING_COPY[reason];
+  return failureCopy(reason);
+}
