@@ -165,18 +165,33 @@ for (const [name, bad] of [
   check(`${name}: no block is forwarded`, !('e2e' in payload));
 }
 
-// ── 6. the default is ON ───────────────────────────────────────────────────
-// A safety switch you have to remember to turn on is not a safety switch, and
-// the failure mode of a wrong default here is that encrypted pairing silently
-// never works in production.
+// ── 6. the default is OFF, and the ON-list is explicit ─────────────────────
+/**
+ * CHANGED IN D1-PREP (c), and the old assertions here were the bug.
+ *
+ * This block used to pin `(v) => v !== 'false'` — default ON, disabled only by
+ * the exact string "false" — and asserted `'0' => enabled` as CORRECT.
+ *
+ * Every line of the D1 runbook sets `E2E_PAIRING_ENABLED=0` to ship the first
+ * production deploy DARK. Under the old predicate that value enabled the
+ * feature, and this test certified it. The test was not merely silent about
+ * the defect; it was the thing that would have kept anyone from finding it.
+ *
+ * The predicate is now an explicit ON-list. The asymmetry is the point: an
+ * unrecognised value must leave a crypto handshake dark, never turn it live.
+ */
 {
-  const evaluate = (v) => v !== 'false';
-  eq('unset => enabled', evaluate(undefined), true);
-  eq('empty => enabled', evaluate(''), true);
-  eq('"true" => enabled', evaluate('true'), true);
-  eq('"0" => enabled (only the exact string "false" disables)', evaluate('0'), true);
-  eq('"False" => enabled (not case-folded, so a typo fails SAFE)', evaluate('False'), true);
+  const evaluate = (v) => ['1', 'true'].includes(String(v ?? '').trim().toLowerCase());
+  eq('unset => DISABLED (fail-closed: D1 ships dark)', evaluate(undefined), false);
+  eq('empty => DISABLED', evaluate(''), false);
+  eq('"0" => DISABLED (the value the D1 runbook actually sets)', evaluate('0'), false);
   eq('"false" => DISABLED', evaluate('false'), false);
+  eq('"no" => DISABLED (unrecognised values fail SAFE)', evaluate('no'), false);
+  eq('"P1" => DISABLED (a typo can never switch a crypto feature on)', evaluate('P1'), false);
+  eq('"1" => enabled (the value the D1 runbook flips to at step 6)', evaluate('1'), true);
+  eq('"true" => enabled', evaluate('true'), true);
+  eq('" 1 " => enabled (Coolify env values arrive padded)', evaluate(' 1 '), true);
+  eq('"TRUE" => enabled (case-folded on the ON side only)', evaluate('TRUE'), true);
 }
 
 // ── 7. drift guard ─────────────────────────────────────────────────────────
@@ -185,8 +200,13 @@ for (const [name, bad] of [
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   check('the comment-stripper did not empty the file', /function handleBrowserRequestPairing/.test(src));
-  check('the flag defaults to ON',
-    /const E2E_PAIRING_ENABLED = process\.env\.E2E_PAIRING_ENABLED !== 'false';/.test(src));
+  check('the flag defaults to OFF via an explicit ON-list (D1-PREP (c))',
+    /const E2E_PAIRING_ENABLED = \['1', 'true'\]\.includes\(/.test(src));
+  check('the OFF default is not reachable by a bare !== comparison any more',
+    !/E2E_PAIRING_ENABLED !== 'false'/.test(src));
+  check('the boot log states which way the switch is set (D1-PLAN §2 step 5 reads it)',
+    /\[e2e\] pairing disabled \(E2E_PAIRING_ENABLED=/.test(src)
+    && /\[e2e\] pairing enabled \(E2E_PAIRING_ENABLED=1\)/.test(src));
   check('the gate refuses mode=1 only',
     /if \(!E2E_PAIRING_ENABLED && e2eBlock && e2eBlock\.mode === 1\)/.test(src));
   check('the refusal frame is sent to the BROWSER',

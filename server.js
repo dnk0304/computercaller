@@ -169,9 +169,29 @@ const LEGACY_RELAY_PORT = process.env.LEGACY_RELAY_PORT === '1';
 const LEGACY_RESUME_TEARDOWN = process.env.LEGACY_RESUME_TEARDOWN === '1';
 
 /**
- * N-1 KILL SWITCH. `E2E_PAIRING_ENABLED=false` turns off SAS-BLOCKING encrypted
- * pairing. Default ON — a safety switch that has to be remembered is not a
- * safety switch, and this one exists to be flipped during an incident.
+ * N-1 KILL SWITCH. `E2E_PAIRING_ENABLED` gates SAS-BLOCKING encrypted pairing.
+ *
+ * DEFAULT OFF (D1-PREP (c)). D1 is the first production deploy of the E2E
+ * stack and it ships DARK: the code goes out, the feature does not, and Ken
+ * flips the env var to `1` afterwards with no redeploy (D1-PLAN §2 step 6).
+ * Fail-closed is the only correct default for a first deploy of a crypto
+ * handshake — an unset variable must not turn a feature on in production.
+ *
+ * ── THE DEFECT THIS REPLACES (found in D1-PREP, and it was live) ───────────
+ * The predicate used to be `process.env.E2E_PAIRING_ENABLED !== 'false'`:
+ * default ON, and disabled ONLY by the exact nine characters "false".
+ *
+ * Every instruction in the D1 runbook says to set `E2E_PAIRING_ENABLED=0`.
+ * Under the old predicate `'0' !== 'false'` is TRUE, so the variable Ken sets
+ * to ship dark would have shipped the feature ENABLED — and the old
+ * tests/e2e-kill-switch.test.mjs asserted that outcome as correct ("\"0\" =>
+ * enabled"), so nothing would have caught it. A kill switch whose documented
+ * OFF value means ON is worse than no kill switch: it is a false sense of one.
+ *
+ * So the predicate is now an explicit ON-list. "1" and "true" enable it;
+ * anything else — including unset, "0", "", "no", and a typo — leaves it off.
+ * The asymmetry is deliberate: the failure mode of an unrecognised value must
+ * be "the feature stayed dark", never "the feature went live".
  *
  * What it does NOT do, deliberately (B6): it never strips an e2e block, and it
  * never forwards a MODIFIED one. A relay that quietly removed key material
@@ -188,7 +208,18 @@ const LEGACY_RESUME_TEARDOWN = process.env.LEGACY_RESUME_TEARDOWN === '1';
  * Live pairs are untouched: this gates the handshake, not the data plane.
  * Flipping it mid-incident must not drop anyone who is already connected.
  */
-const E2E_PAIRING_ENABLED = process.env.E2E_PAIRING_ENABLED !== 'false';
+const E2E_PAIRING_ENABLED = ['1', 'true'].includes(
+  String(process.env.E2E_PAIRING_ENABLED ?? '').trim().toLowerCase(),
+);
+// Say which way the switch is set, once, at boot. D1-PLAN §2 step 5 verifies
+// the deploy by reading this line out of the relay log — a switch whose state
+// you cannot observe from outside the process is not operable during an
+// incident, which is the one moment it exists for.
+console.log(
+  E2E_PAIRING_ENABLED
+    ? '[e2e] pairing enabled (E2E_PAIRING_ENABLED=1)'
+    : `[e2e] pairing disabled (E2E_PAIRING_ENABLED=${process.env.E2E_PAIRING_ENABLED ?? 'unset'})`,
+);
 
 // One Prisma client for the whole relay process. server.js is a long-lived
 // custom server (not Next.js runtime), so it can't import the TS singleton from

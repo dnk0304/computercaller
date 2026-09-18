@@ -85,6 +85,51 @@ if (!PHASE_RAW) {
   process.exit(2);
 }
 const PHASE = PHASE_RAW.toUpperCase();
+
+/**
+ * (b2) --phase is WHITELISTED, not merely required.
+ *
+ * Requiring the flag closed the "defaulted to P0" hole but left the opposite
+ * one open: any string at all was accepted, and every phase-gated step in this
+ * file is an `includes(PHASE)` membership test. A phase nobody recognises
+ * therefore fails every one of those tests SILENTLY and the run still reports
+ * PASS on a narrower gate than the caller asked for.
+ *
+ * That is not hypothetical. The MERGE lane ran `--phase MERGE`, executed 62 of
+ * 69 steps, and destabilised the badge count to 24/42 — with no warning,
+ * because "MERGE" was not in any of the membership lists below. A typo
+ * ("--phase P5a2", "--phase D-1") would have done the same thing.
+ *
+ * So: the set of phases is enumerated in ONE place and an unrecognised value
+ * exits 2 with usage rather than quietly narrowing the gate. Adding a phase is
+ * a deliberate edit to this list — which is the point. Absent is not passing,
+ * and neither is unrecognised.
+ */
+const KNOWN_PHASES = [
+  'P0', 'P0.2', 'P0.3',
+  'P1', 'P1.1', 'P1.2',
+  'P2', 'P2.1',
+  'P3', 'P3.1',
+  'P4', 'P4.1',
+  'P5A', 'P5B',
+  'P6',
+  'D1',
+  'FT1', 'FT2', 'FT3',
+  'MERGE',
+];
+if (!KNOWN_PHASES.includes(PHASE)) {
+  console.error(
+    `\ne2e-gate: REFUSING TO RUN — unrecognised --phase "${PHASE_RAW}".\n`
+    + `    known phases: ${KNOWN_PHASES.join(', ')}\n`
+    + '    usage: bun run e2e:gate --phase P<N> [--lane web|android|all] [--parallel-harnesses]\n\n'
+    + '    Every phase-gated step in this gate is an includes(PHASE) membership test, so an\n'
+    + '    unrecognised phase does not error — it silently fails every one of them and still\n'
+    + '    reports PASS on a gate narrower than you asked for. "--phase MERGE" once ran 62 of\n'
+    + '    69 steps that way. A phase that is not on the list above has not been thought about;\n'
+    + '    add it here deliberately rather than letting it through.\n'
+  );
+  process.exit(2);
+}
 const BASELINE = has('baseline');
 const OUTDIR = join(ROOT, flag('out', 'e2e-evidence'));
 const LABEL = flag('label', null);
@@ -1101,6 +1146,28 @@ if (WEB) {
   // ── 6. extension packaging guard ─────────────────────────────────────────
   run('check-extension', `"${GITBASH}" tools/check-extension.sh`);
 
+  /**
+   * D1-PREP (a). The identity-leak guard runs as its OWN gate step, in addition
+   * to the call check-extension.sh already makes.
+   *
+   * It is registered separately and SCOPE-INDEPENDENTLY on purpose. What it
+   * guards is not a property of any one lane's diff: it scans the built client
+   * output (.next/static/** and chrome-extension/**) for personal identities
+   * and access-control env NAMES. A lane that touches no client code at all can
+   * still ship a leak, because the leak travels by IMPORT CHAIN — that is
+   * exactly how lib/entitlement-core.js reached a public _next/static chunk
+   * through a 'use client' LoginForm. Gating this on "did this lane touch the
+   * bundler" would make it blind to the only way the defect actually occurs.
+   *
+   * Nesting it inside check-extension.sh alone also made it invisible in the
+   * gate JSON: a failure there was reported as "check-extension failed", which
+   * is a packaging verdict, not a disclosure one. D1 ships to production and
+   * needs the disclosure answer named in its own right.
+   *
+   * It needs the build, since .next/static does not exist before it.
+   */
+  run('check-no-identities', `"${GITBASH}" tools/check-no-identities.sh`, { needs: ['build'] });
+
   // ── 7. relay suites ──────────────────────────────────────────────────────
   const RELAY = ['pairing-persist', 'pair-state', 'dock-resume', 'reset-room', 'listener-heartbeat',
     'relink-kill-frame-buffer', 'call-separation', 'www-origin', 'repro-resume-sync',
@@ -1173,6 +1240,14 @@ if (WEB) {
     // nothing would crash; the gate would just start grading lanes on 77 files
     // they never touched again.
     ['scope-base', 'tests/scope-base.test.mjs', true],
+    // D1-PREP (b2). --phase is whitelisted, not merely required. Named
+    // explicitly for the same reason as the lines above — the sweep matches
+    // only tests/e2e-*.test.mjs. This is the rule that stops an unrecognised
+    // phase from silently failing every includes(PHASE) membership test in
+    // this file and reporting PASS on a hollow gate ("--phase MERGE" ran 62 of
+    // 69 steps that way). Carries its own positive control, so narrowing
+    // KNOWN_PHASES turns it red instead of turning the gate quiet.
+    ['gate-phase-whitelist', 'tests/gate-phase-whitelist.test.mjs', true],
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {
