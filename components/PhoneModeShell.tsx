@@ -50,6 +50,8 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
+import { EncryptionBanner } from '@/components/EncryptionStatus';
+import { SasConfirmDialog } from '@/components/SasConfirmDialog';
 import { UsageMeter } from '@/components/UsageMeter';
 import { Dialpad } from '@/components/Dialpad';
 import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterBar';
@@ -1924,6 +1926,15 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
     // area rather than disappearing behind the keyboard.
     <div className={clsx('phone-mode-shell relative flex flex-col bg-slate-50 font-sans', isExt && 'cc-ext')}>
       <PhoneModeHeader surface={surface} />
+      {/* E2E-P5a (b)+(c). The banner sits directly under the header, above the
+          call strip: an encryption refusal outranks call chrome, and it is the
+          one piece of chrome here that cannot be dismissed. The SAS dialog is a
+          portal to document.body, so its position in this tree is irrelevant to
+          where it paints — it lives here because this component is the only
+          thing both surfaces render, which is what keeps the blocking step from
+          existing on one surface and not the other. */}
+      <EncryptionBanner />
+      <SasConfirmDialog />
       {/* The live-call strip sits directly under the header and above the tab
           strip — the dashboard's quick-dial panel equivalent, in a shape a
           390px column can afford. It is chrome, so it is OUTSIDE the

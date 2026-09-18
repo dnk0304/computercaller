@@ -22,7 +22,7 @@
  */
 import { chromium } from 'playwright';
 import { awaitServiceWorker } from './lib/ext-sw.mjs';
-import { Reaper } from './lib/reap.mjs';
+import { Reaper, rmWhenUnlocked } from './lib/reap.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -551,7 +551,7 @@ try {
 } finally {
   await ctx.close();
   reaper.reapAndReport('ext-badge-counter-proof');
-  fs.rmSync(userDataDir, { recursive: true, force: true });
+  rmWhenUnlocked(userDataDir);  // (f) never rmSync a handle Chromium may still hold
 }
 
 const failed = results.filter((r) => !r.pass);

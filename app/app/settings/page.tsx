@@ -14,6 +14,7 @@ import {
 // SyncSetupPanel is mounted in app/app/layout.tsx — no import needed here.
 import { SignInSecuritySection } from './SignInSecuritySection';
 import { LayoutSettings } from '@/components/LayoutSettings';
+import { EncryptedModeToggle } from '@/components/EncryptedModeToggle';
 
 interface UserData {
   id: string;
@@ -255,6 +256,18 @@ export default function SettingsPage() {
           (dispatch pixel/layout-settings-phaseA). Self-contained: owns its own
           useLayoutPrefs() lifecycle. */}
       <LayoutSettings />
+
+      {/* Encrypted mode — E2E-P5a (a). §12: opt-in, default OFF, per device and
+          stored locally. It sits directly under Layout and above Phone
+          connection on purpose: it is a property OF the phone connection, so it
+          belongs immediately before the section that explains that connection,
+          not buried at the bottom next to account plumbing. The switch greys
+          itself with a peer-specific reason when it cannot be turned on — see
+          settingAvailability() in lib/encryptedModeCopy.ts. */}
+      <section aria-labelledby="encrypted-mode-heading">
+        <h2 id="encrypted-mode-heading" className="sr-only">Encrypted mode</h2>
+        <EncryptedModeToggle variant="row" email={user.email} />
+      </section>
 
       {/* Phone connection — neutral pointer back to the dashboard. The
           connection model is LAN-only: type the IP your phone is showing in

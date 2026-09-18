@@ -36,6 +36,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings, PanelRight, Monitor, Sun, Moon } from 'lucide-react';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
+import { EncryptionChip } from '@/components/EncryptionStatus';
+import { EncryptedModeToggle } from '@/components/EncryptedModeToggle';
 import { CcMark } from '@/components/CcMark';
 import { CcLockup } from '@/components/CcLockup';
 import { usePhoneMode } from '@/hooks';
@@ -112,8 +114,14 @@ function AppHeader() {
         Beta
       </span>
 
-      <div className="min-w-0 flex-1">
+      {/* E2E-P5a (c): the encryption chip is a SIBLING of ConnectionStatus, never
+          a branch inside it. The pill keeps switching on lobbyState alone, so an
+          encryption outcome can never repaint this row as "signed-out" — the
+          defect P5a slice 1 traced. EncryptionChip renders nothing at all in the
+          error states; EncryptionBanner carries those, with room for a reason. */}
+      <div className="min-w-0 flex-1 flex items-center gap-2">
         <ConnectionStatus />
+        <EncryptionChip />
       </div>
 
       <button
@@ -156,8 +164,12 @@ function ExtensionHeader() {
       <CcMark size={18} title="ComputerCaller" className="flex-shrink-0" />
 
       {/* min-w-0 is what lets the pill's truncate actually engage. */}
-      <div className="flex min-w-0 flex-1 items-center justify-start pl-1">
+      <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5 pl-1">
         <ConnectionStatus variant="compact" />
+        {/* Glyph only: AC-1 caps this row and the word cannot fit. The meaning
+            is not lost — title + a visually-hidden sentence carry it, and the
+            account menu one click away states it in full. */}
+        <EncryptionChip compact />
       </div>
 
       {/* ⤢ and ⇲ are mutually exclusive by construction: canPopout is every
@@ -343,6 +355,19 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
             )}
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <ThemeChoice email={email} />
+            <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
+            {/* E2E-P5a (a): the extension's Encrypted-mode switch.
+                THE MENU IS WHERE IT GOES, and the alternative was worse. The
+                extension surface has no settings SCREEN of its own — popup.html
+                and sidepanel.html are a sign-in gate plus an iframe, and the
+                three tabs are Dial/Texts/Alerts — so the choices were this menu
+                or a new surface. The 40px header has a hard width budget (AC-1)
+                and could not take a fourth control, and burying a security
+                setting inside the Alerts tab would make it undiscoverable.
+                `role="menuitemcheckbox"` is the correct ARIA for a toggle inside
+                a `role="menu"`; a bare `role="switch"` here would be a control
+                the menu's own keyboard model does not know how to reach. */}
+            <EncryptedModeToggle variant="menuitem" email={email} />
             <div className="my-1 h-px bg-slate-100" aria-hidden="true" />
             <MenuLink href={WEBAPP_DASHBOARD_URL} icon={<LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" />}>
               Open dashboard

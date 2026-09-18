@@ -65,6 +65,7 @@
  */
 import { chromium } from 'playwright';
 import { awaitServiceWorker } from './lib/ext-sw.mjs';
+import { exitAfterFlush } from './lib/finish.mjs';
 import { Reaper } from './lib/reap.mjs';
 import { WebSocketServer } from 'ws';
 import { fileURLToPath } from 'node:url';
@@ -100,10 +101,15 @@ wss.on('connection', (socket) => {
   socket.on('pong', () => { lastPongAt = Date.now(); });
   socket.on('close', () => { serverSeesOpen = false; });
   // Same 15s cadence as server.js.
-  const iv = setInterval(() => {
-    if (socket.readyState === socket.OPEN) socket.ping();
-    else clearInterval(iv);
+  const iv = setInterval(() => {
+    if (socket.readyState === socket.OPEN) socket.ping();
+    else clearInterval(iv);
   }, 15_000);
+  // (f) An unref'd timer cannot hold the loop open. The clearInterval above
+  // only runs on the next tick AFTER the socket closes, so on every early
+  // return this 15s sampler was still armed and the process stayed alive.
+  iv.unref?.();
+  socket.on('close', () => clearInterval(iv));
 });
 
 const report = { runSeconds: RUN_S, arms: {} };
@@ -328,4 +334,4 @@ try {
   wss.close();
 }
 
-process.exit(exitCode);
+exitAfterFlush(exitCode);

@@ -10,7 +10,8 @@
  * read out of the configured database. Nothing about the UI is stubbed — the
  * gate is passed the way a logged-in user passes it, not bypassed.
  */
-import { chromium } from 'playwright';
+import { chromium } from 'playwright';
+import { exitAfterFlush } from './lib/finish.mjs';
 import path from 'node:path';
 
 const LABEL = process.argv[2];               // 'before' | 'after'
@@ -79,3 +80,15 @@ await shot('extension',       `${BASE}/extension`, { width: 400, height: 600, sc
 
 await browser.close();
 await db.$disconnect();
+
+// ── E2E-P5a (f): EXIT, do not merely stop having work to do. ──────────────
+// Three harnesses in the P5A gate were recorded as timeouts with a COMPLETE
+// summary in their logs. The gate-side cause is fixed and is NOT a hang:
+// child.kill() on a shell:true step signals cmd.exe only, so the timeout never
+// stopped the work (tests/gate-child-exit.test.mjs). This is the other half:
+// once the summary is printed and the finally block has closed the browser and
+// reaped, nothing is left to wait for, so say so explicitly rather than hoping
+// the event loop drains. exitAfterFlush flushes stdout first — on Windows the
+// gate reads this over a pipe, where writes are async and a bare process.exit
+// can truncate the very summary line the gate parses.
+exitAfterFlush(process.exitCode ?? 0);

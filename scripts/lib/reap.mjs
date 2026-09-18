@@ -19,6 +19,7 @@
  * from THIS process.
  */
 import { spawnSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
 
 const WIN = process.platform === 'win32';
 
@@ -55,6 +56,45 @@ export function killTree(pid) {
   }
   try { process.kill(-pid, 'SIGKILL'); return true; } catch { /* no group */ }
   try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
+}
+
+/**
+ * Synchronous sleep. Deliberate: `reap()` must stay fully synchronous so it
+ * still works from the 'exit' handler (see installExitHook), and an `await`
+ * there would never run.
+ */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * (f) Remove a directory that a dying process may still hold open.
+ *
+ * THE DEFECT (P0.3 lane, R-AE addendum): `ext-badge-counter-proof` exited 124
+ * after printing "43/43 passed" because its teardown ran
+ * `fs.rmSync(userDataDir, { recursive: true, force: true })` on a profile
+ * directory Chromium had not yet released. On Windows that throws EBUSY/EPERM —
+ * `force` only swallows ENOENT — and the throw escapes the finally block.
+ *
+ * NEVER rmSync a held handle: poll until the unlink succeeds, bounded, and then
+ * give up QUIETLY. A leftover temp directory is a tidiness problem; a harness
+ * that fails its own teardown is a false red.
+ *
+ * @returns {{removed: boolean, waitedMs: number, error?: string}}
+ */
+export function rmWhenUnlocked(dir, { timeoutMs = 5000, intervalMs = 150 } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return { removed: true, waitedMs: Date.now() - t0 };
+    } catch (e) {
+      if (Date.now() - t0 >= timeoutMs) {
+        return { removed: false, waitedMs: Date.now() - t0, error: `${e?.code || e?.message || e}` };
+      }
+      sleepSync(intervalMs);
+    }
+  }
 }
 
 /** Every descendant PID of `root`, root included, from a census snapshot. */
@@ -170,7 +210,29 @@ export class Reaper {
      * harness printed a confident "reaped: yes 2" about two processes that
      * were still running.
      */
-    const after = new Set(census().map((p) => p.pid));
+    /**
+     * (f) SETTLE BEFORE THE CENSUS — bounded, and it is not cosmetic.
+     *
+     * `taskkill /F` RETURNS BEFORE Windows has finished tearing the process
+     * down and releasing its handles. Censusing immediately therefore reports
+     * survivors that are merely mid-death, and — the defect the P0.3 lane hit —
+     * lets the caller run `fs.rmSync(userDataDir)` against a profile directory
+     * Chromium still holds open, which throws EBUSY/EPERM out of the very
+     * finally block that was supposed to be cleaning up. `force: true` does NOT
+     * cover that; it only ignores ENOENT.
+     *
+     * Bounded at 5s and it exits early the moment the set is empty, so the
+     * normal path costs one census.
+     */
+    const deadline = Date.now() + 5000;
+    let after = new Set(census().map((p) => p.pid));
+    while (unique.some((p) => after.has(p)) && Date.now() < deadline) {
+      // 250ms, not 150: each poll spawns `tasklist`, which is not cheap. The
+      // window is a safety net for a process mid-death, not a busy-wait.
+      sleepSync(250);
+      after = new Set(census().map((p) => p.pid));
+    }
+
     const gone = unique.filter((p) => !after.has(p));
     const survived = unique.filter((p) => after.has(p));
     return { killed: gone.length, pids: gone, survived };
