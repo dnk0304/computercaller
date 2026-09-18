@@ -510,9 +510,14 @@ class FileTransferLoopbackTest {
             mapOf("id" to "f".repeat(32), "name" to "two.bin", "size" to size,
                 "mime" to "application/octet-stream", "sha256" to sha, "from" to "browser")
         )
-        val reject = waitFor { peer.first(FileTransfer.REJECT) }
-        assertNotNull("the second offer must be rejected", reject)
-        assertEquals("f".repeat(32), reject!!["id"])
+        // FT-A1.1: busy travels as FILE_FAILED, not FILE_REJECT - the relay
+        // mints it too and cannot author a REJECT for an id it only has from
+        // the hint, so both ends speak one frame for the condition.
+        val busy = waitFor { peer.first(FileTransfer.FAILED) }
+        assertNotNull("the second offer must be refused", busy)
+        assertEquals("f".repeat(32), busy!!["id"])
+        assertEquals(FileTransfer.Reason.BUSY, busy["reason"])
+        assertEquals("no FILE_REJECT for busy", null, peer.first(FileTransfer.REJECT))
         // The first offer is untouched.
         assertEquals("one.bin", rec.offered!!.second)
     }

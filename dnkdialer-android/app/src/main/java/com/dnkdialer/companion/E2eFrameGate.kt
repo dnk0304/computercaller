@@ -240,6 +240,22 @@ class E2eFrameGate(
 
     // -------------------------------------------------------------- inbound
 
+    /** FT-A1.1: does the body carry the explicit `"relay": true` marker? */
+    private fun relayMarkedOf(json: String): Boolean = try {
+        com.google.gson.JsonParser.parseString(json).asJsonObject
+            .get(FileTransfer.RELAY_MARKER)?.takeIf { it.isJsonPrimitive }?.asBoolean == true
+    } catch (e: RuntimeException) {
+        false
+    }
+
+    /** `reason` from a plaintext FILE_FAILED body, or null. */
+    private fun reasonOf(json: String): String? = try {
+        com.google.gson.JsonParser.parseString(json).asJsonObject
+            .get("reason")?.takeIf { it.isJsonPrimitive }?.asString
+    } catch (e: RuntimeException) {
+        null
+    }
+
     /** Splice `ft` into an unsealed body as a sibling field. */
     private fun mergeHint(plain: String, ft: Map<String, Any?>): String = try {
         val id = ft["id"] as? String
@@ -277,6 +293,20 @@ class E2eFrameGate(
             // A plaintext frame that SHOULD have been sealed, while the latch
             // is on, is exactly what a stripping relay produces. Drop it.
             if (latchedProvider() && isSealedType(type)) {
+                // ONE exception, and it is routed through ONE function so the
+                // pending FT-A1.1 ruling is a change in that function and not
+                // in this branch: the relay mints some FILE_FAILED frames
+                // itself (tier / quota / size_mismatch / its timeout backstop)
+                // and holds no keys, so those are necessarily plaintext.
+                // Dropping them would mean the sender sits through a 30 s
+                // stall instead of being told why it was refused — the quota
+                // design's whole output, lost on the last hop.
+                if (FileTransfer.allowsPlaintextUnderLatch(
+                        type, reasonOf(json), relayMarkedOf(json)
+                    )
+                ) {
+                    return Inbound.Deliver(json)
+                }
                 droppedInbound++
                 return Inbound.Drop("plaintext under the latch")
             }
@@ -299,6 +329,15 @@ class E2eFrameGate(
         return when (val opened = session.open(envelope, type)) {
             is E2eSession.Opened.Frame -> {
                 val plain = String(opened.plaintext, Charsets.UTF_8)
+                // FT-A1.1: the relay forwards peer frames verbatim, so without
+                // this a peer could SEAL {"relay":true,...} and have it
+                // honoured as a relay assertion the moment we unsealed it. The
+                // marker is only meaningful on the plaintext path; inside a
+                // sealed body it is a forgery attempt by construction.
+                if (type in FileTransfer.FRAMES && FileTransfer.peerFrameClaimsRelay(plain)) {
+                    droppedInbound++
+                    return Inbound.Drop("peer frame claims to be relay-minted")
+                }
                 // FT-A1 MUST A-5: the receiver has to compare the hint against
                 // the body it just unsealed, so the hint must travel with the
                 // body to whoever does that compare. Merged as a sibling field

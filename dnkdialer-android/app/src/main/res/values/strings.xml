@@ -535,25 +535,26 @@
 
     <string name="ft_too_large_title">File is too big</string>
     <string name="ft_cannot_send_title">Cannot send this file</string>
-    <string name="ft_fail_too_large">Files up to 1 GB.</string>
-    <string name="ft_fail_quota">Daily limit reached (2 GB) — resets at midnight UTC.</string>
+    <string name="ft_fail_too_large">Files up to 1 GB</string>
+    <string name="ft_fail_quota">Daily limit reached (2 GB) — resets at midnight UTC</string>
     <!-- FT-2b / Pilot: the brief asks for "Send files is included with a
          subscription — Upgrade" plus a deep-link. There is no in-app upgrade
          path and this file carries a standing no-plan-language rule, so the
          copy stays neutral until Pilot rules. Behaviour is unaffected: the
          refusal is server-enforced. -->
-    <string name="ft_fail_tier">Sending files is not available on this account yet.</string>
+    <string name="ft_fail_tier">Send files is included with a subscription — Upgrade</string>
     <string name="ft_fail_hash">The file arrived damaged and was deleted. Try again.</string>
     <string name="ft_fail_cancelled">Transfer cancelled.</string>
     <!-- Also the copy for "the computer's page was never opened": per FT-A1
          there is no no_receiver reason, so that case arrives as timeout. -->
-    <string name="ft_fail_timeout">The transfer stopped responding. Make sure ComputerCaller is open on your computer, then try again.</string>
+    <string name="ft_fail_timeout">Connection problem — try again. Make sure ComputerCaller is open on your computer.</string>
     <string name="ft_fail_oom">This phone ran out of memory during the transfer.</string>
-    <string name="ft_fail_backpressure">The connection could not keep up. Try again.</string>
-    <string name="ft_fail_connection">The connection dropped during the transfer.</string>
+    <string name="ft_fail_backpressure">Connection problem — try again</string>
+    <string name="ft_fail_connection">Connection problem — try again</string>
+    <string name="ft_fail_busy">Another transfer is in progress</string>
     <!-- FT-A1 MUST A-7. Deliberately does not say "tamper": the user cannot
          act on that word, and the honest, actionable thing is to try again. -->
-    <string name="ft_fail_size_mismatch">The transfer was refused because its details did not match. Try sending it again.</string>
+    <string name="ft_fail_size_mismatch">File changed during transfer — try again</string>
 
     <string name="ft_share_label">Send to computer</string>
 </resources>

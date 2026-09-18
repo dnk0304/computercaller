@@ -285,6 +285,7 @@ fun failureCopy(context: Context, reason: String): String = context.getString(
         FileTransfer.Reason.OOM -> R.string.ft_fail_oom
         FileTransfer.Reason.RELAY_BACKPRESSURE -> R.string.ft_fail_backpressure
         FileTransfer.Reason.SIZE_MISMATCH -> R.string.ft_fail_size_mismatch
+        FileTransfer.Reason.BUSY -> R.string.ft_fail_busy
         else -> R.string.ft_fail_connection
     }
 )

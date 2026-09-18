@@ -415,11 +415,17 @@ class FileTransferManager(
         }
     }
 
-    /** The user said no. */
-    fun rejectOffer() {
+    /**
+     * The user said no.
+     *
+     * `FILE_REJECT` is RECEIVER-AUTHORED ONLY (FT-1 Addendum B) — the relay
+     * never mints one — and it carries a reason, so the sender can tell a
+     * decline apart from an offer that timed out on this end.
+     */
+    fun rejectOffer(reason: String = FileTransfer.Reason.CANCELLED) {
         val offer = pendingOffer ?: return
         pendingOffer = null
-        send(FileTransfer.REJECT, mapOf("id" to offer.id))
+        send(FileTransfer.REJECT, mapOf("id" to offer.id, "reason" to reason))
         listener.onIdle()
     }
 
@@ -536,7 +542,12 @@ class FileTransferManager(
             FileTransfer.REJECT -> {
                 val s = active as? Active.Send ?: return
                 if (p["id"] as? String != s.id) return
-                fail(s, FileTransfer.Reason.CANCELLED, true)
+                // Carry the receiver's own reason through rather than assuming
+                // "cancelled": a decline and an expiry look identical to the
+                // sender otherwise, and only one of them is worth retrying.
+                val reason = (p["reason"] as? String)?.takeIf { it in FileTransfer.Reason.ALL }
+                    ?: FileTransfer.Reason.CANCELLED
+                fail(s, reason, true)
             }
             FileTransfer.CHUNK -> onChunk(p)
             FileTransfer.ACK -> {
@@ -558,6 +569,12 @@ class FileTransferManager(
             }
             FileTransfer.DONE -> onDone(p)
             FileTransfer.FAILED -> {
+                // FT-A1.1: a relay-minted FILE_FAILED may ABORT the current
+                // transfer and nothing else. This branch does exactly that —
+                // it touches no key, no session and not the Encrypted-mode
+                // latch, so honouring a plaintext one cannot become a
+                // downgrade. The .part deletion below is part of aborting the
+                // transfer, not a change to pairing state.
                 val a = active ?: return
                 if (p["id"] as? String != a.id) return
                 val reason = (p["reason"] as? String)?.takeIf { it in FileTransfer.Reason.ALL }
@@ -601,9 +618,14 @@ class FileTransferManager(
         }
 
         if (isBusy) {
-            // One transfer at a time. Rejecting is the honest answer; queueing
-            // would mean holding an offer whose sender has a 60 s expiry.
-            send(FileTransfer.REJECT, mapOf("id" to id))
+            // One transfer at a time. FT-A1.1 ratified that busy travels as
+            // FILE_FAILED rather than FILE_REJECT, so that the relay — which
+            // mints this too, and knows the id only from the hint — and the
+            // endpoints speak the same frame for the same condition.
+            send(
+                FileTransfer.FAILED,
+                mapOf("id" to id, "reason" to FileTransfer.Reason.BUSY)
+            )
             return
         }
         if (size > FileTransfer.MAX_FILE_BYTES) {
@@ -731,7 +753,10 @@ class FileTransferManager(
             val o = pendingOffer ?: return
             if (System.currentTimeMillis() - o.offeredAtMs > FileTransfer.OFFER_EXPIRY_MS) {
                 pendingOffer = null
-                send(FileTransfer.REJECT, mapOf("id" to o.id))
+                send(
+                    FileTransfer.REJECT,
+                    mapOf("id" to o.id, "reason" to FileTransfer.Reason.TIMEOUT)
+                )
                 listener.onIdle()
             }
             return

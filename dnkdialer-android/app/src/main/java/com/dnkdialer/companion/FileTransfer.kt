@@ -53,9 +53,14 @@ object FileTransfer {
      * always-slightly-wrong copy of a figure the server already owns — and the
      * first time they disagreed the user would be told the wrong thing.
      *
-     * If one is ever added: it counts bytes this device ACTUALLY SENT. Never
-     * the declared size, and never `ft.size` — the hint is untrusted input
-     * (FT-A1 MUST C-3) and a quota built on it is a quota the sender sets.
+     * If one is ever added: it counts RAW bytes this device ACTUALLY SENT.
+     * Never the declared size, and never `ft.size` — the hint is untrusted
+     * input (FT-A1 MUST C-3) and a quota built on it is a quota the sender
+     * sets. RAW, not wire: the relay meters WIRE bytes (+33% for base64) and
+     * converts through its ftWireCeiling before charging, so this cap and the
+     * server's are expressed in the same unit (FT-1, 2026-09-18). Mixing the
+     * two would show the user a number a third larger than the one they are
+     * actually charged.
      */
     const val DAILY_QUOTA_BYTES: Long = 2_147_483_648L
 
@@ -134,9 +139,33 @@ object FileTransfer {
          */
         const val SIZE_MISMATCH = "size_mismatch"
 
+        /**
+         * FT-A1.1: the peer or the relay already has a transfer in flight.
+         *
+         * Arrives as `FILE_FAILED`, NOT as `FILE_REJECT` — ratified, because
+         * the relay mints it and the relay cannot author a REJECT for a
+         * transfer whose id it only knows from the hint.
+         */
+        const val BUSY = "busy"
+
         val ALL: Set<String> = setOf(
             HASH_MISMATCH, CONNECTION_LOST, RELAY_BACKPRESSURE, CANCELLED,
-            TIMEOUT, TOO_LARGE, OOM, QUOTA, TIER, SIZE_MISMATCH,
+            TIMEOUT, TOO_LARGE, OOM, QUOTA, TIER, SIZE_MISMATCH, BUSY,
+        )
+
+        /**
+         * Reasons the RELAY is entitled to assert, and therefore the only
+         * ones acceptable on a plaintext FILE_FAILED under the latch.
+         * See [FileTransfer.allowsPlaintextUnderLatch]. PENDING FT-A1.1.
+         *
+         * The complement is the interesting half: `hash_mismatch` needs the
+         * bytes, `cancelled` is a user action and `oom` is a local condition
+         * — none of the three is knowable by a party holding no keys, so a
+         * plaintext one is forged by construction.
+         */
+        val RELAY_OWNED: Set<String> = setOf(
+            TIER, QUOTA, TOO_LARGE, SIZE_MISMATCH, BUSY,
+            RELAY_BACKPRESSURE, TIMEOUT, CONNECTION_LOST,
         )
     }
 
@@ -203,6 +232,68 @@ object FileTransfer {
         val id = sealedBody["id"] as? String ?: return null
         val size = (sealedBody["size"] as? Number)?.toLong() ?: return null
         return mapOf("id" to id, "size" to size)
+    }
+
+    /** The marker a relay-minted FILE_FAILED must carry. FT-A1.1. */
+    const val RELAY_MARKER = "relay"
+
+    /**
+     * **FT-A1.1, RATIFIED** — the one function deciding whether a PLAINTEXT
+     * `FILE_*` frame may be delivered while Encrypted mode is latched ON.
+     *
+     * ## Why an exception exists at all
+     *
+     * FT-A1 §3 (C) made every `FILE_*` a sealed type. But the RELAY mints some
+     * `FILE_FAILED` frames itself — tier, quota, busy, its timeout backstop —
+     * and the relay holds no keys, so those are necessarily plaintext. Under a
+     * strict MUST B-1 they would be dropped and the sender would sit through a
+     * 30 s stall instead of being told "daily limit reached": the quota
+     * design's entire user-visible output, lost on the last hop.
+     *
+     * ## The three conditions, all required
+     *
+     *  1. **`FILE_FAILED` only.** A plaintext `FILE_OFFER`, `FILE_CHUNK` or
+     *     `FILE_DONE` is the strip the downgrade guard exists to refuse —
+     *     they carry the file, a filename and a content hash respectively,
+     *     and no legitimate sender emits them in the clear.
+     *  2. **A relay-owned reason.** A reason only an endpoint can know —
+     *     `hash_mismatch` needs the bytes, `cancelled` is a user action, `oom`
+     *     is a local condition — is not the relay's to assert.
+     *  3. **The explicit `relay:true` marker.** Makes the claim deliberate
+     *     rather than inferred, so a stripped peer frame that happens to carry
+     *     an acceptable reason is still refused.
+     *
+     * The residual power granted to anyone who can inject plaintext is to
+     * ABORT a transfer with a plausible reason — the same power as dropping
+     * the packets, which the relay has regardless. It cannot start, redirect,
+     * or read a transfer, and per FT-A1.1 the caller must treat such a frame
+     * as abort-only: it never changes Encrypted mode, a session, or a key.
+     */
+    fun allowsPlaintextUnderLatch(type: String, reason: String?, relayMarked: Boolean): Boolean =
+        type == FAILED && relayMarked && reason != null && reason in Reason.RELAY_OWNED
+
+    /**
+     * FT-A1.1 — a frame that came from the PEER must not claim to be from the
+     * relay. True when the (unsealed) body carries a top-level `relay` key.
+     *
+     * The relay forwards peer frames verbatim, so without this a peer could
+     * seal `{"relay":true,...}` and have it honoured as a relay assertion once
+     * the receiver unsealed it. The marker is only meaningful on the plaintext
+     * path; inside a sealed body it is a forgery attempt by construction.
+     */
+    fun peerFrameClaimsRelay(json: String): Boolean {
+        // A hand-rolled scan rather than a regex or a JSON parse: this runs on
+        // every inbound file frame, it must never throw on malformed input,
+        // and a conservative false positive here only rejects a frame that had
+        // no business carrying the key in the first place.
+        var i = json.indexOf("\"$RELAY_MARKER\"")
+        while (i >= 0) {
+            var j = i + RELAY_MARKER.length + 2
+            while (j < json.length && json[j].isWhitespace()) j++
+            if (j < json.length && json[j] == ':') return true
+            i = json.indexOf("\"$RELAY_MARKER\"", i + 1)
+        }
+        return false
     }
 
     /**
