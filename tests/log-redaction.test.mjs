@@ -59,6 +59,14 @@ const CANARY = {
   notifText: 'CANARY_NOTIF_vs63ec',
   notifTitle: 'CANARY_TITLE_qj15uf',
   number: '+4791234567',
+  // FT-1 (2026-09-18). A FILENAME is PII of exactly the kind this test exists
+  // for — "Q3 layoffs.xlsx", "scan of passport.pdf" — and a base64 chunk IS the
+  // file. Both travel through the same frameLabel()/log sites as every frame
+  // above, so both get a canary here rather than a separate suite that could
+  // drift away from this one.
+  fileName: 'CANARY_FILENAME_qp81zx.jpg',
+  fileData: 'CANARYDATAaGVsbG8gd29ybGQ',
+  fileHash: 'CANARYHASH0000000000000000000000000000000000000000000000000000cc',
 };
 const ALL_CANARIES = Object.values(CANARY);
 
@@ -68,6 +76,20 @@ const FRAMES = {
   PHONE_NOTIFICATION: `PHONE_NOTIFICATION:${JSON.stringify({ packageName: 'com.whatsapp', title: CANARY.notifTitle, text: CANARY.notifText, hasReply: true, notificationKey: `0|com.whatsapp|${CANARY.number}` })}`,
   CONTACTS: `CONTACTS:${JSON.stringify({ chunk: 3, total: 9, items: [{ name: CANARY.contact, number: CANARY.number }] })}`,
   CALL_INCOMING: `CALL_INCOMING:${JSON.stringify({ number: CANARY.number, name: CANARY.contact, callId: 'c-1' })}`,
+  // FT-1 — the file-transfer family. FILE_OFFER carries the name; FILE_CHUNK
+  // carries the bytes; FILE_DONE carries the content hash. The control frames
+  // (ACCEPT / REJECT / ACK / RESUME / FAILED) carry only an opaque id and an
+  // enum, and are listed so that the "label still identifies the frame" half of
+  // the loop below proves the relay's redaction covers the WHOLE family — a
+  // family member nobody added here is a family member nobody checked.
+  FILE_OFFER: `FILE_OFFER:${JSON.stringify({ id: 'a1b2c3d4e5f60718', name: CANARY.fileName, size: 4404019, mime: 'image/jpeg', sha256: CANARY.fileHash, from: 'phone' })}`,
+  FILE_ACCEPT: `FILE_ACCEPT:${JSON.stringify({ id: 'a1b2c3d4e5f60718' })}`,
+  FILE_REJECT: `FILE_REJECT:${JSON.stringify({ id: 'a1b2c3d4e5f60718', reason: 'user_declined' })}`,
+  FILE_CHUNK: `FILE_CHUNK:${JSON.stringify({ id: 'a1b2c3d4e5f60718', seq: 41, n: 21846, data: CANARY.fileData })}`,
+  FILE_ACK: `FILE_ACK:${JSON.stringify({ id: 'a1b2c3d4e5f60718', upTo: 41 })}`,
+  FILE_RESUME: `FILE_RESUME:${JSON.stringify({ id: 'a1b2c3d4e5f60718', upTo: 41 })}`,
+  FILE_DONE: `FILE_DONE:${JSON.stringify({ id: 'a1b2c3d4e5f60718', sha256: CANARY.fileHash })}`,
+  FILE_FAILED: `FILE_FAILED:${JSON.stringify({ id: 'a1b2c3d4e5f60718', reason: 'hash_mismatch' })}`,
 };
 
 console.log('\n── 1. frameLabel() leaks no canary for any frame type ──');
@@ -109,7 +131,11 @@ const COMMA_FRAME = /,\s*(msg|data|frame)\s*(\)|,)/;
 // NB: `message` is deliberately absent — `err.message` is an Error string, not
 // a frame body, and including it flagged 20 legitimate catch-block logs. The
 // frame's content fields are body/text/title, which are listed.
-const PII_FIELDS = 'body|text|title|address|number|phoneNumber|to|from|sender|name|displayName|contact|snippet';
+// FT-1 adds `sha256`: a file's content hash is a content identifier, and a log
+// line carrying it plus a size is enough to confirm a suspected file. `data` is
+// already covered by WHOLE_FRAME/SLICED_FRAME above; `name` was already listed
+// and is what covers a filename.
+const PII_FIELDS = 'body|text|title|address|number|phoneNumber|to|from|sender|name|displayName|contact|snippet|sha256';
 const PII_FIELD_RE = new RegExp(`\\.(${PII_FIELDS})\\b`);
 
 /**

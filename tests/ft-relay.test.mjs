@@ -1,0 +1,770 @@
+#!/usr/bin/env node
+/**
+ * tests/ft-relay.test.mjs — the relay half of file transfer (dispatch FT-1).
+ *
+ * THIS FILE DOES NOT MIRROR server.js.
+ *
+ * The other .mjs relay suites re-implement the state machine they test, with a
+ * comment asking the next person to keep the copy in sync. That is a reasonable
+ * trade for a pairing handshake; it is the wrong trade here, because two of the
+ * things under test are SECURITY gates — "a chunk is only forwarded after the
+ * receiver accepted" and "a trial account cannot open a transfer at all" — and a
+ * mirror of a gate passes happily while the real gate is fail-open. So this file
+ * follows tests/log-redaction.test.mjs instead: it EXTRACTS the real constants
+ * and the real functions out of server.js and runs them, with only the relay's
+ * ambient dependencies (safeSend, the socket objects, the Prisma client) stubbed
+ * or supplied for real. If a function is renamed or deleted in server.js, the
+ * extractor throws and this suite fails loudly rather than drifting.
+ *
+ * The quota parts (deliverable (e)) run against a REAL PostgreSQL, for the same
+ * reason tests/devicekey-authz.test.mjs does: the subject is an atomic
+ * INSERT … ON CONFLICT … WHERE, a BIGINT column and a unique index. A mocked
+ * `db` would return whatever the mock says and the test would prove nothing
+ * about the thing that actually enforces the 2 GiB/day cap.
+ *
+ * Run:
+ *   DATABASE_URL=postgresql://pix:pix@localhost:15433/cc node tests/ft-relay.test.mjs
+ */
+
+import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
+import nodeCrypto from 'node:crypto';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const SERVER_SRC = readFileSync(join(ROOT, 'server.js'), 'utf8');
+const requireCjs = createRequire(import.meta.url);
+
+let pass = 0, fail = 0;
+const check = (name, cond, detail = '') => {
+  if (cond) { pass++; console.log(`  ok   ${name}`); }
+  else { fail++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
+};
+
+// ── PART 0 — pull the REAL source out of server.js ──────────────────────────
+
+/** Strip comments so prose describing a rule can never satisfy the rule. */
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.replace(/(^|[^:'"])\/\/.*$/, '$1'))
+    .join('\n');
+}
+
+/**
+ * Brace-balanced extraction of `function NAME(...) { … }`.
+ *
+ * The `async ` prefix is captured deliberately. Dropping it does not produce a
+ * missing-function error — it produces a SYNTAX error at `new Function` time,
+ * or worse, a sync function whose `await` is a parse error somewhere else. Two
+ * of the extracted functions are async (the quota reserve and the offer gate).
+ */
+function extractFn(name) {
+  let start = SERVER_SRC.indexOf(`function ${name}(`);
+  if (start === -1) throw new Error(`function ${name} not found in server.js`);
+  if (SERVER_SRC.slice(start - 6, start) === 'async ') start -= 6;
+  // Walk the PARAMETER LIST by paren balance first. Jumping straight to the
+  // next '{' finds the destructuring default in `function f(a, { x = 1 } = {})`
+  // rather than the body, and the brace walk then terminates on that object's
+  // closing brace — producing a truncated, syntactically broken extraction whose
+  // error surfaces on the NEXT function in the concatenation.
+  let i = SERVER_SRC.indexOf('(', SERVER_SRC.indexOf(name, start));
+  let parens = 0;
+  for (; i < SERVER_SRC.length; i++) {
+    if (SERVER_SRC[i] === '(') parens++;
+    else if (SERVER_SRC[i] === ')' && --parens === 0) break;
+  }
+  let depth = 0;
+  for (let j = SERVER_SRC.indexOf('{', i); j < SERVER_SRC.length; j++) {
+    if (SERVER_SRC[j] === '{') depth++;
+    else if (SERVER_SRC[j] === '}' && --depth === 0) return SERVER_SRC.slice(start, j + 1);
+  }
+  throw new Error(`unterminated ${name}`);
+}
+
+/**
+ * Bracket-balanced extraction of `const NAME = …;`. Needed because several of
+ * the constants are multi-line `new Set([...])` literals, so a line regex would
+ * capture a fragment that does not parse.
+ */
+function extractConst(name) {
+  const re = new RegExp(`(?:^|\\n)\\s*const ${name} =`);
+  const m = re.exec(SERVER_SRC);
+  if (!m) throw new Error(`const ${name} not found in server.js`);
+  const start = SERVER_SRC.indexOf('const ', m.index);
+  let depth = 0;
+  for (let j = start; j < SERVER_SRC.length; j++) {
+    const c = SERVER_SRC[j];
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
+    else if (c === ';' && depth === 0) return SERVER_SRC.slice(start, j + 1);
+  }
+  throw new Error(`unterminated const ${name}`);
+}
+
+const FT_CONSTS = [
+  'FT_FRAME_TYPES', 'FT_FAIL_REASONS', 'FT_MAX_FILE_BYTES', 'FT_DAILY_QUOTA_BYTES',
+  'FT_QUOTA_RETENTION_DAYS', 'FT_CHUNK_RAW_BYTES', 'FT_CHUNK_WIRE_BYTES',
+  'FT_DEST_BACKPRESSURE_BYTES',
+  'FT_STALL_MS', 'FT_OFFER_TTL_MS', 'FT_SWEEP_MS', 'FT_WIRE_OVERHEAD_FACTOR',
+  'FT_TIERS_ALLOWED',
+];
+const FT_FNS = [
+  'frameType', 'frameLabel', 'isFileFrame', 'utcDayKey',
+  'ftCountDrop', 'ftParse', 'ftSocketForRole', 'ftPeerSocket', 'ftFailedFrame',
+  'ftAbort', 'ftReserveQuota', 'ftReleaseQuota', 'ftCommitQuota', 'ftHandleOffer',
+  'handleFileFrame',
+];
+
+/**
+ * Instantiate the extracted relay code with injected dependencies. Every caller
+ * gets a FRESH instance so one test's drop counters or in-flight record cannot
+ * leak into the next (the append-only-shared-state failure this project has
+ * already paid for once).
+ */
+function buildRelay({ db }) {
+  const logs = [];
+  const body = [
+    ...FT_CONSTS.map(extractConst),
+    ...FT_FNS.map(extractFn),
+    'const ftDropCounts = new Map();',
+    `return { ${[...FT_CONSTS, ...FT_FNS].join(', ')}, ftDropCounts };`,
+  ].join('\n\n');
+  const factory = new Function('db', 'safeSend', 'rlog', 'redactToken', 'WebSocket', 'crypto', 'Buffer', 'console', body);
+  const safeSend = (ws, msg) => {
+    if (!ws || ws.readyState !== 1) return false;
+    ws.sent.push(String(msg));
+    return true;
+  };
+  const rlog = (m) => logs.push(String(m));
+  const quietConsole = { log: (m) => logs.push(String(m)), error: (m) => logs.push(String(m)) };
+  const api = factory(db, safeSend, rlog, () => 'tok:redacted', { OPEN: 1 }, nodeCrypto, Buffer, quietConsole);
+  api.logs = logs;
+  api.safeSend = safeSend;
+  return api;
+}
+
+// Fresh sockets/room per scenario.
+const mkWs = (userId = 'u1', tier = 'plus') => ({ userId, tier, readyState: 1, bufferedAmount: 0, sent: [] });
+function mkRoom(phone, browser) {
+  return {
+    token: 'ROOMTOKEN', lobby: new Set(),
+    active: { browser, phone, e2e: null },
+    pendingPairing: null, resumable: null, frameBuffer: [], transfer: null,
+  };
+}
+const newId = () => randomBytes(16).toString('hex');
+const sha = () => randomBytes(32).toString('hex');
+const lastOf = (ws, type) => [...ws.sent].reverse().find((m) => m.startsWith(`${type}:`)) || null;
+const payloadOf = (frame) => (frame ? JSON.parse(frame.slice(frame.indexOf(':') + 1)) : null);
+const countOf = (ws, type) => ws.sent.filter((m) => m.startsWith(`${type}:`)).length;
+
+/** A db stub for the arms that are NOT about the quota: always admits. */
+const DB_ALWAYS_OK = {
+  $queryRawUnsafe: async () => [{ used: 1n }],
+  $executeRawUnsafe: async () => 1,
+};
+/** A db stub that refuses every reservation (0 rows = over cap). */
+const DB_OVER_QUOTA = {
+  $queryRawUnsafe: async () => [],
+  $executeRawUnsafe: async () => 1,
+};
+
+/** Offer → accept, returning the armed relay/room/sockets. */
+async function armedTransfer({ db = DB_ALWAYS_OK, size = 4 * 1024 * 1024, tier = 'plus' } = {}) {
+  const R = buildRelay({ db });
+  const phone = mkWs('u1', tier);
+  const browser = mkWs('u1', tier);
+  const room = mkRoom(phone, browser);
+  const id = newId();
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'holiday.jpg', size, mime: 'image/jpeg', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+  return { R, room, phone, browser, id };
+}
+
+console.log('\nFT-1 relay — file transfer frames, backpressure, resume, quota\n');
+
+// ── PART 1 — the frozen frame family + the constants ────────────────────────
+console.log('PART 1 — frozen frames and constants');
+{
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const EXPECTED = ['FILE_OFFER', 'FILE_ACCEPT', 'FILE_REJECT', 'FILE_CHUNK',
+    'FILE_ACK', 'FILE_RESUME', 'FILE_DONE', 'FILE_FAILED'];
+  check('the frame family is exactly the 8 frozen types',
+    R.FT_FRAME_TYPES.size === EXPECTED.length && EXPECTED.every((t) => R.FT_FRAME_TYPES.has(t)),
+    `got ${[...R.FT_FRAME_TYPES].join(',')}`);
+  check('FILE_DECLINE (the pre-brief spelling) is NOT in the family',
+    !R.FT_FRAME_TYPES.has('FILE_DECLINE'));
+
+  const REASONS = ['hash_mismatch', 'connection_lost', 'relay_backpressure', 'cancelled',
+    'timeout', 'too_large', 'oom', 'quota', 'tier'];
+  check('FILE_FAILED reason vocabulary is exactly the frozen 9',
+    R.FT_FAIL_REASONS.size === REASONS.length && REASONS.every((r) => R.FT_FAIL_REASONS.has(r)),
+    `got ${[...R.FT_FAIL_REASONS].join(',')}`);
+  check('an off-vocabulary reason is normalised, never minted',
+    payloadOf(R.ftFailedFrame('abc12345', 'because_i_said_so')).reason === 'cancelled');
+
+  check('per-file cap is 1 GiB exactly', R.FT_MAX_FILE_BYTES === 1073741824, String(R.FT_MAX_FILE_BYTES));
+  check('daily cap is 2 GiB exactly', R.FT_DAILY_QUOTA_BYTES === 2147483648, String(R.FT_DAILY_QUOTA_BYTES));
+  check('daily cap is int4 max + 1 — so the column MUST be BIGINT',
+    R.FT_DAILY_QUOTA_BYTES === 2147483647 + 1);
+  check('chunk is 48 KiB raw', R.FT_CHUNK_RAW_BYTES === 49152, String(R.FT_CHUNK_RAW_BYTES));
+  check('relay watermark is 8 MB', R.FT_DEST_BACKPRESSURE_BYTES === 8 * 1024 * 1024);
+  check('stall backstop is 30 s', R.FT_STALL_MS === 30000);
+  check('quota retention is 7 days', R.FT_QUOTA_RETENTION_DAYS === 7);
+
+  // Tier allow-list: fail CLOSED. trial/free out, unknown out.
+  check('tier allow-list admits plus and pro', R.FT_TIERS_ALLOWED.has('plus') && R.FT_TIERS_ALLOWED.has('pro'));
+  check('tier allow-list REFUSES trial', !R.FT_TIERS_ALLOWED.has('trial'));
+  check('tier allow-list REFUSES free', !R.FT_TIERS_ALLOWED.has('free'));
+  check('tier allow-list REFUSES an unknown/future tier (fail-closed)',
+    !R.FT_TIERS_ALLOWED.has('enterprise') && !R.FT_TIERS_ALLOWED.has(undefined));
+
+  // frameType, not startsWith — the classifier every redaction site trusts.
+  check('isFileFrame classifies via frameType', R.isFileFrame('FILE_CHUNK:{"id":"a"}') === true);
+  check('isFileFrame ignores a lookalike with no valid head',
+    R.isFileFrame('file_chunk:{}') === false);
+  check('isFileFrame does not swallow a non-member FILE_-prefixed frame',
+    R.isFileFrame('FILE_SOMETHING_ELSE:{}') === false);
+}
+
+// ── PART 2 — chunk size vs the relay's real maxPayload ──────────────────────
+console.log('\nPART 2 — chunk size fits under the relay frame cap');
+{
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  // 48 KiB raw → base64 is 4/3 rounded up to a multiple of 4.
+  const b64 = 4 * Math.ceil(R.FT_CHUNK_RAW_BYTES / 3);
+  const envelope = `FILE_CHUNK:${JSON.stringify({ id: newId(), seq: 21845, n: 21846, data: '' })}`.length;
+  const wire = b64 + envelope;
+  check('48 KiB raw base64s to exactly 65536 chars', b64 === 65536, String(b64));
+  check('a full chunk is under 1 MiB on the wire even with the envelope',
+    wire < 1024 * 1024, `${wire} bytes`);
+  // Headroom for the E2E seal: nonce + tag + base64-of-ciphertext + JSON header.
+  check('a SEALED full chunk still fits under 1 MiB',
+    Math.ceil((R.FT_CHUNK_RAW_BYTES + 28) * 4 / 3) + envelope + 256 < 1024 * 1024);
+
+  // The real constant, when it is there. Forge-V's maxPayload lives on
+  // feature/saas-multiuser and arrives in e2e/integration at the D1 merge, so on
+  // this lane's base it is absent. This arm ACTIVATES automatically the moment
+  // it lands — it is not a literal standing in for the real value.
+  const m = /const RELAY_MAX_PAYLOAD_BYTES = ([^;]+);/.exec(stripComments(SERVER_SRC));
+  if (m) {
+    const real = Function(`return (${m[1]});`)();
+    check('a full chunk is under the REAL RELAY_MAX_PAYLOAD_BYTES', wire < real, `${wire} vs ${real}`);
+    check('the real cap is at least 4x a full chunk', real >= 4 * wire);
+  } else {
+    check('RELAY_MAX_PAYLOAD_BYTES absent at this base — asserted against 1 MiB (activates at D1)',
+      wire < 1024 * 1024);
+  }
+}
+
+// ── PART 3 — the handshake, both directions ────────────────────────────────
+console.log('\nPART 3 — handshake and forwarding');
+{
+  const { R, room, phone, browser, id } = await armedTransfer();
+  check('FILE_OFFER reached the receiver', !!lastOf(browser, 'FILE_OFFER'));
+  check('the forwarded offer is byte-identical in its fields',
+    payloadOf(lastOf(browser, 'FILE_OFFER')).name === 'holiday.jpg');
+  check('the relay armed exactly one record', !!room.transfer && room.transfer.id === id);
+  check('the record is metadata only — no data, no chunk, no name',
+    !('data' in room.transfer) && !('chunk' in room.transfer) && !('name' in room.transfer),
+    Object.keys(room.transfer).join(','));
+  check('the record carries the fields the spec names',
+    ['id', 'state', 'from', 'size', 'mime', 'startedAt', 'bytesForwarded'].every((k) => k in room.transfer));
+  check('FILE_ACCEPT reached the sender', !!lastOf(phone, 'FILE_ACCEPT'));
+  check('state is accepted', room.transfer.state === 'accepted');
+
+  const chunk = `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 86, data: 'QUJD' })}`;
+  R.handleFileFrame(room, phone, chunk, 'phone', room.token);
+  check('a chunk after ACCEPT is forwarded AS-IS',
+    lastOf(browser, 'FILE_CHUNK') === chunk);
+  check('bytesForwarded counts wire bytes', room.transfer.bytesForwarded === Buffer.byteLength(chunk, 'utf8'));
+
+  R.handleFileFrame(room, browser, `FILE_ACK:${JSON.stringify({ id, upTo: 0 })}`, 'browser', room.token);
+  check('FILE_ACK flows receiver → sender', !!lastOf(phone, 'FILE_ACK'));
+
+  const done = `FILE_DONE:${JSON.stringify({ id, sha256: sha() })}`;
+  R.handleFileFrame(room, phone, done, 'phone', room.token);
+  check('FILE_DONE is forwarded', lastOf(browser, 'FILE_DONE') === done);
+  check('the record is dropped on completion', room.transfer === null);
+}
+{
+  // PC → phone is the same code path, mirrored. Proving it separately is the
+  // point: the spec flags "the gate is currently browser→phone only" as the one
+  // place this feature touches a security-relevant path.
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const phone = mkWs(); const browser = mkWs();
+  const room = mkRoom(phone, browser);
+  const id = newId();
+  R.handleFileFrame(room, browser, `FILE_OFFER:${JSON.stringify({ id, name: 'r.pdf', size: 1024, mime: 'application/pdf', sha256: sha(), from: 'browser' })}`, 'browser', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('PC → phone: the offer reaches the phone', !!lastOf(phone, 'FILE_OFFER'));
+  check('PC → phone: the record records the browser as sender', room.transfer.from === 'browser');
+  R.handleFileFrame(room, phone, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'phone', room.token);
+  R.handleFileFrame(room, browser, `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 1, data: 'QQ' })}`, 'browser', room.token);
+  check('PC → phone: chunks flow browser → phone', countOf(phone, 'FILE_CHUNK') === 1);
+}
+
+// ── PART 4 — accept-before-chunks, one-per-room, direction ─────────────────
+console.log('\nPART 4 — consent gate and concurrency');
+{
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const phone = mkWs(); const browser = mkWs();
+  const room = mkRoom(phone, browser);
+  const id = newId();
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'x', size: 1024, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  // The whole feature's consent promise: not one byte moves before Accept.
+  for (let seq = 0; seq < 20; seq++) {
+    R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq, n: 20, data: 'QUJD' })}`, 'phone', room.token);
+  }
+  check('NOT ONE chunk is forwarded before FILE_ACCEPT', countOf(browser, 'FILE_CHUNK') === 0);
+  check('the dropped chunks are counted by type and reason',
+    R.ftDropCounts.get(room.token)?.get('FILE_CHUNK/not_accepted') === 20);
+  check('bytesForwarded stayed at zero', room.transfer.bytesForwarded === 0);
+
+  // A second offer while one is live.
+  const id2 = newId();
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id: id2, name: 'y', size: 1024, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('a second concurrent offer is refused', payloadOf(lastOf(phone, 'FILE_REJECT'))?.reason === 'busy');
+  check('the refusal names the SECOND id, not the live one', payloadOf(lastOf(phone, 'FILE_REJECT'))?.id === id2);
+  check('the live transfer is untouched by the refusal', room.transfer.id === id);
+  check('the second offer never reached the peer', countOf(browser, 'FILE_OFFER') === 1);
+
+  // Accept, then the RECEIVER tries to push chunks back up the wrong way.
+  R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+  R.handleFileFrame(room, browser, `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 20, data: 'QUJD' })}`, 'browser', room.token);
+  check('a chunk from the RECEIVER is dropped (wrong direction)', countOf(phone, 'FILE_CHUNK') === 0);
+
+  // A chunk for an id the relay does not know.
+  R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id: newId(), seq: 0, n: 1, data: 'QQ' })}`, 'phone', room.token);
+  check('a chunk for an unknown id is dropped', countOf(browser, 'FILE_CHUNK') === 0);
+}
+{
+  // A socket that is not the ACTIVE peer for its role cannot drive a transfer —
+  // otherwise a duplicate lobby socket would bypass the state machine entirely.
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const phone = mkWs(); const browser = mkWs(); const ghost = mkWs();
+  const room = mkRoom(phone, browser);
+  R.handleFileFrame(room, ghost, `FILE_OFFER:${JSON.stringify({ id: newId(), name: 'x', size: 1, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('a non-active socket cannot open a transfer', room.transfer === null && countOf(browser, 'FILE_OFFER') === 0);
+}
+
+// ── PART 5 — backpressure watermark and declared-size overrun ──────────────
+console.log('\nPART 5 — backpressure and declared-size enforcement');
+{
+  const { R, room, phone, browser, id } = await armedTransfer();
+  browser.bufferedAmount = 8 * 1024 * 1024; // AT the mark — not over
+  R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 9, data: 'QUJD' })}`, 'phone', room.token);
+  check('at exactly the watermark the transfer survives', room.transfer !== null && countOf(browser, 'FILE_CHUNK') === 1);
+
+  browser.bufferedAmount = 8 * 1024 * 1024 + 1; // one byte over
+  R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq: 1, n: 9, data: 'QUJD' })}`, 'phone', room.token);
+  check('one byte over the watermark aborts', room.transfer === null);
+  check('the over-mark chunk was NOT forwarded — the relay never queues', countOf(browser, 'FILE_CHUNK') === 1);
+  check('the SENDER is told relay_backpressure', payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'relay_backpressure');
+  check('the RECEIVER is told relay_backpressure too', payloadOf(lastOf(browser, 'FILE_FAILED'))?.reason === 'relay_backpressure');
+}
+{
+  // Declared 1 MB, pushes far more: the abort must fire off bytesForwarded,
+  // not off anything the sender claims per-chunk.
+  const { R, room, phone, browser, id } = await armedTransfer({ size: 1024 * 1024 });
+  const fat = `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 1, data: 'A'.repeat(2 * 1024 * 1024) })}`;
+  R.handleFileFrame(room, phone, fat, 'phone', room.token);
+  check('a chunk past declared size x1.40 aborts as too_large',
+    room.transfer === null && payloadOf(lastOf(browser, 'FILE_FAILED'))?.reason === 'too_large');
+  check('the over-size chunk was not forwarded', countOf(browser, 'FILE_CHUNK') === 0);
+}
+{
+  // THE SMALL-FILE REGRESSION. `bytesForwarded > size * 1.40` with no floor
+  // aborts a 10-byte file on its first chunk, because the JSON envelope alone is
+  // seven times the declared size. A percentage-only ceiling is a size-blind
+  // rule that misbehaves at exactly the end nobody thinks to test.
+  const { R, room, phone, browser, id } = await armedTransfer({ size: 10 });
+  R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 1, data: 'aGVsbG8gd29ybGQ' })}`, 'phone', room.token);
+  check('a 10-byte file survives its own first chunk',
+    room.transfer !== null && countOf(browser, 'FILE_CHUNK') === 1);
+  R.handleFileFrame(room, phone, `FILE_DONE:${JSON.stringify({ id, sha256: sha() })}`, 'phone', room.token);
+  check('and completes normally', room.transfer === null && !!lastOf(browser, 'FILE_DONE'));
+  check('the ceiling floor is one full chunk on the wire',
+    R.FT_CHUNK_WIRE_BYTES > 4 * Math.ceil(R.FT_CHUNK_RAW_BYTES / 3),
+    String(R.FT_CHUNK_WIRE_BYTES));
+}
+
+// ── PART 6 — resume ────────────────────────────────────────────────────────
+console.log('\nPART 6 — resume across a reconnect');
+{
+  const { R, room, phone, browser, id } = await armedTransfer({ size: 200 * 1024 * 1024 });
+  R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 4267, data: 'QUJD' })}`, 'phone', room.token);
+  // The browser blips: soft-hold keeps the phone active, arms a resume claim.
+  room.active.browser = null;
+  room.resumable = { expiresAt: Date.now() + 180_000 };
+  check('the transfer record SURVIVES a held pair', room.transfer !== null);
+
+  // The browser returns as a NEW socket and asks to resume from where it got to.
+  const browser2 = mkWs();
+  room.active.browser = browser2;
+  room.resumable = null;
+  R.handleFileFrame(room, browser2, `FILE_RESUME:${JSON.stringify({ id, upTo: 0 })}`, 'browser', room.token);
+  check('FILE_RESUME is forwarded to the SENDER', !!lastOf(phone, 'FILE_RESUME'));
+  check('the relay forwards upTo untouched — it does not invent an offset',
+    payloadOf(lastOf(phone, 'FILE_RESUME')).upTo === 0);
+  check('state returns to accepted so chunks flow again', room.transfer.state === 'accepted');
+  R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq: 1, n: 4267, data: 'QUJD' })}`, 'phone', room.token);
+  check('chunks resume to the NEW receiver socket', countOf(browser2, 'FILE_CHUNK') === 1);
+  check('and NOT to the dead one — the relay routes off room.active, not the record',
+    countOf(browser, 'FILE_CHUNK') === 1);
+}
+{
+  // The record is gone (window expired, or a RESET_ROOM happened). A resume must
+  // be answered, not swallowed — a silent drop hangs the receiver's UI forever.
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const phone = mkWs(); const browser = mkWs();
+  const room = mkRoom(phone, browser);
+  R.handleFileFrame(room, browser, `FILE_RESUME:${JSON.stringify({ id: newId(), upTo: 12 })}`, 'browser', room.token);
+  check('a resume for an expired/unknown record answers connection_lost',
+    payloadOf(lastOf(browser, 'FILE_FAILED'))?.reason === 'connection_lost');
+  check('nothing was forwarded to the peer', countOf(phone, 'FILE_RESUME') === 0);
+}
+{
+  // ftAbort is what the janitor and every teardown path call.
+  const { R, room, phone, browser } = await armedTransfer();
+  R.ftAbort(room, 'timeout');
+  check('a stall abort tells both sides timeout',
+    payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'timeout'
+    && payloadOf(lastOf(browser, 'FILE_FAILED'))?.reason === 'timeout');
+  check('and drops the record', room.transfer === null);
+}
+
+// ── PART 7 — a 1 GiB-shaped transfer, by arithmetic ────────────────────────
+console.log('\nPART 7 — 1 GiB-shaped transfer (seq/n arithmetic, no allocation)');
+{
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const SIZE = R.FT_MAX_FILE_BYTES;                   // exactly 1 GiB
+  const N = Math.ceil(SIZE / R.FT_CHUNK_RAW_BYTES);
+  check('1 GiB at 48 KiB raw is 21846 chunks', N === 21846, String(N));
+  check('the last chunk is a partial, not a full one', SIZE % R.FT_CHUNK_RAW_BYTES !== 0 || N * R.FT_CHUNK_RAW_BYTES === SIZE);
+
+  const phone = mkWs(); const browser = mkWs();
+  const room = mkRoom(phone, browser);
+  const id = newId();
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'v.mp4', size: SIZE, mime: 'video/mp4', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('a 1 GiB offer is admitted at exactly the cap', !!room.transfer && room.transfer.state === 'offered');
+  R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+  // Drive the boundary sequence numbers only; the body of the stream is
+  // arithmetic, not bytes — allocating 1 GB to prove routing would prove
+  // nothing extra and would OOM the runner.
+  for (const seq of [0, 1, Math.floor(N / 2), N - 2, N - 1]) {
+    R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq, n: N, data: 'QUJD' })}`, 'phone', room.token);
+  }
+  check('every boundary chunk of a 21846-chunk stream forwards', countOf(browser, 'FILE_CHUNK') === 5);
+  check('the relay never held a byte of content', room.transfer.bytesForwarded < 1000);
+  R.handleFileFrame(room, phone, `FILE_DONE:${JSON.stringify({ id, sha256: sha() })}`, 'phone', room.token);
+  check('the 1 GiB transfer completes and the slot frees', room.transfer === null);
+
+  // One byte over the cap.
+  const room2 = mkRoom(phone, browser);
+  const id2 = newId();
+  R.handleFileFrame(room2, phone, `FILE_OFFER:${JSON.stringify({ id: id2, name: 'v.mp4', size: SIZE + 1, mime: 'video/mp4', sha256: sha(), from: 'phone' })}`, 'phone', room2.token);
+  await new Promise((r) => setImmediate(r));
+  check('1 GiB + 1 byte is refused too_large', payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'too_large');
+  check('the oversize offer never reached the peer', countOf(browser, 'FILE_OFFER') === 1);
+  check('no record was left behind', room2.transfer === null);
+}
+
+// ── PART 8 — tier refusal ──────────────────────────────────────────────────
+console.log('\nPART 8 — tier gate (trial/free = feature OFF)');
+// NOTE the sockets here are built INLINE rather than via mkWs(): mkWs defaults
+// `tier` to 'plus', so passing `undefined` through it would silently test a
+// paying account and report three confident passes for the one case that
+// matters most — a socket whose tier never resolved.
+for (const tier of ['trial', 'free', 'enterprise', undefined]) {
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const mk = () => ({ userId: 'u1', tier, readyState: 1, bufferedAmount: 0, sent: [] });
+  const phone = mk(); const browser = mk();
+  const room = mkRoom(phone, browser);
+  const id = newId();
+  let reserved = false;
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'x', size: 1024, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check(`tier=${tier}: refused with FILE_FAILED tier`, payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'tier');
+  check(`tier=${tier}: the offer NEVER reached the peer`, countOf(browser, 'FILE_OFFER') === 0);
+  check(`tier=${tier}: no record armed`, room.transfer === null);
+  void reserved;
+}
+{
+  // The tier check must run BEFORE any DB write — a trial account must not be
+  // able to make the relay touch the quota table at all.
+  let touched = 0;
+  const db = { $queryRawUnsafe: async () => { touched++; return [{ used: 1n }]; }, $executeRawUnsafe: async () => { touched++; return 1; } };
+  const R = buildRelay({ db });
+  const phone = mkWs('u1', 'trial'); const browser = mkWs('u1', 'trial');
+  const room = mkRoom(phone, browser);
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id: newId(), name: 'x', size: 1024, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('a trial offer causes ZERO quota-table traffic', touched === 0, `touched=${touched}`);
+}
+{
+  // Quota refusal (stubbed 0-rows) must not arm a transfer.
+  const R = buildRelay({ db: DB_OVER_QUOTA });
+  const phone = mkWs(); const browser = mkWs();
+  const room = mkRoom(phone, browser);
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id: newId(), name: 'x', size: 1024, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('an over-quota offer is refused with FILE_FAILED quota',
+    payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'quota');
+  check('an over-quota offer never reaches the peer', countOf(browser, 'FILE_OFFER') === 0);
+}
+{
+  // FAIL CLOSED on a DB error. This is the deliberate divergence from
+  // checkDailyOutboundLimit, which fails open — one admitted offer here is up to
+  // 1 GB of egress, so an outage must refuse, not wave through.
+  const db = { $queryRawUnsafe: async () => { throw new Error('connection refused'); }, $executeRawUnsafe: async () => 1 };
+  const R = buildRelay({ db });
+  const phone = mkWs(); const browser = mkWs();
+  const room = mkRoom(phone, browser);
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id: newId(), name: 'x', size: 1024, mime: 'text/plain', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('a quota-store outage FAILS CLOSED', payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'quota');
+  check('and arms nothing', room.transfer === null && countOf(browser, 'FILE_OFFER') === 0);
+}
+
+// ── PART 9 — frameBuffer exclusion ─────────────────────────────────────────
+console.log('\nPART 9 — FILE_* frames never enter the 200-entry replay buffer');
+{
+  // Behavioural: 600 chunks through the real buffering branch, then a resume.
+  // The branch itself lives inline in the phone handler, so it is extracted the
+  // same way everything else here is — by reading the REAL source, not by
+  // restating the rule.
+  const src = stripComments(SERVER_SRC);
+  const pushSites = src.match(/frameBuffer\.push\(/g) || [];
+  check('there is exactly one frameBuffer push site to guard', pushSites.length === 1, `${pushSites.length} sites`);
+  const idx = src.indexOf('frameBuffer.push(');
+  const before = src.slice(Math.max(0, idx - 900), idx);
+  check('the push site is guarded by isFileFrame BEFORE the push', /isFileFrame\(msg\)[\s\S]*return;/.test(before));
+  check('the guard uses frameType-based isFileFrame, not startsWith',
+    !/startsWith\(\s*['"]FILE_/.test(src));
+
+  // Now prove the rule itself: a 200-slot buffer flushed by a chunk stream.
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const FRAME_BUFFER_MAX = 200;
+  const buffer = [];
+  const bufferOrSkip = (msg) => {
+    if (R.isFileFrame(msg)) return 'skipped';
+    buffer.push(msg);
+    if (buffer.length > FRAME_BUFFER_MAX) buffer.shift();
+    return 'buffered';
+  };
+  const real = ['SMS_RECEIVED:{"id":1}', 'PHONE_NOTIFICATION:{"id":2}', 'CALL_LOG_ENTRY:{"id":3}'];
+  for (const m of real) bufferOrSkip(m);
+  const id = newId();
+  for (let seq = 0; seq < 600; seq++) bufferOrSkip(`FILE_CHUNK:${JSON.stringify({ id, seq, n: 600, data: 'QUJD' })}`);
+  bufferOrSkip(`FILE_OFFER:${JSON.stringify({ id, name: 'x', size: 1, mime: 'text/plain', sha256: sha(), from: 'phone' })}`);
+  bufferOrSkip(`FILE_ACK:${JSON.stringify({ id, upTo: 599 })}`);
+  bufferOrSkip(`FILE_DONE:${JSON.stringify({ id, sha256: sha() })}`);
+  check('600 chunks later, the replay buffer holds ONLY the 3 real frames',
+    buffer.length === 3 && real.every((m, i) => buffer[i] === m), `len=${buffer.length}`);
+  check('no FILE_* frame of any type is in the buffer', buffer.every((m) => !R.isFileFrame(m)));
+}
+
+// ── PART 10 — logging and redaction ────────────────────────────────────────
+console.log('\nPART 10 — FILE_* logging is type + bytes + id only');
+{
+  const R = buildRelay({ db: DB_ALWAYS_OK });
+  const phone = mkWs(); const browser = mkWs();
+  const room = mkRoom(phone, browser);
+  const id = newId();
+  const CANARY_NAME = 'CANARY_FILENAME_qp81zx.jpg';
+  const CANARY_DATA = 'CANARYDATAaGVsbG8gd29ybGQ';
+  const CANARY_HASH = 'deadbeef'.repeat(8);
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: CANARY_NAME, size: 4096, mime: 'image/jpeg', sha256: CANARY_HASH, from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+  R.handleFileFrame(room, phone, `FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 1, data: CANARY_DATA })}`, 'phone', room.token);
+  R.handleFileFrame(room, phone, `FILE_DONE:${JSON.stringify({ id, sha256: CANARY_HASH })}`, 'phone', room.token);
+  const all = R.logs.join('\n');
+  check('no filename ever reaches a log line', !all.includes(CANARY_NAME));
+  check('no chunk data ever reaches a log line', !all.includes(CANARY_DATA));
+  check('no content hash ever reaches a log line', !all.includes(CANARY_HASH));
+  check('the transfer id IS logged (it is the debugging handle, and it is random)',
+    all.includes(id));
+  check('frameLabel on a fat chunk prints type and byte count only',
+    R.frameLabel(`FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 1, data: 'A'.repeat(1000) })}`)
+      === `type=FILE_CHUNK bytes=${Buffer.byteLength(`FILE_CHUNK:${JSON.stringify({ id, seq: 0, n: 1, data: 'A'.repeat(1000) })}`, 'utf8')}`);
+
+  // Source-level: no FILE_ log site may interpolate a payload field other than
+  // id/size/reason/state/bytes. The failure this guards is a well-meant
+  // `${payload.name}` added to a debug line six months from now.
+  const src = stripComments(SERVER_SRC);
+  const bad = [];
+  for (const line of src.split('\n')) {
+    if (!/rlog\(|console\.(log|error)\(/.test(line)) continue;
+    if (!/FILE/.test(line)) continue;
+    for (const m of line.matchAll(/\$\{([^}]+)\}/g)) {
+      const expr = m[1];
+      if (/payload\.(name|data|sha256|mime)|rec\.(name|data)|\bmsg\b(?!Label)/.test(expr)
+          && !/frameLabel\(/.test(expr)) bad.push(`${expr}`);
+    }
+  }
+  check('no FILE_* log site interpolates a name, a hash, a mime or raw data', bad.length === 0, bad.join(' | '));
+}
+
+// ── PART 11 — the quota, against a REAL PostgreSQL ─────────────────────────
+console.log('\nPART 11 — FileQuota against a real database');
+let db = null;
+let userId = null;
+try {
+  if (!process.env.DATABASE_URL) {
+    console.error('\nft-relay: DATABASE_URL is required for PART 11 (the ccpix harness DB).');
+    console.error('  e.g. DATABASE_URL=postgresql://pix:pix@localhost:15433/cc node tests/ft-relay.test.mjs');
+    process.exit(2);
+  }
+  const { PrismaClient } = requireCjs(join(ROOT, 'node_modules', '@prisma', 'client'));
+  db = new PrismaClient();
+  const R = buildRelay({ db });
+
+  // An isolated user per run — this DB is shared with the other lanes' suites,
+  // and a suite that assumes it owns the table is a suite that goes red for a
+  // sibling's reasons.
+  const suffix = randomBytes(8).toString('hex');
+  const user = await db.user.create({
+    data: {
+      email: `ft1-${suffix}@harness.invalid`,
+      phoneToken: randomBytes(32).toString('base64url'),
+    },
+  });
+  userId = user.id;
+
+  const D1 = '2026-09-18';
+  const D2 = '2026-09-19';
+  const GiB = 1024 * 1024 * 1024;
+  const readBytes = async (day) => {
+    const rows = await db.$queryRawUnsafe(
+      `SELECT "bytes" FROM "FileQuota" WHERE "userId" = $1 AND "day" = $2`, userId, day,
+    );
+    return rows.length ? BigInt(rows[0].bytes) : null;
+  };
+
+  check('a fresh account has no quota row at all', (await readBytes(D1)) === null);
+
+  const r1 = await R.ftReserveQuota(userId, GiB, D1);
+  check('a 1 GiB reservation is admitted', r1.ok === true);
+  check('the counter holds exactly 1 GiB', (await readBytes(D1)) === BigInt(GiB));
+
+  const r2 = await R.ftReserveQuota(userId, GiB, D1);
+  check('a second 1 GiB reservation lands exactly ON the 2 GiB cap', r2.ok === true);
+  check('the counter holds exactly 2 GiB — a value int4 cannot represent',
+    (await readBytes(D1)) === BigInt(R.FT_DAILY_QUOTA_BYTES));
+
+  const r3 = await R.ftReserveQuota(userId, 1, D1);
+  check('one more BYTE is refused', r3.ok === false && r3.reason === 'quota');
+  check('the refused reservation did not increment', (await readBytes(D1)) === BigInt(R.FT_DAILY_QUOTA_BYTES));
+
+  // Day rollover: a new UTC calendar day is a new row and a full allowance.
+  const r4 = await R.ftReserveQuota(userId, GiB, D2);
+  check('the next UTC day starts fresh (rollover at 00:00 UTC)', r4.ok === true);
+  check('the new day holds 1 GiB', (await readBytes(D2)) === BigInt(GiB));
+  check('yesterday is untouched by today', (await readBytes(D1)) === BigInt(R.FT_DAILY_QUOTA_BYTES));
+
+  // Release targets the day the reservation was MADE on, never "today". A
+  // transfer opened at 23:59:50 and failed at 00:00:10 must refund yesterday.
+  const recAcrossMidnight = { senderUserId: userId, quotaDay: D1, size: GiB, quotaSettled: false };
+  R.ftReleaseQuota(recAcrossMidnight);
+  await new Promise((r) => setTimeout(r, 250));
+  check('a failure refunds the day it was charged to', (await readBytes(D1)) === BigInt(GiB));
+  check('and does NOT touch the current day', (await readBytes(D2)) === BigInt(GiB));
+
+  check('the release is marked settled', recAcrossMidnight.quotaSettled === true);
+  R.ftReleaseQuota(recAcrossMidnight);       // second call — must be a no-op
+  await new Promise((r) => setTimeout(r, 250));
+  check('a double release refunds ONCE, not twice', (await readBytes(D1)) === BigInt(GiB));
+
+  // Commit is "leave it where it is".
+  const recDone = { senderUserId: userId, quotaDay: D2, size: GiB, quotaSettled: false };
+  R.ftCommitQuota(recDone);
+  check('commit marks the record settled', recDone.quotaSettled === true);
+  R.ftReleaseQuota(recDone);
+  await new Promise((r) => setTimeout(r, 250));
+  check('a committed transfer can never be refunded afterwards', (await readBytes(D2)) === BigInt(GiB));
+
+  // The floor: a refund must never drive a counter negative.
+  const recHuge = { senderUserId: userId, quotaDay: D2, size: 8 * GiB, quotaSettled: false };
+  R.ftReleaseQuota(recHuge);
+  await new Promise((r) => setTimeout(r, 250));
+  check('an over-large refund floors at zero, never negative', (await readBytes(D2)) === 0n);
+
+  // The whole-path arm: a real FILE_OFFER reserves, a real FILE_FAILED releases.
+  {
+    const phone = mkWs(userId, 'plus'); const browser = mkWs(userId, 'plus');
+    const room = mkRoom(phone, browser);
+    const id = newId();
+    const before = (await readBytes(R.utcDayKey(new Date()))) ?? 0n;
+    R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'a.bin', size: 50 * 1024 * 1024, mime: 'application/octet-stream', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+    await new Promise((r) => setTimeout(r, 300));
+    const today = R.utcDayKey(new Date());
+    check('FILE_OFFER reserved on the sender account', (await readBytes(today)) === before + BigInt(50 * 1024 * 1024));
+    check('the record remembers which day it charged', room.transfer?.quotaDay === today);
+    check('the record charges ws.userId, never a payload field', room.transfer?.senderUserId === userId);
+
+    R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+    R.handleFileFrame(room, browser, `FILE_FAILED:${JSON.stringify({ id, reason: 'hash_mismatch' })}`, 'browser', room.token);
+    await new Promise((r) => setTimeout(r, 300));
+    check('FILE_FAILED released the reservation', (await readBytes(today)) === before);
+    check('and the peer was told', payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason === 'hash_mismatch');
+  }
+  {
+    const phone = mkWs(userId, 'plus'); const browser = mkWs(userId, 'plus');
+    const room = mkRoom(phone, browser);
+    const id = newId();
+    const today = R.utcDayKey(new Date());
+    const before = (await readBytes(today)) ?? 0n;
+    R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'b.bin', size: 7 * 1024 * 1024, mime: 'application/octet-stream', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+    await new Promise((r) => setTimeout(r, 300));
+    R.handleFileFrame(room, browser, `FILE_ACCEPT:${JSON.stringify({ id })}`, 'browser', room.token);
+    R.handleFileFrame(room, phone, `FILE_DONE:${JSON.stringify({ id, sha256: sha() })}`, 'phone', room.token);
+    await new Promise((r) => setTimeout(r, 300));
+    check('FILE_DONE COMMITS the bytes — they stay on the counter',
+      (await readBytes(today)) === before + BigInt(7 * 1024 * 1024));
+  }
+
+  // The janitor's delete is a ranged one against the day index.
+  const OLD = '2026-01-01';
+  await R.ftReserveQuota(userId, 1024, OLD);
+  check('an old row exists to prune', (await readBytes(OLD)) === 1024n);
+  await db.$executeRawUnsafe(`DELETE FROM "FileQuota" WHERE "userId" = $1 AND "day" < $2`, userId, '2026-09-01');
+  check('a ranged day delete prunes it', (await readBytes(OLD)) === null);
+  check('and leaves the current rows alone', (await readBytes(D2)) !== null);
+
+  // The table stores NOTHING about the file.
+  const cols = await db.$queryRawUnsafe(
+    `SELECT column_name FROM information_schema.columns WHERE table_name = 'FileQuota'`,
+  );
+  const names = cols.map((c) => c.column_name).sort();
+  check('FileQuota has exactly id/userId/day/bytes/createdAt/updatedAt and nothing else',
+    names.join(',') === 'bytes,createdAt,day,id,updatedAt,userId', names.join(','));
+  const type = await db.$queryRawUnsafe(
+    `SELECT data_type FROM information_schema.columns WHERE table_name = 'FileQuota' AND column_name = 'bytes'`,
+  );
+  check('bytes is BIGINT — an INTEGER would overflow at the cap', type[0]?.data_type === 'bigint', type[0]?.data_type);
+} catch (e) {
+  fail++;
+  console.log(`  FAIL PART 11 threw — ${e.message}`);
+  console.log(e.stack);
+} finally {
+  if (db) {
+    try {
+      if (userId) await db.user.delete({ where: { id: userId } }); // cascades FileQuota
+    } catch (e) { console.error(`  warn  cleanup failed: ${e.message}`); }
+    await db.$disconnect();
+  }
+}
+
+console.log(`\n${fail === 0 ? 'OK' : 'FAIL'} ft-relay: ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
