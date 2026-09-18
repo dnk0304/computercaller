@@ -244,6 +244,19 @@ class PhoneService : Service() {
     private val pendingE2eOffers = mutableMapOf<String, E2eNegotiation.PeerOffer>()
 
     /**
+     * P4.1 — the offer of the pairing this phone ACCEPTED, kept until the pair
+     * ends.
+     *
+     * [pendingE2eOffers] is emptied at Accept, several hundred milliseconds
+     * before PAIRING_ACTIVE comes back from the relay, so it is not a source
+     * for the active pair. A declined or aborted pairing never lands here: its
+     * advertisement describes a computer this phone refused, and re-asserting
+     * it on some later ACTIVE frame would attribute one computer's capability
+     * to another.
+     */
+    private var acceptedE2eOffer: Pair<String, E2eNegotiation.PeerOffer>? = null
+
+    /**
      * §13.1: once this pair has been refused for a downgrade, a later weaker
      * offer is not a fresh negotiation — it is the second step of the same
      * attack. Survives for the life of the pairing series.
@@ -2564,6 +2577,9 @@ class PhoneService : Service() {
         // what it was: it never touches the executor.
         if (!accept) {
             pendingE2eOffers.remove(pairingId)
+            // P4.1: the user said no to this computer, so it is no longer the
+            // pending peer the Settings toggle is about.
+            E2eSettings.clearPeerAdvertisementFor(this, pairingId, "DECLINE_PAIRING")
             sendPairingDecision("DECLINE_PAIRING", pairingId, null)
             return
         }
@@ -2574,16 +2590,19 @@ class PhoneService : Service() {
                 // verification must not quietly get less than it asked for.
                 android.util.Log.w("PhoneService", "E2E refused: ${decision.logReason}")
                 pendingE2eOffers.remove(pairingId)
+                E2eSettings.clearPeerAdvertisementFor(this, pairingId, "E2E refused")
                 sendPairingDecision("DECLINE_PAIRING", pairingId, null)
                 broadcastE2eRefusal(pairingId, decision.userMessage)
             }
 
             is E2eNegotiation.Decision.Plaintext -> {
+                acceptedE2eOffer = pendingE2eOffers[pairingId]?.let { pairingId to it }
                 pendingE2eOffers.remove(pairingId)
                 sendPairingDecision(type, pairingId, null) // v55, byte for byte
             }
 
             is E2eNegotiation.Decision.Encrypted -> {
+                acceptedE2eOffer = pendingE2eOffers[pairingId]?.let { pairingId to it }
                 pendingE2eOffers.remove(pairingId)
                 e2eExecutor.execute { completeEncryptedAccept(pairingId, decision) }
             }
@@ -2635,12 +2654,34 @@ class PhoneService : Service() {
         }
         val offer = E2eNegotiation.parsePeerOffer(block)
         pendingE2eOffers[pairingId] = offer
+        // P4.1 — persist it. `pendingE2eOffers` is in-memory and dies with the
+        // process; the Settings screen is normally opened minutes later from a
+        // cold start, and answering "waiting" there is the P4 Part 1 bug.
+        val record = E2eSettings.recordPeerAdvertisement(this, pairingId, offer)
         android.util.Log.d(
             "PhoneService",
             "PAIRING_REQUEST e2e offer id=$pairingId advertisement=${offer.advertisement} " +
-                "recipients=${offer.recipients.size}" +
+                "recipients=${offer.recipients.size} peerSupported=${record.supported}" +
                 (offer.absentReason?.let { " reason=$it" } ?: "")
         )
+    }
+
+    /**
+     * P4.1 — re-assert the persisted advertisement for a pair that just went
+     * active.
+     *
+     * PAIRING_ACTIVE carries no `e2e` block of its own, so there is nothing new
+     * to learn; what this covers is the record having been written under a
+     * phone device identity that has since rotated, or not written at all
+     * because the process restarted between REQUEST and ACTIVE. Re-writing
+     * from the stashed offer is a no-op in the normal case and repairs the
+     * record in the abnormal one. It deliberately does NOT invent an offer
+     * when none was stashed: a fabricated ABSENT record would claim the
+     * computer is too old on no evidence.
+     */
+    private fun refreshPeerAdvertisementOnActive() {
+        val (pairingId, offer) = acceptedE2eOffer ?: return
+        E2eSettings.recordPeerAdvertisement(this, pairingId, offer)
     }
 
     /**
@@ -3906,6 +3947,9 @@ class PhoneService : Service() {
         cancelConnectTimeout()
         cancelLobbyReconnect()
         clearAllPendingPairings("user disconnect from lobby")
+        // P4.1: the user left the lobby, so there is no pending computer.
+        E2eSettings.clearPeerAdvertisement(this, "user disconnect from lobby")
+        acceptedE2eOffer = null
         lastConnectionError = null
         client?.close(1000, "user_disconnect_from_lobby")
         client = null
@@ -3957,6 +4001,8 @@ class PhoneService : Service() {
         // but tearing down first would leave the chokepoint latched with no
         // session for the moment in between.
         tearDownE2e("LEAVE_ACTIVE")
+        E2eSettings.clearPeerAdvertisement(this, "LEAVE_ACTIVE")
+        acceptedE2eOffer = null
         // Do NOT close the relay client. Do NOT null clientRelayUrl. Do
         // NOT touch the TokenStore. Phone stays in lobby, ready to
         // accept a new pairing. The PAIRING_TERMINATED reply (when the
@@ -4114,6 +4160,11 @@ class PhoneService : Service() {
                     }
                     android.util.Log.d("PhoneService", "PAIRING_CANCELLED id=$pairingId")
                     cancelPendingPairing(pairingId)
+                    // P4.1: the pending computer withdrew. Scoped to THIS
+                    // pairingId so an unrelated active pair keeps its record.
+                    E2eSettings.clearPeerAdvertisementFor(
+                        this, pairingId, "PAIRING_CANCELLED"
+                    )
                     // Also notify any visible AlertDialog so the user
                     // doesn't have to dismiss a stale prompt manually.
                     val cancelIntent = Intent(ACTION_PAIRING_CANCELLED_IN_FOREGROUND).apply {
@@ -4134,6 +4185,10 @@ class PhoneService : Service() {
                     val ip = (payload?.get("ip") as? String).orEmpty()
                     android.util.Log.d("PhoneService", "PAIRING_ACTIVE ua=$ua ip=$ip")
                     isPairActive = true
+                    // P4.1: keep the persisted advertisement current for the
+                    // pair that just went live. See the method's own note on
+                    // why it never fabricates one.
+                    refreshPeerAdvertisementOnActive()
                     updateNotification(getString(R.string.pair_active_notification))
                     // P4 (i): the shade as it stands right now. Dennis: "when
                     // we sync phone, it should fetch all notifications that
@@ -4152,6 +4207,14 @@ class PhoneService : Service() {
                     // pending-pairing sweep, so a request that arrives in the
                     // same tick cannot be accepted against a dead session.
                     tearDownE2e("PAIRING_TERMINATED: $reason")
+                    // P4.1: the pair is over, so what that computer could do is
+                    // no longer a fact about a current peer. Cleared HERE and
+                    // not inside tearDownE2e, which also runs on a relay
+                    // disconnect and on service destroy — neither of which is
+                    // an unpair, and clearing there would grey the toggle out
+                    // after every reconnect.
+                    E2eSettings.clearPeerAdvertisement(this, "PAIRING_TERMINATED: $reason")
+                    acceptedE2eOffer = null
                     // Drop any pending request notifications for this
                     // session — defensive; usually nothing is pending
                     // by the time TERMINATED arrives.
@@ -4170,6 +4233,8 @@ class PhoneService : Service() {
                     android.util.Log.d("PhoneService", "RESET_ROOM")
                     isPairActive = false
                     tearDownE2e("RESET_ROOM")
+                    E2eSettings.clearPeerAdvertisement(this, "RESET_ROOM")
+                    acceptedE2eOffer = null
                     clearAllPendingPairings("room reset")
                 }
                 // ------------------------------------------------------

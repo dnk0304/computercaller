@@ -30,10 +30,19 @@ import org.junit.runner.RunWith
  *  4. A repaint is NOT a tap: onResume assigns isChecked, and that assignment
  *     must not rewrite the preference.
  *
- * The enabled branch is reached through SettingsActivity.capabilityOverride
- * because [E2ePeerCapability.current] is still the P4 Part 1 stub and cannot
- * return PEER_SUPPORTED on any device. Without the seam the enabled row would
- * ship with no test at all — see the résumé's one-line request to Forge.
+ * P4.1 rewired the SETUP only. The three PEER states are now reached the way
+ * production reaches them: an `e2e` advertisement is persisted through
+ * [E2eSettings] and the Activity reads it back through the real
+ * [E2ePeerCapability.current]. Until P4.1 that provider was a stub that could
+ * only answer UNKNOWN, so this suite drove SettingsActivity.capabilityOverride
+ * for every state — and passed while the shipped toggle could never enable.
+ * The assertions below are unchanged; what changed is that they are now about
+ * the production path.
+ *
+ * [E2ePeerCapability.State.DEVICE_UNSUPPORTED] still uses the override, and
+ * has to: it means this phone's Keystore cannot do key agreement (API 26-30),
+ * which an API 31+ emulator cannot be put into. Removing the seam would not
+ * make that row tested — it would make it untested.
  */
 @RunWith(AndroidJUnit4::class)
 class E2eSettingsToggleUiTest {
@@ -41,16 +50,44 @@ class E2eSettingsToggleUiTest {
     private val instr get() = InstrumentationRegistry.getInstrumentation()
     private val ctx get() = instr.targetContext
 
+    /**
+     * The states a real device can be put into, and therefore the states whose
+     * RENDERING can be asserted here.
+     *
+     * [E2ePeerCapability.State.DEVICE_UNSUPPORTED] is missing on purpose: it
+     * means this phone's own Keystore cannot do key agreement (API 26–30), and
+     * an API 31+ emulator cannot be put into that state by any input. P5b
+     * reached it with a SettingsActivity override; P4.1 deleted that seam
+     * because lint proved the read side of it was production code
+     * (RestrictedApi), and a seam the product can reach is not a test seam.
+     *
+     * What is lost is the RENDER of that one row, and it is not lost silently:
+     * its reason string is still asserted distinct below, its branch is
+     * asserted in E2ePeerCapabilityTest, and the row's layout is the same
+     * disabled row the other two greyed states exercise here. Running it on a
+     * real API 26–30 image is the open item — the same open item the crypto
+     * suite already carries as `api26ImageRun: false`.
+     */
+    private val reachableStates = listOf(
+        E2ePeerCapability.State.UNKNOWN,
+        E2ePeerCapability.State.PEER_SUPPORTED,
+        E2ePeerCapability.State.PEER_UNSUPPORTED,
+    )
+
     @Before
     fun signInAndClearPreference() {
         // SettingsActivity bounces to SignInActivity without a stored token.
         TokenStore.save(ctx, "settings-toggle-test-not-a-real-token", "dennis@example.com")
         E2eSettings.setEncryptedModeEnabled(ctx, false)
+        // P4.1: the capability now comes off disk, so a record left by an
+        // earlier test would decide this one's starting state.
+        E2eSettings.clearPeerAdvertisement(ctx, "UI test setup")
     }
 
     @After
     fun tearDown() {
         E2eSettings.setEncryptedModeEnabled(ctx, false)
+        E2eSettings.clearPeerAdvertisement(ctx, "UI test teardown")
         TokenStore.clear(ctx)
     }
 
@@ -68,7 +105,7 @@ class E2eSettingsToggleUiTest {
     fun every_incapable_state_greys_the_toggle_with_its_own_reason() {
         val reasons = mutableMapOf<E2ePeerCapability.State, String>()
 
-        for (state in E2ePeerCapability.State.values()) {
+        for (state in reachableStates) {
             launchWith(state) { activity, toggle, reason ->
                 val shouldBeOperable = state == E2ePeerCapability.State.PEER_SUPPORTED
                 assertEquals(
@@ -100,10 +137,17 @@ class E2eSettingsToggleUiTest {
             }
         }
 
+        // The fourth state's copy is asserted at the STRING level, since its
+        // row cannot be rendered on this device (see [reachableStates]). The
+        // claim being made — four states, four different things to do next —
+        // is unchanged; only one quarter of it is proved from resources rather
+        // than from a painted view.
+        val allReasons = reasons.values.toMutableSet()
+        allReasons.add(ctx.getString(R.string.settings_encrypted_mode_device_old))
         assertEquals(
             "each capability state must have its OWN reason — a shared string " +
                 "tells the user nothing about what to do next",
-            E2ePeerCapability.State.values().size, reasons.values.toSet().size
+            E2ePeerCapability.State.values().size, allReasons.size
         )
     }
 
@@ -146,7 +190,7 @@ class E2eSettingsToggleUiTest {
 
     @Test
     fun the_row_never_claims_end_to_end_in_any_state() {
-        for (state in E2ePeerCapability.State.values()) {
+        for (state in reachableStates) {
             launchWith(state) { activity, _, _ ->
                 CopyRules.assertNoEndToEndClaim(activity.window.decorView)
             }
@@ -154,19 +198,78 @@ class E2eSettingsToggleUiTest {
     }
 
     /**
-     * Launch Settings with the capability provider forced to [state].
+     * Put the REAL provider into [state] by writing the advertisement that
+     * produces it, exactly as PhoneService does on a PAIRING_REQUEST.
      *
-     * The override is applied inside onActivity and followed by an explicit
-     * refresh, because the Activity has already painted itself from the real
-     * provider by the time the test can touch it.
+     * DEVICE_UNSUPPORTED is rejected outright rather than faked: it is a fact
+     * about the phone's Keystore, not about any peer, and there is no longer a
+     * seam that can assert it. A test that asked for it would otherwise get a
+     * silently wrong row. See [reachableStates].
+     */
+    private fun seedRealProvider(state: E2ePeerCapability.State) {
+        E2eSettings.clearPeerAdvertisement(ctx, "seed")
+        when (state) {
+            // No record at all: nothing paired, nothing pending.
+            E2ePeerCapability.State.UNKNOWN -> Unit
+
+            // A v:1 block with a web recipient — the production shape.
+            E2ePeerCapability.State.PEER_SUPPORTED ->
+                E2eSettings.recordPeerAdvertisement(
+                    ctx, "ui-test-pairing",
+                    E2eNegotiation.parsePeerOffer(supportedE2eBlock())
+                )
+
+            // A computer that paired with no usable block at all.
+            E2ePeerCapability.State.PEER_UNSUPPORTED ->
+                E2eSettings.recordPeerAdvertisement(
+                    ctx, "ui-test-pairing", E2eNegotiation.parsePeerOffer(null)
+                )
+
+            E2ePeerCapability.State.DEVICE_UNSUPPORTED -> throw IllegalArgumentException(
+                "DEVICE_UNSUPPORTED cannot be produced on this device — see reachableStates"
+            )
+        }
+        // Prove the seed landed. A seed that silently produced a different
+        // state would make every assertion below test the wrong row while
+        // still going green — the exact failure mode P4.1 exists to close.
+        assertEquals(
+            "seeding did not produce $state",
+            state, E2ePeerCapability.current(ctx)
+        )
+    }
+
+    /** A PAIRING_REQUEST `e2e` block from a capable computer (P1 wire shape). */
+    private fun supportedE2eBlock(): com.google.gson.JsonObject {
+        val g = java.security.KeyPairGenerator.getInstance("EC")
+        g.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val pub = E2eKeyEncoding.toBase64Url(E2eKeyEncoding.toSec1(g.generateKeyPair().public))
+        return com.google.gson.JsonObject().apply {
+            addProperty("v", 1)
+            addProperty("mode", 1)
+            add("recips", com.google.gson.JsonArray().apply {
+                add(com.google.gson.JsonObject().apply {
+                    addProperty("kind", "web")
+                    addProperty("deviceId", "ui-test-dev-web")
+                    addProperty("pub", pub)
+                })
+            })
+        }
+    }
+
+    /**
+     * Launch Settings with the capability provider reporting [state].
+     *
+     * P4.1: every state here goes through the real provider (see
+     * [seedRealProvider]). The explicit refresh stays, because the Activity
+     * has already painted by the time a test can seed anything.
      */
     private fun launchWith(
         state: E2ePeerCapability.State,
         body: (SettingsActivity, SwitchMaterial, android.widget.TextView) -> Unit,
     ) {
+        seedRealProvider(state)
         ActivityScenario.launch(SettingsActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
-                activity.capabilityOverride = state
                 activity.refreshEncryptedModeRowForTest()
                 body(
                     activity,

@@ -1,11 +1,19 @@
 {
-  "_note": "Android lint baseline for the E2E programme, generated on BASE_SHA 445138a6c58c12b2848cb4c24371b0d443e51c27 by P4 (s1). May only SHRINK. Regenerate with: gradlew.bat :app:lintDebug --continue ; node tools/lint-manifest.mjs --generate",
+  "_note": "Android lint baseline for the E2E programme. Programme identity BASE_SHA 445138a6c58c12b2848cb4c24371b0d443e51c27; measured against scopeBase 321333e55c020a74f34c44ca6906d85f1cb3b364 (merge-base). May only SHRINK. Regenerate with: gradlew.bat :app:lintDebug --continue ; node tools/lint-manifest.mjs --generate",
   "_owners": {
     "MissingPermission": "forge-backend — pre-existing on the call/SMS/contacts handlers; each site DOES gate on a runtime permission check upstream, lint cannot see it. Not an E2E deliverable.",
     "_default": "forge-backend — pre-existing at BASE_SHA; not an E2E programme deliverable."
   },
   "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
-  "generatedUtc": "2026-09-17T23:57:05Z",
+  "scopeBase": {
+    "sha": "321333e55c020a74f34c44ca6906d85f1cb3b364",
+    "kind": "merge-base",
+    "ref": "origin/e2e/integration",
+    "integrationTip": "321333e55c020a74f34c44ca6906d85f1cb3b364",
+    "fellBackToBaseSha": false,
+    "reason": null
+  },
+  "generatedUtc": "2026-09-18T03:42:30Z",
   "lintVersion": "lint 8.13.2",
   "total": 183,
   "severities": {

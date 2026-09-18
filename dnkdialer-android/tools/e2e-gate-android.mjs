@@ -27,6 +27,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSy
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import { BASE_SHA as PROGRAMME_BASE_SHA, resolveScopeBase } from './scope.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE_ROOT = resolve(HERE, '..');
@@ -55,16 +56,25 @@ const PHASE = (() => {
   const i = process.argv.indexOf('--phase');
   const v = i > -1 ? process.argv[i + 1] : null;
   if (!v) return 'P4';
-  if (!/^P[0-9]+[A-Za-z]?$/.test(v)) throw new Error(`--phase: unrecognised phase '${v}'`);
+  // P4.1 and friends: a phase can carry a dotted sub-number. The old pattern
+  // rejected `P4.1` outright, which would have read as "this gate does not
+  // exist yet" rather than "the regex is one character short".
+  if (!/^P[0-9]+(\.[0-9]+)?[A-Za-z]?$/.test(v)) throw new Error(`--phase: unrecognised phase '${v}'`);
   return v.toUpperCase();
 })();
 const LANE = 'android';
 
-const BASE_SHA = (() => {
-  const v = BASE_SHA_BY_PHASE[PHASE];
-  if (!v) throw new Error(`no BASE_SHA recorded for phase ${PHASE} — add one rather than guessing`);
-  return v;
-})();
+/**
+ * P4.1: the per-phase table stays for the two phases that recorded one, but a
+ * NEW phase no longer has to be hand-added. Every lane since P0.3 branches
+ * from the integration tip, so the merge-base IS the lane's base — the same
+ * answer `tools/e2e-gate.mjs` computes, from the same unit-tested decision
+ * module. Throwing on an unlisted phase meant the next lane's first gate run
+ * failed for a bookkeeping reason and taught its author to edit this table
+ * instead of to read it.
+ */
+const SCOPE = resolveScopeBase(REPO_ROOT);
+const BASE_SHA = BASE_SHA_BY_PHASE[PHASE] ?? SCOPE.sha;
 
 const LOG_DIR = join(tmpdir(), `e2e-gate-${PHASE.toLowerCase()}-logs`);
 mkdirSync(LOG_DIR, { recursive: true });
@@ -334,6 +344,41 @@ const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: t
   });
 }
 
+// -------------------------- step 11e2: peer capability (P4.1 a/b)
+{
+  // P4.1's own proof, and a separate step for the same reason 11e is separate
+  // from 11d: it asserts something the others cannot. The crypto suite proves
+  // keys survive process death; this proves the SETTINGS SCREEN'S ANSWER does.
+  // P4 Part 1 shipped a capability provider that could only say UNKNOWN, P5b
+  // proved the enabled row through a test-only override, and between two green
+  // gates the product had a toggle no user could ever switch on. Nothing here
+  // uses an override.
+  const adb = process.env.ANDROID_HOME
+    ? join(process.env.ANDROID_HOME, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb')
+    : null;
+  const deviceUp = (() => {
+    try {
+      return /\bdevice\b/.test(execFileSync(adb, ['devices'], { encoding: 'utf8' }).split('\n').slice(1).join('\n'));
+    } catch { return false; }
+  })();
+  const r = step('instrumented-peer-capability', 'tools/run-peer-capability-test.ps1 (advertise -> force-stop -> Settings reads PEER_SUPPORTED)', () => {
+    if (!deviceUp) return 'SKIPPED: no device/emulator attached';
+    return execSync('powershell -ExecutionPolicy Bypass -File tools/run-peer-capability-test.ps1',
+      { ...gradleOpts, maxBuffer: 1 << 24 });
+  });
+  const skipped = !deviceUp;
+  const ok = skipped || /PEER CAPABILITY PROCESS-DEATH PROOF: PASS/.test(r._out);
+  const total = Number(/PEER CAPABILITY TOTAL: (\d+) tests/.exec(r._out)?.[1] ?? -1);
+  finish(r, {
+    exit: skipped ? 0 : (ok ? 0 : 1),
+    counts: {
+      skipped: skipped ? 1 : 0,
+      peerCapabilityProcessDeath: ok && !skipped ? 'PASS' : (skipped ? 'SKIPPED' : 'FAIL'),
+      peerCapabilityTests: skipped ? 0 : total,
+    },
+  });
+}
+
 // ------------------------------------ step 11f: Encrypted-mode UI (P5b b-d)
 {
   // The UI suite is its own step rather than more classes inside the crypto
@@ -383,6 +428,16 @@ const payload = {
   phase: PHASE,
   sha,
   baseSha: BASE_SHA,
+  /** Where BASE_SHA came from, so a reader never has to guess. */
+  baseShaSource: BASE_SHA_BY_PHASE[PHASE] ? 'BASE_SHA_BY_PHASE' : `scope-base (${SCOPE.kind})`,
+  programmeBaseSha: PROGRAMME_BASE_SHA,
+  scopeBase: {
+    sha: SCOPE.sha,
+    kind: SCOPE.kind,
+    integrationTip: SCOPE.integrationTip,
+    fellBackToBaseSha: SCOPE.fellBack,
+    reason: SCOPE.reason,
+  },
   utc: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
   lane: LANE,
   note:

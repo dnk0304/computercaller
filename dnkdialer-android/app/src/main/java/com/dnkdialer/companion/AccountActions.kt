@@ -107,6 +107,13 @@ object AccountActions {
                 )
             }
             E2ePairIdentity.clearPairEpoch(activity)
+            // P4.1: sign-out ends every pair this identity had, so the last
+            // peer advertisement goes with it. E2eSettings lives in its own
+            // prefs file precisely so TokenStore.clear() does NOT wipe it (it
+            // holds the user's encryption preference, which must survive a
+            // sign-in/sign-out round trip) — so the advertisement has to be
+            // cleared explicitly here.
+            E2eSettings.clearPeerAdvertisement(activity, "sign-out")
         } catch (e: Exception) {
             android.util.Log.e("AccountActions", "E2E sign-out threw — continuing", e)
         }

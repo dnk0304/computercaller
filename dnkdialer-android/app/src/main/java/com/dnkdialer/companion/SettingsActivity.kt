@@ -63,20 +63,6 @@ class SettingsActivity : AppCompatActivity() {
      */
     private var suppressEncryptedModeCallback = false
 
-    /**
-     * P5b (b) test seam. [E2ePeerCapability.current] is still the P4 Part 1
-     * stub and can never return PEER_SUPPORTED, so the ENABLED branch of this
-     * row is unreachable on a real device until Forge lands the real lookup.
-     * An instrumented test must still be able to prove the enabled row renders
-     * and persists correctly — otherwise the branch ships untested and the
-     * first person to see it is the user.
-     *
-     * Null in production: nothing in `main` writes it, and the row always
-     * falls through to the real provider.
-     */
-    @androidx.annotation.VisibleForTesting
-    internal var capabilityOverride: E2ePeerCapability.State? = null
-
     /** Guards [lobbyToggle] so a repaint from the flag can't be read as a tap. */
     private var suppressLobbyToggleCallback = false
 
@@ -209,10 +195,11 @@ class SettingsActivity : AppCompatActivity() {
     /**
      * Paint the "Encrypted mode" row from [E2ePeerCapability].
      *
-     * Part 1 always lands on [E2ePeerCapability.State.UNKNOWN] or
-     * [E2ePeerCapability.State.DEVICE_UNSUPPORTED], so the switch is always
-     * disabled here — but the branches are the final ones, so Part 2 only has
-     * to make the provider tell the truth.
+     * P4.1: the provider now tells the truth. It reads the last `e2e`
+     * advertisement persisted for the paired or pending computer, so
+     * [E2ePeerCapability.State.PEER_SUPPORTED] — and therefore an operable
+     * switch — is reachable on a real device. Until P4.1 it was not, and this
+     * row shipped a control no user could ever turn on.
      *
      * The switch's checked state is read from [E2eSettings] (this device's
      * local preference, C-1) and NEVER from the server. It is set with the
@@ -225,7 +212,7 @@ class SettingsActivity : AppCompatActivity() {
      */
     private fun refreshEncryptedModeRow() {
         if (!::encryptedModeToggle.isInitialized) return
-        val state = capabilityOverride ?: E2ePeerCapability.current(this)
+        val state = E2ePeerCapability.current(this)
         val enabled = E2ePeerCapability.isToggleEnabled(state)
 
         encryptedModeToggle.isEnabled = enabled
@@ -266,9 +253,17 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     /**
-     * Repaint the row after a test has set [capabilityOverride]. The Activity
-     * has already painted from the real provider by the time a test can touch
-     * it, so the override needs an explicit second pass.
+     * Repaint the row from the real provider.
+     *
+     * P5b's `capabilityOverride` seam is GONE as of P4.1: the provider tells
+     * the truth now, so a test puts the row into a state by writing the
+     * advertisement that produces it, not by overriding the answer. Lint
+     * removed any doubt about whether the seam was production-reachable — with
+     * `otherwise = NONE` the elvis read in [refreshEncryptedModeRow] was a
+     * RestrictedApi error, because that read WAS production code.
+     *
+     * This hook remains because an instrumented test can only seed the store
+     * after the Activity has already painted, so the second pass is real.
      */
     @androidx.annotation.VisibleForTesting
     internal fun refreshEncryptedModeRowForTest() = refreshEncryptedModeRow()

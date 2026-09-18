@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BASE_SHA, INTEGRATION_REF, resolveScopeBase } from './scope.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE_ROOT = resolve(HERE, '..');                 // dnkdialer-android/
@@ -30,9 +31,22 @@ const REPO_ROOT = resolve(MODULE_ROOT, '..');            // repo root
 const XML = resolve(MODULE_ROOT, 'app/build/reports/lint-results-debug.xml');
 const MANIFEST = resolve(REPO_ROOT, 'e2e-evidence/LINT-BASELINE-android.json');
 
+/**
+ * ISSUES.md 2026-09-18 (closed by P4.1): this file used to stamp
+ * `baseSha: 445138a` — the programme IDENTITY — into a field every reader
+ * takes to mean "the commit this baseline was measured against". Since P0.3
+ * every lane branches from the integration TIP, so those are different shas
+ * and the stamped one was wrong for every lane after P4. Cosmetic in the
+ * sense that no check read the field; not cosmetic in the sense that the next
+ * person to diff two manifests would have compared them against the wrong
+ * commit. It now records BOTH, named for what they are.
+ */
+const SCOPE = resolveScopeBase(REPO_ROOT);
+
 const HEADER_NOTE =
-  'Android lint baseline for the E2E programme, generated on BASE_SHA ' +
-  '445138a6c58c12b2848cb4c24371b0d443e51c27 by P4 (s1). May only SHRINK. ' +
+  'Android lint baseline for the E2E programme. Programme identity BASE_SHA ' +
+  `${BASE_SHA}; measured against scopeBase ${SCOPE.sha} (${SCOPE.kind}` +
+  `${SCOPE.fellBack ? `, fell back: ${SCOPE.reason}` : ''}). May only SHRINK. ` +
   'Regenerate with: gradlew.bat :app:lintDebug --continue ; ' +
   'node tools/lint-manifest.mjs --generate';
 
@@ -112,7 +126,17 @@ function main() {
           'gate on a runtime permission check upstream, lint cannot see it. Not an E2E deliverable.',
         _default: 'forge-backend — pre-existing at BASE_SHA; not an E2E programme deliverable.',
       },
-      baseSha: '445138a6c58c12b2848cb4c24371b0d443e51c27',
+      /** Programme identity. Frozen; NOT what this baseline was measured against. */
+      baseSha: BASE_SHA,
+      /** E2E-P0.3's moving base — the commit this lane's floor is measured from. */
+      scopeBase: {
+        sha: SCOPE.sha,
+        kind: SCOPE.kind,
+        ref: INTEGRATION_REF,
+        integrationTip: SCOPE.integrationTip,
+        fellBackToBaseSha: SCOPE.fellBack,
+        reason: SCOPE.reason,
+      },
       generatedUtc: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
       lintVersion: /by="([^"]+)"/.exec(readFileSync(XML, 'utf8'))?.[1] ?? 'unknown',
       total: totals(files),

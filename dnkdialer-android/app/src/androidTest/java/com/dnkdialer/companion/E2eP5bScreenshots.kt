@@ -43,6 +43,7 @@ class E2eP5bScreenshots {
     fun tearDown() {
         setNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
         E2eSettings.setEncryptedModeEnabled(ctx, false)
+        E2eSettings.clearPeerAdvertisement(ctx, "screenshot teardown")
         TokenStore.clear(ctx)
     }
 
@@ -55,9 +56,21 @@ class E2eP5bScreenshots {
             setNightMode(mode)
 
             // (b) the Settings row, in the state a user can actually operate.
+            //
+            // P4.1: reached by persisting a real `e2e` advertisement rather
+            // than by forcing the Activity's override, so this screenshot is
+            // evidence of the PRODUCTION row. Under P5b it was evidence of a
+            // row only a test could produce — which is how a toggle that could
+            // never enable got photographed looking enabled.
+            E2eSettings.recordPeerAdvertisement(
+                ctx, "shot-pairing", E2eNegotiation.parsePeerOffer(supportedE2eBlock())
+            )
+            assertEquals(
+                "the screenshot fixture did not reach PEER_SUPPORTED",
+                E2ePeerCapability.State.PEER_SUPPORTED, E2ePeerCapability.current(ctx)
+            )
             ActivityScenario.launch(SettingsActivity::class.java).use { scenario ->
                 scenario.onActivity { activity ->
-                    activity.capabilityOverride = E2ePeerCapability.State.PEER_SUPPORTED
                     activity.refreshEncryptedModeRowForTest()
                     CopyRules.assertNoEndToEndClaim(activity.window.decorView)
                 }
@@ -134,5 +147,23 @@ class E2eP5bScreenshots {
             ?: throw AssertionError("takeScreenshot() returned null for $name")
         val dir = File(ctx.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
         File(dir, name).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
+    /** A PAIRING_REQUEST `e2e` block from a capable computer (P1 wire shape). */
+    private fun supportedE2eBlock(): com.google.gson.JsonObject {
+        val g = java.security.KeyPairGenerator.getInstance("EC")
+        g.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val pub = E2eKeyEncoding.toBase64Url(E2eKeyEncoding.toSec1(g.generateKeyPair().public))
+        return com.google.gson.JsonObject().apply {
+            addProperty("v", 1)
+            addProperty("mode", 1)
+            add("recips", com.google.gson.JsonArray().apply {
+                add(com.google.gson.JsonObject().apply {
+                    addProperty("kind", "web")
+                    addProperty("deviceId", "shot-dev-web")
+                    addProperty("pub", pub)
+                })
+            })
+        }
     }
 }

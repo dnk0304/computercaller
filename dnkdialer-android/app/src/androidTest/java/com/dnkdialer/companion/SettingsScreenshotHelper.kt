@@ -41,10 +41,14 @@ class SettingsScreenshotHelper {
         TokenStore.save(ctx, "screenshot-fixture-not-a-real-token", "dennis@example.com")
         assertTrue("fixture token did not persist", TokenStore.hasToken(ctx))
 
-        // Part 1 must never offer the toggle: there is no crypto behind it.
+        // P4.1: the provider is real now, so the state it reports depends on
+        // what is stored. Clear first — this helper documents the UNPAIRED
+        // row, and a record left by an earlier test would otherwise capture a
+        // screenshot of a different state under this file's name.
+        E2eSettings.clearPeerAdvertisement(ctx, "screenshot fixture")
         val state = E2ePeerCapability.current(ctx)
         assertEquals(
-            "Part 1 stub must report UNKNOWN on a capable device",
+            "with nothing paired the provider must report UNKNOWN on a capable device",
             E2ePeerCapability.State.UNKNOWN, state
         )
         assertFalse(E2ePeerCapability.isToggleEnabled(state))
