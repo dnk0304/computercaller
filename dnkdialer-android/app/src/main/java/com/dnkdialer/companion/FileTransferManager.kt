@@ -373,11 +373,19 @@ class FileTransferManager(
                 val pfd = context.contentResolver.openFileDescriptor(partUri, "rw")
                     ?: throw IllegalStateException("no descriptor for $partUri")
                 r.pfd = pfd
-                // Truncate: a document provider may hand back a file that
-                // already exists with bytes in it, and appending to those would
-                // produce a file whose hash can only fail at the very end.
-                FileOutputStream(pfd.fileDescriptor).channel.truncate(0)
-                r.out = FileOutputStream(pfd.fileDescriptor)
+                // ONE stream over this descriptor, and the truncate goes
+                // through it. A second FileOutputStream built from the same
+                // FileDescriptor would own the same fd, and whichever one the
+                // GC reached first would close the descriptor out from under
+                // the other — mid-transfer, with no error that names the cause.
+                //
+                // Truncating at all: a document provider may hand back a file
+                // that already has bytes in it, and appending to those produces
+                // a file whose hash can only fail at the very end of a 1 GB
+                // transfer.
+                val out = FileOutputStream(pfd.fileDescriptor)
+                out.channel.truncate(0)
+                r.out = out
                 synchronized(lock) {
                     active = r
                     pendingOffer = null
@@ -605,8 +613,10 @@ class FileTransferManager(
                 val pfd = context.contentResolver.openFileDescriptor(uri, "rw") ?: return@execute
                 // Discard any tail written after the last sync: the ACK we sent
                 // covers exactly p.bytesWritten, and anything past it is bytes
-                // the sender will send again.
-                FileOutputStream(pfd.fileDescriptor).channel.truncate(p.bytesWritten)
+                // the sender will send again. Same fd-ownership rule as in
+                // acceptOffer — this is the ONE output stream on the descriptor.
+                val out = FileOutputStream(pfd.fileDescriptor)
+                out.channel.truncate(p.bytesWritten)
                 val digest = MessageDigest.getInstance("SHA-256")
                 FileInputStream(pfd.fileDescriptor).use { fis ->
                     val buf = ByteArray(FileTransfer.CHUNK_RAW_BYTES)
@@ -621,7 +631,6 @@ class FileTransferManager(
                 }
                 val r = Active.Receive(p.id, p.name, p.size, p.sha256, null, uri)
                 r.pfd = pfd
-                val out = FileOutputStream(pfd.fileDescriptor)
                 out.channel.position(p.bytesWritten)
                 r.out = out
                 r.digest = digest
@@ -752,27 +761,69 @@ class FileTransferManager(
 
     private fun deleteDoc(uri: Uri) {
         try {
+            if (uri.scheme == "file") {
+                uri.path?.let { java.io.File(it).delete() }
+                return
+            }
             DocumentsContract.deleteDocument(context.contentResolver, uri)
         } catch (e: Exception) {
             android.util.Log.w("FileTransfer", "could not delete ${uri.lastPathSegment}: ${e.message}")
         }
     }
 
+    /**
+     * `file://` handling exists so the instrumented loopback can drive these
+     * exact code paths without a FileProvider in the production manifest — a
+     * test-only provider is production surface, and the alternative (a mocked
+     * rename) would prove nothing about the rename.
+     *
+     * It is not dead weight in production either: a document provider that
+     * hands back a file URI gets correct behaviour instead of a stuck `.part`.
+     */
     private fun renameOffPart(uri: Uri, finalName: String): Uri? = try {
-        // SAF de-duplicates for us: renaming onto an existing name yields
-        // "holiday (1).jpg" from the provider, which is the collision suffix
-        // the spec asks for, produced by the component that can actually see
-        // what else is in the directory.
-        DocumentsContract.renameDocument(context.contentResolver, uri, finalName)
+        if (uri.scheme == "file") {
+            renameLocalFile(uri, finalName)
+        } else {
+            // SAF de-duplicates for us: renaming onto an existing name yields
+            // "holiday (1).jpg" from the provider, which is the collision
+            // suffix the spec asks for, produced by the component that can
+            // actually see what else is in the directory.
+            DocumentsContract.renameDocument(context.contentResolver, uri, finalName)
+        }
     } catch (e: Exception) {
         android.util.Log.w("FileTransfer", "rename failed, file stays .part: ${e.message}")
         null
+    }
+
+    /**
+     * The collision suffix, applied by us because a plain filesystem will
+     * happily let one transfer overwrite the last one's result.
+     */
+    private fun renameLocalFile(uri: Uri, finalName: String): Uri? {
+        val part = java.io.File(uri.path ?: return null)
+        val dir = part.parentFile ?: return null
+        var attempt = 0
+        while (attempt < 1000) {
+            val candidate = java.io.File(dir, FileTransfer.collisionName(finalName, attempt))
+            if (!candidate.exists()) {
+                return if (part.renameTo(candidate)) Uri.fromFile(candidate) else null
+            }
+            attempt++
+        }
+        return null
     }
 
     /** (name, size) from the document provider; size -1 when unknown. */
     private fun queryMeta(uri: Uri): Pair<String?, Long> {
         var name: String? = null
         var size = -1L
+        // A file:// URI has no provider to query. Reading it directly is what
+        // lets the instrumented loopback exercise the real send path; it is
+        // also simply correct for any provider that hands one back.
+        if (uri.scheme == "file") {
+            val f = java.io.File(uri.path ?: "")
+            if (f.isFile) return f.name to f.length()
+        }
         try {
             context.contentResolver.query(uri, null, null, null, null)?.use { c ->
                 if (c.moveToFirst()) {

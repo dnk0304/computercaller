@@ -483,4 +483,63 @@
     <string name="notif_ongoing_connected">Connected to your computer</string>
     <string name="notif_request_body">%1$s wants to connect to this phone.</string>
     <string name="notif_request_big">%1$s wants to connect to this phone. Accept only if you started this from your own computer.</string>
+
+    <!-- ================= FT-2 file transfer (v59) =================
+         Copy rule inherited from the v56 block above: plain English, no
+         pricing or plan language (Play policy). The "we do not scan" line is
+         mandatory, not decorative — spec §6. -->
+    <string name="ft_channel_offers">Incoming files</string>
+    <string name="ft_channel_offers_desc">Asks you to accept or reject a file your computer wants to send</string>
+    <string name="ft_channel_progress">File transfers</string>
+    <string name="ft_channel_progress_desc">Shows progress while a file is being sent or received</string>
+
+    <string name="ft_offer_title">Accept %1$s (%2$s)?</string>
+    <string name="ft_offer_trust">Files are not checked for viruses. Only accept files from people you trust.</string>
+    <string name="ft_accept">Accept</string>
+    <string name="ft_reject">Reject</string>
+    <string name="ft_cancel">Cancel</string>
+    <string name="ft_send">Send</string>
+
+    <string name="ft_send_title">Send %1$s?</string>
+    <string name="ft_send_body">%1$s will be sent to your computer. Files up to 1 GB.</string>
+    <string name="ft_send_started">Sending — your computer will be asked to accept it.</string>
+    <string name="ft_receive_started">Receiving…</string>
+    <string name="ft_one_at_a_time">One file at a time — sending the first one.</string>
+    <string name="ft_no_file">No file to send.</string>
+    <string name="ft_no_picker">No file picker is available on this phone.</string>
+    <string name="ft_not_connected">Connect to your computer first.</string>
+    <string name="ft_offer_gone">That file is no longer being offered.</string>
+    <string name="ft_generic_file">File</string>
+
+    <string name="ft_sending">Sending %1$s</string>
+    <string name="ft_receiving">Receiving %1$s</string>
+    <string name="ft_sent">Sent %1$s</string>
+    <string name="ft_received">Received %1$s</string>
+    <string name="ft_tap_to_open">Tap to open</string>
+    <string name="ft_send_failed">Could not send %1$s</string>
+    <string name="ft_receive_failed">Could not receive %1$s</string>
+    <string name="ft_progress_plain">%1$s of %2$s</string>
+    <string name="ft_progress_eta">%1$s of %2$s · %3$s left</string>
+    <string name="ft_eta_seconds">%1$d sec</string>
+    <string name="ft_eta_minutes">%1$d min</string>
+    <string name="ft_eta_hours">%1$d hr</string>
+
+    <string name="ft_too_large_title">File is too big</string>
+    <string name="ft_cannot_send_title">Cannot send this file</string>
+    <string name="ft_fail_too_large">Files up to 1 GB.</string>
+    <string name="ft_fail_quota">Daily limit reached (2 GB) — resets at midnight UTC.</string>
+    <!-- FT-2b / Pilot: the brief asks for "Send files is included with a
+         subscription — Upgrade" plus a deep-link. There is no in-app upgrade
+         path and this file carries a standing no-plan-language rule, so the
+         copy stays neutral until Pilot rules. Behaviour is unaffected: the
+         refusal is server-enforced. -->
+    <string name="ft_fail_tier">Sending files is not available on this account yet.</string>
+    <string name="ft_fail_hash">The file arrived damaged and was deleted. Try again.</string>
+    <string name="ft_fail_cancelled">Transfer cancelled.</string>
+    <string name="ft_fail_timeout">The transfer stopped responding.</string>
+    <string name="ft_fail_oom">This phone ran out of memory during the transfer.</string>
+    <string name="ft_fail_backpressure">The connection could not keep up. Try again.</string>
+    <string name="ft_fail_connection">The connection dropped during the transfer.</string>
+
+    <string name="ft_share_label">Send to computer</string>
 </resources>

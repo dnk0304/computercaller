@@ -21,8 +21,48 @@ import androidx.appcompat.app.AppCompatDelegate
  * get when the mode is applied after a window already exists.
  */
 class CompanionApp : Application() {
+
+    companion object {
+        /**
+         * FT-2 — is any Activity of ours resumed right now?
+         *
+         * Drives ONE thing: whether [PhoneService] also raises the in-app
+         * file-offer dialog on top of the notification. The notification fires
+         * either way, so a wrong answer here costs a dialog and never the
+         * prompt itself — which is why a simple resumed-count is enough and
+         * ProcessLifecycleOwner (another dependency, another lint item) is not
+         * worth adding for it.
+         *
+         * Tracked in the Application rather than in an Activity so that FT-2
+         * does not have to touch MainActivity, which another lane owns.
+         */
+        @Volatile
+        @JvmStatic
+        var isInForeground: Boolean = false
+            private set
+    }
+
     override fun onCreate() {
         super.onCreate()
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            private var resumed = 0
+            override fun onActivityResumed(activity: android.app.Activity) {
+                resumed++
+                isInForeground = true
+            }
+
+            override fun onActivityPaused(activity: android.app.Activity) {
+                resumed = (resumed - 1).coerceAtLeast(0)
+                isInForeground = resumed > 0
+            }
+
+            override fun onActivityCreated(a: android.app.Activity, b: android.os.Bundle?) = Unit
+            override fun onActivityStarted(a: android.app.Activity) = Unit
+            override fun onActivityStopped(a: android.app.Activity) = Unit
+            override fun onActivitySaveInstanceState(a: android.app.Activity, b: android.os.Bundle) = Unit
+            override fun onActivityDestroyed(a: android.app.Activity) = Unit
+        })
     }
 }
