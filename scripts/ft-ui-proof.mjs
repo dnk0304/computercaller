@@ -107,9 +107,9 @@ fs.mkdirSync(SHOTS, { recursive: true });
 /**
  * minChecks — a FLOOR, not a target. A run reporting fewer means assertions
  * silently stopped executing, which is the failure mode a bare "N/N passed"
- * hides. Node arm 22 + browser arm 45, measured at this commit.
+ * hides. Node arm 22 + browser arm 49, measured at this commit.
  */
-export const MIN_CHECKS = 67;
+export const MIN_CHECKS = 71;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -249,7 +249,7 @@ try {
    * the CLIENT-SAFE entitlement path the components actually read, so the trial
    * lock is exercised through the same fetch the product uses.
    */
-  const openPanel = async ({ subscribed, dark = false, zoom = 1, width = 360 }) => {
+  const openPanel = async ({ subscribed, dark = false, zoom = 1, width = 360, route = '/extension' }) => {
     const ctx = await browser.newContext({
       viewport: { width, height: 780 },
       deviceScaleFactor: 1,
@@ -325,8 +325,15 @@ try {
         });
       }, zoom);
     }
-    await page.goto(`${BASE}/extension`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.cc-ext', { timeout: 30_000 });
+    await page.goto(`${BASE}${route}`, { waitUntil: 'domcontentloaded' });
+    /*
+     * Both surfaces render the SAME PhoneModeShell. The extension route always
+     * does; /app does so only under the width-driven phone mode, which is why
+     * this harness runs at 360 px — the web arm below is a real /app render,
+     * not the extension surface wearing a different URL.
+     */
+    await page.waitForSelector(route === '/extension' ? '.cc-ext' : '.phone-mode-shell',
+      { timeout: 30_000 });
     return { ctx, page };
   };
 
@@ -354,6 +361,20 @@ try {
       el.focus(); return document.activeElement === el;
     }));
     // It must lead somewhere — the existing pricing/upgrade modal.
+    /*
+     * Wait for the entitlement fetch to have RESOLVED before clicking.
+     * `subscribed` reads `entitlement?.allowed === true`, which is false both
+     * for a real trial user AND while the fetch is still in flight — so the
+     * lock paints before the upgrade path exists, and a click landing in that
+     * window opens a modal with nothing to render. Without this wait the check
+     * is a coin flip. (Worth noting as a real, pre-existing UX nuance in
+     * UpgradeModal, not something this feature introduced.)
+     */
+    await page.waitForResponse(
+      (r) => r.url().includes('/api/entitlement') && r.status() === 200,
+      { timeout: 20_000 },
+    ).catch(() => {});
+    await page.waitForTimeout(250);
     await lock.click();
     /*
      * Scoped to a dialog that is NOT the sync-setup panel. The first version of
@@ -484,6 +505,36 @@ try {
     await cancel.click();
     check('progress: cancel removes the row',
       await bar.waitFor({ state: 'detached', timeout: 10_000 }).then(() => true).catch(() => false));
+    await ctx.close();
+  }
+
+  // ── the WEB surface (/app phone mode), not just the extension ────────────
+  {
+    const { ctx, page } = await openPanel({ subscribed: false, route: '/app' });
+    const lock = page.locator('[data-cc-ft-action="tier-lock"]').first();
+    const there = await lock.waitFor({ state: 'attached', timeout: 25_000 })
+      .then(() => true).catch(() => false);
+    check('web: the trial lock renders on /app phone mode', there);
+    if (there) {
+      // The Dial slot carries the FULL sentence; the thread header's icon-only
+      // variant carries it as an accessible name. At least one must be visible
+      // text on this surface, which is the (c) requirement.
+      const withText = page.locator('[data-cc-ft-action="tier-lock"]:not([title])').first();
+      const visibleCopy = (await withText.count())
+        ? (await withText.innerText()).trim() : '';
+      check('web: the full tier sentence is visible text, not only a label',
+        visibleCopy === FT_TIER_LOCK_COPY, visibleCopy || '(icon-only variants only)');
+      await shot(page, 'app-lock-light-360');
+    }
+    check('web: the drop target wraps the shell body',
+      (await page.locator('[data-cc-ft-dragging]').count()) >= 1);
+    await ctx.close();
+  }
+  {
+    const { ctx, page } = await openPanel({ subscribed: true, route: '/app' });
+    const input = page.locator('[data-cc-ft-input]').first();
+    check('web: the send control renders on /app when subscribed',
+      await input.waitFor({ state: 'attached', timeout: 25_000 }).then(() => true).catch(() => false));
     await ctx.close();
   }
 
