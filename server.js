@@ -2632,6 +2632,33 @@ function startRelay(httpServer) {
    *     or if there was never one, the transfer is dead: abort and refund.
    *  2. An offer nobody answers expires at FT_OFFER_TTL_MS so the one-per-room
    *     slot cannot be held hostage by a peer that went away mid-prompt.
+   *
+   *     SECURITY FT-A1.2, RATIFIED (A) 2026-09-18: this branch IS the
+   *     no-receiver timeout, and it is RELAY-owned on purpose. The proposal to
+   *     put it in the service worker (B-3) was STRUCK as unsatisfiable, not
+   *     merely hard: listener sockets have no send path into the relay, and a
+   *     SW-authored frame would be plaintext-and-unmarked, which the phone's
+   *     B-1 downgrade guard is REQUIRED to drop. Giving the SW a send path to
+   *     fix that converts a receive-only component into a wire participant and
+   *     turns its frame-type filter into a security boundary. So the timeout is
+   *     minted here, where the relay mark already comes from one place, and
+   *     `ftAbort` fans it out to BOTH endpoints (M14) — the receiver's copy is
+   *     admissible under A1.1-M9 because a receiver that never answered still
+   *     holds a record for that id. `timeout` stays relay-owned (M15): a peer's
+   *     own plaintext expiry naming a record we have already dropped is a
+   *     `no_record` drop, never a forward.
+   *
+   *     FROZEN timer hierarchy (A1.2, extending A1.1 M4) — changing any number
+   *     here is a cross-lane amendment, not a tuning exercise:
+   *
+   *       sender-local   60 s  PRIMARY        the sender gives up on its own
+   *       SW marker      60 s  INFORMATIONAL  notification only; sends NOTHING (M13)
+   *       FT_OFFER_TTL   90 s  BACKSTOP       this branch: frees slot + quota
+   *       FT_STALL_MS    30 s  post-ACCEPT    branch 3 below, never this one
+   *
+   *     The 30 s gap between the sender's 60 s and this 90 s is what stops the
+   *     relay racing an honest sender into a spurious `timeout`. Pinned by
+   *     tests/ft-relay.test.mjs PART 12.
    *  3. An accepted transfer that goes FT_STALL_MS without a chunk or an ACK is
    *     timed out. This is the relay's BACKSTOP for the receiver-side stall the
    *     clients also enforce — a client that simply stops is not a client that

@@ -126,15 +126,23 @@ const FT_FNS = [
  * leak into the next (the append-only-shared-state failure this project has
  * already paid for once).
  */
-function buildRelay({ db }) {
+function buildRelay({ db, rooms = new Map(), clock = null }) {
   const logs = [];
   const body = [
     ...FT_CONSTS.map(extractConst),
     ...FT_FNS.map(extractFn),
+    // The janitor is a `const ftSweep = setInterval(…)`, not a function, so it
+    // cannot be pulled with extractFn. Extracting the whole declaration and
+    // injecting `setInterval` captures the REAL tick body — the alternative
+    // (re-typing the branch here) is exactly the mirror-of-the-gate this file
+    // exists to avoid, and a mirror of a janitor expires happily while the real
+    // one has a `continue` in the wrong place.
+    extractConst('ftSweep'),
     'const ftDropCounts = new Map();',
-    `return { ${[...FT_CONSTS, ...FT_FNS].join(', ')}, ftDropCounts };`,
+    `return { ${[...FT_CONSTS, ...FT_FNS].join(', ')}, ftDropCounts, ftSweep };`,
   ].join('\n\n');
-  const factory = new Function('db', 'safeSend', 'rlog', 'redactToken', 'WebSocket', 'crypto', 'Buffer', 'console', body);
+  const factory = new Function('db', 'safeSend', 'rlog', 'redactToken', 'WebSocket', 'crypto', 'Buffer', 'console',
+    'rooms', 'setInterval', 'Date', body);
   const safeSend = (ws, msg) => {
     if (!ws || ws.readyState !== 1) return false;
     ws.sent.push(String(msg));
@@ -142,10 +150,37 @@ function buildRelay({ db }) {
   };
   const rlog = (m) => logs.push(String(m));
   const quietConsole = { log: (m) => logs.push(String(m)), error: (m) => logs.push(String(m)) };
-  const api = factory(db, safeSend, rlog, () => 'tok:redacted', { OPEN: 1 }, nodeCrypto, Buffer, quietConsole);
+  // Fake timers, two halves. `setInterval` is captured rather than scheduled so
+  // the tick is driven explicitly (a suite that really waited 90 s would be
+  // deleted by the first person who ran it), and `Date` is injected so the code
+  // under test reads the advanced clock — including `new Date()` inside the
+  // quota day key, which a bare `Date.now` stub would leave on the real wall.
+  let sweepTick = null;
+  const setIntervalStub = (fn) => { sweepTick = fn; return {}; };
+  const api = factory(db, safeSend, rlog, () => 'tok:redacted', { OPEN: 1 }, nodeCrypto, Buffer, quietConsole,
+    rooms, setIntervalStub, clock ? clock.Date : Date);
   api.logs = logs;
   api.safeSend = safeSend;
+  api.rooms = rooms;
+  api.tickSweep = () => {
+    if (!sweepTick) throw new Error('ftSweep was never registered — the extraction is broken');
+    sweepTick();
+  };
   return api;
+}
+
+/**
+ * A monotonic fake clock. Subclasses the real Date so `new Date()` (the quota
+ * day key) and `Date.now()` (every FT timer) both see the advanced time, while
+ * `new Date(x)` keeps working for the callers that pass an argument.
+ */
+function fakeClock(startMs = Date.parse('2026-09-18T12:00:00Z')) {
+  let t = startMs;
+  class FakeDate extends Date {
+    constructor(...args) { if (args.length === 0) super(t); else super(...args); }
+    static now() { return t; }
+  }
+  return { Date: FakeDate, advance: (ms) => { t += ms; }, at: () => t };
 }
 
 // Fresh sockets/room per scenario.
@@ -1183,6 +1218,126 @@ try {
     } catch (e) { console.error(`  warn  cleanup failed: ${e.message}`); }
     await db.$disconnect();
   }
+}
+
+// ── PART 12 — FT-A1.2: the no-receiver timeout is RELAY-owned ──────────────
+//
+// Security FT-A1.2 RATIFIED (A), 2026-09-18: B-3 is STRUCK and the no-receiver
+// timeout lives in the relay janitor, because the SW cannot satisfy it without
+// breaking three other ratified invariants (it has no send path, and a
+// SW-authored frame would be plaintext-and-unmarked, which the phone's B-1
+// guard is required to drop). So there is no new logic in this letter — branch 2
+// of `ftSweep` already IS the ruling — and these cases are the regression pins
+// that stop it from being "simplified" away.
+//
+// FROZEN timer hierarchy (A1.2, extending A1.1 M4):
+//   sender-local 60 s  PRIMARY       · SW 60 s marker  INFORMATIONAL (sends nothing)
+//   relay 90 s TTL     BACKSTOP      · FT_STALL_MS 30 s  post-ACCEPT only
+console.log('\nPART 12 — FT-A1.2 no-receiver TTL sweep (relay-owned)');
+{
+  /** A db that records every settle so a refund can be counted, not assumed. */
+  const mkRecordingDb = () => {
+    const execs = [];
+    return {
+      execs,
+      $queryRawUnsafe: async () => [{ used: 1n }],
+      $executeRawUnsafe: async (sql, ...args) => { execs.push({ sql, args }); return 1; },
+    };
+  };
+
+  /** Arm an offer and answer with NEITHER accept nor reject. */
+  async function armedOffer({ clock, db, size = 4 * 1024 * 1024, tier = 'plus' }) {
+    const rooms = new Map();
+    const R = buildRelay({ db, rooms, clock });
+    const phone = mkWs('u1', tier);
+    const browser = mkWs('u1', tier);
+    const room = mkRoom(phone, browser);
+    rooms.set(room.token, room);
+    const id = newId();
+    R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id, name: 'holiday.jpg', size, mime: 'image/jpeg', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    return { R, room, phone, browser, id };
+  }
+
+  // (1) the expiry itself.
+  const clock = fakeClock();
+  const db = mkRecordingDb();
+  const SIZE = 4 * 1024 * 1024;
+  const { R, room, phone, browser, id } = await armedOffer({ clock, db, size: SIZE });
+  const armed = !!room.transfer && room.transfer.state === 'offered';
+  clock.advance(R.FT_OFFER_TTL_MS - 1_000);          // 89 s — still inside the backstop
+  R.tickSweep();
+  const aliveBefore = room.transfer !== null;
+  clock.advance(2_000);                               // 91 s — past it
+  R.tickSweep();
+  check('A1.2: a pending offer nobody answers survives to FT_OFFER_TTL_MS and is expired after it',
+    armed && aliveBefore && room.transfer === null,
+    `armed=${armed} aliveAt89s=${aliveBefore} recAt91s=${room.transfer}`);
+
+  // (2) M14 — BOTH endpoints hear it, and the receiver's copy is correct.
+  const toSender = payloadOf(lastOf(phone, 'FILE_FAILED'));
+  const toReceiver = payloadOf(lastOf(browser, 'FILE_FAILED'));
+  const wanted = JSON.stringify({ id, reason: 'timeout', relay: true });
+  check('A1.2-M14: the marked timeout is delivered to BOTH endpoints, body exactly {id,reason,relay}',
+    JSON.stringify(toSender) === wanted && JSON.stringify(toReceiver) === wanted
+    && countOf(phone, 'FILE_FAILED') === 1 && countOf(browser, 'FILE_FAILED') === 1,
+    `sender=${JSON.stringify(toSender)} receiver=${JSON.stringify(toReceiver)}`);
+
+  // (3) the slot and the reservation are actually given back — and a transfer
+  //     that burned bytes before expiring still PAYS for them (MUST A-4): the
+  //     refund is size-minus-metered, never a blanket release.
+  await new Promise((r) => setImmediate(r));
+  const settles = db.execs.filter((e) => /"FileQuota" SET "bytes"/.test(e.sql));
+  const fullRefund = settles.length === 1
+    && /GREATEST/.test(settles[0].sql) && settles[0].args[2] === String(SIZE);
+  const rec = { senderUserId: 'u1', quotaDay: '2026-09-18', size: SIZE, bytesForwarded: R.ftWireCeiling(1024 * 1024), quotaSettled: false };
+  R.ftSettleQuota(rec);
+  R.ftSettleQuota(rec);                               // idempotence: no double refund
+  const partial = db.execs.filter((e) => /"FileQuota" SET "bytes"/.test(e.sql)).length === 2
+    && rec.settledRaw > 0 && rec.settledRaw < SIZE;
+  // Slot freed for real: a fresh offer in the same room is admitted, not `busy`.
+  const id2 = newId();
+  R.handleFileFrame(room, phone, `FILE_OFFER:${JSON.stringify({ id: id2, name: 'b.jpg', size: 4096, mime: 'image/jpeg', sha256: sha(), from: 'phone' })}`, 'phone', room.token);
+  await new Promise((r) => setImmediate(r));
+  check('A1.2: the sweep frees the room slot and refunds the reservation exactly once (metered bytes stay charged)',
+    fullRefund && partial && room.transfer?.id === id2
+    && payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason !== 'busy',
+    `settles=${settles.length} refund=${settles[0]?.args[2]} settledRaw=${rec.settledRaw} rec2=${room.transfer?.id === id2}`);
+
+  // (4) M15 — `timeout` is relay-owned and never peer-authored. A peer's own
+  //     plaintext expiry arriving after the sweep names a transfer the relay no
+  //     longer holds, so it is dropped and COUNTED rather than forwarded as if
+  //     the relay had authored it. (The marked forgery is the separate
+  //     peer_claimed_relay rejection above; the receiver-side half of M15 is the
+  //     phone's B-1 guard, which is not this component's to enforce.)
+  const c2 = fakeClock();
+  const S = await armedOffer({ clock: c2, db: mkRecordingDb() });
+  c2.advance(S.R.FT_OFFER_TTL_MS + 1_000);
+  S.R.tickSweep();
+  const beforeP = S.phone.sent.length; const beforeB = S.browser.sent.length;
+  S.R.handleFileFrame(S.room, S.browser, `FILE_FAILED:${JSON.stringify({ id: S.id, reason: 'timeout' })}`, 'browser', S.room.token);
+  check('A1.2-M15: a plaintext UNMARKED peer `timeout` after the sweep is dropped and counted, never forwarded',
+    S.phone.sent.length === beforeP && S.browser.sent.length === beforeB
+    && S.R.ftDropCounts.get(S.room.token)?.get('FILE_FAILED/no_record') === 1,
+    `sentDelta=${S.phone.sent.length - beforeP} count=${S.R.ftDropCounts.get(S.room.token)?.get('FILE_FAILED/no_record')}`);
+
+  // (5) the 90 s TTL is the OFFERED branch only. Once the receiver accepts,
+  //     FT_STALL_MS (30 s) owns the path — inverting these would let an accepted
+  //     transfer idle for 90 s, and would time out an honest sender's offer
+  //     before its own 60 s primary had a chance to speak.
+  const c3 = fakeClock();
+  const A = await armedOffer({ clock: c3, db: mkRecordingDb() });
+  A.R.handleFileFrame(A.room, A.browser, `FILE_ACCEPT:${JSON.stringify({ id: A.id })}`, 'browser', A.room.token);
+  const accepted = A.room.transfer?.state === 'accepted';
+  const c4 = fakeClock();
+  const O = await armedOffer({ clock: c4, db: mkRecordingDb() });
+  const MID = 40_000;                                  // > FT_STALL_MS, < FT_OFFER_TTL_MS
+  c3.advance(MID); A.R.tickSweep();
+  c4.advance(MID); O.R.tickSweep();
+  check('A1.2: the 90 s TTL does NOT govern post-ACCEPT — at 40 s idle the accepted transfer is stalled out while the pending offer lives',
+    accepted && A.room.transfer === null && O.room.transfer !== null
+    && payloadOf(lastOf(A.phone, 'FILE_FAILED'))?.reason === 'timeout',
+    `accepted=${accepted} acceptedRec=${A.room.transfer} offeredRec=${!!O.room.transfer}`);
 }
 
 console.log(`\n${fail === 0 ? 'OK' : 'FAIL'} ft-relay: ${pass} passed, ${fail} failed`);
