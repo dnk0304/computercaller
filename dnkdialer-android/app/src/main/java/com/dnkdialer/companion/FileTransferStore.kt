@@ -2,6 +2,7 @@ package com.dnkdialer.companion
 
 import android.content.Context
 import org.json.JSONObject
+import androidx.core.content.edit
 
 /**
  * FT-2 (c) — the durable half of resume.
@@ -65,7 +66,11 @@ object FileTransferStore {
             .put("bytesWritten", p.bytesWritten)
             .put("uri", p.uri)
             .put("savedAtMs", p.savedAtMs)
-        prefs(ctx).edit().putString(KEY_PENDING, o.toString()).commit()
+        // commit(), not apply(): this record is the resume point, and a
+        // process death between an ACK and an asynchronous write is exactly the
+        // case it exists to survive. androidx.core's edit(commit = true) is the
+        // synchronous write in the idiom lint asks for.
+        prefs(ctx).edit(commit = true) { putString(KEY_PENDING, o.toString()) }
     }
 
     /**
@@ -116,6 +121,6 @@ object FileTransferStore {
     }
 
     fun clear(ctx: Context) {
-        prefs(ctx).edit().remove(KEY_PENDING).commit()
+        prefs(ctx).edit(commit = true) { remove(KEY_PENDING) }
     }
 }

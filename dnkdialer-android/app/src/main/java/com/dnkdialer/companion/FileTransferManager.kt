@@ -12,6 +12,7 @@ import java.io.InputStream
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import androidx.core.net.toUri
 
 /**
  * FT-2 — the file-transfer state machine for the phone, both directions.
@@ -47,6 +48,12 @@ class FileTransferManager(
     private val isOpen: () -> Boolean,
     /** Bytes queued on the socket but not yet written — the §1 watermark input. */
     private val queuedBytes: () -> Long,
+    /**
+     * Is Encrypted mode latched ON for this pair? FT-A1 MUST A-5 uses it to
+     * fail CLOSED: under mode ON a FILE_OFFER with no `ft` hint is a STRIPPED
+     * hint, which is exactly what a relay bypassing the quota gate would send.
+     */
+    private val sealedModeOn: () -> Boolean = { false },
     private val listener: Listener,
 ) {
 
@@ -562,7 +569,37 @@ class FileTransferManager(
 
     private fun onOffer(p: Map<String, Any?>) {
         val id = p["id"] as? String ?: return
+        // A-6: the ceiling and every downstream number come from the SEALED
+        // body. `ft.size` is never substituted for this value anywhere.
         val size = (p["size"] as? Number)?.toLong() ?: return
+
+        // FT-A1 MUST A-5 — FIRST, before the busy check, before any UI, before
+        // any FILE_ACCEPT and before the save picker. A refusal raised after
+        // the picker has opened has already spent the user's attention on a
+        // transfer that was never going to happen, and a SILENT refusal hides
+        // a relay-tamper event from both the user and the logs.
+        if (!FileTransfer.hintMatches(
+                hint = p[FileTransfer.HINT_KEY] as? Map<*, *>,
+                sealedId = id,
+                sealedSize = size,
+                sealedModeOn = sealedModeOn(),
+            )
+        ) {
+            android.util.Log.e(
+                "FileTransfer",
+                "FILE_OFFER hint does not match the sealed body - refusing $id"
+            )
+            send(
+                FileTransfer.FAILED,
+                mapOf("id" to id, "reason" to FileTransfer.Reason.SIZE_MISMATCH)
+            )
+            listener.onFailed(
+                id, FileTransfer.sanitizeName(p["name"] as? String),
+                FileTransfer.Reason.SIZE_MISMATCH, false
+            )
+            return
+        }
+
         if (isBusy) {
             // One transfer at a time. Rejecting is the honest answer; queueing
             // would mean holding an offer whose sender has a 60 s expiry.
@@ -604,12 +641,12 @@ class FileTransferManager(
             val p = FileTransferStore.load(context, System.currentTimeMillis()) ?: run {
                 // Unknown version, unparseable, or expired: the .part is
                 // unreachable garbage, so delete it rather than leave it.
-                FileTransferStore.loadUriForCleanup(context)?.let { deleteDoc(Uri.parse(it)) }
+                FileTransferStore.loadUriForCleanup(context)?.let { deleteDoc(it.toUri()) }
                 FileTransferStore.clear(context)
                 return@execute
             }
             try {
-                val uri = Uri.parse(p.uri)
+                val uri = p.uri.toUri()
                 val pfd = context.contentResolver.openFileDescriptor(uri, "rw") ?: return@execute
                 // Discard any tail written after the last sync: the ACK we sent
                 // covers exactly p.bytesWritten, and anything past it is bytes
@@ -643,7 +680,7 @@ class FileTransferManager(
                 android.util.Log.i("FileTransfer", "resuming receive ${p.id} from upTo=${p.upTo}")
             } catch (e: Exception) {
                 android.util.Log.w("FileTransfer", "resume failed: ${e.message}")
-                deleteDoc(Uri.parse(p.uri))
+                deleteDoc(p.uri.toUri())
                 FileTransferStore.clear(context)
             }
         }
@@ -685,7 +722,12 @@ class FileTransferManager(
      * waiting for a process death to expose it.
      */
     fun tick() {
-        val a = active ?: run {
+        val a = active
+        if (a == null) {
+            // Nothing running: the only thing that can expire is an unanswered
+            // offer. Written as a plain if/return rather than an elvis-run
+            // block because the two early returns inside one expression read as
+            // (and lint flags as) suspicious indentation.
             val o = pendingOffer ?: return
             if (System.currentTimeMillis() - o.offeredAtMs > FileTransfer.OFFER_EXPIRY_MS) {
                 pendingOffer = null

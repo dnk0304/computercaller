@@ -552,33 +552,88 @@ class FileTransferLoopbackTest {
      * on a pairing the user was told is encrypted.
      */
     @Test
-    fun file_chunks_are_sealed_and_control_frames_are_not() {
-        assertTrue(
-            "FILE_CHUNK must be on the §13.7 sealed list",
-            E2eFrameGate.isSealedType(FileTransfer.CHUNK)
-        )
-        // *_CHUNK, so §13.4's suffix rule makes it padding-exempt with no
-        // amendment — asserted here so a change to that rule fails loudly.
+    fun all_file_frames_are_sealed_and_none_are_mandatory_plaintext() {
+        // FT-A1 S3 (C) RATIFIED 2026-09-18: all eight FILE_* frames go through
+        // the PhoneClient seal chokepoint. The relay keeps its tier/quota gate
+        // through the plaintext frame TYPE plus the `ft` envelope hint.
+        for (t in FileTransfer.FRAMES) {
+            assertTrue("$t must be sealed under mode ON", E2eFrameGate.isSealedType(t))
+            assertFalse(t in E2eFrameGate.MANDATORY_PLAINTEXT)
+        }
+        // *_CHUNK, so S13.4's suffix rule makes it padding-exempt unchanged.
         assertTrue(FileTransfer.CHUNK.endsWith("_CHUNK"))
 
-        for (t in listOf(
-            FileTransfer.ACCEPT, FileTransfer.REJECT, FileTransfer.ACK,
-            FileTransfer.RESUME, FileTransfer.DONE, FileTransfer.FAILED
-        )) {
-            assertFalse(
-                "$t must stay plaintext so the relay can enforce accept-before-chunks",
-                E2eFrameGate.isSealedType(t)
-            )
-        }
-
-        // Latched ON with no session: a chunk must be DROPPED, never sent in
-        // the clear. The twin of the sealed path, and the one that is a
-        // security bug rather than a lost frame.
+        // Latched ON with no session: a file frame must be DROPPED, never sent
+        // in the clear. This is the twin of the sealed path and the one that is
+        // a security bug rather than a lost frame.
         val gate = E2eFrameGate(sessionProvider = { null }, latchedProvider = { true })
-        assertEquals(null, gate.outbound(FileTransfer.CHUNK, """{"id":"x","seq":0,"n":1,"data":"AA"}"""))
-        assertEquals(1L, gate.droppedOutbound)
-        // A control frame is unaffected.
-        assertNotNull(gate.outbound(FileTransfer.ACK, """{"id":"x","upTo":0}"""))
+        assertEquals(null, gate.outbound(FileTransfer.CHUNK, "{\"id\":\"x\",\"seq\":0,\"n\":1,\"data\":\"AA\"}"))
+        assertEquals(null, gate.outbound(FileTransfer.OFFER, "{\"id\":\"x\",\"size\":1}"))
+        assertEquals(2L, gate.droppedOutbound)
+    }
+
+    /**
+     * FT-A1 MUST A-5 on the live state machine: a tampered hint is refused
+     * BEFORE any prompt, and the refusal is both sent and surfaced.
+     */
+    @Test(timeout = 120_000)
+    fun a_tampered_offer_hint_is_refused_with_size_mismatch_before_any_prompt() {
+        val peer = ScriptedPeer()
+        val rec = Recorder()
+        val mgr = FileTransferManager(
+            context = ctx,
+            send = { type, payload -> peer.record(type, payload) },
+            isOpen = { peer.open.get() },
+            queuedBytes = { peer.queued },
+            sealedModeOn = { true },
+            listener = rec,
+        )
+        val id = "9".repeat(32)
+        mgr.onFrame(
+            FileTransfer.OFFER,
+            mapOf(
+                "id" to id, "name" to "holiday.jpg", "size" to 734003200L,
+                "mime" to "image/jpeg", "sha256" to "ab", "from" to "browser",
+                // Vector L2: the relay lowered the hint. The ciphertext would be
+                // byte-identical; only this compare catches it.
+                FileTransfer.HINT_KEY to mapOf("id" to id, "size" to 1024L),
+            )
+        )
+        val failed = waitFor { peer.first(FileTransfer.FAILED) }
+        assertNotNull(failed)
+        assertEquals(FileTransfer.Reason.SIZE_MISMATCH, failed!!["reason"])
+        assertEquals(id, failed["id"])
+        // Surfaced, not silent - a silent refusal hides a tamper from the user.
+        assertEquals(FileTransfer.Reason.SIZE_MISMATCH, rec.failedReason)
+        // And NO prompt was raised, and nothing was accepted.
+        assertEquals("no dialog may precede the compare", null, rec.offered)
+        assertEquals(null, peer.first(FileTransfer.ACCEPT))
+    }
+
+    /** A stripped hint under mode ON fails closed (vector L3). */
+    @Test(timeout = 120_000)
+    fun a_stripped_offer_hint_fails_closed_under_sealed_mode() {
+        val peer = ScriptedPeer()
+        val rec = Recorder()
+        val mgr = FileTransferManager(
+            context = ctx,
+            send = { type, payload -> peer.record(type, payload) },
+            isOpen = { peer.open.get() },
+            queuedBytes = { peer.queued },
+            sealedModeOn = { true },
+            listener = rec,
+        )
+        mgr.onFrame(
+            FileTransfer.OFFER,
+            mapOf(
+                "id" to "8".repeat(32), "name" to "x.bin", "size" to 10L,
+                "mime" to "application/octet-stream", "sha256" to "ab", "from" to "browser",
+            )
+        )
+        val failed = waitFor { peer.first(FileTransfer.FAILED) }
+        assertNotNull("a missing hint under ON must fail closed", failed)
+        assertEquals(FileTransfer.Reason.SIZE_MISMATCH, failed!!["reason"])
+        assertEquals(null, rec.offered)
     }
 
     // =====================================================================

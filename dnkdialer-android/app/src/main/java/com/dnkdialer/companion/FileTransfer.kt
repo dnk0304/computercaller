@@ -44,7 +44,19 @@ object FileTransfer {
      */
     const val MAX_FILE_BYTES: Long = 1_073_741_824L
 
-    /** 2 GiB per UTC day, sender-side. Mirrored for copy only — never enforced here. */
+    /**
+     * 2 GiB per UTC day, sender-side. Mirrored for COPY only, never enforced.
+     *
+     * There is deliberately no local "used today" accumulator on the phone.
+     * The relay meters ACTUAL `FILE_CHUNK` wire bytes and charges those
+     * (FT-A1 MUST A-3/A-4), so any number the phone kept would be a second,
+     * always-slightly-wrong copy of a figure the server already owns — and the
+     * first time they disagreed the user would be told the wrong thing.
+     *
+     * If one is ever added: it counts bytes this device ACTUALLY SENT. Never
+     * the declared size, and never `ft.size` — the hint is untrusted input
+     * (FT-A1 MUST C-3) and a quota built on it is a quota the sender sets.
+     */
     const val DAILY_QUOTA_BYTES: Long = 2_147_483_648L
 
     /**
@@ -112,14 +124,113 @@ object FileTransfer {
         const val QUOTA = "quota"
         const val TIER = "tier"
 
+        /**
+         * FT-A1 MUST A-7. The unsealed `FILE_OFFER` body disagreed with the
+         * envelope's `ft` hint.
+         *
+         * Its own reason rather than `cancelled` or `hash_mismatch` because
+         * those mislabel a tamper event as user action or as corruption, and
+         * the one thing this failure must do is be legible afterwards.
+         */
+        const val SIZE_MISMATCH = "size_mismatch"
+
         val ALL: Set<String> = setOf(
             HASH_MISMATCH, CONNECTION_LOST, RELAY_BACKPRESSURE, CANCELLED,
-            TIMEOUT, TOO_LARGE, OOM, QUOTA, TIER,
+            TIMEOUT, TOO_LARGE, OOM, QUOTA, TIER, SIZE_MISMATCH,
         )
     }
 
     /** This device's identity in `FILE_OFFER.from`. */
     const val FROM_PHONE = "phone"
+
+    // ------------------------------------------------------ sealing policy
+
+    /**
+     * **The single place that decides which FILE_* frames are sealed.**
+     *
+     * GATE1 Addendum **FT-A1 §3 (C), RATIFIED 2026-09-18**: every FILE_* frame
+     * goes through the `PhoneClient` seal chokepoint like every other frame,
+     * sealed when mode is ON. No new path and no exception — so this returns
+     * true for the whole family.
+     *
+     * `FILE_CHUNK` is additionally padding-EXEMPT with no amendment, because
+     * §13.4 keys that exemption on the `*_CHUNK` SUFFIX rather than on a list,
+     * and a fixed-count bulk transfer already discloses its size through `n`.
+     *
+     * The relay does not lose its gate by this: the frame TYPE travels in the
+     * clear on every frame (`TYPE:body`) and is bound into the AAD, so the
+     * relay can drive its per-room record, its stall timer and its
+     * accept-before-chunks rule from the type alone (FT-A1 §0/Q1). What it
+     * needs beyond the type — the transfer id and the declared size — arrives
+     * as the [hintFor] envelope hint, not by leaving the body in the clear.
+     *
+     * Superseded: spec line 176's "plaintext `size` on FILE_OFFER". The
+     * plaintext size is now the hint; the SEALED `size` is authoritative.
+     */
+    fun isSealedFrame(type: String): Boolean = type in FRAMES
+
+    /** The envelope hint key. Rides OUTSIDE the AAD — see [hintFor]. */
+    const val HINT_KEY = "ft"
+
+    /**
+     * FT-A1 **MUST A-1 / C-1 / C-2** — the plaintext relay hint, or null.
+     *
+     * Only `FILE_OFFER` carries one, and it carries exactly `{id, size}`.
+     * `FILE_CHUNK` and the six control frames carry none.
+     *
+     * ## Why a hint exists at all
+     *
+     * The relay charges the sender's quota and enforces the tier at the
+     * FILE_OFFER gate, and under mode ON it cannot read the sealed body. The
+     * hint is the minimum it needs: an opaque 16-byte id to meter against, and
+     * a declared size for admission control.
+     *
+     * ## Why it is OUTSIDE the AAD, and therefore untrusted
+     *
+     * Binding it would mean either a new AAD tag on EVERY frame (breaking the
+     * frozen `kdf-vectors.json` on three implementations) or a
+     * frame-type-conditional AAD — two AAD layouts in a protocol that has one.
+     * It also buys nothing: vector L2 shows a relay that lowers `ft.size`
+     * produces a BYTE-IDENTICAL ciphertext, and the receiver's compare
+     * ([hintMatches]) refuses anyway. A tampering relay's only achievable
+     * outcome is "transfer fails", which it could get by dropping a packet.
+     *
+     * So: **this is a hint from an untrusted party. The sealed value is the
+     * fact.** Never allocate from it, never show it, never meter with it.
+     */
+    fun hintFor(type: String, sealedBody: Map<String, Any?>): Map<String, Any?>? {
+        if (type != OFFER) return null
+        val id = sealedBody["id"] as? String ?: return null
+        val size = (sealedBody["size"] as? Number)?.toLong() ?: return null
+        return mapOf("id" to id, "size" to size)
+    }
+
+    /**
+     * FT-A1 **MUST A-5 / C-3** — the receiver's compare, before anything else.
+     *
+     * True when the envelope hint is consistent with the body we just
+     * unsealed. The caller refuses with [Reason.SIZE_MISMATCH] otherwise, and
+     * must do so BEFORE any UI prompt, any FILE_ACCEPT and any save picker —
+     * a refusal after the picker has opened has already spent the user's
+     * attention on a transfer that was never going to happen.
+     *
+     * [sealedModeOn] is what makes this fail CLOSED: under mode ON a missing
+     * hint is a stripped hint, which is exactly what a relay that wants to
+     * bypass the quota gate would send. Under mode OFF there is no envelope
+     * and so no hint, and requiring one would refuse every honest transfer.
+     */
+    fun hintMatches(
+        hint: Map<*, *>?,
+        sealedId: String,
+        sealedSize: Long,
+        sealedModeOn: Boolean,
+    ): Boolean {
+        if (hint == null) return !sealedModeOn
+        val id = hint["id"] as? String ?: return false
+        val size = (hint["size"] as? Number)?.toLong() ?: return false
+        if (size < 0 || size > MAX_FILE_BYTES) return false
+        return id == sealedId && size == sealedSize
+    }
 
     // ------------------------------------------------------------------ id
 

@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.net.toUri
 
 /**
  * FT-2 (a)(b)(d) — the only Activity this feature adds. Four entry points,
@@ -188,12 +189,12 @@ class FileTransferActivity : AppCompatActivity() {
             // half-written file as if it were the finished one.
             type = "application/octet-stream"
             putExtra(Intent.EXTRA_TITLE, FileTransfer.partNameFor(name))
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                putExtra(
-                    android.provider.DocumentsContract.EXTRA_INITIAL_URI,
-                    Uri.parse("content://com.android.externalstorage.documents/document/primary%3ADownload")
-                )
-            }
+            // Downloads by default; the user can still pick anywhere. No SDK
+            // guard: EXTRA_INITIAL_URI is API 26 and minSdk is 26.
+            putExtra(
+                android.provider.DocumentsContract.EXTRA_INITIAL_URI,
+                "content://com.android.externalstorage.documents/document/primary%3ADownload".toUri()
+            )
         }
         try {
             startActivityForResult(i, RQ_CREATE_DEST)

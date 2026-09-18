@@ -51,7 +51,7 @@ class FileTransferNotifier(private val context: Context) {
         context.getSystemService(NotificationManager::class.java)
 
     fun createChannels() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        // No SDK guard: NotificationChannel is API 26 and minSdk is 26.
         manager.createNotificationChannel(
             NotificationChannel(
                 OFFER_CHANNEL_ID,
@@ -239,10 +239,23 @@ class FileTransferNotifier(private val context: Context) {
         manager.notify(RESULT_NOTIFICATION_ID, n)
     }
 
+    /**
+     * "45 seconds" / "3 minutes" / "1 hour".
+     *
+     * getQuantityString rather than getString: "1 minutes" is the kind of
+     * detail that makes an app feel unfinished, and several of the languages
+     * this ships in do not pluralise the way English does.
+     */
     private fun humanEta(seconds: Long): String = when {
-        seconds < 60 -> context.getString(R.string.ft_eta_seconds, seconds)
-        seconds < 3600 -> context.getString(R.string.ft_eta_minutes, seconds / 60)
-        else -> context.getString(R.string.ft_eta_hours, seconds / 3600)
+        seconds < 60 -> context.resources.getQuantityString(
+            R.plurals.ft_eta_seconds, seconds.toInt(), seconds.toInt()
+        )
+        seconds < 3600 -> context.resources.getQuantityString(
+            R.plurals.ft_eta_minutes, (seconds / 60).toInt(), (seconds / 60).toInt()
+        )
+        else -> context.resources.getQuantityString(
+            R.plurals.ft_eta_hours, (seconds / 3600).toInt(), (seconds / 3600).toInt()
+        )
     }
 }
 
@@ -271,6 +284,7 @@ fun failureCopy(context: Context, reason: String): String = context.getString(
         FileTransfer.Reason.TIMEOUT -> R.string.ft_fail_timeout
         FileTransfer.Reason.OOM -> R.string.ft_fail_oom
         FileTransfer.Reason.RELAY_BACKPRESSURE -> R.string.ft_fail_backpressure
+        FileTransfer.Reason.SIZE_MISMATCH -> R.string.ft_fail_size_mismatch
         else -> R.string.ft_fail_connection
     }
 )

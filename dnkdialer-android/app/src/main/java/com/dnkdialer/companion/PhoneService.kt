@@ -19,6 +19,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import android.annotation.SuppressLint
 
 class PhoneService : Service() {
 
@@ -68,6 +69,14 @@ class PhoneService : Service() {
          * only long enough to show a dialog would race its own onDestroy.
          * Cleared in onDestroy so a stale Activity is a no-op, not a crash.
          */
+        //
+        // Suppressed StaticFieldLeak, with the reason: the detector flags any
+        // static field whose type transitively holds a Context. This one is
+        // built with applicationContext (see setUpFileTransfer), which lives as
+        // long as the process, so it cannot retain the Service or an Activity -
+        // the leak the detector is actually describing. It is cleared in
+        // onDestroy regardless, so the reference does not outlive the service.
+        @SuppressLint("StaticFieldLeak")
         @Volatile
         @JvmStatic
         var fileTransferHandler: FileTransferManager? = null
@@ -4104,6 +4113,11 @@ class PhoneService : Service() {
             send = { type, payload -> sendResponse(type, payload, client?.isOpen == true) },
             isOpen = { client?.isOpen == true },
             queuedBytes = { client?.queuedBytes() ?: 0L },
+            // FT-A1 MUST A-5: read through the SAME provider the frame gate
+            // uses, not a snapshot. A latch that flips mid-transfer must be
+            // seen by the hint compare at the moment it compares, or the two
+            // disagree about whether a missing hint is a stripped one.
+            sealedModeOn = { e2eLatchedOn },
             listener = object : FileTransferManager.Listener {
                 override fun onProgress(
                     id: String, name: String, sent: Long, total: Long, outgoing: Boolean
