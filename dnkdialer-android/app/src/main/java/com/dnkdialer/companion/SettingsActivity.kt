@@ -56,6 +56,27 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var encryptedModeToggle: SwitchMaterial
     private lateinit var encryptedModeReason: TextView
 
+    /**
+     * Guards [encryptedModeToggle] so a repaint from the stored preference
+     * can't be read as a tap. Same hazard, same fix, as
+     * [suppressLobbyToggleCallback].
+     */
+    private var suppressEncryptedModeCallback = false
+
+    /**
+     * P5b (b) test seam. [E2ePeerCapability.current] is still the P4 Part 1
+     * stub and can never return PEER_SUPPORTED, so the ENABLED branch of this
+     * row is unreachable on a real device until Forge lands the real lookup.
+     * An instrumented test must still be able to prove the enabled row renders
+     * and persists correctly — otherwise the branch ships untested and the
+     * first person to see it is the user.
+     *
+     * Null in production: nothing in `main` writes it, and the row always
+     * falls through to the real provider.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal var capabilityOverride: E2ePeerCapability.State? = null
+
     /** Guards [lobbyToggle] so a repaint from the flag can't be read as a tap. */
     private var suppressLobbyToggleCallback = false
 
@@ -121,9 +142,31 @@ class SettingsActivity : AppCompatActivity() {
 
         encryptedModeToggle = findViewById(R.id.settingsEncryptedModeToggle)
         encryptedModeReason = findViewById(R.id.settingsEncryptedModeReason)
-        // No listener is attached in Part 1 ON PURPOSE. An inert switch that
-        // silently stored a preference would let the user believe they had
-        // turned encryption on. refreshEncryptedModeRow() disables it.
+        // P5b (b) — the switch is OPERABLE now, but only ever in the one state
+        // where operating it is honest: PEER_SUPPORTED. In every other state
+        // refreshEncryptedModeRow() disables it, and a disabled SwitchMaterial
+        // does not deliver onCheckedChanged, so the Part 1 guarantee ("an inert
+        // switch never stores a preference") is preserved by the platform
+        // rather than by the absence of a listener.
+        //
+        // suppressEncryptedModeCallback exists for the same reason
+        // suppressLobbyToggleCallback does: refreshEncryptedModeRow() assigns
+        // isChecked on every onResume, and an assignment fires the listener.
+        // Without the guard, merely opening Settings would rewrite the
+        // preference — a no-op today and a real bug the moment the write has a
+        // side effect.
+        encryptedModeToggle.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressEncryptedModeCallback) return@setOnCheckedChangeListener
+            E2eSettings.setEncryptedModeEnabled(this, isChecked)
+            // The mode of a LIVE pair is latched at Accept (B6), so this switch
+            // changes the next pairing, not the current one. Saying so beats
+            // letting the user believe an active session just changed shape.
+            encryptedModeReason.text = getString(
+                if (isChecked) R.string.settings_encrypted_mode_on_next_pair
+                else R.string.settings_encrypted_mode_off_next_pair
+            )
+            announceEncryptedModeState(isChecked)
+        }
 
         // ---- ON THIS PHONE ----------------------------------------------
         findViewById<View>(R.id.settingsViewMessagesButton).setOnClickListener {
@@ -182,11 +225,15 @@ class SettingsActivity : AppCompatActivity() {
      */
     private fun refreshEncryptedModeRow() {
         if (!::encryptedModeToggle.isInitialized) return
-        val state = E2ePeerCapability.current(this)
+        val state = capabilityOverride ?: E2ePeerCapability.current(this)
         val enabled = E2ePeerCapability.isToggleEnabled(state)
 
         encryptedModeToggle.isEnabled = enabled
+        // Assigning isChecked fires the listener; the guard makes this a
+        // repaint rather than a user action. See suppressEncryptedModeCallback.
+        suppressEncryptedModeCallback = true
         encryptedModeToggle.isChecked = enabled && E2eSettings.isEncryptedModeEnabled(this)
+        suppressEncryptedModeCallback = false
 
         // The switch tints are a custom colour selector without a disabled
         // state, so a disabled switch is pixel-identical to an enabled one
@@ -203,6 +250,46 @@ class SettingsActivity : AppCompatActivity() {
                 E2ePeerCapability.State.DEVICE_UNSUPPORTED -> R.string.settings_encrypted_mode_device_old
                 E2ePeerCapability.State.PEER_SUPPORTED -> R.string.settings_encrypted_mode_ready
             }
+        )
+
+        // TalkBack reads a switch as "Encrypted mode, off. Switch." and stops.
+        // On a DISABLED switch that is actively misleading: the user is told
+        // what it is and not that it cannot be operated or why, and the reason
+        // line is a separate node they may never reach. Fold the reason into
+        // the switch's own description so the control explains itself wherever
+        // focus lands.
+        encryptedModeToggle.contentDescription = getString(
+            R.string.settings_encrypted_mode_a11y,
+            getString(R.string.row_encrypted_mode_title),
+            encryptedModeReason.text.toString()
+        )
+    }
+
+    /**
+     * Repaint the row after a test has set [capabilityOverride]. The Activity
+     * has already painted from the real provider by the time a test can touch
+     * it, so the override needs an explicit second pass.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun refreshEncryptedModeRowForTest() = refreshEncryptedModeRow()
+
+    /**
+     * Speak the outcome of a toggle. The visible reason line changes under the
+     * switch, but a change to a node that is not focused is not announced, so
+     * a TalkBack user would otherwise hear "on" and never learn that "on"
+     * applies to the next pairing rather than this one.
+     */
+    private fun announceEncryptedModeState(isChecked: Boolean) {
+        encryptedModeToggle.contentDescription = getString(
+            R.string.settings_encrypted_mode_a11y,
+            getString(R.string.row_encrypted_mode_title),
+            encryptedModeReason.text.toString()
+        )
+        encryptedModeToggle.announceForAccessibility(
+            getString(
+                if (isChecked) R.string.settings_encrypted_mode_on_next_pair
+                else R.string.settings_encrypted_mode_off_next_pair
+            )
         )
     }
 

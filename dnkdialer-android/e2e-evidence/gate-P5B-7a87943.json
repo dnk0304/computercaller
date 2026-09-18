@@ -1,0 +1,121 @@
+{
+  "phase": "P5B",
+  "sha": "7a87943c7f11f709d126b18b9a2cc650f9095aae",
+  "baseSha": "3c2d204",
+  "utc": "2026-09-18T01:33:36Z",
+  "lane": "android",
+  "note": "Produced by tools/e2e-gate-android.mjs, the documented stand-in for `bun run e2e:gate --phase P5B --lane android` (P0 owns the real gate and it lives on e2e/p0-design-freeze; merging it here would violate the lane scope rule). Same JSON shape as E2E-P0-GATE-SPEC.md.",
+  "env": {
+    "node": "v24.12.0",
+    "bun": "1.3.11",
+    "chrome": null,
+    "gradle": "9.0-milestone-1"
+  },
+  "steps": [
+    {
+      "name": "repo-state",
+      "cmd": "git rev-parse HEAD; git status --porcelain; merge-base",
+      "exit": 1,
+      "ms": 132,
+      "counts": {
+        "dirtyFiles": 5,
+        "ancestorOk": 0
+      },
+      "log": "C:\\Users\\D\\AppData\\Local\\Temp\\e2e-gate-p5b-logs\\repo-state.log"
+    },
+    {
+      "name": "scope-non-android-diff",
+      "cmd": "git diff 3c2d204..HEAD -- . ':(exclude)dnkdialer-android/'",
+      "exit": 0,
+      "ms": 71,
+      "counts": {
+        "nonAndroidFiles": 0,
+        "violations": 0
+      }
+    },
+    {
+      "name": "assembleDebug",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\e2e-p5b\\dnkdialer-android\\gradlew.bat\" :app:assembleDebug",
+      "exit": 0,
+      "ms": 345178,
+      "counts": {}
+    },
+    {
+      "name": "aapt-badging-versionCode",
+      "cmd": "aapt dump badging app-debug.apk",
+      "exit": 0,
+      "ms": 337,
+      "counts": {
+        "versionCode": 58,
+        "versionName": "1.0.34"
+      }
+    },
+    {
+      "name": "testDebugUnitTest",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\e2e-p5b\\dnkdialer-android\\gradlew.bat\" :app:testDebugUnitTest",
+      "exit": 0,
+      "ms": 214466,
+      "counts": {
+        "tests": 140,
+        "failures": 0,
+        "skipped": 0,
+        "errors": 0
+      }
+    },
+    {
+      "name": "lintDebug-vs-manifest",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\e2e-p5b\\dnkdialer-android\\gradlew.bat\" :app:lintDebug --continue; lint-manifest --check",
+      "exit": 0,
+      "ms": 760369,
+      "counts": {
+        "issues": 183,
+        "grownCells": 0
+      }
+    },
+    {
+      "name": "instrumented-E2eKeyStoreTest",
+      "cmd": "tools/run-keystore-test.ps1",
+      "exit": 0,
+      "ms": 261973,
+      "counts": {
+        "skipped": 0,
+        "processDeathProof": "PASS"
+      }
+    },
+    {
+      "name": "instrumented-crypto-suite",
+      "cmd": "tools/run-agreement-test.ps1 (ECDH + SAS + counter + session + accept + lifecycle + frozen KDF vectors)",
+      "exit": 0,
+      "ms": 270763,
+      "counts": {
+        "skipped": 0,
+        "ecdh": "PASS",
+        "sasVectors": "PASS",
+        "counterFailClosed": "PASS",
+        "acceptHandshake": "PASS",
+        "lifecycle": "PASS",
+        "frozenKdfVectors": "PASS",
+        "instrumentedTests": 94,
+        "deviceApi": 36,
+        "backend": "ANDROID_KEYSTORE",
+        "strongBoxDeclared": false,
+        "api26ImageRun": false
+      }
+    },
+    {
+      "name": "instrumented-encrypted-mode-ui",
+      "cmd": "tools/run-ui-tests.ps1 (settings toggle + SAS confirm + key-change + screenshots)",
+      "exit": 0,
+      "ms": 456710,
+      "counts": {
+        "skipped": 0,
+        "encryptedModeUi": "PASS",
+        "uiInstrumentedTests": 20,
+        "screenshots": 6
+      }
+    }
+  ],
+  "harnessPass": [],
+  "baselineDiff": [],
+  "result": "FAIL"
+}

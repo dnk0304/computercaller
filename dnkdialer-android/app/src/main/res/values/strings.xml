@@ -101,7 +101,13 @@
     <!-- Format strings — collapsed to a single short label.
          "Connected" reads at a glance; the client count goes in logs. -->
     <string name="status_connected_to_host">Connected</string>
-    <string name="status_clients_connected_one">Connected</string>
+    <!-- P5b (d): "Connected" on its own is GONE from the status line. An
+         active pair now names its encryption state through E2eStatusCopy
+         (status_connected_encrypted / status_connected_unencrypted), because a
+         bare "Connected" is precisely the reading a user takes as safe. The
+         string is deleted rather than kept "just in case": lint counted it as
+         newly unused the moment E2eStatusCopy took over, and a dead string that
+         still says the tempting wrong thing is how the wrong thing comes back. -->
     <string name="status_clients_connected_many">Connected · %1$d</string>
     <string name="status_error_format">%1$s</string>
     <string name="status_perms_denied_count">%1$d permissions required</string>
@@ -449,6 +455,66 @@
     <string name="settings_encrypted_mode_peer_old">Update ComputerCaller on your computer to use encrypted mode.</string>
     <string name="settings_encrypted_mode_device_old">This phone\'s Android version can\'t use encrypted mode.</string>
     <string name="settings_encrypted_mode_ready">Both this phone and your computer support encrypted mode.</string>
+    <!-- P5b (b). The mode of a live pair is latched at Accept (B6), so the
+         switch describes the NEXT connection. Saying "next time you connect"
+         is the difference between a setting the user trusts and one they
+         re-toggle because nothing visibly happened. -->
+    <string name="settings_encrypted_mode_on_next_pair">On. Your next connection will be encrypted, and you\'ll confirm a code on both devices.</string>
+    <string name="settings_encrypted_mode_off_next_pair">Off. Your next connection won\'t be encrypted unless your computer asks for it.</string>
+    <!-- TalkBack description for the switch: title, then the reason line, so a
+         greyed control explains itself without the user hunting for the text
+         underneath it. %1$s = row title, %2$s = the reason/state line. -->
+    <string name="settings_encrypted_mode_a11y">%1$s. %2$s</string>
+
+    <!-- ==================== P5b (c) — the SAS confirm ====================
+         Shown on the Home hero card after Accept, when the pair is Encrypted
+         (verified). Copy parity with the web/extension surface, which asks
+         "Same code on your phone?" — same question, other direction.
+         The code is read out in GROUPS by TalkBack: "412 908" is confirmable
+         against a screen, "four hundred twelve thousand nine hundred and
+         eight" is not. -->
+    <string name="e2e_sas_title">Check the code</string>
+    <string name="e2e_sas_prompt">Same code on your computer?</string>
+    <string name="e2e_sas_matches">Matches</string>
+    <string name="e2e_sas_no_match">Doesn\'t match</string>
+    <!-- Why the user is being asked at all. Without it the six digits read as
+         a hoop to jump through and users tap "Matches" without looking. -->
+    <string name="e2e_sas_body">Your computer is showing a five-digit code. If it\'s the same one, this connection is encrypted and nobody in between can read it.</string>
+    <!-- Shown when the user says the codes differ. It is NOT phrased as an
+         error the user caused, and it does not offer "try again" as the
+         obvious next tap: a mismatch may be an attack, and retrying is the
+         thing an attacker needs the user to do. -->
+    <string name="e2e_sas_refused">Connection refused. The codes didn\'t match, so this phone didn\'t connect. If it keeps happening, don\'t connect from that computer.</string>
+    <!-- %1$s = the digits, already spaced into two groups for the screen
+         reader. -->
+    <string name="e2e_sas_code_a11y">Code %1$s. Compare it with the code on your computer.</string>
+
+    <!-- ============== P5b (d) — the TOFU key-change warning ==============
+         FROZEN copy, parity with P5a-UI (Ken R-AH). P5a's surface says "Your
+         phone's key changed"; this is the same sentence pointed the other way.
+         M-C still holds: it names the benign causes and asserts none of them,
+         and the remedy it offers is to PAIR AGAIN and confirm — i.e. to check
+         the code — rather than to click past the warning. -->
+    <string name="e2e_key_change_title">Your computer\'s key changed</string>
+    <string name="e2e_key_change_body">If you reinstalled or reset the browser, pair again to confirm it\'s your computer.</string>
+    <string name="e2e_key_change_trust">Trust</string>
+    <string name="e2e_key_change_not_now">Not now</string>
+
+    <!-- ============ P5b (d) — encrypted state, in words ============
+         Never colour-only (WCAG 1.4.1): the dot tint is an accent, the word
+         is the signal. "Not encrypted" is spelled out rather than left as a
+         bare "Connected", because a plain "Connected" with a grey dot is the
+         state users misread as safe. -->
+    <!-- The three frozen state words (P5a parity): "Encrypted",
+         "Encrypted, unverified", "Not encrypted". Sealed-but-unverified is its
+         OWN word, not a synonym for verified: nobody confirmed a code, and a
+         pair that says "Encrypted" flat when no one checked is claiming a
+         verification that did not happen. -->
+    <string name="status_connected_encrypted">Connected · Encrypted</string>
+    <string name="status_connected_encrypted_unverified">Connected · Encrypted, unverified</string>
+    <string name="status_connected_unencrypted">Connected · Not encrypted</string>
+    <string name="notif_ongoing_connected_encrypted">Connected to your computer · Encrypted</string>
+    <string name="notif_ongoing_connected_encrypted_unverified">Connected to your computer · Encrypted, unverified</string>
 
     <string name="row_stay_disconnected_title">Stay disconnected</string>
     <string name="row_stay_disconnected_sub">Don\'t reconnect on restart</string>

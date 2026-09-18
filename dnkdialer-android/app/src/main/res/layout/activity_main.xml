@@ -459,6 +459,218 @@
                         android:textSize="@dimen/cc_text_foot"
                         android:textColor="@color/text_tertiary" />
                 </LinearLayout>
+
+                <!-- ============== HERO FACE 3 — SAS CONFIRM (P5b c) ==============
+                     The THIRD face of the same frame, for the same reason the
+                     request is face 2 and not a dialog (mockup note 1, frame 3):
+                     it appears where the user is already looking and never costs
+                     them their context.
+
+                     It is shown after Accept when the pair is Encrypted
+                     (verified), and while it is up there is NO way past it but
+                     to answer — no dismiss, no back, no outside tap. That is the
+                     point: a SAS a user can wave away is a SAS that verifies
+                     nothing, and "Doesn't match" is the answer an attacker needs
+                     the user not to be asked for.
+
+                     LARGE TEXT: the two answers are stacked, not side by side.
+                     "Doesn't match" is nearly twice the width of "Decline", and
+                     at 1.3x a weighted horizontal pair clips it to "Doesn't
+                     matc…" — an unreadable answer on a security prompt. Stacked
+                     full-width buttons with wrap_content height grow instead of
+                     truncating, and give two unmissable targets for a decision
+                     that should be deliberate rather than fast. -->
+                <LinearLayout
+                    android:id="@+id/homeHeroSas"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center_horizontal"
+                    android:paddingTop="26dp"
+                    android:paddingBottom="26dp"
+                    android:paddingStart="@dimen/cc_hero_padding"
+                    android:paddingEnd="@dimen/cc_hero_padding"
+                    android:visibility="gone"
+                    tools:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <View
+                            android:layout_width="@dimen/cc_presence_dot"
+                            android:layout_height="@dimen/cc_presence_dot"
+                            android:layout_marginEnd="@dimen/space_8"
+                            android:background="@drawable/bg_presence_dot"
+                            android:backgroundTint="@color/dot_waiting"
+                            android:importantForAccessibility="no" />
+
+                        <TextView
+                            android:id="@+id/homeSasTitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/e2e_sas_title"
+                            android:textSize="@dimen/cc_text_presence"
+                            android:textColor="@color/text_secondary"
+                            android:fontFamily="sans-serif-medium" />
+                    </LinearLayout>
+
+                    <!-- The digits. Monospace with letterSpacing so the two
+                         groups of three are countable at a glance and never
+                         re-flow between renders; the grouping is applied in
+                         MainActivity so the a11y string and the visible string
+                         cannot drift apart. -->
+                    <TextView
+                        android:id="@+id/homeSasCode"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:layout_marginBottom="12dp"
+                        android:gravity="center"
+                        android:fontFamily="monospace"
+                        android:textSize="@dimen/cc_text_hero"
+                        android:textStyle="bold"
+                        android:textColor="@color/text_primary"
+                        android:letterSpacing="0.18"
+                        android:focusable="true"
+                        tools:text="412 908" />
+
+                    <TextView
+                        android:id="@+id/homeSasPrompt"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="@string/e2e_sas_prompt"
+                        android:textSize="@dimen/cc_text_hero"
+                        android:textColor="@color/text_primary"
+                        android:textStyle="bold"
+                        android:letterSpacing="-0.019" />
+
+                    <TextView
+                        android:id="@+id/homeSasBody"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:gravity="center"
+                        android:text="@string/e2e_sas_body"
+                        android:textSize="@dimen/cc_text_sub"
+                        android:textColor="@color/text_secondary"
+                        android:lineSpacingMultiplier="1.5" />
+
+                    <androidx.appcompat.widget.AppCompatButton
+                        android:id="@+id/sasMatchesButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:minHeight="@dimen/cc_pill_height"
+                        android:paddingTop="@dimen/space_8"
+                        android:paddingBottom="@dimen/space_8"
+                        android:text="@string/e2e_sas_matches"
+                        android:textSize="@dimen/cc_text_button"
+                        android:textAllCaps="false"
+                        android:textColor="#FFFFFFFF"
+                        android:fontFamily="sans-serif-medium"
+                        android:background="@drawable/bg_pill_brand"
+                        android:stateListAnimator="@null" />
+
+                    <androidx.appcompat.widget.AppCompatButton
+                        android:id="@+id/sasNoMatchButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:minHeight="@dimen/cc_pill_height"
+                        android:paddingTop="@dimen/space_8"
+                        android:paddingBottom="@dimen/space_8"
+                        android:text="@string/e2e_sas_no_match"
+                        android:textSize="@dimen/cc_text_button"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_primary"
+                        android:fontFamily="sans-serif-medium"
+                        android:background="@drawable/bg_pill_outline"
+                        android:stateListAnimator="@null" />
+                </LinearLayout>
+
+                <!-- ========== HERO FACE 4 — KEY CHANGED / TOFU (P5b d) ==========
+                     This computer has paired before and is now offering a
+                     DIFFERENT key. M-C: the phone cannot tell a reinstall from
+                     a substitution, so the copy lists the benign causes and
+                     asserts none of them — a confident "this is just a
+                     reinstall" trains users straight through a real attack.
+
+                     "Not now" is first in reading order and is NOT the
+                     gradient button. Trusting a new key is the consequential
+                     answer, so it does not get the affordance that makes a tap
+                     feel routine. Stacked for the same large-text reason as
+                     the SAS face. -->
+                <LinearLayout
+                    android:id="@+id/homeHeroKeyChange"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center_horizontal"
+                    android:paddingTop="26dp"
+                    android:paddingBottom="26dp"
+                    android:paddingStart="@dimen/cc_hero_padding"
+                    android:paddingEnd="@dimen/cc_hero_padding"
+                    android:visibility="gone"
+                    tools:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/homeKeyChangeTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="@string/e2e_key_change_title"
+                        android:textSize="@dimen/cc_text_hero"
+                        android:textColor="@color/text_primary"
+                        android:textStyle="bold"
+                        android:letterSpacing="-0.019" />
+
+                    <TextView
+                        android:id="@+id/homeKeyChangeBody"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center"
+                        android:text="@string/e2e_key_change_body"
+                        android:textSize="@dimen/cc_text_sub"
+                        android:textColor="@color/text_secondary"
+                        android:lineSpacingMultiplier="1.5" />
+
+                    <androidx.appcompat.widget.AppCompatButton
+                        android:id="@+id/keyChangeNotNowButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:minHeight="@dimen/cc_pill_height"
+                        android:paddingTop="@dimen/space_8"
+                        android:paddingBottom="@dimen/space_8"
+                        android:text="@string/e2e_key_change_not_now"
+                        android:textSize="@dimen/cc_text_button"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_primary"
+                        android:fontFamily="sans-serif-medium"
+                        android:background="@drawable/bg_pill_outline"
+                        android:stateListAnimator="@null" />
+
+                    <androidx.appcompat.widget.AppCompatButton
+                        android:id="@+id/keyChangeTrustButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:minHeight="@dimen/cc_pill_height"
+                        android:paddingTop="@dimen/space_8"
+                        android:paddingBottom="@dimen/space_8"
+                        android:text="@string/e2e_key_change_trust"
+                        android:textSize="@dimen/cc_text_button"
+                        android:textAllCaps="false"
+                        android:textColor="@color/text_primary"
+                        android:fontFamily="sans-serif-medium"
+                        android:background="@drawable/bg_pill_outline"
+                        android:stateListAnimator="@null" />
+                </LinearLayout>
             </FrameLayout>
         </com.google.android.material.card.MaterialCardView>
 

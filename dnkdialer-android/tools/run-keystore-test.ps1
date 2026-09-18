@@ -12,6 +12,36 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 
 $adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
+
+# ---------------------------------------------------------------- serial pin
+# This box runs more than one emulator: other E2E lanes are told to start their
+# own (FT-2's e2e_api26 on 5556 collided with this lane's Medium_Phone on 5554
+# mid-gate). Every bare `adb` call then fails with "more than one
+# device/emulator", and the gate reads that as the PRODUCT failing rather than
+# as two lanes sharing a host.
+#
+# So every adb call below is pinned with -s. The serial comes from
+# ANDROID_SERIAL when set (the caller knows which device is its own); a single
+# attached device is taken as unambiguous; anything else is a hard stop that
+# NAMES the candidates, because picking one by position would silently run this
+# lane's tests on another lane's emulator.
+$serial = $env:ANDROID_SERIAL
+if (-not $serial) {
+    $devices = @(& $adb devices | Select-String -Pattern '^(\S+)\s+device$' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value })
+    if ($devices.Count -eq 1) {
+        $serial = $devices[0]
+    } elseif ($devices.Count -eq 0) {
+        throw "no device/emulator attached"
+    } else {
+        throw "more than one device attached ($($devices -join ', ')) and ANDROID_SERIAL is not set - refusing to guess which one is this lane's"
+    }
+}
+Write-Host "device: $serial"
+# Prove the device answers before asserting anything about what it runs.
+$probe = ((& $adb -s $serial shell getprop ro.build.version.sdk) -join '').Trim()
+if ($probe -notmatch '^\d+$') { throw "device $serial did not answer getprop (got '$probe')" }
+
 $pkg = 'com.dnkdialer.companion'
 $runner = "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 $cls = "$pkg.E2eKeyStoreTest"
@@ -37,18 +67,18 @@ if ($LASTEXITCODE -ne 0) { throw "assemble failed ($LASTEXITCODE)" }
 # setting, reversible with `settings delete global ...`, and the device really
 # does have room. Cost us ~20 min in (s5).
 $THRESHOLD = 16777216
-if (((& $adb shell settings get global sys_storage_threshold_max_bytes) -join '').Trim() -ne "$THRESHOLD") {
+if (((& $adb -s $serial shell settings get global sys_storage_threshold_max_bytes) -join '').Trim() -ne "$THRESHOLD") {
     Write-Host "== lowering low-storage install threshold to $THRESHOLD =="
-    & $adb shell settings put global sys_storage_threshold_max_bytes $THRESHOLD | Out-Null
+    & $adb -s $serial shell settings put global sys_storage_threshold_max_bytes $THRESHOLD | Out-Null
 }
 
 Write-Host '== installing app + test APKs =='
-& $adb uninstall "$pkg.test" 2>&1 | Out-Null   # may not be present; ignore
-& $adb uninstall $pkg 2>&1 | Out-Null
+& $adb -s $serial uninstall "$pkg.test" 2>&1 | Out-Null   # may not be present; ignore
+& $adb -s $serial uninstall $pkg 2>&1 | Out-Null
 foreach ($apk in @(
     'app\build\outputs\apk\debug\app-debug.apk',
     'app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk')) {
-    $r = (& $adb install $apk) -join "`n"
+    $r = (& $adb -s $serial install $apk) -join "`n"
     if ($LASTEXITCODE -ne 0 -or $r -notmatch 'Success') {
         throw "adb install failed for ${apk}: $r"
     }
@@ -56,15 +86,15 @@ foreach ($apk in @(
 
 # Prove the device is running THIS build before asserting anything about it —
 # a failed install silently leaves a stale APK and every test still passes.
-$vc = (& $adb shell dumpsys package $pkg | Select-String 'versionCode=' | Select-Object -First 1) -join ''
+$vc = (& $adb -s $serial shell dumpsys package $pkg | Select-String 'versionCode=' | Select-Object -First 1) -join ''
 Write-Host "installed: $($vc.Trim())"
 if ($vc -notmatch 'versionCode=58') { throw "device is not running versionCode 58: $vc" }
 
 function Invoke-Phase([string]$method) {
     Write-Host "== force-stop, then run $method =="
-    & $adb shell am force-stop $pkg | Out-Null
-    & $adb shell am force-stop "$pkg.test" | Out-Null
-    $out = (& $adb shell am instrument -w -e class "$cls#$method" $runner) -join "`n"
+    & $adb -s $serial shell am force-stop $pkg | Out-Null
+    & $adb -s $serial shell am force-stop "$pkg.test" | Out-Null
+    $out = (& $adb -s $serial shell am instrument -w -e class "$cls#$method" $runner) -join "`n"
     Write-Host $out
     # Two traps here, both hit during (s3):
     #  1. `am instrument` exits 0 even when tests FAIL — the report text is the
@@ -84,8 +114,8 @@ Invoke-Phase 'phase1_generateAndRecordPublicKey'
 Invoke-Phase 'phase2_keySurvivesProcessDeath'
 
 Write-Host '== remaining in-process tests =='
-& $adb shell am force-stop $pkg | Out-Null
-$out = (& $adb shell am instrument -w -e class $cls `
+& $adb -s $serial shell am force-stop $pkg | Out-Null
+$out = (& $adb -s $serial shell am instrument -w -e class $cls `
     -e notClass "$cls#phase1_generateAndRecordPublicKey,$cls#phase2_keySurvivesProcessDeath" `
     $runner) -join "`n"
 Write-Host $out
