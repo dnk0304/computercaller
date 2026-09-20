@@ -200,41 +200,58 @@ await check('the window RESETS on a new pairEpoch (a new epoch is a new key)', a
   eq((await S.admitSeq({ kid: 'kid-01', direction: 1, seq: 9, pairEpoch: 2 })).ok, true, 'epoch 2 seq 9');
 });
 
-await check('a forged high seq advances the floor by AT MOST 256, matching the Android lane', async () => {
+await check('the floor advance is capped at 256 within the forward-jump band', async () => {
   reset();
   const args = { kid: 'kid-01', direction: 1, pairEpoch: 1 };
   eq((await S.admitSeq({ ...args, seq: 0 })).ok, true, 'baseline');
-  // The attack: one frame claiming a huge sequence number. Uncapped, the floor
-  // would jump to seq-1023 and EVERY frame still in flight would be refused as
-  // "below floor" — a total denial of service costing the attacker one frame.
-  const forged = await S.admitSeq({ ...args, seq: 5_000_000 });
-  // §13.5 "anti-replay dedupes, it never rejects": we cannot prove the frame is
-  // a duplicate, so it is accepted and COUNTED as beyond-window rather than
-  // silently discarded. Same verdict as E2eDedupe.observe's beyondWindowTotal.
-  eq(forged.ok, true, 'forged frame is accepted, not rejected');
-  eq(forged.beyondWindow, true, 'and is counted as beyond-window');
+  // ARMED, via the real two-call shape (M-A5-2 armRule): admitSeq decides the
+  // window, markAuthenticated raises the mark once the AEAD tag verified.
+  await S.markAuthenticated({ ...args, seq: 0 });
+  eq((await S.admitSeq({ ...args, seq: 1024 })).ok, true, 'at the bound, accepted');
+  await S.markAuthenticated({ ...args, seq: 1024 });
+  // 2048 is still admissible (highestAccepted 1024 + WINDOW) and it is far
+  // enough ahead of floor 1 to demand a 1024-wide slide. The cap holds it to
+  // 256, which is the §13.5 clause this check exists for and which M-A5-2 did
+  // NOT change. Same arithmetic as the Android lane's E2eDedupe.observe.
+  const jump = await S.admitSeq({ ...args, seq: 2048 });
+  eq(jump.ok, true, 'accepted');
+  eq(jump.beyondWindow, true, 'and counted as beyond-window');
   const w = store[S.DEDUPE_KEY]['kid-01|1'];
-  eq(w.floor, 256, 'floor advanced by exactly the cap, not by 4,998,977');
+  eq(w.floor, 257, 'floor advanced by exactly the cap (1 + 256), not by 1024');
   eq(w.beyondWindow, 1, 'beyond-window counter is exported');
-  // The cap BOUNDS the damage; it does not eliminate it. Frames 1..255 are
-  // lost — stated here rather than wished away, because the Android lane does
-  // exactly the same thing and a test that claimed otherwise would be the one
-  // place the two implementations silently disagreed.
+  // The cap BOUNDS the damage; it does not eliminate it. Frames under the new
+  // floor are lost — stated rather than wished away, because the Android lane
+  // does the same thing and a test claiming otherwise would be the one place
+  // the two implementations silently disagreed.
   eq((await S.admitSeq({ ...args, seq: 1 })).why, 'below-floor', 'frames under the new floor are lost (bounded at 256)');
-  // Everything at or above the new floor still lands normally.
-  eq((await S.admitSeq({ ...args, seq: 256 })).ok, true, 'the first frame at the new floor lands');
+  eq((await S.admitSeq({ ...args, seq: 257 })).ok, true, 'the first frame at the new floor lands');
   eq((await S.admitSeq({ ...args, seq: 900 })).ok, true, 'and the rest of the window is healthy');
 });
 
-await check('a second forged frame cannot compound the advance without more frames', async () => {
+// SECURITY A5 / M-A5-2 (F2) CHANGED THIS CHECK, DELIBERATELY. It used to assert
+// that two forged `seq: 5_000_000` frames walked the floor to 512 — "each frame
+// costs the attacker one frame and buys at most 256". That ratio was the bug:
+// ~20 000 injected frames bought a floor past every frame in flight, i.e. a
+// total denial of service on the pairing for the price of a flood. The floor
+// cap bounded the damage PER FRAME and never bounded the attack. The forward-
+// jump bound does: such a frame now buys ZERO. Full vector set in
+// tests/e2e-sw-a5-forward-jump.test.mjs against tests/e2e-forward-jump-vectors.json.
+await check('a far-future forged frame now buys the attacker nothing at all', async () => {
   reset();
   const args = { kid: 'kid-01', direction: 1, pairEpoch: 1 };
   await S.admitSeq({ ...args, seq: 0 });
-  await S.admitSeq({ ...args, seq: 5_000_000 });
-  await S.admitSeq({ ...args, seq: 5_000_000 });
-  // Each forged frame costs the attacker one frame and buys at most 256 — the
-  // cap is per frame, so the ratio never improves for them.
-  eq(store[S.DEDUPE_KEY]['kid-01|1'].floor, 512, 'two frames, two caps');
+  // The mark must be ARMED for the bound to apply — an unarmed window is the
+  // post-resume state and admits by the ordinary rules (vector A).
+  await S.markAuthenticated({ ...args, seq: 0 });
+  const a = await S.admitSeq({ ...args, seq: 5_000_000 });
+  const b = await S.admitSeq({ ...args, seq: 5_000_000 });
+  eq(a.why, 'forward-jump', 'first forgery refused');
+  eq(b.why, 'forward-jump', 'second forgery refused');
+  const w = store[S.DEDUPE_KEY]['kid-01|1'];
+  eq(w.floor, 0, 'the floor did not move — that immobility IS the fix');
+  eq(w.highestAccepted, 0, 'and neither did the bound');
+  eq(w.beyondWindow, 0, 'a refusal is not a beyond-window ACCEPT');
+  eq((await S.admitSeq({ ...args, seq: 1 })).ok, true, 'the real frames still land');
 });
 
 await check('a malformed or negative seq is refused, not coerced', async () => {

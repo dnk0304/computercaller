@@ -115,7 +115,7 @@ check('CONTROL: …and a present entry as present, so it is not stuck on "no"',
 // The phase set itself, as the full sorted string.
 check('KNOWN_PHASES is the frozen set, byte for byte',
   [...KNOWN_PHASES].sort().join(',')
-    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P3,P3.1,P4,P4.1,P5A,P5B,P6',
+    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P3,P3.1,P3.2,P4,P4.1,P5A,P5B,P6',
   KNOWN_PHASES.join(','));
 
 // E2E-P2.2. The A5 web fix-before-flip lane. It RUNS both browser harnesses,
@@ -133,6 +133,19 @@ check('KNOWN_PHASES is the frozen set, byte for byte',
   check('P2.2 skips the FT-only harnesses',
     !p22.includes('ft-ui-proof') && !p22.includes('ft-web-proof'), p22.join(', '));
 }
+
+// Merged by Ken (E2E-MERGE-A5): P2.2 and P3.2 each added a phase to the frozen
+// string in the same window; BOTH kept, as the file itself prescribes.
+// E2E-P3.2 (Security A5 M-A5-2 / M-A5-3, the SW fix lane) added P3.2. Adding a
+// phase is SUPPOSED to land here: this string is the one place a new phase
+// cannot arrive by accident, and two lanes adding a phase in the same window
+// conflict on it instead of interleaving silently. P2.2 (web) adds 'P2.2' the
+// same way -- Ken resolves that conflict at merge, keeping BOTH.
+const p32 = harnessesFor('P3.2');
+check('P3.2 runs ext-sw-lifetime-proof -- it is the SW lane',
+  p32.includes('ext-sw-lifetime-proof'), p32.join(', '));
+check('P3.2 runs e2e-ui-proof -- the P5a surfaces exist on this base',
+  p32.includes('e2e-ui-proof'), p32.join(', '));
 
 // THE REGRESSION, named. This is the arm that would have gone red at (d).
 const d1 = harnessesFor('D1');

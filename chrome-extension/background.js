@@ -42,6 +42,7 @@ import {
   isSealedEnvelope,
   openSealedFrame,
   admitSeq,
+  markAuthenticated,
   noteDrop,
   readDrops,
   pairContextInputs,
@@ -308,6 +309,26 @@ async function localUserId() {
     }
   } catch { /* offline — counts-only until the next attempt, which is correct */ }
   return null;
+}
+
+/**
+ * Security A5 / M-A5-3: WHY this reply carries no key, as a token the page may
+ * branch on.
+ *
+ * Null is not one situation. "The worker has no key yet" and "the worker had a
+ * key and loading it threw" are the same `pub: null` on the wire and want
+ * different page behaviour -- the first is an extension that is simply not part
+ * of this pairing (badge it absent, 2 recipients, honest), the second is a
+ * broken worker where the honest move is to WAIT rather than to present a SAS
+ * that silently excludes it. A5's null arm forbids exactly one thing: showing a
+ * 2-key code as though it covered the SW.
+ *
+ * Tokens are stable and short by design; `error` keeps the diagnostic text.
+ */
+function nullKeyReason() {
+  if (swPubKey) return null;
+  if (deviceKeyError) return 'key-unavailable';
+  return 'not-hydrated';
 }
 
 function primeDeviceKey() {
@@ -1590,17 +1611,52 @@ async function openIfSealed(type, data) {
   const session = await ensureSession(data.kid);
   if (!session) return null;                        // counts-only
   if (data.kid !== e2eKid) { await noteDrop('wrong-kid'); return null; }
+  // CAPTURED ONCE. `e2ePairEpoch` is module state and there are two awaits
+  // below it; a rekey that lands mid-open would otherwise have admitSeq() and
+  // markAuthenticated() reasoning about DIFFERENT epochs, and the mark for a
+  // frame decrypted under the old key would be written into the new window --
+  // re-arming a bound that a reset had just disarmed (M-A5-2 vector H).
+  // markAuthenticated() also guards on this value, so a stale mark is a no-op.
+  const epoch = e2ePairEpoch;
   // §13.5 anti-replay BEFORE the open, so a replayed frame costs no crypto.
   // A duplicate is dropped silently: frameBuffer legitimately re-sends on
   // resume, and treating that as an attack turns every reconnect into a failure.
-  const admit = await admitSeq({
-    kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: e2ePairEpoch,
-  });
-  if (!admit.ok) { await noteDrop(admit.why); return undefined; }   // drop entirely
+  let admit;
   try {
-    return await openSealedFrame({
-      session, frameType: type, envelope: data, pairEpoch: e2ePairEpoch,
+    admit = await admitSeq({
+      kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: epoch,
     });
+  } catch (e) {
+    // RESUME-PROTOCOL rule 6 / M-A5-2: a stored dedupe record of an unknown
+    // version has no forward-jump bound, so admitting against it would silently
+    // reopen F2. Fail CLOSED and loudly; the next Accept rebuilds the record.
+    console.warn('[CC-SW] dedupe record unusable — dropping frame:', String((e && e.message) || e));
+    trace('e2e-dedupe-record-version', { why: String((e && e.message) || e).slice(0, 120) });
+    await noteDrop('dedupe-record-version');
+    return undefined;
+  }
+  if (!admit.ok) {
+    // A forward-jump is NOT counted here. admitSeq() bumps
+    // refusedForwardJump at the refusal site itself (so the count cannot be
+    // lost if a caller forgets), and M-A5-2 requires that counter to be
+    // distinct from droppedTotal — adding a noteDrop() here would both
+    // inflate `total` and count the same refusal twice.
+    if (admit.why !== 'forward-jump') await noteDrop(admit.why);
+    return undefined;                                              // drop entirely
+  }
+  try {
+    const opened = await openSealedFrame({
+      session, frameType: type, envelope: data, pairEpoch: epoch,
+    });
+    // M-A5-2 `armRule`: the forward-jump mark is raised HERE, after the AEAD
+    // tag verified, and nowhere else. admitSeq() above knows only that the
+    // frame was well SHAPED; if it raised the mark, a forged envelope at a
+    // huge seq would set the high-water mark itself and the bound would then
+    // admit everything below it.
+    await markAuthenticated({
+      kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: epoch,
+    });
+    return opened;
   } catch {
     // Tag failure. §13.5: drop the frame, NEVER close the socket. The user
     // still gets a badge and a generic body — silence would be worse.
@@ -2278,7 +2334,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // page initiated the pairing. It is pinned as source 'bridge', which
     // outranks any TOFU pin. The reply carries the value the worker now holds,
     // null included, so the page can see the hand-over landed.
-    primeDeviceKey()
+    // SECURITY A5 / M-A5-3 (F3): refreshDeviceKey(), NOT primeDeviceKey(). This
+    // is the fix, and it is one word long.
+    //
+    // B9 is amended to "no SW SAS module -- the SW is a recipient, not a
+    // verifier", and the whole of what makes that safe is that the PAGE feeds
+    // the SW's key into the SAS transcript, so swapping the SW key moves the
+    // digits (sas-vectors v3-3key-mode-on 50690 vs v4-3key-sw-swapped 44820).
+    // That holds only if the key on THIS reply is the key the worker actually
+    // holds right now. primeDeviceKey() memoises into `deviceKeyPrimed` for the
+    // life of the worker, so a key rotated under us -- an IndexedDB wipe, a
+    // regenerated record -- would keep answering the OLD key here until
+    // something else happened to call connect(). The user would then compare a
+    // code covering a key nobody holds, and the swap A5 wants visible becomes
+    // invisible by the back door.
+    //
+    // Cost: one IndexedDB read on a path that already awaits. refreshDeviceKey()
+    // also routes through primeDeviceKey()'s regeneration branch, so a rotation
+    // first observed HERE still drops the stale wraps and says counts-only
+    // (M-C) instead of merely reporting a new deviceId.
+    refreshDeviceKey()
       .then(async () => {
         if (typeof message.pairingId === 'string' && message.pairingId) {
           await setOwnPairingId(message.pairingId);
@@ -2286,6 +2361,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const own = await readOwnPairingId();
         sendResponse?.({
           ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
+          // M-A5-3's null arm, MACHINE-READABLE. `error` already carried the
+          // IndexedDB exception text, but that is a diagnostic string and the
+          // page must not branch on it. `reason` is null whenever `pub` is a
+          // key and a short stable token otherwise, so the page can hold the
+          // pairing (or badge the SW absent) WITHOUT claiming a 2-key SAS
+          // covered a worker whose key it never learned. Every other field on
+          // this reply is byte-identical to A4.1.
+          reason: nullKeyReason(),
           pairingId: (own && own.pairingId) || null,
           // A4.1-M1: WHERE that pairingId came from. 'bridge' is this
           // hand-over having landed; 'tofu' is the worker echoing a pin it
@@ -2295,7 +2378,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
       })
       .catch(() => sendResponse?.({
-        ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError, pairingId: null,
+        ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
+        reason: nullKeyReason(),
+        pairingId: null,
         pairingIdSource: 'none',
       }));
   } else if (message?.type === 'e2e-state-get') {
