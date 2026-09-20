@@ -56,7 +56,7 @@ export const KNOWN_PHASES = [
   'P1', 'P1.1', 'P1.2',
   'P2', 'P2.1', 'P2.2', 'P2.3',
   'P3', 'P3.1', 'P3.2',
-  'P4', 'P4.1',
+  'P4', 'P4.1', 'P4.2',
   'P5A', 'P5B',
   'P6', 'P6.1',
   'D1',
@@ -94,7 +94,7 @@ export const PHASE_HARNESSES = {
     // i.e. the hook and the component these surfaces render from — same
     // reasoning that put P2.2 on this list.
     runs: ['P2.2', 'P2.3', 'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'MERGE'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'FT1', 'FT2', 'FT3'],
+    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P4.2', 'FT1', 'FT2', 'FT3'],
   },
   /**
    * P5a slice 2 — the Encrypted-mode UI proof. From P5A onwards, where the
@@ -105,7 +105,7 @@ export const PHASE_HARNESSES = {
   'e2e-ui-proof': {
     runs: ['P2.2', 'P2.3', 'P3.2', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'MERGE'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1',
-      'P3', 'P3.1', 'P4', 'P4.1', 'FT1', 'FT2', 'FT3'],
+      'P3', 'P3.1', 'P4', 'P4.1', 'P4.2', 'FT1', 'FT2', 'FT3'],
   },
   /**
    * FT-3b (d): the file-transfer failure-copy table, both surfaces, driven
@@ -115,13 +115,13 @@ export const PHASE_HARNESSES = {
   'ft-ui-proof': {
     runs: ['FT3'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
-      'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'FT1', 'FT2', 'MERGE'],
+      'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'FT1', 'FT2', 'MERGE'],
   },
   /** FT-3a: the transfer wire/UI on the web app. FT3 only, same reasoning. */
   'ft-web-proof': {
     runs: ['FT3'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
-      'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'FT1', 'FT2', 'MERGE'],
+      'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'FT1', 'FT2', 'MERGE'],
   },
 };
 

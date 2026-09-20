@@ -447,7 +447,13 @@ const MIN_CHECKS_OVERRIDE = {
   // per-harness runs/skips table into this module, so the suite now asserts the
   // phase set, every phase's resolved list, the coverage rule and four controls
   // for the rule itself. Measured: 107.
-  'unit:harness-list': 107,
+  // E2E-P4.2 (e) min-checks raise 107 -> 130. Registering P4.2 in KNOWN_PHASES
+  // generates three more checks (its resolved list, its no-FT-proofs arm, and
+  // the frozen phase-set string). The floor was ALSO stale: the suite already
+  // measured 127 on this lane's base 165f165, i.e. 20 checks above the number
+  // guarding it, so a deletion of twenty assertions would have printed a
+  // cheerful N/N. Re-measured here rather than bumped by three.
+  'unit:harness-list': 130,
 };
 const MIN_CHECKS = (() => {
   const table = {};
