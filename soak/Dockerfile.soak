@@ -1,0 +1,47 @@
+# Image for both cc-e2e-soak-relay and cc-e2e-soak-runner.
+#
+# ONE image for both on purpose: the runner must hold the pairs using the same
+# ws client, the same node version and the same lib/e2e code as the relay it is
+# measuring. A runner built from a different base is a second variable in an
+# experiment that is supposed to have one.
+#
+# Built from the POST-D1-PREP tree. Pass the sha at build time so the running
+# container can name the commit it is evidence about — a soak trace that cannot
+# name its build is not evidence.
+FROM node:22-bookworm-slim
+
+ARG SOAK_SHA=unset
+ENV SOAK_SHA=${SOAK_SHA}
+
+# `tee` for the N-2 stdout capture, openssl for prisma.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates coreutils \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Dependencies first so a code-only change does not re-resolve the tree.
+COPY package.json bun.lock* package-lock.json* ./
+COPY prisma ./prisma
+RUN npm install --omit=dev --no-audit --no-fund \
+ && npx prisma generate
+
+COPY . .
+
+# The relay runs NODE_ENV=production, which needs a real build. Doing it here
+# rather than at container start means the 24 h window is not spent compiling,
+# and means a build failure is a BUILD failure rather than a soak that quietly
+# never started.
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# Evidence lives on a volume mounted here. Declared so a run without the volume
+# still writes somewhere rather than failing at the first heartbeat.
+RUN mkdir -p /evidence
+VOLUME ["/evidence"]
+
+EXPOSE 3000
+
+# No CMD: docker-compose.soak.yml gives each service its own command, and a
+# default here would let the wrong one start silently if a service ever lost
+# its command line.
