@@ -165,12 +165,28 @@ function actualWebBadge({ localMode, block, phoneRowPublicKey = PHONE.b64, latch
   return { decision: d, badge: d.action === 'abort' ? 'ABORT' : BADGE[d.state] };
 }
 
-/** Record a cell. Either it conforms (a pass) or it is a spec divergence. */
+/**
+ * Record a cell: it conforms (a pass), it is a spec divergence, or it is
+ * STRUCK.
+ *
+ * STRUCK (M-A5-4 / R-BD 2026-09-20) is a RULING, not a result. It marks a row
+ * that Security has ratified out of the live matrix: the row is kept, with its
+ * evidence and its note, so the reasoning is not lost, but it is no longer a
+ * finding against the shipped code and it is NOT counted as a pass either —
+ * nothing about it was proven. A struck row must still never be reported as
+ * green, which is why it gets its own tag in the report rather than being
+ * folded into the conformant count.
+ */
 const cells = [];
-function cell(row, title, { automated, spec, actual, note = '' }) {
+const struckCells = [];
+function cell(row, title, { automated, spec, actual, note = '', struck = false }) {
   const conforms = spec === actual;
-  cells.push({ row, title, automated, spec, actual, conforms });
+  cells.push({ row, title, automated, spec, actual, conforms, struck });
   if (!automated) return;
+  if (struck) {
+    struckCells.push({ row, title, spec, actual, note });
+    return;
+  }
   if (conforms) {
     passed++;
   } else {
@@ -442,7 +458,7 @@ console.log('E2E-P6 (d) — §13.2 mixed-mode matrix\n');
     webKey: { deviceId: WEB_ID, pubB64Url: WEB.b64 },
     sw: { status: 'present', recipient: { kind: 'extension', deviceId: SW_ID, pub: SW.b64 }, pairingId: PAIRING_ID },
   });
-  eq('row 10 [PINNED CURRENT BEHAVIOUR]: with web OFF and the extension present, the block still advertises mode 0',
+  eq('row 10 [STRUCK — M-A5-4]: with web OFF and the extension present, the block still advertises mode 0',
     req.mode, 0);
 
   // And the gap is structural, not a slip at one call site: there is no channel
@@ -450,15 +466,15 @@ console.log('E2E-P6 (d) — §13.2 mixed-mode matrix\n');
   // so that adding one turns this red and closes the finding.
   const phoneE2eSrc = readFileSync(path.join(ROOT, 'hooks', 'phoneE2e.ts'), 'utf8');
   const hasExtSetting = /RequestBlockInput[\s\S]{0,400}?(extMode|extensionMode|swMode|extLocalMode)/.test(phoneE2eSrc);
-  check('row 10 [PINNED CURRENT BEHAVIOUR]: RequestBlockInput carries NO extension-setting field',
+  check('row 10 [STRUCK — M-A5-4]: RequestBlockInput carries NO extension-setting field',
     hasExtSetting === false,
-    'an extension-setting input now exists — row 10 may be implemented; re-check the finding');
+    'an extension-setting input now exists — the row RETURNS; compute the OR before buildRequestBlock and un-strike this cell');
 
   const spec = specDecide('on', 'on'); // phone ON, computer advertises OR = ON
   const actual = hasExtSetting ? spec : 'NO CHANNEL (computer cannot advertise OR(web, ext))';
   cell(10, 'v58 ON / ext ON, web OFF (same computer)', {
-    automated: true, spec, actual,
-    note: 'buildRequestBlock takes a single `localMode` and has no input for the extension\'s own setting, so a computer with web OFF / extension ON advertises mode 0. The frozen spec value (the OR of the two local settings) has no channel to travel on. The phone models it — E2eSettings.advertisementOf() is exactly this OR — but nothing on the computer computes it, and grep finds no encrypted-mode setting in chrome-extension/ at all.',
+    automated: true, spec, actual, struck: true,
+    note: 'M-A5-4 / R-BD 2026-09-20: no per-extension setting exists; row returns only if one is added, and the OR is then computed before buildRequestBlock. STRUCK per Security F4 ACCEPT — the row collapses into rows 8/9 and is kept here as a struck row with this note, not as a live divergence. The original finding, unchanged: buildRequestBlock takes a single `localMode` and has no input for the extension\'s own setting, so a computer with web OFF / extension ON advertises mode 0; the frozen spec value (the OR of the two local settings) has no channel to travel on. The phone models it — E2eSettings.advertisementOf() is exactly this OR — but nothing on the computer computes it, and grep finds no encrypted-mode setting in chrome-extension/ at all. The two assertions above stay ARMED: if an extension-setting input ever appears they go RED and the row returns.',
   });
 }
 
@@ -686,9 +702,9 @@ const conformingCells = automatedCells.filter((c) => c.conforms);
 
 console.log('\n── §13.2 cell status ───────────────────────────────────────────');
 for (const c of cells) {
-  const tag = !c.automated ? 'AWAITING-HUMAN' : c.conforms ? 'AUTOMATED  OK ' : 'SPEC-DIVERGE  ';
+  const tag = !c.automated ? 'AWAITING-HUMAN' : c.struck ? 'STRUCK M-A5-4 ' : c.conforms ? 'AUTOMATED  OK ' : 'SPEC-DIVERGE  ';
   console.log(`  [${tag}] row ${String(c.row).padStart(2)} — ${c.title}`);
-  if (c.automated && !c.conforms) {
+  if (c.automated && !c.conforms && !c.struck) {
     console.log(`                   spec: ${c.spec}`);
     console.log(`                 actual: ${c.actual}`);
   }
@@ -703,6 +719,18 @@ if (divergences.length) {
     console.log(`    §13.2 requires : ${d.spec}`);
     console.log(`    the code does  : ${d.actual}`);
     console.log(`    why            : ${d.note}\n`);
+  }
+}
+
+if (struckCells.length) {
+  console.log('══ STRUCK — rows Security has ratified out of the live matrix ═══════');
+  console.log('   NOT passes and NOT findings. Kept so the reasoning survives, and');
+  console.log('   armed so the row comes back if the gap it named ever closes.\n');
+  for (const d of struckCells) {
+    console.log(`  row ${d.row} — ${d.title}`);
+    console.log(`    §13.2 required : ${d.spec}`);
+    console.log(`    the code does  : ${d.actual}`);
+    console.log(`    ruling         : ${d.note}\n`);
   }
 }
 
@@ -724,6 +752,7 @@ console.log(
   `§13.2 cells: ${cells.length} total — `
   + `${conformingCells.length} automated and conformant, `
   + `${divergences.length} automated but DIVERGENT from spec, `
+  + `${struckCells.length} STRUCK (row ${struckCells.map((d) => d.row).join(', ')} — M-A5-4), `
   + `${awaitingHuman.length} AWAITING-HUMAN (rows ${awaitingHuman.map((h) => h.row).join(', ')}).`,
 );
 console.log(
