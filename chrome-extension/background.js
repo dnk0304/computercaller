@@ -44,7 +44,6 @@ import {
   admitSeq,
   markAuthenticated,
   noteDrop,
-  noteRefusedForwardJump,
   readDrops,
   pairContextInputs,
   setOwnPairingId,
@@ -1612,13 +1611,20 @@ async function openIfSealed(type, data) {
   const session = await ensureSession(data.kid);
   if (!session) return null;                        // counts-only
   if (data.kid !== e2eKid) { await noteDrop('wrong-kid'); return null; }
+  // CAPTURED ONCE. `e2ePairEpoch` is module state and there are two awaits
+  // below it; a rekey that lands mid-open would otherwise have admitSeq() and
+  // markAuthenticated() reasoning about DIFFERENT epochs, and the mark for a
+  // frame decrypted under the old key would be written into the new window --
+  // re-arming a bound that a reset had just disarmed (M-A5-2 vector H).
+  // markAuthenticated() also guards on this value, so a stale mark is a no-op.
+  const epoch = e2ePairEpoch;
   // §13.5 anti-replay BEFORE the open, so a replayed frame costs no crypto.
   // A duplicate is dropped silently: frameBuffer legitimately re-sends on
   // resume, and treating that as an attack turns every reconnect into a failure.
   let admit;
   try {
     admit = await admitSeq({
-      kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: e2ePairEpoch,
+      kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: epoch,
     });
   } catch (e) {
     // RESUME-PROTOCOL rule 6 / M-A5-2: a stored dedupe record of an unknown
@@ -1630,15 +1636,17 @@ async function openIfSealed(type, data) {
     return undefined;
   }
   if (!admit.ok) {
-    // M-A5-2's counter is deliberately NOT droppedTotal — see
-    // noteRefusedForwardJump(). A forgery band must be readable on its own.
-    if (admit.why === 'forward-jump') await noteRefusedForwardJump();
-    else await noteDrop(admit.why);
+    // A forward-jump is NOT counted here. admitSeq() bumps
+    // refusedForwardJump at the refusal site itself (so the count cannot be
+    // lost if a caller forgets), and M-A5-2 requires that counter to be
+    // distinct from droppedTotal — adding a noteDrop() here would both
+    // inflate `total` and count the same refusal twice.
+    if (admit.why !== 'forward-jump') await noteDrop(admit.why);
     return undefined;                                              // drop entirely
   }
   try {
     const opened = await openSealedFrame({
-      session, frameType: type, envelope: data, pairEpoch: e2ePairEpoch,
+      session, frameType: type, envelope: data, pairEpoch: epoch,
     });
     // M-A5-2 `armRule`: the forward-jump mark is raised HERE, after the AEAD
     // tag verified, and nowhere else. admitSeq() above knows only that the
@@ -1646,7 +1654,7 @@ async function openIfSealed(type, data) {
     // huge seq would set the high-water mark itself and the bound would then
     // admit everything below it.
     await markAuthenticated({
-      kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: e2ePairEpoch,
+      kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: epoch,
     });
     return opened;
   } catch {

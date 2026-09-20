@@ -165,6 +165,56 @@ await check('a burst of refusals is not lost to the read-modify-write race', asy
   eq((await S.readDrops()).refusedForwardJump, 50, 'every refusal in the burst');
 });
 
+await check('markAuthenticated is a NO-OP for a stale epoch (the rekey race)', async () => {
+  reset();
+  // The race this guards: openIfSealed() awaits the AEAD open, and a rekey can
+  // land during that await. A mark carrying the OLD epoch must not be written
+  // into the NEW window, or it re-arms a bound the reset just disarmed.
+  await S.admitSeq({ kid: KID, direction: DIR, seq: 5, pairEpoch: 2 });
+  await S.markAuthenticated({ kid: KID, direction: DIR, seq: 900000, pairEpoch: 1 });
+  eq(record().highestAccepted, -1, 'a mark from the previous epoch must not land');
+  await S.markAuthenticated({ kid: KID, direction: DIR, seq: 5, pairEpoch: 2 });
+  eq(record().highestAccepted, 5, 'the current epoch still marks normally');
+});
+
+const NL_ = String.fromCharCode(10);
+const BG_SRC = readFileSync(new URL('../chrome-extension/background.js', import.meta.url), 'utf8');
+/** openIfSealed()'s body with comment lines removed (a check must not match prose). */
+function openIfSealedCode() {
+  const start = BG_SRC.indexOf('async function openIfSealed(');
+  assert(start > 0, 'openIfSealed not found');
+  const rest = BG_SRC.slice(start);
+  const stop = rest.indexOf('function splitFrame');
+  assert(stop > 0, 'could not bound openIfSealed');
+  return rest.slice(0, stop).split(NL_).filter((l) => !/^\s*(\/\/|\*)/.test(l)).join(NL_);
+}
+
+await check('openIfSealed bounding worked (positive control)', () => {
+  const code = openIfSealedCode();
+  assert(/admitSeq\(/.test(code) && /openSealedFrame\(/.test(code), 'the extracted body is wrong');
+});
+
+await check('background.js captures the epoch ONCE across the open', () => {
+  const code = openIfSealedCode();
+  assert(/const epoch = e2ePairEpoch;/.test(code), 'the epoch must be captured once');
+  const reads = [...code.matchAll(/pairEpoch:\s*([A-Za-z0-9_$.]+)/g)].map((m) => m[1]);
+  assert(reads.length >= 3, `expected >= 3 pairEpoch sites, saw ${reads.length}`);
+  for (const r of reads) eq(r, 'epoch', 'pairEpoch site must use the captured epoch, not a re-read');
+});
+
+await check('a forward-jump is counted ONCE, not by both module and caller', async () => {
+  reset();
+  await S.admitSeq({ kid: KID, direction: DIR, seq: 0, pairEpoch: 1 });
+  await S.markAuthenticated({ kid: KID, direction: DIR, seq: 0, pairEpoch: 1 });
+  await S.admitSeq({ kid: KID, direction: DIR, seq: 99999, pairEpoch: 1 });
+  eq((await S.readDrops()).refusedForwardJump, 1, 'exactly one');
+  const code = openIfSealedCode();
+  assert(!/noteRefusedForwardJump/.test(code),
+    'admitSeq() owns the counter; a second bump here double-counts every refusal');
+  assert(/admit\.why !== 'forward-jump'/.test(code),
+    'a forward-jump must be excluded from noteDrop(), or it inflates droppedTotal');
+});
+
 // ── 3. The stored-record version guard (RESUME-PROTOCOL rule 6) ─────────────
 
 await check('a pre-M-A5-2 record (no v, no highestAccepted) throws loudly', async () => {
