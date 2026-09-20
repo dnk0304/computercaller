@@ -43,6 +43,7 @@ import {
   openSealedFrame,
   admitSeq,
   noteDrop,
+  noteRefusedForwardJump,
   readDrops,
   pairContextInputs,
   setOwnPairingId,
@@ -1593,10 +1594,27 @@ async function openIfSealed(type, data) {
   // §13.5 anti-replay BEFORE the open, so a replayed frame costs no crypto.
   // A duplicate is dropped silently: frameBuffer legitimately re-sends on
   // resume, and treating that as an attack turns every reconnect into a failure.
-  const admit = await admitSeq({
-    kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: e2ePairEpoch,
-  });
-  if (!admit.ok) { await noteDrop(admit.why); return undefined; }   // drop entirely
+  let admit;
+  try {
+    admit = await admitSeq({
+      kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: e2ePairEpoch,
+    });
+  } catch (e) {
+    // RESUME-PROTOCOL rule 6 / M-A5-2: a stored dedupe record of an unknown
+    // version has no forward-jump bound, so admitting against it would silently
+    // reopen F2. Fail CLOSED and loudly; the next Accept rebuilds the record.
+    console.warn('[CC-SW] dedupe record unusable — dropping frame:', String((e && e.message) || e));
+    trace('e2e-dedupe-record-version', { why: String((e && e.message) || e).slice(0, 120) });
+    await noteDrop('dedupe-record-version');
+    return undefined;
+  }
+  if (!admit.ok) {
+    // M-A5-2's counter is deliberately NOT droppedTotal — see
+    // noteRefusedForwardJump(). A forgery band must be readable on its own.
+    if (admit.why === 'forward-jump') await noteRefusedForwardJump();
+    else await noteDrop(admit.why);
+    return undefined;                                              // drop entirely
+  }
   try {
     return await openSealedFrame({
       session, frameType: type, envelope: data, pairEpoch: e2ePairEpoch,

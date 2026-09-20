@@ -1,0 +1,87 @@
+{
+  "id": "e2e-forward-jump-vectors",
+  "v": 1,
+  "source": "Security GATE2-PRE-A5 — F2 / MUST M-A5-2",
+  "authoredBy": "E2E-P3.2 (extension SW lane)",
+  "ownershipNote": "P2.2 (web) was scheduled to author this file. At the time P3.2 reached deliverable (a) no branch e2e/p2.2-a5-web existed on origin and the file was absent from e2e/integration (122e9c6), so the SW lane authored it. If P2.2 pushes its own copy, Ken dedupes at merge: ONE file, three consumers (web, SW, android P4.2).",
+  "whatThisPins": [
+    "seq == highestAccepted + window  -> ACCEPTED",
+    "seq == highestAccepted + window + 1 -> REFUSED (why 'forward-jump')",
+    "a refusal moves NEITHER floor NOR highestAccepted",
+    "the same refused frame replayed N times increments the counter N times",
+    "the bound walks forward only with ACCEPTANCE, never with a drop or a duplicate",
+    "a pairEpoch change rebuilds the record and re-arms the bound at the new floor"
+  ],
+  "params": {
+    "window": 1024,
+    "floorAdvanceCap": 256,
+    "initialFloor": 0,
+    "initialHighestAccepted": 0
+  },
+  "vectors": [
+    {
+      "id": "F2-1-at-bound-accepted",
+      "note": "The frozen edge: exactly +WINDOW above a fresh highestAccepted is legitimate. frameBuffer resume can produce it; a receiver that refused here would break reconnect.",
+      "frames": [{ "seq": 1024, "epoch": 1, "expect": "accept" }],
+      "after": { "floor": 1, "highestAccepted": 1024, "refusedForwardJump": 0 }
+    },
+    {
+      "id": "F2-2-one-past-bound-refused",
+      "note": "+WINDOW+1 is unreachable by any honest sender. Refused, and the floor does not move — that immobility IS the fix.",
+      "frames": [{ "seq": 1025, "epoch": 1, "expect": "refuse", "why": "forward-jump" }],
+      "after": { "floor": 0, "highestAccepted": 0, "refusedForwardJump": 1 }
+    },
+    {
+      "id": "F2-3-replayed-refusal-counts-every-time",
+      "note": "A5's own wording: 'the same frame twice -> refused twice, counter = 2'. A counter that deduped its own refusals would report a flood as a single event.",
+      "frames": [
+        { "seq": 1025, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
+        { "seq": 1025, "epoch": 1, "expect": "refuse", "why": "forward-jump" }
+      ],
+      "after": { "floor": 0, "highestAccepted": 0, "refusedForwardJump": 2 }
+    },
+    {
+      "id": "F2-4-floor-moves-only-on-accept",
+      "note": "A refusal between two accepts must leave the window exactly as the accepts left it.",
+      "frames": [
+        { "seq": 0, "epoch": 1, "expect": "accept" },
+        { "seq": 1025, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
+        { "seq": 1024, "epoch": 1, "expect": "accept" }
+      ],
+      "after": { "floor": 1, "highestAccepted": 1024, "refusedForwardJump": 1 }
+    },
+    {
+      "id": "F2-5-bound-walks-with-acceptance-not-with-the-floor",
+      "note": "highestAccepted 2048 after a legitimate climb; the floor is only 257 because of the 256 cap. The bound is measured from ACCEPTANCE, so 3072 is still admissible and 3073 is not.",
+      "frames": [
+        { "seq": 0, "epoch": 1, "expect": "accept" },
+        { "seq": 1024, "epoch": 1, "expect": "accept" },
+        { "seq": 2048, "epoch": 1, "expect": "accept" },
+        { "seq": 3073, "epoch": 1, "expect": "refuse", "why": "forward-jump" }
+      ],
+      "after": { "floor": 257, "highestAccepted": 2048, "refusedForwardJump": 1 }
+    },
+    {
+      "id": "F2-6-the-original-attack-is-now-inert",
+      "note": "THE REGRESSION VECTOR. Pre-M-A5-2 each of these three far-future frames was ACCEPTED and walked the floor up by 256, so ~20k injections silenced the pairing. Now: refused, floor pinned at 0, and the next real frame still lands.",
+      "frames": [
+        { "seq": 0, "epoch": 1, "expect": "accept" },
+        { "seq": 5000000, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
+        { "seq": 5000000, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
+        { "seq": 5000000, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
+        { "seq": 1, "epoch": 1, "expect": "accept" }
+      ],
+      "after": { "floor": 0, "highestAccepted": 1, "refusedForwardJump": 3 }
+    },
+    {
+      "id": "F2-7-epoch-reset-rearms-the-bound",
+      "note": "A new epoch is a new key and a new record. The bound must be re-armed from the new floor, not inherited from the old highestAccepted — inheriting it would refuse every legitimate frame after an Accept.",
+      "frames": [
+        { "seq": 1024, "epoch": 1, "expect": "accept" },
+        { "seq": 0, "epoch": 2, "expect": "accept" },
+        { "seq": 1025, "epoch": 2, "expect": "refuse", "why": "forward-jump" }
+      ],
+      "after": { "floor": 0, "highestAccepted": 0, "refusedForwardJump": 1 }
+    }
+  ]
+}

@@ -72,12 +72,40 @@ export { LABEL_NP2C, LABEL_NC2P } from './kdf.mjs';
 export const DEDUPE_WINDOW = 1024;
 export const FLOOR_ADVANCE_CAP = 256;
 
+/**
+ * Security A5 / M-A5-2 (F2). The forward-jump bound, same width as the dedupe
+ * window and deliberately so: `frameBuffer` resume re-sends frames at or below
+ * the highest sequence already seen, so no honest sender can produce a frame
+ * more than one window ahead of the highest one this receiver has ACCEPTED.
+ * The band above it is reachable only by a forgery.
+ */
+export const FORWARD_JUMP_WINDOW = DEDUPE_WINDOW;
+
+/**
+ * The stored dedupe-record version (RESUME-PROTOCOL v2 rule 6).
+ *
+ * WHY A VERSION TAG WITH A LOUD FAILURE, in the same shape sw-key.js uses for
+ * the device-key record. Before M-A5-2 the record was
+ * `{epoch, floor, seen, beyondWindow}` and carried no `highestAccepted`. A
+ * worker that silently kept using such a record would enforce NO forward-jump
+ * bound — F2 would still be open, and nothing would say so: the frames would
+ * keep flowing and the counter would keep reading 0. So an unversioned or
+ * unknown-versioned record is a THROW, the caller turns it into a drop, and the
+ * next Accept (a new pairEpoch) rebuilds the record from scratch.
+ */
+export const DEDUPE_RECORD_V = 1;
+
+/** Thrown by admitSeq() for a record it must not reason about. */
+export class DedupeRecordVersionError extends Error {
+  constructor(message) { super(message); this.name = 'DedupeRecordVersionError'; }
+}
+
 // ── chrome.storage.session keys ─────────────────────────────────────────────
 /** kid → {kid, wrap, epk, mode, recipKeys, storedAt}. The WRAP, never SK. */
 export const WRAP_KEY = 'cc_e2e_wrap';
 /** "<kid>|<dir>" → next send seq. Persist-before-emit; fail closed if absent. */
 export const SEQ_KEY = 'cc_e2e_seq';
-/** "<kid>|<dir>" → {epoch, floor, seen:[…]}. §13.5 anti-replay window. */
+/** "<kid>|<dir>" → {v, epoch, floor, seen:[…], highestAccepted}. §13.5 window. */
 export const DEDUPE_KEY = 'cc_e2e_dedupe';
 /** Exported drop counter — §13.5 requires it, a silent dropper is untestable. */
 export const DROPS_KEY = 'cc_e2e_drops';
@@ -619,16 +647,56 @@ export async function openSealedFrame({ session, frameType, envelope, pairEpoch 
  *  - a duplicate is DROPPED, never treated as an attack: frameBuffer legitimately
  *    re-sends on resume, and a receiver that closed the socket on a duplicate
  *    would turn every reconnect into a failure.
+ *
+ * M-A5-2 (F2) adds ONE bound on top of that frozen set, and changes no other
+ * number: a frame more than FORWARD_JUMP_WINDOW above `highestAccepted` is
+ * REFUSED — dropped, floor NOT advanced, counted separately. Before this, a
+ * single forged far-future seq walked the floor up by 256 every time it was
+ * replayed, so an attacker who could inject 20 000 such frames could push the
+ * floor past every frame still in flight and silence the pairing. The cap
+ * bounded the damage per frame; it did not bound the attack.
+ *
+ * @throws {DedupeRecordVersionError} for a stored record of an unknown version.
  */
 export async function admitSeq({ kid, direction, seq, pairEpoch }) {
   const mapKey = `${kid}|${direction}`;
   const all = (await sessionGet(DEDUPE_KEY)) || {};
   let w = all[mapKey];
+  if (w && w.epoch === Number(pairEpoch) && w.v !== DEDUPE_RECORD_V) {
+    // Loud, per RESUME-PROTOCOL rule 6. A pre-M-A5-2 record has no `v` and no
+    // `highestAccepted`; reasoning about it would silently disable the bound
+    // this function exists to enforce. The caller drops the frame; the next
+    // Accept carries a new pairEpoch and rebuilds the record below.
+    throw new DedupeRecordVersionError(
+      `cc-e2e dedupe record version ${JSON.stringify(w.v)} is not ${DEDUPE_RECORD_V} — `
+      + `refusing to admit frames against a record with no forward-jump bound; re-pair to rebuild it`,
+    );
+  }
   if (!w || w.epoch !== Number(pairEpoch)) {
-    w = { epoch: Number(pairEpoch), floor: 0, seen: [], beyondWindow: 0 };
+    w = {
+      v: DEDUPE_RECORD_V,
+      epoch: Number(pairEpoch),
+      floor: 0,
+      seen: [],
+      beyondWindow: 0,
+      // Starts level with `floor`, not at -1: with floor 0 the first admissible
+      // band is [0, 1024], which is exactly the frozen vector's "+WINDOW
+      // accepted, +WINDOW+1 refused" over a fresh window.
+      highestAccepted: 0,
+    };
   }
   const n = Number(seq);
   if (!Number.isSafeInteger(n) || n < 0) return { ok: false, why: 'malformed-seq' };
+
+  // ── M-A5-2 / F2: the forward-jump bound, BEFORE any floor movement ────────
+  // Order is the whole fix. Checked after the slide it would be checking a
+  // floor the forgery had already moved.
+  if (n > w.highestAccepted + FORWARD_JUMP_WINDOW) {
+    w.refusedForwardJump = (w.refusedForwardJump || 0) + 1;
+    all[mapKey] = w;                       // floor and highestAccepted UNMOVED
+    await sessionSet(DEDUPE_KEY, all);
+    return { ok: false, why: 'forward-jump' };
+  }
 
   // Deliberately a line-for-line mirror of the Android lane's E2eDedupe.observe
   // (e2e/p4-android-v58). Two implementations of one frozen parameter set that
@@ -651,6 +719,7 @@ export async function admitSeq({ kid, direction, seq, pairEpoch }) {
       // says dedupe rather than reject — so accept it and make the case
       // countable instead of silent.
       w.beyondWindow = (w.beyondWindow || 0) + 1;
+      if (n > w.highestAccepted) w.highestAccepted = n;   // M-A5-2: accept moves it
       all[mapKey] = w;
       await sessionSet(DEDUPE_KEY, all);
       return { ok: true, beyondWindow: true };
@@ -659,6 +728,10 @@ export async function admitSeq({ kid, direction, seq, pairEpoch }) {
 
   if (w.seen.includes(n)) { all[mapKey] = w; await sessionSet(DEDUPE_KEY, all); return { ok: false, why: 'duplicate' }; }
   w.seen.push(n);
+  // M-A5-2: the floor moves for its own reasons (the cap), but the forward-jump
+  // bound tracks ACCEPTANCE — a refused or duplicated frame must never widen
+  // the band the next forgery is measured against.
+  if (n > w.highestAccepted) w.highestAccepted = n;
   all[mapKey] = w;
   await sessionSet(DEDUPE_KEY, all);
   return { ok: true };
@@ -695,9 +768,36 @@ export function noteDrop(reason) {
   return next;
 }
 
+/**
+ * M-A5-2's counter: refused forward jumps, in the `cc_e2e_drops` family but
+ * DISTINCT from `total` and from the per-window `beyondWindow`.
+ *
+ * Distinctness is the requirement, not a style choice (A5 F2: "a new exported
+ * `refusedForwardJump` counter, distinct from `droppedTotal` and from
+ * `beyondWindow`"). Folding it into `total` would make a forgery campaign look
+ * like a noisy relay; folding it into `beyondWindow` would make a REFUSAL look
+ * like an ACCEPT, which is the exact confusion F2 is about.
+ *
+ * Shares `dropQueue` for the same reason noteDrop() does: the shape that
+ * produces this counter is a BURST, and an unserialised read-modify-write
+ * across two awaits records one increment for a whole flood.
+ */
+export function noteRefusedForwardJump() {
+  const next = dropQueue.then(async () => {
+    const all = (await sessionGet(DROPS_KEY)) || { total: 0, byReason: {} };
+    all.refusedForwardJump = (all.refusedForwardJump || 0) + 1;
+    await sessionSet(DROPS_KEY, all);
+    return all;
+  });
+  dropQueue = next.catch(() => {});
+  return next;
+}
+
 /** Read the drop counter. Exported so a harness can assert it. */
 export function readDrops() {
-  return sessionGet(DROPS_KEY).then((v) => v || { total: 0, byReason: {} });
+  return sessionGet(DROPS_KEY).then((v) => ({
+    total: 0, byReason: {}, refusedForwardJump: 0, ...(v || {}),
+  }));
 }
 
 // ── Send counter: persist-before-emit, fail closed (A1 (3) / A2's sole control) ──

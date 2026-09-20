@@ -334,11 +334,26 @@ await check('dedupe: a duplicate is dropped, silently, and stays dropped', async
 await check('dedupe: the floor advance is CAPPED at 256 on one frame', async () => {
   reset();
   assert((await admit(0)).ok, 'seed');
-  // Far beyond floor+1024. One frame may carry the floor at most 256.
-  await admit(1_000_000);
+  assert((await admit(S.DEDUPE_WINDOW)).ok, 'at the forward-jump bound, still admissible');
+  // Beyond floor+1024 but WITHIN the M-A5-2 bound (highestAccepted 1024 +
+  // WINDOW). One admissible frame may still carry the floor at most 256.
+  await admit(2 * S.DEDUPE_WINDOW);
   const w = session[S.DEDUPE_KEY][`${KID}|${DIR_IN}`];
-  eq(w.floor, S.FLOOR_ADVANCE_CAP, 'floor advanced by exactly the cap, not to the forged seq');
+  eq(w.floor, 1 + S.FLOOR_ADVANCE_CAP, 'floor advanced by exactly the cap, not by the full slide');
   assert(w.beyondWindow >= 1, 'the un-provable case must be COUNTED, not silent');
+});
+
+// Security A5 / M-A5-2 (F2) at the chokepoint: the case the check above USED to
+// cover — `seq: 1_000_000` — is no longer a capped advance, it is a refusal.
+await check('dedupe: a frame past the forward-jump bound is REFUSED at the chokepoint', async () => {
+  reset();
+  assert((await admit(0)).ok, 'seed');
+  const r = await admit(1_000_000);
+  eq(r.ok, false, 'refused');
+  eq(r.why, 'forward-jump', 'and named');
+  const w = session[S.DEDUPE_KEY][`${KID}|${DIR_IN}`];
+  eq(w.floor, 0, 'the floor did not move');
+  eq(w.beyondWindow, 0, 'a refusal is not a beyond-window accept');
 });
 
 await check('dedupe: the window RESETS on a new pairEpoch (§13.5)', async () => {
