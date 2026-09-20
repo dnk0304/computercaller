@@ -106,8 +106,26 @@ export function mintTicket({ secret, userId, expiresIn = '10m' }) {
   return jwt.sign({ purpose: 'relay-ticket', userId }, secret, { algorithm: 'HS256', expiresIn });
 }
 
-/** The three URLs a harness can legitimately connect to. */
+/**
+ * The three URLs a harness can legitimately connect to.
+ *
+ * The `user` must be a row that `seedEntitledUser()` (or the real signup path)
+ * actually created. Validated EAGERLY, because the URL builders are lazy: a
+ * caller who passed no user — or a user selected without `phoneToken` — used to
+ * get a perfectly normal object back and then a `TypeError: cannot read
+ * properties of undefined` from inside a `ws` constructor several seconds
+ * later, or worse, `?token=undefined`, which the relay answers with 4401 and
+ * which reads exactly like the auth storm this module exists to explain.
+ * Nothing here can mint an entitled identity; admission is the DB row's to
+ * grant, and this says so at the point of the mistake.
+ */
 export function relayUrls({ wsBase, secret, user, listenerDeviceId = null }) {
+  if (!user || typeof user.id !== 'string' || !user.id) {
+    throw new Error('relayUrls: needs a seeded user row with an id — a secret alone grants no entitlement');
+  }
+  if (typeof user.phoneToken !== 'string' || !user.phoneToken) {
+    throw new Error('relayUrls: user.phoneToken is missing — select it when you load the row (it has no DB default)');
+  }
   const ticket = () => mintTicket({ secret, userId: user.id });
   return {
     browser: () => `${wsBase}/relay?ticket=${encodeURIComponent(ticket())}`,

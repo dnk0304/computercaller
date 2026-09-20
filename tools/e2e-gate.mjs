@@ -1303,6 +1303,20 @@ if (WEB) {
     // 69 steps that way). Carries its own positive control, so narrowing
     // KNOWN_PHASES turns it red instead of turning the gate quiet.
     ['gate-phase-whitelist', 'tests/gate-phase-whitelist.test.mjs', true],
+    // SOAK-RIG (c). 48 checks. The R-AM soak rig: that importing soak-runner /
+    // verify-soak / relay-auth starts no clock and opens no socket, and that
+    // verify-soak's rule-8 guards can actually go RED — a >10 min gap, a <24 h
+    // window, a mid-window sha change and a second heartbeat file are each
+    // asserted BY NAME against fixtures from one generator whose clean 24 h
+    // window passes. Named explicitly because the sweep above matches only
+    // `tests/e2e-*.test.mjs`.
+    //
+    // It is in the gate because the soak's verdict is a one-shot: the 24 h
+    // window is not repeatable on a whim, and until this file existed the gap
+    // rule had never once been observed to fire. A guard nothing exercises is
+    // a comment. Node-only — no browser, no Docker, no database (rule 17).
+    // ONLY e2e-gate.mjs change made by SOAK-RIG; declared in the résumé.
+    ['soak-rig', 'tests/soak-rig.test.mjs', true],
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {
