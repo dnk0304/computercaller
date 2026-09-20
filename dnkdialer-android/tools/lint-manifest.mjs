@@ -121,9 +121,20 @@ function main() {
     const out = {
       _note: HEADER_NOTE,
       _owners: {
+        /**
+         * ANDROID-LINT (b4). The old text here read "each site DOES gate on a
+         * runtime permission check upstream, lint cannot see it", which is
+         * both no longer true and was never a good reason: a guarantee lint
+         * cannot see is one the next caller cannot see either. The two
+         * CallHandler sites now check ANSWER_PHONE_CALLS locally, the rule has
+         * ZERO cells in this manifest, and this entry stays only so that a
+         * future MissingPermission is read as a regression to fix at the site
+         * rather than as a known-and-excused finding.
+         */
         MissingPermission:
-          'forge-backend — pre-existing on the call/SMS/contacts handlers; each site DOES ' +
-          'gate on a runtime permission check upstream, lint cannot see it. Not an E2E deliverable.',
+          'forge-backend — fixed at source (ANDROID-LINT b2): every site checks the permission ' +
+          'locally before the call. ZERO allowed cells. A new one is a REGRESSION, not a baseline ' +
+          'entry — fix it at the call site; do not widen this manifest.',
         _default: 'forge-backend — pre-existing at BASE_SHA; not an E2E programme deliverable.',
       },
       /** Programme identity. Frozen; NOT what this baseline was measured against. */

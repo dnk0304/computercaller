@@ -1,30 +1,27 @@
 {
-  "_note": "Android lint baseline for the E2E programme. Programme identity BASE_SHA 445138a6c58c12b2848cb4c24371b0d443e51c27; measured against scopeBase 321333e55c020a74f34c44ca6906d85f1cb3b364 (merge-base). May only SHRINK. Regenerate with: gradlew.bat :app:lintDebug --continue ; node tools/lint-manifest.mjs --generate",
+  "_note": "Android lint baseline for the E2E programme. Programme identity BASE_SHA 445138a6c58c12b2848cb4c24371b0d443e51c27; measured against scopeBase ea2fe608357454d6391962396caae5046831354e (merge-base). May only SHRINK. Regenerate with: gradlew.bat :app:lintDebug --continue ; node tools/lint-manifest.mjs --generate",
   "_owners": {
-    "MissingPermission": "forge-backend — pre-existing on the call/SMS/contacts handlers; each site DOES gate on a runtime permission check upstream, lint cannot see it. Not an E2E deliverable.",
+    "MissingPermission": "forge-backend — fixed at source (ANDROID-LINT b2): every site checks the permission locally before the call. ZERO allowed cells. A new one is a REGRESSION, not a baseline entry — fix it at the call site; do not widen this manifest.",
     "_default": "forge-backend — pre-existing at BASE_SHA; not an E2E programme deliverable."
   },
   "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
   "scopeBase": {
-    "sha": "321333e55c020a74f34c44ca6906d85f1cb3b364",
+    "sha": "ea2fe608357454d6391962396caae5046831354e",
     "kind": "merge-base",
     "ref": "origin/e2e/integration",
-    "integrationTip": "321333e55c020a74f34c44ca6906d85f1cb3b364",
+    "integrationTip": "ea2fe608357454d6391962396caae5046831354e",
     "fellBackToBaseSha": false,
     "reason": null
   },
-  "generatedUtc": "2026-09-18T03:42:30Z",
+  "generatedUtc": "2026-09-20T04:52:37Z",
   "lintVersion": "lint 8.13.2",
-  "total": 183,
+  "total": 175,
   "severities": {
-    "MissingPermission": "Error",
-    "NewApi": "Error",
     "BatteryLife": "Warning",
     "GradleDependency": "Warning",
     "NewerVersionAvailable": "Warning",
     "Deprecated": "Warning",
     "PluralsCandidate": "Warning",
-    "PermissionImpliesUnsupportedChromeOsHardware": "Error",
     "WakelockTimeout": "Warning",
     "ObsoleteSdkInt": "Warning",
     "UseCompoundDrawables": "Warning",
@@ -44,12 +41,7 @@
       "NewerVersionAvailable": 4
     },
     "app/src/main/AndroidManifest.xml": {
-      "Deprecated": 1,
-      "PermissionImpliesUnsupportedChromeOsHardware": 5
-    },
-    "app/src/main/java/com/dnkdialer/companion/CallHandler.kt": {
-      "MissingPermission": 2,
-      "NewApi": 1
+      "Deprecated": 1
     },
     "app/src/main/java/com/dnkdialer/companion/MainActivity.kt": {
       "BatteryLife": 1,
