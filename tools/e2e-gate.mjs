@@ -454,6 +454,16 @@ const MIN_CHECKS_OVERRIDE = {
   // guarding it, so a deletion of twenty assertions would have printed a
   // cheerful N/N. Re-measured here rather than bumped by three.
   'unit:harness-list': 130,
+  // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
+  // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
+  // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
+  // code cannot tell a passing suite from an absent one. Measured on
+  // e2e/p4.2-a5-android at 9fac09c, AVD e2e_p42 (API 34):
+  //   testDebugUnitTest 200 · instrumented-A5 8 (4 vectors + 2 observability
+  //   + 2 vector-M) · SasVectorsTest 7.
+  'android:testDebugUnitTest': 200,
+  'android:instrumented-A5': 8,
+  'android:SasVectorsTest': 7,
 };
 const MIN_CHECKS = (() => {
   const table = {};
@@ -1775,15 +1785,106 @@ if (ANDROID) {
       }
     }
 
-    if (['P4', 'P5B', 'P6', 'P6.1', 'P7', 'P8'].includes(PHASE)) {
-      run('android:SasVectorsTest', `${gradlew} :app:connectedDebugAndroidTest --tests "*SasVectorsTest"`, {
+    const ANDROID_TEST_RESULTS = join(AROOT, 'app/build/outputs/androidTest-results/connected');
+    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P7', 'P8'].includes(PHASE)) {
+      // FINDING (E2E-P4.2 (e)): this is a SECOND phase table that has to agree
+      // with KNOWN_PHASES and does not — the exact defect tools/lib/harness-
+      // list.mjs was created to fold away. It still names 'P7' and 'P8', which
+      // are not phases (the gate refuses them before reaching here, so they are
+      // dead entries rather than live bugs), and it silently omitted P4.2 — an
+      // android phase whose ONLY instrumented step is this one. A phase missing
+      // from this list does not fail: it runs nothing and the gate prints PASS,
+      // which is "0 tests ran" wearing a green hat. P4.2 added; folding the
+      // table into harness-list.mjs is Ken's call, not this lane's.
+      // FINDING (E2E-P4.2 (e)): this step could never have run. `--tests` is a
+      // JVM `Test` task option; :app:connectedDebugAndroidTest is a
+      // DeviceProviderInstrumentTestTask and REFUSES it —
+      // "Unknown command-line option '--tests'" — so the step failed at
+      // CONFIGURATION time, before a single test. It went unnoticed because no
+      // android-lane gate JSON has ever been committed (e2e-evidence/ holds
+      // gate-P0..P6 and D1/FT3/MERGE, no P4 or P5B). Every android phase that
+      // names this step — P4, P5B, P6, P6.1 — inherits the fix.
+      // The supported mechanism is the runner-argument property below, which is
+      // what the lane's own manual runs have been using throughout.
+      rmSync(ANDROID_TEST_RESULTS, { recursive: true, force: true });
+      run('android:SasVectorsTest',
+        `${gradlew} :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.dnkdialer.companion.E2eSasVectorsTest`, {
+          cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
+          parse: () => junitCounts(ANDROID_TEST_RESULTS),
+        });
+    }
+
+    // E2E-P4.2 (e). The android lane's own test evidence, with COUNTS.
+    //
+    // Counts are read from the JUnit XML rather than from gradle's stdout, and
+    // that is the point: `BUILD SUCCESSFUL` is printed by a run that executed
+    // zero tests just as cheerfully as by one that executed two hundred. A
+    // filter matching nothing, an instrumentation that never installed, a suite
+    // renamed out from under its own gate step — all three exit 0. The
+    // MIN_CHECKS floors turn "0 tests ran" into a FAIL, structurally.
+    if (PHASE === 'P4.2') {
+      const A5_CLASSES = [
+        'com.dnkdialer.companion.E2eForwardJumpVectorsTest',
+        'com.dnkdialer.companion.E2eForwardJumpObservabilityTest',
+        'com.dnkdialer.companion.E2eModeVectorMBackCompatTest',
+      ].join(',');
+
+      run('android:testDebugUnitTest', `${gradlew} :app:testDebugUnitTest`, {
         cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
+        parse: () => junitCounts(join(AROOT, 'app/build/test-results/testDebugUnitTest')),
       });
+
+      // Both instrumented steps write to ONE results directory, and gradle
+      // overwrites rather than clears it. Counting without removing it first
+      // would let a step report the PREVIOUS step's (or the previous gate
+      // run's) totals — a count read from a stale artefact is worth less than
+      // no count, because it looks like evidence.
+      rmSync(ANDROID_TEST_RESULTS, { recursive: true, force: true });
+      run('android:instrumented-A5',
+        `${gradlew} :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=${A5_CLASSES}`, {
+          cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
+          parse: () => junitCounts(ANDROID_TEST_RESULTS),
+        });
     }
   }
   // Step 12 is a prohibition, not a command: the gate never signs a release
   // APK. Asserted structurally — no assembleRelease/bundleRelease above.
   record('android:never-signs-release', '(assertion: no assembleRelease/bundleRelease in this tool)', 0, 0, { releaseTasks: 0 });
+}
+
+/**
+ * Sum the JUnit XML in a gradle results directory into a counts object.
+ *
+ * Deliberately reads the ARTEFACTS, never stdout. A gradle run that executed
+ * nothing exits 0 and says BUILD SUCCESSFUL; only the XML knows how many tests
+ * there actually were. Returns total 0 for a missing or empty directory, which
+ * the MIN_CHECKS floor then reports as the failure it is.
+ */
+function junitCounts(dir) {
+  let total = 0, failures = 0, errors = 0, skipped = 0, files = 0;
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop();
+    let entries = [];
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const full = join(d, e.name);
+      if (e.isDirectory()) { stack.push(full); continue; }
+      if (!e.name.endsWith('.xml')) continue;
+      let xml = '';
+      try { xml = readFileSync(full, 'utf8'); } catch { continue; }
+      const open = xml.match(/<testsuite[ >][^>]*/);
+      if (!open) continue;
+      const attr = (k) => {
+        const a = open[0].match(new RegExp(k + '="([0-9]+)"'));
+        return a ? Number(a[1]) : 0;
+      };
+      total += attr('tests'); failures += attr('failures');
+      errors += attr('errors'); skipped += attr('skipped');
+      files++;
+    }
+  }
+  return { passed: total - failures - errors - skipped, total, failures, errors, skipped, files };
 }
 
 // ── 10. baseline parity ────────────────────────────────────────────────────
@@ -1801,11 +1902,27 @@ if (BASELINE) {
 } else if (existsSync(BASELINE_PATH)) {
   const ref = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
   const now = new Map(harnessPass.map((h) => [h.name, h]));
-  baselineDiff = (ref.harnessPass || [])
+  // Only steps this lane COULD have run are comparable.
+  //
+  // BASELINE-harness.json was recorded on a WEB lane, and every step in it is a
+  // harness/relay/unit step living inside `if (WEB)`. Under `--lane android`
+  // none of them execute, so diffing the whole list reported all 16 as
+  // "regressed" — a lane being structurally incapable of running a step is not
+  // that step regressing. Same class as FT-MERGE (d1) / R-AU: a predicate asked
+  // of a lane it has no meaning for, answering FAIL because it had no read path
+  // for that lane. Reported as `comparable` rather than quietly passing, so the
+  // JSON says WHY the number is zero.
+  const comparable = WEB ? (ref.harnessPass || []) : [];
+  baselineDiff = comparable
     .filter((h) => !now.has(h.name))
     .map((h) => redact(`${h.name}: passed at BASE_SHA, not passing now`));
   record('baseline-parity', `diff vs ${BASELINE_PATH.replace(/\\/g, '/')}`,
-    baselineDiff.length === 0 ? 0 : 1, 0, { reference: (ref.harnessPass || []).length, regressed: baselineDiff.length });
+    baselineDiff.length === 0 ? 0 : 1, 0, {
+      reference: (ref.harnessPass || []).length,
+      comparable: comparable.length,
+      regressed: baselineDiff.length,
+      ...(WEB ? {} : { why: 'lane=android runs no web-lane steps; nothing in the reference is comparable' }),
+    });
 } else {
   record('baseline-parity', `read ${BASELINE_PATH.replace(/\\/g, '/')}`, 1, 0, { missing: 1 });
 }
