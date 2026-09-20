@@ -145,6 +145,11 @@ model User {
   // removes every key row with them (C-4). Additive virtual relation field (no
   // column on User) → `prisma db push` clean.
   deviceKeys          DeviceKey[]
+  // File-transfer daily byte quota (2026-09-18, dispatch FT-1). One row per
+  // (user, UTC day) holding ONLY a byte tally — no filenames, no mime, no
+  // content. onDelete: Cascade. Additive virtual relation field (no column on
+  // User) → `prisma db push` clean.
+  fileQuotas          FileQuota[]
   // freeTierGrandfathered (2026-09-13, dispatch forge/cardfirst-revert).
   // Boolean @default(false) → additive migration, zero data loss, every
   // existing row valid the instant it is added.
@@ -717,4 +722,52 @@ model DeviceKey {
   @@index([userId, deviceId])
   // The list endpoint's query: a user's live keys, newest first.
   @@index([userId, revokedAt])
+}
+
+// FileQuota (2026-09-18, dispatch FT-1, FILE-TRANSFER-SPEC Addendum A DECIDED).
+// Per-user, per-UTC-day tally of file-transfer bytes, used ONLY to enforce the
+// 2 GiB/day cap that Dennis decided on 2026-09-17: "Lets limit it to 1gb max
+// size per file with a 2gb daily limit."
+//
+// WHAT IT HOLDS: a userId, a UTC day string and a byte count. Nothing else.
+// No filename, no mime type, no sha256, no transfer id, no content — the relay
+// is a forward-and-forget bus and this table must not become the one place a
+// file's identity is durably recorded. A row is indistinguishable from "this
+// account moved N bytes on this day".
+//
+// bytes is BigInt, NOT Int, and that is load-bearing: the cap itself is
+// 2_147_483_648 which is exactly ONE MORE than Postgres int4's 2_147_483_647
+// maximum. An Int column would overflow on the very first account that reaches
+// the limit the column exists to enforce.
+//
+// The reserve is an ATOMIC check-and-increment at FILE_OFFER (INSERT … ON
+// CONFLICT DO UPDATE … WHERE bytes + size <= cap RETURNING) so two racing
+// offers can never both slip past the cap — no read-modify-write. Bytes are
+// COMMITTED by simply being left in place at FILE_DONE, and RELEASED with a
+// floored decrement at FILE_FAILED, so an aborted transfer does not burn quota.
+// Only the SENDER's account is charged (the receiver did not choose the file).
+//
+// Rows older than FT_QUOTA_RETENTION_DAYS (7) are deleted by the relay's
+// FileQuota janitor (server.js) — the day index below is what makes that a
+// cheap ranged delete rather than a table scan.
+//
+// Fully ADDITIVE (new table only, FK to User) → Coolify's pre-deploy
+// `prisma db push` applies it with zero data loss, and it is reversible by:
+// DROP TABLE "FileQuota";  Ken runs the migration — do NOT push from a worktree.
+//   day    — 'YYYY-MM-DD' in UTC. The reset boundary is UTC midnight, not a
+//            rolling window: one counter, one reset, tellable to the user as
+//            "resets at midnight UTC".
+//   bytes  — raw file bytes reserved/committed for this account this UTC day.
+model FileQuota {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  day       String   // 'YYYY-MM-DD' (UTC)
+  bytes     BigInt   @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, day])
+  @@index([userId])
+  @@index([day])
 }

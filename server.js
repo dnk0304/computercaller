@@ -390,6 +390,180 @@ const LISTENER_HOLD_GRACE_MS = 10 * 60_000;
 // resume window is (memory bound is entry-count, not time).
 const FRAME_BUFFER_MAX = 200;
 
+// ── FILE TRANSFER (dispatch FT-1, 2026-09-18) ───────────────────────────────
+//
+// Spec: ken/PROJECTS/computercaller/FILE-TRANSFER-SPEC.md + Addendum A DECIDED
+// (Dennis 2026-09-17 17:31: "Lets limit it to 1gb max size per file with a 2gb
+// daily limit. The trial period will not allow transfers.").
+//
+// The relay is an OPAQUE FORWARDER. It never parses `data`, never buffers a
+// byte of file content, and keeps at most ONE small metadata record per room.
+// Everything below is either routing, a state check, or an abuse gate.
+//
+// The FROZEN frame family. FT-2 (android) and FT-3 (clients) build against this
+// exact set in parallel — do not add, rename or reshape a member without a
+// cross-lane amendment. Note the dispatch brief names FILE_REJECT where the
+// original spec §2 said FILE_DECLINE; the brief's spelling is the one three
+// lanes are building to, so FILE_REJECT is the wire name and FILE_DECLINE does
+// not exist.
+const FT_FRAME_TYPES = new Set([
+  'FILE_OFFER',   // {id,name,size,mime,sha256,from}  sender → receiver
+  'FILE_ACCEPT',  // {id}                             receiver → sender
+  'FILE_REJECT',  // {id,reason}                      receiver → sender ONLY (FT-A1.1 M5: the relay mints none)
+  'FILE_CHUNK',   // {id,seq,n,data}                  sender → receiver
+  'FILE_ACK',     // {id,upTo}                        receiver → sender
+  'FILE_RESUME',  // {id,upTo}                        receiver → sender (post-reconnect)
+  'FILE_DONE',    // {id,sha256}                      sender → receiver
+  'FILE_FAILED',  // {id,reason}                      either direction, terminal
+]);
+
+/**
+ * The FROZEN `FILE_FAILED.reason` vocabulary. A reason outside this set is a
+ * protocol violation: the relay refuses to MINT one, and normalises an inbound
+ * unknown reason to 'cancelled' rather than forwarding an arbitrary string that
+ * a client will switch on. FT-A1.1 section 2.2 splits this further: see
+ * FT_RELAY_OWNED_REASONS for the subset the relay itself may author.
+ * `FILE_REJECT.reason` is deliberately NOT frozen here
+ * — it is receiver-authored UX ('user_declined', 'panel_closed', …) and, as of
+ * FT-A1.1 M5, nothing else: 'busy' moved to the relay-minted FILE_FAILED path.
+ */
+const FT_FAIL_REASONS = new Set([
+  'hash_mismatch', 'connection_lost', 'relay_backpressure', 'cancelled',
+  'timeout', 'too_large', 'oom', 'quota', 'tier',
+  // FT-A1 MUST A-7 (Security, 2026-09-18). A tamper/lie signal that the enum
+  // had no word for. Reusing `cancelled` would label it user action and
+  // `hash_mismatch` would label it corruption; both hide the one event the
+  // control exists to surface. FT-1 owns the enum, FT-3a/3b carry the copy, and
+  // this MUST land before FT-2 seals FILE_OFFER — otherwise every mismatch is
+  // dropped by the receiver's own validator and presents as a 30 s hang.
+  'size_mismatch',
+  // FT-A1.1 MUST A1.1-M5. `busy` used to be minted as FILE_REJECT — which is
+  // sealed-by-exclusion under mode ON, so a plaintext one is dropped by the
+  // receiver's downgrade guard and "another transfer is already running" was
+  // invisible the moment encryption went on, no matter how the origin question
+  // was ruled. It is a relay-minted refusal like every other, so it lives here.
+  'busy',
+]);
+
+/**
+ * The EXHAUSTIVE, frozen set of reasons the RELAY may author (FT-A1.1 section 2.2).
+ *
+ * Everything else — hash_mismatch, cancelled, oom — is peer-owned and must stay
+ * sealed under mode ON; a plaintext one is the receiver's to drop.
+ *
+ * This set is what `relay:true` is allowed to be stamped on. Keeping it separate
+ * from FT_FAIL_REASONS is the point: the mark asserts WHO wrote the frame, so a
+ * reason only a peer can legitimately give must never carry it, even by accident
+ * through the normalise-to-`cancelled` fallback.
+ *
+ * `connection_lost` is in the subset (it is already relay-authored today: no
+ * peer socket at FILE_OFFER, no sender at FILE_RESUME). `bad_hint` is NOT —
+ * M1 keeps it a counter and off the wire entirely.
+ */
+const FT_RELAY_OWNED_REASONS = new Set([
+  'tier', 'quota', 'too_large', 'size_mismatch', 'busy',
+  'relay_backpressure', 'timeout', 'connection_lost',
+]);
+
+/**
+ * FT-A1.1 MUST A1.1-M12. The base64 FLOOR, 4/3, used to invert the meter into
+ * raw bytes for the CHARGE — and deliberately NOT the same constant as
+ * FT_WIRE_OVERHEAD_FACTOR.
+ *
+ * The two conversions have OPPOSITE correct directions of error and must never
+ * share a number. The CEILING errs generous (1.40 plus a whole chunk): a false
+ * abort has no attacker behind it and costs a real user their transfer, and a
+ * control that fires on honest traffic is a control someone switches off. The
+ * CHARGE errs conservative: under-billing favours the one party with a motive to
+ * lie about size.
+ *
+ * Sharing 1.40 for both meant an honest transfer (true ratio about 1.34) was
+ * charged roughly 0.96x of what it actually moved — a silent ~4.3 % discount on
+ * the abuse control itself, which would have grown with any future raise to the
+ * ceiling factor.
+ */
+const FT_WIRE_B64_FACTOR = 4 / 3;
+
+/** 1 GiB hard per-file cap (Addendum A DECIDED). Checked at FILE_OFFER. */
+const FT_MAX_FILE_BYTES = 1024 * 1024 * 1024; // 1_073_741_824
+
+/**
+ * 2 GiB per account per UTC CALENDAR day (Addendum A DECIDED) — not a rolling
+ * window. Charged to the SENDER at FILE_OFFER, committed at FILE_DONE, released
+ * at FILE_FAILED. See the FileQuota model for why the column is BigInt: this
+ * constant is exactly int4 max + 1.
+ */
+const FT_DAILY_QUOTA_BYTES = 2 * 1024 * 1024 * 1024; // 2_147_483_648
+
+/** Rows this old are pruned by the FileQuota janitor. Nothing reads them. */
+const FT_QUOTA_RETENTION_DAYS = 7;
+
+/**
+ * 48 KiB of RAW file bytes per chunk → 65 536 chars of base64 → ~65.7 KB on the
+ * wire with the JSON envelope. The relay does not enforce this (it never parses
+ * `data`); it is asserted in tests/ft-relay.test.mjs against the REAL relay
+ * maxPayload so a future chunk-size bump cannot silently start closing sockets.
+ */
+const FT_CHUNK_RAW_BYTES = 48 * 1024; // 49_152
+
+/**
+ * The wire size of ONE full chunk, with generous headroom: base64 of the raw
+ * bytes, plus the JSON envelope, plus room for the E2E seal (nonce + tag +
+ * base64 expansion of the ciphertext + the `{e,kid,s}` header).
+ *
+ * This is the FLOOR of the declared-size ceiling below, and that is not a
+ * nicety. `bytesForwarded > size * 1.40` alone is wrong for small files: a
+ * 10-byte text file declares size=10, so the ceiling is 14 bytes, and the very
+ * first chunk — which carries a ~70-byte JSON envelope before a single payload
+ * character — trips it. Every file under about 200 bytes would have aborted as
+ * `too_large`, which is the opposite of what the rule is for.
+ */
+const FT_CHUNK_WIRE_BYTES = 4 * Math.ceil((FT_CHUNK_RAW_BYTES + 28) / 3) + 1024;
+
+/**
+ * Relay-side watermark. If the DESTINATION socket has more than this queued,
+ * the transfer is aborted with `relay_backpressure` — the relay does NOT buffer.
+ * A relay that queues is a relay that stores, which is the one thing this
+ * feature is not allowed to become.
+ */
+const FT_DEST_BACKPRESSURE_BYTES = 8 * 1024 * 1024;
+
+/** Chunk/ACK stall backstop (spec §2). 30 s of silence mid-transfer aborts. */
+const FT_STALL_MS = 30_000;
+
+/**
+ * Relay-side offer expiry. The sender's own expiry is 60 s (spec §2); the relay
+ * holds its slot 30 s longer so a dead peer cannot leak the one-per-room slot,
+ * and so the relay is never the side that times out a live negotiation first.
+ */
+const FT_OFFER_TTL_MS = 90_000;
+
+/** How often the transfer janitor sweeps for stalls and orphaned records. */
+const FT_SWEEP_MS = 5_000;
+
+/**
+ * Declared-size enforcement (spec §2 rule 2): forwarded wire bytes may exceed
+ * the declared RAW size by at most this factor (base64 is +33 %, the JSON
+ * envelope and any E2E seal the rest). A sender cannot declare 1 MB and push
+ * 200 MB.
+ */
+const FT_WIRE_OVERHEAD_FACTOR = 1.40;
+
+/**
+ * Tiers entitled to file transfer. An ALLOW-list, not a deny-list, so an
+ * unknown or future tier fails CLOSED rather than inheriting the feature.
+ * Addendum A DECIDED: "The trial period will not allow transfers" / "Subscribed
+ * (Plus/Pro) only" — so 'trial' and 'free' are out. 'solo' is in: it is the
+ * grandfathered-legacy PAYING tier, and refusing a paying subscriber a feature
+ * Dennis scoped as "subscribed only" would be the wrong reading of the decision.
+ */
+const FT_TIERS_ALLOWED = new Set(['solo', 'plus', 'pro']);
+
+/** True for any frame in the frozen FILE_* family. Uses the validated classifier. */
+function isFileFrame(msg) {
+  return FT_FRAME_TYPES.has(frameType(msg));
+}
+
 /**
  * Relay state machine — Connect+Accept lobby model (dispatch #32, 2026-05-25).
  *
@@ -613,6 +787,12 @@ function startRelay(httpServer) {
       console.log(`[Relay][${redactToken(token)}] resetRoom(${origin}): no room — already empty`);
       return null;
     }
+    // FT-1 (d): RESET_ROOM drops the room object wholesale, which would take an
+    // in-flight transfer record with it — and with it the sender's quota
+    // RESERVATION, silently burning up to 1 GB of their daily allowance for a
+    // transfer that never happened. Abort explicitly first so the refund runs.
+    ftAbort(room, 'cancelled');
+    ftDropCounts.delete(token);
     return resetRoomCore(
       room,
       {
@@ -715,6 +895,12 @@ function startRelay(httpServer) {
         active: { browser: null, phone: null, e2e: null },
         pendingPairing: null,
         frameBuffer: [],
+        // FT-1: the single in-flight file-transfer record, or null. Declared
+        // here rather than sprouting on first FILE_OFFER so every reader — the
+        // janitor, the teardown paths, the handler — can rely on the key
+        // existing, and so the places that drop a room are visibly obliged to
+        // say what happens to it.
+        transfer: null,
       };
       rooms.set(token, room);
     }
@@ -735,6 +921,7 @@ function startRelay(httpServer) {
     // Worst case the room lingers RESUME_WINDOW_MS past empty.
     if (room.resumable && Date.now() <= room.resumable.expiresAt) return;
     rooms.delete(room.token);
+    ftDropCounts.delete(room.token); // FT-1: per-room drop counters die with the room
     console.log(`[Relay] Reaped empty room ${redactToken(room.token)}`);
   }
 
@@ -1020,6 +1207,14 @@ function startRelay(httpServer) {
     // fresh Connect+Accept triggers the web quick-sync backfill, so any
     // buffered frames are moot. Drop them to bound memory.
     room.frameBuffer = [];
+    // FT-1 (d): the transfer record survives a SOFT HOLD (the early return
+    // above) so a blip mid-1-GB-transfer can be resumed — but a genuine
+    // teardown is the end of it. PAIRING_TERMINATED reached the clients a few
+    // lines up; refund the sender's quota reservation and drop the record so
+    // the next pair starts with an empty slot. `notify:false` because the
+    // sockets are being told PAIRING_TERMINATED already, and a FILE_FAILED
+    // chasing it would arrive after the UI had reset.
+    ftAbort(room, 'connection_lost', { notify: false });
 
     // Issue 3 (2026-06-11): arm the auto-resume window ONLY for connection
     // drops. A deliberate teardown ('user_left' — Disconnect button on either
@@ -1121,6 +1316,12 @@ function startRelay(httpServer) {
     if (Date.now() > claim.expiresAt) {
       room.resumable = null;
       room.frameBuffer = []; // Fix 2: claim expired — buffered frames are stale.
+      // FT-1 (d): the resume window is what kept the transfer record alive. It
+      // just closed, so the transfer is unrecoverable — refund and drop. The
+      // janitor reaches the same conclusion within FT_SWEEP_MS; doing it here
+      // means the very next FILE_RESUME gets an honest connection_lost instead
+      // of being forwarded to a sender that is no longer there.
+      ftAbort(room, 'connection_lost');
       return false;
     }
     if (room.pendingPairing) {
@@ -1792,6 +1993,810 @@ function startRelay(httpServer) {
     return { action: 'pass', msg };
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FILE TRANSFER — relay half (dispatch FT-1, 2026-09-18)
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Everything the relay knows about a transfer lives in ONE record per room,
+  // `room.transfer`. It is metadata only: an id, a state, which role is sending,
+  // the DECLARED size and mime, timestamps, a running count of forwarded WIRE
+  // bytes, and the bookkeeping needed to release a quota reservation exactly
+  // once. It never holds `data`, never holds a chunk, and never holds the file
+  // name — the name is in the FILE_OFFER the relay forwards byte-for-byte and
+  // then forgets, and under E2E mode ON it is sealed and the relay could not
+  // read it if it wanted to.
+  //
+  // The record is dropped on completion, on abort, on RESET_ROOM, on a
+  // deliberate PAIRING_TERMINATED, and on resume-window expiry. It SURVIVES a
+  // soft-held pair for the length of the resume claim, which is the whole point
+  // of (d): a 1 GB transfer is minutes long, so a socket blip mid-transfer must
+  // be resumable rather than fatal (Addendum A reverses the 25 MB spec's
+  // "abort, do not resume" for caps over 100 MB).
+  //
+  // THE ONE RULE THAT IS NOT NEGOTIABLE: a FILE_CHUNK whose id has no record in
+  // state 'accepted' is dropped. That is the mechanical enforcement of Dennis's
+  // "the file transfer must be accepted by the receiving party" — it is not left
+  // to client goodwill, because a client is the thing an attacker controls.
+
+  /** Per-room counters for dropped FILE_* frames. Keyed by room token. */
+  const ftDropCounts = new Map();
+
+  function ftCountDrop(token, type, why) {
+    let perRoom = ftDropCounts.get(token);
+    if (!perRoom) { perRoom = new Map(); ftDropCounts.set(token, perRoom); }
+    const key = `${type}/${why}`;
+    const n = (perRoom.get(key) ?? 0) + 1;
+    perRoom.set(key, n);
+    return n;
+  }
+
+  /**
+   * Parse a FILE_* frame into `{type, payload}`, or null when it is not a file
+   * frame or is malformed.
+   *
+   * Validation is deliberately SHALLOW: the id shape and the presence of a JSON
+   * object, nothing more. The relay is a forwarder; deep validation of a field
+   * it does not act on would be a second, divergent copy of the clients' rules.
+   * The fields it DOES act on (size, seq bookkeeping) are validated where they
+   * are used, in ftHandleOffer.
+   *
+   * The `id` shape is enforced because the id is the record key and the join
+   * between four frame types — a junk id is the one field that can desynchronise
+   * the state machine. 16 random bytes as lowercase hex is what the spec says a
+   * sender generates; the range is widened to 8-64 hex chars so a client that
+   * picks a different random width is not silently broken by the relay.
+   */
+  function ftParse(msg) {
+    const type = frameType(msg);
+    if (!FT_FRAME_TYPES.has(type)) return null;
+    const s = String(msg);
+    const colon = s.indexOf(':');
+    if (colon === -1) return { type, payload: null };
+    let payload;
+    try { payload = JSON.parse(s.slice(colon + 1)); } catch { return { type, payload: null }; }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { type, payload: null };
+    // NOTE an id is NOT required here, and that changed with FT-A1.
+    //
+    // Under Encrypted mode ON every FILE_* frame except FILE_OFFER is "sealed by
+    // exclusion" and arrives as {e,kid,s,c} with NO readable id — the id is
+    // inside the ciphertext. Requiring one would have dropped every chunk of
+    // every encrypted transfer as malformed. FT-A1 section 1.7 is explicit that the
+    // relay drives its per-room record from the frame TYPE alone, which is
+    // plaintext on the wire and authenticated in the AAD, so an id-less frame is
+    // matched to the room's single in-flight transfer rather than by key.
+    //
+    // ftFrameId() below is where "is there a usable id, and is it well-formed"
+    // is decided, so a MALFORMED id is still rejected — it just is not confused
+    // with an ABSENT one.
+    return { type, payload };
+  }
+
+  /**
+   * The transfer id a FILE_* frame identifies, or null when the frame carries
+   * none (the sealed case, see ftParse).
+   *
+   * Under mode OFF the id is the top-level `id`. Under mode ON, FILE_OFFER's id
+   * is in the plaintext envelope hint `ft.id` (FT-A1 MUST A-1) and no other
+   * FILE_* frame carries one at all.
+   *
+   * @returns {string|null|false}  a valid id, null when absent, false when present-but-malformed
+   */
+  function ftFrameId(payload) {
+    if (typeof payload.id === 'string') {
+      return /^[0-9a-fA-F]{8,64}$/.test(payload.id) ? payload.id : false;
+    }
+    const ft = payload.ft;
+    if (ft && typeof ft === 'object' && typeof ft.id === 'string') {
+      return /^[0-9a-f]{32}$/.test(ft.id) ? ft.id : false;
+    }
+    return null;
+  }
+
+  /** The ACTIVE socket for a role, or null. */
+  function ftSocketForRole(room, role) {
+    return role === 'phone' ? room.active.phone : room.active.browser;
+  }
+
+  /** The active socket opposite `role`, or null. */
+  function ftPeerSocket(room, role) {
+    return ftSocketForRole(room, role === 'phone' ? 'browser' : 'phone');
+  }
+
+  /** Mint a FILE_FAILED frame. Refuses to emit a reason outside the frozen set. */
+  function ftFailedFrame(id, reason, { relay = true } = {}) {
+    const r = FT_FAIL_REASONS.has(reason) ? reason : 'cancelled';
+    // FT-A1.1 MUST A1.1-M6 — the ONE mint site, and therefore the one place the
+    // origin mark can be applied. Under mode ON a relay-authored frame is
+    // necessarily plaintext (the relay holds no keys), so without a mark the
+    // receiver's downgrade guard cannot tell a legitimate refusal from an
+    // injected one and correctly drops both — which would hide exactly the
+    // events the tier, quota and tamper controls exist to surface.
+    //
+    // `relay:false` is the RE-MINT path (M7): a plaintext peer failure is rebuilt
+    // here from two scalars, which is what strips every other field the peer put
+    // on it. That rebuild must not inherit the mark, and it must not copy a
+    // `relay` field out of the payload either — the caller says which it is.
+    //
+    // The subset check is not decoration. `r` may have just been normalised to
+    // `cancelled`, which is PEER-owned; stamping that would have the relay
+    // claiming authorship of a reason only a peer can legitimately give.
+    const mark = relay && FT_RELAY_OWNED_REASONS.has(r);
+    return `FILE_FAILED:${JSON.stringify(mark ? { id, reason: r, relay: true } : { id, reason: r })}`;
+  }
+
+  /**
+   * Terminal abort. Releases the sender's quota reservation (exactly once),
+   * tells BOTH still-open sides, and drops the record.
+   *
+   * `notify` lets a caller suppress the outbound frames when the frame that
+   * caused the abort is itself a FILE_FAILED being forwarded — otherwise the
+   * peer would receive two.
+   */
+  function ftAbort(room, reason, { notify = true } = {}) {
+    const rec = room.transfer;
+    if (!rec) return;
+    room.transfer = null;
+    ftSettleQuota(rec);
+    if (!notify) return;
+    const frame = ftFailedFrame(rec.id, reason);
+    for (const role of ['phone', 'browser']) {
+      safeSend(ftSocketForRole(room, role), frame);
+    }
+    rlog(`[Relay][${redactToken(room.token)}] FILE transfer aborted id=${rec.id} reason=${reason} bytes=${rec.bytesForwarded}`);
+  }
+
+  /**
+   * Reserve `size` raw bytes against the sender's UTC-day quota.
+   *
+   * ATOMIC check-and-increment in a single statement (INSERT … ON CONFLICT DO
+   * UPDATE … WHERE bytes + size <= cap RETURNING) — the same shape as
+   * checkDailyOutboundLimit, and for the same reason: two offers racing on one
+   * account must never both slip past the cap, which a read-then-write cannot
+   * guarantee.
+   *
+   * NOTE THE DELIBERATE DIVERGENCE FROM checkDailyOutboundLimit: that gate fails
+   * OPEN on a DB error, because blocking a phone call over a counter-store blip
+   * is worse than one uncounted call. This one fails CLOSED. A single admitted
+   * offer here is up to 1 GB of relay egress, and the cap IS the abuse control —
+   * failing open turns a DB outage into unbounded bandwidth. The cost of failing
+   * closed is one retry after the blip; the cost of failing open is a bill.
+   *
+   * The INSERT branch (first row of the day) carries no WHERE and therefore no
+   * cap check, which is safe ONLY because `size` is already known to be <=
+   * FT_MAX_FILE_BYTES (1 GiB) < FT_DAILY_QUOTA_BYTES (2 GiB) by the time we get
+   * here. The explicit guard below makes that dependency non-silent rather than
+   * leaving it as a comment about call order.
+   *
+   * @returns {Promise<{ok:true, day:string} | {ok:false, reason:'quota'}>}
+   */
+  async function ftReserveQuota(userId, size, day) {
+    if (size > FT_DAILY_QUOTA_BYTES) return { ok: false, reason: 'quota' };
+    try {
+      const rows = await db.$queryRawUnsafe(
+        `INSERT INTO "FileQuota" ("id","userId","day","bytes","createdAt","updatedAt")
+         VALUES ($1,$2,$3,$4::bigint,now(),now())
+         ON CONFLICT ("userId","day")
+         DO UPDATE SET "bytes" = "FileQuota"."bytes" + $4::bigint, "updatedAt" = now()
+         WHERE "FileQuota"."bytes" + $4::bigint <= $5::bigint
+         RETURNING "bytes" AS used`,
+        crypto.randomUUID(),
+        userId,
+        day,
+        String(size),
+        String(FT_DAILY_QUOTA_BYTES),
+      );
+      if (!rows || rows.length === 0) return { ok: false, reason: 'quota' };
+      return { ok: true, day };
+    } catch (e) {
+      console.error(`[Relay] FileQuota reserve FAILED-CLOSED (user=${userId} size=${size} day=${day}): ${e.message}`);
+      return { ok: false, reason: 'quota' };
+    }
+  }
+
+  /**
+   * TERMINAL SETTLE — the one place a transfer's quota reaches its final value,
+   * whether it ended in FILE_DONE or FILE_FAILED.
+   *
+   * FT-A1 MUST A-4 + Ken's Addendum 2: the daily quota is charged on METERED
+   * bytes, not on the hinted size, and a transfer aborted at the meter still
+   * pays for what it burned. That makes DONE and FAILED the same operation:
+   * adjust the reservation to what was actually relayed. A transfer that failed
+   * before a single chunk settles to zero — a full refund, which is the
+   * "released on FILE_FAILED" behaviour Addendum A asked for — and one that
+   * streamed 700 MiB against a 1 KiB lie settles to 700 MiB, which is the
+   * abuse budget vector L5 exists to protect.
+   *
+   * Idempotent via `rec.quotaSettled`: a stall sweep racing an inbound
+   * FILE_FAILED must settle once, not twice.
+   *
+   * The decrement targets the day the reservation was MADE on (`rec.quotaDay`),
+   * never "today". A transfer that starts at 23:59:50 UTC and fails at 00:00:10
+   * would otherwise refund a day that was never charged and leave yesterday's
+   * row inflated forever.
+   *
+   * GREATEST(0, …) because a refund must never drive a counter negative, which
+   * would hand the account free quota tomorrow if a row somehow double-refunded.
+   */
+  function ftSettleQuota(rec) {
+    if (!rec || rec.quotaSettled || !rec.quotaDay || !rec.senderUserId) return;
+    rec.quotaSettled = true;
+    const { senderUserId, quotaDay, size } = rec;
+    // MUST A-4: the account is charged what it actually MOVED, never what it
+    // claimed it would move. The reservation made at FILE_OFFER was admission
+    // control on an untrusted number; this is the correction to the truth.
+    // `bytesForwarded` IS the MUST A-3 meter: every FILE_CHUNK's actual wire
+    // length, summed, for this (room, id). It is deliberately one field and not
+    // a second `metered` counter alongside it — two names for one quantity is
+    // how one of them stops being incremented.
+    const actual = ftRawFromWire(rec.bytesForwarded);
+    const delta = actual - size;                 // negative = refund the unused part
+    rec.settledRaw = actual;
+    if (delta === 0) return;
+    const sql = delta > 0
+      ? `UPDATE "FileQuota" SET "bytes" = "bytes" + $3::bigint, "updatedAt" = now()
+         WHERE "userId" = $1 AND "day" = $2`
+      // GREATEST(0, ...) because a refund must never drive a counter negative,
+      // which would hand the account free quota tomorrow.
+      : `UPDATE "FileQuota" SET "bytes" = GREATEST(0::bigint, "bytes" - $3::bigint), "updatedAt" = now()
+         WHERE "userId" = $1 AND "day" = $2`;
+    db.$executeRawUnsafe(sql, senderUserId, quotaDay, String(Math.abs(delta))).catch((e) => {
+      console.error(`[Relay] FileQuota settle failed (user=${senderUserId} day=${quotaDay}): ${e.message}`);
+    });
+  }
+
+  /**
+   * THE ONE PLACE the relay reads anything out of a FILE_OFFER body.
+   *
+   * Spec line 176 flags the sealing of FILE_OFFER for Security sign-off. That
+   * ruling — Security FT-A1, proposal R-AF: a sealed frame plus ONE plaintext
+   * envelope hint `ft:{size}`, the receiver refusing if the sealed size
+   * disagrees with the hint — is OPEN as of 2026-09-18, and Ken's instruction is
+   * to HOLD the mode-ON shape. So this function implements the RULED plaintext
+   * path and guesses at nothing: no `ft` hint is read, because reading a field
+   * whose name is still a proposal is how a lane ends up shipping a wire format
+   * nobody ratified.
+   *
+   * WHEN FT-A1 LANDS, this is the only function that changes. `size` is read
+   * here and nowhere else; the chunk path, the abort path and every log line
+   * take it off the record this builds.
+   *
+   * So every read the gate performs goes through here. When the ruling arrives,
+   * changing where `size` lives is a change to THIS FUNCTION and nothing else:
+   * no second parse site in the chunk path, no third one in a log line, no
+   * chance of one of them being updated and another not. It already tolerates a
+   * body whose name/mime/sha256 have moved inside a seal — those are returned as
+   * null rather than treated as missing-and-therefore-malformed.
+   *
+   * WHAT IT DELIBERATELY DOES NOT RETURN: the account. The sender is
+   * `ws.userId`, proven at the WS upgrade by the relay ticket / phone token, and
+   * a quota gate that could be pointed at another account by a payload field is
+   * not a quota gate. The `from` field in the frame is a UI hint for the
+   * receiver and the relay must never resolve an identity from it — which is
+   * precisely why this accessor cannot hand one back, no matter how the sealing
+   * ruling lands.
+   *
+   * @returns {{size:number|null, mime:string|null, sealed:boolean}}
+   */
+  function ftOfferMetadata(payload) {
+    const none = { id: null, size: null, mime: null, sealed: false, ok: false };
+    if (!payload || typeof payload !== 'object') return none;
+
+    // A sealed frame is the E2E envelope {e,kid,s,c}. `c` is the ciphertext and
+    // `e` is the version marker — a NUMBER (1), not a string; vector L's
+    // envelope is {"e":1,"kid":"kid-ftA1","s":42,"c":"..."}. Keying the check on
+    // `c` being a non-empty string is what makes it independent of how `e` is
+    // spelled if the envelope version ever moves.
+    const sealed = typeof payload.c === 'string' && payload.c.length > 0 && payload.e !== undefined;
+
+    if (sealed) {
+      // MUST A-2 — FAIL CLOSED on a missing or malformed hint. This is the hole
+      // that would otherwise make the entire gate decorative: with no hint and
+      // no refusal, EVERY sender bypasses tier and quota by omitting one field.
+      // Vector L3.
+      // `sealed: true` is carried on the REFUSAL too. Returning the bare `none`
+      // here reported every bad hint as an ordinary malformed plaintext frame,
+      // so the one counter that distinguishes "someone is stripping hints" from
+      // "a client sent junk" never moved. A refusal that cannot be told apart
+      // from noise is a refusal nobody will ever notice firing.
+      const bad = { id: null, size: null, mime: null, sealed: true, ok: false };
+      const ft = payload.ft;
+      if (!ft || typeof ft !== 'object' || Array.isArray(ft)) return bad;
+      if (typeof ft.id !== 'string' || !/^[0-9a-f]{32}$/.test(ft.id)) return bad;
+      if (!Number.isSafeInteger(ft.size) || ft.size < 0 || ft.size > FT_MAX_FILE_BYTES) return bad;
+      // mime is SEALED under mode ON and the relay does not get one. It never
+      // needed it — it is a log-line nicety, not an input to any decision.
+      return { id: ft.id, size: ft.size, mime: null, sealed: true, ok: true };
+    }
+
+    // Mode OFF: the body is the plaintext FileOffer.
+    const id = typeof payload.id === 'string' && /^[0-9a-fA-F]{8,64}$/.test(payload.id) ? payload.id : null;
+    const size = Number.isSafeInteger(payload.size) && payload.size > 0 ? payload.size : null;
+    const mime = typeof payload.mime === 'string' ? payload.mime.slice(0, 128) : null;
+    if (id === null || size === null) return none;
+    return { id, size, mime, sealed: false, ok: true };
+  }
+
+  /**
+   * MUST A-3 — the wire-byte ceiling for a transfer that declared `size` RAW
+   * bytes, and the single most unit-sensitive number in this file.
+   *
+   * `size` is RAW file bytes. The meter counts WIRE bytes: base64 is +33 %
+   * before the JSON envelope, before any E2E seal. Comparing the two directly —
+   * which is what "metered bytes exceeding the hint" reads like in English —
+   * would abort every HONEST transfer at roughly three quarters of the way
+   * through, with `size_mismatch`, and the bug would look exactly like an
+   * attack. So the hint is converted into its wire equivalent first, and the
+   * slack is one whole chunk on top (a transfer is not over budget for
+   * overshooting by less than the quantum it sends in).
+   *
+   * The second term applies the 1 GiB PER-FILE cap in the same units, so a
+   * sender that hints 1 GiB and then streams forever is stopped at the cap
+   * rather than at 1.4x the cap.
+   */
+  function ftWireCeiling(size) {
+    const hinted = Math.ceil(size * FT_WIRE_OVERHEAD_FACTOR) + FT_CHUNK_WIRE_BYTES;
+    const hardCap = Math.ceil(FT_MAX_FILE_BYTES * FT_WIRE_OVERHEAD_FACTOR) + FT_CHUNK_WIRE_BYTES;
+    return Math.min(hinted, hardCap);
+  }
+
+  /**
+   * MUST A-4 — the RAW-byte equivalent of what was actually relayed, which is
+   * what the daily quota is charged on.
+   *
+   * `ft.size` is an admission-control ESTIMATE supplied by the party being
+   * charged; vector L5 is the attack where a sender hints 1 KiB, passes the
+   * gate and the receiver's compare (both values are lies told by the same
+   * party), and streams 700 MiB for 1 KiB of quota. The meter is the truth.
+   *
+   * Inverting the wire overhead is itself an estimate, but it is an estimate
+   * derived from a MEASUREMENT rather than from the sender's claim, and it errs
+   * within one chunk of the real figure. It is clamped to the per-file cap so a
+   * settle can never charge more than a file is allowed to be.
+   */
+  function ftRawFromWire(wireBytes) {
+    if (!wireBytes) return 0;
+    // Inverted on the base64 FLOOR (4/3), never on the ceiling's 1.40 — see
+    // FT_WIRE_B64_FACTOR. Dividing by the larger number returns FEWER raw bytes
+    // than were really moved, which is the wrong direction of error for a charge.
+    return Math.min(Math.ceil(wireBytes / FT_WIRE_B64_FACTOR), FT_MAX_FILE_BYTES);
+  }
+
+  /**
+   * FILE_OFFER — the single chokepoint. Tier, then size, then quota, in that
+   * order: cheapest and most decisive first, so a trial account never causes a
+   * DB write and an oversize pick never consumes a reservation it cannot use.
+   *
+   * THE ACCOUNT IS `ws.userId` — proven at the WS upgrade by the relay ticket /
+   * phone token. It is never read from the payload. A `from` field exists in the
+   * frame for the receiver's UI and the relay does not trust it for anything.
+   *
+   * The record is armed SYNCHRONOUSLY, in state 'gating', BEFORE the first
+   * await. Two FILE_OFFERs arriving back-to-back would otherwise both observe
+   * "no transfer in flight", both pass the gate and both reserve quota, and the
+   * one-per-room rule would be decided by which DB round-trip returned first.
+   */
+  async function ftHandleOffer(room, ws, role, payload, token) {
+    // THE ACCESSOR RUNS FIRST, before any other check, because under mode ON it
+    // is also where the transfer's ID comes from. Under mode OFF the id is the
+    // plaintext `id`; under mode ON it is `ft.id`, and there is no other
+    // readable one — so nothing that needs to NAME this transfer (the busy
+    // reject, the no-peer failure) can run ahead of it.
+    //
+    // It FAILS CLOSED when a sealed offer's hint is absent or malformed
+    // (MUST A-2, vector L3). That refusal is the whole gate: without it, every
+    // sender skips tier and quota by omitting one field.
+    const meta = ftOfferMetadata(payload);
+    if (!meta.ok) {
+      // size_mismatch, not a bare `malformed` reject: under mode ON this IS the
+      // tamper signal. L3 is literally "the relay strips ft", and the receiver
+      // answers that same case with that same reason. One event, one word, both
+      // ends of the wire.
+      //
+      // When the id itself is the unreadable part there is nothing to name, and
+      // a FILE_FAILED without a valid id is dropped by the receiver's own
+      // validator anyway — so the frame is not invented. The sender's 60 s offer
+      // expiry is the backstop, which is the same reasoning FT-A1 section 2.3 uses
+      // for the SW's unsendable failure.
+      const nameable = ftFrameId(payload);
+      if (nameable) safeSend(ws, ftFailedFrame(nameable, 'size_mismatch'));
+      ftCountDrop(token, 'FILE_OFFER', meta.sealed ? 'bad_hint' : 'malformed');
+      rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused (hint absent or malformed) sealed=${meta.sealed} nameable=${!!nameable}`);
+      return;
+    }
+    const id = meta.id;
+    const size = meta.size;
+
+    const dest = ftPeerSocket(room, role);
+    if (!dest) {
+      safeSend(ws, ftFailedFrame(id, 'connection_lost'));
+      return;
+    }
+    // One transfer per room at a time, keyed by the transfer id.
+    if (room.transfer) {
+      // M5: FILE_FAILED, not FILE_REJECT. FILE_REJECT is receiver-authored and
+      // sealed-by-exclusion, so a relay-minted plaintext one is invisible under
+      // mode ON. Every relay refusal goes through the one marked mint path.
+      safeSend(ws, ftFailedFrame(id, 'busy'));
+      rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused busy id=${id} (in-flight id=${room.transfer.id})`);
+      return;
+    }
+
+    const now = Date.now();
+    const rec = {
+      id,
+      state: 'gating',
+      from: role,
+      size,
+      mime: meta.mime ?? '',
+      startedAt: now,
+      bytesForwarded: 0,
+      lastActivityAt: now,
+      // The AUTHENTICATED account, from the socket. Never from the payload, and
+      // ftOfferMetadata cannot supply one even if a future frame shape carried
+      // a plausible-looking field.
+      senderUserId: ws.userId,
+      quotaDay: null,
+      quotaSettled: false,
+    };
+    room.transfer = rec;
+
+    // (1) Tier. Addendum A: trial/free are OFF. Fail-closed allow-list.
+    if (!FT_TIERS_ALLOWED.has(ws.tier)) {
+      room.transfer = null;
+      safeSend(ws, ftFailedFrame(id, 'tier'));
+      rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused tier id=${id} tier=${ws.tier}`);
+      return;
+    }
+    // (2) Per-file hard cap.
+    if (size > FT_MAX_FILE_BYTES) {
+      room.transfer = null;
+      safeSend(ws, ftFailedFrame(id, 'too_large'));
+      rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused too_large id=${id} size=${size}`);
+      return;
+    }
+    // (3) Daily quota — reserved now, committed at FILE_DONE, released on abort.
+    const day = utcDayKey(new Date());
+    const reserved = await ftReserveQuota(ws.userId, size, day);
+    if (!reserved.ok) {
+      room.transfer = null;
+      safeSend(ws, ftFailedFrame(id, 'quota'));
+      rlog(`[Relay][${redactToken(token)}] FILE_OFFER refused quota id=${id} size=${size} day=${day}`);
+      return;
+    }
+    rec.quotaDay = day;
+
+    // The await above yielded; the room may have been reset or the pair torn
+    // down underneath us. Re-check both, and refund if we are too late.
+    if (room.transfer !== rec) { ftSettleQuota(rec); return; }
+    const destNow = ftPeerSocket(room, role);
+    if (!destNow || destNow.readyState !== WebSocket.OPEN) {
+      room.transfer = null;
+      ftSettleQuota(rec);
+      safeSend(ws, ftFailedFrame(id, 'connection_lost'));
+      return;
+    }
+
+    rec.state = 'offered';
+    rec.lastActivityAt = Date.now();
+    safeSend(destNow, `FILE_OFFER:${JSON.stringify(payload)}`);
+    rlog(`[Relay][${redactToken(token)}] FILE_OFFER armed id=${id} from=${role} size=${size}`);
+  }
+
+  /**
+   * The FILE_* data plane. Called from BOTH the phone and browser message
+   * handlers, so phone→PC and PC→phone are the same code and cannot drift into
+   * two gates of which one is fail-open.
+   *
+   * Returns true when the frame was consumed (the caller must NOT fall through
+   * to its normal forward/drop path).
+   */
+  function handleFileFrame(room, ws, msg, role, token) {
+    const parsed = ftParse(msg);
+    if (!parsed) return false;               // not a FILE_* frame at all
+    const { type, payload } = parsed;
+    if (!payload) {
+      ftCountDrop(token, type, 'malformed');
+      rlog(`[Relay][${redactToken(token)}] FILE frame dropped (malformed): ${frameLabel(msg)}`);
+      return true;
+    }
+    // A FILE_* frame is data plane: only the ACTIVE socket for this role may
+    // send one. A lobby/duplicate socket streaming chunks would bypass the whole
+    // state machine, so these are dropped rather than passed to the resume
+    // passthrough that non-file data frames get.
+    // FT-A1.1 MUST A1.1-M7 — a peer may not claim relay authorship. Checked for
+    // EVERY FILE_* type, before anything else looks at the frame.
+    //
+    // REJECTED, not stripped, and the distinction is load-bearing: stripping
+    // means re-serialising a frame the relay has promised to forward
+    // byte-for-byte, and a re-serialiser on the passthrough path is how a relay
+    // eventually starts parsing chunk bodies. Refusing costs an attacker one
+    // frame and costs an honest client nothing, because no honest client sends
+    // this field.
+    if (Object.prototype.hasOwnProperty.call(payload, 'relay')) {
+      ftCountDrop(token, type, 'peer_claimed_relay');
+      rlog(`[Relay][${redactToken(token)}] FILE frame REJECTED (peer set the relay origin mark): ${frameLabel(msg)}`);
+      return true;
+    }
+
+    if (ws !== ftSocketForRole(room, role)) {
+      ftCountDrop(token, type, 'not_active');
+      rlog(`[Relay][${redactToken(token)}] FILE frame dropped (socket not active ${role}): ${frameLabel(msg)}`);
+      return true;
+    }
+
+    // The id this frame names, or null when it carries none. Under Encrypted
+    // mode ON every FILE_* frame except FILE_OFFER is sealed by exclusion and
+    // has no readable id (FT-A1 section 1.7) — those are matched to the room's
+    // single in-flight transfer by TYPE, which is plaintext on the wire and
+    // authenticated in the AAD. `false` means an id was present and malformed,
+    // which is never matched to anything.
+    const frameId = ftFrameId(payload);
+    // NOTE the malformed-id drop is BELOW the FILE_OFFER branch, not above it.
+    // A sealed offer whose ft.id is malformed must reach ftHandleOffer so that
+    // MUST A-2's fail-closed refusal runs and is COUNTED as a bad hint; dropping
+    // it here would look identical in the logs to a stray frame and would hide
+    // the one event the hint gate exists to surface.
+    if (type === 'FILE_OFFER') {
+      ftHandleOffer(room, ws, role, payload, token).catch((e) => {
+        console.error(`[Relay][${redactToken(token)}] FILE_OFFER gate crashed: ${e.message}`);
+        if (room.transfer && room.transfer.id === frameId) ftAbort(room, 'cancelled');
+      });
+      return true;
+    }
+
+    if (frameId === false) {
+      ftCountDrop(token, type, 'bad_id');
+      rlog(`[Relay][${redactToken(token)}] FILE frame dropped (malformed id): ${frameLabel(msg)}`);
+      return true;
+    }
+
+    const rec = room.transfer;
+    const dest = ftPeerSocket(room, role);
+
+    // Every remaining frame type is about an EXISTING transfer. No record — or a
+    // record for a DIFFERENT id, when the frame names one at all — means the
+    // frame is stale (a late ACK after an abort, a chunk from a cancelled
+    // transfer) or forged. Drop and count.
+    if (!rec || (frameId !== null && rec.id !== frameId)) {
+      ftCountDrop(token, type, 'no_record');
+      rlog(`[Relay][${redactToken(token)}] FILE frame dropped (no matching transfer): ${frameLabel(msg)}`);
+      // A resume for a transfer the relay no longer knows about is the one case
+      // the sender must hear about, or its UI hangs waiting for chunks that will
+      // never come (deliverable (d)). With a sealed, id-less resume there is
+      // nothing to name, so the failure is addressed to the id the relay would
+      // have used — and when there is none, the sender's own stall timer is the
+      // backstop and no frame is invented.
+      if (type === 'FILE_RESUME' && frameId) safeSend(ws, ftFailedFrame(frameId, 'connection_lost'));
+      return true;
+    }
+
+    const isSender = rec.from === role;
+
+    switch (type) {
+      case 'FILE_ACCEPT': {
+        if (isSender || rec.state !== 'offered') {
+          ftCountDrop(token, type, 'bad_state');
+          return true;
+        }
+        rec.state = 'accepted';
+        rec.lastActivityAt = Date.now();
+        safeSend(dest, msg);
+        rlog(`[Relay][${redactToken(token)}] FILE_ACCEPT id=${rec.id} — chunks now admitted`);
+        return true;
+      }
+
+      case 'FILE_REJECT': {
+        if (isSender) { ftCountDrop(token, type, 'bad_state'); return true; }
+        room.transfer = null;
+        ftSettleQuota(rec);
+        safeSend(dest, msg);
+        rlog(`[Relay][${redactToken(token)}] FILE_REJECT id=${rec.id} — record dropped, quota released`);
+        return true;
+      }
+
+      case 'FILE_CHUNK': {
+        // ACCEPT-BEFORE-CHUNKS. This branch is the feature's consent gate.
+        if (!isSender || rec.state !== 'accepted') {
+          const n = ftCountDrop(token, type, rec.state === 'accepted' ? 'wrong_direction' : 'not_accepted');
+          rlog(`[Relay][${redactToken(token)}] FILE_CHUNK dropped (state=${rec.state} sender=${isSender}) id=${rec.id} count=${n}`);
+          return true;
+        }
+        if (!dest || dest.readyState !== WebSocket.OPEN) {
+          ftCountDrop(token, type, 'no_dest');
+          return true;
+        }
+        // Relay-side watermark. The relay does NOT queue — a relay that queues
+        // is a relay that stores. Over the mark, both sides are told and the
+        // transfer is over.
+        const queued = typeof dest.bufferedAmount === 'number' ? dest.bufferedAmount : 0;
+        if (queued > FT_DEST_BACKPRESSURE_BYTES) {
+          rlog(`[Relay][${redactToken(token)}] FILE_CHUNK backpressure abort id=${rec.id} bufferedAmount=${queued}`);
+          ftAbort(room, 'relay_backpressure');
+          return true;
+        }
+        // MUST A-3 — THE WIRE METER. This is the control that defends against a
+        // LYING SENDER, which is the party the quota is charged to and therefore
+        // the party with the motive. Vector L5: a sender seals `size: 1024` AND
+        // hints `ft.size: 1024`, so the relay's admission gate passes and the
+        // receiver's compare passes too — both values are lies told by the same
+        // party — and then it streams 700 MiB for 1 KiB of quota, indefinitely.
+        // Nothing in the hint/sealed compare can see that; only counting the
+        // bytes as they go past can.
+        //
+        // FILE_CHUNK is padding-exempt (`_CHUNK` suffix), so the count is exact
+        // and costs no crypto and no parsing.
+        const wire = Buffer.byteLength(msg, 'utf8');
+        // ftWireCeiling converts the RAW hint into WIRE bytes before comparing.
+        // Comparing them directly would abort every honest transfer at about
+        // three quarters through — and it would look like an attack.
+        const ceiling = ftWireCeiling(rec.size);
+        if (rec.bytesForwarded + wire > ceiling) {
+          rlog(`[Relay][${redactToken(token)}] FILE_CHUNK over metered ceiling id=${rec.id} hinted=${rec.size} metered=${rec.bytesForwarded} ceiling=${ceiling}`);
+          // `size_mismatch` per Ken's Addendum 2, which is the binding text and
+          // is also the more precise word: what happened is that the declared
+          // size and the actual stream disagree. Security's A-3 says `quota`;
+          // that reason is kept for the case it describes exactly — the account
+          // having no allowance left — rather than being overloaded onto this.
+          // The metered bytes are CHARGED on the way out: ftAbort settles.
+          ftAbort(room, 'size_mismatch');
+          return true;
+        }
+        rec.bytesForwarded += wire;
+        rec.lastActivityAt = Date.now();
+        // Forwarded AS-IS. The relay does not parse, re-encode, inspect or log
+        // `data` — under E2E mode ON it could not read it anyway.
+        safeSend(dest, msg);
+        return true;
+      }
+
+      case 'FILE_ACK': {
+        if (isSender) { ftCountDrop(token, type, 'bad_state'); return true; }
+        rec.lastActivityAt = Date.now();
+        safeSend(dest, msg);
+        return true;
+      }
+
+      case 'FILE_RESUME': {
+        // Receiver → sender after a reconnect. The record survived the held
+        // pair (see the janitor + terminateActivePair), so the sender is told
+        // where to re-slice from. The relay forwards `upTo` untouched: it has
+        // no idea how many chunks the receiver actually wrote, and guessing
+        // would be the relay inventing content state it must not hold.
+        if (isSender) { ftCountDrop(token, type, 'bad_state'); return true; }
+        const sender = ftSocketForRole(room, rec.from);
+        if (!sender || sender.readyState !== WebSocket.OPEN) {
+          ftCountDrop(token, type, 'no_sender');
+          safeSend(ws, ftFailedFrame(rec.id, 'connection_lost'));
+          return true;
+        }
+        rec.state = 'accepted';
+        rec.lastActivityAt = Date.now();
+        safeSend(sender, msg);
+        // The sending ROLE is deliberately NOT interpolated here. The record's
+        // field is named `from` (the shape the spec froze), and `.from` is on
+        // the redaction suite's PII field list because that is what a sender
+        // ADDRESS is called on every other frame in this relay. A role is not
+        // PII — but a log line that has to be argued about is a log line that
+        // will eventually be copied to one that does leak. The id is the
+        // debugging handle, and the direction is recoverable from the FILE_OFFER
+        // line a few seconds earlier.
+        rlog(`[Relay][${redactToken(token)}] FILE_RESUME id=${rec.id} forwarded to sender`);
+        return true;
+      }
+
+      case 'FILE_DONE': {
+        if (!isSender) { ftCountDrop(token, type, 'bad_state'); return true; }
+        room.transfer = null;
+        ftSettleQuota(rec);  // charge what was METERED, not what was hinted
+        safeSend(dest, msg);
+        rlog(`[Relay][${redactToken(token)}] FILE_DONE id=${rec.id} bytes=${rec.bytesForwarded} — quota committed`);
+        return true;
+      }
+
+      case 'FILE_FAILED': {
+        // Either side, terminal.
+        room.transfer = null;
+        ftSettleQuota(rec);
+        // A SEALED failure is forwarded VERBATIM. Its reason is inside the
+        // ciphertext, so re-minting the frame would (a) invent a reason the
+        // sender never gave and (b) turn a sealed frame into a plaintext one —
+        // which the receiver is required to DROP while the session is ON
+        // (FT-A1 MUST B-1's downgrade guard). The relay would have silently
+        // converted "the transfer failed" into "nothing ever arrived".
+        //
+        // A PLAINTEXT failure is normalised, so a client-authored string can
+        // never widen the frozen vocabulary on its way through.
+        const sealed = typeof payload.c === 'string' && payload.e !== undefined;
+        // M7: the re-mint IS the stripper — it rebuilds the frame from two
+        // scalars and discards everything else the peer attached, including any
+        // `relay` key. `{relay:false}` keeps it from acquiring the mark on the
+        // way through: this frame's author is the peer, not us.
+        safeSend(dest, sealed ? msg : ftFailedFrame(rec.id, payload.reason, { relay: false }));
+        rlog(`[Relay][${redactToken(token)}] FILE_FAILED id=${rec.id} sealed=${sealed} — quota settled`);
+        return true;
+      }
+
+      default:
+        return true;
+    }
+  }
+
+  /**
+   * Transfer janitor. Three jobs, all of them about not leaking:
+   *
+   *  1. A pair that is HELD (soft-hold, resume claim armed) keeps its record —
+   *     that is what makes FILE_RESUME possible at all. Once the claim expires,
+   *     or if there was never one, the transfer is dead: abort and refund.
+   *  2. An offer nobody answers expires at FT_OFFER_TTL_MS so the one-per-room
+   *     slot cannot be held hostage by a peer that went away mid-prompt.
+   *
+   *     SECURITY FT-A1.2, RATIFIED (A) 2026-09-18: this branch IS the
+   *     no-receiver timeout, and it is RELAY-owned on purpose. The proposal to
+   *     put it in the service worker (B-3) was STRUCK as unsatisfiable, not
+   *     merely hard: listener sockets have no send path into the relay, and a
+   *     SW-authored frame would be plaintext-and-unmarked, which the phone's
+   *     B-1 downgrade guard is REQUIRED to drop. Giving the SW a send path to
+   *     fix that converts a receive-only component into a wire participant and
+   *     turns its frame-type filter into a security boundary. So the timeout is
+   *     minted here, where the relay mark already comes from one place, and
+   *     `ftAbort` fans it out to BOTH endpoints (M14) — the receiver's copy is
+   *     admissible under A1.1-M9 because a receiver that never answered still
+   *     holds a record for that id. `timeout` stays relay-owned (M15): a peer's
+   *     own plaintext expiry naming a record we have already dropped is a
+   *     `no_record` drop, never a forward.
+   *
+   *     FROZEN timer hierarchy (A1.2, extending A1.1 M4) — changing any number
+   *     here is a cross-lane amendment, not a tuning exercise:
+   *
+   *       sender-local   60 s  PRIMARY        the sender gives up on its own
+   *       SW marker      60 s  INFORMATIONAL  notification only; sends NOTHING (M13)
+   *       FT_OFFER_TTL   90 s  BACKSTOP       this branch: frees slot + quota
+   *       FT_STALL_MS    30 s  post-ACCEPT    branch 3 below, never this one
+   *
+   *     The 30 s gap between the sender's 60 s and this 90 s is what stops the
+   *     relay racing an honest sender into a spurious `timeout`. Pinned by
+   *     tests/ft-relay.test.mjs PART 12.
+   *  3. An accepted transfer that goes FT_STALL_MS without a chunk or an ACK is
+   *     timed out. This is the relay's BACKSTOP for the receiver-side stall the
+   *     clients also enforce — a client that simply stops is not a client that
+   *     gets to pin a room's transfer slot open forever.
+   */
+  const ftSweep = setInterval(() => {
+    const now = Date.now();
+    for (const room of rooms.values()) {
+      const rec = room.transfer;
+      if (!rec) continue;
+      if (rec.state === 'gating') continue;   // a DB round-trip owns it
+      const bothActive = !!(room.active.phone && room.active.browser);
+      if (!bothActive) {
+        const claim = room.resumable;
+        if (claim && now <= claim.expiresAt) continue;   // held — keep for resume
+        ftAbort(room, 'connection_lost');
+        continue;
+      }
+      const ttl = rec.state === 'offered' ? FT_OFFER_TTL_MS : FT_STALL_MS;
+      if (now - rec.lastActivityAt > ttl) ftAbort(room, 'timeout');
+    }
+  }, FT_SWEEP_MS);
+  if (typeof ftSweep.unref === 'function') ftSweep.unref();
+
+  /**
+   * FileQuota janitor. One ranged DELETE every 6 h against the `day` index.
+   *
+   * There was no existing DB housekeeping path in the relay to hang this on
+   * (the only other janitors are in-memory Map sweeps), so this is a new one
+   * built to the same shape: unref'd so it can never hold the process open,
+   * fail-soft so a DB blip logs and retries in 6 h rather than crashing the
+   * relay, and cheap enough that its cost is irrelevant next to a single chunk.
+   */
+  const ftQuotaPrune = setInterval(() => {
+    const cutoff = utcDayKey(new Date(Date.now() - FT_QUOTA_RETENTION_DAYS * 24 * 60 * 60 * 1000));
+    db.$executeRawUnsafe(`DELETE FROM "FileQuota" WHERE "day" < $1`, cutoff)
+      .then((n) => { if (n) console.log(`[Relay] FileQuota janitor pruned ${n} row(s) older than ${cutoff}`); })
+      .catch((e) => console.error(`[Relay] FileQuota janitor failed (retry in 6h): ${e.message}`));
+  }, 6 * 60 * 60 * 1000);
+  if (typeof ftQuotaPrune.unref === 'function') ftQuotaPrune.unref();
+
   /**
    * Live-sync resume fix (2026-06-16) — Bug A backstop + duplicate-lobby-socket
    * delivery (hotfix 2026-06-16b).
@@ -2269,6 +3274,25 @@ function startRelay(httpServer) {
           return;
         }
 
+        // FILE TRANSFER (FT-1). Handled BEFORE the listener mirror and before
+        // the active-pair data plane, by the same function the browser branch
+        // calls — phone→PC and PC→phone go through ONE gate, which is the only
+        // way the tier/quota check cannot end up fail-open on one side.
+        //
+        // Deliberately ABOVE broadcastToListeners: a 1 GB transfer is ~21 800
+        // chunks, and mirroring every one of them into every passive extension
+        // SW would be a bandwidth multiplier into exactly the context that MV3
+        // evicts mid-stream. A listener is a notification surface, not a file
+        // sink; the receiving extension participates as the ACTIVE browser.
+        if (isFileFrame(msg)) {
+          try {
+            if (handleFileFrame(room, ws, msg, 'phone', token)) return;
+          } catch (e) {
+            console.error(`[Relay][${redactToken(token)}] FILE frame handler crashed: ${e.message}`);
+            return;
+          }
+        }
+
         // forge/chrome-extension-p1: mirror EVERY phone-originated data frame to
         // passive listeners (extension SWs) BEFORE the active-pair gate, so the
         // background SW fires notifications for incoming calls/SMS even when the
@@ -2324,6 +3348,29 @@ function startRelay(httpServer) {
         // quick-sync backfill, so buffering a dead pair is pointless.
         const claim = room.resumable;
         if (claim && Date.now() <= claim.expiresAt) {
+          // FT-1 (c): FILE_* frames NEVER enter the replay buffer.
+          //
+          // frameBuffer is a 200-ENTRY (not byte-bounded) replay buffer whose
+          // whole job is to preserve real messages across a socket blip. A
+          // single 1 GB transfer is ~21 800 chunks; even a 25 MB one is 534.
+          // Either would flush every SMS, notification and call-log entry out of
+          // a 200-slot buffer in under a second — the classic shape-keyed
+          // failure, where a size-blind buffer is silently emptied by a big
+          // payload and the feature it exists for stops working with no error
+          // anywhere. Chunks are also worthless to replay: the transfer's own
+          // FILE_RESUME protocol (deliverable (d)) is how a blip is recovered,
+          // and a chunk replayed out of that protocol's sight would corrupt the
+          // receiver's offset.
+          //
+          // Classified with frameType() via isFileFrame(), never startsWith():
+          // startsWith('FILE_') would also swallow a future FILE_-prefixed frame
+          // nobody meant to exclude, and frameType() is the already-validated
+          // classifier every redaction site in this file trusts.
+          if (isFileFrame(msg)) {
+            ftCountDrop(token, frameType(msg), 'not_buffered');
+            rlog(`[Relay][${redactToken(token)}] FILE frame NOT buffered during resume window: ${frameLabel(msg)}`);
+            return;
+          }
           if (!room.frameBuffer) room.frameBuffer = [];
           room.frameBuffer.push({ msg, at: Date.now() });
           if (room.frameBuffer.length > FRAME_BUFFER_MAX) room.frameBuffer.shift();
@@ -2526,6 +3573,27 @@ function startRelay(httpServer) {
           console.error(`[Relay][${redactToken(token)}] RESET_ROOM handler crashed: ${e.message}`);
         }
         return;
+      }
+
+      // FILE TRANSFER (FT-1) — the mirror image of the phone branch above, same
+      // function, same gate. Placed ahead of gateBrowserSyncFrame and the
+      // free-tier outbound meter because neither matches a FILE_* frame
+      // (gateBrowserSyncFrame passes anything that is not GET_CONTACTS /
+      // GET_MESSAGES / GET_CALL_LOGS; checkDailyOutboundLimit returns null for
+      // anything that is not MAKE_CALL / SEND_SMS) — running a 21 800-chunk
+      // stream through both only to be told "pass, null" twice per chunk is
+      // work with no decision attached to it.
+      //
+      // Passive listeners never reach here: the `if (ws.listener) return` far
+      // above short-circuits them, so a receive-only extension SW cannot open,
+      // accept or feed a transfer.
+      if (isFileFrame(msg)) {
+        try {
+          if (handleFileFrame(room, ws, msg, 'browser', token)) return;
+        } catch (e) {
+          console.error(`[Relay][${redactToken(token)}] FILE frame handler crashed: ${e.message}`);
+          return;
+        }
       }
 
       // Tier gate (2026-07-27) — enforce contact-sync + sync-range on the

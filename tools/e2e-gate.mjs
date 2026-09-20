@@ -1230,9 +1230,16 @@ if (WEB) {
     // P1 — B8 authorization over the real ccpix DB. Not matched by the
     // `tests/e2e-*.test.mjs` sweep below, so it is named explicitly; a security
     // suite the gate never runs is a security suite that stops being true.
-    'devicekey-authz'];
-  /** P0 DELIVERS these; BASE_SHA predates them. Only --baseline may excuse them. */
-  const P0_NEW = new Set(['session-superseded', 'devicekey-authz']);
+    'devicekey-authz',
+    // FT-1 (2026-09-18). The relay half of file transfer: the accept-before-
+    // chunks consent gate, the backpressure abort, the frameBuffer exclusion,
+    // resume, and the tier + 2 GiB/day quota chokepoint. Named explicitly
+    // because the `tests/e2e-*.test.mjs` sweep below does not match it, and a
+    // security gate the gate never runs is a security gate that stops being
+    // true.
+    'ft-relay'];
+  /** Delivered by a lane AFTER BASE_SHA. Only --baseline may excuse them. */
+  const P0_NEW = new Set(['session-superseded', 'devicekey-authz', 'ft-relay']);
   /**
    * Suites that genuinely need the harness DATABASE_URL.
    *
@@ -1247,7 +1254,10 @@ if (WEB) {
    * the scrub: the suites that must not see the ambient environment still
    * cannot, and the one that needs a database says so by name.
    */
-  const DB_BACKED = new Set(['devicekey-authz']);
+  // FT-1: ft-relay's PART 11 enforces the 2 GiB/day quota against a REAL
+  // PostgreSQL — the subject is an atomic INSERT … ON CONFLICT … WHERE over a
+  // BIGINT column and a unique index, none of which a mock can be wrong about.
+  const DB_BACKED = new Set(['devicekey-authz', 'ft-relay']);
   for (const base of RELAY) {
     const rel = resolveIn('tests', base);
     if (!rel) {
