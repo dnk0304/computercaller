@@ -22,6 +22,9 @@ import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 // footprint HERE is five call sites, deliberately, so the Monday rebase of
 // this 4,679-line file against Forge-U/Forge-T/Pixel-S is a local merge.
 import { useE2e } from './useE2e';
+import { useFileTransfer } from './useFileTransfer';
+import type { FileTransferBridgeSlot } from './useFileTransfer';
+import { isFileFrameType } from '@/lib/fileTransfer/frames.ts';
 import {
   getDeviceLabel,
   getEffectiveDeviceLabel,
@@ -396,6 +399,14 @@ export function usePhoneBridge() {
   const e2eApi = useE2e();
   const e2eRef = useRef(e2eApi);
   e2eRef.current = e2eApi;
+  // FT-3a. The transfer state machines live in lib/fileTransfer and reach the
+  // socket only through this bridge, which is filled in below once sendCommand
+  // exists. Same ref dance as e2eRef, and for the same reason: the inbound
+  // handler and the send path are ~2,000 lines apart in this file.
+  const fileTransferBridgeSlot = useMemo<FileTransferBridgeSlot>(() => ({ bridge: null }), []);
+  const fileTransferApi = useFileTransfer(fileTransferBridgeSlot);
+  const fileTransferRef = useRef(fileTransferApi);
+  fileTransferRef.current = fileTransferApi;
   // `leaveActive` is declared far below this point; the ref lets the inbound
   // PAIRING_ACTIVE handler reach it without hoisting a 4,600-line file around.
   const leaveActiveRef = useRef<(() => void) | null>(null);
@@ -1277,6 +1288,14 @@ export function usePhoneBridge() {
     // parseMessage returns `payload: any` already (line 498), so normalize
     // -> any is structurally identical and keeps every switch branch typed
     // the same as before.
+    // FT-3a. File frames route to their own state machines and stop here.
+    // Placed BEFORE normalizePayload on purpose: that helper coerces the
+    // phone's contact/message/call-log shapes, and a base64 chunk body has no
+    // business passing through a coercer that was not written for it.
+    if (isFileFrameType(type)) {
+      fileTransferRef.current.handleFrame(type, parsed.payload);
+      return;
+    }
     const payload = normalizePayload(type, parsed.payload) as typeof parsed.payload;
     console.log('[PhoneBridge] Handling message type:', type, 'payload:', payload);
 
@@ -3082,6 +3101,9 @@ export function usePhoneBridge() {
         setBridgeStatus('connected');
         // Successful open — reset backoff back to base for the NEXT failure.
         reconnectDelayRef.current = RECONNECT_BASE_MS;
+        // FT-3a. A transfer that was in flight asks the peer to pick up from the
+        // receiver's on-disk watermark. No-op when nothing is transferring.
+        fileTransferRef.current.noteReconnect();
         userInitiatedCloseRef.current = false;
         // Dispatch #32: lobbyState defaults to 'lobby' immediately on WS
         // open. The relay's LOBBY_STATUS frame will arrive a moment later
@@ -3246,6 +3268,16 @@ export function usePhoneBridge() {
       },
     );
   }, []);
+
+  // FT-3a. `sendFrame` is sendCommand itself, so file frames go through the ONE
+  // outbound chokepoint and are sealed by exactly the same code as every other
+  // frame. `bufferedAmount` is what the sender's 2 MB watermark reads to decide
+  // whether to defer — the real socket, not an estimate.
+  fileTransferBridgeSlot.bridge = {
+    sendFrame: (type, payload) => sendCommand(type, payload),
+    bufferedAmount: () => wsRef.current?.bufferedAmount ?? 0,
+    isOpen: () => wsRef.current?.readyState === WebSocket.OPEN,
+  };
 
   // Public actions
   //
@@ -4893,6 +4925,11 @@ export function usePhoneBridge() {
     setE2eLocalMode: e2eApi.setLocalMode,
     // E2E-P2.1: the explicit user act that clears a sticky encryption error.
     dismissE2eError: e2eApi.dismissError,
+
+    // FT-3a. The file-transfer view-model FT-3b renders: pendingOffer, progress
+    // (bytes / bytesPerSecond / etaSeconds), error.copy, and the actions.
+    // Logic only — this lane ships no UI.
+    fileTransfer: fileTransferApi,
 
     // Full MMS media fetch (on-demand). Returns a base64-encoded media payload
     // plus its MIME type — caller composes the `data:` URL when rendering.

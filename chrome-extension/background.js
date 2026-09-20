@@ -1018,6 +1018,65 @@ function pendingOfferForTest() {
     : null;
 }
 
+// ── FT-3a: file-transfer routing (ROUTING ONLY) ─────────────────────────────
+//
+// Read this before extending it.
+//
+// The page — /app in the side panel or the pop-out — holds its OWN socket to
+// the relay and runs the whole transfer there (hooks/useFileTransfer). This
+// worker's socket is the notification side channel, and it is a PINNED
+// invariant that it sends nothing (tests/e2e-sw-chokepoint.test.mjs claim 3),
+// so nothing here originates FILE_ACCEPT / FILE_REJECT / FILE_ACK /
+// FILE_RESUME. That is the page's job and it stays the page's job.
+//
+// What this worker does is narrower: when an offer arrives and the panel is
+// not open, note that ONE marker so the surface can show there is a file
+// waiting. FILE_CHUNK is deliberately absent from every path below — a worker
+// that touched chunk bodies would be holding file bytes, which is the one
+// thing the 1 GB design exists to prevent.
+const FILE_ROUTED_TYPES = new Set(['FILE_OFFER', 'FILE_DONE', 'FILE_FAILED']);
+
+/** The single pending-offer marker. No queue: one transfer per room, by rule. */
+let pendingFileOffer = null;
+
+function broadcastFileEvent(event) {
+  for (const port of presencePorts) {
+    // `catch {}` rather than the file's older `catch (_) {}` so this addition
+    // does not raise the no-unused-vars warning count.
+    try { port.postMessage({ type: 'file', event }); } catch { /* port closed */ }
+  }
+}
+
+/**
+ * @param {string} type one of FILE_ROUTED_TYPES
+ * @param {object} data the frame body, or {} when it arrived sealed
+ * @param {boolean} sealed true when the body could not be opened
+ */
+function routeFileFrame(type, data, sealed) {
+  if (type === 'FILE_CHUNK') return;             // never, under any condition
+  if (!FILE_ROUTED_TYPES.has(type)) return;
+
+  if (type === 'FILE_OFFER') {
+    // Under encrypted mode the name and mime are sealed and we do not have
+    // them. Say so rather than inventing a filename: the page will render the
+    // real offer from its own socket, and this marker only has to say "a file
+    // is waiting".
+    pendingFileOffer = {
+      id: typeof data.id === 'string' ? data.id : null,
+      sealed,
+      at: Date.now(),
+    };
+  } else if (pendingFileOffer && (data.id === undefined || data.id === pendingFileOffer.id)) {
+    pendingFileOffer = null;
+  }
+  broadcastFileEvent({ kind: type, pending: pendingFileOffer });
+}
+
+/** Test/diagnostics accessor. Never a source of truth for the page. */
+function pendingFileOfferForTest() {
+  return pendingFileOffer;
+}
+
 // ── Deep links carried by a notification ────────────────────────────────────
 // Kept in storage.session, not a Map: the SW is routinely torn down between
 // raising a notification and the user clicking it, and a click that lands on a
@@ -1998,6 +2057,14 @@ function deliverFrame(type, data) {
       });
       return;
     }
+    // FT-3a. Not a notification — a routing marker only. FILE_CHUNK never
+    // reaches here: it is not in FILE_ROUTED_TYPES and routeFileFrame refuses
+    // it outright, so no file bytes pass through this worker.
+    case 'FILE_OFFER':
+    case 'FILE_DONE':
+    case 'FILE_FAILED':
+      routeFileFrame(type, data, sealed);
+      return;
     default:
       // Everything else (control frames, sync data) is not a notification.
       return;
@@ -2364,6 +2431,8 @@ Object.assign(self, {
   connect,
   handleFrame,
   deliverFrame,
+  routeFileFrame,
+  pendingFileOfferForTest,
   notePhonePresence,
   notePairState,
   paintBadge,

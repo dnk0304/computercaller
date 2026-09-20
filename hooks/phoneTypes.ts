@@ -175,7 +175,27 @@ export type PhoneEventType =
   //   payload: { kind: 'call' | 'message', limit: number,
   //              resetAt: number /* epoch-ms of next UTC midnight */,
   //              cta: 'subscribe' }
-  | 'LIMIT_REACHED';
+  | 'LIMIT_REACHED'
+  // FT-3a (2026-09-18). Phone <-> PC file transfer. Shapes are FROZEN by
+  // FILE-TRANSFER-SPEC.md + Addendum A and are built against in parallel by
+  // FT-1 (relay) and FT-2 (Android), so do not rename a field without Ken.
+  // usePhoneBridge routes the whole family to lib/fileTransfer and never
+  // touches a chunk body itself; the authoritative payload types live in
+  // lib/fileTransfer/frames.ts.
+  //   FILE_OFFER  { id, name, size, mime, sha256, from }
+  //   FILE_ACCEPT / FILE_REJECT  { id }
+  //   FILE_CHUNK  { id, seq, n, data }   -- base64; `*_CHUNK`, so padding-exempt
+  //   FILE_ACK / FILE_RESUME     { id, upTo }
+  //   FILE_DONE   { id, sha256 }
+  //   FILE_FAILED { id, reason }
+  | 'FILE_OFFER'
+  | 'FILE_ACCEPT'
+  | 'FILE_REJECT'
+  | 'FILE_CHUNK'
+  | 'FILE_ACK'
+  | 'FILE_RESUME'
+  | 'FILE_DONE'
+  | 'FILE_FAILED';
 
 // Message types to phone
 /**
