@@ -162,7 +162,6 @@ function liftNullKeyReason() {
   assert(start > 0, 'nullKeyReason() not found in background.js');
   const end = bg.indexOf('\n}', start);
   const body = bg.slice(start, end + 2);
-  // eslint-disable-next-line no-new-func
   return new Function('swPubKey', 'deviceKeyError', `${body}\nreturn nullKeyReason();`);
 }
 const nullKeyReason = liftNullKeyReason();
