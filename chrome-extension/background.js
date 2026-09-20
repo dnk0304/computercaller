@@ -311,6 +311,26 @@ async function localUserId() {
   return null;
 }
 
+/**
+ * Security A5 / M-A5-3: WHY this reply carries no key, as a token the page may
+ * branch on.
+ *
+ * Null is not one situation. "The worker has no key yet" and "the worker had a
+ * key and loading it threw" are the same `pub: null` on the wire and want
+ * different page behaviour -- the first is an extension that is simply not part
+ * of this pairing (badge it absent, 2 recipients, honest), the second is a
+ * broken worker where the honest move is to WAIT rather than to present a SAS
+ * that silently excludes it. A5's null arm forbids exactly one thing: showing a
+ * 2-key code as though it covered the SW.
+ *
+ * Tokens are stable and short by design; `error` keeps the diagnostic text.
+ */
+function nullKeyReason() {
+  if (swPubKey) return null;
+  if (deviceKeyError) return 'key-unavailable';
+  return 'not-hydrated';
+}
+
 function primeDeviceKey() {
   if (!deviceKeyPrimed) {
     deviceKeyPrimed = publicIdentity()
@@ -2296,7 +2316,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // page initiated the pairing. It is pinned as source 'bridge', which
     // outranks any TOFU pin. The reply carries the value the worker now holds,
     // null included, so the page can see the hand-over landed.
-    primeDeviceKey()
+    // SECURITY A5 / M-A5-3 (F3): refreshDeviceKey(), NOT primeDeviceKey(). This
+    // is the fix, and it is one word long.
+    //
+    // B9 is amended to "no SW SAS module -- the SW is a recipient, not a
+    // verifier", and the whole of what makes that safe is that the PAGE feeds
+    // the SW's key into the SAS transcript, so swapping the SW key moves the
+    // digits (sas-vectors v3-3key-mode-on 50690 vs v4-3key-sw-swapped 44820).
+    // That holds only if the key on THIS reply is the key the worker actually
+    // holds right now. primeDeviceKey() memoises into `deviceKeyPrimed` for the
+    // life of the worker, so a key rotated under us -- an IndexedDB wipe, a
+    // regenerated record -- would keep answering the OLD key here until
+    // something else happened to call connect(). The user would then compare a
+    // code covering a key nobody holds, and the swap A5 wants visible becomes
+    // invisible by the back door.
+    //
+    // Cost: one IndexedDB read on a path that already awaits. refreshDeviceKey()
+    // also routes through primeDeviceKey()'s regeneration branch, so a rotation
+    // first observed HERE still drops the stale wraps and says counts-only
+    // (M-C) instead of merely reporting a new deviceId.
+    refreshDeviceKey()
       .then(async () => {
         if (typeof message.pairingId === 'string' && message.pairingId) {
           await setOwnPairingId(message.pairingId);
@@ -2304,6 +2343,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const own = await readOwnPairingId();
         sendResponse?.({
           ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
+          // M-A5-3's null arm, MACHINE-READABLE. `error` already carried the
+          // IndexedDB exception text, but that is a diagnostic string and the
+          // page must not branch on it. `reason` is null whenever `pub` is a
+          // key and a short stable token otherwise, so the page can hold the
+          // pairing (or badge the SW absent) WITHOUT claiming a 2-key SAS
+          // covered a worker whose key it never learned. Every other field on
+          // this reply is byte-identical to A4.1.
+          reason: nullKeyReason(),
           pairingId: (own && own.pairingId) || null,
           // A4.1-M1: WHERE that pairingId came from. 'bridge' is this
           // hand-over having landed; 'tofu' is the worker echoing a pin it
@@ -2313,7 +2360,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
       })
       .catch(() => sendResponse?.({
-        ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError, pairingId: null,
+        ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
+        reason: nullKeyReason(),
+        pairingId: null,
         pairingIdSource: 'none',
       }));
   } else if (message?.type === 'e2e-state-get') {
