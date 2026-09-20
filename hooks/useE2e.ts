@@ -690,7 +690,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
       fail('e2e-setup-failed', `could not open our wrap: ${(e as Error).message}`);
       return true;
     }
-  }, [fail, localMode]);
+  }, [fail, fetchRevocationVerdict, localMode]);
 
   const onE2eUnavailable = useCallback(() => {
     // Terminal. The relay's kill switch refused mode 1; retrying in a loop

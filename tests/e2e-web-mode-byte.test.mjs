@@ -101,7 +101,6 @@ for (const c of M.cases) {
 
   // The §13.3 modeByte is the EFFECTIVE mode — the value the hook now feeds
   // sasDigits, rather than the hard-coded `true` it used to.
-  // eslint-disable-next-line no-await-in-loop
   const digits = await sasDigits({
     pairingId: M.pairingId,
     epk: M.epk,
