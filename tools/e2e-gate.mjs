@@ -464,6 +464,15 @@ const MIN_CHECKS_OVERRIDE = {
   // written), and until this commit it reported no count at all — see the
   // last-resort branch of passLine(). Measured: 13 assertions.
   'unit:bridge-origin-pin': 13,
+  // FT-MERGE (c2). tests/e2e-ft-sw-union.test.mjs proves the background.js
+  // UNION of P3.1's sealed passthrough and FT-3a's routing. It is RUN by the
+  // `tests/e2e-*.test.mjs` sweep (step 7) like every other e2e-* suite, so it
+  // is NOT re-listed in UNIT below — that would execute it twice and put two
+  // disagreeing entries in the gate JSON. What it needs from this table is the
+  // half the sweep does not give it: a declared floor, so a resolution that
+  // silently drops half the union cannot take the count down with it and still
+  // print a cheerful N/N. Measured: 44 assertions.
+  'relay:e2e-ft-sw-union.test.mjs': 44,
 };
 const MIN_CHECKS = (() => {
   const table = {};
@@ -1313,6 +1322,10 @@ if (WEB) {
     // 69 steps that way). Carries its own positive control, so narrowing
     // KNOWN_PHASES turns it red instead of turning the gate quiet.
     ['gate-phase-whitelist', 'tests/gate-phase-whitelist.test.mjs', true],
+    // FT-MERGE (c2) is deliberately ABSENT from this list: see
+    // MIN_CHECKS_OVERRIDE['relay:e2e-ft-sw-union.test.mjs'] above. The sweep in
+    // step 7 matches tests/e2e-*.test.mjs and already runs it; its count is
+    // pinned by the floor table rather than by a second registration here.
   ];
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {

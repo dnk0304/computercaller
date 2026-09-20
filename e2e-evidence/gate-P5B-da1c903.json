@@ -1,0 +1,120 @@
+{
+  "phase": "P5B",
+  "label": null,
+  "harnessMode": "sequential",
+  "note": null,
+  "sha": "da1c9033cb8915df51dc11a07a930fa6ef9db54d",
+  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "scopeBase": {
+    "sha": "392e4905cd68cea448b5b0ffe32b5d86e809a4d7",
+    "kind": "merge-base",
+    "ref": "origin/e2e/integration",
+    "integrationTip": "392e4905cd68cea448b5b0ffe32b5d86e809a4d7",
+    "fellBackToBaseSha": false,
+    "reason": null
+  },
+  "utc": "2026-09-20T02:07:49.830Z",
+  "lane": "android",
+  "mode": "full",
+  "env": {
+    "node": "v24.12.0",
+    "bun": "1.3.11",
+    "chrome": "C:\\Users\\D\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe"
+  },
+  "steps": [
+    {
+      "name": "git-identity-clean-base-ancestry",
+      "cmd": "git rev-parse HEAD && git status --porcelain && git merge-base --is-ancestor BASE_SHA HEAD",
+      "exit": 1,
+      "ms": 68,
+      "counts": {
+        "dirtyPaths": 2,
+        "baseIsAncestor": true
+      }
+    },
+    {
+      "name": "scope-diff-vs-base",
+      "cmd": "git diff --name-only 392e490..HEAD",
+      "exit": 1,
+      "ms": 35,
+      "counts": {
+        "changed": 51,
+        "android": 15,
+        "nonAndroid": 36,
+        "offLane": 36,
+        "scopeBase": "392e4905cd68cea448b5b0ffe32b5d86e809a4d7",
+        "scopeBaseKind": "merge-base"
+      }
+    },
+    {
+      "name": "android:assembleDebug",
+      "cmd": "gradlew.bat :app:assembleDebug",
+      "exit": 1,
+      "ms": 36,
+      "counts": null,
+      "log": "C:/Users/D/worktrees/computercaller/ft-merge/.e2e-gate-logs/P5B-android-assembledebug.log"
+    },
+    {
+      "name": "android:lint",
+      "cmd": "gradlew.bat :app:lintDebug",
+      "exit": 1,
+      "ms": 23,
+      "counts": {
+        "issues": 0
+      },
+      "log": "C:/Users/D/worktrees/computercaller/ft-merge/.e2e-gate-logs/P5B-android-lint.log"
+    },
+    {
+      "name": "android:SasVectorsTest",
+      "cmd": "gradlew.bat :app:connectedDebugAndroidTest --tests \"*SasVectorsTest\"",
+      "exit": 1,
+      "ms": 22,
+      "counts": null,
+      "log": "C:/Users/D/worktrees/computercaller/ft-merge/.e2e-gate-logs/P5B-android-sasvectorstest.log"
+    },
+    {
+      "name": "android:never-signs-release",
+      "cmd": "(assertion: no assembleRelease/bundleRelease in this tool)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "releaseTasks": 0
+      }
+    },
+    {
+      "name": "baseline-parity",
+      "cmd": "diff vs C:/Users/D/worktrees/computercaller/ft-merge/e2e-evidence/BASELINE-harness.json",
+      "exit": 1,
+      "ms": 0,
+      "counts": {
+        "reference": 16,
+        "regressed": 16
+      }
+    }
+  ],
+  "harnessPass": [],
+  "baselineDiff": [
+    "relay:pairing-persist: passed at BASE_SHA, not passing now",
+    "relay:pair-state: passed at BASE_SHA, not passing now",
+    "relay:dock-resume: passed at BASE_SHA, not passing now",
+    "relay:reset-room: passed at BASE_SHA, not passing now",
+    "relay:listener-heartbeat: passed at BASE_SHA, not passing now",
+    "relay:relink-kill-frame-buffer: passed at BASE_SHA, not passing now",
+    "relay:call-separation: passed at BASE_SHA, not passing now",
+    "relay:www-origin: passed at BASE_SHA, not passing now",
+    "relay:repro-resume-sync: passed at BASE_SHA, not passing now",
+    "relay:log-redaction: passed at BASE_SHA, not passing now",
+    "harness:app-in-call-shots: passed at BASE_SHA, not passing now",
+    "harness:ext-in-call-shots: passed at BASE_SHA, not passing now",
+    "harness:ext-badge-counter-proof: passed at BASE_SHA, not passing now",
+    "harness:ext-templates-scroll-call-message-proof: passed at BASE_SHA, not passing now",
+    "harness:ext-shell-theme-proof: passed at BASE_SHA, not passing now",
+    "harness:ext-layering-shots: passed at BASE_SHA, not passing now"
+  ],
+  "ms": 2486,
+  "failedStep": "git-identity-clean-base-ancestry",
+  "produced": [
+    "e2e-evidence/gate-P5B-da1c903.json"
+  ],
+  "result": "FAIL"
+}
