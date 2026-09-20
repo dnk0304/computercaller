@@ -177,6 +177,14 @@ export interface DedupeWindow {
   readonly floor: number;
   readonly drops: number;
   readonly size: number;
+  /** A5 / M-A5-2. The highest seq that AUTHENTICATED; -1 while unarmed. */
+  readonly highestAccepted: number;
+  /** A5 / M-A5-2. Frames refused for jumping more than one window forward. */
+  readonly refusedForwardJump: number;
+  /** true when the frame must be REFUSED (floor unmoved, not recorded). */
+  refuseForwardJump(seq: number): boolean;
+  /** Raise the high-water mark. Call ONLY after the AEAD tag verified. */
+  confirm(seq: number): void;
   /** true when the frame is NEW. false is a silent DROP, never an error. */
   accept(seq: number): boolean;
   reset(): void;
@@ -188,7 +196,7 @@ export declare function createDedupeWindow(): DedupeWindow;
 
 export type OpenResult =
   | { ok: true; plaintext: Uint8Array; seq: number }
-  | { ok: false; reason: 'shape' | 'kid' | 'duplicate' | 'auth' };
+  | { ok: false; reason: 'shape' | 'kid' | 'duplicate' | 'auth' | 'forward-jump' };
 
 export interface ComputerSession {
   readonly kid: string;
@@ -197,6 +205,9 @@ export interface ComputerSession {
   readonly drops: number;
   readonly sendFloor: number;
   readonly recvFloor: number;
+  /** A5 / M-A5-2. Distinct from `drops`; see lib/e2e/session.mjs. */
+  readonly refusedForwardJump: number;
+  readonly highestAccepted: number;
   resetDedupe(): void;
   /** THE outbound chokepoint: pads (§13.4), seals, returns the envelope. */
   seal(frameType: string, plaintext: Uint8Array): Promise<Envelope>;

@@ -266,7 +266,22 @@ export function findOurWrap(block: E2eAcceptBlock, ourDeviceId: string): string 
   return block.wraps.find((w) => w.deviceId === ourDeviceId)?.wrap ?? null;
 }
 
-/** C-1: OR, and once ON it never goes back for the life of the pair. */
+/**
+ * C-1: OR, and once ON it never goes back for the life of the pair.
+ *
+ * ── WHAT `peerMode` IS (GATE1 Addendum A5, F5 — canonical) ────────────────
+ * The `mode` byte on the wire is the SENDER'S OWN LOCAL SETTING at that
+ * moment: an ADVERTISEMENT, not a negotiated result. The EFFECTIVE mode is
+ * `OR(ownLocal, peerByte)`, derived locally by each end, latched at Accept,
+ * and NEVER transmitted. A negotiated result on the wire would be circular —
+ * it would let a relay-chosen bit be laundered into a value that looks
+ * endpoint-asserted.
+ *
+ * Android's shipped byte carries the already-ORed value, which is
+ * observationally identical because OR absorbs: OR(a, OR(a, b)) == OR(a, b)
+ * for every (a, b). That is asserted over all four pairs by the A5 verifier,
+ * and it is why vc58 needs no rebuild for this lane's correction.
+ */
 export function effectiveMode(local: LocalMode, peerMode: 0 | 1 | null, latched: boolean): 'on' | 'off' {
   if (latched) return 'on';
   if (local === 'on') return 'on';
@@ -303,14 +318,46 @@ export interface AcceptInput {
   ourDeviceId: string;
   /** From GET /api/devicekeys/list, kind='phone'. null when there is no live row. */
   phoneRowPublicKey: string | null;
-  /** True once this pair has been encrypted — the C-1 latch. */
+  /**
+   * True once this pair's EFFECTIVE mode has been ON — the C-1 latch. It makes
+   * `effectiveMode` return 'on' regardless of what a later accept advertises,
+   * so a peer cannot un-ask mid-pair.
+   */
   latched: boolean;
+  /**
+   * A5. True once this pair has SEALED at all, which is a different fact from
+   * the one above: under M-A5-5 a 0/0 pair with a usable block on both sides
+   * SEALS while its effective mode stays off (vector M1 — "Encrypted,
+   * unverified"). The DOWNGRADE latch keys off this one, because the thing it
+   * refuses is a re-accept with no usable block after we have been sealing —
+   * and that is a downgrade whether or not the SAS was ever blocking.
+   *
+   * Optional, defaulting to `latched`, so the pre-A5 two-argument callers keep
+   * their exact previous behaviour rather than silently losing the latch.
+   */
+  sealedLatched?: boolean;
 }
 
 export interface AcceptDecision {
   /** 'abort' means send LEAVE_ACTIVE and do not enter the data plane. */
   action: 'proceed' | 'abort';
+  /**
+   * Whether the pair SEALS. A5 / M-A5-5(2): a usable block on both sides
+   * ALWAYS seals, so this is 'on' for every proceed that has a block — mode 0/0
+   * included. Plaintext ('off') happens only when there is NO usable block.
+   *
+   * It is deliberately NOT the same value as {@link effective}: conflating
+   * "is this pair encrypted" with "did anyone ask for verification" is the
+   * root cause of A5's row 4, where a mode-0 accept paired in the clear while
+   * the phone was sealing.
+   */
   mode: 'on' | 'off';
+  /**
+   * A5 / M-A5-5(1),(3). `OR(localMode, block.mode)`, latched. This — never
+   * `localMode` — is what governs verification, and it is the byte that goes
+   * into the §13.3 SAS transcript (`modeByte`). It is never transmitted.
+   */
+  effective: 'on' | 'off';
   state: E2eState;
   error?: E2eError;
   /** Only meaningful when action === 'proceed' and mode === 'on'. */
@@ -321,83 +368,235 @@ export interface AcceptDecision {
 }
 
 /**
- * B6 / C-1 / C-2, in the order they must be evaluated.
+ * B6 / C-1 / C-2 / A5, in the order they must be evaluated.
  *
- * MODE ON IS FAIL-CLOSED, and the three ways it fails are kept distinct because
- * they mean different things to whoever debugs this at 3am: no block at all
- * (the phone is old, or the relay dropped an oversized/malformed one), a block
- * that says mode 0 (the phone declined), and a block with no wrap for us (we
- * were left out of the recipient list). All three land on `e2e-setup-failed`
- * for the user — P5a owns the copy — but the `detail` says which.
+ * ── THE A5 CORRECTION, AND IT IS THE WHOLE SHAPE OF THIS FUNCTION ─────────
+ * The `mode` byte is the SENDER'S LOCAL SETTING — an advertisement. It governs
+ * VERIFICATION, never SEALING. Three rules follow, and the pre-A5 version of
+ * this function broke all three (F5's three divergent cells, every one of them
+ * web-side):
  *
- * MODE OFF NEVER ABORTS. If the peer brought encryption we take it, flagged
- * `unverified` unless C-2 actually passes. The local setting is a request, not
- * a veto: refusing the peer's encryption because we did not ask for it would be
- * choosing plaintext on the user's behalf.
+ *   1. SEALING is decided by whether there is a USABLE BLOCK, not by the byte.
+ *      A usable block on both sides ALWAYS seals. Plaintext happens only when
+ *      there is no usable block at all. Row 4 was the bug: `block.mode < 1`
+ *      was read as "the phone declined" and the pair went in the CLEAR while
+ *      the phone sealed — i.e. the two ends disagreed about whether traffic
+ *      was encrypted, which is worse than either answer.
+ *   2. VERIFICATION is decided by `effective = OR(localMode, block.mode)`,
+ *      latched. Row 8 was the bug: `verified` came from `localMode` alone, so
+ *      a peer that asked to verify got no SAS on the computer and the user
+ *      "verified" against a code nothing displayed — verification made vacuous,
+ *      which is the one property mode ON exists to provide.
+ *   3. A mode-0 accept with local ON is NOT an abort. It is effective ON and
+ *      SAS-blocking (row 9, symmetric with row 8). The pre-A5 abort here was
+ *      the mirror of the row-4 mistake: it treated an advertisement as a veto.
+ *
+ * MODE 0/0 WITH A USABLE BLOCK therefore lands on "Encrypted, unverified" —
+ * sealed, SAS not blocking, `modeByte` 0x00 into the transcript. That is
+ * vector M1 and its digits (02024) differ from M4's (30087) precisely because
+ * the modeByte is in the transcript.
+ *
+ * WHAT DID NOT CHANGE, and must not:
+ *
+ *   - MODE ON IS STILL FAIL-CLOSED where failing closed means something: no
+ *     block at all, no wrap for us, a C-2 pin that cannot be proven.
+ *   - THE DOWNGRADE LATCH still outranks everything (M-A5-5(4)). Once this
+ *     pair has sealed, a re-accept carrying NO usable block is a downgrade and
+ *     aborts, whatever the local setting is.
+ *   - MODE OFF NEVER ABORTS on the strength of the local setting alone. The
+ *     setting is a request, not a veto.
  */
 export function decideAccept(input: AcceptInput): AcceptDecision {
   const { localMode, block, ourDeviceId, phoneRowPublicKey, latched } = input;
-  const wantOn = localMode === 'on' || latched;
+  const sealedLatched = input.sealedLatched ?? latched;
 
+  // ── no usable block: the ONLY road to plaintext ─────────────────────────
   if (!block) {
-    if (wantOn) {
+    // The downgrade latch, and it is checked against `sealedLatched` rather
+    // than the effective-mode latch on purpose: a 0/0 pair seals with effective
+    // OFF, and a block-less re-accept after THAT is still a downgrade. Keying
+    // this off the effective latch would have left exactly the M1 pairs — the
+    // ones the user was never asked to verify — undefended.
+    if (localMode === 'on' || latched || sealedLatched) {
       return {
-        action: 'abort', mode: 'on', state: 'error', error: 'e2e-setup-failed', verified: false,
-        detail: latched
-          ? 'this pair was encrypted and came back with no e2e block — a downgrade, not a renegotiation'
+        action: 'abort', mode: 'on', effective: 'on', state: 'error',
+        error: 'e2e-setup-failed', verified: false,
+        detail: sealedLatched
+          ? 'this pair was sealing and came back with no e2e block — a downgrade, not a renegotiation'
           : 'encrypted mode is ON locally but PAIRING_ACTIVE carried no e2e block',
       };
     }
-    return { action: 'proceed', mode: 'off', state: 'unencrypted', verified: false };
+    return { action: 'proceed', mode: 'off', effective: 'off', state: 'unencrypted', verified: false };
   }
 
-  if (block.mode < 1) {
-    if (wantOn) {
-      return {
-        action: 'abort', mode: 'on', state: 'error', error: 'e2e-setup-failed', verified: false,
-        detail: `encrypted mode is ON locally but the accept block says mode=${block.mode}`,
-      };
-    }
-    return { action: 'proceed', mode: 'off', state: 'unencrypted', verified: false };
-  }
+  // ── a usable block exists. From here the pair SEALS (M-A5-5(2)). ────────
+  // Note what is NOT here any more: a branch on `block.mode < 1`. The byte is
+  // an advertisement about verification; reading it as consent to encrypt is
+  // the row-4 defect, and reading it as a refusal to encrypt is the same
+  // mistake wearing the other hat.
+  const effective = effectiveMode(localMode, block.mode, latched);
 
-  // The block says mode 1. From here the pair IS encrypted (C-1's OR), whatever
-  // the local setting says — so a missing wrap is fatal in both directions: we
-  // would be in an encrypted pair we cannot read.
+  // Fatal in BOTH directions and at either effective mode: we would be inside
+  // an encrypted pair we cannot read.
   const wrap = findOurWrap(block, ourDeviceId);
   if (!wrap) {
     return {
-      action: 'abort', mode: 'on', state: 'error', error: 'e2e-setup-failed', verified: false,
+      action: 'abort', mode: 'on', effective, state: 'error',
+      error: 'e2e-setup-failed', verified: false,
       detail: `the accept block has no wrap for our deviceId (${block.wraps.length} wrap(s), none ours)`,
     };
   }
 
   const pin = pinPhoneKey(block, phoneRowPublicKey);
   if (!pin.verified) {
-    if (localMode === 'on' || latched) {
+    // A5: the condition is the EFFECTIVE mode, not `localMode`. A peer that
+    // asked for verification gets a fail-closed pin on this side too —
+    // otherwise the side that asked is the only side checking, which is the
+    // row-8 asymmetry in its C-2 form.
+    if (effective === 'on') {
       return {
-        action: 'abort', mode: 'on', state: 'error', error: 'e2e-key-mismatch', verified: false,
-        detail: `C-2 pin failed (${pin.reason}) with encrypted mode ON — failing closed`,
+        action: 'abort', mode: 'on', effective, state: 'error',
+        error: 'e2e-key-mismatch', verified: false,
+        detail: `C-2 pin failed (${pin.reason}) with effective mode ON — failing closed`,
       };
     }
-    // Mode OFF: the peer brought encryption we did not ask for and we cannot
-    // vouch for the key. Encrypted beats plaintext; unverified says so.
+    // Effective OFF: nobody asked to verify, and we cannot vouch for the key.
+    // Encrypted beats plaintext; `unverified` says so, and the pair still seals.
     return {
-      action: 'proceed', mode: 'on', state: 'encrypted-unverified', kid: block.kid, verified: false,
-      detail: `C-2 pin failed (${pin.reason}) with encrypted mode OFF — continuing unverified`,
+      action: 'proceed', mode: 'on', effective, state: 'encrypted-unverified',
+      kid: block.kid, verified: false,
+      detail: `C-2 pin failed (${pin.reason}) with effective mode OFF — sealing unverified`,
     };
   }
 
   return {
     action: 'proceed',
     mode: 'on',
-    state: localMode === 'on' || latched ? 'encrypted-verified' : 'encrypted-unverified',
+    effective,
+    // `verified` is the KEY-PINNED-AND-SAS-EXPECTED state. The user's own SAS
+    // confirmation is tracked separately on the view (`sas.confirmed`) — this
+    // flag says the pair is one where a SAS is meaningful and the key pinned.
+    state: effective === 'on' ? 'encrypted-verified' : 'encrypted-unverified',
     kid: block.kid,
-    verified: localMode === 'on' || latched,
-    detail: localMode === 'on' || latched
+    verified: effective === 'on',
+    detail: effective === 'on'
       ? undefined
-      : 'the peer asked for encryption and we did not — verified key, but the user never confirmed the SAS',
+      : 'a usable block on both sides with neither end asking to verify — '
+        + 'sealed at modeByte 0x00 (vector M1), SAS not blocking',
   };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// F1 / M-A5-1 — revocation, evaluated as a pure verdict
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * One row of GET /api/devicekeys/list. Every field is `unknown`-shaped on the
+ * way in, because this is a network response and the only thing worse than an
+ * absent field is a coerced one.
+ */
+export interface DeviceKeyRow {
+  kind?: unknown;
+  publicKey?: unknown;
+  deviceId?: unknown;
+  revokedAt?: unknown;
+}
+
+export type RevocationVerdict =
+  | { live: true; publicKey: string; deviceId: string | null }
+  | { live: false; reason: 'fetch-failed' | 'no-phone-row' | 'revoked' | 'rotated' };
+
+/**
+ * M-A5-1 (b), as one function so there is ONE reading of "is the pinned key
+ * still good".
+ *
+ * ── WHY THIS EXISTS AT ALL ────────────────────────────────────────────────
+ * The list was read at Accept ONLY. A key revoked AFTER Accept — rotation,
+ * sign-out, the stolen-device response that `revokedAt` exists for — kept
+ * unsealing for the life of the pair, and §13.8 REUSES the SK across resume,
+ * hold and dock, so that life is hours. The whole point of `revokedAt` is to
+ * end access NOW; as shipped it ended access at the next pairing. The
+ * acceptance criterion is bounded staleness: worst case one resume interval,
+ * not one pair lifetime.
+ *
+ * ── THE ARM THAT IS EASY TO GET WRONG ─────────────────────────────────────
+ * A FAILED FETCH IS NOT A PASS. It returns `fetch-failed`, which is a refusal,
+ * exactly as the existing `phoneRowPublicKey = null` path already refuses. A
+ * network error is not evidence that a key is live, and a relay-position party
+ * can cause network errors at will — so "we could not check, carry on" would
+ * hand exactly the wrong party the ability to suppress the check.
+ *
+ * ── AND THE ONE THAT IS EASY TO MAKE VACUOUS ──────────────────────────────
+ * `pinnedPublicKey` is the key this pair actually derived under. Comparing the
+ * live row against it is what catches ROTATION: a phone that revoked and
+ * re-registered has a live, non-revoked row whose key is a different key, and
+ * an existence check alone would call that "still good" while we hold an SK
+ * derived from a key the user has retired.
+ */
+export function readRevocationVerdict(
+  raw: unknown,
+  { pinnedPublicKey }: { pinnedPublicKey?: string | null } = {},
+): RevocationVerdict {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { live: false, reason: 'fetch-failed' };
+  }
+  const keys = (raw as { keys?: unknown }).keys;
+  if (!Array.isArray(keys)) return { live: false, reason: 'fetch-failed' };
+
+  const phones = (keys as DeviceKeyRow[]).filter((k) => k && k.kind === 'phone');
+  if (phones.length === 0) return { live: false, reason: 'no-phone-row' };
+
+  // `revokedAt` non-null in ANY shape is revoked. The API returns an ISO string
+  // or null, but a truthy non-string (a number, an object) is not a reason to
+  // decide a key is live — the fail-closed reading of an unexpected value is
+  // the only safe one here.
+  const live = phones.filter((k) => k.revokedAt === null || k.revokedAt === undefined);
+  if (live.length === 0) return { live: false, reason: 'revoked' };
+
+  const usable = live.find(
+    (k) => typeof k.publicKey === 'string' && isPinned(k.publicKey),
+  );
+  if (!usable) return { live: false, reason: 'no-phone-row' };
+
+  const publicKey = usable.publicKey as string;
+  if (typeof pinnedPublicKey === 'string' && pinnedPublicKey.length > 0
+    && pinnedPublicKey !== publicKey) {
+    // Live row, different key: the phone rotated. We hold an SK derived from a
+    // key the user has retired, which is the same exposure as a revocation.
+    return { live: false, reason: 'rotated' };
+  }
+  return {
+    live: true,
+    publicKey,
+    deviceId: typeof usable.deviceId === 'string' ? usable.deviceId : null,
+  };
+}
+
+/**
+ * What a re-check verdict means for the pair.
+ *
+ * Every non-live verdict tears down, and that uniformity is deliberate: the
+ * four reasons differ in what a reader should conclude, not in what the client
+ * should do. `re-pair-needed` is STICKY (the P2.1 pattern) — cleared only by an
+ * explicit user act or a new pairing, never by anything the relay or the
+ * network can cause, for the same reason the epoch floor is.
+ */
+export interface RecheckOutcome {
+  /** Drop the SK, refuse to unseal further frames, and abandon the pair. */
+  teardown: boolean;
+  error?: E2eError;
+  detail?: string;
+}
+
+export function outcomeForRevocationVerdict(v: RevocationVerdict): RecheckOutcome {
+  if (v.live) return { teardown: false };
+  const detail = {
+    'fetch-failed': 'the DeviceKey list could not be read — a failed fetch is NOT a pass (M-A5-1 b)',
+    'no-phone-row': 'the pinned phone key is absent from the DeviceKey list',
+    revoked: 'the pinned phone key has a non-null revokedAt',
+    rotated: 'the phone has a LIVE key, but not the one this pair derived under (rotation)',
+  }[v.reason];
+  return { teardown: true, error: 're-pair-needed', detail };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -405,21 +604,55 @@ export function decideAccept(input: AcceptInput): AcceptDecision {
 // ───────────────────────────────────────────────────────────────────────────
 
 export interface E2eView {
+  /** Is this pair SEALING. A5 / M-A5-5(2): a usable block on both sides always is. */
   mode: 'off' | 'on';
+  /**
+   * A5 / M-A5-5(1),(3). `OR(localMode, peerByte)`, latched, never transmitted.
+   * It governs VERIFICATION, not sealing, and it is the §13.3 `modeByte`.
+   *
+   * Separate from `mode` because the pair that A5 row 4 got wrong — sealed,
+   * effective OFF, "Encrypted, unverified" — is exactly the one where the two
+   * differ, and a surface that renders only `mode` cannot tell the user
+   * whether a SAS is expected of them.
+   */
+  effective: 'off' | 'on';
   state: E2eState;
   error?: E2eError;
   peer: { supports: boolean; kind: SwKeyStatus };
-  sas: { digits: string | null; confirmed: boolean };
+  sas: {
+    digits: string | null;
+    confirmed: boolean;
+    /**
+     * M-A5-3. What the digits actually cover. `null` until a pair computes
+     * them. A surface must read `coverage.coversSw` rather than counting keys:
+     * a 3-key transcript whose third key we cannot attribute to the live SW
+     * does NOT cover the SW.
+     */
+    coverage: SasCoverage | null;
+  };
   /** Debug surface. Dropped frames are not an error the user can act on. */
-  debug: { drops: number; downgradesDropped: number; kid: string | null };
+  debug: {
+    drops: number;
+    downgradesDropped: number;
+    kid: string | null;
+    /**
+     * A5 / M-A5-2. Frames refused for jumping more than one dedupe window
+     * past the highest AUTHENTICATED seq. Separate from `drops` on purpose:
+     * `drops` is ordinary resume-replay housekeeping and this is the only
+     * observable difference between a receiver that bounds forward jumps and
+     * one that silently does not.
+     */
+    refusedForwardJump: number;
+  };
 }
 
 export const E2E_VIEW_INITIAL: E2eView = {
   mode: 'off',
+  effective: 'off',
   state: 'unencrypted',
   peer: { supports: false, kind: 'unknown' },
-  sas: { digits: null, confirmed: false },
-  debug: { drops: 0, downgradesDropped: 0, kid: null },
+  sas: { digits: null, confirmed: false, coverage: null },
+  debug: { drops: 0, downgradesDropped: 0, kid: null, refusedForwardJump: 0 },
 };
 
 /**
@@ -471,6 +704,7 @@ export function viewAfterPairEnded(v: E2eView): E2eView {
     return {
       ...E2E_VIEW_INITIAL,
       mode: v.mode,
+      effective: v.effective,
       state: 'error',
       error: v.error,
       peer: { supports: false, kind: v.peer.kind },
@@ -552,4 +786,79 @@ export function writeEncryptedMode(
  */
 export function sasKeySet(block: E2eAcceptBlock): string[] {
   return block.recipKeys.slice();
+}
+
+/**
+ * What the displayed code ACTUALLY covers — E2E-P2.2 (d) / A5 F3, MUST M-A5-3.
+ *
+ * ── THE CLAIM THAT MUST NOT BE MADE ───────────────────────────────────────
+ * B9's amended wording (§13.3) settles that the SW is a RECIPIENT, not a
+ * verifier: one SAS, computed and displayed on the page, over the canonical set
+ * INCLUDING every service worker's static key. That is only true — rather than
+ * merely convenient — if the SW key in the transcript is the key the SW
+ * ACTUALLY HOLDS, read live over the A4.1 bridge. A page-cached copy makes the
+ * swap invisible again by the back door, which is the exact attack
+ * `sas-vectors.json` v3 (50690) vs v4 (44820) exists to demonstrate.
+ *
+ * And when the bridge read returns `unknown`, the pair MUST NOT present a
+ * 2-key SAS as though it covered the SW. A code presented as covering a key it
+ * did not include is a FALSE ASSURANCE about exactly the leg that decrypts
+ * notification bodies with the panel closed — strictly worse than saying "the
+ * SW key is unavailable".
+ *
+ * So coverage is computed, never assumed, and `coversSw` is true ONLY when the
+ * LIVE bridge value is present AND appears in the block's key set. A third key
+ * in `recipKeys` that we cannot attribute is `unattributed` — it is NOT
+ * evidence the SW is covered, because the whole point is that we do not know
+ * whose key it is.
+ */
+export interface SasCoverage {
+  /** How many static keys went into the transcript. */
+  keyCount: number;
+  /** True ONLY when the SW's LIVE key is one of them. Never inferred from a count. */
+  coversSw: boolean;
+  /** `present` / `absent` / `unknown`, straight from the live bridge read. */
+  swStatus: SwKeyStatus;
+  /**
+   * Keys in the set that are neither the phone's pinned key, nor ours, nor the
+   * live SW key. Non-zero means the displayed digits cover something we cannot
+   * name — honest to surface, never a reason to claim SW coverage.
+   */
+  unattributed: number;
+  /**
+   * The page advertised an SW key that the bridge no longer reports. The
+   * transcript then contains a key the SW does not hold, so the digits are
+   * meaningless as a verification of the SW leg. This is a REFUSAL condition,
+   * not a badge.
+   */
+  staleSwKey: boolean;
+}
+
+export function sasCoverage(
+  block: E2eAcceptBlock,
+  { ourPub, phonePub, sw }: {
+    ourPub: string | null | undefined;
+    phonePub: string | null | undefined;
+    sw: SwKeyResult;
+  },
+): SasCoverage {
+  const keys = block.recipKeys;
+  const livePub = sw.status === 'present' ? sw.recipient?.pub ?? null : null;
+  // `coversSw` requires BOTH: a live present reading, and that live key being
+  // in the transcript. Either half alone is the false assurance M-A5-3 names.
+  const coversSw = livePub !== null && keys.includes(livePub);
+
+  let unattributed = 0;
+  for (const k of keys) {
+    if (k === ourPub || k === phonePub || (livePub !== null && k === livePub)) continue;
+    unattributed += 1;
+  }
+
+  // An `absent` SW is honest: it told us it has no key, so a 2-key set is the
+  // correct set and there is nothing stale about it. `unknown` is the
+  // dangerous one — we never heard, so a third key we cannot attribute may or
+  // may not be the SW's, and we must not guess either way.
+  const staleSwKey = sw.status === 'present' && livePub !== null && !keys.includes(livePub);
+
+  return { keyCount: keys.length, coversSw, swStatus: sw.status, unattributed, staleSwKey };
 }

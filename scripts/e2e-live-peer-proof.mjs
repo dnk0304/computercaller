@@ -468,7 +468,28 @@ async function main() {
     await relay.close();
   }
 
-  // ── scenario 2: ON / OFF — the web wants encryption, the phone declines ──
+  // ── scenario 2: ON / OFF — the web wants encryption, the phone does NOT ──
+  //
+  // GATE1 Addendum A5, F5 / MUST M-A5-5(1) REWROTE this scenario's verdict, so
+  // the assertions below are not the ones that were here before and the change
+  // is the point rather than a fixup.
+  //
+  // It used to read "the phone DECLINES" and assert an abort. That was the
+  // mirror of A5's row-4 defect: the `mode` byte on the wire is the SENDER'S
+  // OWN LOCAL SETTING — an ADVERTISEMENT — and reading a 0 as a veto is the
+  // same category error as reading it as consent to go plaintext. A phone
+  // whose user simply has the setting off is not refusing the pairing.
+  //
+  // §13.2 row 9 (and vector M3) say what actually happens: effective =
+  // OR(ownLocal, peerByte) = ON, the pair SEALS, and the SAS is blocking on
+  // BOTH ends. It is symmetric with row 8, and that symmetry is the whole
+  // safety property: a device that asked for verification never silently gets
+  // less than it asked for.
+  //
+  // This is the LIVE version of the same claim tests/e2e-web-mode-byte.test.mjs
+  // makes against frozen vector M — here the accept block has made a real
+  // round-trip through the relay's own e2eBlock-core validation first, which is
+  // what this harness exists for.
   {
     const relay = startRelay();
     const browser = await connect(relay.port, 'browser');
@@ -490,9 +511,81 @@ async function main() {
       localMode: 'on', block: readAcceptBlock(active.payload.e2e),
       ourDeviceId: 'dev-web-01', phoneRowPublicKey: phoneKey.b64, latched: false,
     });
-    eq('ON/OFF: the web REFUSES the pair', decision.action, 'abort');
-    eq('ON/OFF: ...with e2e-setup-failed', decision.error, 'e2e-setup-failed');
-    eq('ON/OFF: ...and state error for P5a', decision.state, 'error');
+    eq('ON/OFF (A5 row 9): the web PROCEEDS — a mode-0 byte is an advertisement, not a veto',
+      decision.action, 'proceed');
+    eq('ON/OFF (A5 row 9): ...effective ON, because OUR local setting is on',
+      decision.effective, 'on');
+    eq('ON/OFF (A5 row 9): ...and the pair SEALS', decision.mode, 'on');
+    eq('ON/OFF (A5 row 9): ...SAS blocking — encrypted-verified, symmetric with row 8',
+      decision.state, 'encrypted-verified');
+    check('ON/OFF (A5 row 9): ...verified', decision.verified === true);
+    check('ON/OFF (A5 row 9): ...and no error', decision.error === undefined);
+
+    // The wrap still has to OPEN. A5 changed which verdict a mode-0 byte
+    // produces; it did not weaken anything about the crypto, and asserting the
+    // new verdict without this would prove only that we stopped refusing.
+    const ourWrap = decision.kid ? active.payload.e2e.wraps.find(
+      (w) => w.deviceId === 'dev-web-01') : null;
+    check('ON/OFF (A5 row 9): ...and our wrap is present to open', !!ourWrap);
+
+    browser.close(); phone.close();
+    await relay.close();
+  }
+
+  // ── scenario 2b: OFF / ON — §13.2 ROW 8, the other half of the OR ──────
+  //
+  // THIS SCENARIO EXISTS BECAUSE OF A NEGATIVE CONTROL, and that is the whole
+  // reason it is worth its lines. Scenario 2 (row 9) cannot detect a row-8
+  // regression: planting `effective = localMode === 'on' || latched` — ignore
+  // the peer byte entirely, which IS the shipped row-8 defect — leaves every
+  // one of scenario 2's assertions GREEN, because there our own setting is
+  // already ON and the OR is satisfied without the peer's bit ever being read.
+  // A scenario that claims a symmetry while exercising only one side of it is
+  // a green that cannot go red.
+  //
+  // Here the settings are SWAPPED over a real relay round-trip: this computer's
+  // setting is OFF and the phone advertises 1. The peer byte is now the ONLY
+  // thing that can make the effective mode ON, so that plant turns this red.
+  //
+  // §13.2 row 8: "effective ON. SAS shown and blocking on BOTH. Encrypted
+  // (verified). The mode-OFF computer displays the SAS even though its own
+  // setting is off — a peer asking to verify is not an error state."
+  {
+    const relay = startRelay();
+    const browser = await connect(relay.port, 'browser');
+    const phone = await connect(relay.port, 'phone');
+    const web = await mintKeyPair();
+    const phoneKey = await mintKeyPair();
+
+    // mode 0 on the REQUEST: this computer's own setting is off.
+    browser.send('BROWSER_REQUEST_PAIRING', {
+      ua: 'harness',
+      e2e: { v: 1, mode: 0, recips: [{ kind: 'web', deviceId: 'dev-web-01', pub: web.b64 }] },
+    });
+    const req = await phone.wait('PAIRING_REQUEST');
+    const accept = await phoneAccept({ recips: req.payload.e2e.recips, phoneKey, pairEpoch: 1, modeOn: true });
+    // mode 1 on the ACCEPT: the PHONE's own setting is on.
+    phone.send('ACCEPT_PAIRING', { pairingId: req.payload.pairingId, e2e: { ...accept.block, mode: 1 } });
+    const active = await browser.wait('PAIRING_ACTIVE');
+
+    const { decideAccept, readAcceptBlock } = await import('../hooks/phoneE2e.ts');
+    const block = readAcceptBlock(active.payload.e2e);
+    check('OFF/ON (A5 row 8): the accept block survived the relay', block !== null);
+    eq('OFF/ON (A5 row 8): ...and it carries the PHONE\'s own setting on the wire',
+      block.mode, 1);
+
+    const d = decideAccept({
+      localMode: 'off', block,
+      ourDeviceId: 'dev-web-01', phoneRowPublicKey: phoneKey.b64, latched: false,
+    });
+    eq('OFF/ON (A5 row 8): proceeds', d.action, 'proceed');
+    eq('OFF/ON (A5 row 8): effective ON — from the PEER\'s byte, not our setting',
+      d.effective, 'on');
+    eq('OFF/ON (A5 row 8): ...the pair seals', d.mode, 'on');
+    eq('OFF/ON (A5 row 8): ...SAS blocking on the mode-OFF computer too',
+      d.state, 'encrypted-verified');
+    check('OFF/ON (A5 row 8): ...verified', d.verified === true);
+    check('OFF/ON (A5 row 8): ...and it is NOT an error state', d.error === undefined);
 
     browser.close(); phone.close();
     await relay.close();

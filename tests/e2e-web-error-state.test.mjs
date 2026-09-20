@@ -58,11 +58,15 @@ const ALL_ERRORS = [
 function erroredView(error, overrides = {}) {
   return {
     mode: 'on',
+    // A5 (E2E-P2.2 (c)): the EFFECTIVE mode, OR(local, peerByte), latched. It
+    // is a separate field from `mode` because a 0/0 pair SEALS with effective
+    // off, and that is exactly the pair A5 row 4 used to send in the clear.
+    effective: 'on',
     state: 'error',
     error,
     peer: { supports: true, kind: 'present' },
     sas: { digits: '123456', confirmed: true },
-    debug: { drops: 3, downgradesDropped: 2, kid: 'kid-1' },
+    debug: { drops: 3, downgradesDropped: 2, kid: 'kid-1', refusedForwardJump: 0 },
     ...overrides,
   };
 }
@@ -71,10 +75,11 @@ function erroredView(error, overrides = {}) {
 function liveView(overrides = {}) {
   return {
     mode: 'on',
+    effective: 'on',
     state: 'encrypted-verified',
     peer: { supports: true, kind: 'present' },
     sas: { digits: '654321', confirmed: true },
-    debug: { drops: 0, downgradesDropped: 0, kid: 'kid-9' },
+    debug: { drops: 0, downgradesDropped: 0, kid: 'kid-9', refusedForwardJump: 0 },
     ...overrides,
   };
 }
@@ -103,8 +108,14 @@ for (const error of ALL_ERRORS) {
   // peer.kind is a property of the BROWSER (the extension SW's key), not of the
   // pair, so it survives a teardown.
   eq('onPairEnded PRESERVES peer.kind', out.peer.kind, 'present');
+  // A5 (E2E-P2.2 (c)) added `effective` beside `mode`: the pair A5 row 4 got
+  // wrong — sealed, effective OFF — is precisely the one where the two differ.
+  // It rides through a teardown with `mode` for the same reason `mode` does:
+  // "you asked for encryption and the pair refused" and "the pair was never
+  // encrypted" are different sentences, and the badge says so.
+  eq('onPairEnded PRESERVES the effective mode alongside mode', out.effective, 'on');
   eq('the view shape is unchanged', Object.keys(out).sort().join(','),
-    'debug,error,mode,peer,sas,state');
+    'debug,effective,error,mode,peer,sas,state');
 }
 
 {

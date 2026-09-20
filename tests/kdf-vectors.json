@@ -545,5 +545,76 @@
       "authority": "GATE1.md \"Addendum FT-A1 - FILE_OFFER hint + SW routing: AMENDED\" - 2026-09-18T00:00Z",
       "verifier": "tools/ft-a1-vector-l-verify.mjs (14/14 PASS)"
     }
+  },
+  "modeVectorM": {
+    "_comment": "GATE1 Addendum A5, F5 / MUST M-A5-5 - VECTOR M, the mode-byte semantics. The `mode` byte ON THE WIRE is the SENDER'S OWN LOCAL SETTING at that moment: an ADVERTISEMENT. The EFFECTIVE mode is OR(ownLocal, peerByte), derived locally by each end, latched at Accept, and NEVER transmitted. E2E-SPEC-v1.0 §13.3's `modeByte` is the EFFECTIVE mode. Read the table in one line: the wire bytes differ per sender because they are local settings; the effective mode, the SAS input and the digits do not.",
+    "_authority": "security/PROJECTS/computercaller/e2e/GATE2-PRE-A5.md - F5, \"Vector M - frozen\". Frozen clean-room by a5-vector-m-verify.mjs, which re-derives all six frozen tests/sas-vectors.json vectors (54443, 06512, 50690, 44820, 17477, 79729) as its control BEFORE emitting M. Reproduce with: node <security>/a5-vector-m-verify.mjs tests/sas-vectors.json",
+    "frozenBy": "E2E-P2.2 (b)/(c), web lane",
+    "pairingId": "pair-M-0000000000000001",
+    "pairEpoch": 7,
+    "keys": {
+      "phone": "0411111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+      "web": "0422222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222",
+      "sw": "0433333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "epk": "04aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sealingRule": "A usable block on both sides ALWAYS seals. Plaintext only when there is NO usable block. Mode 0/0 is Encrypted (unverified) - never plaintext. That is A5 row 4, and `sealed` is true in every row below because of it.",
+    "verificationRule": "`verified` derives from the EFFECTIVE mode, never from the local setting alone (A5 row 8). The downgrade latch is unchanged and still outranks everything (M-A5-5(4)).",
+    "absorption": "OR(a, OR(a, b)) == OR(a, b) for every (a, b). Android's shipped accept byte carries the already-ORed effective value, so a receiver computing OR(ownLocal, peerByte) reaches the SAME effective mode either way - which is why vc58 needs no rebuild for this correction and why aligning the Kotlin byte to the strict local-setting rule rides P4.2.",
+    "consumers": [
+      "hooks/phoneE2e.ts decideAccept + hooks/useE2e.ts (web) - tests/e2e-web-policy.test.mjs, tests/e2e-web-mode-byte.test.mjs",
+      "chrome-extension/sw-session.js (SW) - P3.2",
+      "E2eNegotiation.parsePeerOffer + E2eSettings.effectiveMode (android) - already correct; P4.2 aligns the byte"
+    ],
+    "cases": [
+      {
+        "id": "M1-off-off",
+        "phoneLocal": false,
+        "computerLocal": false,
+        "requestModeByte": 0,
+        "acceptModeByte": 0,
+        "effective": false,
+        "sasModeByte": 0,
+        "digits": "02024",
+        "sealed": true,
+        "sasBlocking": false
+      },
+      {
+        "id": "M2-phone-on-computer-off",
+        "phoneLocal": true,
+        "computerLocal": false,
+        "requestModeByte": 0,
+        "acceptModeByte": 1,
+        "effective": true,
+        "sasModeByte": 1,
+        "digits": "30087",
+        "sealed": true,
+        "sasBlocking": true
+      },
+      {
+        "id": "M3-phone-off-computer-on",
+        "phoneLocal": false,
+        "computerLocal": true,
+        "requestModeByte": 1,
+        "acceptModeByte": 0,
+        "effective": true,
+        "sasModeByte": 1,
+        "digits": "30087",
+        "sealed": true,
+        "sasBlocking": true
+      },
+      {
+        "id": "M4-on-on",
+        "phoneLocal": true,
+        "computerLocal": true,
+        "requestModeByte": 1,
+        "acceptModeByte": 1,
+        "effective": true,
+        "sasModeByte": 1,
+        "digits": "30087",
+        "sealed": true,
+        "sasBlocking": true
+      }
+    ]
   }
 }
