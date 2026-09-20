@@ -183,6 +183,16 @@ await check('below-window behaviour is unchanged: dedupe, never reject', async (
   eq((await S.readDrops()).refusedForwardJump, 0, 'and no refusal was counted');
 });
 
+// NEGATIVE-TEST NOTE, recorded because it changes what these two checks are
+// worth. Planting "a duplicate widens highestAccepted" does NOT turn them red,
+// and cannot: a duplicate seq is by construction one already seen, hence <=
+// highestAccepted, so the widening branch is unreachable. Same for a
+// below-floor drop, which is strictly lower still. They are cheap REGRESSION
+// PINS on the second half of each assertion (the bound is still where the
+// accepts left it), not detectors. The detector for "a drop widens the bound"
+// is the RATCHET case — a refusal setting highestAccepted = n, which would let
+// an attacker climb one window per forged frame — and that is caught by
+// vectors F2-2/F2-3/F2-6, verified red by plant.
 await check('a duplicate does NOT widen the bound', async () => {
   reset();
   const args = { kid: KID, direction: DIR, pairEpoch: 7 };
