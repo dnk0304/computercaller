@@ -27,6 +27,20 @@
  * third one is the detector with teeth: the old module-scope `mkdirSync` would
  * have created it.
  *
+ * ── WHY THE CHILD PROBES RUN BEFORE THIS FILE IMPORTS THE RIG ──────────────
+ * Found by planting the defect. A first draft imported the three modules at the
+ * top in the ordinary way, then checked them in a child process. Re-adding a
+ * module-scope `setInterval` to soak-runner.mjs did not turn that suite red: it
+ * HUNG it, because the timer it planted was now in this process too, and ESM
+ * evaluates every static import before the first test runs. The gate would have
+ * recorded a 15-minute timeout instead of a named failure — a detector that
+ * cannot report is barely better than one that cannot fire.
+ *
+ * So the probes are `spawnSync` calls at module scope, and the rig is loaded
+ * afterwards with `await import()` only once they come back clean. A rig that
+ * starts a clock is now caught by a child that never comes home, this file
+ * exits 1 with the reason, and the suite it would have hung never loads it.
+ *
  * No browser, no Docker, no database. This is a node-only suite by design —
  * the soak itself is Ken's to start on Hetzner (R-AM).
  */
@@ -39,11 +53,8 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import jwt from 'jsonwebtoken';
 
-import { verifySoak, parseArgs, MAX_GAP_MS, EXPECT_EVERY_MS } from '../soak/verify-soak.mjs';
-import { mintSecret, mintTicket, relayUrls } from '../scripts/lib/relay-auth.mjs';
-import { readConfig, EXPECTED_CLOSE_CODES } from '../soak/soak-runner.mjs';
-
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const RIG = ['soak/soak-runner.mjs', 'soak/verify-soak.mjs', 'scripts/lib/relay-auth.mjs'];
 
 // ── a counted-assertion helper, so the gate gets a stable number ───────────
 // The gate parses counts out of stdout (tools/e2e-gate.mjs passLine) and judges
@@ -53,9 +64,30 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // count would silently shrink. An explicit tally cannot do that.
 let passed = 0, failed = 0;
 const failures = [];
-function check(name, cond, detail = '') {
+/** Record a result. Does not throw — used where every probe must be reported. */
+function tally(name, cond, detail = '') {
   if (cond) { passed += 1; } else { failed += 1; failures.push(`${name}${detail ? ` — ${detail}` : ''}`); }
+  return !!cond;
+}
+/** Record a result AND fail the enclosing node:test. */
+function check(name, cond, detail = '') {
+  tally(name, cond, detail);
   assert.ok(cond, `${name}${detail ? ` — ${detail}` : ''}`);
+}
+/**
+ * A throwing assertion that still moves the COUNT.
+ *
+ * Found by planting the defect: a bare `assert.throws` turned the suite red by
+ * exit code but left the summary reading "45/45 checks passed", so the gate's
+ * parity reference would have seen a full house on a failing run. Every
+ * assertion in this file goes through the tally for that reason.
+ */
+function checkThrows(name, fn, re) {
+  let threw = null;
+  try { fn(); } catch (e) { threw = e; }
+  const ok = !!threw && re.test(String(threw.message || threw));
+  tally(name, ok, threw ? String(threw.message).slice(0, 120) : 'did not throw');
+  assert.ok(ok, `${name} — ${threw ? threw.message : 'did not throw'}`);
 }
 process.on('exit', () => {
   console.log(`\n${passed}/${passed + failed} checks passed`);
@@ -64,6 +96,62 @@ process.on('exit', () => {
 
 // Rule 16: nothing this suite writes lands inside the tree it is asserting on.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'soak-rig-'));
+
+// ── the side-effect probes, run BEFORE the rig is imported ─────────────────
+/**
+ * Import one rig module in a child process and report what it did.
+ *
+ * The environment is deliberately hostile: a relay URL and a DATABASE_URL that
+ * point at a closed port, so anything reaching for the network at module scope
+ * fails loudly instead of hanging. `timeout` kills the child and leaves
+ * `status` null — which is precisely the signature of a module that armed an
+ * interval or held a socket open, so the timeout IS the no-lingering-handle
+ * assertion rather than merely a safety net.
+ */
+function probeImport(rel) {
+  const evidence = path.join(TMP, `evidence-${path.basename(rel)}`);
+  const href = 'file://' + path.join(ROOT, rel).replace(/\\/g, '/');
+  const r = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(href)}).then(()=>{})`], {
+    cwd: ROOT, encoding: 'utf8', timeout: 30_000,
+    env: {
+      ...process.env,
+      SOAK_EVIDENCE_DIR: evidence,
+      SOAK_RELAY_WS: 'ws://127.0.0.1:1',
+      DATABASE_URL: 'postgresql://nobody:nobody@127.0.0.1:1/nothing',
+      SOAK_HOURS: '24',
+    },
+  });
+  return {
+    rel,
+    exitedCleanly: r.status === 0,
+    madeEvidenceDir: fs.existsSync(evidence),
+    detail: `status=${r.status} signal=${r.signal} stderr=${(r.stderr || '').slice(0, 300)}`,
+  };
+}
+
+const PROBES = RIG.map(probeImport);
+const dirty = PROBES.filter((p) => !p.exitedCleanly || p.madeEvidenceDir);
+if (dirty.length) {
+  // Refuse to go any further. Importing a rig module that starts a clock would
+  // hang THIS process too, and a hung suite reports nothing.
+  console.error('\nREFUSING to load the rig — importing it is not side-effect free:');
+  for (const p of dirty) {
+    console.error(`  FAIL ${p.rel} — exitedCleanly=${p.exitedCleanly} madeEvidenceDir=${p.madeEvidenceDir} ${p.detail}`);
+  }
+  // Tally through the same counters the tests use, so the summary the gate
+  // parses is this file's ONLY summary line — passLine takes the LAST `n/m` in
+  // stdout, and a second count printed here would be the one it read.
+  for (const p of PROBES) {
+    tally(`${p.rel} exits on its own when merely imported`, p.exitedCleanly, p.detail);
+    tally(`${p.rel} creates no evidence directory on import`, !p.madeEvidenceDir, p.detail);
+  }
+  fs.rmSync(TMP, { recursive: true, force: true });
+  process.exit(1);
+}
+
+const { verifySoak, parseArgs, MAX_GAP_MS, EXPECT_EVERY_MS } = await import('../soak/verify-soak.mjs');
+const { mintSecret, mintTicket, relayUrls } = await import('../scripts/lib/relay-auth.mjs');
+const { readConfig, EXPECTED_CLOSE_CODES } = await import('../soak/soak-runner.mjs');
 
 // ── fixture generators ─────────────────────────────────────────────────────
 const T0 = Date.parse('2026-09-21T00:00:00.000Z');
@@ -116,29 +204,9 @@ const named = (r, needle) => r.checks.find((c) => c.name.includes(needle));
 // 1. The three modules load with NO side effects.
 // ═══════════════════════════════════════════════════════════════════════════
 test('importing the rig starts nothing: no clock, no socket, no evidence dir', () => {
-  for (const rel of ['soak/soak-runner.mjs', 'soak/verify-soak.mjs', 'scripts/lib/relay-auth.mjs']) {
-    const evidence = path.join(TMP, `evidence-${path.basename(rel)}`);
-    const r = spawnSync(process.execPath,
-      ['-e', `import(${JSON.stringify('file://' + path.join(ROOT, rel).replace(/\\/g, '/'))}).then(()=>{})`],
-      {
-        cwd: ROOT, encoding: 'utf8', timeout: 30_000,
-        env: {
-          ...process.env,
-          SOAK_EVIDENCE_DIR: evidence,
-          // Deliberately hostile: if module scope tried to reach a relay or a
-          // database, these would make it fail loudly rather than hang.
-          SOAK_RELAY_WS: 'ws://127.0.0.1:1',
-          DATABASE_URL: 'postgresql://nobody:nobody@127.0.0.1:1/nothing',
-          SOAK_HOURS: '24',
-        },
-      });
-    // `timeout` kills with a signal and leaves status null — which is exactly
-    // what a module that opened a socket or armed a 5-minute interval would do,
-    // so this is the no-lingering-handle assertion as much as a timeout guard.
-    check(`${rel} exits on its own when merely imported`, r.status === 0,
-      `status=${r.status} signal=${r.signal} stderr=${(r.stderr || '').slice(0, 300)}`);
-    check(`${rel} creates no evidence directory on import`, !fs.existsSync(evidence),
-      `${evidence} exists`);
+  for (const p of PROBES) {
+    check(`${p.rel} exits on its own when merely imported`, p.exitedCleanly, p.detail);
+    check(`${p.rel} creates no evidence directory on import`, !p.madeEvidenceDir);
   }
 });
 
@@ -246,19 +314,17 @@ test('a minted secret alone buys no entitled identity — the seeded user is loa
 
   // A short secret cannot be used at all, so a caller cannot quietly downgrade
   // to one the relay would refuse (and only complain about on its own stdout).
-  assert.throws(() => mintTicket({ secret: 'too-short', userId: 'u1' }), /at least 32 chars/);
-  passed += 1;
+  checkThrows('a secret under 32 chars cannot mint a ticket at all',
+    () => mintTicket({ secret: 'too-short', userId: 'u1' }), /at least 32 chars/);
 
   // The phone URL needs the row's phoneToken; there is nothing to mint it from,
   // and relayUrls refuses EAGERLY rather than handing back lazy builders that
   // produce `?token=undefined` — which the relay answers with 4401, i.e. the
   // exact symptom this module exists to stop people from misreading.
-  assert.throws(() => relayUrls({ wsBase: 'ws://x', secret, user: undefined }),
-    /needs a seeded user row/);
-  passed += 1;
-  assert.throws(() => relayUrls({ wsBase: 'ws://x', secret, user: { id: 'u1' } }),
-    /phoneToken is missing/);
-  passed += 1;
+  checkThrows('relayUrls refuses with no seeded user row',
+    () => relayUrls({ wsBase: 'ws://x', secret, user: undefined }), /needs a seeded user row/);
+  checkThrows('relayUrls refuses a row loaded without its phoneToken',
+    () => relayUrls({ wsBase: 'ws://x', secret, user: { id: 'u1' } }), /phoneToken is missing/);
   // A real seeded shape still works, so the guard is not simply refusing
   // everything — the control for the two throws above.
   const urls = relayUrls({ wsBase: 'ws://x', secret, user: { id: 'u1', phoneToken: 'tok-abc' } });
