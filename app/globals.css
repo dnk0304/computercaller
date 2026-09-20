@@ -245,3 +245,48 @@ body {
     transition-duration: 1ms !important;
   }
 }
+
+/* ===========================================================================
+   FT-3b — file-transfer motion.
+
+   The progress fill glides between ACK watermarks instead of jumping. 200 ms
+   is deliberately longer than the ~120 ms that reads as "instant": the bar is
+   ambient information the user glances at, not a control they are waiting on,
+   and a shorter transition on a value that updates several times a second
+   reads as a twitch rather than movement.
+
+   `width` is animated rather than `transform: scaleX()` — the usual advice is
+   the opposite, but a scaled bar also scales its border radius into an ellipse
+   at low percentages, and this bar is 4 px tall and fully rounded. At this size
+   the layout cost is a 4 px-tall strip; correctness wins.
+
+   Under reduced motion the transition is dropped entirely. The bar still
+   updates and still reports every value to assistive tech — reduced motion
+   means less movement, never less information.
+   =========================================================================== */
+.cc-ft-bar {
+  transition: width 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.cc-ft-drop-overlay {
+  animation: cc-ft-drop-in 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes cc-ft-drop-in {
+  from { opacity: 0; transform: scale(0.99); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-ft-bar { transition: none; }
+  .cc-ft-drop-overlay {
+    animation: cc-ft-drop-in-reduced 100ms linear both;
+  }
+  @keyframes cc-ft-drop-in-reduced {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  /* The dialog backdrop's blur-in and every tonal change in the feature. */
+  .cc-ft-surface *,
+  .cc-ft-surface {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}

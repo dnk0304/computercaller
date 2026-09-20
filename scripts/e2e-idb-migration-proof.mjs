@@ -254,6 +254,7 @@ async function main() {
       const back = await page.evaluate(() => window.readBack('deviceKey', 'self'));
       eq('future: the newer build\'s device key is intact', back.value?.deviceId, 'from-the-future');
     });
+
     // ── arm 5: a FRESH browser profile pairs end to end ─────────────────────
     // The regression in one arm: on a cold profile, the device key and the seq
     // floor must BOTH be writable and readable through the one factory, in the

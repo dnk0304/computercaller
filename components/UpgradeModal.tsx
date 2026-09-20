@@ -37,7 +37,14 @@ const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
 /** Which limit the caller just hit — drives one descriptive line only. */
-export type LimitContext = 'templates' | 'quickReplies' | 'syncRange' | 'contactSync' | undefined;
+export type LimitContext =
+  | 'templates' | 'quickReplies' | 'syncRange' | 'contactSync'
+  /* FT-3b. Web + extension only. The Android app must never reach an upgrade
+     modal — Play's anti-steering clause forbids a tappable route to external
+     checkout (PLAY-TIER-COPY-RULING §1) — and it does not: this modal has no
+     Android surface. */
+  | 'fileTransfer'
+  | undefined;
 
 function contextLine(context: LimitContext): string | null {
   switch (context) {
@@ -49,6 +56,8 @@ function contextLine(context: LimitContext): string | null {
       return 'You’ve reached how far back your plan syncs your history.';
     case 'contactSync':
       return 'Phone contacts aren’t included on your current plan.';
+    case 'fileTransfer':
+      return 'Sending files isn’t included on your current plan. Receiving files still works.';
     default:
       return null;
   }

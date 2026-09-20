@@ -53,6 +53,13 @@ import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
 import { EncryptionBanner } from '@/components/EncryptionStatus';
 import { SasConfirmDialog } from '@/components/SasConfirmDialog';
+// FT-3b. Three self-wiring slots: the overlay layer (offer dialog, progress,
+// error banner, received toast), the send control, and the panel drop target.
+// They read `usePhone().fileTransfer` and the entitlement themselves so this
+// file gains a tag per insertion rather than a prop chain — see
+// components/fileTransfer/FileTransferSlots.tsx.
+import { FileTransferLayer } from '@/components/fileTransfer/FileTransferLayer';
+import { SendFileSlot, FileDropTarget } from '@/components/fileTransfer/FileTransferSlots';
 import { UsageMeter } from '@/components/UsageMeter';
 import { Dialpad, CollapsePanel } from '@/components/Dialpad';
 import { useDialpadOpen } from '@/lib/dialpadPref';
@@ -539,6 +546,15 @@ function DialerView() {
             <Delete className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
+
+        {/* FT-3b (a)+(c). The send control lives in the dialpad island, not in
+            the Recent section: Recent unmounts when the call log is empty, and
+            a feature that disappears on a fresh account is a feature users
+            never find. This is the slot that carries the FULL trial-lock
+            sentence — the thread header's icon-only variant defers to it. */}
+        <div className="flex justify-center px-3 pb-2">
+          <SendFileSlot />
+        </div>
       </div>
 
       {/* Recent calls — INDEPENDENT scroller. Sits in the remaining vertical
@@ -734,6 +750,14 @@ function ExtDialerView() {
           // "New message" button in Texts opens, where there is no number yet.
           onSendMessage={(number) => push({ kind: 'thread', threadId: number, from: 'dialer' })}
         />
+
+        {/* FT-3b (a)+(c). Same slot as the web dialer, compact skin. The
+            extension panel is ~400 px wide and the full sentence wraps to two
+            lines there, which is correct — truncating a policy-relevant
+            sentence to fit is not an option. */}
+        <div className="flex justify-center px-3 pb-2">
+          <SendFileSlot compact />
+        </div>
       </div>
 
       {/* No call history yet — one muted line rather than a filter bar over an
@@ -1082,6 +1106,12 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
           {displayName.charAt(0).toUpperCase()}
         </div>
         <p className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-800">{displayName}</p>
+        {/* FT-3b. Icon-only: this row is h-10 and already carries a back arrow,
+            an avatar, the name and the call button, so a labelled control does
+            not fit at 360 px. The verbatim tier string survives as the button's
+            accessible name and tooltip, and is visible in full on the Dial
+            view's control and in the `tier` failure banner. */}
+        <SendFileSlot iconOnly />
         <button
           type="button"
           onClick={() => { if (guard('call')) makeCall(threadId); }}
@@ -1996,6 +2026,14 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           existing on one surface and not the other. */}
       <EncryptionBanner />
       <SasConfirmDialog />
+      {/* FT-3b. Mounted here for the same reason SasConfirmDialog is: this
+          component is the only thing both surfaces render, so the offer dialog
+          cannot exist on the web and not in the extension. The error banner and
+          progress row are in-flow and paint right here, under the encryption
+          banner — a transfer refusal ranks below an encryption refusal and
+          above call chrome. The dialog and the toast are portals, so their
+          position in this tree does not decide where they paint. */}
+      <FileTransferLayer compact={isExt} />
       {/* The live-call strip sits directly under the header and above the tab
           strip — the dashboard's quick-dial panel equivalent, in a shape a
           390px column can afford. It is chrome, so it is OUTSIDE the
@@ -2026,9 +2064,14 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
       {ringingCardHere && <PhoneModeIncomingCard {...callSurfaceProps} />}
       {/* min-h-0 so the active view actually scrolls inside this box instead of
           stretching the column — the same class of bug as AC-2's. */}
-      <div className="min-h-0 flex-1 overflow-hidden">
+      {/* FT-3b. The drop target is the body box, not the whole column: dragging
+          a file over the header or the tab strip is not aiming at a drop, and
+          in the extension the panel floats over a host page whose own drags
+          must not arm this target. Drag-drop is an enhancement only — the same
+          job is reachable from the focusable Send file button. */}
+      <FileDropTarget className="min-h-0 flex-1 overflow-hidden">
         {renderView(current)}
-      </div>
+      </FileDropTarget>
       {/* Quick-reply confirmation. Was a 1.4 s full-body takeover; a sent SMS
           is a confirmation, not a screen. */}
       {phoneCall.surfaceProps.sentNotice && (
