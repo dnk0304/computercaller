@@ -72,6 +72,7 @@ import {
   readAcceptBlock,
   readEncryptedMode,
   readSwKey,
+  sasCoverage,
   outcomeForRevocationVerdict,
   readRevocationVerdict,
   sasKeySet,
@@ -633,6 +634,27 @@ export function useE2e(emailProp?: string | null): E2eApi {
         pairEpoch: context.pairEpoch,
         modeOn: decision.effective === 'on',
       });
+      // M-A5-3, page side. The SW key is read LIVE off the A4.1 bridge here —
+      // `swRef.current` is re-read at THIS moment, not the value Connect used
+      // a second ago — and what the digits cover is COMPUTED rather than
+      // inferred from a key count.
+      const coverage = sasCoverage(block, {
+        ourPub: key.pubB64Url,
+        phonePub: phoneRowPublicKey,
+        sw: swRef.current,
+      });
+      if (coverage.staleSwKey) {
+        // The page advertised an SW key the bridge no longer reports, so the
+        // transcript contains a key the SW does not hold and the digits say
+        // nothing about the SW leg. Refusing is the only honest option: a code
+        // presented as covering a key it did not include is a false assurance
+        // about exactly the recipient that decrypts notification bodies with
+        // the panel closed.
+        fail('re-pair-needed',
+          'the SAS transcript carries an extension key the service worker no longer '
+          + 'reports (M-A5-3): the code would claim coverage it does not have');
+        return true;
+      }
       setView((v) => ({
         ...v,
         mode: 'on',
@@ -640,7 +662,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
         state: decision.state,
         error: undefined,
         peer: { supports: true, kind: swRef.current.status },
-        sas: { digits, confirmed: false },
+        sas: { digits, confirmed: false, coverage },
         debug: { ...v.debug, kid: block.kid, drops: 0 },
       }));
       return false;

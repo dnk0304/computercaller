@@ -619,7 +619,17 @@ export interface E2eView {
   state: E2eState;
   error?: E2eError;
   peer: { supports: boolean; kind: SwKeyStatus };
-  sas: { digits: string | null; confirmed: boolean };
+  sas: {
+    digits: string | null;
+    confirmed: boolean;
+    /**
+     * M-A5-3. What the digits actually cover. `null` until a pair computes
+     * them. A surface must read `coverage.coversSw` rather than counting keys:
+     * a 3-key transcript whose third key we cannot attribute to the live SW
+     * does NOT cover the SW.
+     */
+    coverage: SasCoverage | null;
+  };
   /** Debug surface. Dropped frames are not an error the user can act on. */
   debug: {
     drops: number;
@@ -641,7 +651,7 @@ export const E2E_VIEW_INITIAL: E2eView = {
   effective: 'off',
   state: 'unencrypted',
   peer: { supports: false, kind: 'unknown' },
-  sas: { digits: null, confirmed: false },
+  sas: { digits: null, confirmed: false, coverage: null },
   debug: { drops: 0, downgradesDropped: 0, kid: null, refusedForwardJump: 0 },
 };
 
@@ -776,4 +786,79 @@ export function writeEncryptedMode(
  */
 export function sasKeySet(block: E2eAcceptBlock): string[] {
   return block.recipKeys.slice();
+}
+
+/**
+ * What the displayed code ACTUALLY covers — E2E-P2.2 (d) / A5 F3, MUST M-A5-3.
+ *
+ * ── THE CLAIM THAT MUST NOT BE MADE ───────────────────────────────────────
+ * B9's amended wording (§13.3) settles that the SW is a RECIPIENT, not a
+ * verifier: one SAS, computed and displayed on the page, over the canonical set
+ * INCLUDING every service worker's static key. That is only true — rather than
+ * merely convenient — if the SW key in the transcript is the key the SW
+ * ACTUALLY HOLDS, read live over the A4.1 bridge. A page-cached copy makes the
+ * swap invisible again by the back door, which is the exact attack
+ * `sas-vectors.json` v3 (50690) vs v4 (44820) exists to demonstrate.
+ *
+ * And when the bridge read returns `unknown`, the pair MUST NOT present a
+ * 2-key SAS as though it covered the SW. A code presented as covering a key it
+ * did not include is a FALSE ASSURANCE about exactly the leg that decrypts
+ * notification bodies with the panel closed — strictly worse than saying "the
+ * SW key is unavailable".
+ *
+ * So coverage is computed, never assumed, and `coversSw` is true ONLY when the
+ * LIVE bridge value is present AND appears in the block's key set. A third key
+ * in `recipKeys` that we cannot attribute is `unattributed` — it is NOT
+ * evidence the SW is covered, because the whole point is that we do not know
+ * whose key it is.
+ */
+export interface SasCoverage {
+  /** How many static keys went into the transcript. */
+  keyCount: number;
+  /** True ONLY when the SW's LIVE key is one of them. Never inferred from a count. */
+  coversSw: boolean;
+  /** `present` / `absent` / `unknown`, straight from the live bridge read. */
+  swStatus: SwKeyStatus;
+  /**
+   * Keys in the set that are neither the phone's pinned key, nor ours, nor the
+   * live SW key. Non-zero means the displayed digits cover something we cannot
+   * name — honest to surface, never a reason to claim SW coverage.
+   */
+  unattributed: number;
+  /**
+   * The page advertised an SW key that the bridge no longer reports. The
+   * transcript then contains a key the SW does not hold, so the digits are
+   * meaningless as a verification of the SW leg. This is a REFUSAL condition,
+   * not a badge.
+   */
+  staleSwKey: boolean;
+}
+
+export function sasCoverage(
+  block: E2eAcceptBlock,
+  { ourPub, phonePub, sw }: {
+    ourPub: string | null | undefined;
+    phonePub: string | null | undefined;
+    sw: SwKeyResult;
+  },
+): SasCoverage {
+  const keys = block.recipKeys;
+  const livePub = sw.status === 'present' ? sw.recipient?.pub ?? null : null;
+  // `coversSw` requires BOTH: a live present reading, and that live key being
+  // in the transcript. Either half alone is the false assurance M-A5-3 names.
+  const coversSw = livePub !== null && keys.includes(livePub);
+
+  let unattributed = 0;
+  for (const k of keys) {
+    if (k === ourPub || k === phonePub || (livePub !== null && k === livePub)) continue;
+    unattributed += 1;
+  }
+
+  // An `absent` SW is honest: it told us it has no key, so a 2-key set is the
+  // correct set and there is nothing stale about it. `unknown` is the
+  // dangerous one — we never heard, so a third key we cannot attribute may or
+  // may not be the SW's, and we must not guess either way.
+  const staleSwKey = sw.status === 'present' && livePub !== null && !keys.includes(livePub);
+
+  return { keyCount: keys.length, coversSw, swStatus: sw.status, unattributed, staleSwKey };
 }
