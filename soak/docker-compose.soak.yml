@@ -1,0 +1,185 @@
+# cc-e2e-soak — the 24 h soak, as a staging stack on the Hetzner box.
+#
+# Ken's ruling (R-AM): the soak does NOT run on the Windows dev box. It runs
+# here, off the prod network, built from THIS tree (branch e2e/soak-rig off
+# 392e490, the tree D1 ships). The clock starts when Ken runs it; nothing in
+# this file starts a clock by itself.
+#
+# WHY OFF THE PROD NETWORK, EXPLICITLY
+# ------------------------------------
+# E2E-PLAN's risk list names "web deploy during soak" as the thing that
+# invalidates a soak run, and MA-4/NEW-MA-3 exist because of it: a soak that
+# shares a network, a database or a process with prod is a soak whose 24 h
+# window any unrelated deploy can silently end. So this stack gets:
+#   - its own bridge network, `internal: true` (no egress, no prod reachability)
+#   - its own Postgres with its own volume (never the prod DB, never a prod dump)
+#   - its own published port, high and explicit, so nothing collides with prod
+#   - no Traefik/Coolify labels at all, so the proxy never routes to it
+#
+# The relay under test is the SAME image content as prod (built from this tree),
+# because a soak of a different build is evidence about a different build. What
+# differs is only its environment.
+
+name: cc-e2e-soak
+
+networks:
+  soak:
+    driver: bridge
+    # No route to the prod network and no inbound from the proxy. The runner and
+    # the relay talk to each other over this and nothing else.
+    internal: true
+  # A second, non-internal network carries ONLY the published port, so the
+  # relay stays reachable from the host for Ken's manual checks without giving
+  # the database any egress at all.
+  soak_edge:
+    driver: bridge
+
+volumes:
+  soak_pgdata:
+  # Trace + heartbeat live on a named volume so a container restart cannot
+  # truncate them. RESUME-PROTOCOL rule 8 treats a heartbeat gap > 10 min as an
+  # invalidated run, and a bind mount that vanished on restart would manufacture
+  # exactly that gap.
+  soak_evidence:
+
+# The three services that need the image all build the same one. Anchored so a
+# future edit cannot drift the runner's build off the relay's — the whole point
+# of one image is that there is exactly one.
+x-soak-image: &soak-image
+  build:
+    context: ..
+    dockerfile: soak/Dockerfile.soak
+    args:
+      SOAK_SHA: ${SOAK_SHA:-unset}
+  image: cc-e2e-soak-relay:${SOAK_SHA:-unset}
+
+services:
+  soak-db:
+    image: postgres:16-alpine
+    container_name: cc-e2e-soak-db
+    restart: unless-stopped
+    networks: [soak]
+    environment:
+      POSTGRES_USER: soak
+      POSTGRES_PASSWORD: soak
+      POSTGRES_DB: ccsoak
+    volumes:
+      - soak_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U soak -d ccsoak"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # One-shot schema creation. Without it the scratch Postgres is EMPTY: the
+  # relay's entitlement chokepoint queries User on every upgrade and the runner
+  # seeds two users before it opens a socket, so every socket dies 4403 / the
+  # runner crashes at its first Prisma call — on a stack that otherwise looks
+  # like it came up cleanly. `db push` rather than `migrate deploy` because this
+  # database is created empty and thrown away; there is no history to preserve.
+  soak-migrate:
+    <<: *soak-image
+    container_name: cc-e2e-soak-migrate
+    restart: "no"
+    depends_on:
+      soak-db:
+        condition: service_healthy
+    networks: [soak]
+    environment:
+      DATABASE_URL: postgresql://soak:soak@soak-db:5432/ccsoak
+    command: ["npx", "prisma", "db", "push", "--skip-generate", "--accept-data-loss"]
+
+  soak-relay:
+    <<: *soak-image
+    container_name: cc-e2e-soak-relay
+    restart: unless-stopped
+    depends_on:
+      soak-db:
+        condition: service_healthy
+      soak-migrate:
+        condition: service_completed_successfully
+    networks: [soak, soak_edge]
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: postgresql://soak:soak@soak-db:5432/ccsoak
+      # The soak exercises a real encrypted pair, so the kill switch is ON here.
+      # At 392e490 the predicate is `process.env.E2E_PAIRING_ENABLED === '1'`
+      # (server.js:233, P1.3): the string "1" and nothing else enables it, and
+      # unset-or-anything-else is OFF. This container env is the ONE place it is
+      # ON — prod's own environment is untouched by this file and stays OFF
+      # until D1 flips it.
+      E2E_PAIRING_ENABLED: "1"
+      JWT_SECRET: ${SOAK_JWT_SECRET:?SOAK_JWT_SECRET must be set - refusing to boot with a default secret}
+      # Security N-2: the whole soak's relay stdout must be greppable as a FILE.
+      # `docker logs --since` is explicitly the SECONDARY source because it is
+      # subject to the daemon's rotation policy; the file is the primary.
+      RELAY_VERBOSE: "1"
+    ports:
+      # High, explicit, and not a prod port. Only the edge network publishes.
+      - "127.0.0.1:39300:3000"
+    volumes:
+      - soak_evidence:/evidence
+    # Capture stdout to the evidence volume for the whole run (N-2), while
+    # still letting `docker logs` work.
+    command: ["sh", "-c", "node server.js 2>&1 | tee -a /evidence/soak-${SOAK_SHA:-unset}.log"]
+    healthcheck:
+      # node rather than curl: node:22-bookworm-slim ships neither curl nor
+      # wget, and a healthcheck whose binary is missing is permanently
+      # unhealthy, which would hold the runner at the starting line forever.
+      #
+      # It probes `/` and accepts ANY status below 500, deliberately. There is
+      # no /api/health route in this tree — server.js only carves that path out
+      # of the staging basic-auth gate and says so ("No-op if route doesn't
+      # exist"). A healthcheck asserting 200 on /api/health would therefore be
+      # permanently red against a perfectly healthy relay, which is the same
+      # class of mistake as a green that can never go red. What this stack needs
+      # to know before the runner connects is that Next has finished starting
+      # and the process is answering HTTP; a 200/302/404 all prove that, a
+      # connection refused or a 5xx does not.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        # 24 h of a verbose relay comfortably exceeds the 10 MB default, and a
+        # rotated-away log is how a canary grep returns 0 for the wrong reason.
+        max-size: "200m"
+        max-file: "5"
+
+  soak-runner:
+    <<: *soak-image
+    container_name: cc-e2e-soak-runner
+    restart: unless-stopped
+    depends_on:
+      soak-relay:
+        # Was a bare `depends_on: [soak-relay]`, which only waits for the
+        # container to START. The runner seeds its users and opens four sockets
+        # in its first second; against a relay still compiling nothing, that is
+        # a burst of failed connects at the head of the window.
+        condition: service_healthy
+    networks: [soak]
+    environment:
+      SOAK_RELAY_WS: ws://soak-relay:3000
+      SOAK_EVIDENCE_DIR: /evidence
+      SOAK_SHA: ${SOAK_SHA:-unset}
+      # The runner seeds its own two entitled users with Prisma, so it needs the
+      # scratch database — it had no DATABASE_URL at all, and `new
+      # PrismaClient()` with none throws before the first socket is opened.
+      DATABASE_URL: postgresql://soak:soak@soak-db:5432/ccsoak
+      # ... and it MUST mint its browser tickets with the secret the relay
+      # verifies against. Without this the runner falls back to mintSecret(),
+      # signs tickets with a secret the relay has never seen, and every browser
+      # socket is closed 4401 while the phone sockets stay up — the exact
+      # half-alive soak scripts/lib/relay-auth.mjs was written to prevent.
+      JWT_SECRET: ${SOAK_JWT_SECRET:?SOAK_JWT_SECRET must be set - refusing to boot with a default secret}
+      # 24 h. Set SOAK_HOURS lower ONLY for a rehearsal, and label the evidence
+      # as a rehearsal if you do — a 2 h run is not a 24 h run with a shorter
+      # clock, and NEW-MA-3 forbids stitching windows into one.
+      SOAK_HOURS: ${SOAK_HOURS:-24}
+    volumes:
+      - soak_evidence:/evidence
+    command: ["node", "soak/soak-runner.mjs"]

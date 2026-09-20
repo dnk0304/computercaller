@@ -1,0 +1,31 @@
+# Build-context exclusions for soak/Dockerfile.soak ONLY.
+#
+# BuildKit reads `<dockerfile>.dockerignore` in preference to the context root's
+# `.dockerignore`, which is why this lives here: the repo has no root
+# `.dockerignore` and adding one would silently change the context of every
+# other build anyone ever runs against this tree.
+#
+# The line that matters is `node_modules`. The build context is the repo root,
+# which on the box that produced it is a WINDOWS checkout — `COPY . .` would
+# drop Windows-native @prisma/client engines and esbuild/sharp binaries on top
+# of the Linux tree `npm ci` had just installed, and the relay would fail at
+# require() time with an error that reads like a Prisma schema problem. It also
+# copies a multi-GB directory across for nothing.
+#
+# Deliberately NOT excluded: e2e-evidence/, android/, tools/. They cost little
+# and something in the build reading a file this list had quietly removed is a
+# worse failure than a larger context.
+node_modules
+.next
+.git
+
+# Never bake a real secret into a soak image. The stack takes SOAK_JWT_SECRET
+# from the environment at run time; .env.example is kept because it is
+# documentation, not a credential.
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Another lane's lock file must never travel into an image.
+.e2e-lock
