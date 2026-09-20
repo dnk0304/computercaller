@@ -30,6 +30,44 @@
  * heartbeat at all. The heartbeat here is emitted from the same loop that holds
  * the sockets, so a heartbeat line is evidence the pairs were actually held.
  *
+ * THE PAIRS MUST BE ACTIVE, NOT MERELY CONNECTED
+ * -----------------------------------------------
+ * The first execution of this rig (Hetzner 2026-09-20T02:32Z) opened all four
+ * sockets, authed cleanly, logged zero 4401 — and soaked nothing. The relay's
+ * model is Connect+Accept (server.js startRelay docblock, dispatch #32): every
+ * socket lands in `room.lobby`, and the data plane forwards ONLY between
+ * `room.active.browser` and `room.active.phone`. A pair that never performs the
+ * handshake stays in the lobby forever and every frame it sends is dropped and
+ * logged (`Dropping lobby-phone frame`). That run was a 24 h soak of the
+ * rejection path wearing a healthy heartbeat.
+ *
+ * So the runner now drives the real handshake, in the relay's own words:
+ *
+ *   browser --BROWSER_REQUEST_PAIRING:{ua,ip}--> relay
+ *   relay   --PAIRING_REQUEST:{pairingId,...}--> phone
+ *   phone   --ACCEPT_PAIRING:{pairingId}------> relay
+ *   relay   --PAIRING_ACTIVE:{...}------------> BOTH
+ *
+ * and a pair is "open" only once BOTH of its sockets have seen PAIRING_ACTIVE.
+ * The heartbeat's onOpen/offOpen now mean exactly that — sockets-open is no
+ * longer sufficient, because sockets-open is the state that lied.
+ *
+ * WE RE-RUN THE HANDSHAKE ON EVERY RECONNECT rather than leaning on the relay's
+ * resume claim. The claim (RESUME_WINDOW_MS soft hold) only re-forms a pair
+ * when the SAME room's surviving peer is still active and the drop is inside
+ * the window; outside it the relay sends PAIRING_TERMINATED and both sockets
+ * return to the lobby. A soak whose recovery depended on the claim would go
+ * quietly back to lobby-soaking the first time a reconnect fell outside the
+ * window — the exact failure this fix exists to remove — so the runner re-arms
+ * unconditionally and the relay's own `already_active` reject is what makes
+ * that idempotent. PAIRING_ACTIVE arriving from a resume is indistinguishable
+ * from one arriving from a fresh accept, and both are counted.
+ *
+ * TRAFFIC IS COUNTED WHERE IT LANDS. framesSent* only increments for a frame
+ * the runner sent while the pair was ACTIVE, and framesRecv* counts frames on
+ * the BROWSER socket — i.e. frames the relay actually forwarded. Counting sends
+ * alone is how the first verifier would have graded a zero-forward window VALID.
+ *
  * NOTHING HERE STARTS A CLOCK ON ITS OWN, AND IMPORTING IT STARTS NOTHING AT
  * ALL. The window begins when Ken starts the container (R-AM). Everything that
  * seeds a user, opens a socket or reads a wall clock now lives inside `main()`,
@@ -103,10 +141,41 @@ export function appendLine(file, obj) {
  */
 export const EXPECTED_CLOSE_CODES = new Set([1000, 1001, 4010]);
 
+/**
+ * Relay control frames that mean the pair is NOT active and must not be
+ * mistaken for noise. PAIRING_REJECTED is the relay refusing to form the pair
+ * at all; PAIRING_TERMINATED is an active pair being torn down. Both are
+ * counted as unexpected: in a healthy window with zero unexpected closes and
+ * zero reconnects neither can legitimately occur, and a window that saw them
+ * spent part of itself back in the lobby.
+ */
+export const UNEXPECTED_PAIRING_FRAMES = new Set(['PAIRING_REJECTED', 'PAIRING_TERMINATED']);
+
+/**
+ * Split a relay frame into `TYPE` and its JSON payload.
+ *
+ * The wire format is `TYPE:{json}` at every server.js safeSend site. Exported
+ * so the handshake logic is testable without a socket, and so an unparseable
+ * payload on a known type comes back marked rather than swallowed — protocol
+ * drift is not something a 24 h window should absorb silently.
+ */
+export function parseFrame(raw) {
+  const text = typeof raw === 'string' ? raw : String(raw);
+  const i = text.indexOf(':');
+  if (i === -1) return { type: text, payload: null, parsed: false };
+  const type = text.slice(0, i);
+  try { return { type, payload: JSON.parse(text.slice(i + 1)), parsed: true }; }
+  catch { return { type, payload: null, parsed: false }; }
+}
+
 export function newCounters() {
   return {
     framesSentOn: 0,
     framesSentOff: 0,
+    // Counted on the BROWSER socket only: these are the frames the relay CHOSE
+    // to forward. Counting the phone socket's receives too would fold the
+    // runner's own control-plane traffic in and prove nothing about the data
+    // plane, which is the only thing a forward-path soak is about.
     framesRecvOn: 0,
     framesRecvOff: 0,
     opensOn: 0,
@@ -116,6 +185,19 @@ export function newCounters() {
     unexpectedCloseLog: [],
     reconnects: 0,
     sealOpenFailures: 0,
+    // Handshake bookkeeping. pairingsOn/Off is how many times each pair reached
+    // PAIRING_ACTIVE on BOTH sockets — 1 for a clean window, more only if it
+    // had to re-form after a reconnect.
+    pairingsOn: 0,
+    pairingsOff: 0,
+    pairingRequests: 0,
+    pairingRejected: 0,
+    pairingTerminated: 0,
+    pairingTimeouts: 0,
+    // Frames the runner declined to send because its pair was not active. A
+    // non-zero value on a window with no reconnects means the relay never let
+    // the pair form — the exact defect this file was rewritten to expose.
+    ticksSkippedNotActive: 0,
   };
 }
 
@@ -146,7 +228,142 @@ export async function main(env = process.env) {
    * idle. An idle socket for 24 h proves the TCP stack works, not the relay.
    */
   function makePair({ name, mode, urls }) {
-    const pair = { name, mode, phone: null, browser: null, seq: 0, lastError: null };
+    const pair = {
+      name, mode, phone: null, browser: null, seq: 0, lastError: null,
+      // Handshake state. `active` is the ONLY thing that makes this pair count
+      // as open — see the heartbeat below.
+      active: false,
+      phoneActive: false,
+      browserActive: false,
+      phoneLobby: false,
+      browserLobby: false,
+      pendingRequest: false,
+      retryTimer: null,
+    };
+
+    const recvBump = () => { if (mode === 'on') counters.framesRecvOn += 1; else counters.framesRecvOff += 1; };
+    const activeBump = () => { if (mode === 'on') counters.pairingsOn += 1; else counters.pairingsOff += 1; };
+
+    /** Both sides saw PAIRING_ACTIVE — and only then is the data plane open. */
+    const settleActive = () => {
+      if (pair.active || !pair.phoneActive || !pair.browserActive) return;
+      pair.active = true;
+      pair.pendingRequest = false;
+      activeBump();
+    };
+
+    /**
+     * Back to the lobby. Clears BOTH halves of the active flag, so a stale
+     * PAIRING_ACTIVE still in flight to the other side cannot re-open the pair
+     * on its own.
+     */
+    const dropToLobby = () => {
+      pair.active = false;
+      pair.phoneActive = false;
+      pair.browserActive = false;
+      pair.pendingRequest = false;
+    };
+
+    /**
+     * Ask the relay to form the pair.
+     *
+     * Guarded on BOTH sockets having reached the lobby, because
+     * BROWSER_REQUEST_PAIRING with no phone in the room is answered
+     * `PAIRING_REJECTED:{reason:'already_pending'}` (server.js maps the
+     * no-phone case onto that existing reason deliberately). Retried on every
+     * reject/timeout: a soak that gives up on the handshake is the bug.
+     */
+    const requestPairing = () => {
+      if (pair.active || pair.pendingRequest) return;
+      if (!pair.phoneLobby || !pair.browserLobby) return;
+      if (pair.browser?.readyState !== WebSocket.OPEN) return;
+      pair.pendingRequest = true;
+      counters.pairingRequests += 1;
+      // No `e2e` block. Mode ON here means a sealed-SHAPED data body, not a
+      // real encrypted pairing; sending a mode=1 block would put the handshake
+      // at the mercy of E2E_PAIRING_ENABLED (server.js refuses it outright when
+      // the kill switch is off) and the soak would be measuring the kill switch
+      // instead of the forward path.
+      pair.browser.send(`BROWSER_REQUEST_PAIRING:${JSON.stringify({
+        ua: `soak-runner/${name}`, ip: '127.0.0.1',
+      })}`);
+    };
+
+    const retryPairing = () => {
+      clearTimeout(pair.retryTimer);
+      pair.retryTimer = setTimeout(requestPairing, 2000);
+      pair.retryTimer.unref?.();
+    };
+
+    const onPhoneFrame = (raw) => {
+      const { type, payload } = parseFrame(raw);
+      switch (type) {
+        case 'LOBBY_STATUS':
+          pair.phoneLobby = true;
+          requestPairing();
+          break;
+        case 'PAIRING_REQUEST':
+          // The accept must echo the relay's OWN pairingId; a mismatch is
+          // ignored ("ACCEPT_PAIRING ignored — id mismatch") and the pair would
+          // silently never form.
+          if (payload?.pairingId && pair.phone?.readyState === WebSocket.OPEN) {
+            pair.phone.send(`ACCEPT_PAIRING:${JSON.stringify({ pairingId: payload.pairingId })}`);
+          }
+          break;
+        case 'PAIRING_ACTIVE':
+          pair.phoneActive = true;
+          settleActive();
+          break;
+        case 'PAIRING_CANCELLED':
+          counters.pairingTimeouts += 1;
+          dropToLobby();
+          retryPairing();
+          break;
+        case 'PAIRING_TERMINATED':
+          counters.pairingTerminated += 1;
+          dropToLobby();
+          retryPairing();
+          break;
+        default:
+          break;
+      }
+    };
+
+    const onBrowserFrame = (raw) => {
+      recvBump();
+      const { type } = parseFrame(raw);
+      switch (type) {
+        case 'LOBBY_STATUS':
+          pair.browserLobby = true;
+          requestPairing();
+          break;
+        case 'PHONE_PRESENT':
+          pair.phoneLobby = true;
+          requestPairing();
+          break;
+        case 'PAIRING_ACTIVE':
+          pair.browserActive = true;
+          settleActive();
+          break;
+        case 'PAIRING_REJECTED':
+          counters.pairingRejected += 1;
+          pair.pendingRequest = false;
+          retryPairing();
+          break;
+        case 'PAIRING_TIMEOUT':
+          counters.pairingTimeouts += 1;
+          dropToLobby();
+          retryPairing();
+          break;
+        case 'PAIRING_TERMINATED':
+          counters.pairingTerminated += 1;
+          dropToLobby();
+          retryPairing();
+          break;
+        default:
+          break;
+      }
+    };
 
     const wire = (role) => {
       // A FRESH ticket per connect. A cached one survives the first reconnect
@@ -156,10 +373,16 @@ export async function main(env = process.env) {
       ws.on('open', () => {
         if (mode === 'on') counters.opensOn += 1; else counters.opensOff += 1;
       });
-      ws.on('message', () => {
-        if (mode === 'on') counters.framesRecvOn += 1; else counters.framesRecvOff += 1;
+      ws.on('message', (data) => {
+        if (role === 'phone') onPhoneFrame(data.toString());
+        else onBrowserFrame(data.toString());
       });
       ws.on('close', (code, reason) => {
+        // This socket is gone, so the pair is not active whatever the other
+        // half still believes — and the lobby flag for THIS role resets, so the
+        // reconnect's own LOBBY_STATUS is what re-arms the handshake.
+        if (role === 'phone') pair.phoneLobby = false; else pair.browserLobby = false;
+        dropToLobby();
         if (EXPECTED_CLOSE_CODES.has(code)) {
           counters.closesExpected += 1;
         } else {
@@ -180,6 +403,9 @@ export async function main(env = process.env) {
       return ws;
     };
 
+    // Phone first. BROWSER_REQUEST_PAIRING needs a phone already in the lobby;
+    // the handshake retries regardless, but this order keeps the common path
+    // free of a rejected first attempt.
     pair.phone = wire('phone');
     pair.browser = wire('browser');
     return pair;
@@ -196,14 +422,20 @@ export async function main(env = process.env) {
    * relay and not to the harness watching it.
    */
   function tick(pair) {
+    // NOT ACTIVE, NOT SENT. A frame from a lobby socket is dropped by the relay
+    // and logged; counting it as "sent" is precisely what let the first window
+    // report traffic it never carried. Skips are counted instead, so a window
+    // that never paired is loud in its own trace rather than silent.
+    if (!pair.active || pair.phone?.readyState !== WebSocket.OPEN) {
+      counters.ticksSkippedNotActive += 1;
+      return;
+    }
     const s = pair.seq++;
     const body = pair.mode === 'on'
       ? { e: 1, kid: `soak-${pair.name}`, s, c: crypto.randomBytes(96).toString('base64url') }
       : { text: `soak ${pair.name} ${s}`, at: Date.now() };
-    if (pair.phone?.readyState === WebSocket.OPEN) {
-      pair.phone.send(`SMS_RECEIVED:${JSON.stringify(body)}`);
-      if (pair.mode === 'on') counters.framesSentOn += 1; else counters.framesSentOff += 1;
-    }
+    pair.phone.send(`SMS_RECEIVED:${JSON.stringify(body)}`);
+    if (pair.mode === 'on') counters.framesSentOn += 1; else counters.framesSentOff += 1;
   }
 
   // ── trace sampling ───────────────────────────────────────────────────────
@@ -233,6 +465,7 @@ export async function main(env = process.env) {
         onPhone: pairs.on.phone?.readyState, onBrowser: pairs.on.browser?.readyState,
         offPhone: pairs.off.phone?.readyState, offBrowser: pairs.off.browser?.readyState,
       },
+      active: { on: pairs.on.active === true, off: pairs.off.active === true },
     };
   }
 
@@ -255,17 +488,42 @@ export async function main(env = process.env) {
 
   const deadline = Date.parse(START) + HOURS * 3600_000;
 
+  // fwdOn/fwdOff are DELTAS: frames the relay forwarded to the browser socket
+  // since the previous beat. A cumulative number can only ever go up and so
+  // looks healthy forever after one good minute; a delta that goes to zero
+  // names the beat where forwarding stopped.
+  let lastRecvOn = 0, lastRecvOff = 0;
+
   const hb = setInterval(() => {
     // The heartbeat carries enough to prove the pairs were HELD, not merely
     // that a timer fired — a heartbeat that only says "alive" cannot
     // distinguish a running soak from a running clock.
+    //
+    // onOpen/offOpen NOW MEAN ACTIVE. Sockets-open was the field that lied in
+    // the 02:32Z window: all four sockets were open for the whole run and not
+    // one frame was forwarded. A pair is open here only when both its sockets
+    // are OPEN *and* both have seen PAIRING_ACTIVE.
+    const open = (p) => p.phone?.readyState === WebSocket.OPEN
+      && p.browser?.readyState === WebSocket.OPEN && p.active === true;
+    const fwdOn = counters.framesRecvOn - lastRecvOn;
+    const fwdOff = counters.framesRecvOff - lastRecvOff;
+    lastRecvOn = counters.framesRecvOn;
+    lastRecvOff = counters.framesRecvOff;
     appendLine(HEARTBEAT_PATH, {
       utc: new Date().toISOString(), kind: 'hb', sha: SHA,
       elapsedMin: Math.round((Date.now() - Date.parse(START)) / 60_000),
-      onOpen: pairs.on.phone?.readyState === WebSocket.OPEN && pairs.on.browser?.readyState === WebSocket.OPEN,
-      offOpen: pairs.off.phone?.readyState === WebSocket.OPEN && pairs.off.browser?.readyState === WebSocket.OPEN,
+      onOpen: open(pairs.on),
+      offOpen: open(pairs.off),
+      // Stated separately from onOpen so a future reader can tell "socket died"
+      // apart from "socket fine, pair fell back to the lobby".
+      onActive: pairs.on.active === true,
+      offActive: pairs.off.active === true,
+      fwdOn,
+      fwdOff,
       rssMb: +(process.memoryUsage().rss / 1048576).toFixed(1),
       unexpectedCloses: counters.closesUnexpected,
+      pairingRejected: counters.pairingRejected,
+      pairingTerminated: counters.pairingTerminated,
     });
   }, HEARTBEAT_MS);
 
@@ -278,6 +536,9 @@ export async function main(env = process.env) {
     appendLine(TRACE_PATH, final);
     appendLine(HEARTBEAT_PATH, { utc: new Date().toISOString(), kind: 'end', sha: SHA, why });
     for (const p of [pairs.on, pairs.off]) {
+      // The handshake retry timer is ours too — an un-cleared one would keep
+      // the loop alive past the window and re-arm a pair we are tearing down.
+      clearTimeout(p.retryTimer);
       // Close by handle, never by killing anything: this process owns exactly
       // these four sockets and nothing else.
       try { p.phone?.removeAllListeners('close'); p.phone?.close(1000); } catch { /* closing */ }

@@ -30,6 +30,22 @@
  * and a second file — so the guards are proven able to go red before the one
  * window that counts depends on them.
  *
+ * ── WHAT THE VERDICT IS MADE OF (SOAK-RIG-2) ──────────────────────────────
+ * Continuity and duration decide whether the WINDOW is real. They cannot decide
+ * whether anything was SOAKED. The 2026-09-20T02:32Z run was 100% continuous,
+ * held four authed sockets, logged zero unexpected closes — and forwarded not
+ * one frame, because the runner never performed the relay's Connect+Accept
+ * handshake and both rooms sat in the lobby. This file would have called it
+ * VALID, because its traffic check read `framesSent`: a counter the runner
+ * increments by itself, about frames the relay was throwing away.
+ *
+ * So the traffic verdict is now RECEIVE-based and the activity verdict is
+ * explicit: every heartbeat must report both pairs ACTIVE with a non-zero
+ * forward delta, and the end-of-run counters must show the relay returned at
+ * least 90% of what was sent on BOTH pairs. A heartbeat file from the old rig
+ * lacks those fields and fails — deliberately. It is evidence produced by a rig
+ * that could not tell the difference.
+ *
  * Usage:
  *   node soak/verify-soak.mjs <heartbeat.jsonl> [trace.jsonl] [--hours 24]
  */
@@ -141,6 +157,37 @@ export function verifySoak({ files, hours = 24, log = () => {} }) {
   check('both pairs were held open at every heartbeat',
     held.length > 0 && bothOpen.length === held.length,
     `${bothOpen.length}/${held.length} beats had both pairs open`);
+
+  // ── the pairs were ACTIVE, not merely connected ──────────────────────────
+  // SOAK-RIG-2. The 02:32Z window had four open sockets for its whole life and
+  // forwarded nothing: the runner never sent BROWSER_REQUEST_PAIRING, so both
+  // rooms stayed in the lobby and the relay dropped every frame. onOpen alone
+  // could not see that, and this verifier would have graded it VALID. A beat
+  // that does not assert its pairs are ACTIVE is now a beat that fails the run
+  // — an OLD heartbeat file (no onActive field) therefore fails too, which is
+  // correct: it is evidence from a rig that could not tell.
+  const notActive = held.filter((b) => !(b.onActive === true && b.offActive === true));
+  check('no heartbeat reports a pair that is not ACTIVE',
+    held.length > 0 && notActive.length === 0,
+    notActive.length
+      ? `${notActive.length}/${held.length} beats not active, first at ${notActive[0].utc}`
+      : `${held.length} beats, all active`);
+
+  // Forwarding is what a forward-path soak is FOR. fwdOn/fwdOff are per-beat
+  // deltas of frames the relay forwarded to the browser socket, so a window
+  // that stops forwarding halfway names the beat rather than hiding inside a
+  // cumulative total that can only go up.
+  const noFwd = held.filter((b) => !((b.fwdOn || 0) > 0 && (b.fwdOff || 0) > 0));
+  check('every heartbeat saw the relay forward frames on both pairs',
+    held.length > 0 && noFwd.length === 0,
+    noFwd.length
+      ? `${noFwd.length}/${held.length} beats with a zero forward delta, first at ${noFwd[0].utc}`
+      : `${held.length} beats forwarding`);
+
+  check('no pairing was rejected or terminated during the window',
+    held.every((b) => (b.pairingRejected || 0) === 0 && (b.pairingTerminated || 0) === 0),
+    `max rejected=${Math.max(0, ...held.map((b) => b.pairingRejected || 0))} `
+    + `terminated=${Math.max(0, ...held.map((b) => b.pairingTerminated || 0))}`);
   check('zero unexpected closes across the window',
     held.every((b) => (b.unexpectedCloses || 0) === 0),
     `max unexpectedCloses seen: ${Math.max(0, ...held.map((b) => b.unexpectedCloses || 0))}`);
@@ -175,9 +222,29 @@ export function verifySoak({ files, hours = 24, log = () => {} }) {
     if (end) {
       check('runner ended because its window completed, not because it was killed',
         end.why === 'window-complete', `why=${end.why}`);
+      // SOAK-RIG-2 — WHY THIS IS NOT framesSent.
+      // It used to be. framesSent counts what the RUNNER handed to a socket,
+      // which a relay that drops every frame from a lobby socket will happily
+      // let you accumulate for 24 h. The only number that means "the relay
+      // carried it" is what came back on the BROWSER socket, so the check is
+      // recv-based and two-sided: both pairs must have received, and the recv
+      // total must track the sent total rather than being a token handful of
+      // control frames. 0.9 leaves room for the last few frames still in
+      // flight when the window closed; it does not leave room for a lobby.
+      const c = end.counters || {};
+      const sent = (c.framesSentOn || 0) + (c.framesSentOff || 0);
+      const recv = (c.framesRecvOn || 0) + (c.framesRecvOff || 0);
+      const ratio = sent > 0 ? recv / sent : 0;
       check('final counters show traffic actually flowed',
-        (end.counters?.framesSentOn || 0) > 0 && (end.counters?.framesSentOff || 0) > 0,
-        JSON.stringify(end.counters || {}).slice(0, 200));
+        (c.framesSentOn || 0) > 0 && (c.framesSentOff || 0) > 0
+        && (c.framesRecvOn || 0) > 0 && (c.framesRecvOff || 0) > 0,
+        JSON.stringify(c).slice(0, 240));
+      check('the relay forwarded at least 90% of what was sent',
+        sent > 0 && ratio >= 0.9,
+        `sent=${sent} recv=${recv} ratio=${ratio.toFixed(3)}`);
+      check('no tick was skipped for want of an active pair',
+        (c.ticksSkippedNotActive || 0) === 0,
+        `ticksSkippedNotActive=${c.ticksSkippedNotActive ?? 'absent'}`);
     }
   } else {
     log('  note trace file not supplied — memory/CPU trend not checked');
