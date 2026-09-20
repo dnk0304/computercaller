@@ -40,6 +40,7 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
 import { harnessesFor, KNOWN_PHASES, phaseTableProblems } from './lib/harness-list.mjs';
+import { resolveJavaHome } from './lib/java-home.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
 // longer encodes the phase in the worktree name.
 import { isGateWorktree, isGateMain } from './gate-location.mjs';
@@ -1622,7 +1623,28 @@ if (ANDROID) {
      */
     const gradlew = `"${join(AROOT, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew')}"`;
 
-    run('android:assembleDebug', `${gradlew} :app:assembleDebug`, { cwd: AROOT, timeout: 30 * 60_000 });
+    /**
+     * GATE-JAVA-HOME. ANDROID-LINT-2 run 1 lost all three gradle steps below
+     * to exit 9009 in 31 ms: "JAVA_HOME is not set and no java command could
+     * be found in your PATH". None of these calls passes `scrub: true`, so
+     * they inherit process.env verbatim — the lane's verdict was decided by
+     * whether the invoking shell happened to export JAVA_HOME. That is an
+     * environment non-run wearing a lane result's clothes.
+     *
+     * So the gate derives it itself and injects it explicitly, and records
+     * WHICH jdk graded the lane in the step's meta. No JDK is a LOUD FAIL
+     * plus three skips — never a silent PASS, same shape as
+     * `android:gradlew-present`. The two run() calls inherit that via
+     * `needs`, which already writes the "depends on X, which failed" skip.
+     */
+    const javaHome = resolveJavaHome();
+    record('android:java-home', 'resolveJavaHome()', javaHome ? 0 : 1, 0,
+      { missing: javaHome ? 0 : 1 },
+      javaHome ? { javaHome: javaHome.replace(/\\/g, '/') } : {});
+
+    run('android:assembleDebug', `${gradlew} :app:assembleDebug`, {
+      cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
+    });
 
     /**
      * ANDROID-LINT (a2). The verdict is the MANIFEST CHECK, not gradle's exit.
@@ -1644,7 +1666,10 @@ if (ANDROID) {
      * first (which also stops gradle reporting UP-TO-DATE and leaving the old
      * XML in place), then require one written after the step started.
      */
-    {
+    if (!javaHome) {
+      skip('android:lint', `${gradlew} :app:lintDebug --continue && node tools/lint-manifest.mjs --check  (cwd dnkdialer-android)`,
+        'not run — depends on "android:java-home", which failed');
+    } else {
       const t0 = Date.now();
       const report = join(AROOT, 'app/build/reports/lint-results-debug.xml');
       const manifestTool = join(AROOT, 'tools', 'lint-manifest.mjs');
@@ -1653,6 +1678,7 @@ if (ANDROID) {
       const startedAt = Date.now();
       const lint = spawnSync(`${gradlew} :app:lintDebug --continue`, {
         cwd: AROOT, shell: true, encoding: 'utf8', timeout: 30 * 60_000, maxBuffer: 256 * 1024 * 1024,
+        env: { ...process.env, JAVA_HOME: javaHome },
       });
       let out = `${lint.stdout || ''}${lint.stderr || ''}`;
       const gradleExit = lint.status === null ? 124 : lint.status;
@@ -1689,7 +1715,9 @@ if (ANDROID) {
     }
 
     if (['P4', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) {
-      run('android:SasVectorsTest', `${gradlew} :app:connectedDebugAndroidTest --tests "*SasVectorsTest"`, { cwd: AROOT, timeout: 30 * 60_000 });
+      run('android:SasVectorsTest', `${gradlew} :app:connectedDebugAndroidTest --tests "*SasVectorsTest"`, {
+        cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
+      });
     }
   }
   // Step 12 is a prohibition, not a command: the gate never signs a release

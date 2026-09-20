@@ -28,6 +28,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { BASE_SHA as PROGRAMME_BASE_SHA, resolveScopeBase } from './scope.mjs';
+import { resolveJavaHome } from '../../tools/lib/java-home.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODULE_ROOT = resolve(HERE, '..');
@@ -120,7 +121,19 @@ function finish(rec, { exit, counts } = {}) {
 // execSync's shell even with cwd set to the module root — it is not on PATH
 // and cmd.exe does not search the child's cwd. Cost a false FAIL in (s7).
 const gradlew = `"${join(MODULE_ROOT, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew')}"`;
-const gradleOpts = { cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: true };
+/**
+ * GATE-JAVA-HOME. Same rule as tools/e2e-gate.mjs section 11: gradle exits
+ * 9009 in 31 ms when the invoking shell has no JAVA_HOME, and that is an
+ * environment non-run, not a lane result. Derive it once; inject it
+ * explicitly so this gate's verdict never depends on the caller's shell.
+ * Null is left null and passed as '' — gradle then fails loudly exactly as
+ * it does today, rather than the gate quietly grading nothing.
+ */
+const JAVA_HOME = resolveJavaHome();
+const gradleOpts = {
+  cwd: MODULE_ROOT, encoding: 'utf8', stdio: 'pipe', shell: true,
+  env: { ...process.env, JAVA_HOME: JAVA_HOME || '' },
+};
 
 // ---------------------------------------------------------------- step 1
 {
