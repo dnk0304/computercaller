@@ -532,7 +532,14 @@ export function useE2e(emailProp?: string | null): E2eApi {
     if (!isSealedFrameType(type)) return { drop: false, payload };
     const result = await session.open(type, payload);
     if (result.ok) {
-      setView((v) => ({ ...v, debug: { ...v.debug, drops: session.drops } }));
+      setView((v) => ({
+        ...v,
+        debug: {
+          ...v.debug,
+          drops: session.drops,
+          refusedForwardJump: session.refusedForwardJump,
+        },
+      }));
       return { drop: false, payload: JSON.parse(new TextDecoder().decode(result.plaintext)) };
     }
     if (result.reason === 'shape') {
@@ -574,7 +581,16 @@ export function useE2e(emailProp?: string | null): E2eApi {
       setView((v) => ({ ...v, debug: { ...v.debug, downgradesDropped: downgradeDropsRef.current } }));
       return { drop: true };
     }
-    setView((v) => ({ ...v, debug: { ...v.debug, drops: session.drops } }));
+    // A5 / M-A5-2: a 'forward-jump' refusal lands here with the rest of the
+    // drops, and the counter is what tells them apart in the debug surface.
+    setView((v) => ({
+      ...v,
+      debug: {
+        ...v.debug,
+        drops: session.drops,
+        refusedForwardJump: session.refusedForwardJump,
+      },
+    }));
     return { drop: true };
   }, []);
 

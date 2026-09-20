@@ -411,7 +411,19 @@ export interface E2eView {
   peer: { supports: boolean; kind: SwKeyStatus };
   sas: { digits: string | null; confirmed: boolean };
   /** Debug surface. Dropped frames are not an error the user can act on. */
-  debug: { drops: number; downgradesDropped: number; kid: string | null };
+  debug: {
+    drops: number;
+    downgradesDropped: number;
+    kid: string | null;
+    /**
+     * A5 / M-A5-2. Frames refused for jumping more than one dedupe window
+     * past the highest AUTHENTICATED seq. Separate from `drops` on purpose:
+     * `drops` is ordinary resume-replay housekeeping and this is the only
+     * observable difference between a receiver that bounds forward jumps and
+     * one that silently does not.
+     */
+    refusedForwardJump: number;
+  };
 }
 
 export const E2E_VIEW_INITIAL: E2eView = {
@@ -419,7 +431,7 @@ export const E2E_VIEW_INITIAL: E2eView = {
   state: 'unencrypted',
   peer: { supports: false, kind: 'unknown' },
   sas: { digits: null, confirmed: false },
-  debug: { drops: 0, downgradesDropped: 0, kid: null },
+  debug: { drops: 0, downgradesDropped: 0, kid: null, refusedForwardJump: 0 },
 };
 
 /**
