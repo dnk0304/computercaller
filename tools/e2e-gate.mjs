@@ -1435,7 +1435,7 @@ if (WEB) {
   // Gated to P6 and later because they are P6 deliverables and did not exist at
   // BASE_SHA; running them under an earlier --phase would report `missing` for
   // a file that was never supposed to be there yet.
-  if (['P6', 'P7', 'P8', 'D1'].includes(PHASE)) {
+  if (['P6', 'P6.1', 'P7', 'P8', 'D1'].includes(PHASE)) {
     const P6_REAL_RELAY = [
       // (e) 10,000 frames across a resume, counters asserted on all three lanes.
       ['p6:replay', 'scripts/e2e-replay-proof.mjs'],
@@ -1769,7 +1769,7 @@ if (ANDROID) {
       }
     }
 
-    if (['P4', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) {
+    if (['P4', 'P5B', 'P6', 'P6.1', 'P7', 'P8'].includes(PHASE)) {
       run('android:SasVectorsTest', `${gradlew} :app:connectedDebugAndroidTest --tests "*SasVectorsTest"`, {
         cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
       });
