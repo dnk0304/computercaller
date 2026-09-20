@@ -1063,7 +1063,20 @@ let LANE_CHANGED = [];
   const changed = gitOut(['diff', '--name-only', `${SCOPE_BASE.sha}..HEAD`]).split('\n').filter(Boolean);
   const android = changed.filter((f) => f.startsWith('dnkdialer-android/'));
   const nonAndroid = changed.filter((f) => !f.startsWith('dnkdialer-android/'));
-  const offSide = DEFAULT_LANE === 'android' ? nonAndroid : android;
+  // FT-MERGE-2 (d1), Ken R-AU. Keyed on LANE, not DEFAULT_LANE.
+  //
+  // `--lane all` had no read path here: this line asked DEFAULT_LANE, which
+  // is a pure function of PHASE, so `--phase D1 --lane all` still graded every
+  // android file as off-lane and reported offLane 15 on the FT-MERGE gates —
+  // the artefact R-AU rules is not a defect. It was also self-contradictory:
+  // ANDROID is true under `all`, so the gate ran assembleDebug and lintDebug
+  // over the very files it was calling out of scope.
+  //
+  // Under `all` BOTH lanes are in scope, so nothing is off-lane and the step
+  // degrades to "did this lane change anything outside the repo?" — vacuously
+  // true. It still reports `android` and `nonAndroid` counts, so the numbers
+  // a reviewer reads are unchanged; only the PASS/FAIL predicate moves.
+  const offSide = LANE === 'all' ? [] : (LANE === 'android' ? nonAndroid : android);
   record('scope-diff-vs-base', `git diff --name-only ${SCOPE_BASE.sha.slice(0, 7)}..HEAD`,
     offSide.length === 0 ? 0 : 1, Date.now() - t0,
     {
