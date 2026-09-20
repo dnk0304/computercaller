@@ -357,8 +357,11 @@ android {
         // is consumed EXACTLY ONCE by the eventual signed release; a Play
         // rejection means 59, never a re-signed 58. P4 builds DEBUG only —
         // signing and upload are human steps (DO-NOT-AUTO-RESUME).
-        versionCode = 58
-        versionName = "1.0.34"
+        // FT-MERGE-2 (c): 58 -> 59 because vc58 is CONSUMED by the signed v58
+        // release (P5b (e)); per the note above a consumed code is never
+        // re-signed, so the FT-2 file-transfer work ships as v59.
+        versionCode = 59
+        versionName = "1.0.35"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
