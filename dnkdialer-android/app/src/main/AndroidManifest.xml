@@ -3,37 +3,41 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      ANDROID-LINT (b3) — PermissionImpliesUnsupportedChromeOsHardware x5.
+      ANDROID-LINT-2 (Pilot R-AZ) — telephony vs camera uses-feature.
 
-      CALL_PHONE / SEND_SMS / RECEIVE_SMS / READ_SMS each IMPLY
-      <uses-feature android:name="android.hardware.telephony" android:required="true"/>
-      and CAMERA implies android.hardware.camera required="true", unless the
-      manifest says otherwise. That implicit "required" is a DISTRIBUTION rule,
-      not a runtime one: Play filters the listing to devices that have the
-      hardware, so today this app is invisible to Chromebooks, Wi-Fi tablets
-      and any device without a radio.
+      CALL_PHONE / SEND_SMS / RECEIVE_SMS / READ_SMS each imply
+      <uses-feature android:name="android.hardware.telephony" android:required="true"/>.
+      That implication STAYS: telephony is required. The Play device list must
+      remain exactly what the live listing already has. Shipping to Chromebooks
+      Wi-Fi tablets and radio-less devices would put the dialer/SMS surfaces on
+      hardware where they are inert — the "unable to verify core functionality"
+      path of the June 2026 SMS/Call-Log rejection. No required="false" line for
+      telephony; the implicit required="true" is the declaration.
 
-      Declaring required="false" WIDENS eligibility — it never narrows it — and
-      it is the honest declaration for this app: the companion pairs with a
-      phone and its call/SMS surfaces already degrade gracefully when the
-      platform refuses (CallHandler returns false, the UI reports it). A device
-      without a radio gets the paired-dialer surfaces and not the local ones.
-      PILOT NOTE: this changes the Play device list (more devices, none
-      removed). Nothing else about the listing, permissions or policy moves.
+      CAMERA is different: it is only used for QR pairing, and pairing has a
+      non-QR fallback, so android.hardware.camera is declared required="false".
+
+      The resulting PermissionImpliesUnsupportedChromeOsHardware lint warning on
+      the four telephony permissions is suppressed per-permission via
+      tools:ignore (never at the manifest root, which would mask the check for
+      any permission added later).
     -->
-    <uses-feature android:name="android.hardware.telephony" android:required="false"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
 
     <!-- Phone permissions -->
-    <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <uses-permission android:name="android.permission.CALL_PHONE"
+        tools:ignore="PermissionImpliesUnsupportedChromeOsHardware"/>
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS"/>
     <uses-permission android:name="android.permission.READ_CALL_LOG"/>
 
     <!-- SMS permissions -->
-    <uses-permission android:name="android.permission.SEND_SMS"/>
-    <uses-permission android:name="android.permission.RECEIVE_SMS"/>
-    <uses-permission android:name="android.permission.READ_SMS"/>
+    <uses-permission android:name="android.permission.SEND_SMS"
+        tools:ignore="PermissionImpliesUnsupportedChromeOsHardware"/>
+    <uses-permission android:name="android.permission.RECEIVE_SMS"
+        tools:ignore="PermissionImpliesUnsupportedChromeOsHardware"/>
+    <uses-permission android:name="android.permission.READ_SMS"
+        tools:ignore="PermissionImpliesUnsupportedChromeOsHardware"/>
 
     <!-- Contacts permission -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
