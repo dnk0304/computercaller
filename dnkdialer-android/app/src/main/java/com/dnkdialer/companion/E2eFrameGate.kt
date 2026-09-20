@@ -359,6 +359,15 @@ class E2eFrameGate(
                 Inbound.Drop("duplicate")
             }
 
+            is E2eSession.Opened.RefusedForwardJump -> {
+                // A5 / M-A5-2. Counted in the gate's own drop total as well,
+                // because from the gate's side it IS an inbound frame that was
+                // thrown away; the security-specific count lives on the session
+                // and survives the epoch this gate's session does not.
+                droppedInbound++
+                Inbound.Drop("refused forward jump")
+            }
+
             is E2eSession.Opened.Undecryptable -> {
                 droppedInbound++
                 if (opened.requestRepair) repairRequested = true

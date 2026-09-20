@@ -47,6 +47,29 @@ object E2eLifecycle {
 
     private const val TAG = "E2eLifecycle"
 
+    /**
+     * GATE1 Addendum A5, MUST M-A5-2 — the process-lifetime forward-jump
+     * refusal counter, and the reason it lives HERE.
+     *
+     * [E2eDedupe] is rebuilt on every pairEpoch change (E2eSession.forPhone
+     * constructs a new window per epoch), so a counter held by the window would
+     * be zeroed by an epoch change — and an epoch change is something an
+     * attacker can provoke. The vector file's `counterRule`: a counter an
+     * attacker can zero is not a counter. This object is the owner that
+     * survives epochs, so the counter hangs here and each window increments it.
+     *
+     * The web lane keeps the same property with a closure that outlives
+     * `reset()`; the SW lane counts on its drops record rather than on the
+     * per-epoch window. Three lanes, one rule.
+     */
+    val forwardJumpCounter = E2eDedupe.ForwardJumpCounter()
+
+    /**
+     * Total forward-jump refusals since process start. Exported the way
+     * `droppedTotal` is, because §13.5 makes observability the deliverable.
+     */
+    val refusedForwardJump: Long get() = forwardJumpCounter.value
+
     private const val PREFS = "computercaller_e2e_identity"
     private const val KEY_DEVICE_ID = "device_id"
 

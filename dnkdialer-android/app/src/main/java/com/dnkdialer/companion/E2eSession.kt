@@ -55,6 +55,16 @@ class E2eSession private constructor(
     val droppedFrames: Long get() = inbound.droppedTotal
 
     /**
+     * A5 / M-A5-2. Forward-jump refusals, session-lifetime — it is NOT zeroed
+     * when a new epoch rebuilds the window. Exposed so a refusal is observable
+     * from the debug surface and from P6.1b's cross-impl driver.
+     */
+    val refusedForwardJump: Long get() = inbound.refusedForwardJump
+
+    /** A5 / M-A5-2. -1 until a frame has authenticated in this epoch. */
+    val highestAccepted: Long get() = inbound.highestAccepted
+
+    /**
      * This device's outbound nonce prefix. Exposed for the (g) harness and for
      * tests that play the peer; production code never needs it, because [seal]
      * already applies it.
@@ -71,6 +81,18 @@ class E2eSession private constructor(
 
         /** Already seen. Drop it silently; a resume legitimately re-sends. */
         data object Duplicate : Opened
+
+        /**
+         * A5 / M-A5-2. More than [E2eDedupe.WINDOW] above the highest sequence
+         * that has authenticated in this epoch. Dropped, floor unmoved, NOT
+         * recorded, counted in [refusedForwardJump].
+         *
+         * A separate variant rather than a [Duplicate] so the two cannot be
+         * confused at a call site: a duplicate is a routine consequence of a
+         * resume, a refusal is reachable only by a frame no honest sender could
+         * have produced.
+         */
+        data object RefusedForwardJump : Opened
 
         /**
          * Did not authenticate, or malformed. Drop the frame and NEVER close
@@ -215,9 +237,13 @@ class E2eSession private constructor(
         ) ?: return Opened.Undecryptable(failures.recordFailure())
 
         failures.reset()
-        return when (inbound.observe(envelope.seq)) {
+        // authenticates = true is a statement of fact, not a convenience: the
+        // AEAD tag verified three lines above, or this line is unreachable.
+        // A5 armRule — only such a frame may raise the high-water mark.
+        return when (inbound.observe(envelope.seq, authenticates = true)) {
             E2eDedupe.Verdict.FRESH -> Opened.Frame(plaintext)
             E2eDedupe.Verdict.DUPLICATE -> Opened.Duplicate
+            E2eDedupe.Verdict.REFUSED_FORWARD_JUMP -> Opened.RefusedForwardJump
         }
     }
 
