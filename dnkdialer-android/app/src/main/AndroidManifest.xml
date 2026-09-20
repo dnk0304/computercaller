@@ -2,6 +2,28 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+      ANDROID-LINT (b3) — PermissionImpliesUnsupportedChromeOsHardware x5.
+
+      CALL_PHONE / SEND_SMS / RECEIVE_SMS / READ_SMS each IMPLY
+      <uses-feature android:name="android.hardware.telephony" android:required="true"/>
+      and CAMERA implies android.hardware.camera required="true", unless the
+      manifest says otherwise. That implicit "required" is a DISTRIBUTION rule,
+      not a runtime one: Play filters the listing to devices that have the
+      hardware, so today this app is invisible to Chromebooks, Wi-Fi tablets
+      and any device without a radio.
+
+      Declaring required="false" WIDENS eligibility — it never narrows it — and
+      it is the honest declaration for this app: the companion pairs with a
+      phone and its call/SMS surfaces already degrade gracefully when the
+      platform refuses (CallHandler returns false, the UI reports it). A device
+      without a radio gets the paired-dialer surfaces and not the local ones.
+      PILOT NOTE: this changes the Play device list (more devices, none
+      removed). Nothing else about the listing, permissions or policy moves.
+    -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+
     <!-- Phone permissions -->
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
