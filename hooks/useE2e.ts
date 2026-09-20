@@ -72,6 +72,8 @@ import {
   readAcceptBlock,
   readEncryptedMode,
   readSwKey,
+  outcomeForRevocationVerdict,
+  readRevocationVerdict,
   sasKeySet,
   viewAfterErrorDismissed,
   viewAfterPairEnded,
@@ -80,6 +82,7 @@ import {
   type E2eView,
   type LocalMode,
   type RequestBlock,
+  type RevocationVerdict,
   type SwKeyResult,
 } from './phoneE2e';
 import {
@@ -168,6 +171,22 @@ export interface E2eApi {
   sealOutbound(type: string, payload: object): Promise<object>;
   /** (e) THE inbound decoder. `drop` frames are silently discarded. */
   openInbound(type: string, payload: unknown): Promise<{ drop: boolean; payload?: unknown }>;
+  /**
+   * F1 / M-A5-1 (b). Re-read the DeviceKey list and act on it. Call this on
+   * EVERY resume, reattach and socket re-establish — not only at Accept.
+   * Returns true when the caller must LEAVE_ACTIVE and abandon the pair.
+   */
+  recheckPinnedKey(): Promise<boolean>;
+  /**
+   * F1 / M-A5-1 (a). THIS side is revoking: sign-out, key rotation, or an
+   * explicit revoke. Drops the SK and the SK-bound counters locally and
+   * returns true so the caller sends RESET_ROOM.
+   *
+   * This is the leg that does not depend on the peer — it works against a peer
+   * that has stopped polling, and it is entirely local state with no relay
+   * trust in it.
+   */
+  revokeLocalPair(reason?: string): Promise<boolean>;
   /** Sign-out wipes SK and keeps the device key. */
   onSignOut(): void;
   /** A new pair / new epoch: drop the session so the next accept rebuilds it. */
@@ -224,6 +243,17 @@ export function useE2e(emailProp?: string | null): E2eApi {
    * refusal off `latchedRef` alone would leave exactly those pairs undefended.
    */
   const sealedLatchedRef = useRef(false);
+  /**
+   * F1 / M-A5-1 (b). Once a re-check has refused, this pair does not unseal
+   * another frame, full stop — not even one that would open. It is STICKY (the
+   * P2.1 pattern): cleared only by an explicit user act or a NEW pairing, never
+   * by anything the relay or the network can cause. A refusal that a
+   * disconnect could clear defends against nothing, because the access it
+   * refuses can simply be preceded by a disconnect.
+   */
+  const refuseUnsealRef = useRef(false);
+  /** The phone key THIS pair derived under — what a re-check compares against. */
+  const pinnedPhoneKeyRef = useRef<string | null>(null);
   const downgradeDropsRef = useRef(0);
   /** The session userId, fetched once. Local identity — never from the wire. */
   const userIdRef = useRef<string | null>(null);
@@ -282,6 +312,71 @@ export function useE2e(emailProp?: string | null): E2eApi {
     setView((v) => ({ ...v, state: 'error', error, mode: v.mode }));
   }, []);
 
+  /**
+   * The ONE place the DeviceKey list is read. Returns a verdict, never a bare
+   * list: a caller that had to interpret rows itself would be a second opinion
+   * about revocation, and two readings of the same rows is how F1 happened.
+   *
+   * A thrown fetch and a non-2xx both land on `fetch-failed`, which is a
+   * REFUSAL. See readRevocationVerdict's own note: a failed fetch is not a pass.
+   */
+  const fetchRevocationVerdict = useCallback(async (): Promise<RevocationVerdict> => {
+    try {
+      const res = await fetch('/api/devicekeys/list', { credentials: 'same-origin' });
+      if (!res.ok) return { live: false, reason: 'fetch-failed' };
+      return readRevocationVerdict(await res.json(), {
+        pinnedPublicKey: pinnedPhoneKeyRef.current,
+      });
+    } catch {
+      return { live: false, reason: 'fetch-failed' };
+    }
+  }, []);
+
+  /**
+   * F1 / M-A5-1 (a). The revoking side tears itself down.
+   *
+   * Local state only, and that is the point: it works against a peer that has
+   * stopped polling and it trusts the relay for nothing. The SK goes, the
+   * SK-bound seq records go (they are meaningless without it and keeping them
+   * would let a restored profile look like a resumable pair), and the caller is
+   * told to RESET_ROOM.
+   */
+  const revokeLocalPair = useCallback(async (reason?: string): Promise<boolean> => {
+    sessionRef.current = null;
+    refuseUnsealRef.current = true;
+    pinnedPhoneKeyRef.current = null;
+    latchedRef.current = false;
+    sealedLatchedRef.current = false;
+    try {
+      // `clear` is optional on the SeqStore interface (P3 supplies its own
+      // store), so this is an optional call rather than a cast.
+      await indexedDbSeqStore().clear?.();
+    } catch {
+      // A store we cannot clear leaves counters that are useless without the
+      // SK we have just dropped. Worth a try, never worth blocking a teardown
+      // the user asked for — the SK is gone either way, which is the control.
+    }
+    fail('re-pair-needed', reason ?? 'this device revoked the pair locally (M-A5-1 a)');
+    return true;
+  }, [fail]);
+
+  /**
+   * F1 / M-A5-1 (b). The pinning side re-checks — at Accept AND on every
+   * resume, reattach and socket re-establish.
+   */
+  const recheckPinnedKey = useCallback(async (): Promise<boolean> => {
+    // Nothing to protect: no SK means no frames are being unsealed. Returning
+    // false here is not a pass, it is "not applicable".
+    if (!sessionRef.current && !refuseUnsealRef.current) return false;
+    if (refuseUnsealRef.current) return true;
+    const outcome = outcomeForRevocationVerdict(await fetchRevocationVerdict());
+    if (!outcome.teardown) return false;
+    sessionRef.current = null;
+    refuseUnsealRef.current = true;
+    fail(outcome.error ?? 're-pair-needed', outcome.detail);
+    return true;
+  }, [fail, fetchRevocationVerdict]);
+
   // ── (b) ─────────────────────────────────────────────────────────────────
   const buildRequestE2e = useCallback(async (): Promise<RequestBlock | null> => {
     let key: WebDeviceKey;
@@ -322,21 +417,55 @@ export function useE2e(emailProp?: string | null): E2eApi {
     const key = keyRef.current;
     const ourDeviceId = key?.deviceId ?? '';
 
+    // A NEW pairing outcome is one of the two things that clears a sticky
+    // refusal (the other is an explicit user act). A RESUME IS NOT ONE — and
+    // the distinction is the whole control, the same one A3-M2 draws for the
+    // epoch floor. `resumed` is set by the RELAY, so clearing the refusal on a
+    // resume would mean a relay-position party could lift a revocation refusal
+    // simply by causing a reconnect. Only a fresh pairing clears it.
+    const isFreshPairing = payload.resumed !== true;
+    if (isFreshPairing) {
+      refuseUnsealRef.current = false;
+      pinnedPhoneKeyRef.current = null;
+    } else if (refuseUnsealRef.current) {
+      // Already refused, and this is a resume. Nothing to re-decide.
+      return true;
+    }
+
     // C-2 wants the phone's row from the API. A failed fetch is NOT a pass:
     // `null` flows into pinPhoneKey as 'no-phone-row', which does not verify.
-    let phoneRowPublicKey: string | null = null;
-    let phoneDeviceId: string | null = null;
-    try {
-      const res = await fetch('/api/devicekeys/list', { credentials: 'same-origin' });
-      if (res.ok) {
-        const data = (await res.json()) as { keys?: { kind?: string; publicKey?: string; deviceId?: string; revokedAt?: string | null }[] };
-        const phone = (data.keys ?? []).find((k) => k.kind === 'phone' && !k.revokedAt);
-        phoneRowPublicKey = phone?.publicKey ?? null;
-        phoneDeviceId = phone?.deviceId ?? null;
-      }
-    } catch {
-      // Left null on purpose — see above.
+    //
+    // F1 / M-A5-1 (b): this is the SAME reader the resume path uses. There was
+    // an inline `find(k => k.kind === 'phone' && !k.revokedAt)` here, and its
+    // problem was not that it was wrong — it is that it was the ONLY place the
+    // list was ever read, so a key revoked one millisecond later kept unsealing
+    // for the life of the pair. One reader, two call sites.
+    const verdict = await fetchRevocationVerdict();
+
+    // M-A5-1 (b), and it is UNCONDITIONAL — it does not go through C-2 and it
+    // does not depend on the effective mode.
+    //
+    // That independence is load-bearing after the A5 row-4 correction. C-2's
+    // pin arm now PROCEEDS unverified when the effective mode is off, because
+    // a 0/0 pair seals and "we cannot vouch for this key" is survivable there.
+    // "The key this pair is already derived under has been REVOKED" is not the
+    // same fact and is not survivable at any mode: routing it through C-2
+    // would have re-opened F1 for exactly the 0/0 pairs, which is the pairing
+    // an attacker would choose.
+    //
+    // It is gated on a pin EXISTING, because at a first Accept there is nothing
+    // to have revoked yet — an ungated refusal would make a first pairing
+    // impossible for anyone whose ledger is merely empty.
+    if (pinnedPhoneKeyRef.current && !verdict.live) {
+      const outcome = outcomeForRevocationVerdict(verdict);
+      sessionRef.current = null;
+      refuseUnsealRef.current = true;
+      fail(outcome.error ?? 're-pair-needed', outcome.detail);
+      return true;
     }
+
+    const phoneRowPublicKey: string | null = verdict.live ? verdict.publicKey : null;
+    const phoneDeviceId: string | null = verdict.live ? verdict.deviceId : null;
 
     const decision = decideAccept({
       localMode, block, ourDeviceId, phoneRowPublicKey,
@@ -363,6 +492,11 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // even for a pair nobody asked to verify).
     latchedRef.current = latchedRef.current || decision.effective === 'on';
     sealedLatchedRef.current = true;
+    // What a later re-check compares the live row against. Without it, a phone
+    // that revoked and immediately re-registered would present a live,
+    // non-revoked row and the re-check would call the pair healthy while we
+    // hold an SK derived from a key the user has retired.
+    pinnedPhoneKeyRef.current = phoneRowPublicKey;
 
     // ── A3: the context comes off the wire, the userId comes from the session ──
     // The LOCAL userId is required and is never taken from `payload`. Read that
@@ -555,6 +689,12 @@ export function useE2e(emailProp?: string | null): E2eApi {
   }, []);
 
   const openInbound = useCallback(async (type: string, payload: unknown) => {
+    // F1 / M-A5-1 (b). The refusal outranks everything below, including the
+    // "no session, pass it through" arm: a pair whose peer key is revoked must
+    // not silently fall back to reading PLAINTEXT frames off the same socket.
+    // That fallback would turn a revocation into a downgrade, which is the one
+    // outcome worse than the staleness F1 is about.
+    if (refuseUnsealRef.current) return { drop: true };
     const session = sessionRef.current;
     if (!session) return { drop: false, payload };
     if (!isSealedFrameType(type)) return { drop: false, payload };
@@ -628,6 +768,13 @@ export function useE2e(emailProp?: string | null): E2eApi {
     sessionRef.current = null;
     latchedRef.current = false;
     sealedLatchedRef.current = false;
+    // M-A5-1 (a): sign-out is a REVOKING act on this side. The SK goes here and
+    // the SK-bound counters go with it; usePhoneBridge sends RESET_ROOM. The
+    // sticky refusal is cleared because sign-out is one of the explicit user
+    // acts allowed to clear it — there is no pair left to protect.
+    refuseUnsealRef.current = false;
+    pinnedPhoneKeyRef.current = null;
+    void indexedDbSeqStore().clear?.().catch(() => {});
     downgradeDropsRef.current = 0;
     userIdRef.current = null;
     setView(E2E_VIEW_INITIAL);
@@ -669,16 +816,22 @@ export function useE2e(emailProp?: string | null): E2eApi {
    * OLD failure over the new attempt.
    */
   const dismissError = useCallback(() => {
+    // An explicit user act, which is one of the only two things allowed to
+    // clear a sticky refusal. It does NOT restore access: the SK is gone, and
+    // the next accept re-reads the DeviceKey list. If the key is still revoked
+    // the refusal returns immediately — which is the bounded-staleness contract
+    // rather than a way around it.
+    refuseUnsealRef.current = false;
     setView(viewAfterErrorDismissed);
   }, []);
 
   return useMemo(() => ({
     e2e: view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
-    dismissError,
+    dismissError, recheckPinnedKey, revokeLocalPair,
   }), [view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
-    dismissError]);
+    dismissError, recheckPinnedKey, revokeLocalPair]);
 }
 
 function fromB64(value: string): Uint8Array {

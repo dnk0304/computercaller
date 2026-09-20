@@ -487,6 +487,119 @@ export function decideAccept(input: AcceptInput): AcceptDecision {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// F1 / M-A5-1 — revocation, evaluated as a pure verdict
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * One row of GET /api/devicekeys/list. Every field is `unknown`-shaped on the
+ * way in, because this is a network response and the only thing worse than an
+ * absent field is a coerced one.
+ */
+export interface DeviceKeyRow {
+  kind?: unknown;
+  publicKey?: unknown;
+  deviceId?: unknown;
+  revokedAt?: unknown;
+}
+
+export type RevocationVerdict =
+  | { live: true; publicKey: string; deviceId: string | null }
+  | { live: false; reason: 'fetch-failed' | 'no-phone-row' | 'revoked' | 'rotated' };
+
+/**
+ * M-A5-1 (b), as one function so there is ONE reading of "is the pinned key
+ * still good".
+ *
+ * ── WHY THIS EXISTS AT ALL ────────────────────────────────────────────────
+ * The list was read at Accept ONLY. A key revoked AFTER Accept — rotation,
+ * sign-out, the stolen-device response that `revokedAt` exists for — kept
+ * unsealing for the life of the pair, and §13.8 REUSES the SK across resume,
+ * hold and dock, so that life is hours. The whole point of `revokedAt` is to
+ * end access NOW; as shipped it ended access at the next pairing. The
+ * acceptance criterion is bounded staleness: worst case one resume interval,
+ * not one pair lifetime.
+ *
+ * ── THE ARM THAT IS EASY TO GET WRONG ─────────────────────────────────────
+ * A FAILED FETCH IS NOT A PASS. It returns `fetch-failed`, which is a refusal,
+ * exactly as the existing `phoneRowPublicKey = null` path already refuses. A
+ * network error is not evidence that a key is live, and a relay-position party
+ * can cause network errors at will — so "we could not check, carry on" would
+ * hand exactly the wrong party the ability to suppress the check.
+ *
+ * ── AND THE ONE THAT IS EASY TO MAKE VACUOUS ──────────────────────────────
+ * `pinnedPublicKey` is the key this pair actually derived under. Comparing the
+ * live row against it is what catches ROTATION: a phone that revoked and
+ * re-registered has a live, non-revoked row whose key is a different key, and
+ * an existence check alone would call that "still good" while we hold an SK
+ * derived from a key the user has retired.
+ */
+export function readRevocationVerdict(
+  raw: unknown,
+  { pinnedPublicKey }: { pinnedPublicKey?: string | null } = {},
+): RevocationVerdict {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { live: false, reason: 'fetch-failed' };
+  }
+  const keys = (raw as { keys?: unknown }).keys;
+  if (!Array.isArray(keys)) return { live: false, reason: 'fetch-failed' };
+
+  const phones = (keys as DeviceKeyRow[]).filter((k) => k && k.kind === 'phone');
+  if (phones.length === 0) return { live: false, reason: 'no-phone-row' };
+
+  // `revokedAt` non-null in ANY shape is revoked. The API returns an ISO string
+  // or null, but a truthy non-string (a number, an object) is not a reason to
+  // decide a key is live — the fail-closed reading of an unexpected value is
+  // the only safe one here.
+  const live = phones.filter((k) => k.revokedAt === null || k.revokedAt === undefined);
+  if (live.length === 0) return { live: false, reason: 'revoked' };
+
+  const usable = live.find(
+    (k) => typeof k.publicKey === 'string' && isPinned(k.publicKey),
+  );
+  if (!usable) return { live: false, reason: 'no-phone-row' };
+
+  const publicKey = usable.publicKey as string;
+  if (typeof pinnedPublicKey === 'string' && pinnedPublicKey.length > 0
+    && pinnedPublicKey !== publicKey) {
+    // Live row, different key: the phone rotated. We hold an SK derived from a
+    // key the user has retired, which is the same exposure as a revocation.
+    return { live: false, reason: 'rotated' };
+  }
+  return {
+    live: true,
+    publicKey,
+    deviceId: typeof usable.deviceId === 'string' ? usable.deviceId : null,
+  };
+}
+
+/**
+ * What a re-check verdict means for the pair.
+ *
+ * Every non-live verdict tears down, and that uniformity is deliberate: the
+ * four reasons differ in what a reader should conclude, not in what the client
+ * should do. `re-pair-needed` is STICKY (the P2.1 pattern) — cleared only by an
+ * explicit user act or a new pairing, never by anything the relay or the
+ * network can cause, for the same reason the epoch floor is.
+ */
+export interface RecheckOutcome {
+  /** Drop the SK, refuse to unseal further frames, and abandon the pair. */
+  teardown: boolean;
+  error?: E2eError;
+  detail?: string;
+}
+
+export function outcomeForRevocationVerdict(v: RevocationVerdict): RecheckOutcome {
+  if (v.live) return { teardown: false };
+  const detail = {
+    'fetch-failed': 'the DeviceKey list could not be read — a failed fetch is NOT a pass (M-A5-1 b)',
+    'no-phone-row': 'the pinned phone key is absent from the DeviceKey list',
+    revoked: 'the pinned phone key has a non-null revokedAt',
+    rotated: 'the phone has a LIVE key, but not the one this pair derived under (rotation)',
+  }[v.reason];
+  return { teardown: true, error: 're-pair-needed', detail };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // (g) the view-model + the per-device setting
 // ───────────────────────────────────────────────────────────────────────────
 
