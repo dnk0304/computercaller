@@ -9,7 +9,11 @@
  * the attack DISABLED (the positive control) and once with it armed:
  *
  *   strip-e2e        the relay deletes the `e2e` block from PAIRING_ACTIVE
- *   downgrade-mode   the relay rewrites mode 1 -> 0 on the accept block
+ *   downgrade-mode   the relay rewrites mode 1 -> 0 on the accept block.
+ *                    Since M-A5-5 §1 (effective = OR(localMode, block.mode))
+ *                    this byte flip against a local-ON computer is ABSORBED,
+ *                    not refused: the defense is the OR, so the outcome is
+ *                    identical to the untampered run. R-BD 2026-09-20.
  *   replay-epoch     the relay re-offers a SUPERSEDED accept block
  *   replay-epoch-rebound  the same, with ctx.pairingId re-bound to the live
  *                         pairing, which isolates the A3-M2 epoch floor
@@ -43,6 +47,13 @@
  *     client-side check neutered, and the harness asserts the attack then
  *     SUCCEEDS. A check that cannot be made to fail is not delivering an
  *     attack, and this file says so out loud rather than reporting a pass.
+ *     ONE EXCEPTION, and it is a property and not a gap (R-BD 2026-09-20):
+ *     downgrade-mode has NO check left to remove. Under M-A5-5 §1 the defense
+ *     is the OR itself — decideAccept has no `block.mode < 1` branch — so the
+ *     detector proves ABSORPTION instead: neutered and armed produce the
+ *     IDENTICAL outcome, and the separate "SAS under mode 0 DIFFERS" assertion
+ *     is what shows that HONOURING the flipped byte would have diverged the
+ *     SAS. That pair is the evidence the attack is still being delivered.
  *
  * ── WHOSE LOGIC IS REAL, AND WHOSE IS A MIRROR ─────────────────────────────
  * REAL, imported from the shipped tree:
@@ -140,11 +151,12 @@ function driftGuards() {
     /const browserActive = \{ deviceName \};/.test(server));
   check('drift: N-1 kill switch still REFUSES mode=1 rather than stripping it',
     /if \(!E2E_PAIRING_ENABLED && e2eBlock && e2eBlock\.mode === 1\)[\s\S]{0,400}PAIRING_E2E_UNAVAILABLE/.test(server));
-  // The spelling matters and is NOT what the dispatch brief says (see the
-  // report at the bottom of this file): the relay arms only on the literal
-  // string 'false'.
-  check("drift: the kill switch arms ONLY on the literal string 'false'",
-    /E2E_PAIRING_ENABLED\s*=\s*process\.env\.E2E_PAIRING_ENABLED\s*!==\s*'false'/.test(server));
+  // R-BD 2026-09-20 / N-1.1: P1.3 (38d4031) inverted the spelling to an opt-IN
+  // literal '1'. P6 predates that commit (P1.3 is NOT an ancestor of aa06366),
+  // so this pin carried the old `!== 'false'` spelling. Re-pinned to the
+  // CURRENT server.js:233 text, exact, no `.*` loosening.
+  check("drift: the kill switch is exactly === '1' (N-1.1)",
+    /E2E_PAIRING_ENABLED\s*=\s*process\.env\.E2E_PAIRING_ENABLED\s*===\s*'1'/.test(server));
 
   check('drift: the Kotlin pin still refuses on a key that disagrees with the registry',
     /advertised a key that is NOT the one/.test(kt));
@@ -518,9 +530,16 @@ async function phoneBuildAccept({ pairingId, userId, phoneDeviceId, recips, phon
     v: 1, mode: modeOn ? 1 : 0, kid, epk: b64(epk),
     recipKeys: [phoneKey.b64, ...recips.map((r) => r.pub)],
     wraps,
-    ...(modeOn ? {
-      ctx: { pairingId, phoneDeviceId, peerDeviceId, pairEpoch: String(pairEpoch) },
-    } : {}),
+    // MIRROR FIX (R-BD 2026-09-20): the real phone attaches ctx
+    // UNCONDITIONALLY — PhoneService.kt:2797
+    // `E2ePairIdentity.withCtx(prepared.block, pairContext)`, with no mode
+    // gate. This mirror used to gate it on modeOn, which was invisible
+    // pre-A5 because a 0/0 pair went in the clear and never read ctx. Under
+    // M-A5-5 §2 a 0/0 pair with a usable block SEALS, pairContextFromWire
+    // then needs ctx, and the missing field surfaced as a bogus
+    // "ctx refused" refusal the shipped phone can never produce.
+    // `sas` stays mode-gated below: that one IS mode-dependent.
+    ctx: { pairingId, phoneDeviceId, peerDeviceId, pairEpoch: String(pairEpoch) },
   };
   const sas = modeOn
     ? await sasDigits({ pairingId, epk, keys: block.recipKeys.map(unb64), pairEpoch, modeOn: true })
@@ -537,7 +556,8 @@ async function phoneBuildAccept({ pairingId, userId, phoneDeviceId, recips, phon
  * check stays armed, so a neutered run that still refuses is refusing for the
  * reason it names and not for a dropped socket.
  *
- *   'mode'   skip decideAccept's abort  (defeats strip-e2e AND downgrade-mode)
+ *   'mode'   skip decideAccept's abort  (defeats strip-e2e; under M-A5-5 §1
+ *            downgrade-mode has no abort left to skip — see its detector)
  *   'epoch'  skip admitPairEpoch        (defeats replay-epoch)
  */
 async function computerAccept({ payload, localMode, webKey, store, userId, bridgePairingId, latched = false, neuter = null }) {
@@ -809,12 +829,22 @@ async function main() {
         const actors = await newActors(db); seededUsers.push(actors.user.id);
         const r = await runPairing({ relay, proxy, actors, localMode: 'on', pairEpoch: 12 });
         check('downgrade-mode/ON: the attack actually fired', proxy.tamperCount() > 0, `tampered ${proxy.tamperCount()}`);
-        eq('downgrade-mode/ON: the pairing was REFUSED', r.computer?.completed, false);
-        eq('downgrade-mode/ON: refused with e2e-setup-failed', r.computer?.error, 'e2e-setup-failed');
-        check('downgrade-mode/ON: the detail names the downgraded mode',
-          /accept block says mode=0/.test(r.computer?.detail ?? ''), r.computer?.detail);
-        check('downgrade-mode/ON: the user copy is the frozen sentence',
-          (r.computer?.copy ?? '').startsWith(ABORT_SETUP_FAILED), r.computer?.copy);
+        // R-BD 2026-09-20 / M-A5-5 §1: effective = OR(localMode, block.mode).
+        // The flipped byte (1 -> 0) meets a local-ON computer, the OR absorbs
+        // it, and the pair seals VERIFIED — the downgrade does not land. These
+        // four were pinned pre-A5, when decideAccept had a `block.mode < 1`
+        // abort; that branch is gone and its absence IS the M-A5-5 defense.
+        eq('downgrade-mode/ON: the pairing COMPLETED - the flip was absorbed (M-A5-5 §1)',
+          r.computer?.completed, true);
+        eq('downgrade-mode/ON: no error - absorption is not a refusal', r.computer?.error, undefined);
+        // The flipped byte DID reach the browser (proves the attack is still
+        // delivered end to end), and the browser's SAS still equals the
+        // phone's mode-1 code: effective ON on BOTH ends — vector M3's shape.
+        eq('downgrade-mode/ON: the flipped byte reached the browser (mode=0 on the wire)',
+          r.activePayload?.e2e?.mode, 0);
+        eq("downgrade-mode/ON: the SAS still MATCHES the phone's mode-1 code (effective ON both ends, vector M3)",
+          r.computer?.sas, r.accept?.sas);
+        eq('downgrade-mode/ON: the badge is the sealed-and-verified one', r.computer?.label, 'Encrypted');
         // The SAS transcript's modeByte (0x04) makes the downgrade visible even
         // if every other field survived — assert the digits DIVERGE, which is
         // the property, not merely that something refused.
@@ -830,11 +860,17 @@ async function main() {
         const proxy = startProxy({ upstreamPort: real.port, attack: 'downgrade-mode' });
         const actors = await newActors(db); seededUsers.push(actors.user.id);
         const r = await runPairing({ relay, proxy, actors, localMode: 'on', pairEpoch: 12, neuter: 'mode' });
-        console.log('  DETECTOR PROOF downgrade-mode: B6 mode check REMOVED —');
-        console.log(`    completed=${r.computer?.completed} mode=${r.computer?.mode} badge=${r.computer?.label}`);
-        check('downgrade-mode DETECTOR: with the check removed the attack SUCCEEDS (B6 downgrade lands)',
-          r.computer?.completed === true && r.computer?.mode === 'off',
-          'the attack could NOT be made to succeed — this harness may not be delivering it');
+        console.log('  DETECTOR PROOF downgrade-mode: the `mode` neuter is a NO-OP under M-A5-5 —');
+        console.log(`    completed=${r.computer?.completed} mode=${r.computer?.mode} badge=${r.computer?.label} sas=${r.computer?.sas}`);
+        // R-BD 2026-09-20: there is no longer a check to remove. decideAccept
+        // has no `block.mode < 1` branch, so `neuter: 'mode'` cannot change
+        // this outcome — and that INVARIANCE is the detector. The proof that
+        // the attack is still being delivered, and that honouring the flipped
+        // byte would have been fatal, is the `SAS under mode 0 DIFFERS`
+        // assertion in the armed block above.
+        check('downgrade-mode DETECTOR: the byte flip is absorbed, not refused - OR(local, peer) is the defense (M-A5-5 §1)',
+          r.computer?.completed === true && r.computer?.mode === 'on' && r.computer?.sas === r.accept?.sas,
+          `completed=${r.computer?.completed} mode=${r.computer?.mode} sasMatches=${r.computer?.sas === r.accept?.sas}`);
         await endPair(r); await proxy.close();
       }
 
@@ -1045,24 +1081,33 @@ async function main() {
       const a2 = await newActors(db); seededUsers.push(a2.user.id);
       const r2 = await runPairing({ relay, proxy: proxy2, actors: a2, localMode: 'off', phoneModeOn: false, pairEpoch: 51 });
       eq('N-1: a plaintext pairing is unaffected by the kill switch', r2.computer?.completed, true);
-      eq('N-1: and it is Not encrypted, not silently "encrypted"', r2.computer?.label, 'Not encrypted');
+      // R-BD 2026-09-20 / M-A5-5 §2: a 0/0 pair WITH a usable block seals and
+      // is `Encrypted, unverified`. Plaintext is now reserved for pairs with
+      // NO usable block. The property this row guards is unchanged and is the
+      // second half: it must never come out silently VERIFIED.
+      eq('N-1: a 0/0 pair under the switch seals UNVERIFIED (M-A5-5 §2) - never silently verified',
+        r2.computer?.label, 'Encrypted, unverified');
+      eq('N-1: ...and `verified` says so explicitly', r2.computer?.verified, false);
+      eq('N-1: ...sealed, so the effective mode is on', r2.computer?.mode, 'on');
       await endPair(r2); await proxy2.close();
     });
 
-    // The SPELLING of the switch. The dispatch brief says
-    // `E2E_PAIRING_ENABLED=0`; server.js arms only on the literal 'false'. A
-    // value that does not arm the switch is the "wrong option name disables a
-    // MUST" shape, so it is asserted rather than assumed either way.
-    console.log('\n── N-1 spelling: E2E_PAIRING_ENABLED=0 does NOT arm the switch ──');
+    // The SPELLING of the switch. R-BD 2026-09-20 / N-1.1: P1.3 (38d4031)
+    // inverted it to an opt-IN literal '1' — `E2E_PAIRING_ENABLED === '1'`
+    // (server.js:233) — so '0' now ARMS the switch, matching the dispatch
+    // brief. P6 predates P1.3 and pinned the old opt-OUT spelling. A wrong
+    // option value silently disabling a MUST is exactly why this is asserted
+    // and not assumed, so the assertion is INVERTED, not deleted.
+    console.log('\n── N-1 spelling: E2E_PAIRING_ENABLED=0 ARMS the switch (N-1.1) ──');
     await withRealRelay(relayOpts({ E2E_PAIRING_ENABLED: '0' }, 'killswitch-zero'), async (real) => {
       const relay = { ...real, secret };
       const proxy = startProxy({ upstreamPort: real.port, attack: 'none' });
       const actors = await newActors(db); seededUsers.push(actors.user.id);
       const r = await runPairing({ relay, proxy, actors, localMode: 'on', pairEpoch: 60 });
-      check("N-1 spelling: with '0' the relay still pairs ENCRYPTED — only 'false' arms the switch",
-        r.computer?.completed === true && r.computer?.mode === 'on',
-        `killSwitch=${JSON.stringify(r.killSwitch)} mode=${r.computer?.mode}`);
-      console.log("    NOTE: the operator-facing value is 'false'. '0' leaves encrypted pairing ENABLED.");
+      check("N-1 spelling: E2E_PAIRING_ENABLED=0 ARMS the switch (N-1.1)",
+        !!r.killSwitch && r.killSwitch.reason === 'kill-switch' && r.computer === undefined,
+        `killSwitch=${JSON.stringify(r.killSwitch)} computer=${JSON.stringify(r.computer)}`);
+      console.log("    NOTE: the switch is opt-IN since P1.3 - ONLY the literal '1' leaves encrypted pairing ENABLED; every other value, '0' included, ARMS it.");
       await endPair(r); await proxy.close();
     });
 
