@@ -33,7 +33,11 @@
  * importable from one. The hook is the binder; this is the decision.
  */
 
-import { revokeOwnWebDeviceKey, type RevokeOwnKeyResult } from './revokeWebKey';
+// Explicit .ts extensions throughout lib/e2e: these modules are imported by
+// the node suites under type-stripping, which does NOT do extensionless
+// resolution. The repo already spells it this way (see usePhoneBridge's
+// '@/lib/fileTransfer/frames.ts').
+import { revokeOwnWebDeviceKey, type RevokeOwnKeyResult } from './revokeWebKey.ts';
 
 /** The legs, in the order {@link runRevokingTeardown} runs them. */
 export const TEARDOWN_STEPS = ['revokeLocalPair', 'resetRoom', 'onSignOut', 'revokeRemote'] as const;

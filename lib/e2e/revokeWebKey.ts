@@ -32,10 +32,15 @@
  * ordering that makes this safe to say.
  */
 
-import { loadWebDeviceKey, type WebDeviceKey, type WebKeyOptions } from './webKey';
-import { forgetWebDeviceKeyId, peekWebDeviceKeyId } from './webKeyId';
+// TYPE-ONLY from webKey.ts, deliberately. A value import would pull the
+// IndexedDB device-key module into every importer at load time — including the
+// node suites, which have no indexedDB — for a function that is only reached on
+// the one path where the caller did NOT inject a loader. That default is taken
+// lazily inside resolveOwnWebDeviceKeyId instead.
+import type { WebDeviceKey, WebKeyOptions } from './webKey.ts';
+import { forgetWebDeviceKeyId, peekWebDeviceKeyId } from './webKeyId.ts';
 
-export { forgetWebDeviceKeyId, peekWebDeviceKeyId, rememberWebDeviceKeyId } from './webKeyId';
+export { forgetWebDeviceKeyId, peekWebDeviceKeyId, rememberWebDeviceKeyId } from './webKeyId.ts';
 
 /** The subset of `/api/devicekeys/list`'s rows this module reads. */
 interface DeviceKeyRowish {
@@ -99,9 +104,9 @@ export async function resolveOwnWebDeviceKeyId(
   const remembered = peekWebDeviceKeyId();
   if (remembered) return { id: remembered };
 
-  const load = opts.loadKey ?? loadWebDeviceKey;
   let key: WebDeviceKey | null;
   try {
+    const load = opts.loadKey ?? (await import('./webKey.ts')).loadWebDeviceKey;
     key = await load(opts);
   } catch {
     // A key we cannot read is a key we cannot identify. Not a pass.

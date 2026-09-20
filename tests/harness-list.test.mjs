@@ -115,7 +115,7 @@ check('CONTROL: …and a present entry as present, so it is not stuck on "no"',
 // The phase set itself, as the full sorted string.
 check('KNOWN_PHASES is the frozen set, byte for byte',
   [...KNOWN_PHASES].sort().join(',')
-    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P3,P3.1,P3.2,P4,P4.1,P5A,P5B,P6,P6.1',
+    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P5A,P5B,P6,P6.1',
   KNOWN_PHASES.join(','));
 
 // E2E-P2.2. The A5 web fix-before-flip lane. It RUNS both browser harnesses,
@@ -132,6 +132,21 @@ check('KNOWN_PHASES is the frozen set, byte for byte',
     p22.includes('e2e-ui-proof'), p22.join(', '));
   check('P2.2 skips the FT-only harnesses',
     !p22.includes('ft-ui-proof') && !p22.includes('ft-web-proof'), p22.join(', '));
+}
+
+// E2E-P2.3. The revocation TRIGGER lane — it gives M-A5-1 (a) the callers P2.2
+// never shipped. Same harness set as P2.2 and for the same reason, one step
+// stronger: this lane edits BOTH the hook (usePhoneBridge: signOutEverywhere /
+// forgetThisComputer) and a rendered component (ConnectionStatus: the new
+// "Forget this computer" control beside Reset lobby), so the extension shell
+// and the encrypted-mode UI both render changed code.
+{
+  const p23 = harnessesFor('P2.3');
+  check('P2.3 runs ext-sw-lifetime-proof', p23.includes('ext-sw-lifetime-proof'), p23.join(', '));
+  check('P2.3 runs e2e-ui-proof — it adds a control to a rendered pill',
+    p23.includes('e2e-ui-proof'), p23.join(', '));
+  check('P2.3 skips the FT-only harnesses',
+    !p23.includes('ft-ui-proof') && !p23.includes('ft-web-proof'), p23.join(', '));
 }
 
 // Merged by Ken (E2E-MERGE-A5): P2.2 and P3.2 each added a phase to the frozen

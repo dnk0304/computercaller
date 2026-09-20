@@ -58,7 +58,7 @@ import {
  * migrating would mean inventing a floor, and the only honest floor for a
  * record that never had one is "none yet, and no key either".
  */
-import { rememberWebDeviceKeyId } from './webKeyId';
+import { rememberWebDeviceKeyId } from './webKeyId.ts';
 
 export const WEB_KEY_RECORD_VERSION = 2;
 

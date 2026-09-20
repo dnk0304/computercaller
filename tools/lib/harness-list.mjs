@@ -54,7 +54,7 @@
 export const KNOWN_PHASES = [
   'P0', 'P0.2', 'P0.3',
   'P1', 'P1.1', 'P1.2',
-  'P2', 'P2.1', 'P2.2',
+  'P2', 'P2.1', 'P2.2', 'P2.3',
   'P3', 'P3.1', 'P3.2',
   'P4', 'P4.1',
   'P5A', 'P5B',
@@ -90,7 +90,10 @@ export const PHASE_HARNESSES = {
    */
   'ext-sw-lifetime-proof': {
     // Merged by Ken (P2.2 x P3.2), then by Forge (x P6.1): union of all three lanes.
-    runs: ['P2.2', 'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'MERGE'],
+    // P2.3 (revocation TRIGGER wiring) edits usePhoneBridge + ConnectionStatus,
+    // i.e. the hook and the component these surfaces render from — same
+    // reasoning that put P2.2 on this list.
+    runs: ['P2.2', 'P2.3', 'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'MERGE'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'FT1', 'FT2', 'FT3'],
   },
   /**
@@ -100,7 +103,7 @@ export const PHASE_HARNESSES = {
    * to evidence, and MERGE for the same superset reason as above.
    */
   'e2e-ui-proof': {
-    runs: ['P2.2', 'P3.2', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'MERGE'],
+    runs: ['P2.2', 'P2.3', 'P3.2', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'MERGE'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1',
       'P3', 'P3.1', 'P4', 'P4.1', 'FT1', 'FT2', 'FT3'],
   },
@@ -111,13 +114,13 @@ export const PHASE_HARNESSES = {
    */
   'ft-ui-proof': {
     runs: ['FT3'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2',
+    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
       'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'FT1', 'FT2', 'MERGE'],
   },
   /** FT-3a: the transfer wire/UI on the web app. FT3 only, same reasoning. */
   'ft-web-proof': {
     runs: ['FT3'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2',
+    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
       'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'D1', 'FT1', 'FT2', 'MERGE'],
   },
 };
