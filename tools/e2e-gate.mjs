@@ -1327,6 +1327,13 @@ if (WEB) {
     // 69 steps that way). Carries its own positive control, so narrowing
     // KNOWN_PHASES turns it red instead of turning the gate quiet.
     ['gate-phase-whitelist', 'tests/gate-phase-whitelist.test.mjs', true],
+    // GATE-JAVA-HOME. tools/lib/java-home.mjs decides whether the android
+    // lane runs at all. Named explicitly (the sweep matches only
+    // tests/e2e-*.test.mjs) because its silent-failure mode is the one this
+    // gate is worst at reporting: trust a stale JAVA_HOME and all three
+    // gradle steps come back exit 9009 in ~30 ms, which reads as "the android
+    // lane failed" rather than "the gate never ran".
+    ['gate-java-home', 'tests/gate-java-home.test.mjs', true],
     // FT-MERGE (c2) is deliberately ABSENT from this list: see
     // MIN_CHECKS_OVERRIDE['relay:e2e-ft-sw-union.test.mjs'] above. The sweep in
     // step 7 matches tests/e2e-*.test.mjs and already runs it; its count is
