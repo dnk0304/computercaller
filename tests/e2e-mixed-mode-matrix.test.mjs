@@ -48,6 +48,14 @@
  * not this deliverable's job — (d) is the matrix, and a matrix that quietly
  * asserted the implementation instead of the spec would be worthless.
  *
+ * FINDING RETIRED by R-BC on 2026-09-20: the three §13.2 divergences were
+ * ratified away by Security M-A5-5 (GATE2-PRE-A5.md) and fixed in P2.2
+ * (9c0c04b, cells proof 3873f8d). The original pins are kept in git history at
+ * 9f84091. The pins below now assert the RATIFIED behaviour; the paragraph
+ * above is the historical record of why they were authored as failable.
+ * Row 10 is a SEPARATE, still-live finding (no channel for OR(web, ext)) that
+ * M-A5-5 does not speak to — it is untouched and still reports as a divergence.
+ *
  * Exit code is 0 unless an ASSERTION fails. Divergences and AWAITING-HUMAN
  * cells are reported, counted, and do not fail the suite — they are findings
  * for Ken, not test breakage.
@@ -300,14 +308,16 @@ console.log('E2E-P6 (d) — §13.2 mixed-mode matrix\n');
 
   const block = acceptBlock({ mode: 0, keys: [PHONE.pub, WEB.pub, SW.pub], wraps: [wrapFor(WEB_ID), wrapFor(SW_ID)] });
   const { decision, badge } = actualWebBadge({ localMode: 'off', block });
-  // PINNED CURRENT BEHAVIOUR. If this ever changes, this line goes red and the
-  // divergence below must be re-checked — that is the point of pinning it.
-  eq('row 4 [PINNED CURRENT BEHAVIOUR]: the web lane treats a mode-0 accept as PLAINTEXT',
-    decision.state, 'unencrypted');
-  eq('row 4: no SAS is shown', decision.verified, false);
+  // M-A5-5 / R-BC 2026-09-20. Ratified §2: a usable block on both sides ALWAYS
+  // seals; mode 0/0 = Encrypted (unverified). Was pinned to 'unencrypted' as
+  // failable evidence of the pre-A5 divergence (history at 9f84091).
+  check('row 4 [M-A5-5 / R-BC]: a usable block on both sides SEALS even at mode 0/0',
+    decision.state.startsWith('encrypted-'), decision.state);
+  eq('row 4 [M-A5-5 / R-BC]: and it is unverified — neither side asked to verify',
+    decision.verified, false);
   cell(4, 'v58 OFF / new web+ext OFF', {
     automated: true, spec: specDecide('off', 'off'), actual: badge,
-    note: 'The accept block has no way to say "sealed, but neither side asked for the SAS". The phone (E2eSettings.effectiveMode) calls this ENCRYPTED_UNVERIFIED and SEALS; the web lane (decideAccept, the `block.mode < 1` branch) reads mode 0 as "the phone declined" and pairs in the CLEAR. The two ends disagree about whether the pair is encrypted at all.',
+    note: 'ratified M-A5-5 §2: mode 0/0 = Encrypted (unverified). Both ends now SEAL and agree. The pre-A5 web lane read mode 0 as "the phone declined" and paired in the CLEAR (the `block.mode < 1` branch of decideAccept, now deleted) — that divergence is RETIRED by R-BC 2026-09-20, fixed in P2.2 (9c0c04b).',
   });
 }
 
@@ -386,8 +396,11 @@ console.log('E2E-P6 (d) — §13.2 mixed-mode matrix\n');
   const { decision, badge } = actualWebBadge({ localMode: 'off', block });
   eq('row 8: the web does NOT treat the peer\'s request to verify as an error', decision.action, 'proceed');
   check('row 8: the pair is sealed', decision.state.startsWith('encrypted-'), decision.state);
-  eq('row 8 [PINNED CURRENT BEHAVIOUR]: the web marks it UNVERIFIED and shows no blocking SAS',
-    decision.verified, false);
+  // M-A5-5 / R-BC 2026-09-20. Ratified §3: `verified` derives from the
+  // EFFECTIVE mode, never from localMode. Peer ON => effective ON => SAS
+  // blocking on BOTH ends. Was pinned false as failable evidence (at 9f84091).
+  eq('row 8 [M-A5-5 / R-BC]: the web marks it VERIFIED — SAS blocking on both ends',
+    decision.verified, true);
   // The modeByte is the OR, so both ends derive the SAME digits for a row-8 pair.
   const keys = [PHONE.pub, WEB.pub, SW.pub];
   const web = await sasDigits({ pairingId: PAIRING_ID, epk: EPK.pub, keys, pairEpoch: PAIR_EPOCH, modeOn: true });
@@ -395,7 +408,7 @@ console.log('E2E-P6 (d) — §13.2 mixed-mode matrix\n');
   eq('row 8: both ends derive the same digits regardless of key learning order', web, phone);
   cell(8, 'v58 ON / new web OFF → effective ON', {
     automated: true, spec: specDecide('off', 'on'), actual: badge,
-    note: 'decideAccept derives `verified` from localMode ALONE ("verified: localMode === \'on\' || latched"). §13.2 row 8 and E2eSettings.effectiveMode both say the PEER advertising ON is enough: SAS blocking on BOTH, badge Encrypted (verified). As shipped the web shows no SAS, so the phone blocks on a code the user is never asked to confirm on the computer — the pairing cannot complete, or completes half-verified.',
+    note: 'ratified M-A5-5 §3: `verified` derives from the EFFECTIVE mode, never from localMode. The peer advertising ON is enough — SAS blocking on BOTH, badge Encrypted (verified), matching E2eSettings.effectiveMode. The pre-A5 web derived `verified` from localMode alone and showed no SAS; that divergence is RETIRED by R-BC 2026-09-20, fixed in P2.2 (9c0c04b).',
   });
 }
 
@@ -547,22 +560,35 @@ console.log('E2E-P6 (d) — §13.2 mixed-mode matrix\n');
   const asked = { localMode: 'on', ourDeviceId: WEB_ID, phoneRowPublicKey: PHONE.b64, latched: false };
   const lesserOffers = [
     ['no e2e block at all (old peer, kill switch, or a >4KB block the relay dropped)', null],
-    ['a block that says mode 0', acceptBlock({ mode: 0, keys: [PHONE.pub, WEB.pub], wraps: [wrapFor(WEB_ID)] })],
+    // M-A5-5 / R-BC 2026-09-20: this offer is NO LONGER "less". Ratified §1:
+    // effective = OR(localMode, block.mode), so local ON + mode 0 is effective
+    // ON — it seals AND verifies (row 9). Flagged so the loop asserts that
+    // ratified outcome instead of a LOUD refusal. Was pinned as a refusal as
+    // failable evidence of the pre-A5 divergence (history at 9f84091).
+    ['a block that says mode 0', acceptBlock({ mode: 0, keys: [PHONE.pub, WEB.pub], wraps: [wrapFor(WEB_ID)] }), 'seals-M-A5-5'],
     ['a block with no wrap for us', acceptBlock({ mode: 1, keys: [PHONE.pub, WEB.pub], wraps: [wrapFor(SW_ID)] })],
     ['a block whose key set omits the phone\'s registered key (C-2 pin fails)',
       acceptBlock({ mode: 1, keys: [WEB.pub, SW.pub], wraps: [wrapFor(WEB_ID)] })],
     ['a block with v != 1', { ...acceptBlock({ mode: 1, keys: [PHONE.pub, WEB.pub], wraps: [wrapFor(WEB_ID)] }), v: 2 }],
     ['a structurally malformed block', { v: 1, mode: 1, kid: 'k', epk: 'not-a-point', recipKeys: [], wraps: [] }],
   ];
-  for (const [label, raw] of lesserOffers) {
+  for (const [label, raw, sealsUnderRuling] of lesserOffers) {
     const d = decideAccept({ ...asked, block: raw === null ? null : readAcceptBlock(raw) });
     const silentlyLess = d.action === 'proceed' && d.verified === false;
+    // The universal still holds over EVERY offer, including the ratified one:
+    // whatever happens, the asking device never quietly ends up unverified.
     check(`closing rule: asked for verification, offered ${label} → never silently less`,
       !silentlyLess,
       `got action=${d.action} state=${d.state} verified=${d.verified}`);
-    check(`closing rule: …and the refusal is LOUD (an error the user sees) — ${label}`,
-      d.action === 'abort' && typeof d.error === 'string' && d.error.length > 0,
-      `action=${d.action} error=${d.error}`);
+    if (sealsUnderRuling) {
+      check(`closing rule [M-A5-5 / R-BC]: …and it is not a refusal at all — it seals VERIFIED (OR makes it effective ON) — ${label}`,
+        d.action === 'proceed' && d.state === 'encrypted-verified' && d.verified === true,
+        `action=${d.action} state=${d.state} verified=${d.verified}`);
+    } else {
+      check(`closing rule: …and the refusal is LOUD (an error the user sees) — ${label}`,
+        d.action === 'abort' && typeof d.error === 'string' && d.error.length > 0,
+        `action=${d.action} error=${d.error}`);
+    }
   }
 
   // The counterfactual: a device that did NOT ask must still be allowed to take
@@ -601,9 +627,11 @@ console.log('E2E-P6 (d) — §13.2 mixed-mode matrix\n');
   check('drift: Kotlin aborts on ABSENT + local ON',
     /PeerAdvertisement\.ABSENT ->[\s\S]{0,120}?if \(localEnabled\) EffectiveMode\.ABORT else EffectiveMode\.PLAINTEXT/.test(body),
     'the ABSENT branch is no longer if(localEnabled) ABORT else PLAINTEXT');
-  check('drift: JS aborts on no-block + wantOn',
-    /if \(!block\) \{[\s\S]{0,200}?if \(wantOn\) \{[\s\S]{0,200}?action: 'abort'/.test(js),
-    'decideAccept\'s no-block branch no longer aborts on wantOn');
+  // M-A5-5 / R-BC 2026-09-20: re-pinned to the CURRENT text. `wantOn` is gone;
+  // the no-block guard is now the explicit triple (localMode ON, either latch).
+  check('drift [PINNED — M-A5-5 alignment]: JS aborts on no-block + local ON or either latch',
+    /if \(!block\) \{[\s\S]{0,900}?if \(localMode === 'on' \|\| latched \|\| sealedLatched\) \{[\s\S]{0,120}?action: 'abort'/.test(js),
+    'decideAccept changed — re-check against M-A5-5');
   eq('drift: and the two agree on the ABSENT/local-OFF outcome (plaintext)',
     decideAccept({ localMode: 'off', block: null, ourDeviceId: WEB_ID, phoneRowPublicKey: PHONE.b64, latched: false }).state,
     'unencrypted');
@@ -615,19 +643,26 @@ console.log('E2E-P6 (d) — §13.2 mixed-mode matrix\n');
   eq('drift: the exported JS effectiveMode is the same OR (peer ON)', effectiveMode('off', 1, false), 'on');
   eq('drift: …and OFF/OFF is the only "off"', effectiveMode('off', 0, false), 'off');
 
-  // (c) THE DIVERGENCE, pinned. Kotlin: peer ON ⇒ ENCRYPTED_VERIFIED whatever
-  // the local setting. JS decideAccept: `verified` comes from localMode ALONE.
-  // Pinned as assertions against the CURRENT text so that fixing either side
-  // turns this red and forces the finding to be closed rather than forgotten.
+  // (c) THE ALIGNMENT, pinned. RETIRED DIVERGENCE (R-BC 2026-09-20): Kotlin
+  // said peer ON => ENCRYPTED_VERIFIED whatever the local setting, while JS
+  // decideAccept took `verified` from localMode ALONE. M-A5-5 §3 ratified the
+  // Kotlin reading and P2.2 implemented it, so the two lanes now agree. These
+  // pins hold the CURRENT text of both so a drift APART turns this red.
   check('drift [PINNED DIVERGENCE]: Kotlin says peer ON → ENCRYPTED_VERIFIED unconditionally',
     /PeerAdvertisement\.ON -> EffectiveMode\.ENCRYPTED_VERIFIED/.test(body),
     'the Kotlin ON branch changed — re-check the row 8 finding');
-  check('drift [PINNED DIVERGENCE]: JS derives `verified` from localMode alone',
-    /verified: localMode === 'on' \|\| latched,/.test(js),
-    'decideAccept\'s verified flag changed — the row 8 divergence may be FIXED; update the finding');
-  check('drift [PINNED DIVERGENCE]: Kotlin SEALS on peer OFF while JS pairs in the clear on mode 0',
-    /PeerAdvertisement\.OFF ->[\s\S]{0,80}?if \(localEnabled\) \{/.test(body) && /if \(block\.mode < 1\)/.test(js),
-    'one of the two mode-0 branches changed — re-check the row 4 finding');
+  check('drift [PINNED — M-A5-5 alignment]: JS derives `verified` from the EFFECTIVE mode (§3)',
+    /verified: effective === 'on',/.test(js)
+      && /verified: localMode === 'on'/.test(js) === false,
+    'decideAccept changed — re-check against M-A5-5');
+  // M-A5-5 / R-BC 2026-09-20: the two mode-0 branches AGREE now. Kotlin's OFF
+  // branch is unchanged (Android untouched, vc58 intact); the JS `block.mode <
+  // 1` plaintext branch was DELETED in P2.2, so a usable block always seals.
+  check('drift [PINNED — M-A5-5 alignment]: both lanes SEAL on peer OFF — the JS mode-0 plaintext branch is gone',
+    /PeerAdvertisement\.OFF ->[\s\S]{0,80}?if \(localEnabled\) \{/.test(body)
+      && /if \(block\.mode < 1\)/.test(js) === false
+      && /state: effective === 'on' \? 'encrypted-verified' : 'encrypted-unverified',/.test(js),
+    'decideAccept changed — re-check against M-A5-5');
 
   // (d) The downgrade latch exists on both sides and outranks a weaker offer.
   check('drift: Kotlin has a downgrade latch that outranks a non-ON offer',
