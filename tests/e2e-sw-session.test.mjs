@@ -204,7 +204,11 @@ await check('the floor advance is capped at 256 within the forward-jump band', a
   reset();
   const args = { kid: 'kid-01', direction: 1, pairEpoch: 1 };
   eq((await S.admitSeq({ ...args, seq: 0 })).ok, true, 'baseline');
+  // ARMED, via the real two-call shape (M-A5-2 armRule): admitSeq decides the
+  // window, markAuthenticated raises the mark once the AEAD tag verified.
+  await S.markAuthenticated({ ...args, seq: 0 });
   eq((await S.admitSeq({ ...args, seq: 1024 })).ok, true, 'at the bound, accepted');
+  await S.markAuthenticated({ ...args, seq: 1024 });
   // 2048 is still admissible (highestAccepted 1024 + WINDOW) and it is far
   // enough ahead of floor 1 to demand a 1024-wide slide. The cap holds it to
   // 256, which is the §13.5 clause this check exists for and which M-A5-2 did
@@ -236,6 +240,9 @@ await check('a far-future forged frame now buys the attacker nothing at all', as
   reset();
   const args = { kid: 'kid-01', direction: 1, pairEpoch: 1 };
   await S.admitSeq({ ...args, seq: 0 });
+  // The mark must be ARMED for the bound to apply — an unarmed window is the
+  // post-resume state and admits by the ordinary rules (vector A).
+  await S.markAuthenticated({ ...args, seq: 0 });
   const a = await S.admitSeq({ ...args, seq: 5_000_000 });
   const b = await S.admitSeq({ ...args, seq: 5_000_000 });
   eq(a.why, 'forward-jump', 'first forgery refused');

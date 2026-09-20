@@ -68,45 +68,71 @@ const record = () => (store[S.DEDUPE_KEY] || {})[`${KID}|${DIR}`] || null;
 console.log('SW forward-jump bound — Security A5 M-A5-2 / F2\n');
 
 // ── 0. The vector file itself ───────────────────────────────────────────────
-// A parity file that silently lost its vectors would make every lane pass.
+// A parity file that silently lost its cases would make all three lanes pass.
 
-await check('the vector file matches the module\'s frozen parameters', () => {
-  eq(VECTORS.params.window, S.FORWARD_JUMP_WINDOW, 'window');
-  eq(VECTORS.params.window, S.DEDUPE_WINDOW, 'window == dedupe window');
-  eq(VECTORS.params.floorAdvanceCap, S.FLOOR_ADVANCE_CAP, 'floor advance cap');
-});
-
-await check('the vector file carries all seven vectors with unique ids', () => {
-  eq(VECTORS.vectors.length, 7, 'vector count');
-  const ids = VECTORS.vectors.map((v) => v.id);
+await check('the vector file is P2.2 frozen table and names this lane a consumer', () => {
+  eq(VECTORS.window, S.FORWARD_JUMP_WINDOW, 'window');
+  eq(VECTORS.window, S.DEDUPE_WINDOW, 'window == dedupe window');
+  eq(VECTORS.cases.length, 8, 'case count');
+  const ids = VECTORS.cases.map((c) => c.id);
   eq(new Set(ids).size, ids.length, 'unique ids');
-  for (const v of VECTORS.vectors) {
-    assert(Array.isArray(v.frames) && v.frames.length > 0, `${v.id}: no frames`);
-    assert(v.after && typeof v.after.floor === 'number', `${v.id}: no expected floor`);
-  }
+  assert(VECTORS.consumers.some((c) => /SW|P3\.2/.test(c)), 'the SW must be listed as a consumer');
+  assert(/UNARMED \(-1\)/.test(VECTORS.armRule), 'the arm rule this lane implements');
+  assert(/NOT zeroed by a dedupe reset/.test(VECTORS.counterRule), 'the counter rule this lane implements');
 });
 
-// ── 1. Every vector, frame by frame, against the real module ────────────────
+// ── 1. Every case, step by step, against the real module ────────────────────
+//
+// `expect` is P2.2's vocabulary, mapped onto the SW's two-call shape:
+//   accepted                      -> admitSeq ok, then markAuthenticated()
+//   accepted-but-unauthenticated  -> admitSeq ok, markAuthenticated NOT called
+//   duplicate                     -> admitSeq {ok:false, why:'duplicate'}
+//   refused                       -> admitSeq {ok:false, why:'forward-jump'}
+// The unauthenticated arm is the whole point of the split: see markAuthenticated().
 
-for (const v of VECTORS.vectors) {
-  await check(`vector ${v.id}`, async () => {
+for (const c of VECTORS.cases) {
+  await check(`case ${c.id}`, async () => {
     reset();
+    let epoch = 1;
     let i = 0;
-    for (const f of v.frames) {
-      const r = await S.admitSeq({
-        kid: KID, direction: DIR, seq: f.seq, pairEpoch: f.epoch,
-      });
-      const label = `${v.id} frame[${i}] seq=${f.seq} epoch=${f.epoch}`;
-      eq(r.ok, f.expect === 'accept', `${label} verdict`);
-      if (f.why) eq(r.why, f.why, `${label} why`);
+    for (const st of c.steps) {
+      const label = `${c.id} step[${i}]`;
+      if (st.reset) {
+        // The SW's real §13.8 reset path, not an edit to the store: it clears
+        // the dedupe windows outright, and a new pairEpoch comes with it. That
+        // makes the counter assertion on this step load-bearing —
+        // dropSessionState() must NOT take cc_e2e_drops with it, or an
+        // attacker who can provoke a reset can zero the security counter
+        // (the vector file's counterRule).
+        await S.dropSessionState();
+        epoch += 1;
+      } else {
+        const r = await S.admitSeq({ kid: KID, direction: DIR, seq: st.seq, pairEpoch: epoch });
+        if (st.expect === 'refused') {
+          eq(r.ok, false, `${label} verdict`);
+          eq(r.why, 'forward-jump', `${label} why`);
+        } else if (st.expect === 'duplicate') {
+          eq(r.ok, false, `${label} verdict`);
+          eq(r.why, 'duplicate', `${label} why`);
+        } else {
+          eq(r.ok, true, `${label} verdict (${st.expect})`);
+          if (st.authenticates) {
+            await S.markAuthenticated({ kid: KID, direction: DIR, seq: st.seq, pairEpoch: epoch });
+          }
+        }
+      }
+      const w = record();
+      if (typeof st.highestAcceptedAfter === 'number') {
+        // After a reset the window is rebuilt lazily by the next admitSeq, so
+        // "disarmed" is either a rebuilt record at -1 or no record at all.
+        eq(w ? w.highestAccepted : -1, st.highestAcceptedAfter, `${label} highestAccepted`);
+      }
+      if (typeof st.floorAfter === 'number') eq(w ? w.floor : 0, st.floorAfter, `${label} floor`);
+      if (typeof st.refusedForwardJumpAfter === 'number') {
+        eq((await S.readDrops()).refusedForwardJump, st.refusedForwardJumpAfter, `${label} refusedForwardJump`);
+      }
       i += 1;
     }
-    const w = record();
-    assert(w, `${v.id}: no stored record`);
-    eq(w.v, S.DEDUPE_RECORD_V, `${v.id} record version`);
-    eq(w.floor, v.after.floor, `${v.id} floor`);
-    eq(w.highestAccepted, v.after.highestAccepted, `${v.id} highestAccepted`);
-    eq(w.refusedForwardJump || 0, v.after.refusedForwardJump, `${v.id} per-window refusals`);
   });
 }
 
@@ -197,7 +223,9 @@ await check('a duplicate does NOT widen the bound', async () => {
   reset();
   const args = { kid: KID, direction: DIR, pairEpoch: 7 };
   await S.admitSeq({ ...args, seq: 10 });
+  await S.markAuthenticated({ ...args, seq: 10 });
   await S.admitSeq({ ...args, seq: 10 });          // duplicate
+  await S.markAuthenticated({ ...args, seq: 10 }); // even if the caller marked it
   eq(record().highestAccepted, 10, 'highestAccepted after a duplicate');
   eq((await S.admitSeq({ ...args, seq: 1035 })).ok, false, '10 + 1024 + 1 is still refused');
 });
@@ -206,7 +234,9 @@ await check('a below-floor drop does NOT widen the bound', async () => {
   reset();
   const args = { kid: KID, direction: DIR, pairEpoch: 7 };
   await S.admitSeq({ ...args, seq: 0 });
+  await S.markAuthenticated({ ...args, seq: 0 });
   await S.admitSeq({ ...args, seq: 1024 });        // floor -> 1
+  await S.markAuthenticated({ ...args, seq: 1024 });
   await S.admitSeq({ ...args, seq: 0 });           // below floor now
   eq(record().highestAccepted, 1024, 'unchanged by a below-floor drop');
 });

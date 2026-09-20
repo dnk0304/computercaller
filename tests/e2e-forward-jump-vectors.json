@@ -1,87 +1,85 @@
 {
-  "id": "e2e-forward-jump-vectors",
-  "v": 1,
-  "source": "Security GATE2-PRE-A5 — F2 / MUST M-A5-2",
-  "authoredBy": "E2E-P3.2 (extension SW lane)",
-  "ownershipNote": "P2.2 (web) was scheduled to author this file. At the time P3.2 reached deliverable (a) no branch e2e/p2.2-a5-web existed on origin and the file was absent from e2e/integration (122e9c6), so the SW lane authored it. If P2.2 pushes its own copy, Ken dedupes at merge: ONE file, three consumers (web, SW, android P4.2).",
-  "whatThisPins": [
-    "seq == highestAccepted + window  -> ACCEPTED",
-    "seq == highestAccepted + window + 1 -> REFUSED (why 'forward-jump')",
-    "a refusal moves NEITHER floor NOR highestAccepted",
-    "the same refused frame replayed N times increments the counter N times",
-    "the bound walks forward only with ACCEPTANCE, never with a drop or a duplicate",
-    "a pairEpoch change rebuilds the record and re-arms the bound at the new floor"
+  "_comment": "GATE1 Addendum A5, MUST M-A5-2 — the forward-jump bound. Frozen by E2E-P2.2 (web lane); OWNED BY P2.2 and CONSUMED BY P3.2 (extension service worker) and, when Android next builds, P4.2. One table, three implementations: a lane that disagrees with this file fails its own build instead of surfacing as 'the same ciphertext replayed forever'.",
+  "_authority": "security/PROJECTS/computercaller/e2e/GATE2-PRE-A5.md — F2 / M-A5-2",
+  "version": 1,
+  "window": 1024,
+  "rule": "Per (kid, direction). A frame whose seq exceeds highestAccepted + window is REFUSED: dropped, floor NOT advanced, seq NOT recorded, counted in refusedForwardJump (distinct from droppedTotal and from any beyond-window statistic). At or below the bound behaviour is unchanged — the dedupe DEDUPES, it never rejects.",
+  "armRule": "highestAccepted starts UNARMED (-1) and is raised ONLY by a frame whose AEAD tag verified. A merely well-shaped frame must never move it: if it could, one forged envelope at seq 2^40 would set the mark and the bound would then admit everything below it. A fresh receive window is the normal state after a resume/reattach, and arming from 0 would refuse a peer legitimately past the window.",
+  "counterRule": "refusedForwardJump is session-lifetime and is NOT zeroed by a dedupe reset (an epoch change). A counter an attacker can zero by causing an epoch change is not a counter.",
+  "consumers": [
+    "lib/e2e/session.mjs (web) — tests/e2e-web-forward-jump.test.mjs",
+    "chrome-extension/sw-session.js (SW) — P3.2",
+    "E2eDedupe (android) — P4.2"
   ],
-  "params": {
-    "window": 1024,
-    "floorAdvanceCap": 256,
-    "initialFloor": 0,
-    "initialHighestAccepted": 0
-  },
-  "vectors": [
+  "cases": [
     {
-      "id": "F2-1-at-bound-accepted",
-      "note": "The frozen edge: exactly +WINDOW above a fresh highestAccepted is legitimate. frameBuffer resume can produce it; a receiver that refused here would break reconnect.",
-      "frames": [{ "seq": 1024, "epoch": 1, "expect": "accept" }],
-      "after": { "floor": 1, "highestAccepted": 1024, "refusedForwardJump": 0 }
+      "id": "A-unarmed-admits-any-seq",
+      "note": "Nothing has authenticated yet, so there is no honest high-water mark. The bound is not armed and a high seq is admitted by the ordinary window rules. This is the resume case, and it is why the counter must not fire here.",
+      "steps": [
+        { "seq": 900000, "authenticates": true, "expect": "accepted", "refusedForwardJumpAfter": 0, "highestAcceptedAfter": 900000 }
+      ]
     },
     {
-      "id": "F2-2-one-past-bound-refused",
-      "note": "+WINDOW+1 is unreachable by any honest sender. Refused, and the floor does not move — that immobility IS the fix.",
-      "frames": [{ "seq": 1025, "epoch": 1, "expect": "refuse", "why": "forward-jump" }],
-      "after": { "floor": 0, "highestAccepted": 0, "refusedForwardJump": 1 }
+      "id": "B-exactly-plus-window-accepted",
+      "note": "The boundary is INCLUSIVE. highestAccepted + 1024 is the last legitimate value and must pass — an off-by-one here refuses honest traffic.",
+      "steps": [
+        { "seq": 0, "authenticates": true, "expect": "accepted", "refusedForwardJumpAfter": 0, "highestAcceptedAfter": 0 },
+        { "seq": 1024, "authenticates": true, "expect": "accepted", "refusedForwardJumpAfter": 0, "highestAcceptedAfter": 1024 }
+      ]
     },
     {
-      "id": "F2-3-replayed-refusal-counts-every-time",
-      "note": "A5's own wording: 'the same frame twice -> refused twice, counter = 2'. A counter that deduped its own refusals would report a flood as a single event.",
-      "frames": [
-        { "seq": 1025, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
-        { "seq": 1025, "epoch": 1, "expect": "refuse", "why": "forward-jump" }
-      ],
-      "after": { "floor": 0, "highestAccepted": 0, "refusedForwardJump": 2 }
+      "id": "C-plus-window-plus-one-refused",
+      "note": "One past the bound is the refusal band. No honest sender can produce it: frameBuffer resume re-sends at or below the highest seq already seen.",
+      "steps": [
+        { "seq": 0, "authenticates": true, "expect": "accepted", "refusedForwardJumpAfter": 0, "highestAcceptedAfter": 0 },
+        { "seq": 1025, "authenticates": true, "expect": "refused", "refusedForwardJumpAfter": 1, "highestAcceptedAfter": 0 }
+      ]
     },
     {
-      "id": "F2-4-floor-moves-only-on-accept",
-      "note": "A refusal between two accepts must leave the window exactly as the accepts left it.",
-      "frames": [
-        { "seq": 0, "epoch": 1, "expect": "accept" },
-        { "seq": 1025, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
-        { "seq": 1024, "epoch": 1, "expect": "accept" }
-      ],
-      "after": { "floor": 1, "highestAccepted": 1024, "refusedForwardJump": 1 }
+      "id": "D-same-refused-frame-twice-counts-twice",
+      "note": "THE defect F2 names. The old behaviour admitted a far-future frame, never recorded it (the floor advance is capped at 256, so its index fell outside the seen set) and so replayed it without limit. A refused frame is not recorded either — it is refused AGAIN, and the counter is the proof.",
+      "steps": [
+        { "seq": 10, "authenticates": true, "expect": "accepted", "refusedForwardJumpAfter": 0, "highestAcceptedAfter": 10 },
+        { "seq": 5000, "authenticates": true, "expect": "refused", "refusedForwardJumpAfter": 1, "highestAcceptedAfter": 10 },
+        { "seq": 5000, "authenticates": true, "expect": "refused", "refusedForwardJumpAfter": 2, "highestAcceptedAfter": 10 }
+      ]
     },
     {
-      "id": "F2-5-bound-walks-with-acceptance-not-with-the-floor",
-      "note": "highestAccepted 2048 after a legitimate climb; the floor is only 257 because of the 256 cap. The bound is measured from ACCEPTANCE, so 3072 is still admissible and 3073 is not.",
-      "frames": [
-        { "seq": 0, "epoch": 1, "expect": "accept" },
-        { "seq": 1024, "epoch": 1, "expect": "accept" },
-        { "seq": 2048, "epoch": 1, "expect": "accept" },
-        { "seq": 3073, "epoch": 1, "expect": "refuse", "why": "forward-jump" }
-      ],
-      "after": { "floor": 257, "highestAccepted": 2048, "refusedForwardJump": 1 }
+      "id": "E-floor-unmoved-by-a-refusal",
+      "note": "The floor is the denial-of-service surface: a far-future seq that slid the floor forward would make every frame the real peer has not sent yet look 'old'. A refusal must leave it exactly where it was.",
+      "steps": [
+        { "seq": 0, "authenticates": true, "expect": "accepted", "floorAfter": 0 },
+        { "seq": 99999, "authenticates": true, "expect": "refused", "floorAfter": 0, "refusedForwardJumpAfter": 1 },
+        { "seq": 1, "authenticates": true, "expect": "accepted", "floorAfter": 0, "refusedForwardJumpAfter": 1 }
+      ]
     },
     {
-      "id": "F2-6-the-original-attack-is-now-inert",
-      "note": "THE REGRESSION VECTOR. Pre-M-A5-2 each of these three far-future frames was ACCEPTED and walked the floor up by 256, so ~20k injections silenced the pairing. Now: refused, floor pinned at 0, and the next real frame still lands.",
-      "frames": [
-        { "seq": 0, "epoch": 1, "expect": "accept" },
-        { "seq": 5000000, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
-        { "seq": 5000000, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
-        { "seq": 5000000, "epoch": 1, "expect": "refuse", "why": "forward-jump" },
-        { "seq": 1, "epoch": 1, "expect": "accept" }
-      ],
-      "after": { "floor": 0, "highestAccepted": 1, "refusedForwardJump": 3 }
+      "id": "F-mark-moves-only-on-authentication",
+      "note": "A frame that passes the window but fails its AEAD tag proves nothing about who produced it, so it must NOT widen the bound. Without this, one forged envelope buys an attacker an arbitrarily large admissible range.",
+      "steps": [
+        { "seq": 0, "authenticates": true, "expect": "accepted", "highestAcceptedAfter": 0 },
+        { "seq": 1000, "authenticates": false, "expect": "accepted-but-unauthenticated", "highestAcceptedAfter": 0 },
+        { "seq": 1025, "authenticates": true, "expect": "refused", "refusedForwardJumpAfter": 1, "highestAcceptedAfter": 0 }
+      ]
     },
     {
-      "id": "F2-7-epoch-reset-rearms-the-bound",
-      "note": "A new epoch is a new key and a new record. The bound must be re-armed from the new floor, not inherited from the old highestAccepted — inheriting it would refuse every legitimate frame after an Accept.",
-      "frames": [
-        { "seq": 1024, "epoch": 1, "expect": "accept" },
-        { "seq": 0, "epoch": 2, "expect": "accept" },
-        { "seq": 1025, "epoch": 2, "expect": "refuse", "why": "forward-jump" }
-      ],
-      "after": { "floor": 0, "highestAccepted": 0, "refusedForwardJump": 1 }
+      "id": "G-in-window-dedupe-never-rejects",
+      "note": "Below the bound nothing changes. A duplicate is DROPPED and counted as a drop — not refused, and not counted in refusedForwardJump. Conflating the two would make the new counter unreadable.",
+      "steps": [
+        { "seq": 0, "authenticates": true, "expect": "accepted", "refusedForwardJumpAfter": 0 },
+        { "seq": 5, "authenticates": true, "expect": "accepted", "refusedForwardJumpAfter": 0 },
+        { "seq": 5, "authenticates": true, "expect": "duplicate", "refusedForwardJumpAfter": 0 }
+      ]
+    },
+    {
+      "id": "H-reset-disarms-the-mark-but-keeps-the-counter",
+      "note": "A new pairEpoch is a new key space with no high-water mark of its own; carrying the old one over would refuse the new peer's first frames. The security counter survives — see counterRule.",
+      "steps": [
+        { "seq": 4000, "authenticates": true, "expect": "accepted", "highestAcceptedAfter": 4000 },
+        { "seq": 99999, "authenticates": true, "expect": "refused", "refusedForwardJumpAfter": 1 },
+        { "reset": true, "highestAcceptedAfter": -1, "refusedForwardJumpAfter": 1, "floorAfter": 0 },
+        { "seq": 99999, "authenticates": true, "expect": "accepted", "refusedForwardJumpAfter": 1 }
+      ]
     }
   ]
 }

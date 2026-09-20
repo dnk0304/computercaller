@@ -42,6 +42,7 @@ import {
   isSealedEnvelope,
   openSealedFrame,
   admitSeq,
+  markAuthenticated,
   noteDrop,
   noteRefusedForwardJump,
   readDrops,
@@ -1636,9 +1637,18 @@ async function openIfSealed(type, data) {
     return undefined;                                              // drop entirely
   }
   try {
-    return await openSealedFrame({
+    const opened = await openSealedFrame({
       session, frameType: type, envelope: data, pairEpoch: e2ePairEpoch,
     });
+    // M-A5-2 `armRule`: the forward-jump mark is raised HERE, after the AEAD
+    // tag verified, and nowhere else. admitSeq() above knows only that the
+    // frame was well SHAPED; if it raised the mark, a forged envelope at a
+    // huge seq would set the high-water mark itself and the bound would then
+    // admit everything below it.
+    await markAuthenticated({
+      kid: data.kid, direction: 0x01, seq: data.s, pairEpoch: e2ePairEpoch,
+    });
+    return opened;
   } catch {
     // Tag failure. §13.5: drop the frame, NEVER close the socket. The user
     // still gets a badge and a generic body — silence would be worse.

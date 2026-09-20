@@ -334,7 +334,9 @@ await check('dedupe: a duplicate is dropped, silently, and stays dropped', async
 await check('dedupe: the floor advance is CAPPED at 256 on one frame', async () => {
   reset();
   assert((await admit(0)).ok, 'seed');
+  await S.markAuthenticated({ kid: KID, direction: DIR_IN, seq: 0, pairEpoch: EPOCH });
   assert((await admit(S.DEDUPE_WINDOW)).ok, 'at the forward-jump bound, still admissible');
+  await S.markAuthenticated({ kid: KID, direction: DIR_IN, seq: S.DEDUPE_WINDOW, pairEpoch: EPOCH });
   // Beyond floor+1024 but WITHIN the M-A5-2 bound (highestAccepted 1024 +
   // WINDOW). One admissible frame may still carry the floor at most 256.
   await admit(2 * S.DEDUPE_WINDOW);
@@ -348,6 +350,8 @@ await check('dedupe: the floor advance is CAPPED at 256 on one frame', async () 
 await check('dedupe: a frame past the forward-jump bound is REFUSED at the chokepoint', async () => {
   reset();
   assert((await admit(0)).ok, 'seed');
+  // Arm the mark — M-A5-2's bound applies only once a frame has AUTHENTICATED.
+  await S.markAuthenticated({ kid: KID, direction: DIR_IN, seq: 0, pairEpoch: EPOCH });
   const r = await admit(1_000_000);
   eq(r.ok, false, 'refused');
   eq(r.why, 'forward-jump', 'and named');

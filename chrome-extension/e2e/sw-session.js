@@ -679,10 +679,13 @@ export async function admitSeq({ kid, direction, seq, pairEpoch }) {
       floor: 0,
       seen: [],
       beyondWindow: 0,
-      // Starts level with `floor`, not at -1: with floor 0 the first admissible
-      // band is [0, 1024], which is exactly the frozen vector's "+WINDOW
-      // accepted, +WINDOW+1 refused" over a fresh window.
-      highestAccepted: 0,
+      // UNARMED. -1 is not "zero minus one", it is a distinct state: no frame
+      // has authenticated in this epoch, so there is no honest high-water mark
+      // to measure a jump against. Arming from 0 would refuse a peer that is
+      // legitimately past the window -- the normal situation after a resume or
+      // a reattach, when this receiver rebuilds the record from nothing while
+      // the sender is at seq 90 000. The vector file's `armRule` and case A.
+      highestAccepted: -1,
     };
   }
   const n = Number(seq);
@@ -691,9 +694,18 @@ export async function admitSeq({ kid, direction, seq, pairEpoch }) {
   // ── M-A5-2 / F2: the forward-jump bound, BEFORE any floor movement ────────
   // Order is the whole fix. Checked after the slide it would be checking a
   // floor the forgery had already moved.
-  if (n > w.highestAccepted + FORWARD_JUMP_WINDOW) {
-    w.refusedForwardJump = (w.refusedForwardJump || 0) + 1;
-    all[mapKey] = w;                       // floor and highestAccepted UNMOVED
+  //
+  // ARMED ONLY. An unarmed window (-1) admits by the ordinary rules below and
+  // the first AUTHENTICATED frame sets the mark -- see markAuthenticated().
+  if (w.highestAccepted >= 0 && n > w.highestAccepted + FORWARD_JUMP_WINDOW) {
+    // Counted HERE rather than by the caller, and on the DROPS record rather
+    // than on this window. The vector file's `counterRule`: the counter is
+    // session-lifetime and must NOT be zeroed by an epoch change, because an
+    // epoch change is something an attacker can provoke -- and a counter an
+    // attacker can zero is not a counter. The window is rebuilt on every
+    // epoch; the drops record is not.
+    await noteRefusedForwardJump();
+    all[mapKey] = w;      // floor, seen and the mark ALL unmoved; seq unrecorded
     await sessionSet(DEDUPE_KEY, all);
     return { ok: false, why: 'forward-jump' };
   }
@@ -719,7 +731,6 @@ export async function admitSeq({ kid, direction, seq, pairEpoch }) {
       // says dedupe rather than reject — so accept it and make the case
       // countable instead of silent.
       w.beyondWindow = (w.beyondWindow || 0) + 1;
-      if (n > w.highestAccepted) w.highestAccepted = n;   // M-A5-2: accept moves it
       all[mapKey] = w;
       await sessionSet(DEDUPE_KEY, all);
       return { ok: true, beyondWindow: true };
@@ -728,13 +739,40 @@ export async function admitSeq({ kid, direction, seq, pairEpoch }) {
 
   if (w.seen.includes(n)) { all[mapKey] = w; await sessionSet(DEDUPE_KEY, all); return { ok: false, why: 'duplicate' }; }
   w.seen.push(n);
-  // M-A5-2: the floor moves for its own reasons (the cap), but the forward-jump
-  // bound tracks ACCEPTANCE — a refused or duplicated frame must never widen
-  // the band the next forgery is measured against.
-  if (n > w.highestAccepted) w.highestAccepted = n;
   all[mapKey] = w;
   await sessionSet(DEDUPE_KEY, all);
   return { ok: true };
+}
+
+/**
+ * Arm/raise the forward-jump mark. Called ONLY after the frame's AEAD tag has
+ * verified (M-A5-2 `armRule`).
+ *
+ * WHY THIS IS A SECOND CALL AND NOT A LINE INSIDE admitSeq(). admitSeq() runs
+ * BEFORE the open, deliberately -- §13.5 wants a replayed frame to cost no
+ * crypto -- so at that point the only thing known about the frame is that it is
+ * well SHAPED. Raising the mark there would mean an attacker who can emit a
+ * well-shaped envelope at seq 2^40 sets the high-water mark himself, and the
+ * bound then admits everything below it: the fix would hand over the very
+ * property it exists to protect. Authentication is the only evidence that a
+ * sequence number came from the peer, and it is available only here.
+ *
+ * A no-op when the window is gone or the epoch has moved on: a reset DISARMS
+ * the mark by design (vector H), and re-arming it from a frame decrypted under
+ * the previous epoch would undo that.
+ */
+export async function markAuthenticated({ kid, direction, seq, pairEpoch }) {
+  const mapKey = `${kid}|${direction}`;
+  const all = (await sessionGet(DEDUPE_KEY)) || {};
+  const w = all[mapKey];
+  if (!w || w.epoch !== Number(pairEpoch) || w.v !== DEDUPE_RECORD_V) return;
+  const n = Number(seq);
+  if (!Number.isSafeInteger(n) || n < 0) return;
+  if (n > w.highestAccepted) {
+    w.highestAccepted = n;
+    all[mapKey] = w;
+    await sessionSet(DEDUPE_KEY, all);
+  }
 }
 
 /**
