@@ -1317,14 +1317,35 @@ if (WEB) {
     // a comment. Node-only — no browser, no Docker, no database (rule 17).
     // ONLY e2e-gate.mjs change made by SOAK-RIG; declared in the résumé.
     ['soak-rig', 'tests/soak-rig.test.mjs', true],
+    // SOAK-RIG-2. The handshake proof, against the SHIPPED relay.
+    //
+    // Every other relay suite in tests/ mirrors server.js's state machine by
+    // hand. A mirror cannot prove a CLIENT speaks the protocol the shipped
+    // relay implements — the mirror and the client are written by the same hand
+    // and agree by construction. That is exactly how the soak runner shipped
+    // without a Connect+Accept handshake and soaked the lobby for a whole
+    // window (Hetzner 2026-09-20T02:32Z): four authed sockets, zero 4401, zero
+    // frames forwarded, and a verifier grading `framesSent`.
+    //
+    // So this one boots server.js for real (tests/lib/relay-boot.cjs stubs only
+    // `next`) on an ephemeral port, runs the REAL soak/soak-runner.mjs against
+    // it, and carries the plant: the same client with the handshake removed,
+    // which must forward nothing and must be graded INVALID. DB-backed — it
+    // needs the harness DATABASE_URL, passed explicitly below for the same
+    // reason devicekey-authz does. Node-only: no browser (rule 17).
+    ['soak-handshake', 'tests/soak-handshake.test.mjs', true],
   ];
+  // The one unit suite that needs a database, named for the same reason
+  // DB_BACKED names devicekey-authz above: explicit beats widening the scrub.
+  const UNIT_DB_BACKED = new Set(['soak-handshake']);
   for (const [name, rel, isNew] of UNIT) {
     if (!existsSync(join(ROOT, rel))) {
       if (BASELINE && isNew) skip(`unit:${name}`, `node ${rel}`, 'absent-at-base (delivered by P0)');
       else record(`unit:${name}`, `node ${rel}`, 1, 0, { missing: 1 });
       continue;
     }
-    run(`unit:${name}`, `node ${rel}`, { parse: passLine, scrub: true });
+    const unitEnv = UNIT_DB_BACKED.has(name) ? { DATABASE_URL: process.env.DATABASE_URL || '' } : {};
+    run(`unit:${name}`, `node ${rel}`, { parse: passLine, scrub: true, env: unitEnv, timeout: 10 * 60_000 });
   }
   // E2E-P2 (g-node), Ken R-L. The live-peer harness: both ends driven for real
   // over a socket, with the relay's OWN lib/e2eBlock-core.js doing the block

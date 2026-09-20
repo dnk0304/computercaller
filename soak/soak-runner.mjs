@@ -119,6 +119,12 @@ export function readConfig(env = process.env) {
     HEARTBEAT_MS: Number(env.SOAK_HEARTBEAT_MS || 5 * 60_000),
     TRACE_MS: Number(env.SOAK_TRACE_MS || 60 * 60_000),
     TRAFFIC_MS: Number(env.SOAK_TRAFFIC_MS || 30_000),
+    // How often the runner asks "is the window over yet". 30 s is right for a
+    // 24 h window and wrong for a 15 s rehearsal, where it would add half a
+    // minute of idling to every run of tests/soak-handshake.test.mjs. Same
+    // rationale as the cadence overrides above: the REAL run uses the default,
+    // and verify-soak grades against the real thresholds regardless.
+    DONE_CHECK_MS: Number(env.SOAK_DONE_CHECK_MS || 30_000),
   };
 }
 
@@ -203,7 +209,7 @@ export function newCounters() {
 
 export async function main(env = process.env) {
   const cfg = readConfig(env);
-  const { RELAY_WS, JWT_SECRET, EVIDENCE, SHA, HOURS, HEARTBEAT_MS, TRACE_MS, TRAFFIC_MS } = cfg;
+  const { RELAY_WS, JWT_SECRET, EVIDENCE, SHA, HOURS, HEARTBEAT_MS, TRACE_MS, TRAFFIC_MS, DONE_CHECK_MS } = cfg;
 
   if (!cfg.JWT_SECRET_FROM_ENV) {
     console.warn('[soak] JWT_SECRET absent or <32 chars — minted a throwaway one. '
@@ -551,7 +557,7 @@ export async function main(env = process.env) {
     process.exit(0);
   };
 
-  const done = setInterval(() => { if (Date.now() >= deadline) finish('window-complete'); }, 30_000);
+  const done = setInterval(() => { if (Date.now() >= deadline) finish('window-complete'); }, DONE_CHECK_MS);
   done.unref?.();
 
   process.on('SIGTERM', () => finish('sigterm'));

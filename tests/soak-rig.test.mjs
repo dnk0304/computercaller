@@ -151,7 +151,7 @@ if (dirty.length) {
 
 const { verifySoak, parseArgs, MAX_GAP_MS, EXPECT_EVERY_MS } = await import('../soak/verify-soak.mjs');
 const { mintSecret, mintTicket, relayUrls } = await import('../scripts/lib/relay-auth.mjs');
-const { readConfig, EXPECTED_CLOSE_CODES } = await import('../soak/soak-runner.mjs');
+const { readConfig, EXPECTED_CLOSE_CODES, parseFrame, UNEXPECTED_PAIRING_FRAMES } = await import('../soak/soak-runner.mjs');
 
 // ── fixture generators ─────────────────────────────────────────────────────
 const T0 = Date.parse('2026-09-21T00:00:00.000Z');
@@ -166,7 +166,7 @@ const SHA = 'abc1234';
  * control for the FAILs: the fixtures cannot be wrong in a way that makes a
  * guard look like it fired.
  */
-function heartbeat({ hours = 24, holes = [], shas = null } = {}) {
+function heartbeat({ hours = 24, holes = [], shas = null, beat = null } = {}) {
   const stepMin = EXPECT_EVERY_MS / 60_000;
   const lastMin = hours * 60;
   const lines = [];
@@ -174,7 +174,16 @@ function heartbeat({ hours = 24, holes = [], shas = null } = {}) {
     if (holes.some(([a, b]) => m >= a && m < b)) continue;
     const kind = m === 0 ? 'start' : (m === lastMin ? 'end' : 'hb');
     const rec = { utc: new Date(T0 + m * 60_000).toISOString(), kind, sha: shas ? shas(m) : SHA };
-    if (kind === 'hb') Object.assign(rec, { elapsedMin: m, onOpen: true, offOpen: true, rssMb: 120, unexpectedCloses: 0 });
+    if (kind === 'hb') {
+      Object.assign(rec, {
+        elapsedMin: m, onOpen: true, offOpen: true, rssMb: 120, unexpectedCloses: 0,
+        // SOAK-RIG-2 — what a HEALTHY beat looks like now. `beat(m)` lets one
+        // case damage exactly one field, so a FAIL is attributable to that
+        // field and not to a fixture that fell apart somewhere else.
+        onActive: true, offActive: true, fwdOn: 60, fwdOff: 60,
+        pairingRejected: 0, pairingTerminated: 0,
+      }, beat ? beat(m) : {});
+    }
     if (kind === 'start') rec.hours = hours;
     if (kind === 'end') rec.why = 'window-complete';
     lines.push(JSON.stringify(rec));
@@ -182,12 +191,20 @@ function heartbeat({ hours = 24, holes = [], shas = null } = {}) {
   return lines.join('\n') + '\n';
 }
 
-function trace({ hours = 24 } = {}) {
+function trace({ hours = 24, counters = null } = {}) {
   const lines = [];
   const rec = (kind, m, extra = {}) => ({
     kind, utc: new Date(T0 + m * 60_000).toISOString(), startedAt: new Date(T0).toISOString(),
     sha: SHA, elapsedMin: m, rssMb: 120, heapUsedMb: 60, externalMb: 5, cpuPct: 1.2, loadAvg1: 0.1,
-    counters: { framesSentOn: 100 * (m + 1), framesSentOff: 100 * (m + 1) }, ...extra,
+    // SOAK-RIG-2: a healthy run's recv tracks its sent. `counters` overrides
+    // let one case break one number.
+    counters: {
+      framesSentOn: 100 * (m + 1), framesSentOff: 100 * (m + 1),
+      framesRecvOn: 100 * (m + 1), framesRecvOff: 100 * (m + 1),
+      ticksSkippedNotActive: 0,
+      ...(counters || {}),
+    },
+    ...extra,
   });
   lines.push(JSON.stringify(rec('start', 0)));
   for (let h = 1; h <= hours; h++) lines.push(JSON.stringify(rec('hourly', h * 60)));
@@ -382,6 +399,164 @@ test('the compose stack gives the runner what it needs and keeps the kill switch
     readConfig({}).JWT_SECRET_FROM_ENV === false);
   check('1000 / 1001 / 4010 are the only expected close codes',
     [...EXPECTED_CLOSE_CODES].sort((a, b) => a - b).join(',') === '1000,1001,4010');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. SOAK-RIG-2 — the lobby defect, and the verdict that could not see it.
+//
+// The 2026-09-20T02:32Z window was 100% continuous, held four authed sockets
+// for its whole life, logged zero unexpected closes — and forwarded not one
+// frame, because the runner never performed the relay's Connect+Accept
+// handshake. The verifier graded traffic on `framesSent`, a counter the runner
+// increments about frames the relay was throwing away, and would have called
+// that VALID. Each case below damages exactly ONE field of the clean fixture,
+// so the FAIL is attributable to that field.
+//
+// The handshake itself is proven against the SHIPPED server.js in
+// tests/soak-handshake.test.mjs — a client and a mirror written by the same
+// hand agree by construction, so that proof cannot live here.
+// ═══════════════════════════════════════════════════════════════════════════
+test('PLANT: a window whose relay forwarded NOTHING is INVALID (recv, not sent)', () => {
+  const hb = write('norecv.jsonl', heartbeat({ hours: 24 }));
+  // Sent exactly as much as the clean run. Received nothing. This is the trace
+  // the 02:32Z window would have produced, and the old check passed it.
+  const tr = write('norecv-trace.jsonl', trace({ hours: 24, counters: { framesRecvOn: 0, framesRecvOff: 0 } }));
+  const r = verifySoak({ files: [hb, tr], hours: 24 });
+  check('a zero-recv window is INVALID', !r.valid);
+  const traffic = named(r, 'traffic actually flowed');
+  check('it is the TRAFFIC check that failed, by name', traffic && traffic.ok === false, JSON.stringify(traffic));
+  check('the ratio check failed too', named(r, 'at least 90%')?.ok === false,
+    JSON.stringify(named(r, 'at least 90%')));
+  // The control: the SAME fixture with recv restored is VALID, which is what
+  // makes the two FAILs above attributable to the zero.
+  const ok = verifySoak({ files: [hb, write('recv-trace.jsonl', trace({ hours: 24 }))], hours: 24 });
+  check('the same window with forwarded frames is VALID', ok.valid,
+    ok.checks.filter((c) => !c.ok).map((c) => c.name).join(' | '));
+});
+
+test('PLANT: one pair receiving nothing is still INVALID (both sides are checked)', () => {
+  const hb = write('halfrecv.jsonl', heartbeat({ hours: 24 }));
+  // ON forwarded fine, OFF forwarded nothing. A one-sided check would pass
+  // this, and the ON pair is the sealed path — the half nobody would notice.
+  const tr = write('halfrecv-trace.jsonl', trace({ hours: 24, counters: { framesRecvOff: 0 } }));
+  const r = verifySoak({ files: [hb, tr], hours: 24 });
+  check('a one-sided window is INVALID', !r.valid);
+  check('it is the traffic check that failed', named(r, 'traffic actually flowed')?.ok === false);
+});
+
+test('a recv/sent ratio under 0.9 is INVALID, at or over it is not', () => {
+  const hb = write('ratio.jsonl', heartbeat({ hours: 24 }));
+  const at = (pct) => ({ framesRecvOn: Math.round(100 * 1441 * pct), framesRecvOff: Math.round(100 * 1441 * pct) });
+  // The `end` sample is at elapsedMin 1440, so its sent figure is 100*(1440+1).
+  const low = verifySoak({ files: [hb, write('ratio-low.jsonl', trace({ hours: 24, counters: at(0.85) }))], hours: 24 });
+  check('0.85 is INVALID', !low.valid);
+  check('it is the RATIO check that failed, by name', named(low, 'at least 90%')?.ok === false,
+    JSON.stringify(named(low, 'at least 90%')));
+  check('the two-sided traffic check still passed at 0.85 — the ratio is doing the work',
+    named(low, 'traffic actually flowed')?.ok === true);
+  const high = verifySoak({ files: [hb, write('ratio-high.jsonl', trace({ hours: 24, counters: at(0.95) }))], hours: 24 });
+  check('0.95 is VALID', high.valid, high.checks.filter((c) => !c.ok).map((c) => c.name).join(' | '));
+});
+
+test('a heartbeat that reports a pair NOT ACTIVE invalidates the window', () => {
+  const tr = write('active-trace.jsonl', trace({ hours: 24 }));
+  // Everything else healthy: sockets open, frames forwarded, no closes. Only
+  // the ACTIVE flag is false — which is precisely the lobby state.
+  const hb = write('notactive.jsonl', heartbeat({ hours: 24, beat: (m) => (m === 600 ? { offActive: false } : {}) }));
+  const r = verifySoak({ files: [hb, tr], hours: 24 });
+  check('one non-active beat is INVALID', !r.valid);
+  check('it is the ACTIVE check that failed, by name', named(r, 'not ACTIVE')?.ok === false,
+    JSON.stringify(named(r, 'not ACTIVE')));
+  check('the open check did not fire (the sockets were fine)', named(r, 'held open')?.ok === true);
+});
+
+test('a zero forward delta on any beat invalidates the window', () => {
+  const tr = write('fwd-trace.jsonl', trace({ hours: 24 }));
+  const hb = write('nofwd.jsonl', heartbeat({ hours: 24, beat: (m) => (m === 900 ? { fwdOn: 0 } : {}) }));
+  const r = verifySoak({ files: [hb, tr], hours: 24 });
+  check('a beat that forwarded nothing is INVALID', !r.valid);
+  const fwd = named(r, 'forward frames on both pairs');
+  check('it is the FORWARD check that failed, by name', fwd && fwd.ok === false, JSON.stringify(fwd));
+  check('the failure detail names the beat', /first at 2026-09-21T15:00/.test(fwd?.detail || ''), fwd?.detail);
+});
+
+test('a heartbeat file from the OLD rig fails — it cannot report what it never measured', () => {
+  // No onActive, no fwdOn/fwdOff: the exact shape the 02:32Z window wrote.
+  // Passing it would mean the new guards can be bypassed by old evidence.
+  const stepMin = EXPECT_EVERY_MS / 60_000;
+  const lines = [];
+  for (let m = 0; m <= 1440; m += stepMin) {
+    const kind = m === 0 ? 'start' : (m === 1440 ? 'end' : 'hb');
+    const rec = { utc: new Date(T0 + m * 60_000).toISOString(), kind, sha: SHA };
+    if (kind === 'hb') Object.assign(rec, { elapsedMin: m, onOpen: true, offOpen: true, rssMb: 120, unexpectedCloses: 0 });
+    if (kind === 'start') rec.hours = 24;
+    if (kind === 'end') rec.why = 'window-complete';
+    lines.push(JSON.stringify(rec));
+  }
+  const hb = write('oldrig.jsonl', lines.join('\n') + '\n');
+  const r = verifySoak({ files: [hb], hours: 24 });
+  check('an old-format heartbeat is INVALID', !r.valid);
+  check('the ACTIVE check is what refuses it', named(r, 'not ACTIVE')?.ok === false);
+  check('the FORWARD check refuses it too', named(r, 'forward frames on both pairs')?.ok === false);
+});
+
+test('a rejected or terminated pairing invalidates the window', () => {
+  const tr = write('term-trace.jsonl', trace({ hours: 24 }));
+  const hb = write('terminated.jsonl', heartbeat({ hours: 24, beat: (m) => (m >= 300 ? { pairingTerminated: 1 } : {}) }));
+  const r = verifySoak({ files: [hb, tr], hours: 24 });
+  check('a terminated pairing is INVALID', !r.valid);
+  check('it is the rejected/terminated check that failed, by name',
+    named(r, 'rejected or terminated')?.ok === false, JSON.stringify(named(r, 'rejected or terminated')));
+});
+
+test('a window that skipped ticks for want of an active pair is INVALID', () => {
+  const hb = write('skip.jsonl', heartbeat({ hours: 24 }));
+  const tr = write('skip-trace.jsonl', trace({ hours: 24, counters: { ticksSkippedNotActive: 12 } }));
+  const r = verifySoak({ files: [hb, tr], hours: 24 });
+  check('skipped ticks are INVALID', !r.valid);
+  check('it is the skipped-ticks check that failed, by name',
+    named(r, 'want of an active pair')?.ok === false, JSON.stringify(named(r, 'want of an active pair')));
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. The runner's frame parser, and the guarantee that the REAL-relay proof
+//    of the handshake cannot be quietly dropped from the gate.
+// ═══════════════════════════════════════════════════════════════════════════
+test('parseFrame splits TYPE:{json} the way every server.js safeSend site writes it', () => {
+  const a = parseFrame('PAIRING_REQUEST:{"pairingId":"abc","ua":"x"}');
+  check('the type is everything before the first colon', a.type === 'PAIRING_REQUEST', a.type);
+  check('the payload is parsed', a.parsed === true && a.payload.pairingId === 'abc', JSON.stringify(a));
+  // A payload can legally contain colons; splitting on the LAST one, or on
+  // every one, would lose the pairingId and the accept would be ignored by the
+  // relay as an id mismatch — silently, forever.
+  const b = parseFrame('SMS_RECEIVED:{"text":"12:30:00","at":1}');
+  check('a colon inside the payload does not move the split', b.payload.text === '12:30:00', JSON.stringify(b));
+  const c = parseFrame('PHONE_PRESENT');
+  check('a bare type with no payload is still a type', c.type === 'PHONE_PRESENT' && c.payload === null);
+  const d = parseFrame('PAIRING_ACTIVE:not-json');
+  check('an unparseable payload is MARKED, not swallowed', d.type === 'PAIRING_ACTIVE' && d.parsed === false);
+  check('PAIRING_REJECTED and PAIRING_TERMINATED are the unexpected ones',
+    [...UNEXPECTED_PAIRING_FRAMES].sort().join(',') === 'PAIRING_REJECTED,PAIRING_TERMINATED',
+    [...UNEXPECTED_PAIRING_FRAMES].join(','));
+});
+
+test('the real-relay handshake proof is registered in the gate', () => {
+  // This suite is node-only and proves nothing about the shipped relay. The
+  // proof that the runner speaks the relay's actual protocol lives in
+  // tests/soak-handshake.test.mjs, which boots server.js. If that file or its
+  // gate registration disappears, the handshake goes back to being asserted by
+  // a mirror of itself — so the disappearance has to be loud.
+  const proof = path.join(ROOT, 'tests', 'soak-handshake.test.mjs');
+  check('tests/soak-handshake.test.mjs exists', fs.existsSync(proof));
+  const src = fs.readFileSync(proof, 'utf8');
+  check('it boots the SHIPPED server.js rather than mirroring it',
+    /relay-boot\.cjs/.test(src) && /require\(path\.join\(ROOT, 'server\.js'\)\)/.test(
+      fs.readFileSync(path.join(ROOT, 'tests', 'lib', 'relay-boot.cjs'), 'utf8')));
+  check('it drives the REAL soak-runner.mjs, not a copy',
+    /'soak', 'soak-runner\.mjs'/.test(src));
+  check('it carries the no-handshake plant', /handshake: false/.test(src) && /PLANT IS RED/.test(src));
+  const gate = fs.readFileSync(path.join(ROOT, 'tools', 'e2e-gate.mjs'), 'utf8');
+  check('the gate runs it', /soak-handshake\.test\.mjs/.test(gate));
 });
 
 test.after(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* temp */ } });
