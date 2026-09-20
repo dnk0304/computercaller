@@ -372,9 +372,9 @@ check('view: no sas digits yet', E2E_VIEW_INITIAL.sas.digits === null);
 eq('view: field set is stable for P5a',
   Object.keys(E2E_VIEW_INITIAL).sort().join(','), 'debug,effective,mode,peer,sas,state');
 eq('view: A5 — the initial effective mode is off', E2E_VIEW_INITIAL.effective, 'off');
-eq('view: A5 — debug carries the forward-jump counter',
+eq('view: A5 x FT-A1.1 — debug carries BOTH the forward-jump counter and the relay-abort counter',
   Object.keys(E2E_VIEW_INITIAL.debug).sort().join(','),
-  'downgradesDropped,drops,kid,refusedForwardJump');
+  'downgradesDropped,drops,kid,refusedForwardJump,relayAbortsAccepted');
 
 const total = passed + failed;
 console.log(`e2e-web-policy: ${passed}/${total} checks passed`);

@@ -65,8 +65,8 @@ function erroredView(error, overrides = {}) {
     state: 'error',
     error,
     peer: { supports: true, kind: 'present' },
-    sas: { digits: '123456', confirmed: true },
-    debug: { drops: 3, downgradesDropped: 2, kid: 'kid-1', refusedForwardJump: 0 },
+    sas: { digits: '123456', confirmed: true, coverage: null },
+    debug: { drops: 3, downgradesDropped: 2, relayAbortsAccepted: 0, kid: 'kid-1', refusedForwardJump: 0 },
     ...overrides,
   };
 }
@@ -78,8 +78,8 @@ function liveView(overrides = {}) {
     effective: 'on',
     state: 'encrypted-verified',
     peer: { supports: true, kind: 'present' },
-    sas: { digits: '654321', confirmed: true },
-    debug: { drops: 0, downgradesDropped: 0, kid: 'kid-9', refusedForwardJump: 0 },
+    sas: { digits: '654321', confirmed: true, coverage: null },
+    debug: { drops: 0, downgradesDropped: 0, relayAbortsAccepted: 0, kid: 'kid-9', refusedForwardJump: 0 },
     ...overrides,
   };
 }

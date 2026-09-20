@@ -78,6 +78,7 @@ import {
   sasKeySet,
   viewAfterErrorDismissed,
   viewAfterPairEnded,
+  withRelayAbortAccepted,
   writeEncryptedMode,
   type E2eError,
   type E2eView,
@@ -197,6 +198,11 @@ export interface E2eApi {
    * network can cause clears it — see the table in hooks/phoneE2e.ts.
    */
   dismissError(): void;
+  /**
+   * (j) FT-A1.1 §2.4 — one admitted relay-minted FILE_FAILED. Diagnostics only:
+   * it never gates, and `debug.relayAbortsAccepted` is never user-visible (m-G).
+   */
+  noteRelayAbortAccepted(): void;
 }
 
 /**
@@ -256,6 +262,8 @@ export function useE2e(emailProp?: string | null): E2eApi {
   /** The phone key THIS pair derived under — what a re-check compares against. */
   const pinnedPhoneKeyRef = useRef<string | null>(null);
   const downgradeDropsRef = useRef(0);
+  /** FT-A1.1 §2.4 accepted exceptions. Diagnostics only — never gates. */
+  const relayAbortsAcceptedRef = useRef(0);
   /** The session userId, fetched once. Local identity — never from the wire. */
   const userIdRef = useRef<string | null>(null);
   /** One store instance for the life of the hook, so the floor write and the
@@ -751,10 +759,15 @@ export function useE2e(emailProp?: string | null): E2eApi {
       // about the crypto session, and treating it as one would hand a
       // relay-position party a session kill switch.
       if (isRelayMintedAbort(type, payload)) {
-        console.warn(
-          `[e2e] relay-minted FILE_FAILED accepted ABORT-ONLY (FT-A1.1 §2.4) reason=${
-            (payload as { reason: string }).reason}`,
-        );
+        // (j) P6 seam (1b0e2a6): FT-3a.1 authored a console.warn here and 1b0e2a6
+        // specified the merge resolution verbatim — replace the warn with the
+        // counter and keep the `return { drop: false, payload }`. A warn is
+        // invisible in production and unassertable in a test; a counter is
+        // neither, and it still never gates (debug.relayAbortsAccepted is not
+        // user-visible, m-G). Inlined rather than calling noteRelayAbortAccepted()
+        // because that callback is declared below this one.
+        relayAbortsAcceptedRef.current += 1;
+        setView(withRelayAbortAccepted);
         return { drop: false, payload };
       }
       if (isMalformedRelayMark(type, payload)) {
@@ -798,6 +811,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     pinnedPhoneKeyRef.current = null;
     void indexedDbSeqStore().clear?.().catch(() => {});
     downgradeDropsRef.current = 0;
+    relayAbortsAcceptedRef.current = 0;
     userIdRef.current = null;
     setView(E2E_VIEW_INITIAL);
 
@@ -847,13 +861,30 @@ export function useE2e(emailProp?: string | null): E2eApi {
     setView(viewAfterErrorDismissed);
   }, []);
 
+  /**
+   * (j) FT-A1.1 §2.4 — record one ADMITTED relay-minted FILE_FAILED.
+   *
+   * Diagnostics only. It moves a counter on the debug surface and nothing else:
+   * it does not touch `mode`, does not enter the abort/downgrade path, and does
+   * not mark the session. A transport refusal is not evidence about the crypto
+   * session, and treating it as one would hand a relay-position party a session
+   * kill switch — which is precisely why this is a number and not a signal.
+   *
+   * It replaces FT-3a.1's console.warn at the same site. A warn is invisible in
+   * production and unassertable in a test; a counter is neither.
+   */
+  const noteRelayAbortAccepted = useCallback(() => {
+    relayAbortsAcceptedRef.current += 1;
+    setView(withRelayAbortAccepted);
+  }, []);
+
   return useMemo(() => ({
     e2e: view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
-    dismissError, recheckPinnedKey, revokeLocalPair,
+    dismissError, recheckPinnedKey, revokeLocalPair, noteRelayAbortAccepted,
   }), [view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
-    dismissError, recheckPinnedKey, revokeLocalPair]);
+    dismissError, recheckPinnedKey, revokeLocalPair, noteRelayAbortAccepted]);
 }
 
 function fromB64(value: string): Uint8Array {

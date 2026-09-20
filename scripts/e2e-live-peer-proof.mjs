@@ -892,8 +892,8 @@ async function main() {
       const errored = {
         mode: 'on', state: 'error', error: code,
         peer: { supports: true, kind: 'present' },
-        sas: { digits: '123456', confirmed: true },
-        debug: { drops: 1, downgradesDropped: 1, kid: 'kid-x' },
+        sas: { digits: '123456', confirmed: true, coverage: null },
+        debug: { drops: 1, downgradesDropped: 1, relayAbortsAccepted: 0, kid: 'kid-x', refusedForwardJump: 0 },
       };
       const afterTeardown = VIEW.viewAfterPairEnded(errored);
       check(`ABORT->PAIR-ENDED: the error still shows after teardown — ${why}`,

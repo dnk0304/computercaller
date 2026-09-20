@@ -211,4 +211,127 @@ test('Regression guard: soft-hold keeps survivor browser in active across the bl
   assert.ok(room.resumable, 'resume claim armed');
 });
 
+// ---------------------------------------------------------------------------
+// APPENDED — E2E-P6 (a): the same resume scenario with §13.7 SEALED bodies.
+//
+// The relay is supposed to be mode-blind: it routes on TYPE, and a sealed frame
+// keeps its type and replaces only its body with {e,kid,s,c}. So every
+// assertion above should hold verbatim when the bodies are ciphertext. What is
+// NEW here is the anti-replay rule, which only exists in mode ON:
+//
+//   A resume LEGITIMATELY replays buffered frames. The correct response to a
+//   repeated (kid, s) is to DEDUPE — drop the duplicate silently and keep the
+//   pair up — NOT to treat it as an attack and tear the session down. A resume
+//   that ends in a teardown is the outage the resume path exists to prevent.
+//
+// So the assertions are: same kid across the resume, buffered frames replay in
+// ORDER, duplicates are deduped, rejections are zero, and no NEW frame is ever
+// dropped.
+//
+// Same caveat as the rest of this file: this is a LOGIC harness mirroring
+// server.js branch structure, not a live WS test.
+// ---------------------------------------------------------------------------
+import { makeTestSession, sealBody, openBody, SEALED_FRAME_TYPES } from './lib/sealed-twin.mjs';
+
+// The receiver's anti-replay window. `deduped` and `rejected` are counted
+// SEPARATELY on purpose — collapsing them is exactly the bug this guards.
+function makeReceiver() {
+  return { seen: new Set(), accepted: [], deduped: [], rejected: [], kids: new Set() };
+}
+function receiveSealed(rx, session, type, env) {
+  const key = `${env.kid}|${env.s}`;
+  rx.kids.add(env.kid);
+  if (rx.seen.has(key)) { rx.deduped.push(key); return 'deduped'; }
+  let opened;
+  try { opened = openBody(session, type, env); }
+  catch { rx.rejected.push(key); return 'rejected'; } // only a REAL auth failure rejects
+  rx.seen.add(key);
+  rx.accepted.push({ type, s: env.s, payload: opened });
+  return 'accepted';
+}
+
+test('SEALED twin: mode-ON frames survive the lobby-phone path with 0 drops', () => {
+  const session = makeTestSession({ kid: 'kid-p6-resume-0001' });
+  const room = makeRoom();
+  const browser = { id: 'b1', role: 'browser', open: OPEN };
+  room.active.browser = browser;
+  room.resumable = { droppedRole: 'phone', expiresAt: Date.now() + 120000 };
+  const phone = { id: 'p2', role: 'phone', open: OPEN };
+  room.lobby.add(phone);
+
+  const types = ['CALL_LOG_ENTRY', 'SMS_RECEIVED', 'CALL_INCOMING'];
+  assert.ok(types.every((t) => SEALED_FRAME_TYPES.includes(t)), 'all three types are on the frozen sealed allowlist');
+  const envs = types.map((t, i) => sealBody(session, t, { id: `evt-${i}`, body: `sealed-${i}` }));
+  types.forEach((t, i) => onLobbyPhoneFrame(room, phone, `${t}:${JSON.stringify(envs[i])}`, true));
+
+  assert.equal(room.dropped.length, 0, '0 sealed frames dropped');
+  assert.equal(room.delivered.length, 3, 'browser received all 3 sealed frames');
+  assert.ok(room.active.phone && room.active.phone.id === 'p2', 'phone re-formed into active (routing never read a body)');
+  // The relay must have forwarded the envelope byte-for-byte: it still opens.
+  const rx = makeReceiver();
+  room.delivered.forEach((frame, i) => {
+    const type = frame.slice(0, frame.indexOf(':'));
+    assert.equal(type, types[i], 'type survived the relay in order');
+    assert.equal(receiveSealed(rx, session, type, JSON.parse(frame.slice(type.length + 1))), 'accepted');
+  });
+  assert.equal(rx.rejected.length, 0, 'no sealed frame was corrupted in transit');
+});
+
+test('SEALED twin: the SAME kid comes back across the resume', () => {
+  const session = makeTestSession({ kid: 'kid-p6-resume-0002' });
+  const rx = makeReceiver();
+  // Pre-blip traffic.
+  receiveSealed(rx, session, 'SMS_RECEIVED', sealBody(session, 'SMS_RECEIVED', { id: 'pre-1' }));
+  // …blip… the phone re-attaches and resumes the SAME sealed session.
+  receiveSealed(rx, session, 'SMS_RECEIVED', sealBody(session, 'SMS_RECEIVED', { id: 'post-1' }));
+  assert.deepEqual([...rx.kids], ['kid-p6-resume-0002'], 'exactly one kid across the resume — no silent rekey');
+  assert.equal(rx.rejected.length, 0, 'resume did not invalidate the key');
+});
+
+test('SEALED twin: a resume replay DEDUPES — 0 rejections, 0 teardown', () => {
+  const session = makeTestSession({ kid: 'kid-p6-resume-0003' });
+  const rx = makeReceiver();
+  const types = ['SMS_RECEIVED', 'PHONE_NOTIFICATION', 'CALL_LOG_ENTRY'];
+  const buffered = types.map((t, i) => ({ type: t, env: sealBody(session, t, { id: `buf-${i}`, body: `b${i}` }) }));
+
+  // First pass: the frames are buffered and delivered normally.
+  for (const { type, env } of buffered) assert.equal(receiveSealed(rx, session, type, env), 'accepted');
+  assert.equal(rx.accepted.length, 3);
+
+  // The blip. On resume the relay replays its whole buffer — the SAME envelopes,
+  // in the SAME order. This is legitimate, not an attack.
+  const outcomes = buffered.map(({ type, env }) => receiveSealed(rx, session, type, env));
+  assert.deepEqual(outcomes, ['deduped', 'deduped', 'deduped'], 'every replayed frame was deduped, not rejected');
+  assert.equal(rx.rejected.length, 0, 'a legitimate resume replay produces ZERO rejections');
+  assert.equal(rx.accepted.length, 3, 'and zero double-deliveries');
+
+  // Ordering is preserved through the replay: the dedupe must not reorder or
+  // consume the buffer out of sequence.
+  assert.deepEqual(rx.deduped, buffered.map(({ env }) => `${env.kid}|${env.s}`),
+    'buffered sealed frames replayed in order');
+
+  // …and NEW frames that arrive after the replay still land. A dedupe window
+  // that swallowed post-resume traffic would be the same outage by another name.
+  const fresh = ['SMS_RECEIVED', 'CALL_INCOMING'].map((t) => ({ type: t, env: sealBody(session, t, { id: `new-${t}` }) }));
+  const freshOutcomes = fresh.map(({ type, env }) => receiveSealed(rx, session, type, env));
+  assert.deepEqual(freshOutcomes, ['accepted', 'accepted'], 'zero NEW frames dropped after a resume replay');
+  assert.equal(rx.accepted.length, 5);
+  assert.equal(rx.rejected.length, 0, 'still zero rejections');
+});
+
+test('SEALED twin: dedupe is not blanket acceptance — a TAMPERED replay is rejected', () => {
+  // The control for the test above. If the receiver simply never rejected
+  // anything, "0 rejections on a legitimate replay" would be vacuous. A frame
+  // whose ciphertext was altered has a fresh (kid,s) key, so it reaches the
+  // open() path and must fail authentication there.
+  const session = makeTestSession({ kid: 'kid-p6-resume-0004' });
+  const rx = makeReceiver();
+  const env = sealBody(session, 'SMS_RECEIVED', { id: 'genuine' });
+  assert.equal(receiveSealed(rx, session, 'SMS_RECEIVED', env), 'accepted');
+  const tampered = { ...env, s: env.s + 1, c: env.c.slice(0, -4) + (env.c.endsWith('AAAA') ? 'BBBB' : 'AAAA') };
+  assert.equal(receiveSealed(rx, session, 'SMS_RECEIVED', tampered), 'rejected', 'tampered ciphertext must not open');
+  assert.equal(rx.rejected.length, 1, 'the reject path is reachable — the 0-rejection assertions above mean something');
+  assert.equal(rx.deduped.length, 0, 'and tampering is NOT mistaken for a benign duplicate');
+});
+
 console.log(`\n${passed} repro assertions passed`);

@@ -525,5 +525,131 @@ const isActive = (room, phone, browser) => room.active.phone === phone && room.a
   check('m4: released once the extension is genuinely gone', room.resumable === null);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// (n) SEALED-PAIR TWIN — the listener-renewed hold is MODE-BLIND (E2E-P6 (a))
+// ═══════════════════════════════════════════════════════════════════════════
+// §13.7 replaces a frame's BODY with `{e,kid,s,c}` and leaves its TYPE alone,
+// so nothing above — hasLiveListener, the panelHold renewal, the buffering
+// branch in phoneDataFrame, the replay cutoff — has anything new to read. This
+// section runs the SAME mirrors twice, plaintext then really-sealed, and
+// requires the transcripts to be identical.
+//
+// SCOPE: proves the MIRROR has no body-dependent branch. Not evidence about the
+// shipped relay — that is P6 (g) against `node server.js`. See the header of
+// tests/lib/sealed-twin.mjs.
+import {
+  twin, transcript, openBody, assertNoPlaintext,
+} from './lib/sealed-twin.mjs';
+
+const TWIN_CANARY = 'canary-pairing-persist-4d92be-this-plaintext-must-never-survive';
+
+/**
+ * The FORGE-L path end to end: panel closes → listener renews the claim well
+ * past 180 s → the phone itself blips into the lobby → frames it sends there
+ * are buffered → the panel reopens and the buffer replays.
+ *
+ * A sealed frame buffered while the panel is shut has to survive every claim
+ * renewal in between and still open at the far end.
+ */
+function holdTwinScenario(mode) {
+  NOW = 1_000_000;
+  const { room, phone, browser: panel, sw } = pairedRoomWithListener();
+  const e2e = mode.block();
+  if (e2e) room.pairIdentity = { ...room.pairIdentity, e2e };
+
+  browserSocketClosed(room, panel);          // panelHold armed
+  advance(room, 5 * 60_000);                 // renewed past the 180 s window
+
+  phoneSocketClosed(room, phone);            // the handset blips into the lobby
+  const phone2 = makeWs('phone', { deviceName: 'Pixel' });
+  room.lobby.add(phone2);
+
+  const bodies = [], payloads = [], results = [];
+  for (let i = 0; i < 3; i++) {
+    const payload = { id: `msg-${i}`, text: `${TWIN_CANARY}-${i}` };
+    payloads.push(payload);
+    const body = mode.body('SMS_RECEIVED', payload);
+    bodies.push(body);
+    advance(room, 30_000);                   // more renewals between frames
+    results.push(phoneDataFrame(room, phone2, `SMS_RECEIVED:${JSON.stringify(body)}`));
+  }
+
+  const c = room.resumable;
+  const claimSnapshot = c
+    ? { droppedRole: c.droppedRole, panelHold: c.panelHold, heldSince: c.heldSince,
+        listenerGoneAt: c.listenerGoneAt, expiresAt: c.expiresAt,
+        e2e: c.identity ? c.identity.e2e : undefined }
+    : null;
+
+  const panel2 = makeWs('browser');
+  const resumed = browserJoin(room, panel2);
+  return { room, sw, phone2, panel2, resumed, bodies, payloads, results, claimSnapshot, e2e };
+}
+
+console.log('\n(n) sealed-pair twin — listener-renewed hold + buffered replay');
+{
+  const t = twin(holdTwinScenario);
+  const S = t.sealed, P = t.plain;
+
+  // 1. Transcript equality.
+  const panelAgree = t.agrees((o) => o.panel2.sent);
+  check('n1: reopened-panel transcript identical in plaintext and sealed modes', panelAgree.equal);
+  if (!panelAgree.equal) { console.log(`       plain : ${panelAgree.plain}`); console.log(`       sealed: ${panelAgree.sealed}`); }
+  check('n2: listener transcript identical (live mirror is type-routed)', t.agrees((o) => o.sw.sent).equal);
+  check('n3: phone transcript identical', t.agrees((o) => o.phone2.sent).equal);
+  check('n4: the buffering DECISION is identical', P.results.join(',') === S.results.join(',') && S.results.every((r) => r === 'buffered'));
+  check('n5: the resume fired in both modes', P.resumed === true && S.resumed === true);
+  check('n6: same pair state', isActive(P.room, P.phone2, P.panel2) && isActive(S.room, S.phone2, S.panel2));
+
+  // The renewal decision is the thing FORGE-L added; it must be reached on
+  // identical inputs in both modes, not merely produce a working resume.
+  check('n7: the renewed claim is byte-identical across modes (minus the opaque e2e block)',
+    JSON.stringify({ ...P.claimSnapshot, e2e: undefined }) === JSON.stringify({ ...S.claimSnapshot, e2e: undefined }));
+  check('n8: the hold was genuinely live and genuinely past 180 s',
+    S.claimSnapshot.panelHold === true && S.claimSnapshot.listenerGoneAt === null);
+
+  // 2. Verbatim passthrough across the whole hold.
+  const replayed = S.panel2.sent.filter((m) => m.startsWith('SMS_RECEIVED:'))
+    .map((m) => JSON.parse(m.slice('SMS_RECEIVED:'.length)));
+  check('n9: every sealed frame buffered during the hold came out, in order',
+    replayed.length === S.bodies.length
+    && replayed.every((env, i) => JSON.stringify(env) === JSON.stringify(S.bodies[i])));
+  let opened = [], openOk = true;
+  try { opened = replayed.map((env) => openBody(t.session, 'SMS_RECEIVED', env)); }
+  catch (e) { openOk = false; console.log(`       open failed: ${e.message}`); }
+  check('n10: each replayed envelope still OPENS after the renewals',
+    openOk && opened.length === 3 && opened.every((p, i) => p.text === S.payloads[i].text));
+  check('n11: counters intact, no gaps (s = 0,1,2)', replayed.map((e) => e.s).join(',') === '0,1,2');
+  check('n12: one kid across the whole hold — no re-key on renewal',
+    new Set(replayed.map((e) => e.kid)).size === 1 && replayed[0].kid === t.session.kid);
+  const mirroredLive = S.sw.sent.filter((m) => m.startsWith('SMS_RECEIVED:'));
+  check('n13: the live listener mirror is verbatim too',
+    mirroredLive.length === 3 && mirroredLive.every((m, i) => m === `SMS_RECEIVED:${JSON.stringify(S.bodies[i])}`));
+
+  // 3. No plaintext leak. Secrets are the payloads themselves, never `opened` —
+  // a failed open must not be able to empty the secret set and pass vacuously.
+  const hay = JSON.stringify({
+    frameBuffer: S.room.frameBuffer,
+    resumable: S.room.resumable,
+    pairIdentity: S.room.pairIdentity,
+    panelSent: S.panel2.sent, swSent: S.sw.sent, phoneSent: S.phone2.sent,
+    lastResume: S.room.lastResume,
+  });
+  const leak = assertNoPlaintext(hay, S.payloads);
+  check(`n14: no plaintext survives the hold anywhere in room state${leak.clean ? '' : ` — LEAKED ${JSON.stringify(leak.leaked)}`}`, leak.clean);
+
+  // 4. The e2e block rides the claim untouched; the same kid comes back.
+  check('n15: the claim carried the e2e block verbatim through every renewal',
+    JSON.stringify(S.claimSnapshot.e2e) === JSON.stringify(S.e2e));
+  check('n16: that kid is the kid the replayed frames use', S.claimSnapshot.e2e.kid === t.session.kid);
+  check('n17: plaintext mode attaches no e2e block', P.claimSnapshot.e2e === undefined);
+  check('n18: buffer drained and claim consumed in both modes',
+    P.room.frameBuffer.length === 0 && S.room.frameBuffer.length === 0
+    && P.room.resumable === null && S.room.resumable === null);
+  check('n19: sealed frames are sealed, plaintext frames are not',
+    transcript(P.panel2.sent).every((x) => x.sealed === false)
+    && transcript(S.panel2.sent).filter((x) => x.type === 'SMS_RECEIVED').every((x) => x.sealed === true));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
