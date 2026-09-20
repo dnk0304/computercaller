@@ -101,3 +101,12 @@ prisma/migrations/20260522093753_init/
 # output (canaries, fixture bodies) and must NEVER be committed or mirrored.
 .e2e-lock
 .e2e-gate-logs/
+
+# FT-MERGE (g1). tests/gate-phase-whitelist.test.mjs drives the REAL gate at
+# --phase P4 and --phase P5B as its positive control, and the gate writes its
+# run JSON unconditionally — so merely RUNNING that unit suite deposits two
+# files named after the current HEAD and dirties the tree the NEXT gate has to
+# measure clean (rule 16). They are test byproducts, never evidence. A real
+# P4/P5B evidence run is committed with `git add -f`.
+e2e-evidence/gate-P4-*.json
+e2e-evidence/gate-P5B-*.json
