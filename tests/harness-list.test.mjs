@@ -115,8 +115,24 @@ check('CONTROL: …and a present entry as present, so it is not stuck on "no"',
 // The phase set itself, as the full sorted string.
 check('KNOWN_PHASES is the frozen set, byte for byte',
   [...KNOWN_PHASES].sort().join(',')
-    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P3,P3.1,P4,P4.1,P5A,P5B,P6',
+    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P3,P3.1,P4,P4.1,P5A,P5B,P6',
   KNOWN_PHASES.join(','));
+
+// E2E-P2.2. The A5 web fix-before-flip lane. It RUNS both browser harnesses,
+// which is not the "P3+/P5A+ only" pattern above and is deliberate: the P5a UI
+// surfaces and the extension SW both exist on this lane's base (e2e/integration
+// 122e9c6), and P2.2 changes the hook those surfaces render from — `effective`
+// beside `mode`, the SAS coverage object, the sticky `re-pair-needed`. A phase
+// that edits what a harness asserts and then skips that harness is the exact
+// silent-narrowing this table exists to prevent.
+{
+  const p22 = harnessesFor('P2.2');
+  check('P2.2 runs ext-sw-lifetime-proof', p22.includes('ext-sw-lifetime-proof'), p22.join(', '));
+  check('P2.2 runs e2e-ui-proof — it changes the hook that UI renders from',
+    p22.includes('e2e-ui-proof'), p22.join(', '));
+  check('P2.2 skips the FT-only harnesses',
+    !p22.includes('ft-ui-proof') && !p22.includes('ft-web-proof'), p22.join(', '));
+}
 
 // THE REGRESSION, named. This is the arm that would have gone red at (d).
 const d1 = harnessesFor('D1');
