@@ -412,8 +412,15 @@ const BYSTANDER = 'user-bystander';   // the second account; see the B8 note abo
   c('flipping back admits a new mode=1 pairing', restored.frame === 'PAIRING_REQUEST');
 
   // The mirror above is pinned to the REAL relay, so this cannot rot silently.
-  c('server.js reads the flag as an env var defaulting ON',
-    /const E2E_PAIRING_ENABLED = process\.env\.E2E_PAIRING_ENABLED !== 'false'/.test(SERVER_SRC));
+  // REBASE (P6.1a): the pin moved with the relay, not against it. P6 froze
+  // `!== 'false'` (default ON). D1-PREP (b2) changed the default to OFF because
+  // every instruction in the D1 runbook says to set E2E_PAIRING_ENABLED=0 — which
+  // the old predicate read as ENABLED — and P1.3 (a) 38d4031 then ratified the
+  // exact form as N-1.1's `=== '1'`. Integration is newer and authoritative, so
+  // the test follows it. The pin is no weaker: it is still an exact-source match,
+  // and it still goes red the moment the predicate drifts again.
+  c("server.js reads the flag as N-1.1's ratified `=== '1'` (default OFF)",
+    /const E2E_PAIRING_ENABLED = process\.env\.E2E_PAIRING_ENABLED === '1'/.test(SERVER_SRC));
   c('server.js gates on !E2E_PAIRING_ENABLED && the VALIDATED block with mode === 1',
     /if \(!E2E_PAIRING_ENABLED && e2eBlock && e2eBlock\.mode === 1\)/.test(SERVER_SRC));
   c('server.js answers with PAIRING_E2E_UNAVAILABLE and returns before pendingPairing',
@@ -426,12 +433,40 @@ const BYSTANDER = 'user-bystander';   // the second account; see the B8 note abo
   // the flag has grown a second behaviour, and the only second behaviour
   // available to it is a downgrade.
   {
-    const live = SERVER_SRC
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split(/\r?\n/)
-      .filter((l) => l.includes('E2E_PAIRING_ENABLED') && !/^\s*(\/\/|console\.log)/.test(l.trim()) && !l.includes('console.log'));
+    // REBASE (P6.1a): this filter was LINE-based, and integration's startup
+    // banner is a MULTI-LINE console.log whose ternary arms mention the flag on
+    // lines that contain no `console.log` text of their own. It scored 5 and
+    // called a logging statement a second behaviour. Stripping whole console.log
+    // CALLS (balanced parens) instead of lines that look like one keeps the
+    // assertion's teeth — a genuine third live mention still fires, proven by the
+    // control below — without being fooled by where the newlines fall.
+    const stripCalls = (src) => {
+      let out = '';
+      for (let i = 0; i < src.length;) {
+        const at = src.indexOf('console.log(', i);
+        if (at === -1) { out += src.slice(i); break; }
+        out += src.slice(i, at);
+        let depth = 0; let j = at + 'console.log'.length;
+        for (; j < src.length; j++) {
+          if (src[j] === '(') depth++;
+          else if (src[j] === ')') { depth--; if (depth === 0) { j++; break; } }
+        }
+        i = j;
+      }
+      return out;
+    };
+    const liveSrc = stripCalls(
+      SERVER_SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, ''));
+    const live = liveSrc.split(/\r?\n/).filter((l) => l.includes('E2E_PAIRING_ENABLED'));
     c('the flag has exactly TWO live mentions: the definition and the ONE gate',
       live.length === 2, `found ${live.length}: ${JSON.stringify(live.map((l) => l.trim()))}`);
+    // CONTROL: a planted third live mention must be counted. Without this the
+    // rewrite above could have stripped the flag itself and scored a serene 2.
+    const planted = stripCalls(
+      `${liveSrc}${'\n'}if (!E2E_PAIRING_ENABLED) e2eBlock.mode = 0;${'\n'}`)
+      .split(/\r?\n/).filter((l) => l.includes('E2E_PAIRING_ENABLED'));
+    c('CONTROL: a third live mention is seen (the counter is not stuck on two)',
+      planted.length === 3, `planted count ${planted.length}`);
   }
   c('the forwarded payload attaches the block verbatim, with no kill-switch branch',
     /if \(e2eBlock\) forwardPayload\.e2e = e2eBlock;/.test(SERVER_SRC));
