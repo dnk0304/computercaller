@@ -24,13 +24,15 @@
  * Usage: PORT=<n> DATABASE_URL=<scratch> JWT_SECRET=<>=32> node tests/lib/relay-boot.cjs
  * Prints `RELAY_BOOTED <port>` on stdout once the socket is listening.
  */
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node test launcher for a CJS entry point (server.js); matches server.js's own require block.
 const Module = require('module');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node test launcher (see above).
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
 const origLoad = Module._load;
-Module._load = function patched(request, parent, isMain) {
+Module._load = function patched(request) {
   if (request === 'next') {
     // The smallest shape main() uses: prepare(), getRequestHandler(), and a
     // writable didWebSocketSetup flag. It must NOT serve anything — the relay
@@ -49,6 +51,7 @@ Module._load = function patched(request, parent, isMain) {
 // server.js logs the listen callback itself; announce on the same event by
 // polling the server it created is not possible (no export), so we hook the
 // http module's listen instead — the FIRST server to listen is main()'s.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node test launcher (see above).
 const http = require('http');
 const origCreate = http.createServer;
 http.createServer = function wrapped(...args) {
@@ -65,4 +68,5 @@ http.createServer = function wrapped(...args) {
   return s;
 };
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- the whole point: load the SHIPPED CJS server.js.
 require(path.join(ROOT, 'server.js'));
