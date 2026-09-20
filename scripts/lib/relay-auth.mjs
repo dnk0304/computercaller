@@ -1,5 +1,20 @@
 /**
- * Real credentials for the real relay. (E2E-P6 shared infrastructure.)
+ * Real credentials for the real relay. (Shared harness infrastructure; written
+ * for E2E-P6, brought onto e2e/soak-rig for the R-AM 24 h soak.)
+ *
+ * VERIFIED AGAINST 392e490, not against the P6 tree it came from. Every claim
+ * below was re-read out of that commit rather than inherited:
+ *   - `validateTicket` (server.js) refuses a secret under 32 chars, accepts
+ *     ONLY HS256, and requires `purpose === 'relay-ticket'` plus a string
+ *     `userId` — exactly what `mintTicket()` signs.
+ *   - the relay entitlement chokepoint calls `evaluateUserEntitlement`, whose
+ *     rule (1) is `if (isAdmin) → allowed` (lib/entitlement-core.js:218),
+ *     which is why `seedEntitledUser` sets `isAdmin: true`.
+ *   - `User.phoneToken` is still `@unique` with NO database default, so it must
+ *     be set explicitly in app code (prisma/schema.prisma, Bundle A C2).
+ * No DeviceKey row is needed by anything here: DeviceKey rows key the `wraps[]`
+ * of a real encrypted pairing, and these helpers only get a peer ADMITTED to a
+ * room. A harness that drives a real SAS pairing seeds its own key rows.
  *
  * WHY THIS EXISTS — a discovery that reshaped the P6 harnesses
  * ------------------------------------------------------------
@@ -55,7 +70,7 @@ export function mintSecret() {
  * @param {import('@prisma/client').PrismaClient} db
  */
 export async function seedEntitledUser(db, { email = null } = {}) {
-  const addr = email || `p6-harness-${crypto.randomBytes(6).toString('hex')}@example.invalid`;
+  const addr = email || `e2e-harness-${crypto.randomBytes(6).toString('hex')}@example.invalid`;
   const phoneToken = crypto.randomBytes(32).toString('base64url');
   const user = await db.user.create({
     data: {
