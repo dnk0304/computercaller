@@ -127,6 +127,11 @@ for (const s of PAYLOAD_SUBTREES) {
     '_comment', '_authority', 'version', 'hash', 'cipher', 'tagRanges',
     'context', 'contextBytesHex', 'labels', 'traffic', 'noncePrefixes',
     'ctxWire', 'canonicalPeer', 'canonicalPeerByteOrder', 'kek', 'aead',
+    // E2E-P2.2 (c) / GATE1 Addendum A5, F5. Vector M: the mode-byte semantics.
+    // Frozen clean-room by a5-vector-m-verify.mjs, whose control pass re-derives
+    // all six sas-vectors.json digits before emitting M. Added here deliberately
+    // — that edit IS the review step this allowlist exists to force.
+    'modeVectorM',
   ];
   const actual = Object.keys(V);
   const unknown = actual.filter((k) => !KNOWN.includes(k));
@@ -280,6 +285,46 @@ for (const s of PAYLOAD_SUBTREES) {
       !expected.has(norm(paths)) && paths.length > 2,
       `planted group: ${paths.join(', ')}`);
   }
+}
+
+// ── 5. A5 vector M: the frozen table cannot be edited into agreement ──────
+// The value-level test (tests/e2e-web-mode-byte.test.mjs) drives the product
+// against these digits. What is asserted HERE is the SHAPE, for the reason the
+// whole file exists: a rebase once merged two spellings of the same Security
+// values in with no conflict and every value-level test stayed green.
+{
+  const M = V.modeVectorM;
+  check('vector M: present', !!M);
+  check('vector M: cites its authority (the A5 ruling + the clean-room verifier)',
+    typeof M._authority === 'string' && M._authority.includes('a5-vector-m-verify.mjs'));
+  check('vector M: the frozen pairing identity', M.pairingId === 'pair-M-0000000000000001' && M.pairEpoch === 7);
+  check('vector M: three keys, each a 65-byte uncompressed SEC1 point',
+    ['phone', 'web', 'sw'].every((k) => /^04(?:[0-9a-f]{2}){64}$/.test(M.keys[k])));
+  check('vector M: the epk is the frozen 04||aa*64', M.epk === `04${'aa'.repeat(64)}`);
+  check('vector M: exactly the four cases', M.cases.length === 4);
+  check('vector M: case ids are M1-M4 in order',
+    M.cases.map((c) => c.id.slice(0, 2)).join(',') === 'M1,M2,M3,M4');
+  // The three readings of the table that ARE the ruling. If a future edit
+  // "fixes" the file to match a broken implementation, these go red first.
+  check('vector M: sealed is TRUE in every row (A5 row 4 — a usable block always seals)',
+    M.cases.every((c) => c.sealed === true));
+  check('vector M: effective is the OR of the two local settings, in every row',
+    M.cases.every((c) => c.effective === (c.phoneLocal || c.computerLocal)));
+  check('vector M: the WIRE bytes are the LOCAL settings, not the OR',
+    M.cases.every((c) => c.requestModeByte === (c.computerLocal ? 1 : 0)
+      && c.acceptModeByte === (c.phoneLocal ? 1 : 0)));
+  check('vector M: at least one row has request !== accept (or the byte proves nothing)',
+    M.cases.some((c) => c.requestModeByte !== c.acceptModeByte));
+  check('vector M: sasModeByte IS the effective mode (§13.3)',
+    M.cases.every((c) => c.sasModeByte === (c.effective ? 1 : 0)));
+  check('vector M: sasBlocking follows effective, not the local setting',
+    M.cases.every((c) => c.sasBlocking === c.effective));
+  check('vector M: M2 === M3 — the OR is symmetric (rows 8/9)',
+    M.cases[1].digits === M.cases[2].digits);
+  check('vector M: M1 !== M4 — the modeByte alone moves the digits',
+    M.cases[0].digits !== M.cases[3].digits);
+  check('vector M: the frozen digits are 02024 / 30087',
+    M.cases.map((c) => c.digits).join(',') === '02024,30087,30087,30087');
 }
 
 const total = passed + failed;

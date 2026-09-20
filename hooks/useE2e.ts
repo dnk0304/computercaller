@@ -212,7 +212,18 @@ export function useE2e(emailProp?: string | null): E2eApi {
   const sessionRef = useRef<ComputerSession | null>(null);
   const keyRef = useRef<WebDeviceKey | null>(null);
   const swRef = useRef<SwKeyResult>({ status: 'unknown', recipient: null, pairingId: null });
+  /**
+   * C-1's EFFECTIVE-MODE latch: once OR(local, peer) has been ON for this pair
+   * it stays ON, so a peer cannot un-ask mid-pair.
+   */
   const latchedRef = useRef(false);
+  /**
+   * A5's SEALING latch, and it is a DIFFERENT fact. A 0/0 pair with a usable
+   * block seals while its effective mode stays off (vector M1), and a
+   * block-less re-accept after that is still a downgrade. Keying the downgrade
+   * refusal off `latchedRef` alone would leave exactly those pairs undefended.
+   */
+  const sealedLatchedRef = useRef(false);
   const downgradeDropsRef = useRef(0);
   /** The session userId, fetched once. Local identity — never from the wire. */
   const userIdRef = useRef<string | null>(null);
@@ -328,7 +339,9 @@ export function useE2e(emailProp?: string | null): E2eApi {
     }
 
     const decision = decideAccept({
-      localMode, block, ourDeviceId, phoneRowPublicKey, latched: latchedRef.current,
+      localMode, block, ourDeviceId, phoneRowPublicKey,
+      latched: latchedRef.current,
+      sealedLatched: sealedLatchedRef.current,
     });
 
     if (decision.action === 'abort') {
@@ -336,12 +349,20 @@ export function useE2e(emailProp?: string | null): E2eApi {
       return true;
     }
     if (decision.mode === 'off' || !block || !key) {
-      setView((v) => ({ ...v, mode: 'off', state: 'unencrypted', error: undefined, peer: { supports: false, kind: swRef.current.status } }));
+      setView((v) => ({
+        ...v, mode: 'off', effective: 'off', state: 'unencrypted', error: undefined,
+        peer: { supports: false, kind: swRef.current.status },
+      }));
       return false;
     }
 
-    // From here the pair IS encrypted. Latch it.
-    latchedRef.current = true;
+    // From here the pair SEALS. A5: the two latches carry different facts and
+    // are set from different values — `latchedRef` from the EFFECTIVE mode
+    // (so a 0/0 pair does not latch verification on), `sealedLatchedRef`
+    // unconditionally (so a later block-less accept is refused as a downgrade
+    // even for a pair nobody asked to verify).
+    latchedRef.current = latchedRef.current || decision.effective === 'on';
+    sealedLatchedRef.current = true;
 
     // ── A3: the context comes off the wire, the userId comes from the session ──
     // The LOCAL userId is required and is never taken from `payload`. Read that
@@ -465,16 +486,23 @@ export function useE2e(emailProp?: string | null): E2eApi {
       // first draft passed the wire strings straight through and sas.mjs threw
       // "not a hex string of whole bytes"; scripts/e2e-live-peer-proof.mjs is
       // what surfaced it, which is the argument for that harness existing.
+      // A5 / M-A5-5(3) + vector M. `modeByte` in the §13.3 transcript is the
+      // EFFECTIVE mode — not `true` because we happen to be sealing, and not
+      // `localMode` either. Hard-coding it meant a 0/0 pair would have derived
+      // M4's digits (30087) for a pairing whose frozen answer is M1's (02024),
+      // so the two ends would have shown different codes for the same pairing
+      // the moment the other end computed it correctly.
       const digits = await sasDigits({
         pairingId: context.pairingId,
         epk: fromB64(block.epk),
         keys: sasKeySet(block).map(fromB64),
         pairEpoch: context.pairEpoch,
-        modeOn: true,
+        modeOn: decision.effective === 'on',
       });
       setView((v) => ({
         ...v,
         mode: 'on',
+        effective: decision.effective,
         state: decision.state,
         error: undefined,
         peer: { supports: true, kind: swRef.current.status },
@@ -599,6 +627,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // would churn DeviceKey rows and break the C-2 pin for the other side.
     sessionRef.current = null;
     latchedRef.current = false;
+    sealedLatchedRef.current = false;
     downgradeDropsRef.current = 0;
     userIdRef.current = null;
     setView(E2E_VIEW_INITIAL);
@@ -624,6 +653,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
   const onPairEnded = useCallback(() => {
     sessionRef.current = null;
     latchedRef.current = false;
+    sealedLatchedRef.current = false;
     // NOT `setView(E2E_VIEW_INITIAL)`. A refusal sets state:'error' and then
     // aborts the pair, and the abort lands here — so resetting unconditionally
     // meant the error was erased by the teardown it had itself caused, and the

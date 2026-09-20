@@ -206,11 +206,16 @@ const D = (over) => decideAccept({
   eq('B6: ...state error', noBlock.state, 'error');
   eq('B6: ...error e2e-setup-failed', noBlock.error, 'e2e-setup-failed');
 
+  // A5 / M-A5-5(1) SUPERSEDES the pre-A5 assertion here, which was
+  // "ON + block says mode 0 -> abort". The byte is the SENDER'S LOCAL SETTING,
+  // not a veto: local ON + peer 0 is effective ON (vector M3) and is row 9,
+  // symmetric with row 8. Aborting treated an advertisement as a refusal.
   const modeZero = D({ localMode: 'on', block: readAcceptBlock(acceptBlock({ mode: 0 })) });
-  eq('B6: ON + block says mode 0 → abort', modeZero.action, 'abort');
-  eq('B6: ...error e2e-setup-failed', modeZero.error, 'e2e-setup-failed');
-  check('B6: ...and the detail distinguishes it from "no block"',
-    modeZero.detail !== noBlock.detail);
+  eq('A5 row 9: ON + peer advertises 0 → PROCEED, not abort', modeZero.action, 'proceed');
+  eq('A5 row 9: ...effective ON (OR, and the local ON is ours)', modeZero.effective, 'on');
+  eq('A5 row 9: ...sealed', modeZero.mode, 'on');
+  eq('A5 row 9: ...SAS blocking — encrypted-verified', modeZero.state, 'encrypted-verified');
+  check('A5 row 9: ...and verified', modeZero.verified === true);
 
   const noWrap = D({ localMode: 'on', ourDeviceId: 'someone-else' });
   eq('B6: ON + OUR WRAP MISSING → abort', noWrap.action, 'abort');
@@ -234,15 +239,41 @@ const D = (over) => decideAccept({
   eq('B6: OFF + no block → proceed in plaintext', plain.action, 'proceed');
   eq('B6: ...state unencrypted', plain.state, 'unencrypted');
 
+  // A5 / M-A5-5(3) SUPERSEDES the pre-A5 reading of these arms. `verified`
+  // derives from the EFFECTIVE mode, never from `localMode` — that was row 8:
+  // a peer that asked to verify got no SAS on the computer, so the user
+  // "verified" against a code nothing displayed.
   const peerBrought = D({ localMode: 'off' });
   eq('B6: OFF + the peer brought mode 1 → proceed ENCRYPTED', peerBrought.action, 'proceed');
   eq('B6: ...mode on (C-1 is OR, not AND)', peerBrought.mode, 'on');
-  eq('B6: ...flagged unverified — the user never confirmed a SAS', peerBrought.state, 'encrypted-unverified');
+  eq('A5 row 8: ...effective ON — the PEER asked, so the SAS is blocking here too',
+    peerBrought.effective, 'on');
+  eq('A5 row 8: ...state encrypted-verified, NOT unverified', peerBrought.state, 'encrypted-verified');
+  // Row 8 (peer asked, we did not) and row 9 (we asked, peer did not) must
+  // reach the SAME outcome — that symmetry IS the OR, and vector M2 === M3.
+  eq('A5: row 8 and row 9 are the SAME outcome (the OR is symmetric)',
+    peerBrought.state,
+    D({ localMode: 'on', block: readAcceptBlock(acceptBlock({ mode: 0 })) }).state);
 
+  // Same correction on the C-2 arm: the peer advertised 1, so effective is ON,
+  // so an unprovable pin fails CLOSED on this side too. Leaving it open would
+  // make the side that asked for verification the only side checking.
   const offMismatch = D({ localMode: 'off', phoneRowPublicKey: EVIL_PUB });
-  eq('B6: OFF + C-2 mismatch → proceed, NOT abort', offMismatch.action, 'proceed');
-  eq('B6: ...state encrypted-unverified', offMismatch.state, 'encrypted-unverified');
-  check('B6: ...and not verified', offMismatch.verified === false);
+  eq('A5: OFF + peer 1 + C-2 mismatch → ABORT (effective ON fails closed)',
+    offMismatch.action, 'abort');
+  eq('A5: ...error e2e-key-mismatch', offMismatch.error, 'e2e-key-mismatch');
+  check('A5: ...and not verified', offMismatch.verified === false);
+
+  // ...and with NOBODY asking, the pin failure is survivable: the pair still
+  // SEALS (M-A5-5(2)) and is honestly badged unverified.
+  const zeroZeroMismatch = D({
+    localMode: 'off', phoneRowPublicKey: EVIL_PUB,
+    block: readAcceptBlock(acceptBlock({ mode: 0 })),
+  });
+  eq('A5: 0/0 + C-2 mismatch → proceed, NOT abort', zeroZeroMismatch.action, 'proceed');
+  eq('A5: ...still SEALED', zeroZeroMismatch.mode, 'on');
+  eq('A5: ...effective off', zeroZeroMismatch.effective, 'off');
+  eq('A5: ...state encrypted-unverified', zeroZeroMismatch.state, 'encrypted-unverified');
 
   // Missing wrap is fatal in BOTH modes: we would be inside an encrypted pair
   // we cannot read, which plaintext-preference does not rescue.
@@ -250,9 +281,23 @@ const D = (over) => decideAccept({
   eq('B6: OFF + mode-1 block with NO wrap for us → abort anyway', offNoWrap.action, 'abort');
   eq('B6: ...error e2e-setup-failed', offNoWrap.error, 'e2e-setup-failed');
 
+  // ── A5 ROW 4, the cell this lane exists to fix ───────────────────────
+  // Pre-A5 this returned state 'unencrypted' and the pair went in the CLEAR
+  // while the phone — which has a usable block and therefore seals — sealed.
+  // The two ends disagreed about whether traffic was encrypted, which is worse
+  // than either answer. M-A5-5(2): a usable block on both sides ALWAYS seals.
   const offPeerZero = D({ localMode: 'off', block: readAcceptBlock(acceptBlock({ mode: 0 })) });
-  eq('B6: OFF + peer 0 → plaintext, no error', offPeerZero.state, 'unencrypted');
-  check('B6: ...and no error field', offPeerZero.error === undefined);
+  eq('A5 row 4: 0/0 with a usable block SEALS', offPeerZero.mode, 'on');
+  eq('A5 row 4: ...state encrypted-unverified, NEVER plaintext', offPeerZero.state, 'encrypted-unverified');
+  eq('A5 row 4: ...effective off — mode governs verification, not sealing',
+    offPeerZero.effective, 'off');
+  check('A5 row 4: ...proceeds', offPeerZero.action === 'proceed');
+  check('A5 row 4: ...and no error field', offPeerZero.error === undefined);
+
+  // Plaintext has exactly ONE road to it now: no usable block at all.
+  const trulyPlain = D({ localMode: 'off', block: null });
+  eq('A5: plaintext requires NO usable block', trulyPlain.mode, 'off');
+  eq('A5: ...state unencrypted', trulyPlain.state, 'unencrypted');
 }
 // THE latch: the pair was encrypted; a later accept tries to go plaintext.
 {
@@ -262,8 +307,25 @@ const D = (over) => decideAccept({
   check('LATCH: ...and the detail names it a downgrade',
     downgradeNoBlock.detail.includes('downgrade'));
 
+  // A5 SUPERSEDES the pre-A5 assertion here too. A mode-0 re-accept on a
+  // latched pair is NOT a downgrade: the block is usable, so the pair seals,
+  // and the latch keeps the effective mode ON. What the byte changed is the
+  // PHONE'S OWN SETTING, which it is entitled to change and which the latch
+  // exists to ignore. The genuine downgrade — a re-accept with no usable
+  // block — is asserted directly above and still aborts.
   const downgradeModeZero = D({ localMode: 'off', latched: true, block: readAcceptBlock(acceptBlock({ mode: 0 })) });
-  eq('LATCH: encrypted pair + a mode-0 re-accept → ABORT', downgradeModeZero.action, 'abort');
+  eq('A5/LATCH: a mode-0 re-accept on a latched pair PROCEEDS', downgradeModeZero.action, 'proceed');
+  eq('A5/LATCH: ...effective stays ON — the latch outranks the byte',
+    downgradeModeZero.effective, 'on');
+  eq('A5/LATCH: ...and it is still sealed', downgradeModeZero.mode, 'on');
+
+  // M-A5-5(4): the DOWNGRADE latch is unchanged and outranks everything —
+  // including a 0/0 pair that sealed with effective OFF and so never set the
+  // effective-mode latch. `sealedLatched` is what defends those.
+  const sealedThenNoBlock = D({ localMode: 'off', latched: false, sealedLatched: true, block: null });
+  eq('A5/LATCH: a pair that SEALED at 0/0 still refuses a block-less re-accept',
+    sealedThenNoBlock.action, 'abort');
+  check('A5/LATCH: ...and names it a downgrade', sealedThenNoBlock.detail.includes('downgrade'));
 
   const latchedMismatch = D({ localMode: 'off', latched: true, phoneRowPublicKey: EVIL_PUB });
   eq('LATCH: a latched pair pins C-2 FAIL-CLOSED even with local mode OFF',
@@ -308,7 +370,11 @@ eq('view: initial state', E2E_VIEW_INITIAL.state, 'unencrypted');
 eq('view: initial peer kind is unknown, not absent', E2E_VIEW_INITIAL.peer.kind, 'unknown');
 check('view: no sas digits yet', E2E_VIEW_INITIAL.sas.digits === null);
 eq('view: field set is stable for P5a',
-  Object.keys(E2E_VIEW_INITIAL).sort().join(','), 'debug,mode,peer,sas,state');
+  Object.keys(E2E_VIEW_INITIAL).sort().join(','), 'debug,effective,mode,peer,sas,state');
+eq('view: A5 — the initial effective mode is off', E2E_VIEW_INITIAL.effective, 'off');
+eq('view: A5 — debug carries the forward-jump counter',
+  Object.keys(E2E_VIEW_INITIAL.debug).sort().join(','),
+  'downgradesDropped,drops,kid,refusedForwardJump');
 
 const total = passed + failed;
 console.log(`e2e-web-policy: ${passed}/${total} checks passed`);
