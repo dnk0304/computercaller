@@ -71,6 +71,9 @@ export function IdleTimeoutGuard() {
   const phone = usePhone();
   const calls = (phone as unknown as { calls?: CallInfo[] }).calls;
   const phoneDisconnect = (phone as unknown as { disconnect?: () => void }).disconnect;
+  // P2.3 (a): the shared revoking teardown. Read through a ref like
+  // phoneDisconnect above, because doLogout is a mount-once closure.
+  const signOutEverywhere = phone.signOutEverywhere;
 
   const hasLiveCall = computeHasLiveCall(calls);
 
@@ -97,6 +100,7 @@ export function IdleTimeoutGuard() {
   const showWarnRef = React.useRef<boolean>(false);
   const keepAliveRef = React.useRef<boolean>(phoneKeepsSessionAlive);
   const phoneDisconnectRef = React.useRef<typeof phoneDisconnect>(phoneDisconnect);
+  const signOutEverywhereRef = React.useRef<typeof signOutEverywhere>(signOutEverywhere);
   const stayBtnRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -107,6 +111,7 @@ export function IdleTimeoutGuard() {
     showWarnRef.current = showWarn;
     keepAliveRef.current = phoneKeepsSessionAlive;
     phoneDisconnectRef.current = phoneDisconnect;
+    signOutEverywhereRef.current = signOutEverywhere;
   });
 
   const sendHeartbeat = React.useCallback((force: boolean) => {
@@ -130,10 +135,20 @@ export function IdleTimeoutGuard() {
       const d = phoneDisconnectRef.current;
       if (typeof d === 'function') d();
     } catch { /* fire-and-forget */ }
-    // Best-effort server logout (clears BOTH cookies), then a HARD navigation
-    // so proxy re-runs on a clean slate and the whole app tree unmounts.
-    fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+    // P2.3 (a) — F1 / M-A5-1 (a). An idle auto-logout IS a sign-out: it is the
+    // user's own configured act, just deferred, so it revokes exactly like the
+    // menu's Sign out. The teardown runs BEFORE the logout fetch because the
+    // server-side revoke authenticates with the cookie that fetch clears.
+    // signOutEverywhere never rejects; the logout below is unconditional, and
+    // the hard navigation still happens on every path.
+    void (signOutEverywhereRef.current?.('sign-out') ?? Promise.resolve())
       .catch(() => {})
+      .then(() =>
+        // Best-effort server logout (clears BOTH cookies), then a HARD
+        // navigation so proxy re-runs on a clean slate and the app tree
+        // unmounts.
+        fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {}),
+      )
       .finally(() => {
         window.location.replace(`/auth/login?reason=${IDLE_LOGOUT_REASON}`);
       });

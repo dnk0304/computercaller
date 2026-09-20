@@ -58,6 +58,8 @@ import {
  * migrating would mean inventing a floor, and the only honest floor for a
  * record that never had one is "none yet, and no key either".
  */
+import { rememberWebDeviceKeyId } from './webKeyId';
+
 export const WEB_KEY_RECORD_VERSION = 2;
 
 /** Uncompressed SEC1 P-256 point: 0x04 ‖ X(32) ‖ Y(32). */
@@ -519,6 +521,16 @@ export interface RegisterResult {
   status?: number;
   rotated?: boolean;
   error?: string;
+  /**
+   * P2.3 (c). The DeviceKey ROW id the route echoed back for this key.
+   *
+   * Kept because `POST /api/devicekeys/revoke` addresses a row by id and, until
+   * P2.3, the web client threw this away — so the one thing the revoke endpoint
+   * needs was the one thing the browser never held. It is also mirrored into
+   * lib/e2e/revokeWebKey.ts's module cache at the call site below, which is
+   * what makes a sign-out revoke free of an extra round-trip.
+   */
+  id?: string;
 }
 
 export type RegisterFn = (key: WebDeviceKey, label?: string) => Promise<RegisterResult>;
@@ -543,8 +555,12 @@ export const registerViaApi: RegisterFn = async (key, label) => {
     });
     if (res.status === 409) return { ok: false, inFlight: true, status: 409 };
     if (!res.ok) return { ok: false, status: res.status, error: `http_${res.status}` };
-    const data = (await res.json()) as { rotated?: boolean };
-    return { ok: true, status: res.status, rotated: data?.rotated === true };
+    const data = (await res.json()) as { rotated?: boolean; key?: { id?: unknown } };
+    const id = typeof data?.key?.id === 'string' ? data.key.id : undefined;
+    // P2.3 (c): remember OUR row id so sign-out can revoke it. Ignored when the
+    // route echoes no id — the revoke client then re-derives it from `list`.
+    rememberWebDeviceKeyId(id);
+    return { ok: true, status: res.status, rotated: data?.rotated === true, ...(id ? { id } : {}) };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

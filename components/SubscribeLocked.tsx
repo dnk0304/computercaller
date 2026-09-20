@@ -28,6 +28,11 @@
 import React from 'react';
 import { Lock, ArrowRight, ShieldCheck, RefreshCw, LifeBuoy, LogOut } from 'lucide-react';
 import { clsx } from 'clsx';
+// P2.3 (a): PhoneProvider is mounted in the ROOT layout (app/layout.tsx:128),
+// so this paywall route has the bridge and can revoke like every other
+// sign-out. usePhone throws outside a provider by design; there is no route
+// that renders this screen outside one.
+import { usePhone } from '@/hooks';
 import { WhopEmbedCheckout } from './WhopEmbedCheckout';
 import {
   STOREFRONT_MATRIX,
@@ -130,10 +135,20 @@ export function SubscribeLocked({
   // shown here — it is an in-app upgrade prompt only.
   const plan = tiers[0];
 
+  const { signOutEverywhere } = usePhone();
+
   const handleLogout = () => {
-    // Best-effort logout, then land on the marketing page (mirrors ProfileMenu).
-    fetch('/api/auth/logout', { method: 'POST' })
-      .catch(() => { /* cookie expires server-side regardless */ })
+    // P2.3 (a) — F1 / M-A5-1 (a). Same order as every other sign-out: the pair
+    // is torn down locally, then the server-side revoke goes out while the
+    // session cookie is still live, then the logout. signOutEverywhere never
+    // rejects, so the redirect below is reached on every path.
+    void signOutEverywhere('sign-out')
+      .catch(() => { /* the helper does not reject; belt-and-braces */ })
+      .then(() =>
+        // Best-effort logout, then land on the marketing page (mirrors ProfileMenu).
+        fetch('/api/auth/logout', { method: 'POST' })
+          .catch(() => { /* cookie expires server-side regardless */ }),
+      )
       .finally(() => {
         window.location.href = '/';
       });

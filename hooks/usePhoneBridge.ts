@@ -22,6 +22,8 @@ import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 // footprint HERE is five call sites, deliberately, so the Monday rebase of
 // this 4,679-line file against Forge-U/Forge-T/Pixel-S is a local merge.
 import { useE2e } from './useE2e';
+// P2.3 (a)+(b): the ORDER of a revoking teardown, pure and node-testable.
+import { runRevokingTeardown } from '@/lib/e2e/signOutEverywhere';
 import { useFileTransfer } from './useFileTransfer';
 import type { FileTransferBridgeSlot } from './useFileTransfer';
 import { isFileFrameType } from '@/lib/fileTransfer/frames.ts';
@@ -3546,6 +3548,52 @@ export function usePhoneBridge() {
     }, RESET_CONFIRM_MS);
   }, [clearAllCalls, scheduleReconnect, connect]);
 
+  // ── P2.3 (a)+(b) — the revoking teardown ───────────────────────────────────
+  //
+  // GATE1 Addendum A5 F1 / MUST M-A5-1 (a): "the revoking side tears itself
+  // down". P2.2 built every mechanism — revokeLocalPair, onSignOut, resetRoom —
+  // and then NOTHING called them, so the one leg that does not depend on the
+  // peer was dead code in prod while (b) carried the whole feature. These two
+  // callbacks are the callers.
+  //
+  // The ORDER lives in lib/e2e/signOutEverywhere.ts as a pure function rather
+  // than here, because the order IS the security property (local drop first;
+  // the remote revoke last, but still ahead of the logout that kills the
+  // session cookie it authenticates with) and a decision that load-bearing has
+  // to be provable in the node suite. This file is the binder, not the rule.
+  //
+  // Neither helper ever rejects. The four `/api/auth/logout` callers await
+  // signOutEverywhere() and then log out unconditionally: a failed resetRoom
+  // must not strand a user inside an app they asked to leave, and it cannot
+  // cost them anything either, because the SK is gone by then.
+
+  const signOutEverywhere = useCallback(async (reason = 'sign-out') => {
+    await runRevokingTeardown(
+      {
+        revokeLocalPair: (r) => e2eRef.current.revokeLocalPair(r),
+        resetRoom: () => resetRoom(),
+        onSignOut: () => e2eRef.current.onSignOut(),
+      },
+      { reason, signOut: true },
+    );
+  }, [resetRoom]);
+
+  // "Forget this computer" (P2.3 (b)). NOT a sign-out — the user stays logged
+  // in, so onSignOut is skipped (signOut:false); wiping the hook's sign-out
+  // state would misreport a session that is still live. And NOT "Reset lobby":
+  // Dennis defined Reset as "empty the lobby so the phone re-joins", which must
+  // KEEP the pair. Forget is the control that ends it.
+  const forgetThisComputer = useCallback(async () => {
+    await runRevokingTeardown(
+      {
+        revokeLocalPair: (r) => e2eRef.current.revokeLocalPair(r),
+        resetRoom: () => resetRoom(),
+        onSignOut: () => {},
+      },
+      { reason: 'user-forget', signOut: false },
+    );
+  }, [resetRoom]);
+
   const makeCall = useCallback((number: string, speaker: boolean = false): boolean => {
     // Check if WebSocket is connected before making call
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -4837,6 +4885,14 @@ export function usePhoneBridge() {
     // phone cannot survive into the next session. The phone redials itself in
     // ~5 s; this browser reconnects in ~500 ms.
     resetRoom,
+    // P2.3 (a) — F1 / M-A5-1 (a). The ONE sign-out helper the four
+    // `/api/auth/logout` callers share: revokeLocalPair -> resetRoom ->
+    // onSignOut -> best-effort server-side revoke of THIS browser's own
+    // DeviceKey row; the caller then logs out. Never rejects.
+    signOutEverywhere,
+    // P2.3 (b) — "Forget this computer". The same teardown minus onSignOut:
+    // the user stays signed in. Distinct from resetRoom, which KEEPS the pair.
+    forgetThisComputer,
     // `disconnect` is preserved as a backward-compat alias for ConnectionStatus /
     // ProfileMenu.handleSignOut. New code should call leaveActive() directly.
     disconnect,

@@ -11,6 +11,7 @@ import {
   Plug,
   RotateCw,
   Clock,
+  Unlink,
 } from 'lucide-react';
 import { usePhone } from '@/hooks';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
@@ -59,6 +60,8 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
     leaveActive,
     // Dispatch FORGE-J (2026-09-15) — "Reset lobby".
     resetRoom,
+    // E2E-P2.3 (b) — "Forget this computer". A REVOCATION, unlike resetRoom.
+    forgetThisComputer,
     // FORGE-U's auto-sync in-flight flag (PIXEL-S2 (c)). Already exposed by
     // hooks/usePhoneBridge.ts as `quietSyncing` — "the auto-connect quicksync
     // is running, show the quiet banner, not the modal". No new selector and no
@@ -85,6 +88,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
     requestPairing?: () => void;
     leaveActive?: () => void;
     resetRoom?: () => void | Promise<void>;
+    forgetThisComputer?: () => Promise<void>;
     notificationPermissionGranted?: boolean | null;
     requestNotificationAccess?: () => void;
   };
@@ -115,6 +119,28 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
   // stale hook build; it is not a rendering condition (TS correctly points out
   // a function-valued field is always truthy).
   const onReset = handleReset;
+
+  // ---------- Forget this computer (E2E-P2.3 (b), F1 / M-A5-1 (a)) ----------
+  // Sits BESIDE Reset lobby and is deliberately a different act. Reset is a
+  // TRANSPORT reset — Dennis's words, "empty the lobby so the phone re-joins" —
+  // and it KEEPS the pair, which is why it cannot double as the revoke control
+  // no matter how convenient that would be. Forget drops this computer's
+  // session key, resets the room, and revokes this browser's own DeviceKey row
+  // on the server, so the phone has to pair again from scratch.
+  //
+  // window.confirm for the same reason Reset uses it: this control also renders
+  // inside the extension's 24px header, where a modal has nowhere to go.
+  const handleForget = () => {
+    if (!forgetThisComputer) return;
+    const ok =
+      typeof window === 'undefined' ||
+      window.confirm(
+        'Forgets this pairing on this computer; the phone will ask you to pair again.',
+      );
+    if (!ok) return;
+    void forgetThisComputer();
+  };
+  const onForget = handleForget;
 
   // ---------- Notification-access banner ----------
   // Render-time gate: only show when (a) connected, (b) phone has explicitly
@@ -169,6 +195,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
           onDisconnect={() => leaveActive?.()}
           onConnect={() => requestPairing?.()}
           onReset={onReset}
+          onForget={onForget}
         />
       </>
     );
@@ -184,6 +211,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
           syncing={!!quietSyncing}
           onDisconnect={() => leaveActive?.()}
           onReset={onReset}
+          onForget={onForget}
         />
       ) : state === 'requesting' ? (
         <RequestingPill
@@ -206,6 +234,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
           phonePresent={!!phonePresentInLobby}
           onConnect={() => requestPairing?.()}
           onReset={onReset}
+          onForget={onForget}
         />
       )}
     </>
@@ -249,6 +278,7 @@ function CompactDevicePill({
   onDisconnect,
   onConnect,
   onReset,
+  onForget,
 }: {
   state: LobbyState;
   /** FORGE-U auto-sync in flight. Only meaningful while `state === 'active'`. */
@@ -259,6 +289,7 @@ function CompactDevicePill({
   onDisconnect: () => void;
   onConnect: () => void;
   onReset?: () => void;
+  onForget?: () => void;
 }) {
   const active = state === 'active';
   const connecting = state === 'requesting';
@@ -372,6 +403,7 @@ function CompactDevicePill({
           never wraps and never grows, so the word cannot come with it. The
           title + aria-label carry the meaning instead. */}
       {onReset && <ResetLobbyButton onReset={onReset} compact />}
+      {onForget && <ForgetComputerButton onForget={onForget} compact />}
     </div>
   );
 }
@@ -419,10 +451,12 @@ function LobbyPill({
   phonePresent,
   onConnect,
   onReset,
+  onForget,
 }: {
   phonePresent: boolean;
   onConnect: () => void;
   onReset?: () => void;
+  onForget?: () => void;
 }) {
   return (
     <PillShell tone="slate">
@@ -472,6 +506,7 @@ function LobbyPill({
           out forever. Disconnect is not even rendered here — there is no active
           pair to leave — which is exactly why Reset must be. */}
       {onReset && <ResetLobbyButton onReset={onReset} />}
+      {onForget && <ForgetComputerButton onForget={onForget} />}
     </PillShell>
   );
 }
@@ -554,12 +589,14 @@ function ActivePill({
   syncing,
   onDisconnect,
   onReset,
+  onForget,
 }: {
   phoneName: string | null;
   /** FORGE-U auto-sync in flight — see the note in CompactDevicePill. */
   syncing: boolean;
   onDisconnect: () => void;
   onReset?: () => void;
+  onForget?: () => void;
 }) {
   return (
     <div className="flex items-center gap-4 px-5 py-2 bg-white/50 backdrop-blur-md rounded-2xl border border-slate-200/60 shadow-sm">
@@ -609,6 +646,7 @@ function ActivePill({
           same row so it is findable when Disconnect did not work, but
           text-only and dimmer so it never reads as the primary action. */}
       {onReset && <ResetLobbyButton onReset={onReset} />}
+      {onForget && <ForgetComputerButton onForget={onForget} />}
     </div>
   );
 }
@@ -651,6 +689,51 @@ function ResetLobbyButton({
     >
       <RotateCw className={compact ? 'h-2.5 w-2.5' : 'w-3.5 h-3.5'} aria-hidden="true" />
       {!compact && 'Reset lobby'}
+    </button>
+  );
+}
+
+/**
+ * "Forget this computer" — E2E-P2.3 (b), GATE1 Addendum A5 F1 / MUST M-A5-1 (a).
+ *
+ * The explicit revocation control, and the ONLY one in the UI. It sits beside
+ * Reset lobby because that is where a user looking for "make it stop" will
+ * look, but the two are different acts and the confirm text is what tells them
+ * apart:
+ *
+ *   Reset lobby  — TRANSPORT. Empties the room; the phone re-joins by itself
+ *                  in a few seconds and the PAIR SURVIVES. Dennis's definition,
+ *                  unchanged by P2.3.
+ *   Forget this  — REVOCATION. Drops this computer's session key, resets the
+ *   computer      room, and revokes this browser's own DeviceKey row on the
+ *                 server. The phone must pair again from scratch.
+ *
+ * Styling is ResetLobbyButton's, verbatim, on purpose (the brief: "reuse the
+ * existing button styling verbatim" — no Pixel dispatch needed). Same quiet
+ * weight for the same reason: it is destructive and must not be pressed by
+ * accident. The icon differs because the ACT differs — an unlink, not a redo.
+ */
+function ForgetComputerButton({
+  onForget,
+  compact = false,
+}: {
+  onForget: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onForget}
+      title="Forget this computer — ends the pairing here and revokes this browser's key; the phone will ask you to pair again."
+      className={
+        compact
+          ? 'ml-0.5 inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-amber-100 hover:text-amber-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60'
+          : 'flex flex-shrink-0 items-center gap-1.5 px-2 py-1.5 text-slate-400 hover:text-amber-700 text-xs font-medium rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 focus-visible:ring-offset-1'
+      }
+      aria-label="Forget this computer"
+    >
+      <Unlink className={compact ? 'h-2.5 w-2.5' : 'w-3.5 h-3.5'} aria-hidden="true" />
+      {!compact && 'Forget this computer'}
     </button>
   );
 }

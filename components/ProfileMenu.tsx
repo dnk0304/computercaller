@@ -216,6 +216,13 @@ export const ProfileMenu = () => {
     } catch {
       /* localStorage may throw in private mode — best-effort */
     }
+    // P2.3 (a) — F1 / M-A5-1 (a). The revoking side tears itself down BEFORE
+    // the logout fetch: revokeLocalPair -> resetRoom -> onSignOut -> the
+    // best-effort server-side revoke of this browser's own DeviceKey row,
+    // which needs the session cookie the next line is about to destroy.
+    // signOutEverywhere never rejects, so there is no path that skips logout.
+    await phone.signOutEverywhere('sign-out');
+
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch {

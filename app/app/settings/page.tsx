@@ -664,11 +664,19 @@ export default function SettingsPage() {
             </div>
             <button
               type="button"
-              onClick={() =>
-                fetch('/api/auth/logout', { method: 'POST' }).then(() => {
-                  window.location.href = '/auth/login';
-                })
-              }
+              onClick={() => {
+                // P2.3 (a) — F1 / M-A5-1 (a). Tear the pair down and revoke
+                // this browser's own DeviceKey row BEFORE the logout fetch
+                // clears the session cookie that revoke authenticates with.
+                // signOutEverywhere never rejects.
+                void phone
+                  .signOutEverywhere('sign-out')
+                  .then(() => fetch('/api/auth/logout', { method: 'POST' }))
+                  .catch(() => { /* logout is best-effort; leave regardless */ })
+                  .finally(() => {
+                    window.location.href = '/auth/login';
+                  });
+              }}
               className="text-sm text-red-500 hover:text-red-700 transition-colors focus:outline-none focus-visible:underline"
             >
               Sign out
