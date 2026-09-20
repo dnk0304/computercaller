@@ -34,6 +34,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { harnessesFor, phaseTableProblems } from '../tools/lib/harness-list.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -131,29 +132,57 @@ check('the refusal explains WHY silence was the danger (the 62/69 incident)',
  * D1 itself was in that state: absent from both harness lists, so the
  * production-deploy evidence run skipped the Encrypted-mode UI proof.
  *
- * tools/e2e-gate.mjs now declares PHASE_HARNESSES beside KNOWN_PHASES and
- * refuses to start unless every known phase is explicitly listed as running or
- * skipping each phase-gated harness. Asserted here by READING that source —
- * the run itself cannot show a step that was never scheduled.
+ * tools/lib/harness-list.mjs now declares PHASE_HARNESSES beside KNOWN_PHASES
+ * (FT-MERGE (e)), and the gate refuses to start unless every known phase is
+ * explicitly listed as running or skipping each phase-gated harness. Asserted
+ * here through the real export — the run itself cannot show a step that was
+ * never scheduled.
  */
 {
+  // FT-MERGE (e). The table MOVED: KNOWN_PHASES, PHASE_HARNESSES and the
+  // coverage rule now live in tools/lib/harness-list.mjs beside harnessesFor(),
+  // because they were two tables that had to agree and did not. This block
+  // still asserts the same rules, now against the module that owns them plus
+  // the gate's own refusal wiring — and it asserts them as VALUES, through the
+  // real export, rather than by grepping a source file, which is both stronger
+  // and immune to the next move.
   const src = readFileSync(GATE, 'utf8');
-  check('the gate declares a PHASE_HARNESSES coverage table', /const PHASE_HARNESSES = \{/.test(src));
-  check('it refuses when a known phase has no decision for a harness',
-    /known phase with no decision/.test(src) && /PHASE_HARNESSES\[/.test(src));
-  check('the harness lists are DERIVED from that table, not hand-maintained',
-    /phaseRuns\('ext-sw-lifetime-proof'\)/.test(src) && /phaseRuns\('e2e-ui-proof'\)/.test(src));
+  const LIST = path.join(ROOT, 'tools', 'lib', 'harness-list.mjs');
+  const listSrc = readFileSync(LIST, 'utf8');
+
+  check('the coverage table is declared in tools/lib/harness-list.mjs',
+    /export const PHASE_HARNESSES = \{/.test(listSrc));
+  check('the gate imports KNOWN_PHASES and the coverage rule from it',
+    /import \{[^}]*KNOWN_PHASES[^}]*phaseTableProblems[^}]*\} from '\.\/lib\/harness-list\.mjs'/.test(src));
+  check('the gate still owns the refusal: it exits 2 when a phase has no decision',
+    /known phase with no decision/.test(src) && /phaseTableProblems\(\)/.test(src)
+    && /process\.exit\(2\)/.test(src));
+  check('the harness list is DERIVED from that table, not hand-maintained',
+    /const HARNESS = harnessesFor\(PHASE\)/.test(src));
   check('no phase-gated harness is still gated on a hardcoded phase array',
     !/\['P5A', 'P5B', 'P6', 'P7', 'P8'(, 'D1')?\]\.includes\(PHASE\)\) HARNESS/.test(src));
+  check('the gate keeps no second copy of the table',
+    !/const PHASE_HARNESSES = \{/.test(src) && !/const phaseRuns =/.test(src));
 
-  // The two phases whose omission actually cost something.
-  const table = src.slice(src.indexOf('const PHASE_HARNESSES'), src.indexOf('const phaseRuns'));
-  const swRuns = /'ext-sw-lifetime-proof':\s*\{\s*runs:\s*\[([^\]]*)\]/.exec(table)?.[1] || '';
-  const uiRuns = /'e2e-ui-proof':\s*\{\s*(?:\/\/[^\n]*\n\s*)*runs:\s*\[([^\]]*)\]/.exec(table)?.[1] || '';
-  check("D1 runs e2e-ui-proof (it is the Encrypted-mode proof D1 exists to evidence)",
-    /'D1'/.test(uiRuns), uiRuns.trim());
-  check('D1 runs ext-sw-lifetime-proof', /'D1'/.test(swRuns), swRuns.trim());
-  check('P3.1 runs ext-sw-lifetime-proof (the P3.1 finding)', /'P3\.1'/.test(swRuns), swRuns.trim());
+  // The rule itself, exercised rather than read.
+  check('the shipped table has no gaps', phaseTableProblems().length === 0,
+    JSON.stringify(phaseTableProblems()));
+
+  // The phases whose omission actually cost something, asserted on the resolved
+  // list — the thing the gate will really run.
+  check('D1 runs e2e-ui-proof (the Encrypted-mode proof D1 exists to evidence)',
+    harnessesFor('D1').includes('e2e-ui-proof'), harnessesFor('D1').join(', '));
+  check('D1 runs ext-sw-lifetime-proof',
+    harnessesFor('D1').includes('ext-sw-lifetime-proof'), harnessesFor('D1').join(', '));
+  check('P3.1 runs ext-sw-lifetime-proof (the P3.1 finding)',
+    harnessesFor('P3.1').includes('ext-sw-lifetime-proof'), harnessesFor('P3.1').join(', '));
+  check('MERGE runs both (a merge gate may not be a subset of what it merges)',
+    harnessesFor('MERGE').includes('e2e-ui-proof')
+    && harnessesFor('MERGE').includes('ext-sw-lifetime-proof'), harnessesFor('MERGE').join(', '));
+
+  // CONTROL: these membership assertions must be able to say no.
+  check('CONTROL: the membership detector reports an absent harness as absent',
+    harnessesFor('P0').includes('e2e-ui-proof') === false);
 }
 
 const failed = results.filter((r) => !r.pass);

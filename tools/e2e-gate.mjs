@@ -39,7 +39,7 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // (E2E-P0.3) The moving-base decision and the authored/inherited lint split,
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
-import { harnessesFor } from './lib/harness-list.mjs';
+import { harnessesFor, KNOWN_PHASES, phaseTableProblems } from './lib/harness-list.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
 // longer encodes the phase in the worktree name.
 import { isGateWorktree, isGateMain } from './gate-location.mjs';
@@ -106,58 +106,20 @@ const PHASE = PHASE_RAW.toUpperCase();
  * a deliberate edit to this list — which is the point. Absent is not passing,
  * and neither is unrecognised.
  */
-const KNOWN_PHASES = [
-  'P0', 'P0.2', 'P0.3',
-  'P1', 'P1.1', 'P1.2',
-  'P2', 'P2.1',
-  'P3', 'P3.1',
-  'P4', 'P4.1',
-  'P5A', 'P5B',
-  'P6',
-  'D1',
-  'FT1', 'FT2', 'FT3',
-  'MERGE',
-];
 /**
- * (b2, Ken's addendum after the P3.1 finding). The whitelist above stops an
- * UNRECOGNISED phase from running a hollow gate. It does NOT stop a recognised
- * one from doing the same thing by being missing from a phase-gated step's own
- * membership list — which is the P3.1 finding, and which D1 itself hit: D1 was
- * absent from both harness lists, so `--phase D1`, the production-deploy
- * evidence run, silently skipped the Encrypted-mode UI proof.
+ * FT-MERGE (e). KNOWN_PHASES, the per-harness runs/skips table and the coverage
+ * rule all moved to tools/lib/harness-list.mjs, which is also where
+ * harnessesFor() already lived. They were two tables that had to agree and did
+ * not: after merging ft/3b into integration, harnessesFor('D1') returned the six
+ * BASE harnesses, because this file's PHASE_HARNESSES named D1 and that file's
+ * arrays did not. --phase D1 would have skipped ext-sw-lifetime-proof and
+ * e2e-ui-proof and still printed PASS. One home, one decision.
  *
- * Two hand-maintained lists that must agree is a rule nobody can see. So the
- * phase-gated harnesses are declared HERE, beside KNOWN_PHASES, and validated
- * against it at startup:
- *
- *   - every phase named below must be a known phase (catches a typo that would
- *     otherwise read as "this phase just doesn't run that step");
- *   - every known phase must appear in `runs` or `skips` for each harness, so
- *     adding a phase to KNOWN_PHASES FORCES a deliberate yes/no per step
- *     instead of defaulting to a silent no.
- *
- * Absent is not passing; unrecognised is not passing; and now "nobody thought
- * about it" is not passing either.
+ * The gate keeps what is the gate's: the exit code and the usage text.
  */
-const PHASE_HARNESSES = {
-  'ext-sw-lifetime-proof': {
-    runs:  ['P3', 'P3.1', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'D1'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'FT1', 'FT2', 'FT3', 'MERGE'],
-  },
-  'e2e-ui-proof': {
-    // The Encrypted-mode UI surfaces exist from P5a onwards; running it earlier
-    // would report a not-yet-built feature as a failure.
-    runs:  ['P5A', 'P5B', 'P6', 'D1'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P3', 'P3.1',
-            'P4', 'P4.1', 'FT1', 'FT2', 'FT3', 'MERGE'],
-  },
-};
-for (const [harness, { runs, skips }] of Object.entries(PHASE_HARNESSES)) {
-  const declared = [...runs, ...skips];
-  const unknown = declared.filter((p) => !KNOWN_PHASES.includes(p));
-  const undecided = KNOWN_PHASES.filter((p) => !declared.includes(p));
-  const both = runs.filter((p) => skips.includes(p));
-  if (unknown.length || undecided.length || both.length) {
+const phaseProblems = phaseTableProblems();
+if (phaseProblems.length) {
+  for (const { harness, unknown, undecided, both } of phaseProblems) {
     console.error(
       `\ne2e-gate: REFUSING TO RUN — PHASE_HARNESSES["${harness}"] does not cover KNOWN_PHASES.\n`
       + (unknown.length ? `    not a known phase: ${unknown.join(', ')}\n` : '')
@@ -167,12 +129,9 @@ for (const [harness, { runs, skips }] of Object.entries(PHASE_HARNESSES)) {
       + '    harness. A phase that is merely missing would skip it silently, which is\n'
       + '    the defect this table exists to make impossible.\n',
     );
-    process.exit(2);
   }
+  process.exit(2);
 }
-/** True when PHASE should run this phase-gated harness. */
-const phaseRuns = (harness) => PHASE_HARNESSES[harness].runs.includes(PHASE);
-
 if (!KNOWN_PHASES.includes(PHASE)) {
   console.error(
     `\ne2e-gate: REFUSING TO RUN — unrecognised --phase "${PHASE_RAW}".\n`
@@ -483,7 +442,11 @@ const MIN_CHECKS_OVERRIDE = {
   // from the FT list the mutant drops to 31 TOTAL (two `scripts/<h>.mjs exists`
   // checks stop being generated), so the floor catches the deletion even if
   // someone also deletes the four checks that go red.
-  'unit:harness-list': 33,
+  // FT-MERGE (e) min-checks raise 33 -> 107: the fold moved KNOWN_PHASES and the
+  // per-harness runs/skips table into this module, so the suite now asserts the
+  // phase set, every phase's resolved list, the coverage rule and four controls
+  // for the rule itself. Measured: 107.
+  'unit:harness-list': 107,
 };
 const MIN_CHECKS = (() => {
   const table = {};
