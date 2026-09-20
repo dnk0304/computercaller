@@ -149,6 +149,46 @@
           just presence + the primary action. Not exported; launched via
           explicit Intent from MainActivity only.
         -->
+        <!--
+          FT-2 (v59) — file transfer. ONE activity, transparent, finishes as
+          soon as its dialog or SAF picker resolves.
+
+          exported="true" is required and is the whole point: the ACTION_SEND
+          filter is the "Send to computer" share-sheet target. It is also the
+          only externally reachable entry point this feature adds, and it can
+          do exactly one thing — show a confirm dialog for a URI the SENDING
+          app already granted us. It cannot accept an incoming offer (that
+          path reads the service's own pending offer, not the intent) and it
+          cannot cancel a transfer (that is FileTransferActionReceiver, which
+          is registered at runtime with RECEIVER_NOT_EXPORTED).
+
+          excludeFromRecents + noHistory: a dialog that survives in the recents
+          list can be resumed long after its transfer is gone.
+
+          NO new permission and NO new foreground-service type: transfers run
+          inside the existing specialUse FGS's lifetime (spec §3), which is
+          what keeps the dataSync 6-hour cap and a fresh Play declaration out
+          of this build.
+        -->
+        <activity
+            android:name=".FileTransferActivity"
+            android:theme="@style/Theme.AppCompat.DayNight.Dialog.Alert"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:exported="true">
+            <intent-filter android:label="@string/ft_share_label">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:label="@string/ft_share_label">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
         <activity
             android:name=".SettingsActivity"
             android:label="@string/settings_title"

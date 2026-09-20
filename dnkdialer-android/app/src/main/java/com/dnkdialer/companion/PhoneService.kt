@@ -19,6 +19,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import android.annotation.SuppressLint
 
 class PhoneService : Service() {
 
@@ -58,6 +59,29 @@ class PhoneService : Service() {
 
         /** User-facing copy for [ACTION_PAIRING_E2E_REFUSED]. Never technical. */
         const val EXTRA_E2E_MESSAGE = "e2e_message"
+        /**
+         * FT-2 — the live file-transfer state machine, or null when the
+         * service is not running.
+         *
+         * Static for the same reason [ConnectionRequestReceiver.serviceHandler]
+         * is: [FileTransferActivity] has to reach the ONE running transfer to
+         * accept an offer or start a send, and binding an Activity that exists
+         * only long enough to show a dialog would race its own onDestroy.
+         * Cleared in onDestroy so a stale Activity is a no-op, not a crash.
+         */
+        //
+        // Suppressed StaticFieldLeak, with the reason: the detector flags any
+        // static field whose type transitively holds a Context. This one is
+        // built with applicationContext (see setUpFileTransfer), which lives as
+        // long as the process, so it cannot retain the Service or an Activity -
+        // the leak the detector is actually describing. It is cleared in
+        // onDestroy regardless, so the reference does not outlive the service.
+        @SuppressLint("StaticFieldLeak")
+        @Volatile
+        @JvmStatic
+        var fileTransferHandler: FileTransferManager? = null
+            private set
+
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dnk_dialer_service"
 
@@ -181,6 +205,13 @@ class PhoneService : Service() {
     // explicit user Accept.
     private val reconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var reconnectRunnable: Runnable? = null
+
+    /** FT-2 — notifications + the transfer state machine. Built in onCreate. */
+    private var fileTransferNotifier: FileTransferNotifier? = null
+    private var fileTransferReceiver: FileTransferActionReceiver? = null
+    private var fileTransferStartedMs: Long = 0L
+    private val fileTransferTicker = android.os.Handler(android.os.Looper.getMainLooper())
+    private var fileTransferTickRunnable: Runnable? = null
     private val lobbyReconnectDelayMs: Long = 5_000L
 
     /**
@@ -2133,6 +2164,14 @@ class PhoneService : Service() {
             if (rejoin) userRejoinLobby() else userDisconnectFromLobby()
         }
 
+        // ------------------------------------------------------- FT-2 (v59)
+        // File transfer runs INSIDE this service's existing specialUse FGS
+        // lifetime (spec §3): no new service, no new FGS type, no new manifest
+        // service entry, and therefore no dataSync 6-hour cap and no fresh
+        // Play declaration. All it adds here is two notification channels, a
+        // NOT_EXPORTED receiver for Reject/Cancel, and a 5 s stall ticker.
+        setUpFileTransfer()
+
         // Register for real telephony state changes so we forward true call state
         // (ringing / active / ended) to the web app instead of fake responses tied
         // to MAKE_CALL handling.
@@ -3619,6 +3658,19 @@ class PhoneService : Service() {
                 // onOpen → OPEN. onClose → only flip to IDLE if we
                 // weren't already pushed to FAILED by the error callback
                 // (close fires AFTER error for non-normal closures).
+                // FT-2 (c) — a reconnect is the resume trigger. On open, ask
+                // the manager to re-attach to a half-written .part and emit
+                // FILE_RESUME; on close, just wake anything blocked on the
+                // socket so it can decide for itself whether to wait or fail.
+                // Nothing is torn down here: a receive keeps its .part across
+                // a drop, which is the entire point of resume.
+                try {
+                    if (connected) fileTransferHandler?.onReconnected()
+                    else fileTransferHandler?.onDisconnected()
+                } catch (e: Exception) {
+                    android.util.Log.w("PhoneService", "file-transfer link change: ${e.message}")
+                }
+
                 if (connected) {
                     // Handshake succeeded — the watchdog must NOT fire.
                     // (No backoff counter to reset in v18 — fixed 5s
@@ -4085,10 +4137,178 @@ class PhoneService : Service() {
         }
     }
 
+    // ======================================================== FT-2 (v59)
+
+    /**
+     * Build the file-transfer state machine and wire its four edges: the
+     * outbound send (through PhoneClient's single seal chokepoint), the socket
+     * liveness it needs for backpressure and resume, the notifications, and
+     * the Reject/Cancel receiver.
+     */
+    private fun setUpFileTransfer() {
+        val notifier = FileTransferNotifier(this)
+        notifier.createChannels()
+        fileTransferNotifier = notifier
+
+        val manager = FileTransferManager(
+            context = applicationContext,
+            // Every frame goes through sendResponse -> PhoneClient.sendResponse,
+            // which is the ONE outbound E2E chokepoint (P4 w3). FILE_CHUNK is
+            // on the sealed list, so a chunk that cannot be sealed is dropped
+            // there rather than sent in the clear, with no second path to add.
+            send = { type, payload -> sendResponse(type, payload, client?.isOpen == true) },
+            isOpen = { client?.isOpen == true },
+            queuedBytes = { client?.queuedBytes() ?: 0L },
+            // FT-A1 MUST A-5: read through the SAME provider the frame gate
+            // uses, not a snapshot. A latch that flips mid-transfer must be
+            // seen by the hint compare at the moment it compares, or the two
+            // disagree about whether a missing hint is a stripped one.
+            sealedModeOn = { e2eLatchedOn },
+            listener = object : FileTransferManager.Listener {
+                override fun onProgress(
+                    id: String, name: String, sent: Long, total: Long, outgoing: Boolean
+                ) {
+                    if (fileTransferStartedMs == 0L) fileTransferStartedMs = System.currentTimeMillis()
+                    notifier.showProgress(name, sent, total, outgoing, fileTransferStartedMs)
+                }
+
+                override fun onOfferReceived(id: String, name: String, size: Long, mime: String?) {
+                    notifier.showOffer(id, name, size)
+                    // The in-app dialog too, when an Activity is in front. The
+                    // notification always fires; this is the second surface,
+                    // the same shape as the pairing prompt.
+                    try {
+                        if (isAppInForeground()) {
+                            startActivity(
+                                Intent(this@PhoneService, FileTransferActivity::class.java).apply {
+                                    action = FileTransferActivity.ACTION_SHOW_OFFER
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                            )
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.d("PhoneService", "no foreground offer dialog: ${e.message}")
+                    }
+                }
+
+                override fun onComplete(
+                    id: String, name: String, uri: android.net.Uri?, outgoing: Boolean
+                ) {
+                    notifier.dismissProgress()
+                    notifier.dismissOffer()
+                    notifier.showComplete(name, uri, outgoing)
+                }
+
+                override fun onFailed(
+                    id: String, name: String?, reason: String, outgoing: Boolean
+                ) {
+                    notifier.dismissProgress()
+                    notifier.dismissOffer()
+                    notifier.showFailed(name, reason, outgoing)
+                    // (d) quota / tier / too_large are decisions the user must
+                    // understand, not background noise - surface the dialog too
+                    // when the app is in front and the reason is a refusal
+                    // rather than a fault.
+                    val refusal = reason == FileTransfer.Reason.QUOTA ||
+                        reason == FileTransfer.Reason.TIER ||
+                        reason == FileTransfer.Reason.TOO_LARGE
+                    if (outgoing && refusal && isAppInForeground()) {
+                        try {
+                            startActivity(
+                                Intent(this@PhoneService, FileTransferActivity::class.java).apply {
+                                    action = FileTransferActivity.ACTION_SHOW_MESSAGE
+                                    putExtra(FileTransferActivity.EXTRA_REASON, reason)
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                            )
+                        } catch (e: Exception) {
+                            android.util.Log.d("PhoneService", "no refusal dialog: ${e.message}")
+                        }
+                    }
+                }
+
+                override fun onIdle() {
+                    fileTransferStartedMs = 0L
+                    notifier.dismissProgress()
+                }
+            },
+        )
+        fileTransferHandler = manager
+
+        val receiver = FileTransferActionReceiver()
+        val filter = android.content.IntentFilter().apply {
+            addAction(FileTransferActionReceiver.ACTION_REJECT)
+            addAction(FileTransferActionReceiver.ACTION_CANCEL)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(receiver, filter)
+        }
+        FileTransferActionReceiver.handler = { cancelRunning ->
+            if (cancelRunning) manager.cancel() else manager.rejectOffer()
+        }
+        fileTransferReceiver = receiver
+
+        // One 5 s ticker drives the 30 s stall timeout and the 60 s offer
+        // expiry. Deliberately NOT a timer inside the manager: this service
+        // already owns several handlers with a known lifecycle, and one more
+        // executor with its own is a leak waiting for a process death.
+        val tick = object : Runnable {
+            override fun run() {
+                try {
+                    fileTransferHandler?.tick()
+                } catch (e: Exception) {
+                    android.util.Log.w("PhoneService", "file-transfer tick: ${e.message}")
+                }
+                fileTransferTicker.postDelayed(this, 5_000L)
+            }
+        }
+        fileTransferTickRunnable = tick
+        fileTransferTicker.postDelayed(tick, 5_000L)
+    }
+
+    private fun tearDownFileTransfer() {
+        fileTransferTickRunnable?.let { fileTransferTicker.removeCallbacks(it) }
+        fileTransferTickRunnable = null
+        FileTransferActionReceiver.handler = null
+        try {
+            fileTransferReceiver?.let { unregisterReceiver(it) }
+        } catch (e: Exception) {
+            android.util.Log.d("PhoneService", "file-transfer receiver already gone")
+        }
+        fileTransferReceiver = null
+        fileTransferNotifier?.dismissProgress()
+        fileTransferNotifier = null
+        // Last: an Activity that reads this after teardown must find null.
+        fileTransferHandler = null
+    }
+
+    /**
+     * Is one of our own Activities in front? Drives the SECOND UI surface only
+     * - the notification always fires either way, so a wrong answer here costs
+     * a dialog, never the prompt itself.
+     */
+    private fun isAppInForeground(): Boolean =
+        CompanionApp.isInForeground
+
     private fun handleCommand(command: String, payload: Map<String, Any>?, viaClient: Boolean = false) {
         android.util.Log.d("PhoneService", "handleCommand: $command, viaClient: $viaClient")
         try {
             when (command) {
+                // FT-2 (v59) — the whole file-transfer frame family routes to
+                // one state machine. Matched FIRST and by SET MEMBERSHIP, not
+                // by a prefix: "FILE_" as a prefix would also swallow any
+                // future FILE_-named frame that is not ours, and the relay
+                // dispatches on exact type everywhere else.
+                in FileTransfer.FRAMES -> {
+                    fileTransferHandler?.onFrame(command, payload)
+                        ?: android.util.Log.w(
+                            "PhoneService", "$command with no file-transfer manager"
+                        )
+                }
+
                 // v18 Connect+Accept pivot ----------------------------
                 //
                 // Wire protocol with the relay:
@@ -4925,6 +5145,13 @@ class PhoneService : Service() {
     // Sign Out flow this same dispatch.
 
     override fun onDestroy() {
+        // FT-2: first, so a broadcast or an Activity that arrives during the
+        // rest of the teardown finds a null handler rather than a half-torn
+        // service. Nothing here cancels an in-flight transfer on purpose — a
+        // service death mid-transfer is exactly the case resume exists for,
+        // and the .part plus its resume record must survive it.
+        tearDownFileTransfer()
+
         super.onDestroy()
 
         // §13.8: the SK does not outlive the service. shutdownNow() rather than

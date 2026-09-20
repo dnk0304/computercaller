@@ -81,7 +81,13 @@ class E2eFrameGate(
             "NOTIFICATION_REPLY", "NOTIFICATION_DISMISS",
             "NOTIFICATION_REPLY_SENT", "NOTIFICATION_REPLY_FAILED",
             "NOTIFICATION_REMOVED",
-        )
+
+        ) + FileTransfer.FRAMES.filter { FileTransfer.isSealedFrame(it) }
+        // FT-2 — the FILE_* entries are not listed literally here on purpose.
+        // [FileTransfer.isSealedFrame] is the single owner of that decision,
+        // so GATE1 Addendum FT-A1's ruling was a one-function change on this
+        // lane rather than an edit inside the frozen §13.7 list. Read that
+        // function for the policy; FT-A1 §3 (C) ratified sealing all eight.
 
         /**
          * §13.7's mandatory-plaintext trio, held separately from "everything
@@ -164,7 +170,16 @@ class E2eFrameGate(
             // frame can never leave this device under an unrecorded sequence
             // (A1 item 3 / A2's sole control). The send happens only on the
             // success path below, after that reservation is on disk.
-            session.seal(type, json.toByteArray(Charsets.UTF_8)).toJson()
+            val envelope = session.seal(type, json.toByteArray(Charsets.UTF_8)).toJson()
+            // FT-A1 MUST C-1 / C-2: the `ft` hint is attached at the SEALING
+            // chokepoint, not by a caller, and it is read from `json` — the
+            // very bytes just sealed — in this same function. A hint derived
+            // from a second source (a caller's argument, a re-stat of the Uri)
+            // can drift from the sealed body through ordinary refactoring, and
+            // the receiver's compare would then refuse HONEST transfers: an
+            // outage that looks like "file transfer is broken on Android" with
+            // no attacker anywhere near it.
+            attachHint(type, json, envelope)
         } catch (e: RuntimeException) {
             // E2eSeqStore.CounterUnsafeException lands here: the counter cannot
             // be proved safe, so sealing would risk a nonce reuse. Drop and
@@ -175,7 +190,83 @@ class E2eFrameGate(
         }
     }
 
+    /**
+     * Append the FT-A1 hint to a sealed envelope, or return it untouched.
+     *
+     * The hint is a SIBLING of `{e,kid,s,c}`, not a member of the ciphertext
+     * and not part of the AAD. It is appended textually so the four
+     * authenticated fields keep the exact bytes [E2eEnvelope.Sealed.toJson]
+     * produced — re-serialising the envelope through a JSON library would risk
+     * reordering or renumbering them, and they are what the peer authenticates.
+     */
+    private fun attachHint(type: String, sealedJson: String, envelope: String): String {
+        val body = try {
+            com.google.gson.JsonParser.parseString(sealedJson).asJsonObject
+        } catch (e: RuntimeException) {
+            return envelope
+        }
+        val fields = mutableMapOf<String, Any?>()
+        for ((k, v) in body.entrySet()) {
+            fields[k] = if (v.isJsonPrimitive) {
+                val p = v.asJsonPrimitive
+                if (p.isNumber) p.asNumber else if (p.isString) p.asString else null
+            } else null
+        }
+        val hint = FileTransfer.hintFor(type, fields) ?: return envelope
+        val id = hint["id"] as String
+        val size = hint["size"] as Long
+        // The envelope ends with '}'; splice the sibling in before it.
+        return envelope.dropLast(1) +
+            ",\"${FileTransfer.HINT_KEY}\":{\"id\":\"$id\",\"size\":$size}}"
+    }
+
+    /**
+     * The `ft` hint from an inbound envelope, or null.
+     *
+     * Read off the RAW envelope rather than [E2eEnvelope.parse]'s result,
+     * because that parser deliberately keeps only the four authenticated
+     * fields — which is correct, and is why the hint has to be picked up here.
+     */
+    private fun hintOf(json: String): Map<String, Any?>? = try {
+        val obj = com.google.gson.JsonParser.parseString(json).asJsonObject
+        val ft = obj.getAsJsonObject(FileTransfer.HINT_KEY)
+        if (ft == null) null else mapOf(
+            "id" to (ft.get("id")?.takeIf { it.isJsonPrimitive }?.asString),
+            "size" to (ft.get("size")?.takeIf { it.isJsonPrimitive }?.asLong),
+        )
+    } catch (e: RuntimeException) {
+        null
+    }
+
     // -------------------------------------------------------------- inbound
+
+    /** FT-A1.1: does the body carry the explicit `"relay": true` marker? */
+    private fun relayMarkedOf(json: String): Boolean = try {
+        com.google.gson.JsonParser.parseString(json).asJsonObject
+            .get(FileTransfer.RELAY_MARKER)?.takeIf { it.isJsonPrimitive }?.asBoolean == true
+    } catch (e: RuntimeException) {
+        false
+    }
+
+    /** `reason` from a plaintext FILE_FAILED body, or null. */
+    private fun reasonOf(json: String): String? = try {
+        com.google.gson.JsonParser.parseString(json).asJsonObject
+            .get("reason")?.takeIf { it.isJsonPrimitive }?.asString
+    } catch (e: RuntimeException) {
+        null
+    }
+
+    /** Splice `ft` into an unsealed body as a sibling field. */
+    private fun mergeHint(plain: String, ft: Map<String, Any?>): String = try {
+        val id = ft["id"] as? String
+        val size = ft["size"] as? Long
+        val idJson = if (id == null) "null" else "\"" + id + "\""
+        plain.trimEnd().dropLast(1) +
+            ",\"" + FileTransfer.HINT_KEY + "\":{\"id\":" + idJson +
+            ",\"size\":" + (size?.toString() ?: "null") + "}}"
+    } catch (e: RuntimeException) {
+        plain
+    }
 
     /** What [inbound] decided. */
     sealed interface Inbound {
@@ -202,6 +293,20 @@ class E2eFrameGate(
             // A plaintext frame that SHOULD have been sealed, while the latch
             // is on, is exactly what a stripping relay produces. Drop it.
             if (latchedProvider() && isSealedType(type)) {
+                // ONE exception, and it is routed through ONE function so the
+                // pending FT-A1.1 ruling is a change in that function and not
+                // in this branch: the relay mints some FILE_FAILED frames
+                // itself (tier / quota / size_mismatch / its timeout backstop)
+                // and holds no keys, so those are necessarily plaintext.
+                // Dropping them would mean the sender sits through a 30 s
+                // stall instead of being told why it was refused — the quota
+                // design's whole output, lost on the last hop.
+                if (FileTransfer.allowsPlaintextUnderLatch(
+                        type, reasonOf(json), relayMarkedOf(json)
+                    )
+                ) {
+                    return Inbound.Deliver(json)
+                }
                 droppedInbound++
                 return Inbound.Drop("plaintext under the latch")
             }
@@ -222,8 +327,30 @@ class E2eFrameGate(
         }
 
         return when (val opened = session.open(envelope, type)) {
-            is E2eSession.Opened.Frame ->
-                Inbound.Deliver(String(opened.plaintext, Charsets.UTF_8))
+            is E2eSession.Opened.Frame -> {
+                val plain = String(opened.plaintext, Charsets.UTF_8)
+                // FT-A1.1: the relay forwards peer frames verbatim, so without
+                // this a peer could SEAL {"relay":true,...} and have it
+                // honoured as a relay assertion the moment we unsealed it. The
+                // marker is only meaningful on the plaintext path; inside a
+                // sealed body it is a forgery attempt by construction.
+                if (type in FileTransfer.FRAMES && FileTransfer.peerFrameClaimsRelay(plain)) {
+                    droppedInbound++
+                    return Inbound.Drop("peer frame claims to be relay-minted")
+                }
+                // FT-A1 MUST A-5: the receiver has to compare the hint against
+                // the body it just unsealed, so the hint must travel with the
+                // body to whoever does that compare. Merged as a sibling field
+                // `ft` — the same name it had on the wire — so the handler
+                // reads it the same way in sealed and open mode.
+                if (type == FileTransfer.OFFER) {
+                    val ft = hintOf(json)
+                    if (ft != null) Inbound.Deliver(mergeHint(plain, ft))
+                    else Inbound.Deliver(plain)
+                } else {
+                    Inbound.Deliver(plain)
+                }
+            }
 
             is E2eSession.Opened.Duplicate -> {
                 // NOT an error. A resume legitimately re-sends buffered frames,
