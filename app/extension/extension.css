@@ -1331,7 +1331,9 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   background: transparent;
   border: 0;
   margin: 0;
+}
 
+/* ===========================================================================
    FT-3b — file transfer on the extension surface.
 
    Two different problems are solved below, and they need different selectors.

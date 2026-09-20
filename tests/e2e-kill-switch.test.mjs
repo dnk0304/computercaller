@@ -361,4 +361,14 @@ if (shippedPredicate) {
 
 const total = passed + failed;
 console.log(`e2e-kill-switch: ${passed} passed, ${failed} failed (${total} checks)`);
-process.exit(failed === 0 ? 0 : 1);
+// FT-MERGE (f). `process.exit()` here raced libuv teardown on Windows: after
+// ALL checks passed and the summary printed, the process aborted with
+// "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\winsync.c:76"
+// and exit 127 — which the gate judges as a FAIL. It is load-sensitive, so it
+// appeared only once the merge took this suite from 53 checks (integration)
+// and 47 (ft/1-relay) to 75: 3 of 6 runs aborted at the merge tip, 0 of 6 at
+// 392e490 and 0 of 8 at 364382c. Setting exitCode lets node drain its handles
+// instead of tearing them down mid-close; 10 of 10 runs then exit 0 and the
+// process still terminates on its own (nothing here holds the loop open).
+// No assertion is changed.
+process.exitCode = failed === 0 ? 0 : 1;
