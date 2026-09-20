@@ -45,9 +45,29 @@ const check = (name, cond, detail = '') => {
 
 // ── PART 0 — pull the REAL source out of server.js ──────────────────────────
 
-/** Strip comments so prose describing a rule can never satisfy the rule. */
+/**
+ * Strip comments so prose describing a rule can never satisfy the rule.
+ *
+ * server.js is CRLF in the working tree, and that CR is why this used to
+ * strip nothing. After .split(LF) every line still carried a trailing CR; in
+ * /(^|[^:'"])\/\/.*$/ the dot cannot cross a CR (it is a line
+ * terminator) while $ — there is no m flag — anchors only at the very end of
+ * the whole string, i.e. AFTER that CR. So on a CRLF file the line-comment
+ * branch never matched and every // comment survived the strip untouched.
+ *
+ * That is what made the startsWith('FILE_') assertion at the FILE-frame push
+ * site below read PROSE as if it were code: it was hitting the COMMENT at
+ * server.js:3366 ("startsWith('FILE_') would also swallow a future
+ * FILE_-prefixed frame…") on a relay whose guard at :3369 has been
+ * isFileFrame(msg) since FT-1. Test bug, not relay bug.
+ *
+ * Fixed by normalising line endings first, so the stripper sees the LF text
+ * it was always written for. Everything downstream slices the STRIPPED
+ * string, so dropping CR here is self-consistent.
+ */
 function stripComments(src) {
   return src
+    .replace(/\r\n?/g, '\n')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .map((line) => line.replace(/(^|[^:'"])\/\/.*$/, '$1'))
