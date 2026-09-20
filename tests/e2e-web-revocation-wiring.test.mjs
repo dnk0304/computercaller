@@ -162,7 +162,7 @@ console.log('§3 — nothing blocks the logout (fault injection)');
   // Every other leg, one at a time. Each must leave the rest running: the
   // caller's logout fetch is unconditional and this is what makes that safe.
   for (const bad of ['revokeLocalPair', 'onSignOut', 'revokeRemote']) {
-    const { deps: d, calls: c } = legs({
+    const { deps: d } = legs({
       [bad]: () => { throw new Error(`${bad} exploded`); },
     });
     let rejected = false;
