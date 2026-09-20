@@ -1038,7 +1038,24 @@ const SHA = gitOut(['rev-parse', 'HEAD']);
    * every one this run writes is listed in `produced` so the resumer knows
    * exactly what to commit.
    */
-  const OWN_OUTPUT = /^e2e-evidence\/(gate-P[^/]*\.json|BASELINE-harness\.json|LINT-BASELINE(-android)?\.json)$/;
+  /**
+   * ANDROID-LINT (a3), CHECKPOINTS #159. `docs/screenshots/*.png` belongs in
+   * the same category and for the same reason. Three of this gate's own
+   * harnesses — scripts/e2e-ui-proof.mjs (p5a-*.png), dialpad-toggle-proof.mjs
+   * and ext-text-size-proof.mjs — re-render into docs/screenshots/ at step 10,
+   * i.e. AFTER this cleanliness check has already run. Attempt 1 in a fresh
+   * tree therefore reads dirtyPaths 0 and attempt 2 in the SAME tree reads the
+   * churn those harnesses just wrote and FAILs step 1 on the gate's own output.
+   * FT-MERGE-2 (e) attempt 2 was aborted mid-run for exactly this.
+   *
+   * PNG bytes are not reproducible run-to-run (font hinting, compression
+   * timestamps), so "commit them and they stop being dirty" is not a fix — the
+   * next run dirties them again. The honest rule is the one already applied to
+   * the JSON evidence: the gate does not grade the artefacts it writes, and
+   * every one it writes is listed in `produced`. The harnesses are deliberately
+   * NOT moved before step 1 — they need the dev server, which step 10 owns.
+   */
+  const OWN_OUTPUT = /^(e2e-evidence\/(gate-P[^/]*\.json|BASELINE-harness\.json|LINT-BASELINE(-android)?\.json)|docs\/screenshots\/[^/]+\.png)$/;
   const dirty = porcelain.filter((l) => {
     const p = l.slice(3).trim().replace(/^"|"$/g, '');
     return !ALLOW.test(p) && !OWN_OUTPUT.test(p);
@@ -1593,13 +1610,86 @@ if (ANDROID) {
   if (!existsSync(join(AROOT, 'gradlew.bat'))) {
     record('android:gradlew-present', 'dnkdialer-android/gradlew.bat', 1, 0, { missing: 1 });
   } else {
-    run('android:assembleDebug', 'gradlew.bat :app:assembleDebug', { cwd: AROOT, timeout: 30 * 60_000 });
-    run('android:lint', 'gradlew.bat :app:lintDebug', {
-      cwd: AROOT, timeout: 30 * 60_000,
-      parse: (out) => ({ issues: (out.match(/^\s*\d+ errors?, \d+ warnings?/gm) || []).length }),
-    });
+    /**
+     * ANDROID-LINT (a1), CHECKPOINTS #158. ABSOLUTE, QUOTED path — never a bare
+     * `gradlew.bat`. A bare name is only resolvable because cmd.exe searches the
+     * current directory, and Windows turns that search OFF when the environment
+     * carries `NoDefaultCurrentDirectoryInExePath=1`. FT-MERGE-2 (e) attempt 1
+     * lost BOTH android steps to "'gradlew.bat' is not recognized" in a shell
+     * that happened to carry it — a gate verdict that depended on an env var
+     * nobody set deliberately. Same pattern as
+     * dnkdialer-android/tools/e2e-gate-android.mjs:122.
+     */
+    const gradlew = `"${join(AROOT, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew')}"`;
+
+    run('android:assembleDebug', `${gradlew} :app:assembleDebug`, { cwd: AROOT, timeout: 30 * 60_000 });
+
+    /**
+     * ANDROID-LINT (a2). The verdict is the MANIFEST CHECK, not gradle's exit.
+     *
+     * This step used to be a raw `gradlew.bat :app:lintDebug`, which aborts on
+     * any error (abortOnError) and so reported FAIL for lint findings that are
+     * pre-existing at the scope base — a step that had no way to be green. The
+     * android gate has had the right rule since P4: run lint, then grade the
+     * result against e2e-evidence/LINT-BASELINE-android.json, which may only
+     * SHRINK. This mirrors dnkdialer-android/tools/e2e-gate-android.mjs:242
+     * ("lintDebug-vs-manifest") rather than reimplementing the rule; it is not
+     * extracted into a shared module because the two gates have different
+     * step/record plumbing and a shim between them would be more code than the
+     * ~20 lines it saves.
+     *
+     * The freshness guard is load-bearing and is mirrored too: without it,
+     * `--check` would happily grade a STALE XML left by a previous run and the
+     * gate would go green having never run lint at all. Delete the report
+     * first (which also stops gradle reporting UP-TO-DATE and leaving the old
+     * XML in place), then require one written after the step started.
+     */
+    {
+      const t0 = Date.now();
+      const report = join(AROOT, 'app/build/reports/lint-results-debug.xml');
+      const manifestTool = join(AROOT, 'tools', 'lint-manifest.mjs');
+      const cmd = `${gradlew} :app:lintDebug --continue && node tools/lint-manifest.mjs --check  (cwd dnkdialer-android)`;
+      if (existsSync(report)) rmSync(report);
+      const startedAt = Date.now();
+      const lint = spawnSync(`${gradlew} :app:lintDebug --continue`, {
+        cwd: AROOT, shell: true, encoding: 'utf8', timeout: 30 * 60_000, maxBuffer: 256 * 1024 * 1024,
+      });
+      let out = `${lint.stdout || ''}${lint.stderr || ''}`;
+      const gradleExit = lint.status === null ? 124 : lint.status;
+      let exit = 1;
+      let reportFresh = 0;
+      if (!existsSync(report)) {
+        out += `\nFAIL: lint produced no XML report at ${report} — did gradle run? (gradle exit ${gradleExit})\n`;
+      } else if (statSync(report).mtimeMs < startedAt - 5000) {
+        out += `\nFAIL: lint report is STALE (written ${new Date(statSync(report).mtimeMs).toISOString()}, `
+          + `step started ${new Date(startedAt).toISOString()}) — gradle did not actually run lint\n`;
+      } else {
+        reportFresh = 1;
+        const chk = spawnSync(process.execPath, [manifestTool, '--check'], {
+          cwd: AROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+        });
+        out += `${chk.stdout || ''}${chk.stderr || ''}`;
+        exit = chk.status === null ? 124 : chk.status;
+      }
+      // `issues` parse kept verbatim from the old step so the number in the
+      // JSON means the same thing across every gate run ever recorded.
+      const counts = {
+        issues: (out.match(/^\s*\d+ errors?, \d+ warnings?/gm) || []).length,
+        reportFresh,
+        gradleExit,
+      };
+      if (exit !== 0) {
+        mkdirSync(LOGDIR, { recursive: true });
+        const log = join(LOGDIR, `${PHASE}-android-lint.log`);
+        writeFileSync(log, out);
+        record('android:lint', cmd, exit, Date.now() - t0, counts, { log: log.replace(/\\/g, '/') });
+      } else {
+        record('android:lint', cmd, exit, Date.now() - t0, counts);
+      }
+    }
+
     if (['P4', 'P5B', 'P6', 'P7', 'P8'].includes(PHASE)) {
-      run('android:SasVectorsTest', 'gradlew.bat :app:connectedDebugAndroidTest --tests "*SasVectorsTest"', { cwd: AROOT, timeout: 30 * 60_000 });
+      run('android:SasVectorsTest', `${gradlew} :app:connectedDebugAndroidTest --tests "*SasVectorsTest"`, { cwd: AROOT, timeout: 30 * 60_000 });
     }
   }
   // Step 12 is a prohibition, not a command: the gate never signs a release
@@ -1629,6 +1719,20 @@ if (BASELINE) {
     baselineDiff.length === 0 ? 0 : 1, 0, { reference: (ref.harnessPass || []).length, regressed: baselineDiff.length });
 } else {
   record('baseline-parity', `read ${BASELINE_PATH.replace(/\\/g, '/')}`, 1, 0, { missing: 1 });
+}
+
+/**
+ * ANDROID-LINT (a3). The other half of the OWN_OUTPUT allowance at step 1: a
+ * path the gate stops grading MUST be a path the gate declares. Enumerated
+ * from git rather than from a hard-coded list of filenames, so a harness that
+ * adds or renames a shot shows up here without anybody remembering to update
+ * this block. Listing it is not the same as endorsing committing it — the
+ * resumer decides that per lane (FT-3b committed its shots because ft-ui-proof
+ * asserts on them; FT-MERGE-2 reverted its shots as pure render churn).
+ */
+for (const line of gitOut(['status', '--porcelain', '--', 'docs/screenshots']).split('\n').filter(Boolean)) {
+  const p = line.slice(3).trim().replace(/^"|"$/g, '');
+  if (/^docs\/screenshots\/[^/]+\.png$/.test(p) && !produced.includes(p)) produced.push(p);
 }
 
 // ── evidence JSON (NEW-MA-2: committed in the repo under e2e-evidence/) ────

@@ -185,6 +185,82 @@ check('the refusal explains WHY silence was the danger (the 62/69 incident)',
     harnessesFor('P0').includes('e2e-ui-proof') === false);
 }
 
+/**
+ * ── ANDROID-LANE WIRING (ANDROID-LINT (a4)) ───────────────────────────────
+ * Two defects this suite now guards, both of which produced a gate verdict
+ * that was about the environment rather than about the tree:
+ *
+ *  (i)  CHECKPOINTS #158 — the android steps invoked a BARE `gradlew.bat` and
+ *       relied on cmd.exe searching the current directory. A shell carrying
+ *       NoDefaultCurrentDirectoryInExePath=1 turned both android steps red
+ *       with "'gradlew.bat' is not recognized".
+ *  (ii) CHECKPOINTS #159 — step 1's dirty filter graded docs/screenshots/*.png,
+ *       which three of the gate's OWN harnesses re-render at step 10, so a
+ *       second run in the same tree failed step 1 on the gate's own output.
+ *
+ * MEASUREMENT NOTE (the reason for stripSource below): tools/e2e-gate.mjs is
+ * CRLF. A comment stripper written as /\/\/.*$/ without the `m` flag anchors
+ * `$` after the trailing \r and strips NOTHING, so the assertions would read
+ * the prose in the comments above those fixes instead of the code — and the
+ * prose contains the very strings being searched for. Newlines are normalised
+ * FIRST, and each arm below carries a CONTROL proving the detector can be red.
+ */
+{
+  const srcRaw = readFileSync(GATE, 'utf8');
+  /** Normalise CRLF, then strip block and line comments (with the `m` flag). */
+  const stripSource = (s) => s
+    .replace(/\r\n?/g, '\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"])\/\/.*$/gm, '$1');
+  const code = stripSource(srcRaw);
+
+  check('CONTROL: the comment stripper actually strips (CRLF-safe)',
+    stripSource("const a = 1; // gradlew.bat :app:lintDebug\r\nconst b = 2;\r\n")
+      .includes('gradlew.bat') === false);
+
+  // (i) absolute gradlew.
+  const bareGradlew = /(^|[^/\\])gradlew(\.bat)?['"`]?\s+:app:/g;
+  const bareHits = code.match(bareGradlew) || [];
+  check('android steps invoke gradlew by ABSOLUTE path, never a bare name',
+    bareHits.length === 0, bareHits.join(' | '));
+  check('the android lane resolves gradlew via join(AROOT, ...)',
+    /const gradlew = `"\$\{join\(AROOT, process\.platform === 'win32' \? 'gradlew\.bat' : 'gradlew'\)\}"`/.test(code));
+  const gradleTasks = (code.match(/\$\{gradlew\} :app:(\w+)/g) || []).map((m) => m.split(':app:')[1]);
+  check('all three android gradle tasks go through ${gradlew}',
+    ['assembleDebug', 'lintDebug', 'connectedDebugAndroidTest'].every((t) => gradleTasks.includes(t)),
+    gradleTasks.join(', '));
+  check('CONTROL: the bare-gradlew detector reports a bare invocation as bare',
+    (stripSource("run('x', 'gradlew.bat :app:assembleDebug');").match(bareGradlew) || []).length === 1);
+
+  // (i.b) the lint step's verdict is the manifest check, not gradle's exit.
+  check('android:lint grades against LINT-BASELINE-android.json, not gradle exit',
+    /lint-manifest\.mjs/.test(code) && /reportFresh/.test(code));
+
+  // (ii) the dirty filter, exercised on the SHIPPED regex literal rather than
+  // on a copy of it — a copy would pass while the gate shipped something else.
+  const ownOutputSrc = /const OWN_OUTPUT = (\/.+\/);/.exec(code)?.[1];
+  check('step 1 declares an OWN_OUTPUT allowance', Boolean(ownOutputSrc), String(ownOutputSrc));
+  if (ownOutputSrc) {
+    const lit = /^\/(.*)\/([a-z]*)$/s.exec(ownOutputSrc);
+    const OWN_OUTPUT = new RegExp(lit[1], lit[2]);
+    for (const p of ['docs/screenshots/p5a-dialpad.png', 'docs/screenshots/ext-text-size-picker.png',
+      'e2e-evidence/gate-P4-abc1234.json', 'e2e-evidence/LINT-BASELINE-android.json']) {
+      check(`dirty filter allows the gate's own output: ${p}`, OWN_OUTPUT.test(p));
+    }
+    // CONTROL: the allowance is NARROW. A source file under docs/, a nested
+    // path, or a non-png must still dirty the tree.
+    for (const p of ['docs/screenshots/nested/x.png', 'docs/README.md',
+      'components/Dialpad.tsx', 'docs/screenshots/notes.txt']) {
+      check(`CONTROL: dirty filter still flags ${p}`, OWN_OUTPUT.test(p) === false);
+    }
+  }
+
+  // (ii.b) a path the gate stops grading must be a path the gate declares.
+  check('screenshots the gate re-renders are enumerated into `produced`',
+    /produced\.push\(p\)/.test(code)
+    && /status', '--porcelain', '--', 'docs\/screenshots'/.test(code));
+}
+
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 for (const f of failed) console.log(`  FAIL ${f.name} ${f.detail}`);
