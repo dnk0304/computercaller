@@ -120,6 +120,37 @@ ok('a frame split ACROSS two TCP chunks is reassembled',
     return runTap([f.subarray(0, 7), f.subarray(7)]).user.length === 1;
   })());
 
+// ── 5. the LIST itself, transcribed from the frozen SPEC 13.7 ──────────────
+//
+// The first version of SEALED_TYPES was written from memory and omitted
+// SYNC_ESTIMATE, SIM_LIST and the *_CHUNK variants of CONTACTS/CALL_LOGS. The
+// live run then reported "1 user frame while ON" when four were user-bearing.
+// A mechanism proof cannot catch that — only pinning the LIST can. Every type
+// below is quoted from e2e-evidence/E2E-SPEC-v1.0.md:483-487.
+for (const t of ['PHONE_NOTIFICATION','SMS_RECEIVED','MESSAGES','MESSAGES_CHUNK',
+  'CONTACTS','CONTACTS_CHUNK','CALL_LOGS','CALL_LOGS_CHUNK','CALL_LOG_ENTRY',
+  'MMS_MEDIA_CHUNK','MMS_MEDIA_ERROR','CALL_INCOMING','CALL_ADD','CALL_UPDATE',
+  'CALL_WAITING','CALL_ANSWERED','CALL_ENDED','CALL_REMOVE','SIM_LIST',
+  'SMS_SEND_STATUS','SYNC_ESTIMATE','SEND_SMS','MAKE_CALL','NOTIFICATION_REPLY',
+  'NOTIFICATION_DISMISS','NOTIFICATION_REPLY_SENT','NOTIFICATION_REPLY_FAILED',
+  'NOTIFICATION_REMOVED']) {
+  ok(`SPEC 13.7 sealed type ${t} is treated as a USER frame`,
+    classifyPhoneFrame(`${t}:{}`).userFrame === true);
+}
+// The three that were actually missed, asserted as plaintext-detectable.
+for (const t of ['SYNC_ESTIMATE','CONTACTS_CHUNK','CALL_LOGS_CHUNK']) {
+  ok(`REGRESSION — an unsealed ${t} is COUNTED as plaintext (this is what was missed live)`,
+    classifyPhoneFrame(`${t}:{"a":1}`).sealed === false);
+}
+// Plaintext-by-spec must stay out of the count.
+for (const t of ['GET_MESSAGES','GET_CALL_LOGS','GET_CONTACTS','ACCEPT_PAIRING',
+  'DEVICE_INFO','NOTIFICATION_PERMISSION','PAIR_STATE']) {
+  ok(`plaintext-by-spec ${t} is NOT counted as a user frame`,
+    classifyPhoneFrame(`${t}:{}`).userFrame === false);
+}
+ok('CALL_STATUS is user-bearing but PARTIAL — counted, never asserted on',
+  (() => { const c = classifyPhoneFrame('CALL_STATUS:{"state":"ringing"}'); return c.userFrame === true && c.sealed === null; })());
+
 fs.rmSync(tmp, { force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
