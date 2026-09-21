@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.dnkdialer.companion.BatteryPolicyTest" tests="8" skipped="0" failures="0" errors="0" timestamp="2026-09-21T23:57:02.970Z" hostname="D-OMNI-HP" time="0.05">
+  <properties/>
+  <testcase name="payload is exactly pct charging ts" classname="com.dnkdialer.companion.BatteryPolicyTest" time="0.026"/>
+  <testcase name="cadence table" classname="com.dnkdialer.companion.BatteryPolicyTest" time="0.016"/>
+  <testcase name="pctFrom scales, rounds and clamps" classname="com.dnkdialer.companion.BatteryPolicyTest" time="0.003"/>
+  <testcase name="constants are the frozen three" classname="com.dnkdialer.companion.BatteryPolicyTest" time="0.0"/>
+  <testcase name="isValid is the shape guard BAT-A1 asks for" classname="com.dnkdialer.companion.BatteryPolicyTest" time="0.0"/>
+  <testcase name="BATTERY is not a sealed type" classname="com.dnkdialer.companion.BatteryPolicyTest" time="0.004"/>
+  <testcase name="chargingFrom reads status or plugged" classname="com.dnkdialer.companion.BatteryPolicyTest" time="0.0"/>
+  <testcase name="pctFrom guards scale 0 and missing extras" classname="com.dnkdialer.companion.BatteryPolicyTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

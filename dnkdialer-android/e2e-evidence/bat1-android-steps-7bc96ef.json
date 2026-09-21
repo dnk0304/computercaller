@@ -1,0 +1,30 @@
+{
+  "lane": "BAT-1 android",
+  "phase": "BAT",
+  "note": "Phase BAT is registered by BAT-2 (KNOWN_PHASES + harness-list); BAT-2 had NOT merged when this lane ran, so 'bun run e2e:gate --phase BAT --lane android' was not invokable. Per the brief, the android steps were run individually and their outputs are committed here as evidence. Graded by the next --lane android/all gate on the merged tip.",
+  "base": "fae9b91",
+  "head": "7bc96ef741f3cc7d4b5f477b5f1dd52df2f3d3e8",
+  "avd": "bat_1_and (own AVD, rule 15), API 34 google_apis x86_64, emulator-5584, -no-snapshot -gpu swiftshader_indirect",
+  "steps": [
+    { "step": "compileDebugKotlin", "result": "PASS", "exit": 0 },
+    { "step": "compileDebugAndroidTestKotlin", "result": "PASS", "exit": 0 },
+    { "step": "testDebugUnitTest (full module suite)", "tests": 258, "failures": 0, "errors": 0, "result": "PASS" },
+    { "step": "testDebugUnitTest BatteryPolicyTest", "tests": 8, "cadenceTableRows": 24, "failures": 0, "errors": 0, "result": "PASS" },
+    { "step": "connectedDebugAndroidTest BatteryLoopbackTest", "tests": 3, "failures": 0, "errors": 0, "timeSec": 68.134, "result": "PASS" },
+    { "step": "lintDebug", "warnings": 175, "baselineWarnings": 175, "delta": 0, "result": "PASS (did not grow)" }
+  ],
+  "zeroTestsRanIsFail": "counts above are read from the JUnit XML, not stdout",
+  "plants": [
+    { "target": "BatteryPolicy.MIN_INTERVAL_MS 60_000 -> 30_000", "unitFailures": 2 },
+    { "target": "charging-flip bypass disabled", "unitFailures": 1 },
+    { "target": "isValid shape guard removed from decide()", "unitFailures": 1 },
+    { "target": "pctFrom scale<=0 guard weakened to scale<0", "unitFailures": 1 },
+    { "target": "toPayload gains a top-level relay key (BAT-A1 MUST-2)", "unitFailures": 1 },
+    { "target": "BatteryPolicy.RESEND_INTERVAL_MS 600_000 -> 1_200_000", "unitFailures": 2 },
+    { "target": "BatteryPolicy.MIN_INTERVAL_MS -> 0 (instrumented)", "instrumentedFailures": 1, "message": "a +/-1 pct change < 60 s must not produce a frame expected null, but was:<{pct=49, charging=true, ts=...}>" }
+  ],
+  "baselineAfterEveryPlantRevert": "unit 8/0/0, instrumented 3/0/0",
+  "versionCode": { "source": 60, "assertedBeforeInstrumentedRun": true, "touchedByThisLane": false },
+  "battery": { "shipped": "PLAINTEXT", "sealedTypesChanged": false, "ruling": "GATE1 Addendum BAT-A1 PLAINTEXT-OK" },
+  "constants": { "minPctDelta": 1, "minIntervalMs": 60000, "resendIntervalMs": 600000 }
+}

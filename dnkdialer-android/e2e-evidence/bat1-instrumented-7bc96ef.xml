@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<testsuite name="com.dnkdialer.companion.BatteryLoopbackTest" tests="3" failures="0" errors="0" skipped="0" time="66.993" timestamp="2026-09-21T23:58:31" hostname="localhost">
+  <properties>
+    <property name="device" value="bat_1_and(AVD) - 14" />
+    <property name="flavor" value="" />
+    <property name="project" value=":app" />
+  </properties>
+  <testcase name="cadence_on_a_real_battery" classname="com.dnkdialer.companion.BatteryLoopbackTest" time="63.969" />
+  <testcase name="mode_on_twin_battery_stays_plaintext" classname="com.dnkdialer.companion.BatteryLoopbackTest" time="0.204" />
+  <testcase name="current_sample_is_always_in_shape" classname="com.dnkdialer.companion.BatteryLoopbackTest" time="0.567" />
+</testsuite>
