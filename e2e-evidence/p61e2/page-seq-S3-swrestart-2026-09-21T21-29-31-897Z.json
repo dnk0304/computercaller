@@ -1,0 +1,35 @@
+{
+  "beforeReload": {
+    "ok": true,
+    "rows": [
+      {
+        "key": "cM8-C43Ux3glgHt712HHgQ:2",
+        "kid": "cM8-C43Ux3glgHt712HHgQ",
+        "direction": 2,
+        "next": 0
+      }
+    ]
+  },
+  "afterReload": {
+    "ok": true,
+    "rows": [
+      {
+        "key": "cM8-C43Ux3glgHt712HHgQ:2",
+        "kid": "cM8-C43Ux3glgHt712HHgQ",
+        "direction": 2,
+        "next": 2
+      }
+    ]
+  },
+  "afterSwRestart": {
+    "ok": true,
+    "rows": [
+      {
+        "key": "cM8-C43Ux3glgHt712HHgQ:2",
+        "kid": "cM8-C43Ux3glgHt712HHgQ",
+        "direction": 2,
+        "next": 2
+      }
+    ]
+  }
+}

@@ -1,0 +1,96 @@
+[log] [PhoneBridge] Awaiting relay-ticket before opening relay
+[log] [PhoneBridge] relay-ticket minted — relay connect will kick from effect
+[log] [PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)
+[log] [PhoneBridge] Connecting to relay: ws://localhost:3000/relay?ticket=<redacted>
+[log] [PhoneBridge] Relay WebSocket open — entering lobby
+[log] [PhoneBridge] Connected to relay. Token=<none>. Awaiting LOBBY_STATUS.
+[log] [PhoneBridge] Handling message type: LOBBY_STATUS payload: {phonePresent: false, alreadyActive: false}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Relay WebSocket closed (code=1000, reason="page_unload")
+[log] [PhoneBridge] Close 1000 (user-initiated) — no reconnect.
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Awaiting relay-ticket before opening relay
+[log] [PhoneBridge] relay-ticket minted — relay connect will kick from effect
+[log] [PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)
+[log] [PhoneBridge] Connecting to relay: ws://localhost:3000/relay?ticket=<redacted>
+[log] [PhoneBridge] Relay WebSocket open — entering lobby
+[log] [PhoneBridge] Connected to relay. Token=<none>. Awaiting LOBBY_STATUS.
+[log] [PhoneBridge] Handling message type: LOBBY_STATUS payload: {phonePresent: false, alreadyActive: false}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Relay WebSocket closed (code=1000, reason="page_unload")
+[log] [PhoneBridge] Close 1000 (user-initiated) — no reconnect.
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Awaiting relay-ticket before opening relay
+[log] [PhoneBridge] relay-ticket minted — relay connect will kick from effect
+[log] [PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)
+[log] [PhoneBridge] Connecting to relay: ws://localhost:3000/relay?ticket=<redacted>
+[log] [PhoneBridge] Relay WebSocket open — entering lobby
+[log] [PhoneBridge] Connected to relay. Token=<none>. Awaiting LOBBY_STATUS.
+[log] [PhoneBridge] Handling message type: LOBBY_STATUS payload: {phonePresent: true, alreadyActive: false}
+[log] [e2e] advert recipients=1 swBridge=no-extension-frame — the extension key is NOT in this transcript
+[log] [PhoneBridge] BROWSER_REQUEST_PAIRING sent (e2e=mode1/recips1)
+[log] [PhoneBridge] Handling message type: PAIRING_ACTIVE payload: {deviceName: Google sdk_gphone64_x86_64, e2e: Object}
+[log] [PhoneBridge] auto-sync on connect — 30 days since 2026-08-22T21:32:12.855Z {contacts: true, clampedByPlan: false, epochKey: Google sdk_gphone64_x86_64#0}
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026345869}
+[log] [PhoneBridge] APP_PONG rtt=11ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026360866}
+[log] [PhoneBridge] APP_PONG rtt=12ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026375869}
+[log] [PhoneBridge] APP_PONG rtt=11ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026390859}
+[log] [PhoneBridge] APP_PONG rtt=8ms
+[log] [PhoneBridge] Sending command: NOTIFICATION_DISMISS
+[log] [PhoneBridge] Initiating call to: 000 speaker: false simId: null
+[log] [PhoneBridge] MAKE_CALL command sent successfully
+[log] [PhoneBridge] Sending command: SET_AUDIO_SOURCE
+[log] [PhoneBridge] Sending command: MAKE_CALL
+[log] [PhoneBridge] Handling message type: CALL_ADD payload: {callId: c-1790026394402-1, number: 000, name: , direction: outgoing, state: active}
+[log] [PhoneBridge] CALL_ADD {callId: c-1790026394402-1, number: 000, state: active, foldedFrom: legacy:000:1790026393773}
+[log] [PhoneBridge] Sending command: SET_AUDIO_SOURCE
+[log] [PhoneBridge] Handling message type: CALL_UPDATE payload: {callId: c-1790026394402-1, state: active}
+[log] [PhoneBridge] CALL_UPDATE {callId: c-1790026394402-1, patch: Object}
+[log] [PhoneBridge] Handling message type: CALL_ANSWERED payload: {number: 000}
+[log] [PhoneBridge] Call answered (number=000)
+[log] [PhoneBridge] Handling message type: CALL_UPDATE payload: {callId: c-1790026394402-1, state: active}
+[log] [PhoneBridge] CALL_UPDATE {callId: c-1790026394402-1, patch: Object}
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Relay WebSocket closed (code=1000, reason="page_unload")
+[log] [PhoneBridge] Close 1000 (user-initiated) — no reconnect.
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Awaiting relay-ticket before opening relay
+[log] [PhoneBridge] relay-ticket minted — relay connect will kick from effect
+[log] [PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)
+[log] [PhoneBridge] Connecting to relay: ws://localhost:3000/relay?ticket=<redacted>
+[log] [PhoneBridge] Relay WebSocket open — entering lobby
+[log] [PhoneBridge] Connected to relay. Token=<none>. Awaiting LOBBY_STATUS.
+[log] [PhoneBridge] Handling message type: PAIRING_ACTIVE payload: {deviceName: Google sdk_gphone64_x86_64, e2e: Object, resumed: true, held: true, gapMs: 754}
+[log] [PhoneBridge] relay-confirmed resume — silent backfill since 2026-09-21T21:23:24.858Z {heldForMs: 754}
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026417860}
+[log] [PhoneBridge] APP_PONG rtt=83ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026432849}
+[log] [PhoneBridge] APP_PONG rtt=8ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026447850}
+[log] [PhoneBridge] APP_PONG rtt=16ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026462872}
+[log] [PhoneBridge] APP_PONG rtt=22ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026477856}
+[log] [PhoneBridge] APP_PONG rtt=7ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026492854}
+[log] [PhoneBridge] APP_PONG rtt=10ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026507855}
+[log] [PhoneBridge] APP_PONG rtt=7ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026522847}
+[log] [PhoneBridge] APP_PONG rtt=21ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026537855}
+[log] [PhoneBridge] APP_PONG rtt=39ms

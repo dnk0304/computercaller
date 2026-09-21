@@ -1,0 +1,258 @@
+{
+  "generatedAt": "2026-09-21T22:34:44.629Z",
+  "deliverable": "E2E-P6.1b Part B — the (g) PHONE leg, phone <-> computer",
+  "scope": [
+    "(g) requires that NO side is simulated. scripts/lib/scripted-phone.mjs is not imported anywhere in this run.",
+    "relay: REAL `node server.js` pid 46920 on ephemeral port 5377, scratch Postgres postgresql://pix:pix@localhost:15433/cc",
+    "phone: REAL debug APK (vc59, built from this tree) on a rooted API-34 AVD, reaching the relay through a TLS terminator as https://computercaller.com — the host the APK hardcodes. No app file edited.",
+    "computer: REAL /app page + REAL shipped extension SW in one real Chromium at http://localhost:3000 (the baked app origin), so the relay-ticket CSRF pin is SATISFIED rather than bypassed."
+  ],
+  "apk": {
+    "path": "C:\\Users\\D\\worktrees\\computercaller\\e2e-p61c\\dnkdialer-android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+    "sha256": null,
+    "note": "sha recorded by the runner"
+  },
+  "serial": "emulator-5562",
+  "relayLogRedacted": {
+    "destPath": "C:\\Users\\D\\worktrees\\computercaller\\p61e2-logs\\relay-redacted-2026-09-21T22-31-44-849Z.log",
+    "redactions": 0,
+    "bytes": 6908
+  },
+  "findings": [],
+  "stopped": [
+    {
+      "scenario": "3 resume / RESET_ROOM",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN — needs a surviving pair across a page reload and a SW restart. Every pairing in this run is torn down by the reload itself (logcat: \"E2E torn down (PAIRING_TERMINATED: user_left)\"), so same-kid resume cannot be observed until the harness keeps one pair alive across the reload rather than re-pairing per scenario."
+    },
+    {
+      "scenario": "4 F1 revocation live / F2 forward-jump live",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN. F2-live is structurally blocked, not merely unfinished: E2eDedupe.observe (E2eDedupe.kt:211) only reaches the forward-jump rule for a frame that AUTHENTICATES, and the seq is bound into the AEAD AAD, so a replayed frame with a relabelled far-future seq fails its tag BEFORE dedupe sees it and refusedForwardJump never increments. Emitting a genuine far-future sealed frame needs the page's own session key AND a caller-chosen seq — and sealFrame() deliberately takes no seq argument precisely so no caller can pick one (tests/e2e-sw-chokepoint asserts that signature). The Android leg of M-A5-2 is therefore proven by android:instrumented-A5 8/8 in Part A (E2eForwardJumpVectorsTest + E2eForwardJumpObservabilityTest, which pins the logcat line), not by this harness. F1-live was not reached."
+    },
+    {
+      "scenario": "5 restore-from-backup replay",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN — E2eSeqStore.simulateRestoreFromBackup() (E2eSeqStore.kt:296) deletes the Keystore wrapping key, which needs a live pair to then attempt a send. Blocked behind the same surviving-pair gap as scenario 3."
+    },
+    {
+      "scenario": "6 two-recipient canonical peer (vector J live)",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN, and finding A6-P61B-5 is why: the browser advertised e2e=v1/mode1/recips1 in EVERY pairing this run, with the extension SW present as a listener. There is no two-recipient pair to measure live on this base, so a \"vector J live\" row here would be a one-recipient pair wearing the wrong label."
+    }
+  ],
+  "tables": [
+    {
+      "scenario": "S4a-live — item 4: MUST 2 re-proved LIVE on a RESUME",
+      "note": "The node cells pin the ORDER in the source (gate step `relay:e2e-web-epoch-floor`, 123/123: MUST2 cells \"the revocation verdict is read BEFORE the epoch is admitted\", \"the unconditional revocation refusal is BEFORE the admission\", \"decideAccept (the effective mode) is BEFORE the admission\"). This row is the behavioural half on the path P2.6 changed: the pair is ON, the phone’s kid is revoked through the product’s own API, and the pair is then forced through a RESUME rather than a fresh pairing.",
+      "rows": [
+        {
+          "field": "C-2 refusal sentence on the resume",
+          "phone": null,
+          "page": "[warning] [E2E] e2e-key-mismatch — C-2 pin failed (no-phone-row) with effective mode ON — failing closed",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "effective mode at the refusal",
+          "phone": null,
+          "page": "ON (failing closed)",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "admitted as a RESUME?",
+          "phone": null,
+          "page": "no",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "session on the revoked kid after the resume",
+          "phone": null,
+          "page": null,
+          "sw": "(none)",
+          "match": true
+        }
+      ]
+    },
+    {
+      "scenario": "S4a — F1-live: revoke the PHONE's key via the API",
+      "note": "M-A5-1. The revocation is applied through the product's own /api/devicekeys/revoke and lands on the page via the unconditional list re-read on PAIRING_ACTIVE (M-A5-1(c)); no product edit and no driver-injected state.",
+      "rows": [
+        {
+          "field": "revoked row",
+          "phone": "jwTCglS_lVN14Rea_VOXnA (id=cmubtlz2p0001l27cmdgegvci)",
+          "page": null,
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "registry revokedAt after",
+          "phone": "2026-09-21T22:34:23.988Z",
+          "page": null,
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "page refusal (console / chip)",
+          "phone": null,
+          "page": "[warning] [E2E] e2e-key-mismatch — C-2 pin failed (no-phone-row) with effective mode ON — failing closed",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "computer-side session on the revoked kid",
+          "phone": null,
+          "page": null,
+          "sw": "(none)",
+          "match": true
+        },
+        {
+          "field": "phone user frames seen after revocation",
+          "phone": "0",
+          "page": null,
+          "sw": null,
+          "match": null
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "pass": true,
+      "name": "PRE-adb is root",
+      "detail": "id -u = 0"
+    },
+    {
+      "pass": true,
+      "name": "PRE-hosts maps computercaller.com -> 10.0.2.2",
+      "detail": "10.0.2.2 computercaller.com"
+    },
+    {
+      "pass": true,
+      "name": "PRE-test CA in /system/etc/security/cacerts",
+      "detail": "1738bf2a.0 present"
+    },
+    {
+      "pass": true,
+      "name": "PRE-test CA in the Conscrypt APEX trust store",
+      "detail": "1738bf2a.0 present"
+    },
+    {
+      "pass": true,
+      "name": "PRE-user  real entitled user seeded in the real scratch DB",
+      "detail": "id=cmubtlbr70000l228ekepy2vi"
+    },
+    {
+      "pass": true,
+      "name": "PRE-page  the real web app loaded on the baked origin",
+      "detail": "http://localhost:3000/app"
+    },
+    {
+      "pass": true,
+      "name": "PH-install  the debug APK installed on this lane's AVD",
+      "detail": "emulator-5562 C:\\Users\\D\\worktrees\\computercaller\\e2e-p61c\\dnkdialer-android\\app\\build\\outputs\\apk\\debug\\app-debug.apk"
+    },
+    {
+      "pass": true,
+      "name": "PH-login-net the app issued POST /api/auth/apk-login through the TLS terminator",
+      "detail": "POST /api/auth/apk-login"
+    },
+    {
+      "pass": true,
+      "name": "PH-signin   SignInActivity dismissed (the real login was accepted)",
+      "detail": "signed in"
+    },
+    {
+      "pass": true,
+      "name": "PRE-phone the RELAY observed the real app open /relay/phone",
+      "detail": "Phone joined lobby (browsers=1, active=false)"
+    },
+    {
+      "pass": true,
+      "name": "M-A6-2a  GET /api/devicekeys/list answered as the phone's user, BEFORE any pairing was offered",
+      "detail": "1 live row(s); top-level userId=cmubtlbr70000l228ekepy2vi"
+    },
+    {
+      "pass": true,
+      "name": "M-A6-2b  a LIVE phone DeviceKey row exists at that moment (register-on-login, not register-on-pair)",
+      "detail": "deviceId=jwTCglS_lVN14Rea_VOXnA kind=phone"
+    },
+    {
+      "pass": true,
+      "name": "M-A6-2c  the registry states the SAME account id the page derives its context under (R-BH option B)",
+      "detail": "list.userId=cmubtlbr70000l228ekepy2vi vs seeded User.id=cmubtlbr70000l228ekepy2vi"
+    },
+    {
+      "pass": true,
+      "name": "A6-P61B-3 CLOSED: a receiver for ACTION_E2E_SAS_REQUIRED is registered by the running app",
+      "detail": "dumpsys match count=1 — the 1b emitter path is reachable; the phone raised its hero face in S1"
+    },
+    {
+      "pass": true,
+      "name": "S4-pref  the phone's local encrypted-mode setting reads back ON from disk",
+      "detail": "computercaller_e2e_prefs/encrypted_mode=true"
+    },
+    {
+      "pass": true,
+      "name": "S4-skip   METHOD CHANGE — S4 main + S4b legs skipped so the REVOKE leg gets this device's one reliable pairing",
+      "detail": "Pre-approved for P6.1e-2. Scenario 4 normally pairs three times (S4 -> S4b -> S4a) and item 4 lives in the LAST leg, but this AVD pairs reliably only once per fresh install, so S4a never got a pair (3 runs, 3 x 'no armed line'). The legs are NOT reordered in place — the driver's own note records that revoking the phone key breaks later pairings, which is why the revoke leg is last. No assertion and no product code changed."
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S4a-lobby  the page offers Connect (relay reported the phone in the lobby)",
+      "detail": "Connect enabled"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S4a-accept the PHONE showed a connection request and Accept was tapped",
+      "detail": "pairAcceptButton tapped"
+    },
+    {
+      "pass": true,
+      "name": "S4a-pair  a fresh confirmed ON pair exists for the revoke leg",
+      "detail": "E2E armed kid=gbFFr5KIuYhHDmgyCFbqcA epoch=1 mode=ON verified=true recipients=1 sas=51313"
+    },
+    {
+      "pass": true,
+      "name": "S4a-revoke the phone's DeviceKey row was revoked through the product's own API",
+      "detail": "row id=cmubtlz2p0001l27cmdgegvci deviceId=jwTCglS_lVN14Rea_VOXnA -> ok=true status=200"
+    },
+    {
+      "pass": true,
+      "name": "S4a-registry the registry now reports that row as revoked",
+      "detail": "revokedAt=2026-09-21T22:34:23.988Z"
+    },
+    {
+      "pass": true,
+      "name": "S4a-refuse the page REFUSED the revoked peer after re-reading the registry (F1-live, phone->page direction)",
+      "detail": "console: [warning] [E2E] e2e-key-mismatch — C-2 pin failed (no-phone-row) with effective mode ON — failing closed | chip: Device not verified"
+    },
+    {
+      "pass": true,
+      "name": "S4a-nosession the computer side holds no live session on the revoked kid",
+      "detail": "kid before=gbFFr5KIuYhHDmgyCFbqcA sw kid after=(none)"
+    },
+    {
+      "pass": true,
+      "name": "S4a-c2    the page failed closed at C-2 with the product’s own refusal sentence (e2e-key-mismatch / C-2 pin failed)",
+      "detail": "reason=(no-phone-row) — a C-2 pin verdict; for a REVOKED row this is 'no-phone-row' by phoneE2e.ts:397-399 + useE2e.ts:626. An ON pair existed and was revoked (see S4a-pair / S4a-revoke), which is what makes this the item-4 path rather than an unpaired refusal. Line: [warning] [E2E] e2e-key-mismatch — C-2 pin failed (no-phone-row) with effective mode ON — failing closed"
+    },
+    {
+      "pass": true,
+      "name": "S4a-modeon ...and it failed closed with EFFECTIVE MODE ON (hooks/phoneE2e.ts:553, not the mode-OFF \"sealing unverified\" branch at :561)",
+      "detail": "[warning] [E2E] e2e-key-mismatch — C-2 pin failed (no-phone-row) with effective mode ON — failing closed"
+    },
+    {
+      "pass": true,
+      "name": "S4a-noadmit the revoked pair was NOT admitted as a RESUME (MUST 2 on the P2.6 admission path)",
+      "detail": "no epoch-admission line in the post-revocation resume window. The relay DID offer a resume ([log] [PhoneBridge] Handling message type: PAIRING_ACTIVE payload: {deviceName: Google sdk_gphone64_x86_64, e2e: Object,...) and the page still refused — which is the point of MUST 2: the relay's `resumed` bit is not an admission input (R-BL)."
+    },
+    {
+      "pass": true,
+      "name": "S4a-leave  the page tore the pair down rather than holding it open on a revoked kid",
+      "detail": "[log] [PhoneBridge] leaveActive — back in lobby"
+    }
+  ]
+}

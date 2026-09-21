@@ -1,0 +1,8 @@
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026345869}
+[log] [PhoneBridge] APP_PONG rtt=11ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026360866}
+[log] [PhoneBridge] APP_PONG rtt=12ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026375869}
+[log] [PhoneBridge] APP_PONG rtt=11ms
+[log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026390859}
+[log] [PhoneBridge] APP_PONG rtt=8ms

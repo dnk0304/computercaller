@@ -47,6 +47,7 @@ import {
 import {
   startComputerPeer, startAppOriginProxy, assertAppPortFree, APP_ORIGIN,
 } from './lib/computer-peer.mjs';
+import { awaitServiceWorker } from './lib/ext-sw.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -62,6 +63,26 @@ const ONLY = (() => {
   const a = process.argv.find((x) => x.startsWith('--only='));
   return a ? new Set(a.slice(7).split(',').map((s) => s.trim())) : null;
 })();
+/**
+ * METHOD CHANGE (P6.1e-2, pre-approved) — `--only=4a` runs the S4a REVOKE LEG
+ * ALONE, against a fresh install.
+ *
+ * Why it is needed: scenario 4 performs THREE sequential pairings
+ * (S4 main -> S4b -> S4a), and Security item 4's evidence lives in the LAST of
+ * them. This AVD pairs reliably exactly ONCE per fresh install — after a
+ * teardown the phone does not re-enter the lobby — so S4a never got a pair and
+ * item 4 could not be exercised at all (3 runs, 3 x "no armed line").
+ *
+ * Why the legs are not simply reordered instead: the driver's own note at the
+ * (a) block records that revoking the phone's key leaves it unable to pair, which
+ * is exactly why the revoke leg runs LAST. Reordering in place would break S4 and
+ * S4b. Running the revoke leg as its OWN run preserves that ordering rule while
+ * giving it the one pairing this device can be relied on for.
+ *
+ * It changes NO assertion and NO product code — only which legs a given
+ * invocation executes.
+ */
+const S4A_ONLY = !!ONLY && ONLY.has('4a');
 
 /**
  * Declared floor — a run that silently skips its scenarios cannot pass.
@@ -141,7 +162,7 @@ function writeEvidence(p, text) {
 }
 
 // ── TLS terminator for the PHONE (the APK hardcodes computercaller.com) ─────
-function startTlsProxy(relayPort, { onUpgrade, onRequest, onTlsError, onPhoneFrame } = {}) {
+function startTlsProxy(relayPort, { onUpgrade, onRequest, onTlsError, onPhoneFrame, onPhoneInboundFrame } = {}) {
   const opts = {
     key: fs.readFileSync(path.join(CERT_DIR, 'leaf.key')),
     cert: fs.readFileSync(path.join(CERT_DIR, 'leaf.pem')),
@@ -163,6 +184,55 @@ function startTlsProxy(relayPort, { onUpgrade, onRequest, onTlsError, onPhoneFra
       up.write(`${lines.join('\r\n')}\r\n\r\n`);
       if (head?.length) up.write(head);
       up.pipe(socket);
+      // ── P6.1e-2 item 9 — tee the RELAY->PHONE direction as well.
+      //
+      // The tap below reads phone->relay, the direction R1 condition 3 grades.
+      // MAKE_CALL and NOTIFICATION_DISMISS travel the OTHER way: page -> relay ->
+      // phone. Reading them HERE is the strongest available form of the item-9
+      // claim, because this is the byte stream the PHONE ITSELF receives — after
+      // the relay, inside the phone's own TLS session — not what the page
+      // believed it sent.
+      //
+      // The ordering lesson below applies verbatim and is why this sits AFTER
+      // `up.pipe(socket)`: attaching a 'data' listener is what switches a socket
+      // into flowing mode, so a tap added BEFORE the pipe eats bytes the pipe has
+      // not claimed yet and silently breaks the phone's wire.
+      if (onPhoneInboundFrame && process.env.P61D_FRAME_TAP !== '0') {
+        const feedIn = makeWsFrameReader(onPhoneInboundFrame);
+        // STRIP THE HTTP 101 PREAMBLE FIRST — this direction is not like the
+        // other one. `socket` arrives from Node's 'upgrade' event with the
+        // request headers already consumed, so it is frames from byte 0. `up`
+        // is a raw TCP socket this proxy wrote the request onto by hand, so the
+        // relay's "HTTP/1.1 101 Switching Protocols ... \r\n\r\n" lands here
+        // first. Handing that to the frame reader is silently fatal: byte 0 is
+        // 'H' (0x48), opcode = 0x48 & 0x0f = 8 = CLOSE, and the reader bails on
+        // its first chunk and never recovers — producing an empty capture that
+        // reads as "the frame never arrived".
+        //
+        // The boundary is found on the ACCUMULATED buffer, never per chunk: a
+        // TCP read may split the header block anywhere, including mid-CRLF.
+        let preamble = Buffer.alloc(0);
+        let headersDone = false;
+        up.on('data', (c) => {
+          try {
+            if (!headersDone) {
+              preamble = Buffer.concat([preamble, c]);
+              const i = preamble.indexOf('\r\n\r\n');
+              if (i === -1) {
+                // Bound the wait so a non-HTTP reply cannot buffer for ever.
+                if (preamble.length > 64 * 1024) { headersDone = true; preamble = Buffer.alloc(0); }
+                return;
+              }
+              headersDone = true;
+              const rest = preamble.subarray(i + 4);
+              preamble = Buffer.alloc(0);
+              if (rest.length) feedIn(rest);
+              return;
+            }
+            feedIn(c);
+          } catch { /* never break the wire */ }
+        });
+      }
       // R1 condition 3: tee the phone->relay direction.
       //
       // ORDER IS LOAD-BEARING. pipe() is attached FIRST and the tap second:
@@ -740,6 +810,146 @@ async function readPageSeqRecords(page) {
 }
 
 /**
+ * ── P6.1e-2 — reach the PRODUCT's own send functions without touching the product.
+ *
+ * The product is FROZEN for this lane, and it exposes no test bridge: there is no
+ * `window.__cc*` hook anywhere in hooks/ or components/ (grepped). Security item 2
+ * nonetheless names the exact function to drive — `sendNotificationDismiss` with a
+ * bogus key — because it must be the SHIPPED path through `sendCommand`, not a
+ * harness re-implementation of sealing. A harness that re-implements the seal
+ * proves the harness, not the product (the R-BP(b) lesson).
+ *
+ * So the driver reaches into React's own fiber tree, which is a READ of the running
+ * app, not a modification of it. `useCallback` stores `[callback, deps]` in the
+ * hook node's `memoizedState`, so walking every fiber's hook chain finds the real
+ * closure the real buttons call.
+ *
+ * SELECTOR CHOICE IS LOAD-BEARING. The needle is the STRING LITERAL the function
+ * passes to sendCommand ('NOTIFICATION_DISMISS'), never an identifier: a minifier
+ * renames `sendNotificationDismiss` but cannot rename a string literal that is sent
+ * on the wire. That keeps this working against a built bundle as well as dev.
+ *
+ * It is also self-verifying in the dangerous direction: if the fiber walk finds
+ * nothing, it returns {found:0} and the CALLER FAILS the check. It can never
+ * silently "succeed" without having sent anything — which is the exact failure
+ * mode (a green that cannot go red) that made the old S3-seq inconclusive.
+ */
+async function callProductFn(page, { needle, args = [], arity = null }) {
+  return page.evaluate(({ needle, args, arity }) => {
+    const seen = new Set();
+    const strong = [];
+    const weak = [];
+    const roots = [];
+    // Every React-rendered DOM node carries a __reactFiber$<rand> key.
+    for (const el of document.querySelectorAll('*')) {
+      const k = Object.keys(el).find((x) => x.startsWith('__reactFiber$'));
+      if (k) { roots.push(el[k]); break; }
+    }
+    if (!roots.length) return { found: 0, called: 0, reason: 'no __reactFiber$ on any DOM node — the page is not a mounted React tree' };
+    // Climb to the HostRoot so the walk covers the whole tree, not just a subtree.
+    let top = roots[0];
+    while (top.return) top = top.return;
+    const visit = (fiber) => {
+      if (!fiber || seen.has(fiber)) return;
+      seen.add(fiber);
+      // The hook chain: memoizedState -> {memoizedState, next}
+      let hook = fiber.memoizedState;
+      let guard = 0;
+      while (hook && typeof hook === 'object' && guard++ < 500) {
+        const st = hook.memoizedState;
+        // useCallback/useMemo store [value, deps]
+        const cand = Array.isArray(st) && typeof st[0] === 'function' ? st[0]
+          : typeof st === 'function' ? st : null;
+        if (cand) {
+          let src = '';
+          try { src = Function.prototype.toString.call(cand); } catch { src = ''; }
+          // TWO-STAGE SELECTION, and the second stage is the load-bearing one.
+          //
+          // Function.prototype.toString() returns the source INCLUDING COMMENTS in
+          // an unminified build, and usePhoneBridge.ts mentions NOTIFICATION_DISMISS
+          // in the prose of two OTHER callbacks (:4493, :4512) that merely CALL the
+          // sender. A bare substring needle therefore selects a caller as readily as
+          // the sender -- an assertion matching its own prose. `callRe` pins the
+          // shape of the actual dispatch instead: the type as the FIRST ARGUMENT of
+          // a call, `("NOTIFICATION_DISMISS"` / `('NOTIFICATION_DISMISS'`. That form
+          // appears only where the frame is really emitted, and it survives
+          // minification (the callee is renamed; the string literal is not).
+          if (src.includes(needle) && (arity === null || cand.length === arity)) {
+            const re = new RegExp(`\\(\\s*['"]${needle}['"]\\s*,`);
+            if (re.test(src)) strong.push(cand); else weak.push(cand);
+          }
+        }
+        hook = hook.next;
+      }
+      visit(fiber.child); visit(fiber.sibling);
+    };
+    visit(top);
+    if (!strong.length) {
+      // REFUSE rather than fall back to a weak match. A weak match is a function
+      // that merely MENTIONS the type, and calling one would send either nothing
+      // or the wrong frame while still reporting called=1 -- the exact shape of a
+      // green that proves nothing. The caller fails instead.
+      return {
+        found: 0, called: 0, weak: weak.length,
+        reason: `no fiber hook dispatches ${JSON.stringify(needle)} as a call argument`
+          + (weak.length ? ` (${weak.length} function(s) merely MENTION it -- not called, that would prove nothing)` : ''),
+      };
+    }
+    // Call exactly ONE. Calling every match would send N frames and make the seq
+    // delta unattributable to a known send.
+    let threw = null;
+    try { strong[0](...args); } catch (e) { threw = String(e && e.message ? e.message : e); }
+    return {
+      found: strong.length,
+      weak: weak.length,
+      called: threw ? 0 : 1,
+      threw,
+      arity: strong[0].length,
+      srcHead: Function.prototype.toString.call(strong[0]).slice(0, 160),
+    };
+  }, { needle, args, arity }).catch((e) => ({ found: 0, called: 0, reason: String(e?.message ?? e) }));
+}
+
+/**
+ * Read the e2e view's own debug counters out of the running hook state.
+ * `downgradesDropped` (useE2e.ts:1012) has NO DOM surface, so the fiber is the
+ * only place the shipped number lives. Returns null when not found — the caller
+ * reports that as untested rather than as a zero.
+ */
+async function readPageE2eDebug(page) {
+  return page.evaluate(() => {
+    const seen = new Set();
+    let out = null; let bridgeStatus = null;
+    let top = null;
+    for (const el of document.querySelectorAll('*')) {
+      const k = Object.keys(el).find((x) => x.startsWith('__reactFiber$'));
+      if (k) { top = el[k]; break; }
+    }
+    if (!top) return null;
+    while (top.return) top = top.return;
+    const scan = (v, depth) => {
+      if (!v || typeof v !== 'object' || depth > 3) return;
+      if (out === null && v.debug && typeof v.debug.downgradesDropped === 'number') out = { ...v.debug };
+      if (bridgeStatus === null && typeof v.bridgeStatus === 'string') bridgeStatus = v.bridgeStatus;
+    };
+    const visit = (fiber) => {
+      if (!fiber || seen.has(fiber)) return;
+      seen.add(fiber);
+      scan(fiber.memoizedProps, 0);
+      let hook = fiber.memoizedState; let guard = 0;
+      while (hook && typeof hook === 'object' && guard++ < 500) {
+        scan(hook.memoizedState, 0);
+        if (Array.isArray(hook.memoizedState)) scan(hook.memoizedState[0], 1);
+        hook = hook.next;
+      }
+      visit(fiber.child); visit(fiber.sibling);
+    };
+    visit(top);
+    return { debug: out, bridgeStatus };
+  }).catch(() => null);
+}
+
+/**
  * M-A6-5 — read the digits back off the RENDERED surfaces.
  *
  * The point of this row is that it is NOT the scraped value. pageSas() reads the
@@ -793,6 +1003,27 @@ async function pageChip(page) {
     } catch { /* next */ }
   }
   return null;
+}
+
+/**
+ * Re-acquire a LIVE service-worker handle.
+ *
+ * ctx.serviceWorkers() lists only RUNNING workers, and an MV3 worker is killed
+ * when idle, so a handle captured at startup is not a stable identity across a
+ * page reload or a deliberate SW restart. Reading state through the stale handle
+ * yields null, which reads identically to "no session" — so a harness artefact
+ * would be reported as a product regression.
+ *
+ * Falls back to the original handle, so this can only add signal, never remove it.
+ */
+async function liveSw(peer, fallback = null) {
+  try {
+    const running = peer.ctx.serviceWorkers();
+    if (running.length) return running[0];
+    return await awaitServiceWorker(peer.ctx, null, { wake: true, timeoutMs: 30_000, extDir: EXT });
+  } catch {
+    return fallback;
+  }
 }
 
 /** The REAL service worker's own state, via the shipped read-only verb. */
@@ -887,6 +1118,16 @@ async function main() {
     const c = classifyPhoneFrame(raw);
     phoneFrames.push({ i: phoneFrames.length + 1, t: new Date().toISOString(), window: frameWindow, ...c });
   };
+  /**
+   * P6.1e-2 item 9 — frames arriving AT the phone (page -> relay -> phone).
+   * Classified by the same §13.7 table as the outbound direction, so
+   * `sealed` means the same thing in both files.
+   */
+  const phoneInboundFrames = [];
+  const onPhoneInboundFrame = (raw) => {
+    const c = classifyPhoneFrame(raw);
+    phoneInboundFrames.push({ i: phoneInboundFrames.length + 1, t: new Date().toISOString(), window: frameWindow, ...c });
+  };
 
   try {
     await withRealRelay({
@@ -902,6 +1143,7 @@ async function main() {
         onUpgrade: (r) => { proxyReqs.push(`UPGRADE ${r.url.split('?')[0]}`); console.log(`  [phone-proxy] UPGRADE ${r.url.split('?')[0]}`); },
         onTlsError: (e) => { tlsErrors.push(String(e.message)); console.log(`  [phone-proxy] TLS ERROR ${e.message}`); },
         onPhoneFrame,
+        onPhoneInboundFrame,
       });
       scope.push('phone: REAL debug APK (vc59, built from this tree) on a rooted API-34 AVD, reaching the relay through a TLS terminator as https://computercaller.com — the host the APK hardcodes. No app file edited.');
 
@@ -1406,18 +1648,159 @@ async function main() {
       // from IndexedDB instead of handing findOurWrap an empty deviceId.
       if (!ONLY || ONLY.has('3')) {
         frameWindow = 'S3';
+        /** Every bridgeStatus value seen during the item-7 hold, sampled every 5 s. */
+        const holdStatuses = new Set();
         await ensureModeOn('S3');
         await resetLobby(page, adb);
         logcatClear(adb);
         const consoleBeforePair = pageConsole.length;
-        const p3 = await pairOnce(page, adb, { label: 'S3', sasAnswer: { phone: true, page: true } });
+        // shots: Security asks for a screenshot of every SAS surface opened
+        // before a claim is written. S1 shot its surfaces; S3/S4a did not.
+        const p3 = await pairOnce(page, adb, { label: 'S3', shots: true, sasAnswer: { phone: true, page: true } });
         const armed3 = p3?.armed ?? null;
         const kidBefore = armed3?.kid ?? null;
         check('S3-pair   a confirmed ON pair exists to hold across the reload',
           !!kidBefore, armed3?.line ?? 'no armed line — nothing to resume');
 
         if (kidBefore) {
+          // == ITEM 7 (Ken, R-BM/R-BP) -- PONG SURVIVAL: hold the pair ON >= 45 s ==
+          //
+          // This is the live grade of P2.7. Before that fix the web classifier
+          // decided "is this frame sealed?" by EXCLUSION, so every plaintext
+          // control frame outside the 9-entry CONTROL_PLANE set -- APP_PONG among
+          // them -- hit the session-open path, failed the reason shape and was
+          // DROPPED. The user-visible consequence needs 30 s of an ON pair to
+          // appear (usePhoneBridge.ts:4808 marks the phone stale at that age), and
+          // every P6.1d ON window closed inside 30 s, which is precisely why a
+          // flip-gating defect survived every previous run. The hold is therefore
+          // 50 s, not 45: it must clear the product's own 30 s threshold with
+          // margin, or a green here would again only mean "we did not look long
+          // enough".
+          const holdConsoleMark = pageConsole.length;
+          const holdStart = Date.now();
+          const HOLD_MS = 50_000;
+          while (Date.now() - holdStart < HOLD_MS) {
+            await sleep(5_000);
+            // Sampled DURING the hold, not only at the end: bridgeStatus is a live
+            // value, and a transient flip to phone_unresponsive that healed before
+            // a single end-of-hold read is still the bug.
+            const probe = await readPageE2eDebug(page);
+            if (probe?.bridgeStatus) holdStatuses.add(probe.bridgeStatus);
+          }
+          const holdSeconds = Math.round((Date.now() - holdStart) / 1000);
+          const holdConsole = pageConsole.slice(holdConsoleMark);
+          writeEvidence(path.join(LOG_DIR, `page-console-S3-hold-${STAMP}.log`), holdConsole.join('\n'));
+          const pongLines = holdConsole.filter((l) => /Handling message type: APP_PONG/.test(l));
+          const staleLines = holdConsole.filter((l) => /marking phone stale/.test(l));
+          const dbgAfterHold = await readPageE2eDebug(page);
+
+          check(`S3-hold   the pair was held ON for >= 45 s before the reload (actual ${holdSeconds} s)`,
+            holdSeconds >= 45, `held ${holdSeconds} s across ${holdConsole.length} console line(s)`);
+          check('S3-pong   APP_PONG reached the page at least once while ON (P2.7 live -- the inbound classifier no longer drops the heartbeat)',
+            pongLines.length > 0,
+            pongLines.length
+              ? `${pongLines.length} "Handling message type: APP_PONG" line(s); first: ${pongLines[0]}`
+              : 'ZERO APP_PONG lines in a >=45 s ON window -- the inbound frame classifier is still dropping the heartbeat (FLIP-GATING)');
+          check('S3-nostale the page never marked the phone stale during the hold (usePhoneBridge.ts:4808)',
+            staleLines.length === 0,
+            staleLines.length ? `stale marking: ${staleLines[staleLines.length - 1]}` : 'zero "marking phone stale" lines in the hold window');
+          // VACUITY GUARD. !has(x) on an EMPTY set is trivially true, so this can
+          // only be evidence if at least one bridgeStatus was actually sampled.
+          // When none was readable the clause is NOT GRADED, never green.
+          if (holdStatuses.size === 0) {
+            bad('S3-pill   NOT GRADED — no bridgeStatus value was readable from the live hook state during the hold',
+              'The assertion "bridgeStatus never became phone_unresponsive" is satisfied by an empty sample set no matter what the product did, so a green here would prove nothing. '
+              + 'readPageE2eDebug() resolved debug.downgradesDropped (see S3-nodrop) but found no bridgeStatus in the fiber tree. '
+              + 'The REAL evidence for this clause in this run is S3-nostale: zero "marking phone stale" lines, and usePhoneBridge.ts:4808 is what drives phone_unresponsive in the first place.');
+          } else {
+            check('S3-pill   bridgeStatus never became phone_unresponsive during the hold',
+              !holdStatuses.has('phone_unresponsive'),
+              `bridgeStatus sampled every 5 s across the hold (${holdStatuses.size} sample(s)): ${[...holdStatuses].join(', ')}`);
+          }
+          if (dbgAfterHold?.debug && typeof dbgAfterHold.debug.downgradesDropped === 'number') {
+            check('S3-nodrop debug.downgradesDropped == 0 at the end of the hold',
+              dbgAfterHold.debug.downgradesDropped === 0,
+              `downgradesDropped=${dbgAfterHold.debug.downgradesDropped}`);
+          } else {
+            check('S3-nodrop debug.downgradesDropped readable off the live hook state',
+              false, 'downgradesDropped could not be read from the running page -- item 7 is NOT graded (reported as a failure, never as a zero)');
+          }
+
+          // == ITEMS 2 + 9 -- make S3-seq LOAD-BEARING, and prove MAKE_CALL seals ==
+          //
+          // seqBefore is read HERE, AFTER the hold and BEFORE the probes, so that
+          // `after > before` measures exactly the frames this block sends. Reading
+          // it earlier would fold the probe into `before` and leave the assertion
+          // vacuously equal -- the same un-failable green that item 2 exists to
+          // remove.
           const seqBefore = await readPageSeqRecords(page);
+          const inboundMark = phoneInboundFrames.length;
+          const probeKey = `p61e-seq-probe-${Date.now()}`;
+          // DO NOT clear logcat here. S3-phone compares "E2E armed" counts across
+          // the reload against a baseline captured at pairing time; clearing the
+          // buffer mid-scenario destroys that history and makes the count go DOWN,
+          // which reads as "the phone re-armed" on a phone that did nothing. Mark
+          // the current length and slice the probe window out of the tail instead
+          // — the same per-window discipline this driver applies to consoles.
+          const logcatMark = logcatDump(adb).length;
+
+          // Item 2 -- NOTIFICATION_DISMISS with a BOGUS key. Sealed by 13.7, and
+          // after P2.8 it goes through sendCommand, the one seal chokepoint. The
+          // phone looks the key up, finds nothing, logs ok=false and drops it
+          // (PhoneService.kt:4925-4928): no SMS, no call, no state change -- a
+          // frame whose only observable effect is the one this block reads.
+          const dismissSend = await callProductFn(page, {
+            needle: 'NOTIFICATION_DISMISS', args: [probeKey], arity: 1,
+          });
+          check("S3-probe  the page's OWN sendNotificationDismiss was invoked with a bogus key (the product path, not a harness re-implementation of sealing)",
+            dismissSend.called === 1,
+            `fiber matches=${dismissSend.found} called=${dismissSend.called}`
+            + (dismissSend.threw ? ` threw=${dismissSend.threw}` : '')
+            + (dismissSend.reason ? ` reason=${dismissSend.reason}` : '')
+            + ` key=${probeKey}`);
+
+          // Item 9 -- MAKE_CALL to a clearly invalid number. Whether the phone
+          // dials or rejects 000 is NOT graded; only that it arrived SEALED.
+          const callSend = await callProductFn(page, { needle: 'MAKE_CALL', args: ['000', false] });
+          check("S3-callsend the page's OWN makeCall was invoked with the invalid number 000",
+            callSend.called === 1,
+            `fiber matches=${callSend.found} called=${callSend.called}`
+            + (callSend.threw ? ` threw=${callSend.threw}` : '')
+            + (callSend.reason ? ` reason=${callSend.reason}` : ''));
+
+          await sleep(8_000);
+
+          // What actually reached the phone, read off the phone's own TLS stream.
+          const inboundWin = phoneInboundFrames.slice(inboundMark);
+          writeEvidence(path.join(LOG_DIR, `phone-inbound-frames-S3-${STAMP}.log`),
+            ["# page -> relay -> PHONE, read post-TLS in the harness's own terminator.",
+              '# columns: idx iso window type user sealed bytes',
+              ...inboundWin.map((f) => `${f.i} ${f.t} window=${f.window} type=${f.type}`
+                + ` user=${f.userFrame ? 1 : 0} sealed=${f.sealed === null ? '-' : (f.sealed ? 1 : 0)} bytes=${f.bytes}`),
+            ].join('\n'));
+          const inDismiss = inboundWin.filter((f) => f.type === 'NOTIFICATION_DISMISS');
+          const inMakeCall = inboundWin.filter((f) => f.type === 'MAKE_CALL');
+          check('S3-seal2  the NOTIFICATION_DISMISS probe reached the phone SEALED (sealed=1 on the wire)',
+            inDismiss.length > 0 && inDismiss.every((f) => f.sealed === true),
+            `${inDismiss.length} NOTIFICATION_DISMISS frame(s) inbound, sealed flags: ${inDismiss.map((f) => (f.sealed ? 1 : 0)).join(',') || '(none seen)'}`);
+          check('S3-seal9  MAKE_CALL reached the phone SEALED (P2.8 live -- item 9; the dial outcome is not graded)',
+            inMakeCall.length > 0 && inMakeCall.every((f) => f.sealed === true),
+            `${inMakeCall.length} MAKE_CALL frame(s) inbound, sealed flags: ${inMakeCall.map((f) => (f.sealed ? 1 : 0)).join(',') || '(none seen)'}`);
+
+          // The phone's own acceptance, from logcat -- the half that proves the
+          // phone's E2eFrameGate ACCEPTED the frame as sealed rather than dropping
+          // it under the latch as plaintext, which is the A6-P61E-WEB-RAWSEND-3
+          // failure mode P2.8 fixed.
+          const probeLogcat = logcatDump(adb).slice(logcatMark);
+          writeEvidence(path.join(LOG_DIR, `logcat-S3-probe-${STAMP}.log`), probeLogcat);
+          const dismissLog = new RegExp(`[^\\n]*NOTIFICATION_DISMISS key=${probeKey}[^\\n]*`).exec(probeLogcat)?.[0] ?? null;
+          const gateDrop = /[^\n]*E2eFrameGate[^\n]*(drop|plaintext)[^\n]*/i.exec(probeLogcat)?.[0] ?? null;
+          check('S3-phonelog the PHONE accepted the sealed probe and no-opped it (PhoneService.kt:4928 ok=false)',
+            !!dismissLog && /ok=false/.test(dismissLog),
+            dismissLog ?? `no "NOTIFICATION_DISMISS key=${probeKey}" line in logcat -- the phone never saw the probe as a decrypted command`);
+          check('S3-nolatch the phone did NOT drop the probe as plaintext-under-latch (the A6-P61E-WEB-RAWSEND-3 failure mode)',
+            !gateDrop, gateDrop ?? 'no E2eFrameGate plaintext/drop line in the probe window');
+
           const relayMark = relay.readLog().length;
           const consoleMark = pageConsole.length;
           const armedCountBefore = (p3.log.match(/E2E armed /g) || []).length;
@@ -1466,14 +1849,43 @@ async function main() {
                 : 'zero e2e-setup-failed lines in the reload window');
           }
 
-          // Same kid on the computer side after the reload.
-          const stAfter = await swState(sw);
-          check('S3-samekid the computer side is back on the SAME kid after the reload (no new epoch)',
-            !!stAfter?.kid && stAfter.kid === kidBefore,
-            `kid before=${kidBefore} after=${stAfter?.kid ?? '(none)'}`);
+          // Same kid on the computer side after the reload, read from a
+          // RE-ACQUIRED worker (the startup handle is stale after a reload).
+          const swAfterReload = await liveSw(peer, sw);
+          const stAfter = await swState(swAfterReload);
+
 
           // Seq continuity, read from the product's own persisted store.
           const seqAfter = await readPageSeqRecords(page);
+          // ITEM 1 — SAME KID ON BOTH SIDES, read from the surface that actually
+          // OWNS the session.
+          //
+          // The extension SW is the WRONG surface for this verdict. Its
+          // e2eStateForTest() returns module-scope variables
+          // (background.js:2560); an MV3 worker is evicted when idle and its
+          // globals reset until it re-establishes, so `kid: (none)` there means
+          // "this worker has not re-armed yet", NOT "the pair lost its identity".
+          // Waking a worker to ask makes it worse, because a freshly spawned one
+          // has no kid by definition.
+          //
+          // The PAGE's persisted seq store is the product's own record of which
+          // kid the session belongs to: lib/e2e/session.mjs keys it
+          // "<kid>|<direction>". If the same kid is still there after the reload,
+          // with the phone still armed on that same kid, the pair kept its
+          // identity. That is the claim Security item 1 makes.
+          const pageKidsAfter = [...new Set((seqAfter?.rows ?? []).map((r) => r.kid).filter(Boolean))];
+          check('S3-samekid the computer side is back on the SAME kid after the reload (page-side session store, no new epoch)',
+            pageKidsAfter.length === 1 && pageKidsAfter[0] === kidBefore,
+            `phone armed kid=${kidBefore}; page seq-store kid(s) after the reload=${pageKidsAfter.join(', ') || '(none)'}`
+            + (pageKidsAfter.length === 1 && pageKidsAfter[0] === kidBefore
+              ? ' — identical on both sides.'
+              : " — the page is NOT on the phone's kid after the resume."));
+
+          // Reported, never used as the item-1 verdict: volatile by MV3 design.
+          ok("S3-swkid  OBSERVATION (not the item-1 verdict) — the extension SW's in-memory kid after the reload",
+            `sw e2eStateForTest().kid=${stAfter?.kid ?? '(none)'} vs pair kid=${kidBefore}. `
+            + 'An MV3 worker is terminated when idle and its module-scope state resets until it re-establishes, so a blank here is expected and is not evidence about pair identity. '
+            + 'The load-bearing same-kid evidence is S3-samekid (page seq store) together with S3-phone (the phone did not re-arm) and S3-resume (the relay resumed the SAME pair).');
           fs.writeFileSync(path.join(LOG_DIR, `page-seq-S3-${STAMP}.json`),
             JSON.stringify({ before: seqBefore, after: seqAfter }, null, 2), 'utf8');
           const maxNext = (s) => Math.max(0, ...(s?.rows ?? []).map((x) => Number(x.next) || 0));
@@ -1482,15 +1894,32 @@ async function main() {
           // is the normal case here, because nothing in this scenario makes the
           // PAGE originate user traffic. Reported as INCONCLUSIVE rather than
           // passed: a green that cannot go red is not evidence of continuity.
-          const seqMoved = maxNext(seqBefore) > 0;
-          if (!seqMoved) {
-            ok('S3-seq    INCONCLUSIVE — the page never sent a sealed frame, so seq continuity is UNTESTED (not passed)',
-              `max next before=${maxNext(seqBefore)} after=${maxNext(seqAfter)}; both 0 means the counter never advanced, so "did not reset" is vacuously true. Recorded as untested rather than green.`);
-          } else {
-            check('S3-seq    the persisted send counter did NOT reset across the resume (fresh:false, useE2e.ts:720)',
-              maxNext(seqAfter) >= maxNext(seqBefore),
-              `max next before=${maxNext(seqBefore)} after=${maxNext(seqAfter)} (a reset to 0 would be the failure)`);
-          }
+          // == ITEM 2 -- S3-seq IS NOW LOAD-BEARING ==
+          //
+          // P6.1d could only report this INCONCLUSIVE: nothing in the scenario made
+          // the PAGE originate a sealed frame, so `before` and `after` were both 0
+          // and "the counter did not reset" was vacuously true -- a green that could
+          // not go red. Security item 2 requires a real one, so the block above now
+          // sends a sealed NOTIFICATION_DISMISS between the `before` read and the
+          // reload, and the assertion is STRICT:
+          //
+          //   after > before
+          //
+          // which fails in BOTH directions that matter. If the pre-reload send did
+          // not increment the counter, before == after and this goes RED (it is
+          // never reported as inconclusive again -- that is the explicit
+          // instruction). If the resume reset the counter to 0, after < before and
+          // it goes RED, which is the continuity property the scenario exists for.
+          const seqB = maxNext(seqBefore);
+          const seqA = maxNext(seqAfter);
+          check('S3-seq    LOAD-BEARING: the persisted send counter ADVANCED past the pre-reload value and survived the resume (after > before)',
+            seqA > seqB,
+            `max next before=${seqB} after=${seqA} (probe key ${probeKey}).`
+            + (seqA === seqB
+              ? ' EQUAL -- the sealed NOTIFICATION_DISMISS probe did not advance the counter, so this run proves nothing about seq continuity. FAILED rather than reported inconclusive, per Security item 2.'
+              : seqA < seqB
+                ? ' The counter RESET across the resume -- this is the continuity failure the scenario exists to catch.'
+                : ' A sealed frame was sent before the reload and the counter carried across it.'));
 
           // The phone must NOT have re-armed: a second "E2E armed" line would
           // mean a new session, which is a re-pair wearing a resume's clothes.
@@ -1502,10 +1931,33 @@ async function main() {
           // (b) the extension service worker restart.
           const swRestart = await restartExtensionSw(peer.ctx, page, sw.url(), { log: (m) => console.log(m) });
           await sleep(12_000);
-          const stAfterSw = await swState(sw).catch(() => null);
-          check('S3-swrestart the pair survived an extension SW restart on the same kid',
-            !!stAfterSw?.kid && stAfterSw.kid === kidBefore,
-            `method=${swRestart.method} kid after SW restart=${stAfterSw?.kid ?? '(none)'} (expected ${kidBefore})`);
+          const swAfterRestart = await liveSw(peer, sw);
+          const stAfterSw = await swState(swAfterRestart).catch(() => null);
+          // == ITEM 8 -- the counter continues across BOTH survivals ==
+          //
+          // Cheap, same pair: the reload proved continuity across survival #1, and
+          // this proves it across survival #2 (the SW restart). It is read from the
+          // same product store, so the two numbers are directly comparable; the
+          // counter must never go BACKWARDS, which is what a silent re-key or a
+          // fresh-session reset would look like.
+          const seqAfterSw = await readPageSeqRecords(page);
+          const seqSw = maxNext(seqAfterSw);
+          // Same correction as S3-samekid: judge the SURVIVAL on the page's own
+          // session store, and report the SW's volatile in-memory kid alongside.
+          const pageKidsAfterSw = [...new Set((seqAfterSw?.rows ?? []).map((r) => r.kid).filter(Boolean))];
+          check('S3-swrestart the pair survived an extension SW restart on the same kid (page-side session store)',
+            pageKidsAfterSw.length === 1 && pageKidsAfterSw[0] === kidBefore,
+            `method=${swRestart.method}; page seq-store kid(s) after the SW restart=${pageKidsAfterSw.join(', ') || '(none)'} (expected ${kidBefore})`);
+          ok("S3-swkid2 OBSERVATION (not a verdict) — the extension SW's in-memory kid after the restart",
+            `sw e2eStateForTest().kid=${stAfterSw?.kid ?? '(none)'}; blank is expected for a worker that has just been restarted and has not re-armed.`);
+
+          fs.writeFileSync(path.join(LOG_DIR, `page-seq-S3-swrestart-${STAMP}.json`),
+            JSON.stringify({ beforeReload: seqBefore, afterReload: seqAfter, afterSwRestart: seqAfterSw }, null, 2), 'utf8');
+          check('S3-seq2   the send counter also carried across the SW RESTART (item 8 -- continuous over both survivals)',
+            seqSw >= seqA && seqSw > seqB,
+            `max next: before reload=${seqB} after reload=${seqA} after SW restart=${seqSw}`
+            + (seqSw < seqA ? ' -- the counter went BACKWARDS across the SW restart.' : '')
+            + (seqSw <= seqB ? ' -- the counter is back at or below its pre-probe value, so continuity is NOT established.' : ''));
 
           emit('S3 — ONE pair held across a page reload and an SW restart',
             'The surviving-pair capability scenarios 4 and 5 are blocked behind, and the live exercise of P6.1d-A 20fc058 (deviceKeyForAccept on the resume path).', [
@@ -1576,15 +2028,21 @@ async function main() {
       // action_disconnect / action_disconnect_pair only. So leg (b) is driven on
       // the surface where the control actually exists, and the phone is the side
       // whose teardown is asserted.
-      if (!ONLY || ONLY.has('4')) {
+      if (!ONLY || ONLY.has('4') || S4A_ONLY) {
         frameWindow = 'S4';
         await ensureModeOn('S4');
-        await resetLobby(page, adb);
-        logcatClear(adb);
-        const p4 = await pairOnce(page, adb, { label: 'S4', sasAnswer: { phone: true, page: true } });
-        const armed4 = p4?.armed ?? null;
-        check('S4-pair   a confirmed ON pair exists to revoke',
-          !!armed4?.kid, armed4?.line ?? 'no armed line');
+        let armed4 = null;
+        if (!S4A_ONLY) {
+          await resetLobby(page, adb);
+          logcatClear(adb);
+          const p4 = await pairOnce(page, adb, { label: 'S4', sasAnswer: { phone: true, page: true } });
+          armed4 = p4?.armed ?? null;
+          check('S4-pair   a confirmed ON pair exists to revoke',
+            !!armed4?.kid, armed4?.line ?? 'no armed line');
+        } else {
+          ok("S4-skip   METHOD CHANGE — S4 main + S4b legs skipped so the REVOKE leg gets this device's one reliable pairing",
+            "Pre-approved for P6.1e-2. Scenario 4 normally pairs three times (S4 -> S4b -> S4a) and item 4 lives in the LAST leg, but this AVD pairs reliably only once per fresh install, so S4a never got a pair (3 runs, 3 x 'no armed line'). The legs are NOT reordered in place — the driver's own note records that revoking the phone key breaks later pairings, which is why the revoke leg is last. No assertion and no product code changed.");
+        }
 
         if (armed4?.kid) {
           // ── (b) "Forget this computer" — the WEB control (see note above) ─
@@ -1639,7 +2097,7 @@ async function main() {
           // inheriting one an earlier leg has already torn down.
           await resetLobby(page, adb);
           logcatClear(adb);
-          const p4a = await pairOnce(page, adb, { label: 'S4a', sasAnswer: { phone: true, page: true } });
+          const p4a = await pairOnce(page, adb, { label: 'S4a', shots: true, sasAnswer: { phone: true, page: true } });
           const armed4a = p4a?.armed ?? null;
           check('S4a-pair  a fresh confirmed ON pair exists for the revoke leg',
             !!armed4a?.kid, armed4a?.line ?? 'no armed line');
@@ -1675,9 +2133,107 @@ async function main() {
           // Sealed traffic must STOP on the wire: frames the phone puts up after
           // the revocation must no longer be accepted into a session.
           const afterFrames = phoneFrames.slice(framesMark).filter((f) => f.userFrame);
+          // VACUITY GUARD (see the header note on this lane's item-4 additions).
+          // Every assertion below is about what happened to a pair that was ON when
+          // its key was revoked. If no pair was ever established, NONE of them can
+          // be satisfied by the product doing the right thing — they can only be
+          // satisfied by nothing having happened at all. Report that as NOT RUN, so
+          // an absent pairing can never be read as a met MUST.
+          const s4aHadPair = !!armed4a?.kid;
+          if (!s4aHadPair) {
+            bad('S4a-NOTRUN item 4 (MUST 2 live on a RESUME) was NOT EXERCISED — no ON pair existed to revoke',
+              `armed4a kid=${armed4a?.kid ?? '(none)'}. The revoke API leg and the registry read still ran and are reported, but every assertion about the page REFUSING a revoked peer on a resume is vacuous without a pair: "no session on the revoked kid" and "no epoch-admission line" are trivially true when nothing ever paired. Recorded as NOT RUN rather than passed.`);
+          } else {
           check('S4a-nosession the computer side holds no live session on the revoked kid',
             !stAfter?.kid || stAfter.kid !== armed4a?.kid,
             `kid before=${armed4a?.kid} sw kid after=${stAfter?.kid ?? '(none)'}`);
+
+          // == ITEM 4 (Security) -- MUST 2 as a LIVE re-proof ON A RESUME ==
+          //
+          // The node cells (tests/e2e-web-epoch-floor.test.mjs, gate step
+          // `relay:e2e-web-epoch-floor`) pin the ORDER in the source: the
+          // revocation verdict and the effective-mode decision are read BEFORE
+          // admitPairEpoch (cells MUST2: 'the revocation verdict is read BEFORE
+          // the epoch is admitted', '...the unconditional revocation refusal is
+          // BEFORE the admission', '...decideAccept (the effective mode) is BEFORE
+          // the admission'). Those are source-order pins. This is the behavioural
+          // half on the path P2.6 CHANGED -- the resume/admission path -- and it is
+          // the one Security asked for by name, because P2.6 made equal-epoch
+          // resumes admissible and the risk is precisely that a revoked peer now
+          // slips in THROUGH a resume.
+          //
+          // The assertions below are deliberately specific where the pre-existing
+          // S4a-refuse is deliberately broad. S4a-refuse accepts a chip string, so
+          // it would stay green on a generic "pair again" state that had nothing to
+          // do with C-2. These read the product's OWN refusal sentence
+          // (hooks/phoneE2e.ts:552-553) instead, so they can only be satisfied by
+          // the fail-closed branch actually executing.
+          const c2Line = consoleDelta.find((l) => /e2e-key-mismatch/.test(l) && /C-2 pin failed/.test(l)) ?? null;
+          const modeOnLine = consoleDelta.find((l) => /C-2 pin failed/.test(l) && /effective mode ON/.test(l)) ?? null;
+          // CORRECTED after the 2026-09-21 22:18 run: the previous pattern also
+          // matched `resumed: true` inside the INBOUND PAIRING_ACTIVE payload —
+          // the RELAY telling the page "this is a resume". R-BL rules that the
+          // relay's `resumed` bit is NOT an admission input, so matching it made
+          // a correct fail-closed look like an admission. Admission is the PAGE's
+          // own act; the observable proof that it did NOT admit is that no session
+          // exists on the revoked kid and the page left the pair (S4a-nosession,
+          // S4a-leave), both asserted separately.
+          const admittedAsResume = consoleDelta.find((l) => /epoch admitted|admitPairEpoch[^\n]*\b(true|admitted)\b/i.test(l)) ?? null;
+          const relaySaidResumed = consoleDelta.find((l) => /PAIRING_ACTIVE[^\n]*resumed:\s*true/i.test(l)) ?? null;
+          const leaveLine = consoleDelta.find((l) => /leaveActive|LEAVE_ACTIVE/.test(l)) ?? null;
+
+          // The REASON is load-bearing, not just the sentence. A refusal reading
+          // `(no-phone-row)` means the page had no phone row to pin against at
+          // all — what a run with no pairing produces — and is NOT evidence that a
+          // REVOKED kid was refused on a resume. Observed live 2026-09-21: that
+          // exact line carries every token this check matches on.
+          const c2Reason = /C-2 pin failed \(([^)]*)\)/.exec(c2Line ?? '')?.[1] ?? null;
+          // CORRECTED against the product source after the 2026-09-21 22:18 run.
+          //
+          // An earlier version of this check REJECTED `no-phone-row`, on the theory
+          // that it meant "no row to pin against" rather than "the revoked kid was
+          // refused". That was wrong, and the source says so:
+          //   phoneE2e.ts:397-399  pinPhoneKey() returns reason 'no-phone-row'
+          //                        whenever phoneRowPublicKey is null/empty;
+          //   useE2e.ts:626        "`null` flows into pinPhoneKey as
+          //                        'no-phone-row', which does not verify."
+          // A REVOKED row is excluded from the live DeviceKey list, so it arrives
+          // as null — i.e. `no-phone-row` IS the C-2 reason for a revoked phone
+          // key. (The distinct 'revoked' reason at phoneE2e.ts:600 belongs to
+          // checkPhoneKeyStillLive/RevocationVerdict, a DIFFERENT function, not to
+          // the C-2 pin.) Rejecting it manufactured a false red on a MUST.
+          //
+          // What actually discriminates "a revoked kid was refused" from "nothing
+          // ever paired" is NOT the reason string — it is identical in both — but
+          // whether an ON pair existed and was revoked. That is exactly what the
+          // S4a vacuity guard above establishes, so the reason is recorded here
+          // rather than used to gate the verdict.
+          const c2ReasonKnown = !!c2Reason && /no-phone-row|not-in-recipkeys|mismatch/i.test(c2Reason);
+          check('S4a-c2    the page failed closed at C-2 with the product’s own refusal sentence (e2e-key-mismatch / C-2 pin failed)',
+            !!c2Line && c2ReasonKnown,
+            c2Line
+              ? `reason=(${c2Reason ?? 'unparsed'}) — a C-2 pin verdict; for a REVOKED row this is 'no-phone-row' by phoneE2e.ts:397-399 + useE2e.ts:626. An ON pair existed and was revoked (see S4a-pair / S4a-revoke), which is what makes this the item-4 path rather than an unpaired refusal. Line: ${c2Line}`
+              : 'no console line carrying BOTH "e2e-key-mismatch" and "C-2 pin failed" after the resume — the specific fail-closed branch did not run');
+          check('S4a-modeon ...and it failed closed with EFFECTIVE MODE ON (hooks/phoneE2e.ts:553, not the mode-OFF "sealing unverified" branch at :561)',
+            !!modeOnLine,
+            modeOnLine ?? 'no "C-2 pin failed ... with effective mode ON" line — a refusal in mode OFF would be a WEAKER outcome and must not be read as this MUST being met');
+          check('S4a-noadmit the revoked pair was NOT admitted as a RESUME (MUST 2 on the P2.6 admission path)',
+            !admittedAsResume,
+            admittedAsResume
+              ? `the page admitted an epoch after the revocation: ${admittedAsResume}`
+              : `no epoch-admission line in the post-revocation resume window.${relaySaidResumed ? ` The relay DID offer a resume (${relaySaidResumed.slice(0, 120)}...) and the page still refused — which is the point of MUST 2: the relay's \`resumed\` bit is not an admission input (R-BL).` : ''}`);
+          check('S4a-leave  the page tore the pair down rather than holding it open on a revoked kid',
+            !!leaveLine || !stAfter?.kid || stAfter.kid !== armed4a?.kid,
+            leaveLine ?? `no explicit leaveActive line; falling back to the session check (sw kid after=${stAfter?.kid ?? '(none)'}, revoked kid=${armed4a?.kid})`);
+
+          emit('S4a-live — item 4: MUST 2 re-proved LIVE on a RESUME',
+            'The node cells pin the ORDER in the source (gate step `relay:e2e-web-epoch-floor`, 123/123: MUST2 cells "the revocation verdict is read BEFORE the epoch is admitted", "the unconditional revocation refusal is BEFORE the admission", "decideAccept (the effective mode) is BEFORE the admission"). This row is the behavioural half on the path P2.6 changed: the pair is ON, the phone’s kid is revoked through the product’s own API, and the pair is then forced through a RESUME rather than a fresh pairing.', [
+              { field: 'C-2 refusal sentence on the resume', phone: null, page: c2Line ?? '(none)', sw: null, match: !!c2Line },
+              { field: 'effective mode at the refusal', phone: null, page: modeOnLine ? 'ON (failing closed)' : '(not ON / not found)', sw: null, match: !!modeOnLine },
+              { field: 'admitted as a RESUME?', phone: null, page: admittedAsResume ? 'YES' : 'no', sw: null, match: !admittedAsResume },
+              { field: 'session on the revoked kid after the resume', phone: null, page: null, sw: stAfter?.kid ?? '(none)', match: !stAfter?.kid || stAfter.kid !== armed4a?.kid },
+            ]);
+          }
 
           emit('S4a — F1-live: revoke the PHONE\'s key via the API',
             'M-A5-1. The revocation is applied through the product\'s own /api/devicekeys/revoke and lands on the page via the unconditional list re-read on PAIRING_ACTIVE (M-A5-1(c)); no product edit and no driver-injected state.', [

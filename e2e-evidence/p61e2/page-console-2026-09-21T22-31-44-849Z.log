@@ -1,0 +1,60 @@
+[log] [PhoneBridge] Awaiting relay-ticket before opening relay
+[log] [PhoneBridge] relay-ticket minted — relay connect will kick from effect
+[log] [PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)
+[log] [PhoneBridge] Connecting to relay: ws://localhost:3000/relay?ticket=<redacted>
+[log] [PhoneBridge] Relay WebSocket open — entering lobby
+[log] [PhoneBridge] Connected to relay. Token=<none>. Awaiting LOBBY_STATUS.
+[log] [PhoneBridge] Handling message type: LOBBY_STATUS payload: {phonePresent: false, alreadyActive: false}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Relay WebSocket closed (code=1000, reason="page_unload")
+[log] [PhoneBridge] Close 1000 (user-initiated) — no reconnect.
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Awaiting relay-ticket before opening relay
+[log] [PhoneBridge] relay-ticket minted — relay connect will kick from effect
+[log] [PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)
+[log] [PhoneBridge] Connecting to relay: ws://localhost:3000/relay?ticket=<redacted>
+[log] [PhoneBridge] Relay WebSocket open — entering lobby
+[log] [PhoneBridge] Connected to relay. Token=<none>. Awaiting LOBBY_STATUS.
+[log] [PhoneBridge] Handling message type: LOBBY_STATUS payload: {phonePresent: false, alreadyActive: false}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_ABSENT payload: {}
+[log] [PhoneBridge] Handling message type: PHONE_PRESENT payload: {}
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Relay WebSocket closed (code=1000, reason="page_unload")
+[log] [PhoneBridge] Close 1000 (user-initiated) — no reconnect.
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Awaiting relay-ticket before opening relay
+[log] [PhoneBridge] relay-ticket minted — relay connect will kick from effect
+[log] [PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)
+[log] [PhoneBridge] Connecting to relay: ws://localhost:3000/relay?ticket=<redacted>
+[log] [PhoneBridge] Relay WebSocket open — entering lobby
+[log] [PhoneBridge] Connected to relay. Token=<none>. Awaiting LOBBY_STATUS.
+[log] [PhoneBridge] Handling message type: LOBBY_STATUS payload: {phonePresent: true, alreadyActive: false}
+[log] [e2e] advert recipients=1 swBridge=no-extension-frame — the extension key is NOT in this transcript
+[log] [PhoneBridge] BROWSER_REQUEST_PAIRING sent (e2e=mode1/recips1)
+[log] [PhoneBridge] Handling message type: PAIRING_ACTIVE payload: {deviceName: Google sdk_gphone64_x86_64, e2e: Object}
+[log] [PhoneBridge] auto-sync on connect — 30 days since 2026-08-22T22:34:12.972Z {contacts: true, clampedByPlan: false, epochKey: Google sdk_gphone64_x86_64#0}
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Relay WebSocket closed (code=1000, reason="page_unload")
+[log] [PhoneBridge] Close 1000 (user-initiated) — no reconnect.
+[log] [PhoneBridge] beforeunload — closing relay WS
+[log] [PhoneBridge] Awaiting relay-ticket before opening relay
+[log] [PhoneBridge] relay-ticket minted — relay connect will kick from effect
+[log] [PhoneBridge] Auto-connecting to relay server (silent, ticket-gated)
+[log] [PhoneBridge] Connecting to relay: ws://localhost:3000/relay?ticket=<redacted>
+[log] [PhoneBridge] Relay WebSocket open — entering lobby
+[log] [PhoneBridge] Connected to relay. Token=<none>. Awaiting LOBBY_STATUS.
+[log] [PhoneBridge] Handling message type: PAIRING_ACTIVE payload: {deviceName: Google sdk_gphone64_x86_64, e2e: Object, resumed: true, held: true, gapMs: 625}
+[warning] [E2E] e2e-key-mismatch — C-2 pin failed (no-phone-row) with effective mode ON — failing closed
+[log] [PhoneBridge] leaveActive — back in lobby
+[log] [PhoneBridge] Handling message type: PAIRING_TERMINATED payload: {reason: user_left}
+[log] [PhoneBridge] Handling message type: LOBBY_STATUS payload: {phonePresent: false, alreadyActive: false}
+[log] [PhoneBridge] relay-confirmed resume — silent backfill since 2026-09-21T22:24:26.745Z {heldForMs: 625}

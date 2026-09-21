@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "reason": null,
+  "userId": "cmubtlbr70000l228ekepy2vi",
+  "rows": [
+    {
+      "id": "cmubtlz2p0001l27cmdgegvci",
+      "deviceId": "jwTCglS_lVN14Rea_VOXnA",
+      "kind": "phone",
+      "revokedAt": null
+    }
+  ],
+  "pairingOfferedYet": false
+}

@@ -1,0 +1,35 @@
+09-21 23:33:12.805  4958  5006 D PhoneService: handleCommand: NOTIFICATION_DISMISS, viaClient: true
+09-21 23:33:12.805  4958  5006 D PhoneService: NOTIFICATION_DISMISS key=p61e-seq-probe-1790026393713 ok=false
+09-21 23:33:12.842  4958  5006 D PhoneService: handleCommand: SET_AUDIO_SOURCE, viaClient: true
+09-21 23:33:12.850  4958  5006 D PhoneService: applyBluetoothSco applied: enabled=false, audioMode=0, isBluetoothScoOn=false
+09-21 23:33:12.853  4958  5006 D PhoneService: applySpeakerphone modern (off): clearCommunicationDevice
+09-21 23:33:12.855  4958  5006 D PhoneService: applySpeakerphone applied: enabled=false, audioMode=0, isSpeakerphoneOn=false
+09-21 23:33:12.855  4958  5006 D PhoneService: SET_AUDIO_SOURCE applied: source=phone
+09-21 23:33:12.857  4958  5006 D PhoneService: handleCommand: MAKE_CALL, viaClient: true
+09-21 23:33:12.857  4958  5006 D PhoneService: MAKE_CALL for: 000 (speaker=false, simId=null)
+09-21 23:33:14.402  4958  4995 D PhoneService: TelephonyCallback state: 2 source=modern
+09-21 23:33:14.402  4958  4995 D PhoneService: sendResponse: type=CALL_ADD, viaClient=true, clientOpen=true
+09-21 23:33:14.483  4958  4958 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 23:33:14.487  4958  4995 D PhoneService: Response sent via relay client
+09-21 23:33:14.487  4958  4995 D PhoneService: CALL_ADD callId=c-1790026394402-1 number=[000] dir=outgoing state=active
+09-21 23:33:14.488  4958  4995 D PhoneService: sendResponse: type=CALL_UPDATE, viaClient=true, clientOpen=true
+09-21 23:33:14.534  4958  4995 D PhoneService: Response sent via relay client
+09-21 23:33:14.534  4958  4995 D PhoneService: CALL_UPDATE callId=c-1790026394402-1 state=active
+09-21 23:33:14.534  4958  4995 D PhoneService: sendResponse: type=CALL_ANSWERED, viaClient=true, clientOpen=true
+09-21 23:33:14.580  4958  4995 D PhoneService: Response sent via relay client
+09-21 23:33:14.580  4958  4995 D PhoneService: CALL_ANSWERED fired: number=[000] state=OFFHOOK source=modern
+09-21 23:33:15.008  4958  5006 D PhoneService: handleCommand: SET_AUDIO_SOURCE, viaClient: true
+09-21 23:33:16.084  4958  5006 D PhoneService: applyBluetoothSco applied: enabled=false, audioMode=2, isBluetoothScoOn=false
+09-21 23:33:16.086  4958  5006 D PhoneService: applySpeakerphone modern (off): clearCommunicationDevice
+09-21 23:33:16.089  4958  5006 D PhoneService: applySpeakerphone applied: enabled=false, audioMode=2, isSpeakerphoneOn=true
+09-21 23:33:16.089  4958  5006 D PhoneService: SET_AUDIO_SOURCE applied: source=phone
+09-21 23:33:16.459  4958  4958 D MainActivity: Status updated: Connected — call in progress
+09-21 23:33:16.459  4958  4958 D PhoneService: PhoneStateListener state=OFFHOOK phoneNumber=[000] resolvedNumber=[000] source=legacy
+09-21 23:33:16.459  4958  4958 D PhoneService: sendResponse: type=CALL_UPDATE, viaClient=true, clientOpen=true
+09-21 23:33:16.465  4958  4958 D PhoneService: Response sent via relay client
+09-21 23:33:16.465  4958  4958 D PhoneService: CALL_UPDATE callId=c-1790026394402-1 state=active
+09-21 23:33:16.465  4958  4958 D PhoneService: PhoneStateListener OFFHOOK — CALL_ANSWERED already sent, skipping (source=legacy)
+09-21 23:33:18.461  4958  4958 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 23:33:18.591  4958  4958 D MainActivity: Status updated: Connected — call in progress
+09-21 23:33:20.594  4958  4958 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 23:33:20.894  4958  4958 D MainActivity: Status updated: Connected — call in progress
