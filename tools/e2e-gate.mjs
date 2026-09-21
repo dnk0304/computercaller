@@ -440,6 +440,10 @@ const MIN_CHECKS_OVERRIDE = {
   // chokepoint assertions cannot take the count down and still print N/N.
   // Measured at the commit that adds it: 47 assertions.
   'relay:e2e-web-sas-confirm.test.mjs': 47,
+  // E2E-P6.1c (2b). The advert/attribution suite for A6-P61B-5. Same reasoning
+  // as above: auto-discovered, so the floor is what it needs from this table.
+  // Measured at the commit that adds it: 44 assertions.
+  'relay:e2e-web-sw-advert.test.mjs': 44,
   // FT-3b (g). The file-transfer harnesses post-date BASELINE-harness.json, so
   // the floor cannot be read from it. Measured totals at the commit that
   // registers them: ft-ui-proof 96 (FT-3b (d)), ft-web-proof 26 (FT-3a).

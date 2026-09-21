@@ -193,6 +193,39 @@ export function readSwKey(message: SwKeyMessage | null | undefined): SwKeyResult
   };
 }
 
+/**
+ * E2E-P6.1c (2b) — what the A4.1 bridge actually said, at the moment the
+ * recipient set was frozen for BROWSER_REQUEST_PAIRING.
+ *
+ * `SwKeyStatus` is not enough on its own. It has three values and one of them,
+ * `unknown`, covers two completely different situations: "this page is not
+ * framed by the extension, so there is no bridge to ask" and "we asked and got
+ * no answer in time". A6-P61B-5 is what the gap costs — every P6.1b pairing
+ * advertised `recips1` with the extension service worker present as a relay
+ * listener, and nothing on the page recorded WHY, so the finding sat
+ * unattributed between the driver and the product for a whole lane.
+ */
+export type SwBridgeAnswer =
+  /** The bridge produced a usable recipient; the SW is in the advert. */
+  | 'key'
+  /** The bridge answered explicitly, with no key. Not a timeout — a reading. */
+  | 'none'
+  /** Not framed by the extension: there is no bridge, and none is expected. */
+  | 'no-extension-frame'
+  /** Framed, asked, and silent for SW_KEY_WAIT_MS. The only one that is a fault. */
+  | 'timeout';
+
+/**
+ * The answer, from the two facts that decide it. Pure, because "why did this
+ * pairing advertise one recipient" must be answerable from a test and from a
+ * log line, not by re-running a browser.
+ */
+export function swBridgeAnswer(sw: SwKeyResult, framed: boolean): SwBridgeAnswer {
+  if (sw.status === 'present') return 'key';
+  if (sw.status === 'absent') return 'none';
+  return framed ? 'timeout' : 'no-extension-frame';
+}
+
 export interface RequestBlockInput {
   localMode: LocalMode;
   webKey: Pick<WebDeviceKey, 'deviceId' | 'pubB64Url'>;
@@ -662,6 +695,21 @@ export interface E2eView {
      * one that silently does not.
      */
     refusedForwardJump: number;
+    /**
+     * E2E-P6.1c (2b). How many recipients the LAST BROWSER_REQUEST_PAIRING
+     * advertised, and what the A4.1 bridge had said by then.
+     *
+     * The pair of them is the whole point: `advertisedRecipients: 1` alone is
+     * not a finding (a page nobody framed has exactly one recipient and that is
+     * correct), and `swBridge: 'timeout'` alone does not say what shipped.
+     * Together they are the attribution A6-P61B-5 lacked.
+     *
+     * `null` until a request is built. Diagnostics: they gate nothing, and the
+     * thing a SURFACE must read for coverage is still `sas.coverage.coversSw`,
+     * which is computed against the LIVE key rather than a count.
+     */
+    advertisedRecipients: number | null;
+    swBridge: SwBridgeAnswer | null;
   };
 }
 
@@ -683,7 +731,15 @@ export const E2E_VIEW_INITIAL: E2eView = {
   state: 'unencrypted',
   peer: { supports: false, kind: 'unknown' },
   sas: { digits: null, confirmed: false, coverage: null },
-  debug: { drops: 0, downgradesDropped: 0, relayAbortsAccepted: 0, kid: null, refusedForwardJump: 0 },
+  debug: {
+    drops: 0,
+    downgradesDropped: 0,
+    relayAbortsAccepted: 0,
+    kid: null,
+    refusedForwardJump: 0,
+    advertisedRecipients: null,
+    swBridge: null,
+  },
 };
 
 /**

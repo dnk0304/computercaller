@@ -76,6 +76,7 @@ import {
   outcomeForRevocationVerdict,
   readRevocationVerdict,
   sasKeySet,
+  swBridgeAnswer,
   viewAfterErrorDismissed,
   viewAfterPairEnded,
   viewAfterSasConfirmed,
@@ -435,9 +436,19 @@ export function useE2e(emailProp?: string | null): E2eApi {
       }
       throw e;
     }
+    // E2E-P6.1c (2b). The recipient set is frozen HERE, and usePhoneBridge does
+    // not send BROWSER_REQUEST_PAIRING until this promise settles — so "wait
+    // for the bridge to answer" is this await and nothing else.
+    //
+    // A page the extension does not frame has no bridge to wait for: the answer
+    // is immediate and definitive ('no-extension-frame'), and waiting a second
+    // for a message nobody can send would only slow every pairing down. So the
+    // wait stays scoped to the framed case, and the UNFRAMED case stops being
+    // silent instead.
+    const framed = typeof window !== 'undefined' && window.parent !== window;
     // Wait up to 1 s for the SW — but only when we have not already heard. A
     // key we learned on a previous `ready` is not re-requested.
-    if (swRef.current.status === 'unknown' && typeof window !== 'undefined' && window.parent !== window) {
+    if (swRef.current.status === 'unknown' && framed) {
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, SW_KEY_WAIT_MS);
         const stop = () => { clearTimeout(t); resolve(); };
@@ -445,9 +456,28 @@ export function useE2e(emailProp?: string | null): E2eApi {
         setTimeout(() => clearInterval(poll), SW_KEY_WAIT_MS + 50);
       });
     }
+    const answer = swBridgeAnswer(swRef.current, framed);
     setView((v) => ({ ...v, peer: { ...v.peer, kind: swRef.current.status } }));
     try {
-      return buildRequestBlock({ localMode, webKey: key, sw: swRef.current });
+      const block = buildRequestBlock({ localMode, webKey: key, sw: swRef.current });
+      /**
+       * A6-P61B-5. The page now KNOWS what it advertised and why, before the
+       * frame leaves: every P6.1b pairing went out as `recips1` with the
+       * extension SW live on the relay, and the page held no record that could
+       * tell a driver artefact from a product fault. Recorded on the view
+       * (diagnostics — it gates nothing) AND logged, because the evidence that
+       * raised the finding was a page-console line.
+       */
+      const advertisedRecipients = block.recips.length;
+      setView((v) => ({
+        ...v,
+        debug: { ...v.debug, advertisedRecipients, swBridge: answer },
+      }));
+      console.log(
+        `[e2e] advert recipients=${advertisedRecipients} swBridge=${answer}`
+        + (answer === 'key' ? '' : ' — the extension key is NOT in this transcript'),
+      );
+      return block;
     } catch (e) {
       // An unsendable block is not a reason to pair in the clear while the user
       // believes they asked for encryption.
