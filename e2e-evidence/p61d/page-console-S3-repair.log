@@ -1,0 +1,4 @@
+[log] [e2e] advert recipients=1 swBridge=no-extension-frame — the extension key is NOT in this transcript
+[log] [PhoneBridge] BROWSER_REQUEST_PAIRING sent (e2e=mode1/recips1)
+[log] [PhoneBridge] Handling message type: PAIRING_ACTIVE payload: {deviceName: Google sdk_gphone64_x86_64, e2e: Object}
+[log] [PhoneBridge] auto-sync on connect — 30 days since 2026-08-22T13:22:43.626Z {contacts: true, clampedByPlan: false, epochKey: Google sdk_gphone64_x86_64#0}

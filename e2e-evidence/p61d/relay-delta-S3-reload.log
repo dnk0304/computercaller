@@ -1,0 +1,9 @@
+[Relay][r3hhKKyE:4e725f26] socket_closed: soft-hold survivor (droppedRole=browser, code=1000 reason="page_unload"), resume window armed (180000ms), panelHold=YES (renewed each tick while a listener is present; grace 600000ms)
+[Relay][r3hhKKyE:4e725f26] Browser disconnected (was_active=true, code=1000, reason="page_unload")
+[Relay] Connection authed user=cmub9k3rb0000l2acr3e6j8a1 via relay-ticket room=r3hhKKyE:4e725f26
+[Relay][r3hhKKyE:4e725f26] Browser joined lobby (phones=0, active=true, listener=false, claim=armed(droppedRole=browser))
+[Relay][r3hhKKyE:4e725f26] auto-resumed pair after socket_closed (gap=595ms, heldFor=595ms, droppedRole=browser, panelHold=true, survivorHeld=true)
+[Relay][r3hhKKyE:4e725f26] terminateActivePair: user_left
+[Relay][r3hhKKyE:4e725f26] Dropping lobby-browser frame: type=GET_SYNC_ESTIMATE bytes=20
+[Relay][r3hhKKyE:4e725f26] Dropping lobby-browser frame: type=GET_MESSAGES bytes=36
+[Relay][r3hhKKyE:4e725f26] Dropping lobby-browser frame: type=GET_CALL_LOGS bytes=37

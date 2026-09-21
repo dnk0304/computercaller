@@ -111,6 +111,35 @@ function finding(id, what, evidence) {
 }
 function emit(scenario, note, rows) { tables.push({ scenario, note, rows }); }
 
+/**
+ * Redact credentials out of anything this harness writes to disk.
+ *
+ * writeRedactedRelayLog (phone-peer.mjs:187) already does this for the RELAY
+ * log, but its patterns are tuned to that log's shape: it matches `ticket=`
+ * only in QUERY-STRING position (`[?&]`) and only FULL three-part JWTs. The
+ * logcat and page-console dumps carry neither shape — this lane's evidence
+ * contained a bare `token=r3hhKKyE...` from a logcat line and a bare
+ * `eyJ1c2VySWQiOiJ...` payload blob in a console line, both of which slipped
+ * straight through those patterns and would have been committed.
+ *
+ * They are ephemeral scratch-run credentials against a throwaway user and an
+ * ephemeral relay, so the blast radius is nil — but "it was only a test token"
+ * is exactly the reasoning that eventually commits a real one, and the evidence
+ * dirs are shared. Redact at the write, not by remembering to.
+ */
+function redactSecrets(text) {
+  return String(text)
+    .replace(/\b(ticket|token|phoneToken|authorization|bearer)([=:]\s*)[A-Za-z0-9._~+/=-]{8,}/gi,
+      (_, k, sep) => `${k}${sep}<redacted>`)
+    .replace(/\beyJ[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]+){0,2}/g, '<redacted-jwt>');
+}
+
+/** Every console/logcat/delta dump goes through the redactor. */
+function writeEvidence(p, text) {
+  fs.writeFileSync(p, redactSecrets(text), 'utf8');
+  return p;
+}
+
 // ── TLS terminator for the PHONE (the APK hardcodes computercaller.com) ─────
 function startTlsProxy(relayPort, { onUpgrade, onRequest, onTlsError, onPhoneFrame } = {}) {
   const opts = {
@@ -979,8 +1008,8 @@ async function main() {
         fs.writeFileSync(framesPathGlobal, head.concat(body).join('\n'), 'utf8');
       };
       const flushConsoles = () => {
-        fs.writeFileSync(path.join(LOG_DIR, `page-console-${STAMP}.log`), pageConsole.join('\n'), 'utf8');
-        fs.writeFileSync(path.join(LOG_DIR, `sw-console-${STAMP}.log`), swConsole.join('\n'), 'utf8');
+        writeEvidence(path.join(LOG_DIR, `page-console-${STAMP}.log`), pageConsole.join('\n'));
+        writeEvidence(path.join(LOG_DIR, `sw-console-${STAMP}.log`), swConsole.join('\n'));
       };
 
       /**
@@ -1022,8 +1051,8 @@ async function main() {
         const r = await pairOnce(page, adb, { label: 'S1', shots: true, sasAnswer: { phone: true, page: true } });
         if (r) {
           const chip = await pageChip(page);
-          fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-preconfirm-${STAMP}.log`), r.preConfirmLog, 'utf8');
-          fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-midconfirm-${STAMP}.log`), r.midConfirmLog, 'utf8');
+          writeEvidence(path.join(LOG_DIR, `logcat-S1-preconfirm-${STAMP}.log`), r.preConfirmLog);
+          writeEvidence(path.join(LOG_DIR, `logcat-S1-midconfirm-${STAMP}.log`), r.midConfirmLog);
 
           check('S1-face   the PHONE raised the shipped SAS hero face (M-A6-3 emitter live)',
             r.sas.faceUp, r.sas.faceUp
@@ -1098,7 +1127,7 @@ async function main() {
 
           const armed2 = r.armed;
           const st = await swState(sw);
-          fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-postconfirm-${STAMP}.log`), r.log, 'utf8');
+          writeEvidence(path.join(LOG_DIR, `logcat-S1-postconfirm-${STAMP}.log`), r.log);
           await page.screenshot({ path: path.join(LOG_DIR, `sas-page-S1-confirmed-${STAMP}.png`) }).catch(() => {});
 
           check('S1-confirm both surfaces were answered by a real tap/click',
@@ -1254,7 +1283,7 @@ async function main() {
           logcatClear(adb);
           const dPhone = await pairOnce(page, adb, { label: 'S1-declinePhone', sasAnswer: { phone: false } });
           if (dPhone) {
-            fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-declinePhone-${STAMP}.log`), dPhone.log, 'utf8');
+            writeEvidence(path.join(LOG_DIR, `logcat-S1-declinePhone-${STAMP}.log`), dPhone.log);
             const declined = /DECLINE|declin|refus/i.test(dPhone.log);
             check('S1-tear-phone  "Doesn\'t match" on the PHONE tears the pair down (no seal, existing refusal path)',
               !dPhone.armed && (declined || !dPhone.armed),
@@ -1270,7 +1299,7 @@ async function main() {
           logcatClear(adb);
           const dPage = await pairOnce(page, adb, { label: 'S1-declinePage', sasAnswer: { phone: true, page: false } });
           if (dPage) {
-            fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-declinePage-${STAMP}.log`), dPage.log, 'utf8');
+            writeEvidence(path.join(LOG_DIR, `logcat-S1-declinePage-${STAMP}.log`), dPage.log);
             const refusedAttr = await page.locator('[data-cc-sas-refused="true"]').count().catch(() => 0);
             const chipAfter = await pageChip(page);
             check('S1-tear-page   "Doesn\'t match" on the PAGE runs the revoking teardown (pair not left usable)',
@@ -1322,7 +1351,7 @@ async function main() {
             pageSas: await pageSas(page),
           };
           cells.push(cell);
-          if (r?.log) fs.writeFileSync(path.join(LOG_DIR, `logcat-S2-${cellName.split(' ')[1]}-${STAMP}.log`), r.log, 'utf8');
+          if (r?.log) writeEvidence(path.join(LOG_DIR, `logcat-S2-${cellName.split(' ')[1]}-${STAMP}.log`), r.log);
           console.log(`  ${cellName}: phoneArmed=${cell.phoneMode ?? 'NONE'} verified=${cell.phoneVerified} sas=${cell.phoneSas} | page chip=${cell.pageChip} sas=${cell.pageSas}`);
         }
 
@@ -1398,7 +1427,7 @@ async function main() {
           await sleep(20_000);
 
           const relayDelta = relay.readLog().slice(relayMark);
-          fs.writeFileSync(path.join(LOG_DIR, `relay-delta-S3-reload-${STAMP}.log`), relayDelta, 'utf8');
+          writeEvidence(path.join(LOG_DIR, `relay-delta-S3-reload-${STAMP}.log`), relayDelta);
           const resumedLine = /[^\n]*auto-resumed pair after socket_closed[^\n]*/.exec(relayDelta)?.[0] ?? null;
           const rePaired = /BROWSER_REQUEST_PAIRING/.test(relayDelta);
           const userLeft = /[^\n]*terminateActivePair: [^\n]*/.exec(relayDelta)?.[0] ?? null;
@@ -1416,7 +1445,7 @@ async function main() {
           // The page console's own resume marker (usePhoneBridge.ts:1611) —
           // snapshotted for THIS transition, never read cumulatively.
           const consoleDelta = pageConsole.slice(consoleMark);
-          fs.writeFileSync(path.join(LOG_DIR, `page-console-S3-reload-${STAMP}.log`), consoleDelta.join('\n'), 'utf8');
+          writeEvidence(path.join(LOG_DIR, `page-console-S3-reload-${STAMP}.log`), consoleDelta.join('\n'));
           const resumeConsole = consoleDelta.find((l) => /relay-confirmed resume/.test(l)) ?? null;
           const setupFailedOnResume = consoleDelta.filter((l) => /e2e-setup-failed/.test(l));
           // HONESTY GUARD. "zero e2e-setup-failed" is only evidence that the
@@ -1500,7 +1529,7 @@ async function main() {
           const armed3b = p3b?.armed ?? null;
           const consoleDelta2 = pageConsole.slice(consoleMark2);
           const setupFailedRepair = consoleDelta2.filter((l) => /e2e-setup-failed/.test(l));
-          fs.writeFileSync(path.join(LOG_DIR, `page-console-S3-repair-${STAMP}.log`), consoleDelta2.join('\n'), 'utf8');
+          writeEvidence(path.join(LOG_DIR, `page-console-S3-repair-${STAMP}.log`), consoleDelta2.join('\n'));
 
           check('S3-reset  RESET_ROOM then a fresh pairing yields a NEW kid (a new epoch, not the old session)',
             !!armed3b?.kid && armed3b.kid !== kidBefore,
@@ -1580,7 +1609,7 @@ async function main() {
             await sleep(20_000);
 
             const phoneLog = logcatDump(adb);
-            fs.writeFileSync(path.join(LOG_DIR, `logcat-S4b-forget-${STAMP}.log`), phoneLog, 'utf8');
+            writeEvidence(path.join(LOG_DIR, `logcat-S4b-forget-${STAMP}.log`), phoneLog);
             const tornDown = /[^\n]*E2E torn down \([^\n]*/.exec(phoneLog)?.[0] ?? null;
             const listAfterForget = await fetchRegistry(relay.httpBase, user.phoneToken, { includeRevoked: true });
             const webRevoked = listAfterForget.rows.filter((r) => !String(r.kind || '').toLowerCase().includes('phone') && r.revokedAt);
@@ -1634,7 +1663,7 @@ async function main() {
           await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
           await sleep(20_000);
           const consoleDelta = pageConsole.slice(consoleMark);
-          fs.writeFileSync(path.join(LOG_DIR, `page-console-S4a-revoke-${STAMP}.log`), consoleDelta.join('\n'), 'utf8');
+          writeEvidence(path.join(LOG_DIR, `page-console-S4a-revoke-${STAMP}.log`), consoleDelta.join('\n'));
           const refusalLine = consoleDelta.find((l) => /e2e-key-mismatch|re-pair-needed|refus|revok/i.test(l)) ?? null;
           const chipAfter = await pageChip(page);
           const stAfter = await swState(sw).catch(() => null);
