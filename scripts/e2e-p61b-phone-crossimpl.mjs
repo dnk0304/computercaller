@@ -73,7 +73,13 @@ const ONLY = (() => {
  * STOPPED_SCENARIOS below and reproduced into the artefact, so a reader sees
  * four named gaps rather than a floor quietly lowered to fit.
  */
-const MIN_CHECKS = 20;
+// P6.1d-B raises this 20 -> 28 for the eight checks this lane adds to the
+// shared bring-up and scenario 1: M-A6-2 a/b/c/d (the pre-pairing registry
+// listing and the live C-2 verdict), M-A6-5 a/b/c (grouping parity read off
+// the two RENDERED surfaces) and R1-c3 (zero plaintext phone frames while ON).
+// Raising the floor is the point: if any of them silently stops running, the
+// run cannot pass by quietly reporting fewer checks.
+const MIN_CHECKS = 28;
 
 /**
  * Scenarios this harness does NOT run, each with the reason it cannot be run
@@ -106,7 +112,7 @@ function finding(id, what, evidence) {
 function emit(scenario, note, rows) { tables.push({ scenario, note, rows }); }
 
 // ── TLS terminator for the PHONE (the APK hardcodes computercaller.com) ─────
-function startTlsProxy(relayPort, { onUpgrade, onRequest, onTlsError } = {}) {
+function startTlsProxy(relayPort, { onUpgrade, onRequest, onTlsError, onPhoneFrame } = {}) {
   const opts = {
     key: fs.readFileSync(path.join(CERT_DIR, 'leaf.key')),
     cert: fs.readFileSync(path.join(CERT_DIR, 'leaf.pem')),
@@ -127,7 +133,18 @@ function startTlsProxy(relayPort, { onUpgrade, onRequest, onTlsError } = {}) {
       for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
       up.write(`${lines.join('\r\n')}\r\n\r\n`);
       if (head?.length) up.write(head);
-      up.pipe(socket); socket.pipe(up);
+      up.pipe(socket);
+      // R1 condition 3: tee the phone->relay direction BEFORE splicing it on.
+      // A second 'data' listener beside pipe() sees the same chunks and leaves
+      // pipe()'s backpressure handling intact — replacing the pipe with manual
+      // writes would not. The tap is wrapped so that a parser fault can never
+      // take down the wire it is observing: a broken capture must degrade to a
+      // missing row, never to a failed pairing that looks like a product defect.
+      if (onPhoneFrame) {
+        const feed = makeWsFrameReader(onPhoneFrame);
+        socket.on('data', (c) => { try { feed(c); } catch { /* never break the wire */ } });
+      }
+      socket.pipe(up);
     });
     const kill = () => { try { up.destroy(); } catch { /* gone */ } try { socket.destroy(); } catch { /* gone */ } };
     up.on('error', kill); socket.on('error', kill);
@@ -279,6 +296,10 @@ async function pairOnce(page, adb, { label, sasAnswer = null, shots = false }) {
   sasSeen.faceUp = await until(() => (phoneSasFaceUp(adb) ? true : null), 45_000, 1500) === true;
   if (sasSeen.faceUp) {
     sasSeen.phone = phoneHeroSas(adb);
+    // M-A6-5: the RENDERED string, separators included, taken from the same
+    // dump in the same instant as the normalised digits above. phoneHeroSas()
+    // strips non-digits, so it cannot see a grouping divergence; this can.
+    sasSeen.phoneRendered = phoneHeroSasRendered(uiDump(adb));
     sasSeen.receiverMatches = sasReceiverMatchCount(adb);
     if (shots) {
       adb('shell', 'screencap -p /sdcard/sas-phone.png');
@@ -298,6 +319,9 @@ async function pairOnce(page, adb, { label, sasAnswer = null, shots = false }) {
   sasSeen.dialogOpen = await until(async () => ((await pageSasOpen(page)) ? true : null), 60_000, 1500) === true;
   if (sasSeen.dialogOpen) {
     sasSeen.page = await pageSas(page);
+    // M-A6-5: the dialog's rendered textContent, not the normalised
+    // [data-cc-sas-digits] attribute pageSas() reads.
+    sasSeen.pageRendered = await pageSasRendered(page);
     if (shots) await page.screenshot({ path: path.join(LOG_DIR, `sas-page-${label}-${STAMP}.png`) }).catch(() => {});
   }
 
@@ -447,6 +471,168 @@ async function resetLobby(page, adb, { settle = 12_000 } = {}) {
   return true;
 }
 
+// ── P6.1d-B additions ───────────────────────────────────────────────────────
+
+/**
+ * M-A6-2 — the DeviceKey registry as the PRODUCT exposes it.
+ *
+ * server.js IS the Next custom server (next()/getRequestHandler/app.prepare at
+ * server.js:4079-4081), so the app's route handlers answer on the SAME origin as
+ * the relay socket and the registry needs no second process. Bearer auth is the
+ * phone's own token (lib/deviceKeyAuth.ts:68-80 resolves it to the user), which is
+ * what makes this "listed as the phone's user" rather than "listed as the harness".
+ *
+ * includeRevoked is forced to '0'. The route's own default INCLUDES revoked rows
+ * (list/route.ts:22), and M-A6-2(a) asks whether the phone has a LIVE row before
+ * pairing — a revoked row answering that question would be a false pass, and the
+ * same default would later make the scenario-4 revocation invisible.
+ */
+async function fetchRegistry(httpBase, phoneToken, { includeRevoked = false } = {}) {
+  const url = `${httpBase}/api/devicekeys/list?includeRevoked=${includeRevoked ? '1' : '0'}`;
+  try {
+    const r = await fetch(url, { headers: { authorization: `Bearer ${phoneToken}` } });
+    if (!r.ok) return { ok: false, reason: `http ${r.status}`, rows: [], userId: null };
+    const d = await r.json();
+    return { ok: true, rows: Array.isArray(d.keys) ? d.keys : [], userId: d.userId ?? null };
+  } catch (e) {
+    return { ok: false, reason: String(e?.message ?? e), rows: [], userId: null };
+  }
+}
+
+/** F1-live leg (a): revoke one registry row by its row id (revoke/route.ts:42). */
+async function revokeRegistryRow(httpBase, phoneToken, id) {
+  try {
+    const r = await fetch(`${httpBase}/api/devicekeys/revoke`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${phoneToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const d = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, key: d.key ?? null, alreadyRevoked: d.alreadyRevoked ?? null };
+  } catch (e) {
+    return { ok: false, status: 0, reason: String(e?.message ?? e) };
+  }
+}
+
+/**
+ * R1 condition 3 — and why the relay log CANNOT answer it.
+ *
+ * server.js's per-frame line is `Phone -> ${frameLabel(msg)}` (server.js:3213) and
+ * frameLabel (server.js:113-116) prints ONLY `type=<T> bytes=<N>`, deliberately, for
+ * the PII reason stated at server.js:95-107. A sealed frame and a plaintext frame of
+ * the SAME type are therefore byte-indistinguishable in that log at any verbosity.
+ * Security's condition 3 is a statement about the ENVELOPE ("zero plaintext user
+ * frames from the phone while ON"), so it cannot be read there.
+ *
+ * This harness already terminates the phone's TLS itself (startTlsProxy — the APK
+ * hardcodes wss://computercaller.com), so the phone's post-TLS byte stream passes
+ * through code this lane owns. Teeing it there reads exactly what the PHONE emitted,
+ * before the relay ever sees it — a strictly stronger vantage than the relay log,
+ * and it requires no product change on a frozen product.
+ *
+ * Minimal RFC6455 reader, CLIENT->SERVER only. Client frames are always masked
+ * (§5.3) so unmasking is mandatory; a text message may arrive fragmented (0x1 then
+ * 0x0 continuations), so fragments are REASSEMBLED rather than sampled — a reader
+ * that handled only unfragmented frames would under-count exactly the large frames
+ * a sealed payload produces, which is the direction that would fake a pass.
+ */
+function makeWsFrameReader(onTextMessage) {
+  let buf = Buffer.alloc(0);
+  let fragOp = 0;
+  let fragParts = [];
+  return (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    for (;;) {
+      if (buf.length < 2) return;
+      const b0 = buf[0], b1 = buf[1];
+      const fin = (b0 & 0x80) !== 0;
+      const opcode = b0 & 0x0f;
+      const masked = (b1 & 0x80) !== 0;
+      let len = b1 & 0x7f;
+      let off = 2;
+      if (len === 126) { if (buf.length < off + 2) return; len = buf.readUInt16BE(off); off += 2; }
+      else if (len === 127) {
+        if (buf.length < off + 8) return;
+        const big = buf.readBigUInt64BE(off); off += 8;
+        if (big > 64n * 1024n * 1024n) { buf = Buffer.alloc(0); return; }
+        len = Number(big);
+      }
+      let mask = null;
+      if (masked) { if (buf.length < off + 4) return; mask = buf.subarray(off, off + 4); off += 4; }
+      if (buf.length < off + len) return;
+      const payload = Buffer.from(buf.subarray(off, off + len));
+      if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+      buf = buf.subarray(off + len);
+
+      if (opcode === 0x8) return;                     // close
+      if (opcode === 0x9 || opcode === 0xa) continue; // ping / pong
+      if (opcode === 0x0) {
+        fragParts.push(payload);
+        if (fin) { if (fragOp === 0x1) onTextMessage(Buffer.concat(fragParts).toString('utf8')); fragOp = 0; fragParts = []; }
+        continue;
+      }
+      if (!fin) { fragOp = opcode; fragParts = [payload]; continue; }
+      if (opcode === 0x1) onTextMessage(payload.toString('utf8'));
+    }
+  };
+}
+
+/**
+ * SPEC §13.7 sealed list — the frame types that carry USER content and therefore
+ * MUST be sealed while the pair is ON. Pairing / lobby / presence / resume / reset /
+ * heartbeat frames and the GET_* requests are plaintext BY SPEC; counting those as
+ * "plaintext user frames" would manufacture a violation the spec explicitly permits,
+ * which is the failure mode that makes a security capture worthless.
+ */
+const SEALED_TYPES = new Set([
+  'PHONE_NOTIFICATION', 'SMS_RECEIVED', 'MESSAGES', 'MESSAGES_CHUNK',
+  'CONTACTS', 'CALL_LOGS', 'CALL_STATE', 'CALL_INCOMING', 'CALL_ENDED', 'CALL_LOG',
+]);
+
+/** A sealed payload is the §13.4 envelope {e,kid,s,c}. Anything else is plaintext. */
+function classifyPhoneFrame(raw) {
+  const s = String(raw);
+  const i = s.indexOf(':');
+  const type = i === -1 ? s : s.slice(0, i);
+  const body = i === -1 ? '' : s.slice(i + 1);
+  if (!SEALED_TYPES.has(type)) return { type, userFrame: false, sealed: null, bytes: Buffer.byteLength(s) };
+  let sealed = false;
+  try {
+    const p = JSON.parse(body);
+    sealed = !!p && typeof p === 'object'
+      && p.e !== undefined && typeof p.kid === 'string'
+      && p.s !== undefined && typeof p.c === 'string' && p.c.length > 0;
+  } catch { sealed = false; }
+  return { type, userFrame: true, sealed, bytes: Buffer.byteLength(s) };
+}
+
+/**
+ * M-A6-5 — read the digits back off the RENDERED surfaces.
+ *
+ * The point of this row is that it is NOT the scraped value. pageSas() reads the
+ * [data-cc-sas-digits] ATTRIBUTE and phoneHeroSas() strips non-digits out of the
+ * uiautomator text — both NORMALISE, so both would report "31644" even if the
+ * surface rendered "316 44". M-A6-5 is a divergence in the SEPARATOR, so it is only
+ * visible in the string a human actually sees.
+ */
+async function pageSasRendered(page) {
+  return page.evaluate(() => {
+    const el = document.querySelector('[data-cc-sas-digits]');
+    if (!el) return null;
+    return { text: (el.textContent ?? '').trim(), attr: el.getAttribute('data-cc-sas-digits') };
+  }).catch(() => null);
+}
+
+/** The phone hero face's raw text attribute — separators and all. */
+function phoneHeroSasRendered(xml) {
+  const node = /<node[^>]*resource-id="[^"]*id\/homeSasCode"[^>]*>/.exec(xml)?.[0];
+  if (!node) return null;
+  return {
+    text: /text="([^"]*)"/.exec(node)?.[1] ?? '',
+    contentDesc: /content-desc="([^"]*)"/.exec(node)?.[1] ?? '',
+  };
+}
+
 /** Is the page's SAS dialog open? */
 async function pageSasOpen(page) {
   try { return (await page.locator('[data-cc-sas-open="true"]').count()) > 0; } catch { return false; }
@@ -554,6 +740,21 @@ async function main() {
   let tls = null; let appProxy = null; let db = null; let user = null; let peer = null;
   const proxyReqs = []; const tlsErrors = [];
 
+  // R1 condition 3 capture. `frameWindow` labels which part of the run each
+  // phone frame belongs to, so "while ON" is a window this harness OPENED and
+  // CLOSED around a known pairing rather than a guess made afterwards from
+  // timestamps. Frames seen outside any window keep the label 'pre-pairing'.
+  let frameWindow = 'pre-pairing';
+  const phoneFrames = [];
+  /** M-A6-2 evidence, carried into the artefact as its own rows. */
+  const m6a2 = { listBefore: null, phoneDeviceIds: [], phoneRowIds: [], c2: null };
+  /** M-A6-5 evidence: the two RENDERED strings, read off the live surfaces. */
+  let m6a5 = null;
+  const onPhoneFrame = (raw) => {
+    const c = classifyPhoneFrame(raw);
+    phoneFrames.push({ i: phoneFrames.length + 1, t: new Date().toISOString(), window: frameWindow, ...c });
+  };
+
   try {
     await withRealRelay({
       cwd: ROOT, logDir: LOG_DIR, databaseUrl: DB_URL, label: 'p61b-crossimpl',
@@ -567,6 +768,7 @@ async function main() {
         onRequest: (r) => proxyReqs.push(`${r.method} ${r.url.split('?')[0]}`),
         onUpgrade: (r) => { proxyReqs.push(`UPGRADE ${r.url.split('?')[0]}`); console.log(`  [phone-proxy] UPGRADE ${r.url.split('?')[0]}`); },
         onTlsError: (e) => { tlsErrors.push(String(e.message)); console.log(`  [phone-proxy] TLS ERROR ${e.message}`); },
+        onPhoneFrame,
       });
       scope.push('phone: REAL debug APK (vc59, built from this tree) on a rooted API-34 AVD, reaching the relay through a TLS terminator as https://computercaller.com — the host the APK hardcodes. No app file edited.');
 
@@ -615,6 +817,46 @@ async function main() {
       }, 120_000, 2000);
       check('PRE-phone the RELAY observed the real app open /relay/phone', !!phoneOnWire, phoneOnWire || 'no phone join line');
 
+      // ── M-A6-2(a) — register-on-login, evidenced BEFORE any pairing ───────
+      //
+      // Security graded M-A6-2 NOT MET on P6.1c with the reason that matters:
+      // "Inference from a successful pin is not evidence." A pair that pins
+      // successfully PROVES a row existed, but it proves it after the fact and
+      // only as a by-product. The MUST is that the phone registers its key when
+      // it SIGNS IN — so the only honest evidence is the registry read at a
+      // moment when no pairing has been offered and none could have created the
+      // row. That moment is here: sign-in has happened, the phone is on the
+      // wire, and the first BROWSER_REQUEST_PAIRING is still below.
+      //
+      // ids only (A4-M5): deviceId, kind, revokedAt. No publicKey bytes.
+      const listBefore = await fetchRegistry(relay.httpBase, user.phoneToken);
+      const liveRows = listBefore.rows.filter((r) => !r.revokedAt);
+      const phoneRows = liveRows.filter((r) => String(r.kind || '').toLowerCase().includes('phone'));
+      m6a2.listBefore = {
+        ok: listBefore.ok,
+        reason: listBefore.reason ?? null,
+        userId: listBefore.userId,
+        rows: liveRows.map((r) => ({ id: r.id, deviceId: r.deviceId, kind: r.kind, revokedAt: r.revokedAt ?? null })),
+        pairingOfferedYet: false,
+      };
+      fs.writeFileSync(path.join(LOG_DIR, `devicekeys-list-before-pairing-${STAMP}.json`),
+        JSON.stringify(m6a2.listBefore, null, 2), 'utf8');
+
+      check('M-A6-2a  GET /api/devicekeys/list answered as the phone\'s user, BEFORE any pairing was offered',
+        listBefore.ok, listBefore.ok
+          ? `${liveRows.length} live row(s); top-level userId=${listBefore.userId}`
+          : `registry read failed: ${listBefore.reason}`);
+      check('M-A6-2b  a LIVE phone DeviceKey row exists at that moment (register-on-login, not register-on-pair)',
+        phoneRows.length >= 1,
+        phoneRows.length
+          ? phoneRows.map((r) => `deviceId=${r.deviceId} kind=${r.kind}`).join(' | ')
+          : `no phone-kind row; kinds present: ${liveRows.map((r) => r.kind).join(',') || '(none)'}`);
+      check('M-A6-2c  the registry states the SAME account id the page derives its context under (R-BH option B)',
+        listBefore.ok && listBefore.userId === row.id,
+        `list.userId=${listBefore.userId} vs seeded User.id=${row.id}`);
+      m6a2.phoneDeviceIds = phoneRows.map((r) => r.deviceId);
+      m6a2.phoneRowIds = phoneRows.map((r) => r.id);
+
       // Console transcripts are flushed at TEARDOWN, not here. Writing them at
       // this point captured only the bring-up: the first run produced an empty
       // page-console log and the pairing's own reasoning — the thing the
@@ -637,6 +879,12 @@ async function main() {
         // M-A6-4 phase 1 — the pair is deliberately left UNCONFIRMED, because
         // "an armed-but-unconfirmed session must not carry user traffic" is a
         // claim that can only be tested while it is unconfirmed.
+        // R1 condition 3 — open the window. Everything the phone puts on the
+        // wire from here until the window closes is attributed to this ON
+        // pairing by construction, not by reading timestamps afterwards.
+        const onWindowFrom = phoneFrames.length + 1;
+        frameWindow = 'S1-ON';
+
         const r = await pairOnce(page, adb, { label: 'S1', shots: true, sasAnswer: { phone: true, page: true } });
         if (r) {
           const chip = await pageChip(page);
@@ -657,6 +905,44 @@ async function main() {
           check('S1-item7  the five-digit SAS is IDENTICAL on the phone hero face and the page dialog',
             !!r.sas.phone && !!r.sas.page && r.sas.phone === r.sas.page,
             `phone(hero)=${r.sas.phone} page(dialog)=${r.sas.page}`);
+
+          // ── M-A6-5 — grouping parity, read off the RENDERED surfaces ─────
+          //
+          // R-BK froze the rendering as UNGROUPED five digits on every surface.
+          // Item 7 above compares NORMALISED digits and passed on P6.1c even
+          // though the phone rendered "316 44" and the page "31 644" — which is
+          // exactly why Security had to find M-A6-5 by opening two PNGs by hand.
+          // These checks put that comparison in the harness: the strings must be
+          // contiguous digits, equal to each other, AND equal to the digits the
+          // driver scraped, so a future regrouping on either surface goes red
+          // here instead of surviving to a screenshot review.
+          const phRend = r.sas.phoneRendered?.text ?? null;
+          const pgRend = r.sas.pageRendered?.text ?? null;
+          const ungrouped = (s) => typeof s === 'string' && /^[0-9]{5}$/.test(s);
+          check('M-A6-5a  the PHONE hero face renders five contiguous digits, no separator',
+            ungrouped(phRend), `phone rendered "${phRend}"`);
+          check('M-A6-5b  the PAGE dialog renders five contiguous digits, no separator',
+            ungrouped(pgRend), `page rendered "${pgRend}"`);
+          check('M-A6-5c  the two RENDERED strings are equal, and equal to the digits the driver scraped',
+            ungrouped(phRend) && phRend === pgRend && phRend === r.sas.phone && phRend === r.sas.page,
+            `phone="${phRend}" page="${pgRend}" scraped(phone)=${r.sas.phone} scraped(page)=${r.sas.page}`);
+          if (!(ungrouped(phRend) && ungrouped(pgRend) && phRend === pgRend)) {
+            finding('A6-P61D-M-A6-5-LIVE',
+              'the two SAS surfaces still do not render the same string',
+              `phone hero face rendered "${phRend}", page dialog rendered "${pgRend}". R-BK froze UNGROUPED five digits on every surface. Recorded, NOT patched (product frozen); this blocks the flip.`);
+          }
+          m6a5 = { phoneRendered: phRend, pageRendered: pgRend, phoneContentDesc: r.sas.phoneRendered?.contentDesc ?? null, pageAttr: r.sas.pageRendered?.attr ?? null };
+
+          // ── M-A6-2(b) — C-2 returned Verified for the PHONE's kid, live ───
+          //
+          // The phone's own armed line is where C-2's verdict becomes
+          // observable: PhoneService.kt:2903 sets e2eVerified =
+          // E2eKeyPin.isVerified(verdict) and prints it as `verified=` on the
+          // same line as the kid. isVerified is TRUE only for Verdict.Verified
+          // — a fail-open (FailOpenUnverified) pair still arms and still reads
+          // mode=UNVERIFIED/verified=false, so this distinguishes "the registry
+          // confirmed the peer" from "the registry was unreachable and we
+          // proceeded anyway", which is the whole point of the MUST.
 
           check('S1-a64-a  NO sealed frame before EITHER confirmation (M-A6-4: unconfirmed pair carries no traffic)',
             !r.armedPreConfirm,
@@ -686,6 +972,20 @@ async function main() {
             `phone Matches tapped=${r.answered.phone} page confirm clicked=${r.answered.page}`);
           check('S1-a64-c  the pair seals ONLY AFTER BOTH confirmations (M-A6-4 second half)',
             !!armed2, armed2?.line || 'no "E2E armed" line even after both confirmations');
+
+          // M-A6-2(b), continued from the comment above.
+          m6a2.c2 = {
+            kid: armed2?.kid ?? null,
+            mode: armed2?.mode ?? null,
+            verified: armed2?.verified ?? null,
+            line: armed2?.line ?? null,
+            phoneDeviceIdsAtLogin: m6a2.phoneDeviceIds,
+          };
+          check('M-A6-2d  C-2 returned VERIFIED for the phone\'s own kid on the live pairing',
+            armed2?.verified === true && !!armed2?.kid,
+            armed2
+              ? `kid=${armed2.kid} mode=${armed2.mode} verified=${armed2.verified}`
+              : 'no armed line to read a C-2 verdict from');
 
           // M-A6-1 SECOND HALF — the Critical MUST. Snapshotted HERE, right
           // after THIS pairing's confirmations, because the page console is
@@ -720,12 +1020,79 @@ async function main() {
             { field: 'browser e2e advert (relay-observed)', phone: null, page: advert, sw: null, match: null },
             { field: 'SAS digits (read off the two SURFACES)', phone: r.sas.phone, page: r.sas.page, sw: 'ABSENT — no SAS impl in the shipped extension', match: !!r.sas.phone && r.sas.phone === r.sas.page },
             { field: 'SAS_REQUIRED receiver match count (M-A6-3)', phone: String(r.sas.receiverMatches), page: null, sw: null, match: r.sas.receiverMatches >= 1 },
-            { field: 'sealed BEFORE confirmation (M-A6-4)', phone: r.armed ? 'YES — unexpected' : 'no', page: null, sw: null, match: !r.armed },
+            // Security 2026-09-21 §4 VOIDED the previous version of this row: it
+            // printed `r.armed` — the POST-both-confirm line, identical to the row
+            // below — under a label that reads "before confirmation". The row said
+            // "sealed before confirmation: YES" in a merged evidence artefact while
+            // the underlying checks (S1-a64-a/-b) both passed. The truth-bearing
+            // field has always been `armedPreConfirm` (captured at :320 from the
+            // pre-confirm logcat window and asserted at :662); print THAT.
+            { field: 'sealed BEFORE confirmation (M-A6-4)', phone: r.armedPreConfirm ? 'YES — unexpected' : 'no', page: null, sw: null, match: !r.armedPreConfirm },
             { field: 'sealed AFTER both confirmations (M-A6-4)', phone: armed2 ? 'yes' : 'NO', page: null, sw: null, match: !!armed2 },
             { field: 'kid', phone: armed2?.kid ?? null, page: null, sw: st?.kid ?? null, match: !!armed2?.kid && !!st?.kid && armed2.kid === st.kid },
             { field: 'mode', phone: armed2?.mode ?? null, page: chip, sw: st?.mode ?? null, match: null },
             { field: 'phone armed line (post-confirm)', phone: armed2?.line ?? '(none)', page: null, sw: null, match: !!armed2 },
           ]);
+
+          // ── R1 condition 3 — close the window and count ──────────────────
+          //
+          // Security's condition: from the recips1 live ON pairing, prove ZERO
+          // plaintext user frames from the phone while ON. Counted from the
+          // phone's own post-TLS wire (see makeWsFrameReader's header for why
+          // the relay log cannot answer this), over a window this harness
+          // opened at the pairing and closes here.
+          frameWindow = 'post-S1';
+          const onWindowTo = phoneFrames.length;
+          const win = phoneFrames.filter((f) => f.window === 'S1-ON');
+          const winUser = win.filter((f) => f.userFrame);
+          const winPlain = winUser.filter((f) => f.sealed === false);
+          const framesPath = path.join(LOG_DIR, `phone-frames-${STAMP}.log`);
+          fs.writeFileSync(framesPath,
+            ['# phone -> relay, read post-TLS in the harness\'s own terminator.',
+              '# columns: idx iso window type user sealed bytes',
+              ...phoneFrames.map((f) => `${f.i} ${f.t} window=${f.window} type=${f.type} user=${f.userFrame ? 1 : 0} sealed=${f.sealed === null ? '-' : (f.sealed ? 1 : 0)} bytes=${f.bytes}`),
+            ].join('\n'), 'utf8');
+
+          check('R1-c3  ZERO plaintext user frames from the phone while the pairing is ON',
+            winPlain.length === 0,
+            `${winUser.length} user frame(s) from the phone while ON, ${winPlain.length} without the {e,kid,s,c} envelope` +
+            (winPlain.length ? ` — types: ${[...new Set(winPlain.map((f) => f.type))].join(',')}` : ''));
+          if (winPlain.length) {
+            finding('A6-P61D-PLAINTEXT-WHILE-ON',
+              'the phone emitted a user frame with no envelope while the pairing was ON',
+              `${winPlain.length} frame(s): ${winPlain.map((f) => `#${f.i} ${f.type} ${f.bytes}B`).join(', ')}. See ${framesPath}. Recorded, NOT patched.`);
+          }
+          // The SW's own counters are the second half of the condition: nothing
+          // may have been badge-credited as a plaintext success.
+          const swAfter = await swState(sw);
+          emit('S1c — R1 condition 3: zero plaintext phone frames while ON',
+            `Counted on the phone's post-TLS wire inside this harness's TLS terminator, NOT from the relay log — server.js frameLabel (:113-116) prints only type= and bytes=, so a sealed and a plaintext frame of the same type are indistinguishable there at any verbosity. Window = frames ${onWindowFrom}..${onWindowTo} of ${framesPath}.`, [
+              { field: 'evidence file', phone: framesPath, page: null, sw: null, match: null },
+              { field: 'window (line range in that file, data lines)', phone: `${onWindowFrom}..${onWindowTo}`, page: null, sw: null, match: null },
+              { field: 'phone frames while ON (all types)', phone: String(win.length), page: null, sw: null, match: null },
+              { field: 'of those, USER frames (SPEC 13.7 sealed list)', phone: String(winUser.length), page: null, sw: null, match: null },
+              { field: 'of those, PLAINTEXT (no {e,kid,s,c} envelope)', phone: String(winPlain.length), page: null, sw: null, match: winPlain.length === 0 },
+              { field: 'SW badge-credited plaintext successes', phone: null, page: null, sw: JSON.stringify(swAfter?.counts ?? swAfter?.drops ?? null), match: null },
+            ]);
+
+          // ── M-A6-5 row ───────────────────────────────────────────────────
+          emit('S1d — M-A6-5: SAS grouping parity on the two RENDERED surfaces',
+            'Read back off the live surfaces, not off the normalised scrape. R-BK froze UNGROUPED five digits (§13.3). Screenshots for both surfaces are in this run\'s log dir and were opened before this row was written.', [
+              { field: 'phone hero face — rendered string', phone: `"${m6a5?.phoneRendered}"`, page: null, sw: null, match: /^[0-9]{5}$/.test(m6a5?.phoneRendered ?? '') },
+              { field: 'page dialog — rendered string', phone: null, page: `"${m6a5?.pageRendered}"`, sw: null, match: /^[0-9]{5}$/.test(m6a5?.pageRendered ?? '') },
+              { field: 'equal AND ungrouped on both', phone: m6a5?.phoneRendered ?? '-', page: m6a5?.pageRendered ?? '-', sw: null, match: !!m6a5 && m6a5.phoneRendered === m6a5.pageRendered && /^[0-9]{5}$/.test(m6a5.phoneRendered ?? '') },
+              { field: 'phone TalkBack contentDescription (spoken form)', phone: `"${m6a5?.phoneContentDesc}"`, page: null, sw: null, match: null },
+            ]);
+
+          // ── M-A6-2 rows ──────────────────────────────────────────────────
+          emit('S1e — M-A6-2: device-key registration on login',
+            'The listing is taken AFTER cold sign-in and BEFORE any pairing was offered, which is the only ordering that distinguishes register-on-login from register-on-pair. ids only (A4-M5) — no publicKey bytes.', [
+              { field: 'GET /api/devicekeys/list (pre-pairing) answered', phone: m6a2.listBefore?.ok ? 'yes' : `NO (${m6a2.listBefore?.reason})`, page: null, sw: null, match: !!m6a2.listBefore?.ok },
+              { field: 'live phone DeviceKey rows at that moment (deviceIds)', phone: m6a2.phoneDeviceIds.join(',') || '(none)', page: null, sw: null, match: m6a2.phoneDeviceIds.length >= 1 },
+              { field: 'top-level userId on /list vs seeded User.id (R-BH option B)', phone: String(m6a2.listBefore?.userId), page: row.id, sw: null, match: m6a2.listBefore?.userId === row.id },
+              { field: 'C-2 verdict for the PHONE\'s kid on the live pairing', phone: `kid=${m6a2.c2?.kid} verified=${m6a2.c2?.verified} mode=${m6a2.c2?.mode}`, page: null, sw: null, match: m6a2.c2?.verified === true },
+              { field: 'evidence file (pre-pairing listing)', phone: `devicekeys-list-before-pairing-${STAMP}.json`, page: null, sw: null, match: null },
+            ]);
 
           if (armed2 && armed2.sas && r.sas.phone && armed2.sas !== r.sas.phone) {
             finding('A6-P61C-SASDRIFT',
