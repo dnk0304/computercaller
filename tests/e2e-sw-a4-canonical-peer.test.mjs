@@ -38,7 +38,7 @@ import { webcrypto } from 'node:crypto';
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const subtle = webcrypto.subtle;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const V = JSON.parse(readFileSync(join(ROOT, 'tests/kdf-vectors.json'), 'utf8'));
+const V = JSON.parse(readFileSync(join(ROOT, 'tests/kdf-vectors.json'), 'utf8').replace(/\r\n?/g, '\n'));
 
 // THE VENDORED COPY — the bytes the MV3 service worker runs.
 const K = await import('../chrome-extension/e2e/kdf.mjs');
@@ -384,7 +384,7 @@ await check('A4-M3: ensureSession routes the UNWRAP failure to an abort and the 
   // broke. The length and closed-block guards stay, because they are what stand
   // between a bad slice and a body whose /…/.test() assertions would be
   // vacuously false rather than loud.
-  const src = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8')
+  const src = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8').replace(/\r\n?/g, '\n')
     .replace(/\r\n/g, '\n');
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
   const start = code.indexOf('async function ensureSession');
@@ -429,8 +429,8 @@ await check('A4.1: the e2e-pubkey bridge carries pairingId, keeps rid, and keeps
   // The contract P2 consumes, asserted on BOTH sides of the bridge so the two
   // cannot drift into agreeing about different fields:
   //   { source:'cc-ext', type:'e2e-pubkey', v:1, deviceId, pub, pairingId, rid? }
-  const shell = readFileSync(join(ROOT, 'chrome-extension/shell.js'), 'utf8');
-  const bg = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8');
+  const shell = readFileSync(join(ROOT, 'chrome-extension/shell.js'), 'utf8').replace(/\r\n?/g, '\n');
+  const bg = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8').replace(/\r\n?/g, '\n');
 
   // Page → SW. The hand-over rides the REQUEST, bounded and type-checked before
   // it reaches the worker — this branch is reachable from the app frame.
@@ -452,7 +452,7 @@ await check('A4.1: the e2e-pubkey bridge carries pairingId, keeps rid, and keeps
   // A4.1 is a CONSISTENCY pin, not the anchor: the pin lives in storage.SESSION
   // while the epoch floor (A3-M2), which IS load-bearing against nonce reuse,
   // stays in storage.local. Keeping them in different stores is the point.
-  const sws = readFileSync(join(ROOT, 'chrome-extension/e2e/sw-session.js'), 'utf8');
+  const sws = readFileSync(join(ROOT, 'chrome-extension/e2e/sw-session.js'), 'utf8').replace(/\r\n?/g, '\n');
   assert(/OWN_PAIRING_KEY[\s\S]{0,400}?sessionGet\(OWN_PAIRING_KEY\)/.test(sws),
     'the pairingId pin must live in storage.session');
   assert(/EPOCH_FLOOR_KEY = 'cc_e2e_epoch_floor'/.test(sws), 'the epoch floor must keep its own (local) key');

@@ -177,7 +177,7 @@ console.log('PART 1 — derivation');
 
 console.log('\nPART 2 — server.js really emits it');
 
-const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').replace(/\r\n?/g, '\n');
 // Strip comments before matching: a grep-proof that passes on the prose
 // DESCRIBING an invariant, rather than on the code implementing it, is a proof
 // that fails open the moment someone deletes the comment.
@@ -222,7 +222,7 @@ check('the soft-hold early return broadcasts before returning',
 
 console.log('\nPART 3 — the worker maps it correctly');
 
-const bg = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'background.js'), 'utf8')
+const bg = fs.readFileSync(path.join(ROOT, 'chrome-extension', 'background.js'), 'utf8').replace(/\r\n?/g, '\n')
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^[ \t]*\/\/.*$/gm, '');
 

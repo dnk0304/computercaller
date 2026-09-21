@@ -113,7 +113,7 @@ const ENTITLEMENT_STATES = [
 const src = require('fs').readFileSync(
   require('path').join(__dirname, '..', 'components', 'admin', 'customerRows.ts'),
   'utf8',
-);
+).replace(/\r\n?/g, '\n');
 
 const planBody = src.slice(src.indexOf('export function planPill'));
 const statusBody = src.slice(src.indexOf('export function trialStatusPill'));

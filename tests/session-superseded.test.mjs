@@ -194,7 +194,7 @@ function makeIndex(entries) {
 // contract in prose, and a grep that matches the documentation would stay green
 // through any change to the code it describes.
 {
-  const src = readFileSync(SERVER_JS, 'utf8')
+  const src = readFileSync(SERVER_JS, 'utf8').replace(/\r\n?/g, '\n')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
@@ -366,7 +366,7 @@ const supersedeScenario = twin((mode) => {
 //     touches no buffer and no body. `src` is re-read here because section 7's
 //     copy is block-scoped.
 {
-  const s2 = readFileSync(SERVER_JS, 'utf8')
+  const s2 = readFileSync(SERVER_JS, 'utf8').replace(/\r\n?/g, '\n')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   const fn = s2.slice(s2.indexOf('function supersedeWebSessions'));
