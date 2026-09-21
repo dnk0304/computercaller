@@ -642,9 +642,15 @@ try {
   mf.host_permissions = [`${ORIGIN}/*`];
   fs.writeFileSync(path.join(EXT, 'manifest.json'), JSON.stringify(mf, null, 2));
 
+  // UI-HEADER (ratified R-BO, 2026-09-21) made the wordmark ONE word everywhere
+  // — manifest name + default_title included. This assertion still demanded the
+  // two-word spelling and so failed on a value the product is now REQUIRED to
+  // have; it was the only failure in this harness's first run on 8cb6f82. It
+  // was missed because this harness is in no gate phase (tools/lib/harness-list.mjs
+  // lists it nowhere), so nothing re-ran it when the wordmark changed.
   check(
-    'manifest name is the product name in normal case (PIXEL-S2 (d))',
-    mf.name === 'Computer Caller' && mf.action.default_title === 'Computer Caller',
+    'manifest name is the product name, one word (PIXEL-S2 (d), re-pinned by UI-HEADER/R-BO)',
+    mf.name === 'ComputerCaller' && mf.action.default_title === 'ComputerCaller',
     `${mf.name} / ${mf.action.default_title}`,
   );
   for (const f of ['shell.css', 'shell.js']) {
