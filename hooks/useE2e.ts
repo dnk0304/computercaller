@@ -78,6 +78,7 @@ import {
   sasKeySet,
   viewAfterErrorDismissed,
   viewAfterPairEnded,
+  viewAfterSasConfirmed,
   withRelayAbortAccepted,
   writeEncryptedMode,
   type E2eError,
@@ -189,6 +190,17 @@ export interface E2eApi {
    * trust in it.
    */
   revokeLocalPair(reason?: string): Promise<boolean>;
+  /**
+   * SPEC 12.2 / GATE1-ADDENDUM-A6 M-A6-4. The local human answer to the
+   * blocking short-code dialog. `true` releases the block on this side;
+   * `false` returns `true` so the caller runs the EXISTING revoking teardown
+   * (revokeLocalPair -> RESET_ROOM), which is the same path "Forget this
+   * computer" and sign-out already use. There is no second refusal
+   * implementation and there is NO peer frame: confirmation is local on each
+   * side, and 13.1 puts enforcement "local, at Accept ... using only state it
+   * holds itself".
+   */
+  confirmSas(matches: boolean): boolean;
   /** Sign-out wipes SK and keeps the device key. */
   onSignOut(): void;
   /** A new pair / new epoch: drop the session so the next accept rebuilds it. */
@@ -259,6 +271,29 @@ export function useE2e(emailProp?: string | null): E2eApi {
    * refuses can simply be preceded by a disconnect.
    */
   const refuseUnsealRef = useRef(false);
+  /**
+   * SPEC 12.2, the BLOCK ITSELF. True from the moment a pair whose EFFECTIVE
+   * mode is ON computes digits, until the user answers "matches" on this side.
+   *
+   * Before E2E-P6.1c `sas.confirmed` was written `false` at every accept and
+   * set `true` by nothing, and the only thing that read it was copy
+   * (lib/encryptedModeCopy.ts: `sasIsBlocking`, and the verified/unverified
+   * badge). So the dialog blocked the SCREEN and not the SOCKET: a pair whose
+   * code the user had not checked — the exact pairing-MITM case 12.2 exists
+   * for — passed user traffic the whole time the dialog was up. This ref is
+   * what makes the answer load-bearing; the two chokepoints read it.
+   */
+  const sasPendingRef = useRef(false);
+  /**
+   * The digits the user has ALREADY confirmed on this device. Keyed by the
+   * digits and not by a bare boolean, the same way SasConfirmDialog keys its
+   * own decision: a new pairing mints new digits, so a stale confirmation
+   * cannot silently approve the next pair, while a RESUME that recomputes the
+   * SAME digits for the same live pair does not re-prompt.
+   */
+  const confirmedSasRef = useRef<string | null>(null);
+  /** The digits of the CURRENT pair — what a confirmation names. */
+  const currentSasRef = useRef<string | null>(null);
   /** The phone key THIS pair derived under — what a re-check compares against. */
   const pinnedPhoneKeyRef = useRef<string | null>(null);
   const downgradeDropsRef = useRef(0);
@@ -356,6 +391,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     pinnedPhoneKeyRef.current = null;
     latchedRef.current = false;
     sealedLatchedRef.current = false;
+    confirmedSasRef.current = null;
     try {
       // `clear` is optional on the SeqStore interface (P3 supplies its own
       // store), so this is an optional call rather than a cast.
@@ -663,6 +699,14 @@ export function useE2e(emailProp?: string | null): E2eApi {
           + 'reports (M-A5-3): the code would claim coverage it does not have');
         return true;
       }
+      // SPEC 12.2. The block is armed HERE, before the view is published, so
+      // there is no window in which the digits are on screen and the
+      // chokepoints are still open. `confirmed` is no longer hard-coded false:
+      // a resume that recomputes the same digits for the same live pair keeps
+      // the answer the user already gave, and anything else starts unconfirmed.
+      currentSasRef.current = digits;
+      const alreadyConfirmed = confirmedSasRef.current !== null && confirmedSasRef.current === digits;
+      sasPendingRef.current = decision.effective === 'on' && Boolean(digits) && !alreadyConfirmed;
       setView((v) => ({
         ...v,
         mode: 'on',
@@ -670,7 +714,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
         state: decision.state,
         error: undefined,
         peer: { supports: true, kind: swRef.current.status },
-        sas: { digits, confirmed: false, coverage },
+        sas: { digits, confirmed: alreadyConfirmed, coverage },
         debug: { ...v.debug, kid: block.kid, drops: 0 },
       }));
       return false;
@@ -708,6 +752,17 @@ export function useE2e(emailProp?: string | null): E2eApi {
 
   // ── (e) the chokepoint ──────────────────────────────────────────────────
   const sealOutbound = useCallback(async (type: string, payload: object): Promise<object> => {
+    // SPEC 12.2, outbound half. A REJECTION, not a silent pass: sendCommand
+    // already treats a rejected seal as "REFUSING to send", which is exactly
+    // the semantics wanted and is why this is not a new refusal mechanism.
+    // It sits ABOVE the `!session` arm deliberately — fail closed even in a
+    // state that should be impossible, because the alternative is shipping a
+    // user's SMS in the clear while a security dialog is on screen.
+    if (sasPendingRef.current && isSealedFrameType(type)) {
+      throw new Error(
+        'refusing ' + type + ': the pairing code has not been confirmed on this device (SPEC 12.2)',
+      );
+    }
     const session = sessionRef.current;
     if (!session || !isSealedFrameType(type)) return payload;
     if (type === 'CALL_STATUS') {
@@ -725,6 +780,10 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // That fallback would turn a revocation into a downgrade, which is the one
     // outcome worse than the staleness F1 is about.
     if (refuseUnsealRef.current) return { drop: true };
+    // SPEC 12.2, inbound half. The same block for the same reason: a peer's
+    // message must not reach the user from behind an unanswered verification
+    // dialog. `drop` is the existing inbound refusal verb — no new mechanism.
+    if (sasPendingRef.current && isSealedFrameType(type)) return { drop: true };
     const session = sessionRef.current;
     if (!session) return { drop: false, payload };
     if (!isSealedFrameType(type)) return { drop: false, payload };
@@ -797,12 +856,35 @@ export function useE2e(emailProp?: string | null): E2eApi {
     return { drop: true };
   }, []);
 
+  /**
+   * SPEC 12.2 / M-A6-4. The local answer.
+   *
+   * TRUE  — drop the block and publish `sas.confirmed = true`. The digits are
+   *         remembered so a resume of the SAME pair does not re-prompt.
+   * FALSE — the block STAYS on (fail closed, even if a caller ignores the
+   *         return value) and we return `true`, which tells usePhoneBridge to
+   *         run the teardown it already has: revokeLocalPair -> RESET_ROOM,
+   *         sticky `re-pair-needed`. Nothing new is implemented here, and in
+   *         particular no refusal frame is sent to the peer: the peer runs its
+   *         own local confirmation (13.1).
+   */
+  const confirmSas = useCallback((matches: boolean): boolean => {
+    if (!matches) return true;
+    confirmedSasRef.current = currentSasRef.current;
+    sasPendingRef.current = false;
+    setView(viewAfterSasConfirmed);
+    return false;
+  }, []);
+
   const onSignOut = useCallback(() => {
     // SK goes; the device key stays. Re-registering a key on every sign-in
     // would churn DeviceKey rows and break the C-2 pin for the other side.
     sessionRef.current = null;
     latchedRef.current = false;
     sealedLatchedRef.current = false;
+    sasPendingRef.current = false;
+    confirmedSasRef.current = null;
+    currentSasRef.current = null;
     // M-A5-1 (a): sign-out is a REVOKING act on this side. The SK goes here and
     // the SK-bound counters go with it; usePhoneBridge sends RESET_ROOM. The
     // sticky refusal is cleared because sign-out is one of the explicit user
@@ -837,6 +919,12 @@ export function useE2e(emailProp?: string | null): E2eApi {
     sessionRef.current = null;
     latchedRef.current = false;
     sealedLatchedRef.current = false;
+    // The pair is gone, so there is nothing left to block; the CONFIRMATION
+    // goes with it, because the next pair mints new digits and a carried-over
+    // answer would approve a code nobody looked at.
+    sasPendingRef.current = false;
+    confirmedSasRef.current = null;
+    currentSasRef.current = null;
     // NOT `setView(E2E_VIEW_INITIAL)`. A refusal sets state:'error' and then
     // aborts the pair, and the abort lands here — so resetting unconditionally
     // meant the error was erased by the teardown it had itself caused, and the
@@ -882,9 +970,11 @@ export function useE2e(emailProp?: string | null): E2eApi {
     e2e: view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
     dismissError, recheckPinnedKey, revokeLocalPair, noteRelayAbortAccepted,
+    confirmSas,
   }), [view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
-    dismissError, recheckPinnedKey, revokeLocalPair, noteRelayAbortAccepted]);
+    dismissError, recheckPinnedKey, revokeLocalPair, noteRelayAbortAccepted,
+    confirmSas]);
 }
 
 function fromB64(value: string): Uint8Array {

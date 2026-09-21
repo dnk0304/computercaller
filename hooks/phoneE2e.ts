@@ -745,6 +745,35 @@ export function viewAfterPairEnded(v: E2eView): E2eView {
 }
 
 /**
+ * E2E-P6.1c (2a). The local human act of SPEC 12.2: the user read the five
+ * digits off the phone, read them off this screen, and said they match.
+ *
+ * Pure, and a NO-OP unless there is something to confirm. Three guards, all
+ * load-bearing:
+ *
+ *  - no digits -> identity. `confirmed:true` with `digits:null` would be a
+ *    claim that a code nobody ever saw was checked, and the badge reads
+ *    `encrypted-verified` off exactly that pair of fields.
+ *  - `state:'error'` -> identity. A pair that has already refused is not
+ *    verifiable by pressing a button on the dialog that refused it; the sticky
+ *    error outranks the confirmation exactly as it outranks every other clear
+ *    that is not an explicit dismiss.
+ *  - already confirmed -> identity (the same object), so a double click costs
+ *    the caller no render.
+ *
+ * SPEC 12.2 confirmation is LOCAL on each side (13.1: "Enforcement is local,
+ * at Accept ... using only state it holds itself"), so there is deliberately
+ * no peer frame on this path and nothing here touches the wire.
+ */
+export function viewAfterSasConfirmed(v: E2eView): E2eView {
+  if (!v.sas.digits) return v;
+  if (v.state === 'error') return v;
+  if (v.sas.confirmed) return v;
+  return { ...v, sas: { ...v.sas, confirmed: true } };
+}
+
+
+/**
  * An explicit user act: the dismiss/retry control, or turning encrypted mode
  * off. This is one of only two ways an error leaves the screen.
  *

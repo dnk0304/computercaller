@@ -434,6 +434,12 @@ const MIN_CHECKS_OVERRIDE = {
   // silently drops half the union cannot take the count down with it and still
   // print a cheerful N/N. Measured: 44 assertions.
   'relay:e2e-ft-sw-union.test.mjs': 44,
+  // E2E-P6.1c (2a). The SPEC 12.2 confirmation suite. Auto-discovered by the
+  // tests/e2e-*.test.mjs sweep like every other e2e-* file, so what it needs
+  // here is the half the sweep does not give it: a floor, so a deletion of the
+  // chokepoint assertions cannot take the count down and still print N/N.
+  // Measured at the commit that adds it: 47 assertions.
+  'relay:e2e-web-sas-confirm.test.mjs': 47,
   // FT-3b (g). The file-transfer harnesses post-date BASELINE-harness.json, so
   // the floor cannot be read from it. Measured totals at the commit that
   // registers them: ft-ui-proof 96 (FT-3b (d)), ft-web-proof 26 (FT-3a).
