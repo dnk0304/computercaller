@@ -524,6 +524,17 @@ const MIN_CHECKS_OVERRIDE = {
   // no-FT-proofs arm, and the frozen phase-set string). Re-measured: 133.
   // E2E-P4.4: 142 -> 143, the one check this lane's ctx-parity floor adds to
   // the suite. Kept exact rather than left with a point of slack.
+  // TRIAL-CAPS. tests/no-daily-caps.test.js — the SPEC-TRIAL-RULES-2026-09-21
+  // §3 pin: no daily call/SMS cap anywhere. Named explicitly in UNIT below
+  // (the sweep in step 7 matches only tests/e2e-*.test.mjs), and it needs this
+  // floor more than most, because almost everything it asserts is an ABSENCE.
+  // Its (a) source scan passes by finding nothing, so deleting a token from
+  // the alphabet, a root from the scan, or a plant from the proof makes the
+  // suite GREENER, not redder — the count is the only thing that notices. The
+  // per-token plants and the per-file allowlist checks are generated from
+  // literals, so removing any one of them shows up here as a missing check.
+  // Measured at the commit that adds it: 108 assertions.
+  'unit:no-daily-caps': 108,
   'unit:harness-list': 149,
   // E2E-P4.4. The §13.10.3 userId parity proof. Post-dates the parity baseline
   // file, so the floor cannot be read from it and has to be declared here or
@@ -1557,6 +1568,14 @@ if (WEB) {
     // needs the harness DATABASE_URL, passed explicitly below for the same
     // reason devicekey-authz does. Node-only: no browser (rule 17).
     ['soak-handshake', 'tests/soak-handshake.test.mjs', true],
+    // TRIAL-CAPS. "No call / sms limits for incoming/outgoing calls" (Dennis,
+    // 2026-09-21) is a product promise with no runtime that can break loudly:
+    // restoring a cap key, re-mounting the usage meter or re-emitting the
+    // refusal frame would just work, quietly, and the first report would come
+    // from a capped user. Named explicitly because the sweep above matches
+    // only tests/e2e-*.test.mjs. Node-only — no browser, no database (rule 17).
+    // ONLY e2e-gate.mjs change made by TRIAL-CAPS; declared in the résumé.
+    ['no-daily-caps', 'tests/no-daily-caps.test.js', true],
   ];
   // The one unit suite that needs a database, named for the same reason
   // DB_BACKED names devicekey-authz above: explicit beats widening the scrub.
