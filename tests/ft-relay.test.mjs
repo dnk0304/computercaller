@@ -969,7 +969,7 @@ for (const tier of ['trial', 'free', 'enterprise', undefined]) {
 }
 {
   // FAIL CLOSED on a DB error. This is the deliberate divergence from
-  // checkDailyOutboundLimit, which fails open — one admitted offer here is up to
+  // the removed free-tier call/SMS meter, which failed open — one admitted offer here is up to
   // 1 GB of egress, so an outage must refuse, not wave through.
   const db = { $queryRawUnsafe: async () => { throw new Error('connection refused'); }, $executeRawUnsafe: async () => 1 };
   const R = buildRelay({ db });
