@@ -229,6 +229,17 @@ class SignInActivity : AppCompatActivity() {
                 if (BuildConfig.DEBUG) {
                     android.util.Log.d(TAG, "Sign-in OK — token stored (${result.phoneToken.take(8)}…)")
                 }
+                // P6.1c 1a — SPEC v1.0 l.118: "Phone: Android Keystore …,
+                // registered on login." THIS is that line. Fire-and-forget on
+                // its own thread, the same shape as the login POST above: the
+                // navigation below does not wait for it and no failure here can
+                // stop a sign-in. A failure is retried by PhoneService on the
+                // next start and again on the next Accept.
+                val token = result.phoneToken
+                val app = applicationContext
+                Thread({
+                    E2eDeviceKeyRegistrar.ensureForThisDevice(app, "login", token)
+                }, "e2e-register-on-login").apply { isDaemon = true }.start()
                 startActivity(Intent(this, MainActivity::class.java))
                 finish()
             }

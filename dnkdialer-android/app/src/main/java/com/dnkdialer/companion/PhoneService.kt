@@ -2116,6 +2116,19 @@ class PhoneService : Service() {
         createNotificationChannel()
         createConnectionRequestChannel()
 
+        // P6.1c 1a — SPEC v1.0 l.118 "registered on login". Sign-in covers the
+        // login edge; this covers every app start where the registry has no
+        // live row for us (a register that failed while offline, a 409 during
+        // someone else's handshake, an install that signed in before this build
+        // shipped). Idempotent, so the steady state costs one GET.
+        //
+        // On the e2e executor, never the main thread: E2eDeviceKeyClient
+        // blocks. It is the same single worker the Accept uses, so a start-up
+        // registration and an Accept can never race to write the same row.
+        e2eExecutor.execute {
+            E2eDeviceKeyRegistrar.ensureForThisDevice(this, "service start")
+        }
+
         // Register the connection-request action receiver. Hooks the shared
         // serviceHandler so Accept/Decline broadcasts route through here.
         // Internal-only intents so we keep them NOT_EXPORTED to prevent
@@ -2753,13 +2766,21 @@ class PhoneService : Service() {
         pairingId: String,
         decision: E2eNegotiation.Decision.Encrypted,
     ) {
+        // ------------------------------------------------- (1a) registration
+        //
+        // P6.1c 1a. The page pins US at Accept (its C-2 check), so our row has
+        // to be in the registry BEFORE this ACCEPT reaches it — not "at some
+        // point after login". Registering here rather than only at start-up is
+        // what makes that a guarantee instead of a hope: a start-up attempt
+        // that hit a 409 or was offline retries at exactly the moment it
+        // matters. It is idempotent, so the normal case issues no write.
+        //
+        // It also returns the registry listing, which is the same round trip
+        // the (e) pin below needs — one GET, not two.
+        val registration = E2eDeviceKeyRegistrar.ensureForThisDevice(this, "accept")
+        val registry = registration.registry
+
         // ---------------------------------------------------------- (e) pin
-        val token = TokenStore.getPhoneToken(this)
-        val registry = if (token.isNullOrBlank()) {
-            E2eDeviceKeyClient.Result.Unavailable("no phone token")
-        } else {
-            E2eDeviceKeyClient.list(token)
-        }
         val verdict = E2eKeyPin.verify(decision.recipients, registry, decision.modeOn)
         if (!E2eKeyPin.mayProceed(verdict)) {
             // §13.6. A MISMATCH refuses in BOTH modes — a key that disagrees

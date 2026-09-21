@@ -47,6 +47,22 @@ object E2eDeviceKeyClient {
     private const val BASE = "https://computercaller.com/api/devicekeys"
     private const val TIMEOUT_MS = 10_000
 
+    /**
+     * P6.1c 1a — the ONLY way the instrumented suite can assert what actually
+     * goes on the wire: that the register call carries `Authorization: Bearer`
+     * and carries NO `Origin` header, and that a 409 becomes
+     * [Result.PairingInFlight]. Those are claims about HTTP, and the class doc
+     * above reasons about them at length; until now nothing checked them.
+     *
+     * `internal`, so it is reachable from `androidTest` (same module) and from
+     * nowhere else. Never assigned in `main`, so production traffic always
+     * resolves [BASE].
+     */
+    @androidx.annotation.VisibleForTesting
+    internal var baseOverride: String? = null
+
+    private val base: String get() = baseOverride ?: BASE
+
     /** A row as the registry reports it. */
     data class DeviceKeyRow(
         val deviceId: String,
@@ -99,7 +115,7 @@ object E2eDeviceKeyClient {
             // the caller from the bearer.
         }.toString()
 
-        return request("POST", "$BASE/register", phoneToken, body) { json ->
+        return request("POST", "$base/register", phoneToken, body) { json ->
             val row = parseRow(json.getJSONObject("key"))
             row to json.optBoolean("rotated", false)
         }
@@ -107,7 +123,7 @@ object E2eDeviceKeyClient {
 
     /** The caller's OWN rows. There is no userId parameter, by design. Blocking. */
     fun list(phoneToken: String, includeRevoked: Boolean = true): Result<List<DeviceKeyRow>> {
-        val url = "$BASE/list" + if (includeRevoked) "" else "?includeRevoked=0"
+        val url = "$base/list" + if (includeRevoked) "" else "?includeRevoked=0"
         return request("GET", url, phoneToken, null) { json ->
             val arr: JSONArray = json.optJSONArray("keys") ?: JSONArray()
             (0 until arr.length()).map { parseRow(arr.getJSONObject(it)) }
@@ -117,7 +133,7 @@ object E2eDeviceKeyClient {
     /** Revoke a device's key. Blocking. */
     fun revoke(phoneToken: String, deviceId: String): Result<Pair<DeviceKeyRow, Boolean>> {
         val body = JSONObject().apply { put("deviceId", deviceId) }.toString()
-        return request("POST", "$BASE/revoke", phoneToken, body) { json ->
+        return request("POST", "$base/revoke", phoneToken, body) { json ->
             parseRow(json.getJSONObject("key")) to json.optBoolean("alreadyRevoked", false)
         }
     }
