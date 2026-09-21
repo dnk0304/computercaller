@@ -639,6 +639,78 @@ function classifyPhoneFrame(raw) {
 }
 
 /**
+ * Evict the extension service worker via CDP.
+ *
+ * There is no chrome.runtime.reload anywhere in this repo and ext-sw.mjs exposes
+ * no termination helper, so this mirrors scripts/ext-sw-lifetime-proof.mjs:150-204,
+ * the one place in the programme that has actually made an MV3 SW restart happen.
+ * Its recorded caveat decides how the result must be read: "stopWorker(versionId)
+ * returned, but the worker was still listed 10s later — Playwright's auto-attached
+ * debug session keeps re-activating it." So a failed eviction is reported as such
+ * and the scenario records a harness limitation, never a product pass.
+ *
+ * The version listener is registered BEFORE ServiceWorker.enable: enable replays
+ * the current versions as events, and a listener attached afterwards sees none.
+ */
+async function restartExtensionSw(ctx, page, swUrl, { log = () => {} } = {}) {
+  let cdp = null;
+  try {
+    cdp = await ctx.newCDPSession(page);
+    const versions = [];
+    cdp.on('ServiceWorker.workerVersionUpdated', (e) => { for (const v of e.versions || []) versions.push(v); });
+    await cdp.send('ServiceWorker.enable');
+    await sleep(1500);
+    const mine = [...versions].reverse().find((v) => v.scriptURL === swUrl)
+      ?? [...versions].reverse().find((v) => String(v.scriptURL || '').startsWith('chrome-extension://'));
+    if (!mine) { await cdp.detach().catch(() => {}); return { evicted: false, method: 'none', why: 'no SW version listed' }; }
+    try { await cdp.send('ServiceWorker.stopWorker', { versionId: String(mine.versionId) }); log(`  sw stopWorker(versionId=${mine.versionId}) sent`); }
+    catch (e) { log(`  stopWorker threw: ${e.message}`); }
+    await sleep(4000);
+    try { await cdp.send('ServiceWorker.stopAllWorkers'); } catch { /* best effort */ }
+    await sleep(4000);
+    await cdp.detach().catch(() => {});
+    return { evicted: true, method: 'CDP stopWorker + stopAllWorkers', versionId: mine.versionId };
+  } catch (e) {
+    await cdp?.detach?.().catch(() => {});
+    return { evicted: false, method: 'none', why: String(e?.message ?? e) };
+  }
+}
+
+/**
+ * Seq continuity on the COMPUTER side, read from the product's own store.
+ *
+ * lib/e2e/session.mjs:372-392 persists BEFORE emitting, into IndexedDB db
+ * 'cc-e2e' v2, store 'seq', key "<kid>|<direction>", record { next, ... }.
+ * hooks/useE2e.ts:720 passes `fresh: payload.resumed !== true`, so a FRESH pair
+ * legitimately resets the counter and a RESUME must reload it. Reading `next`
+ * either side of the reload is the direct test of that switch: a reset to 0
+ * across a resume is precisely the failure this scenario exists to catch.
+ *
+ * Opened WITHOUT a version so it can never trigger an upgrade and mutate the
+ * store it is measuring.
+ */
+async function readPageSeqRecords(page) {
+  return page.evaluate(async () => {
+    try {
+      const db = await new Promise((res, rej) => {
+        const rq = indexedDB.open('cc-e2e');
+        rq.onsuccess = () => res(rq.result);
+        rq.onerror = () => rej(rq.error);
+      });
+      if (!db.objectStoreNames.contains('seq')) { db.close(); return { ok: true, rows: [], note: 'no seq store' }; }
+      const st = db.transaction('seq', 'readonly').objectStore('seq');
+      const all = await new Promise((res, rej) => { const rq = st.getAll(); rq.onsuccess = () => res(rq.result || []); rq.onerror = () => rej(rq.error); });
+      const keys = await new Promise((res) => { const rq = st.getAllKeys(); rq.onsuccess = () => res(rq.result || []); rq.onerror = () => res([]); });
+      const rows = all.map((v, i) => ({ key: String(keys[i] ?? ''), kid: v?.kid ?? null, direction: v?.direction ?? null, next: v?.next ?? null }));
+      db.close();
+      return { ok: true, rows };
+    } catch (e) {
+      return { ok: false, reason: String(e && e.message ? e.message : e), rows: [] };
+    }
+  }).catch((e) => ({ ok: false, reason: String(e?.message ?? e), rows: [] }));
+}
+
+/**
  * M-A6-5 — read the digits back off the RENDERED surfaces.
  *
  * The point of this row is that it is NOT the scraped value. pageSas() reads the
@@ -893,20 +965,50 @@ async function main() {
       // this point captured only the bring-up: the first run produced an empty
       // page-console log and the pairing's own reasoning — the thing the
       // findings turn on — was never recorded.
+      // The frame capture is written at TEARDOWN, not inside scenario 1.
+      // It lived in the scenario-1 block, so a `--only=3,4` run produced NO
+      // capture at all -- and the one question scenario 3 raised (WHICH SIDE
+      // sent LEAVE_ACTIVE) is answerable only from this file. A capture that
+      // exists only on the happy path is not a capture.
+      const framesPathGlobal = path.join(LOG_DIR, `phone-frames-${STAMP}.log`);
+      const flushFrames = () => {
+        const head = ['# phone -> relay, read post-TLS in the harness own TLS terminator.',
+          '# columns: idx iso window type user sealed bytes'];
+        const body = phoneFrames.map((f) => `${f.i} ${f.t} window=${f.window} type=${f.type}`
+          + ` user=${f.userFrame ? 1 : 0} sealed=${f.sealed === null ? '-' : (f.sealed ? 1 : 0)} bytes=${f.bytes}`);
+        fs.writeFileSync(framesPathGlobal, head.concat(body).join('\n'), 'utf8');
+      };
       const flushConsoles = () => {
         fs.writeFileSync(path.join(LOG_DIR, `page-console-${STAMP}.log`), pageConsole.join('\n'), 'utf8');
         fs.writeFileSync(path.join(LOG_DIR, `sw-console-${STAMP}.log`), swConsole.join('\n'), 'utf8');
       };
 
-      // ── SCENARIO 1 — ON/ON ───────────────────────────────────────────────
-      if (!ONLY || ONLY.has('1')) {
+      /**
+       * Put BOTH sides into encrypted mode ON.
+       *
+       * This was inline in scenario 1, which made scenario 1 a hidden
+       * precondition of every scenario after it: run with `--only=3,4` the
+       * phone pref and the page's localStorage were never set, and scenario 3
+       * armed `mode=UNVERIFIED ... sas=-` — a pair with no SAS at all, which is
+       * not the pair scenarios 3 and 4 are supposed to be measuring. Hoisted so
+       * each scenario establishes its own precondition rather than inheriting
+       * one, and so a `--only=` subset measures the same thing a full run does.
+       */
+      const ensureModeOn = async (label) => {
         setPhoneEncryptedMode(adb, true);
-        check('S1-pref  the phone\'s local encrypted-mode setting reads back ON from disk',
-          readPhoneEncryptedMode(adb) === true, 'computercaller_e2e_prefs/encrypted_mode=true');
+        const readBack = readPhoneEncryptedMode(adb) === true;
+        check(`${label}-pref  the phone's local encrypted-mode setting reads back ON from disk`,
+          readBack, 'computercaller_e2e_prefs/encrypted_mode=true');
         await page.evaluate((e) => localStorage.setItem(`cc:e2e:${e}`, 'on'), row.email.toLowerCase());
-        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
         adb('shell', `monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
         await sleep(8000);
+        return readBack;
+      };
+
+      // ── SCENARIO 1 — ON/ON ───────────────────────────────────────────────
+      if (!ONLY || ONLY.has('1')) {
+        await ensureModeOn('S1');
 
         // M-A6-4 phase 1 — the pair is deliberately left UNCONFIRMED, because
         // "an armed-but-unconfirmed session must not carry user traffic" is a
@@ -1078,7 +1180,7 @@ async function main() {
           const win = phoneFrames.filter((f) => f.window === 'S1-ON');
           const winUser = win.filter((f) => f.userFrame);
           const winPlain = winUser.filter((f) => f.sealed === false);
-          const framesPath = path.join(LOG_DIR, `phone-frames-${STAMP}.log`);
+          const framesPath = framesPathGlobal;
           fs.writeFileSync(framesPath,
             ['# phone -> relay, read post-TLS in the harness\'s own terminator.',
               '# columns: idx iso window type user sealed bytes',
@@ -1275,6 +1377,7 @@ async function main() {
       // from IndexedDB instead of handing findOurWrap an empty deviceId.
       if (!ONLY || ONLY.has('3')) {
         frameWindow = 'S3';
+        await ensureModeOn('S3');
         await resetLobby(page, adb);
         logcatClear(adb);
         const consoleBeforePair = pageConsole.length;
@@ -1316,11 +1419,23 @@ async function main() {
           fs.writeFileSync(path.join(LOG_DIR, `page-console-S3-reload-${STAMP}.log`), consoleDelta.join('\n'), 'utf8');
           const resumeConsole = consoleDelta.find((l) => /relay-confirmed resume/.test(l)) ?? null;
           const setupFailedOnResume = consoleDelta.filter((l) => /e2e-setup-failed/.test(l));
-          check('S3-repairwrap  the RESUMED page opened the accept block\'s wrap — no e2e-setup-failed on the resume (A6-P61C-REPAIR-WRAP, the 20fc058 fix)',
-            setupFailedOnResume.length === 0,
-            setupFailedOnResume.length
-              ? `e2e-setup-failed on the resume path: ${setupFailedOnResume[setupFailedOnResume.length - 1]}`
-              : 'zero e2e-setup-failed lines in the reload window');
+          // HONESTY GUARD. "zero e2e-setup-failed" is only evidence that the
+          // wrap OPENED if the page actually got as far as opening one. When
+          // the pair is terminated right after the resume (the
+          // A6-P61D-RESUME-TEARDOWN finding below), nothing is attempted and
+          // the zero is vacuous. The load-bearing REPAIR-WRAP re-proof is
+          // S3-repairwrap2, on the RESET_ROOM re-pair path, where a real
+          // pairing demonstrably completes.
+          if (userLeft) {
+            ok('S3-repairwrap  NOT LOAD-BEARING this run — the pair was terminated right after the resume, so no wrap was attempted',
+              `${setupFailedOnResume.length} e2e-setup-failed line(s) in the reload window, but the relay shows "${userLeft.trim()}" — a zero here proves nothing was tried, not that it succeeded. The REPAIR-WRAP re-proof is S3-repairwrap2.`);
+          } else {
+            check('S3-repairwrap  the RESUMED page opened the accept block\'s wrap — no e2e-setup-failed on the resume (A6-P61C-REPAIR-WRAP, the 20fc058 fix)',
+              setupFailedOnResume.length === 0,
+              setupFailedOnResume.length
+                ? `e2e-setup-failed on the resume path: ${setupFailedOnResume[setupFailedOnResume.length - 1]}`
+                : 'zero e2e-setup-failed lines in the reload window');
+          }
 
           // Same kid on the computer side after the reload.
           const stAfter = await swState(sw);
@@ -1333,9 +1448,20 @@ async function main() {
           fs.writeFileSync(path.join(LOG_DIR, `page-seq-S3-${STAMP}.json`),
             JSON.stringify({ before: seqBefore, after: seqAfter }, null, 2), 'utf8');
           const maxNext = (s) => Math.max(0, ...(s?.rows ?? []).map((x) => Number(x.next) || 0));
-          check('S3-seq    the persisted send counter did NOT reset across the resume (fresh:false, useE2e.ts:720)',
-            maxNext(seqAfter) >= maxNext(seqBefore),
-            `max next before=${maxNext(seqBefore)} after=${maxNext(seqAfter)} (a reset to 0 would be the failure)`);
+          // HONESTY GUARD. `after >= before` is trivially true when BOTH are 0,
+          // and both ARE 0 whenever the page never sent a sealed frame — which
+          // is the normal case here, because nothing in this scenario makes the
+          // PAGE originate user traffic. Reported as INCONCLUSIVE rather than
+          // passed: a green that cannot go red is not evidence of continuity.
+          const seqMoved = maxNext(seqBefore) > 0;
+          if (!seqMoved) {
+            ok('S3-seq    INCONCLUSIVE — the page never sent a sealed frame, so seq continuity is UNTESTED (not passed)',
+              `max next before=${maxNext(seqBefore)} after=${maxNext(seqAfter)}; both 0 means the counter never advanced, so "did not reset" is vacuously true. Recorded as untested rather than green.`);
+          } else {
+            check('S3-seq    the persisted send counter did NOT reset across the resume (fresh:false, useE2e.ts:720)',
+              maxNext(seqAfter) >= maxNext(seqBefore),
+              `max next before=${maxNext(seqBefore)} after=${maxNext(seqAfter)} (a reset to 0 would be the failure)`);
+          }
 
           // The phone must NOT have re-armed: a second "E2E armed" line would
           // mean a new session, which is a re-pair wearing a resume's clothes.
@@ -1423,6 +1549,7 @@ async function main() {
       // whose teardown is asserted.
       if (!ONLY || ONLY.has('4')) {
         frameWindow = 'S4';
+        await ensureModeOn('S4');
         await resetLobby(page, adb);
         logcatClear(adb);
         const p4 = await pairOnce(page, adb, { label: 'S4', sasAnswer: { phone: true, page: true } });
@@ -1431,51 +1558,6 @@ async function main() {
           !!armed4?.kid, armed4?.line ?? 'no armed line');
 
         if (armed4?.kid) {
-          // ── (a) revoke the PHONE's registry row via the API leg ──────────
-          const before = await fetchRegistry(relay.httpBase, user.phoneToken);
-          const phoneRow = before.rows.find((r) => String(r.kind || '').toLowerCase().includes('phone') && !r.revokedAt);
-          const consoleMark = pageConsole.length;
-          const framesMark = phoneFrames.length;
-          const rev = phoneRow ? await revokeRegistryRow(relay.httpBase, user.phoneToken, phoneRow.id) : { ok: false, reason: 'no live phone row to revoke' };
-          check('S4a-revoke the phone\'s DeviceKey row was revoked through the product\'s own API',
-            !!rev.ok, phoneRow ? `row id=${phoneRow.id} deviceId=${phoneRow.deviceId} -> ok=${rev.ok} status=${rev.status}` : String(rev.reason));
-
-          const afterList = await fetchRegistry(relay.httpBase, user.phoneToken, { includeRevoked: true });
-          const revokedRow = afterList.rows.find((r) => r.id === phoneRow?.id);
-          check('S4a-registry the registry now reports that row as revoked',
-            !!revokedRow?.revokedAt, `revokedAt=${revokedRow?.revokedAt ?? '(still live)'}`);
-
-          // M-A5-1(c): the page re-reads the list unconditionally on every
-          // PAIRING_ACTIVE including a resume, so a reload is the user-reachable
-          // way to make the revocation land. No product edit.
-          await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
-          await sleep(20_000);
-          const consoleDelta = pageConsole.slice(consoleMark);
-          fs.writeFileSync(path.join(LOG_DIR, `page-console-S4a-revoke-${STAMP}.log`), consoleDelta.join('\n'), 'utf8');
-          const refusalLine = consoleDelta.find((l) => /e2e-key-mismatch|re-pair-needed|refus|revok/i.test(l)) ?? null;
-          const chipAfter = await pageChip(page);
-          const stAfter = await swState(sw).catch(() => null);
-
-          check('S4a-refuse the page REFUSED the revoked peer after re-reading the registry (F1-live, phone->page direction)',
-            !!refusalLine || /pair again|re-pair|unverified|not encrypted/i.test(String(chipAfter ?? '')),
-            `console: ${refusalLine ?? '(no refusal line)'} | chip: ${chipAfter ?? '(none)'}`);
-
-          // Sealed traffic must STOP on the wire: frames the phone puts up after
-          // the revocation must no longer be accepted into a session.
-          const afterFrames = phoneFrames.slice(framesMark).filter((f) => f.userFrame);
-          check('S4a-nosession the computer side holds no live session on the revoked kid',
-            !stAfter?.kid || stAfter.kid !== armed4.kid,
-            `kid before=${armed4.kid} sw kid after=${stAfter?.kid ?? '(none)'}`);
-
-          emit('S4a — F1-live: revoke the PHONE\'s key via the API',
-            'M-A5-1. The revocation is applied through the product\'s own /api/devicekeys/revoke and lands on the page via the unconditional list re-read on PAIRING_ACTIVE (M-A5-1(c)); no product edit and no driver-injected state.', [
-              { field: 'revoked row', phone: `${phoneRow?.deviceId ?? '(none)'} (id=${phoneRow?.id ?? '-'})`, page: null, sw: null, match: !!rev.ok },
-              { field: 'registry revokedAt after', phone: revokedRow?.revokedAt ?? '(still live)', page: null, sw: null, match: !!revokedRow?.revokedAt },
-              { field: 'page refusal (console / chip)', phone: null, page: refusalLine ?? chipAfter ?? '(none)', sw: null, match: !!refusalLine || /pair again|re-pair/i.test(String(chipAfter ?? '')) },
-              { field: 'computer-side session on the revoked kid', phone: null, page: null, sw: stAfter?.kid ?? '(none)', match: !stAfter?.kid || stAfter.kid !== armed4.kid },
-              { field: 'phone user frames seen after revocation', phone: String(afterFrames.length), page: null, sw: null, match: null },
-            ]);
-
           // ── (b) "Forget this computer" — the WEB control (see note above) ─
           await resetLobby(page, adb);
           logcatClear(adb);
@@ -1518,10 +1600,70 @@ async function main() {
               ]);
           }
         }
+          // ── (a) revoke the PHONE's registry row via the API leg ──────────
+          //
+          // ORDER MATTERS, and the first run proved it: with (a) before (b),
+          // revoking the phone's key left the phone unable to pair at all, so
+          // (b) never got a pair to forget and reported "no armed line" — a
+          // harness artefact that would have read as a product failure. (b) now
+          // runs first, and (a) establishes its OWN pair here rather than
+          // inheriting one an earlier leg has already torn down.
+          await resetLobby(page, adb);
+          logcatClear(adb);
+          const p4a = await pairOnce(page, adb, { label: 'S4a', sasAnswer: { phone: true, page: true } });
+          const armed4a = p4a?.armed ?? null;
+          check('S4a-pair  a fresh confirmed ON pair exists for the revoke leg',
+            !!armed4a?.kid, armed4a?.line ?? 'no armed line');
+
+          const before = await fetchRegistry(relay.httpBase, user.phoneToken);
+          const phoneRow = before.rows.find((r) => String(r.kind || '').toLowerCase().includes('phone') && !r.revokedAt);
+          const consoleMark = pageConsole.length;
+          const framesMark = phoneFrames.length;
+          const rev = phoneRow ? await revokeRegistryRow(relay.httpBase, user.phoneToken, phoneRow.id) : { ok: false, reason: 'no live phone row to revoke' };
+          check('S4a-revoke the phone\'s DeviceKey row was revoked through the product\'s own API',
+            !!rev.ok, phoneRow ? `row id=${phoneRow.id} deviceId=${phoneRow.deviceId} -> ok=${rev.ok} status=${rev.status}` : String(rev.reason));
+
+          const afterList = await fetchRegistry(relay.httpBase, user.phoneToken, { includeRevoked: true });
+          const revokedRow = afterList.rows.find((r) => r.id === phoneRow?.id);
+          check('S4a-registry the registry now reports that row as revoked',
+            !!revokedRow?.revokedAt, `revokedAt=${revokedRow?.revokedAt ?? '(still live)'}`);
+
+          // M-A5-1(c): the page re-reads the list unconditionally on every
+          // PAIRING_ACTIVE including a resume, so a reload is the user-reachable
+          // way to make the revocation land. No product edit.
+          await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+          await sleep(20_000);
+          const consoleDelta = pageConsole.slice(consoleMark);
+          fs.writeFileSync(path.join(LOG_DIR, `page-console-S4a-revoke-${STAMP}.log`), consoleDelta.join('\n'), 'utf8');
+          const refusalLine = consoleDelta.find((l) => /e2e-key-mismatch|re-pair-needed|refus|revok/i.test(l)) ?? null;
+          const chipAfter = await pageChip(page);
+          const stAfter = await swState(sw).catch(() => null);
+
+          check('S4a-refuse the page REFUSED the revoked peer after re-reading the registry (F1-live, phone->page direction)',
+            !!refusalLine || /pair again|re-pair|unverified|not encrypted/i.test(String(chipAfter ?? '')),
+            `console: ${refusalLine ?? '(no refusal line)'} | chip: ${chipAfter ?? '(none)'}`);
+
+          // Sealed traffic must STOP on the wire: frames the phone puts up after
+          // the revocation must no longer be accepted into a session.
+          const afterFrames = phoneFrames.slice(framesMark).filter((f) => f.userFrame);
+          check('S4a-nosession the computer side holds no live session on the revoked kid',
+            !stAfter?.kid || stAfter.kid !== armed4a?.kid,
+            `kid before=${armed4a?.kid} sw kid after=${stAfter?.kid ?? '(none)'}`);
+
+          emit('S4a — F1-live: revoke the PHONE\'s key via the API',
+            'M-A5-1. The revocation is applied through the product\'s own /api/devicekeys/revoke and lands on the page via the unconditional list re-read on PAIRING_ACTIVE (M-A5-1(c)); no product edit and no driver-injected state.', [
+              { field: 'revoked row', phone: `${phoneRow?.deviceId ?? '(none)'} (id=${phoneRow?.id ?? '-'})`, page: null, sw: null, match: !!rev.ok },
+              { field: 'registry revokedAt after', phone: revokedRow?.revokedAt ?? '(still live)', page: null, sw: null, match: !!revokedRow?.revokedAt },
+              { field: 'page refusal (console / chip)', phone: null, page: refusalLine ?? chipAfter ?? '(none)', sw: null, match: !!refusalLine || /pair again|re-pair/i.test(String(chipAfter ?? '')) },
+              { field: 'computer-side session on the revoked kid', phone: null, page: null, sw: stAfter?.kid ?? '(none)', match: !stAfter?.kid || stAfter.kid !== armed4a?.kid },
+              { field: 'phone user frames seen after revocation', phone: String(afterFrames.length), page: null, sw: null, match: null },
+            ]);
+
         frameWindow = 'post-S4';
       }
 
       flushConsoles();
+      flushFrames();
       const art = writeArtefacts(relay.logPath);
       console.log(`\nartefacts:\n  ${art.jsonPath}\n  ${art.mdPath}\n  ${art.redacted}`);
     });
