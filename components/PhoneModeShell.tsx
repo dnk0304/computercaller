@@ -65,6 +65,7 @@ import { useDialpadOpen } from '@/lib/dialpadPref';
 import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterBar';
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
 import { CallHistoryEntries, useCallHistoryEntries } from '@/components/CallHistoryEntries';
+import LoadMoreButton from '@/components/LoadMoreButton';
 import { useExtensionTabBadges } from '@/hooks/useExtensionTabBadges';
 import {
   PhoneModeCallBanner,
@@ -710,17 +711,33 @@ function ExtDialerView() {
   // Newest-first, deduped by number — the "redial" model, same as DialerView.
   // Dedupe runs AFTER filtering so a search for a missed call doesn't get
   // swallowed by a later answered call to the same number.
-  const recent = useMemo(() => {
+  //
+  // EXT-HIST: the dedupe no longer stops at 30. It used to `break` there, which
+  // meant the 31st distinct number was not merely hidden — it did not exist, so
+  // nothing could reveal it and the panel silently truncated a user's history.
+  // We now dedupe the whole filtered log (O(n), exactly what the Dashboard
+  // does) and page the RESULT client-side. There is no deeper phone fetch for
+  // calls anywhere in the product: the phone pushes its call log whole
+  // (CALL_LOGS / CALL_LOGS_CHUNK) and both surfaces page what already arrived.
+  const deduped = useMemo(() => {
     const seen = new Set<string>();
     const out: { id: string; number: string; name?: string; date: number; type: string }[] = [];
     for (const log of filter.filteredCallLogs) {
       if (seen.has(log.number)) continue;
       seen.add(log.number);
       out.push({ id: log.id, number: log.number, name: log.name, date: log.date, type: log.type });
-      if (out.length >= 30) break;
     }
     return out;
   }, [filter.filteredCallLogs]);
+
+  // Same first page as before (30) and the same +25 step the web call list
+  // uses, so the two surfaces page at the same rhythm.
+  const [callDisplayCount, setCallDisplayCount] = useState(30);
+  const recent = useMemo(
+    () => deduped.slice(0, callDisplayCount),
+    [deduped, callDisplayCount],
+  );
+  const hasMoreCalls = deduped.length > callDisplayCount;
 
   const [now, setNow] = useState<number>(() => Date.now());
   useEffect(() => {
@@ -888,6 +905,19 @@ function ExtDialerView() {
                 );
               })
             )}
+            {/* EXT-HIST (c). Inside the <ul> so it scrolls with the rows it
+                extends rather than floating as a fixed footer over them; in an
+                <li> because a bare <button> is not valid list content. */}
+            {hasMoreCalls && (
+              <li className="cc-load-more-row px-2.5 pb-2">
+                <LoadMoreButton
+                  testId="ext-calls"
+                  label="Load 25 more"
+                  remaining={deduped.length - callDisplayCount}
+                  onClick={() => setCallDisplayCount((prev) => prev + 25)}
+                />
+              </li>
+            )}
           </ul>
         </div>
       )}
@@ -918,9 +948,55 @@ interface ThreadRow {
 }
 
 function TextsView() {
-  const { messages, contacts } = usePhone();
+  const phone = usePhone();
+  const { messages, contacts, isConnected } = phone;
   const { push } = usePhoneMode();
   const [search, setSearch] = useState('');
+
+  /*
+   * EXT-HIST (a) — stage-2 "load older from the phone".
+   *
+   * Stage 1 (the web app's "Load 500 more" client reveal) is deliberately NOT
+   * ported: this list already renders every thread in the store. What it could
+   * not do was ask the phone for history older than what has synced, which is
+   * the only thing the button on /app actually fetches.
+   *
+   * These three come off the bridge through the same defensive cast the
+   * Dashboard uses — they are not on the `PhoneState` type yet, and a lane
+   * that widens that type is out of this brief's scope (FEATURE-SPEC §5).
+   * Every read falls back to the value that HIDES or disables the control, so
+   * a bridge without them degrades to today's behaviour rather than to a
+   * button that throws.
+   */
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+  const loadOlderThreads = (phone as any).loadOlderThreads as
+    | ((before: number, limit: number) => void)
+    | undefined;
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+  const hasMoreOlderOnPhone: boolean = (phone as any).hasMoreOlderOnPhone ?? true;
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+  const isLoadingOlderThreads: boolean = (phone as any).isLoadingOlderThreads ?? false;
+
+  // The `before` cursor for the next backward page = the date of the OLDEST
+  // message in the store across ALL threads. A reduce rather than
+  // Math.min(...map) because the spread form blows the call stack on a large
+  // store (same reason, same shape, as Dashboard's cursor).
+  const oldestLoadedDate = useMemo<number | null>(() => {
+    let min: number | null = null;
+    for (const m of messages) {
+      const d = m.date;
+      if (typeof d === 'number' && (min === null || d < min)) min = d;
+    }
+    return min;
+  }, [messages]);
+
+  const canFetchOlderThreads =
+    hasMoreOlderOnPhone && Boolean(loadOlderThreads) && oldestLoadedDate !== null;
+
+  const handleLoadOlderThreads = useCallback(() => {
+    if (!loadOlderThreads || oldestLoadedDate === null) return;
+    loadOlderThreads(oldestLoadedDate, 500);
+  }, [loadOlderThreads, oldestLoadedDate]);
   // Same store the /app Texts list reads, same keys: the extension and the web
   // app in one Chrome profile agree about what has been opened.
   const sessionUserId = useSessionUserId();
@@ -1077,6 +1153,25 @@ function TextsView() {
             </li>
           ))
         )}
+        {/* EXT-HIST (a). Under the rows, inside the scroller, so reaching it is
+            the natural end of scrolling the list — the same placement and the
+            same copy as /app. Hidden once the phone reports start-of-history;
+            disabled (with the reason in the tooltip) while the phone is away,
+            because the fetch is a frame to a device that is not listening. */}
+        {canFetchOlderThreads && (
+          <li className="cc-load-more-row px-3 pb-2">
+            <LoadMoreButton
+              testId="ext-threads-fetch"
+              label="Load older messages from phone"
+              busy={isLoadingOlderThreads}
+              disabled={!isConnected}
+              title={
+                !isConnected ? 'Connect your phone to load older messages' : undefined
+              }
+              onClick={handleLoadOlderThreads}
+            />
+          </li>
+        )}
       </ul>
     </div>
   );
@@ -1090,10 +1185,31 @@ interface ThreadViewProps {
   from?: PhoneModeTab;
 }
 
+/**
+ * How many messages one backward page asks for, and therefore the sentinel the
+ * "short page = start of history" inference is measured against. 25 is the
+ * Dashboard's PAGE_SIZE and the size `getContactMessages` requests on open —
+ * the two MUST agree or the first inference below is wrong.
+ */
+const THREAD_PAGE_SIZE = 25;
+
 function ThreadView({ threadId, from }: ThreadViewProps) {
-  const { messages, contacts, sendSms, makeCall } = usePhone();
+  const phone = usePhone();
+  const { messages, contacts, sendSms, makeCall, isConnected } = phone;
   const { pop, setTab } = usePhoneMode();
   const goBack = useCallback(() => { if (from) setTab(from); else pop(); }, [from, setTab, pop]);
+
+  // EXT-HIST (b) — per-conversation backward paging. Same defensive cast as
+  // TextsView and the Dashboard; absent functions disable the feature, never
+  // the view.
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+  const getContactMessages = (phone as any).getContactMessages as
+    | ((address: string) => void)
+    | undefined;
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+  const loadOlderMessages = (phone as any).loadOlderMessages as
+    | ((address: string, before: number, limit: number) => void)
+    | undefined;
 
   const threadMessages = useMemo(
     () => messages.filter(m => m.address === threadId).sort((a, b) => a.date - b.date),
@@ -1115,13 +1231,110 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
     threadMessages.length > 0 ? threadMessages[threadMessages.length - 1].date : 0,
   );
 
+  /*
+   * EXT-HIST (b) — ask the phone for this conversation's newest page on open.
+   *
+   * The store holds whatever the last global sync merged in, which for an old
+   * thread can be a single recent message. `getContactMessages` requests the
+   * newest 25 for this address; we only spend the frame when the store is
+   * short of a full page, so opening an already-synced thread costs nothing.
+   * Keyed on `threadId` alone: the view is remounted per thread (PhoneModeShell
+   * renders it with key={threadId}), and re-firing as messages merge in would
+   * loop the fetch against its own result.
+   */
+  const requestedOpenFetchFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!getContactMessages) return;
+    if (requestedOpenFetchFor.current === threadId) return;
+    requestedOpenFetchFor.current = threadId;
+    if (threadMessages.length < THREAD_PAGE_SIZE) getContactMessages(threadId);
+    // threadMessages.length is read, not tracked: this must fire once per
+    // thread, on open, against the length AT THAT MOMENT.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId, getContactMessages]);
+
+  /*
+   * Page-size sentinel. `null` = nothing paged yet, so visibility is inferred
+   * from the opening page (a thread holding a full 25 may have more behind it;
+   * a shorter one got a short page and is therefore complete). After a real
+   * load the delta decides: a full page back means there may be more, a short
+   * page — or nothing at all — is the start of history. Identical arithmetic
+   * to Dashboard's, deliberately, so the two surfaces cannot disagree about
+   * where a conversation begins.
+   */
+  const [hasMoreHistory, setHasMoreHistory] = useState<boolean | null>(null);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const pendingPrevLenRef = useRef(-1);
+
+  useEffect(() => {
+    if (pendingPrevLenRef.current < 0) return;
+    const delta = threadMessages.length - pendingPrevLenRef.current;
+    setHasMoreHistory(delta >= THREAD_PAGE_SIZE);
+    setIsLoadingOlder(false);
+    pendingPrevLenRef.current = -1;
+  }, [threadMessages.length]);
+
   // Scroll to bottom on mount and whenever a new message arrives. ref pattern
   // (not a fragment + scrollIntoView) so we own the timing and don't rely on
   // layout effects fighting each other.
+  //
+  // EXT-HIST: a PREPEND is the one length change that must NOT jump to the
+  // bottom — older messages appearing above the reader would otherwise throw
+  // them out of the passage they were reading. We snapshot the scroll metrics
+  // before the fetch and restore the reader's anchor by the height the new
+  // content added at the top.
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const isPrependingRef = useRef(false);
+  const prependScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   useEffect(() => {
+    if (isPrependingRef.current) {
+      const el = scrollerRef.current;
+      const snapshot = prependScrollRef.current;
+      if (el && snapshot) {
+        el.scrollTop = snapshot.scrollTop + (el.scrollHeight - snapshot.scrollHeight);
+      }
+      isPrependingRef.current = false;
+      prependScrollRef.current = null;
+      return;
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
   }, [threadMessages.length]);
+
+  const handleOlderClick = useCallback(() => {
+    if (isLoadingOlder || !loadOlderMessages || threadMessages.length === 0) return;
+    const oldest = threadMessages[0]; // sorted oldest->newest
+    const el = scrollerRef.current;
+    if (el) {
+      prependScrollRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+      isPrependingRef.current = true;
+    }
+    pendingPrevLenRef.current = threadMessages.length;
+    setIsLoadingOlder(true);
+    loadOlderMessages(threadId, oldest.date, THREAD_PAGE_SIZE);
+    // Safety net: if no chunk ever merges (zero rows, or a dropped socket) the
+    // resolver effect never runs, so the spinner would spin forever and the
+    // armed prepend flag would suppress the bottom-pin on the next genuine
+    // arrival. Self-disarm on the same window the Dashboard uses. A successful
+    // merge clears both first, so this is a no-op in the happy path.
+    window.setTimeout(() => {
+      isPrependingRef.current = false;
+      prependScrollRef.current = null;
+      if (pendingPrevLenRef.current < 0) return;
+      pendingPrevLenRef.current = -1;
+      setIsLoadingOlder(false);
+      setHasMoreHistory(false);
+    }, 4000);
+  }, [isLoadingOlder, loadOlderMessages, threadMessages, threadId]);
+
+  // Before any paging, infer from the opening page (see the sentinel note).
+  const showOlderButton =
+    Boolean(loadOlderMessages) &&
+    (hasMoreHistory === true ||
+      (hasMoreHistory === null && threadMessages.length >= THREAD_PAGE_SIZE));
+  // Only after a load actually resolved short — never as the opening state of
+  // a thread nobody has paged, where it would be a claim we cannot make.
+  const showBeginningDivider = hasMoreHistory === false;
 
   return (
     // min-h-0 on the column + on the message scroller below is the actual fix
@@ -1172,7 +1385,31 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
       {/* Messages scroll region. Bubbles aligned left/right by sent type;
           tight 70% max-width so a long incoming bubble can't crash into
           the right gutter. */}
-      <div className="cc-thread-scroll min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
+      <div ref={scrollerRef} className="cc-thread-scroll min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
+        {showBeginningDivider && (
+          <div className="cc-thread-begin flex select-none items-center gap-3 px-2 py-2" aria-hidden="true">
+            <span className="h-px flex-1 bg-slate-200" />
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Beginning of conversation
+            </span>
+            <span className="h-px flex-1 bg-slate-200" />
+          </div>
+        )}
+        {showOlderButton && (
+          <div className="flex justify-center py-1">
+            <LoadMoreButton
+              testId="ext-thread-older"
+              variant="pill"
+              label="Older messages"
+              busy={isLoadingOlder}
+              disabled={!isConnected}
+              title={
+                !isConnected ? 'Connect your phone to load older messages' : undefined
+              }
+              onClick={handleOlderClick}
+            />
+          </div>
+        )}
         {threadMessages.map((m) => {
           const isSent = m.type === 'sent';
           return (

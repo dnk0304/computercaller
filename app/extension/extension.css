@@ -1206,6 +1206,71 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   background-color: transparent;
   filter: brightness(1.06);
 }
+/* ---------------------------------------------------------------------------
+   LOAD-MORE — EXT-HIST / FEATURE-SPEC 1
+   ---------------------------------------------------------------------------
+   `components/LoadMoreButton.tsx` ships the /app look in Tailwind slate
+   utilities. Here it is repainted from the surface tokens so it belongs to the
+   panel in both themes instead of importing the dashboard's greys, and sized
+   with `--cc-size` so it follows the Small/Medium/Large type step like every
+   other control on this surface.
+
+   Tap target: the pill is `py-1.5` + a 1em line box. At the Large step and
+   Chrome's 1.4x zoom that measures well past the 32 px floor the spec sets;
+   `min-height` states the floor explicitly rather than leaving it to arithmetic
+   that a future type-step change could quietly break.
+   --------------------------------------------------------------------------- */
+.cc-ext .cc-load-more {
+  color: var(--cc-sec);
+  font-size: calc(var(--cc-size, 13px) - 1px);
+  min-height: 32px;
+}
+.cc-ext .cc-load-more:not(:disabled):hover {
+  color: var(--cc-ink);
+  background-color: var(--cc-zebra);
+}
+.cc-ext .cc-load-more:disabled {
+  color: var(--cc-mut);
+}
+/* The pill variant carries a filled ground on /app; here the ground is the
+   panel's own field colour so it reads as a control, not as a card. */
+.cc-ext .cc-load-more.rounded-full,
+.cc-ext .cc-load-more.rounded-full:disabled {
+  background-color: var(--cc-field);
+}
+.cc-ext .cc-load-more.rounded-full:not(:disabled):hover {
+  background-color: var(--cc-chip-bd);
+}
+.cc-ext .cc-load-more:focus-visible {
+  outline: 2px solid var(--cc-ring);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* The thread-list button lives in an <li> of `cc-card-list`, which turns every
+   child <li> into a card. A control is not an object in that list, so it opts
+   out of the card exactly the way the empty state does. */
+.cc-ext .cc-card-list > li.cc-load-more-row,
+.cc-ext .cc-list > li.cc-load-more-row {
+  background: transparent;
+  border: 0;
+  margin: 0;
+}
+.cc-ext .cc-card-list > li.cc-load-more-row > button {
+  border-radius: var(--r-btn);
+  padding: 8px 9px;
+}
+
+/* "Beginning of conversation" — the divider that says a thread is fully read
+   back, not merely cut off. Hairline and muted ink from the surface tokens so
+   it recedes; it is a full stop, not an announcement. */
+.cc-ext .cc-thread-begin > span:first-child,
+.cc-ext .cc-thread-begin > span:last-child {
+  background-color: var(--cc-hair);
+}
+.cc-ext .cc-thread-begin > span:nth-child(2) {
+  color: var(--cc-mut);
+}
 
 /* ===========================================================================
    TYPE SIZE — Small / Medium / Large, and the weight step
