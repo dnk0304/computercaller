@@ -1,0 +1,52 @@
+# E2E-P2.7 — web frame classifier (R-BM). Evidence.
+# base 2cfe0ff · branch e2e/p2.7-web-classifier · node v24.12.0 · 2026-09-21T14:48:06Z
+
+## suite
+e2e-web-frame-classifier: 174/174 checks passed
+exit=0
+
+## plant proof
+  CLEAN   exit 0 — e2e-web-frame-classifier: 174/174 checks passed
+  RED     P1 — the pre-P2.7 EXCLUSION rule is restored
+          -> 70 failures in the control-plane family, the behaviour cells and the parity cell — e2e-web-frame-classifier: 104/174 checks passed
+          FAIL  (b) the plant actually changed the source
+          FAIL  (b) ...and GET_MESSAGES is STILL plaintext (MANDATORY_PLAINTEXT outranks it) — no frozen SEALED_FRAME_TYPES to plant into
+          FAIL  (b) ...and GET_CALL_LOGS is STILL plaintext (MANDATORY_PLAINTEXT outranks it) — no frozen SEALED_FRAME_TYPES to plant into
+          FAIL  (b) ...and GET_CONTACTS is STILL plaintext (MANDATORY_PLAINTEXT outranks it) — no frozen SEALED_FRAME_TYPES to plant into
+  RED     P2 — GET_MESSAGES is added to the sealed set and the guard removed
+          -> 8 failures in the mandatory-plaintext trio (billing enforcement) — e2e-web-frame-classifier: 166/174 checks passed
+          FAIL  (b) GET_MESSAGES is mandatorily plaintext
+          FAIL  (b) ...and GET_MESSAGES is STILL plaintext (MANDATORY_PLAINTEXT outranks it)
+          FAIL  (b) ...and GET_CALL_LOGS is STILL plaintext (MANDATORY_PLAINTEXT outranks it)
+          FAIL  (b) ...and GET_CONTACTS is STILL plaintext (MANDATORY_PLAINTEXT outranks it)
+  RED     P3 — one §13.7 type is dropped from the web list (silent drift)
+          -> 5 failures in the three-way parity cell — e2e-web-frame-classifier: 169/174 checks passed
+          FAIL  (a) SIM_LIST is sealed
+          FAIL  (d) the web list has 28 entries — got 27 want 28
+          FAIL  (d) web == Android — got "CALL_ADD,CALL_ANSWERED,CALL_ENDED,CALL_INCOMING,CALL_LOGS,CALL_LOGS_CHUNK,CALL_LOG_ENTRY,CALL_REMOVE,CALL_UPDATE,CALL_
+          FAIL  (d) web == §13.7 — got "CALL_ADD,CALL_ANSWERED,CALL_ENDED,CALL_INCOMING,CALL_LOGS,CALL_LOGS_CHUNK,CALL_LOG_ENTRY,CALL_REMOVE,CALL_UPDATE,CALL_WA
+  RED     P4 — the FILE family is dropped from the predicate (FT-A1 §3 (C))
+          -> 12 failures in the FILE_* cells and the stripped-FILE_OFFER latch — e2e-web-frame-classifier: 162/174 checks passed
+          FAIL  (a) FILE_OFFER is sealed (FT-A1 §3 (C))
+          FAIL  (a) FILE_ACCEPT is sealed (FT-A1 §3 (C))
+          FAIL  (a) FILE_REJECT is sealed (FT-A1 §3 (C))
+          FAIL  (a) FILE_CHUNK is sealed (FT-A1 §3 (C))
+e2e-p27-plant-proof: 4/4 plants went red, clean source green
+exit=0
+
+## floors (direct, node-only lane — no gate lane exists per RESUME-PROTOCOL v2.6)
+tests/e2e-web-policy.test.mjs :: exit=0 :: e2e-web-policy: 151/151 checks passed
+tests/e2e-sw-passthrough.test.mjs :: exit=0 :: 112/112 passed
+tests/e2e-sw-chokepoint.test.mjs :: exit=0 :: 28/28 checks passed
+tests/e2e-key-lifecycle.test.mjs :: exit=0 :: e2e-key-lifecycle: 182 passed, 0 failed (182 checks across 16 scenario groups; 9 lifecycle scenarios = brief 6 ∪ M-C 6, 3 shared, + C-2 cross-cutting)
+tests/harness-list.test.mjs :: exit=0 :: 149/149 checks passed
+tests/e2e-web-sas-confirm.test.mjs :: exit=0 :: e2e-web-sas-confirm: 58/58 checks passed
+tests/e2e-web-epoch-floor.test.mjs :: exit=0 :: e2e-web-epoch-floor: 123/123 checks passed
+tests/e2e-mixed-mode-matrix.test.mjs :: exit=0 :: assertions: 111 passed, 0 failed
+tests/e2e-web-error-state.test.mjs :: exit=0 :: e2e-web-error-state: 64/64 checks passed
+
+## tsc
+bunx tsc --noEmit -> exit 0
+
+## eslint (android reports dir deleted first, R-BI b)
+bunx eslint . -> 109 problems (34 errors, 75 warnings) — baseline at 2cfe0ff is 109; grown 0
