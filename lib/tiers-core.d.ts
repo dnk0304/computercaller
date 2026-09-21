@@ -39,19 +39,11 @@ export interface TierLimits {
   calls?: boolean;
   /** Descriptive: trial receives notifications (ON). Present only on the `trial` set. */
   notifications?: boolean;
-  /**
-   * Daily OUTBOUND call cap (dispatch forge/free-tier-p1). Present ONLY on the
-   * `free` set — a finite number here marks the tier as metered by the relay;
-   * every paid tier omits it (→ unlimited). Resets at midnight UTC.
-   */
-  callsPerDay?: number;
-  /** Daily OUTBOUND message cap. Present ONLY on the `free` set; see callsPerDay. */
-  messagesPerDay?: number;
 }
 
 /** Machine-readable upgrade signal for a tier at a cap (Pixel renders the prompt). */
 export interface UpgradePath {
-  /** 'trial-limit-hit' | 'plus-limit-hit' | null (top/grandfathered → null). */
+  /** 'free-tier' | 'trial-limit-hit' | 'plus-limit-hit' | null (top/grandfathered → null). */
   reason: string | null;
   /** 'activate-5' | 'upgrade-7' | null. */
   cta: string | null;
@@ -104,4 +96,4 @@ export function syncSinceFloorMsFromLimits(
 export function upgradePathForTier(tier: string): UpgradePath;
 
 /** The upgrade reason strings, named. */
-export const UPGRADE_REASON: { FREE_LIMIT: string; TRIAL_LIMIT: string; PLUS_LIMIT: string };
+export const UPGRADE_REASON: { FREE_TIER: string; TRIAL_LIMIT: string; PLUS_LIMIT: string };
