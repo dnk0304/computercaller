@@ -60,6 +60,7 @@ import {
 import { pairContextFromWire, canonicalPeerDeviceId } from '@/lib/e2e/kdf.mjs';
 import {
   createComputerSession,
+  hasSeqRecord,
   indexedDbSeqStore,
   openWrap,
   SeqFailClosedError,
@@ -678,13 +679,26 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // is taken from the CTX rather than from the DeviceKey API row: the floor
     // must be keyed by the identity the derivation actually used, or a phone
     // that changed rows would be filed under a floor that guards nothing.
+    //
+    // P2.6: the position is ALSO what keeps Security MUST #2 true. C-2's pin,
+    // the unconditional revocation refusal and `decideAccept`'s effective-mode
+    // evaluation all ran above, on THIS message — a resume is not a shortcut
+    // past any of them, so a pair refused at C-2 (the S4a revoke case) is
+    // refused again here before an admitted resume can reach a key. If this
+    // call is ever moved above them, that property is gone; the ordering is
+    // asserted in tests/e2e-web-epoch-floor.test.mjs.
+    let admitted: Awaited<ReturnType<typeof admitPairEpoch>>;
     try {
-      await admitPairEpoch({
+      admitted = await admitPairEpoch({
         store: keyStoreRef.current,
         key,
         userId,
         phoneDeviceId: context.phoneDeviceId,
         pairEpoch: context.pairEpoch,
+        // The BLOCK's kid, not a remembered one: this is the value the resume
+        // has to match, and it is the same field openWrap derives from below.
+        kid: block.kid,
+        hasSeqState: (kid) => hasSeqRecord({ store: indexedDbSeqStore(), kid }),
       });
     } catch (e) {
       if (e instanceof EpochFloorError) {
@@ -717,7 +731,18 @@ export function useE2e(emailProp?: string | null): E2eApi {
       const session = await createComputerSession({
         pairingId: context.pairingId, sessionKey, context: context.contextBytes,
         kid: block.kid, pairEpoch: context.pairEpoch,
-        store: indexedDbSeqStore(), fresh: payload.resumed !== true,
+        store: indexedDbSeqStore(),
+        // P2.6. `fresh` says "this kid was minted NOW", and an ADMITTED RESUME
+        // is the proof that it was not: same epoch, same kid, same SK about to
+        // be re-derived. That evidence comes from the key schedule and from
+        // storage we own, so it OVERRIDES the relay's `resumed` bit rather than
+        // trusting it — a relay that omitted `resumed` on a soft-hold resume
+        // would otherwise have restarted this counter at 0 under a key that has
+        // already sealed, which is the exact GCM nonce reuse A3-M2 refuses.
+        // `resumed` still decides the case admitPairEpoch cannot see (a NEW
+        // epoch delivered on a resumed socket), so both inputs are kept and
+        // neither can be the only one saying "not fresh".
+        fresh: admitted.resume ? false : payload.resumed !== true,
       });
       sessionKey.fill(0);
       sessionRef.current = session;

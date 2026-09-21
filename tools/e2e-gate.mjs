@@ -458,6 +458,15 @@ const MIN_CHECKS_OVERRIDE = {
   // moves WITH the suite deliberately - a floor left at 47 would let all
   // eleven rendering checks be deleted and still print a cheerful N/N.
   'relay:e2e-web-sas-confirm.test.mjs': 58,
+  // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
+  // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
+  // table is a FLOOR — and it needs one more than most: the suite's whole job
+  // is to keep a security cell from being widened, and the cheapest way to
+  // widen it is to delete the cell that refuses. Measured at the commit that
+  // adds it: 123 assertions (the five cells, the `resumed`-is-not-an-input
+  // section, the replayed P6.1d S3 console shape, Security MUSTs #1-#4, the
+  // v2->v3 record carry-forward, and three plants that must go red).
+  'relay:e2e-web-epoch-floor.test.mjs': 123,
   // E2E-P6.1c (2b). The advert/attribution suite for A6-P61B-5. Same reasoning
   // as above: auto-discovered, so the floor is what it needs from this table.
   // Measured at the commit that adds it: 44 assertions.

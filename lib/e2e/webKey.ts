@@ -57,10 +57,36 @@ import {
  * machine" against an old record). There is no upgrade path from v1 on purpose:
  * migrating would mean inventing a floor, and the only honest floor for a
  * record that never had one is "none yet, and no key either".
+ *
+ * v3 (E2E-P2.6, A6-P61D-RESUME-TEARDOWN) adds `epochFloorKids`: the accept
+ * block's `kid` at the moment each floor was admitted. It is what lets the
+ * equal-epoch case be split (see {@link admitPairEpoch}) instead of being
+ * refused wholesale, which is what killed a pair on a bare page reload.
+ *
+ * v2 IS READ, unlike v1, and this is not the same decision. v1 was rejected
+ * because it had no floor at all, so keeping it would have thrown the control
+ * away. A v2 record HAS every floor; it is only missing the kids. Carrying it
+ * forward invents nothing: the kid map starts empty, every v2-era floor is
+ * therefore "kid unknown", and a kid-unknown floor REFUSES the equal-epoch case
+ * exactly as v2 did (P2.6 rule 4 — no migration, no guessed kid). The next
+ * genuine re-pair writes a real kid and the pair gets the new behaviour. The
+ * record is re-stamped `v: 3` on the next store write, so an OLDER build that
+ * later reads it gets `WebKeyRecordVersionError` — the same loud mechanism,
+ * not a second one.
  */
 import { rememberWebDeviceKeyId } from './webKeyId.ts';
 
-export const WEB_KEY_RECORD_VERSION = 2;
+export const WEB_KEY_RECORD_VERSION = 3;
+
+/**
+ * Versions this build can READ. Everything outside it — a v1 record, or one
+ * from a future build — is `WebKeyRecordVersionError`. Writes are always at
+ * {@link WEB_KEY_RECORD_VERSION}.
+ */
+export const SUPPORTED_WEB_KEY_RECORD_VERSIONS: readonly number[] = Object.freeze([2, 3]);
+
+/** A `kid` is 1..128 chars — the same pin lib/e2eBlock-core.js applies to a block. */
+export const EPOCH_FLOOR_KID_MAX = 128;
 
 /** Uncompressed SEC1 P-256 point: 0x04 ‖ X(32) ‖ Y(32). */
 export const SEC1_P256_BYTES = 65;
@@ -133,6 +159,21 @@ export interface WebDeviceKeyRecord {
    * asserts the stored record has no prefix-shaped field at all.
    */
   epochFloors: Record<string, string>;
+  /**
+   * A6-P61D / P2.6. The accept block's `kid` that was in force when the
+   * matching {@link epochFloors} entry was written, under the SAME key.
+   *
+   * A SEPARATE map rather than a richer floor value on purpose: a v2 record's
+   * floors then keep their exact stored spelling (a decimal string) and are
+   * read by the unchanged, well-tested `hydrateEpochFloors`, while the kid is
+   * simply absent — which is the honest statement "this floor was written by a
+   * build that did not record one" and the state that refuses an equal epoch.
+   *
+   * ABSENCE IS THE SAFE VALUE IN BOTH DIRECTIONS. A floor with no kid refuses
+   * the equal-epoch case; a kid with no floor is not reachable (the floor is
+   * always written first, in the same record) and would be ignored.
+   */
+  epochFloorKids: Record<string, string>;
 }
 
 /**
@@ -146,22 +187,57 @@ export interface WebDeviceKeyRecord {
  * is total. The SAS would also mismatch, but §13 makes the SAS explicitly
  * non-blocking, so it cannot be the control here.
  */
+export type EpochFloorRefusal =
+  /** `pairEpoch < floor` — a strictly superseded epoch. */
+  | 'below-floor'
+  /** `pairEpoch === floor` and the block's kid is NOT the one admitted at that floor. */
+  | 'kid-mismatch'
+  /** `pairEpoch === floor` and the floor predates P2.6, so no kid was recorded. */
+  | 'kid-unknown'
+  /**
+   * `pairEpoch === floor`, the kid matches, but the kid has NO seq history left
+   * to continue (Security MUST #1). The floor and the counters live in two
+   * object stores and can be lost independently; a resume onto a counter that
+   * is gone is a counter restarting at 0 under a key the phone has sealed with.
+   */
+  | 'seq-state-missing';
+
+const EPOCH_FLOOR_WHY =
+  'accepting it would restart a seq counter at 0 against a key that has already sealed frames.';
+
 export class EpochFloorError extends Error {
   readonly code = 'e2e-epoch-replayed';
   /** The hook state this maps to — abandon the pair and force a rekey. */
   readonly state = 're-pair-needed';
   readonly floor: bigint;
   readonly offered: bigint;
-  constructor(floor: bigint, offered: bigint, scope: string) {
+  /** WHICH of the three refusing cells fired. Diagnostic; the code is unchanged. */
+  readonly reason: EpochFloorRefusal;
+  constructor(floor: bigint, offered: bigint, scope: string, reason: EpochFloorRefusal) {
     super(
-      `E2E pairEpoch ${offered} is at or below the stored floor ${floor} for ${scope}: ` +
-        'refusing the pairing (A3-M2 epoch monotonicity). This is what a replayed ' +
-        'ACCEPT_PAIRING looks like; accepting it would restart a seq counter at 0 ' +
-        'against a key that has already sealed frames.',
+      reason === 'below-floor'
+        ? `E2E pairEpoch ${offered} is below the stored floor ${floor} for ${scope}: ` +
+            `refusing the pairing (A3-M2 epoch monotonicity). This is what a replayed ` +
+            `ACCEPT_PAIRING looks like; ${EPOCH_FLOOR_WHY}`
+        : reason === 'kid-mismatch'
+          ? `E2E pairEpoch ${offered} equals the stored floor ${floor} for ${scope} but the ` +
+            `block's kid is NOT the one admitted at that floor: refusing the pairing ` +
+            `(A3-M2). A resume of the same pair carries the same kid; a different kid at ` +
+            `the same epoch is a replay or a re-key that failed to bump, and ${EPOCH_FLOOR_WHY}`
+          : reason === 'kid-unknown'
+            ? `E2E pairEpoch ${offered} equals the stored floor ${floor} for ${scope}, which was ` +
+              `written before kids were recorded, so the resume cannot be told from a replay: ` +
+              `refusing the pairing (A3-M2). Pair again from your phone to record one; ${EPOCH_FLOOR_WHY}`
+            : `E2E pairEpoch ${offered} equals the stored floor ${floor} for ${scope} under the ` +
+              `expected kid, but that kid has no seq history left to continue: refusing the ` +
+              `pairing (A3-M2 + A2). The counter store was cleared or restored while the floor ` +
+              `survived, so resuming would start a counter the phone believes has already run, and ` +
+              `${EPOCH_FLOOR_WHY}`,
     );
     this.name = 'EpochFloorError';
     this.floor = floor;
     this.offered = offered;
+    this.reason = reason;
   }
 }
 
@@ -334,6 +410,8 @@ export async function generateWebDeviceKey(
     // pinning). An empty map is the honest starting state; a map seeded with
     // zeroes would refuse a legitimate first pair at epoch 0.
     epochFloors: {},
+    // No floors means no kids. Same TOFU argument.
+    epochFloorKids: {},
     pubB64Url: toBase64Url(raw),
   };
 }
@@ -375,7 +453,9 @@ export function hydrateRecord(raw: unknown): WebDeviceKey {
     throw new WebKeyRecordShapeError('not an object');
   }
   const r = raw as Record<string, unknown>;
-  if (r.v !== WEB_KEY_RECORD_VERSION) throw new WebKeyRecordVersionError(r.v);
+  if (typeof r.v !== 'number' || !SUPPORTED_WEB_KEY_RECORD_VERSIONS.includes(r.v)) {
+    throw new WebKeyRecordVersionError(r.v);
+  }
   if (typeof r.deviceId !== 'string' || r.deviceId.length === 0 || r.deviceId.length > 128) {
     throw new WebKeyRecordShapeError('deviceId must be a 1..128 char string');
   }
@@ -411,6 +491,7 @@ export function hydrateRecord(raw: unknown): WebDeviceKey {
     privateKey,
     publicKey,
     epochFloors: hydrateEpochFloors(r.epochFloors),
+    epochFloorKids: hydrateEpochFloorKids(r.epochFloorKids),
     pubB64Url: toBase64Url(pub),
   };
 }
@@ -448,6 +529,36 @@ export function hydrateEpochFloors(raw: unknown): Record<string, string> {
   return out;
 }
 
+/**
+ * The kid map. Unlike {@link hydrateEpochFloors}, ABSENT IS LEGAL and means
+ * `{}` — that is the whole v2-compatibility story (see the version header): a
+ * record written before P2.6 has floors and no kids, and an empty kid map makes
+ * every one of those floors refuse the equal-epoch case, which is precisely the
+ * v2 behaviour. Substituting `{}` here therefore removes no control.
+ *
+ * A PRESENT-BUT-MALFORMED map is still a hard shape error, for the same reason
+ * `hydrateEpochFloors` refuses one: a build that wrote kids and a reader that
+ * quietly discarded them would look identical to a legacy record while actually
+ * being a bug, and it would take the resume path away silently.
+ */
+export function hydrateEpochFloorKids(raw: unknown): Record<string, string> {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new WebKeyRecordShapeError('epochFloorKids must be a plain object when present');
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v !== 'string' || v.length === 0 || v.length > EPOCH_FLOOR_KID_MAX) {
+      throw new WebKeyRecordShapeError(
+        `epochFloorKids[${JSON.stringify(k)}] must be a 1..${EPOCH_FLOOR_KID_MAX} char string — ` +
+          `got ${typeof v} ${JSON.stringify(v)}`,
+      );
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
 /** The persisted projection — `pubB64Url` is derived, so it is NOT stored. */
 export function toRecord(key: WebDeviceKey): WebDeviceKeyRecord {
   return {
@@ -462,6 +573,10 @@ export function toRecord(key: WebDeviceKey): WebDeviceKeyRecord {
     // object with the live one, or a later in-memory write would reach storage
     // without going through admitPairEpoch's persist-before-use ordering.
     epochFloors: { ...key.epochFloors },
+    // Copied for the same reason, and ALWAYS written: a record that carried
+    // kids must never be re-persisted without them, or the next equal-epoch
+    // resume would refuse and the reload bug would be back.
+    epochFloorKids: { ...key.epochFloorKids },
   };
 }
 
@@ -649,11 +764,33 @@ export function readEpochFloor(
   return v === undefined ? null : BigInt(v);
 }
 
+/**
+ * The kid recorded with the floor, or `null` when there is none — either
+ * because the pair is unseen, or because the floor predates P2.6.
+ */
+export function readEpochFloorKid(
+  key: Pick<WebDeviceKey, 'epochFloorKids'>,
+  userId: string,
+  phoneDeviceId: string,
+): string | null {
+  const v = key.epochFloorKids[epochFloorKey(userId, phoneDeviceId)];
+  return v === undefined ? null : v;
+}
+
 export interface AdmitEpochResult {
   /** The floor now in storage — always equal to `pairEpoch` on success. */
   floor: bigint;
   /** True when this `(userId, phoneDeviceId)` had never been seen (TOFU). */
   firstSight: boolean;
+  /**
+   * True when this was the RESUME cell: the same epoch under the same kid, so
+   * no floor moved and the same session key is about to be re-derived.
+   *
+   * THE CALLER MUST NOT START A FRESH SEQ COUNTER WHEN THIS IS TRUE. Same key,
+   * same nonce prefix, a counter back at 0 = GCM nonce reuse — the failure
+   * A3-M2 exists to prevent, arriving through the door A3-M2 just opened.
+   */
+  resume: boolean;
 }
 
 /**
@@ -673,6 +810,35 @@ export interface AdmitEpochResult {
  * `pairEpoch` is a bigint because that is what `pairContextFromWire` returns;
  * there is no overload taking a number, deliberately — a `number` here is how
  * the uint64 gets rounded back.
+ *
+ * ── P2.6 / A6-P61D-RESUME-TEARDOWN: the equal-epoch cell ───────────────────
+ *
+ * v2 refused `pairEpoch === floor` outright. That is correct for a REPLAY and
+ * wrong for a RESUME, and until P2.6 the two were indistinguishable here, so a
+ * bare page reload — relay soft-hold, auto-resume, the SAME accept block
+ * re-delivered by design (P1(b)) — landed on the refusing branch and tore the
+ * pair down (`e2e-epoch-replayed` -> leaveActive -> `user_left`).
+ *
+ * The thing that tells them apart is the KID, and it is the right discriminator
+ * rather than a convenient one: the kid names the key material in the block. A
+ * resume re-delivers the same block, so the same kid; anything that would
+ * actually restart a counter against an already-sealing key — a new SK minted
+ * at a stale epoch, a second Accept that failed to bump — carries a DIFFERENT
+ * kid, and is still refused. The four cells:
+ *
+ *   pairEpoch >  floor                     -> ADMIT, floor and kid move
+ *   pairEpoch == floor && kid == floor.kid -> ADMIT AS RESUME, nothing moves
+ *   pairEpoch == floor && kid != floor.kid -> REFUSE  (kid-mismatch)
+ *   pairEpoch == floor && no stored kid    -> REFUSE  (kid-unknown, pre-P2.6)
+ *   pairEpoch <  floor                     -> REFUSE  (below-floor)
+ *
+ * WHAT IS DELIBERATELY NOT AN INPUT: the relay's `resumed` bit. It does not
+ * appear in this function and must not be passed to it. `resumed` is set by a
+ * relay-position party, and a control a relay can set is a control a relay can
+ * lift — the same argument `useE2e.ts` already makes for the sticky unseal
+ * refusal. The bit stays what it was: a UI hint and one input to the seq
+ * store's `fresh` selector. A resume is recognised from the key schedule
+ * itself, by two parties that both hold it, or it is not recognised.
  */
 export async function admitPairEpoch(opts: {
   store: WebKeyStore;
@@ -680,13 +846,29 @@ export async function admitPairEpoch(opts: {
   userId: string;
   phoneDeviceId: string;
   pairEpoch: bigint;
+  /** The accept block's `kid`. REQUIRED — see the equal-epoch cell above. */
+  kid: string;
+  /**
+   * Security MUST #1: does this kid still have seq history? Consulted ONLY on
+   * the equal-epoch cell, and its ABSENCE REFUSES — a caller that forgets to
+   * pass it does not get a silently weaker rule, it gets no resume at all.
+   * `lib/e2e/session.mjs` `hasSeqRecord` is the implementation.
+   */
+  hasSeqState?: (kid: string) => Promise<boolean> | boolean;
 }): Promise<AdmitEpochResult> {
-  const { store, key, userId, phoneDeviceId, pairEpoch } = opts;
+  const { store, key, userId, phoneDeviceId, pairEpoch, kid, hasSeqState } = opts;
   if (typeof pairEpoch !== 'bigint') {
     throw new TypeError('admitPairEpoch: pairEpoch must be a bigint (a number rounds above 2^53)');
   }
   if (pairEpoch < BigInt(0) || pairEpoch > MAX_UINT64) {
     throw new WebKeyRecordShapeError(`pairEpoch ${pairEpoch} is outside uint64`);
+  }
+  // Required, not optional-with-a-fallback. An absent kid would silently make
+  // every equal-epoch case refuse again — the bug back, and green tests.
+  if (typeof kid !== 'string' || kid.length === 0 || kid.length > EPOCH_FLOOR_KID_MAX) {
+    throw new WebKeyRecordShapeError(
+      `admitPairEpoch: kid must be a 1..${EPOCH_FLOOR_KID_MAX} char string (the accept block's kid)`,
+    );
   }
   const k = epochFloorKey(userId, phoneDeviceId);
   const existing = key.epochFloors[k];
@@ -694,19 +876,35 @@ export async function admitPairEpoch(opts: {
 
   if (!firstSight) {
     const floor = BigInt(existing);
-    // `<=`, not `<`. Re-accepting the CURRENT epoch is the replay: the phone
-    // bumps on every Accept and every Reset, so an epoch we have already
-    // installed arriving a second time is either a duplicated frame or a
-    // replayed one, and both would mint a second kid under the same epoch.
-    if (pairEpoch <= floor) throw new EpochFloorError(floor, pairEpoch, k);
+    if (pairEpoch < floor) throw new EpochFloorError(floor, pairEpoch, k, 'below-floor');
+    if (pairEpoch === floor) {
+      const storedKid = key.epochFloorKids[k];
+      if (storedKid === undefined) {
+        throw new EpochFloorError(floor, pairEpoch, k, 'kid-unknown');
+      }
+      if (storedKid !== kid) {
+        throw new EpochFloorError(floor, pairEpoch, k, 'kid-mismatch');
+      }
+      // Security MUST #1. Note the `!hasSeqState` arm: no probe = refuse.
+      if (!hasSeqState || !(await hasSeqState(kid))) {
+        throw new EpochFloorError(floor, pairEpoch, k, 'seq-state-missing');
+      }
+      // RESUME. Nothing to persist: the floor is already this epoch and the kid
+      // is already this kid, so there is no write to await and no window where
+      // storage lags memory. The ordering guarantee below is about ADVANCING a
+      // floor; a floor that does not move cannot be behind reality.
+      return { floor, firstSight: false, resume: true };
+    }
   }
 
   const next = { ...key.epochFloors, [k]: pairEpoch.toString(10) };
-  // Persist FIRST. `toRecord` copies the map, so the record written here is the
+  const nextKids = { ...key.epochFloorKids, [k]: kid };
+  // Persist FIRST. `toRecord` copies the maps, so the record written here is the
   // new floor even though `key.epochFloors` is still the old one at this line.
-  await store.put(toRecord({ ...key, epochFloors: next }));
+  await store.put(toRecord({ ...key, epochFloors: next, epochFloorKids: nextKids }));
   key.epochFloors = next;
-  return { floor: pairEpoch, firstSight };
+  key.epochFloorKids = nextKids;
+  return { floor: pairEpoch, firstSight, resume: false };
 }
 
 /**
@@ -723,6 +921,11 @@ export async function clearEpochFloors(opts: {
   store: WebKeyStore;
   key: WebDeviceKey;
 }): Promise<void> {
-  await opts.store.put(toRecord({ ...opts.key, epochFloors: {} }));
+  // BOTH maps. A kid that survived an unpair would be a kid the next floor at
+  // the same epoch could be resumed onto — the control this function exists to
+  // drop, dropped by half. (P2.6: caught by tests/e2e-web-epoch-floor.test.mjs
+  // on the first run, which is the argument for the clear having a test at all.)
+  await opts.store.put(toRecord({ ...opts.key, epochFloors: {}, epochFloorKids: {} }));
   opts.key.epochFloors = {};
+  opts.key.epochFloorKids = {};
 }
