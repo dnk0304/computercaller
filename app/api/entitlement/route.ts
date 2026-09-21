@@ -15,7 +15,6 @@ import { evaluateEntitlement, isFreeAccessEmail } from '@/lib/entitlement';
 //   state: 'active' | 'trialing' | 'trial_expired' | 'expired' | 'free_tier' | 'none' | 'admin' | 'allowlisted' | 'free_access',
 //   allowed: boolean,   // NOTE: 'free_tier' is ALLOWED — a no-subscription user
 //                       // now lands in the FULL app (free tier), not /subscribe.
-//                       // Daily call/message usage is served by GET /api/usage.
 //   trialDaysLeft: number | null,
 //   trialEndsAt: string | null,        // ADDED 2026-09-15, ISO — additive only
 //   currentPeriodEnd: string | null,   // ADDED 2026-09-15, ISO — additive only

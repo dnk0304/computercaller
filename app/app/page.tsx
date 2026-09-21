@@ -14,7 +14,6 @@ import { PermissionHint } from '@/components/PermissionHint';
 import { usePhone, useDashboardTab } from '@/hooks';
 import type { AudioSource } from '@/hooks/audioSourcePreference';
 import { PcAudioRoute, usePcAudioSelection } from '@/components/PcAudioRoute';
-import { useFreeTier } from '@/hooks/freeTierContext';
 import { User, Bell, LogOut, Phone, MessageSquare, Search, Volume2, Smartphone, Monitor, RefreshCw, ArrowDownLeft, ArrowUpRight, PhoneMissed, PhoneOff, PhoneIncoming, Clock, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -134,7 +133,6 @@ export default function Home() {
   // in the settings-load effect below.
   const [callSpeaker, setCallSpeaker] = useState<boolean>(false);
   const phone = usePhone();
-  const { guard } = useFreeTier();
   const { isConnected, contacts, callLogs, messages, makeCall, disconnect, getContacts, getCallLogs } = phone;
   // Permission-ping (2026-07-09): per-permission grant map (null = unknown on
   // APKs ≤ v48) + "Fix on phone" command sender + status re-poll.
@@ -353,7 +351,7 @@ export default function Home() {
                           </div>
                           <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                             <button
-                              onClick={() => { if (guard('call')) makeCall(log.number, callSpeaker); }}
+                              onClick={() => { makeCall(log.number, callSpeaker); }}
                               className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
                               title={`Call ${log.number}`}
                               aria-label={`Call ${displayName}`}
@@ -469,7 +467,7 @@ export default function Home() {
                         </div>
                         <div className="flex gap-2">
                           <button
-                            onClick={() => { if (guard('call')) makeCall(contact.number, callSpeaker); }}
+                            onClick={() => { makeCall(contact.number, callSpeaker); }}
                             className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors"
                           >
                             <Phone className="w-3.5 h-3.5" />

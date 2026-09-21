@@ -40,7 +40,6 @@ import { usePhone, useNotifications, getNotificationIcon, useDashboardTab, useDe
 import { useAudioSourceDefault } from '@/hooks/audioSourcePreference';
 import type { AudioSource } from '@/hooks/audioSourcePreference';
 import type { ModuleId } from '@/lib/layoutPrefs';
-import { useFreeTier } from '@/hooks/freeTierContext';
 import type { Contact, SmsMessage } from '@/hooks';
 import type { CallLogEntry } from '@/hooks/phoneTypes';
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
@@ -412,7 +411,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   void _onNavigate;
 
   const phone = usePhone();
-  const { guard } = useFreeTier();
   const {
     isConnected,
     contacts,
@@ -1092,17 +1090,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   const handleDialCall = useCallback(() => {
     const trimmed = dialNumber.trim();
     if (!trimmed) return;
-    if (!guard('call')) return; // free-tier daily cap → blocked (modal shown)
     makeCall(trimmed);
-  }, [dialNumber, makeCall, guard]);
+  }, [dialNumber, makeCall]);
 
   const handleCallFromLog = useCallback(
     (number: string) => {
       setDialNumber(number);
-      if (!guard('call')) return;
       makeCall(number);
     },
-    [makeCall, guard]
+    [makeCall]
   );
 
   const handleOpenThread = useCallback((address: string) => {
@@ -1147,9 +1143,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     const recipient = newMsgRecipient.trim();
     const body = newMsgBody.trim();
     if (!recipient || !body) return;
-    // Free-tier guard — if blocked, KEEP the compose fields and stay in the
-    // compose view (don't navigate as if the message was sent).
-    if (!guard('message')) return;
     sendSms(recipient, body);
     // Drop the user straight into the conversation they just started — much
     // less jarring than bouncing back to the empty state.
@@ -1158,15 +1151,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     setComposingNew(false);
     setNewMsgRecipient('');
     setNewMsgBody('');
-  }, [newMsgRecipient, newMsgBody, sendSms, guard, readState]);
+  }, [newMsgRecipient, newMsgBody, sendSms, readState]);
 
   const handleFavoriteClick = useCallback(
     (contact: Contact) => {
       setDialNumber(contact.number);
-      if (!guard('call')) return;
       makeCall(contact.number);
     },
-    [makeCall, guard]
+    [makeCall]
   );
 
   const handleRemoveFavorite = useCallback((contact: Contact) => {
@@ -1191,12 +1183,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     if (!selectedThread) return;
     const body = composeBody.trim();
     if (!body) return;
-    // Free-tier guard — a blocked send must NOT clear the compose box (it would
-    // look like the message went out). guard() opens the block modal on refusal.
-    if (!guard('message')) return;
     sendSms(selectedThread, body);
     setComposeBody('');
-  }, [selectedThread, composeBody, sendSms, guard]);
+  }, [selectedThread, composeBody, sendSms]);
 
   const handleResync = useCallback(() => {
     if (typeof quickSync === 'function') quickSync(); else if (typeof openSyncPanel === 'function') openSyncPanel();
@@ -1433,10 +1422,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               // popup's reply-and-hangup chips — the call is left ringing so
               // the user can still answer after texting.
               onQuickReply={(target, body) => {
-                // Same free-tier gate as every other outbound message; guard()
-                // surfaces the upsell itself and we report the block back so
-                // the card suppresses its confirmation.
-                if (!guard('message')) return false;
                 sendSms(target, body);
                 return true;
               }}

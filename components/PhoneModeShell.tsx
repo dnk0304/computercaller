@@ -60,7 +60,6 @@ import { SasConfirmDialog } from '@/components/SasConfirmDialog';
 // components/fileTransfer/FileTransferSlots.tsx.
 import { FileTransferLayer } from '@/components/fileTransfer/FileTransferLayer';
 import { SendFileSlot, FileDropTarget } from '@/components/fileTransfer/FileTransferSlots';
-import { UsageMeter } from '@/components/UsageMeter';
 import { Dialpad, CollapsePanel } from '@/components/Dialpad';
 import { useDialpadOpen } from '@/lib/dialpadPref';
 import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterBar';
@@ -74,7 +73,6 @@ import {
   usePhoneModeCallSurface,
 } from '@/components/PhoneModeCallSurface';
 import { readDeepLink, clearDeepLink } from '@/lib/extensionBridge';
-import { useFreeTier } from '@/hooks/freeTierContext';
 import {
   usePhone,
   useNotifications,
@@ -360,7 +358,6 @@ function TabButton({ active, onClick, icon, label, badge, badgeLabel }: TabButto
 function DialerView() {
   const phone = usePhone();
   const { makeCall, callLogs } = phone;
-  const { guard } = useFreeTier();
   const { push } = usePhoneMode();
   const [digits, setDigits] = useState<string>('');
 
@@ -414,7 +411,7 @@ function DialerView() {
 
   const dialKey = (d: string) => setDigits(prev => (prev.length < 15 ? prev + d : prev));
   const backspace = () => setDigits(prev => prev.slice(0, -1));
-  const call = () => { if (digits && guard('call')) makeCall(digits); };
+  const call = () => { if (digits) makeCall(digits); };
 
   const keys: { d: string; sub?: string }[] = [
     { d: '1' }, { d: '2', sub: 'ABC' }, { d: '3', sub: 'DEF' },
@@ -635,7 +632,7 @@ function DialerView() {
                     Mode, so it gets the real box rather than a bled target. */}
                 <button
                   type="button"
-                  onClick={() => { if (guard('call')) makeCall(r.number); }}
+                  onClick={() => { makeCall(r.number); }}
                   aria-label={`Call ${label}`}
                   title={`Call ${label}`}
                   className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-emerald-600 transition-colors hover:bg-emerald-50 hover:text-emerald-700 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
@@ -685,7 +682,6 @@ function DialerView() {
 function ExtDialerView() {
   const phone = usePhone();
   const { makeCall, callLogs } = phone;
-  const { guard } = useFreeTier();
   const { push } = usePhoneMode();
   const filter = useCallLogFilter(callLogs);
 
@@ -863,7 +859,7 @@ function ExtDialerView() {
                       nearest the panel edge the thumb reaches first. */}
                   <button
                     type="button"
-                    onClick={() => { if (guard('call')) makeCall(r.number); }}
+                    onClick={() => { makeCall(r.number); }}
                     aria-label={`Call ${label}`}
                     title={`Call ${label}`}
                     className="relative mr-1.5 ml-0.5 inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-emerald-600 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
@@ -1096,7 +1092,6 @@ interface ThreadViewProps {
 
 function ThreadView({ threadId, from }: ThreadViewProps) {
   const { messages, contacts, sendSms, makeCall } = usePhone();
-  const { guard } = useFreeTier();
   const { pop, setTab } = usePhoneMode();
   const goBack = useCallback(() => { if (from) setTab(from); else pop(); }, [from, setTab, pop]);
 
@@ -1165,7 +1160,7 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
         <SendFileSlot iconOnly />
         <button
           type="button"
-          onClick={() => { if (guard('call')) makeCall(threadId); }}
+          onClick={() => { makeCall(threadId); }}
           className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-emerald-50 hover:text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
           aria-label={`Call ${displayName}`}
           title={`Call ${displayName}`}
@@ -1217,8 +1212,6 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
         // the OS keyboard does not cover the messages the user came to read.
         autoFocus={threadMessages.length === 0}
         onSend={(text) => {
-          // Free-tier guard — blocked sends return false so the draft stays.
-          if (!guard('message')) return false;
           sendSms(threadId, text);
           return true;
         }}
@@ -1342,7 +1335,6 @@ interface ComposeViewProps {
 
 function ComposeView({ initialTo, from }: ComposeViewProps) {
   const { sendSms } = usePhone();
-  const { guard } = useFreeTier();
   const { pop, replace, setTab } = usePhoneMode();
   const goBack = useCallback(() => { if (from) setTab(from); else pop(); }, [from, setTab, pop]);
   const [recipient, setRecipient] = useState(initialTo ?? '');
@@ -1361,9 +1353,6 @@ function ComposeView({ initialTo, from }: ComposeViewProps) {
 
   const handleSend = () => {
     if (!canSend) return;
-    // Free-tier guard — if blocked, keep the draft AND stay on this screen
-    // (do not navigate into a thread as if the message went out).
-    if (!guard('message')) return;
     sendSms(recipient, text);
     // After sending, dive into the thread we just started — feels more natural
     // than dropping back to the list. REPLACE, never push: a sent message ends
@@ -1983,12 +1972,6 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
       ? current.kind
       : current.from ?? 'texts';
 
-  // Root views are the three tabs themselves. Only used to keep the free-tier
-  // usage strip off the two tightest screens (thread, compose) — the tab strip
-  // above is unconditional now, the usage strip is not.
-  const isRootView =
-    current.kind === 'dialer' || current.kind === 'texts' || current.kind === 'bell';
-
   // Dial / Texts unread. Returns zeros unless `enabled`, so the dashboard's
   // tab bar receives 0 and 0 and renders exactly as it did before.
   const tabBadges = useExtensionTabBadges({ enabled: isExt, activeTab, alertsUnread: unreadCount });
@@ -2104,11 +2087,6 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
         textsCount={tabBadges.texts}
         onSelect={setTab}
       />
-      {/* Free-tier usage strip (Pixel, forge/free-tier-p1, 2026-08-28) — thin
-          bar under the tab bar. Self-hides for unlimited (paid) tiers.
-          Pilot's rule holds on the extension: this may surface a neutral
-          remaining-count status line, never a price or an upgrade CTA. */}
-      {isRootView && <UsageMeter variant="strip" className={isExt ? 'cc-band cc-band-foot' : undefined} />}
       {/* The incoming-call card: top of the Dial tab, above the pad and the
           recents list, outside the view's own scroller so a ringing phone
           cannot be scrolled out of sight. */}
