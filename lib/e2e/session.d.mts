@@ -136,6 +136,14 @@ export declare function indexedDbSeqStore(factory?: IDBFactory): SeqStore;
 export declare function skFingerprint(sessionKey: Uint8Array, subtle?: SubtleCrypto): Promise<string>;
 
 /**
+ * P2.6 / Security MUST #1. True when `kid` still has a seq record in EITHER
+ * direction — the evidence an equal-epoch RESUME needs before it may be
+ * admitted, because the A3-M2 floor and these counters live in different
+ * object stores and can be lost independently.
+ */
+export declare function hasSeqRecord(opts: { store: SeqStore; kid: string }): Promise<boolean>;
+
+/**
  * A2 MUST #1, from the side that does not mint. `fresh` is the caller's evidence
  * that this kid was minted now — a PAIRING_ACTIVE that is NOT a resume.
  * THROWS `SeqFailClosedError` on a resumed kid with no counter, and on a kid

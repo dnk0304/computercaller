@@ -604,6 +604,7 @@ async function computerAccept({ payload, localMode, webKey, store, userId, bridg
     try {
       await admitPairEpoch({
         store, key: webKey, userId, phoneDeviceId: context.phoneDeviceId, pairEpoch: context.pairEpoch,
+        kid: block.kid,
       });
     } catch (e) {
       const code = e instanceof EpochFloorError ? 'e2e-epoch-replayed' : 'e2e-setup-failed';

@@ -802,7 +802,7 @@ async function main() {
     });
     const admitted = await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
-      phoneDeviceId: ctx42.phoneDeviceId, pairEpoch: ctx42.pairEpoch,
+      phoneDeviceId: ctx42.phoneDeviceId, pairEpoch: ctx42.pairEpoch, kid: a42.block.kid,
     });
     check('FLOOR: the honest epoch 42 is admitted (TOFU, first sight)', admitted.firstSight === true);
 
@@ -816,7 +816,7 @@ async function main() {
     });
     await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
-      phoneDeviceId: ctx43.phoneDeviceId, pairEpoch: ctx43.pairEpoch,
+      phoneDeviceId: ctx43.phoneDeviceId, pairEpoch: ctx43.pairEpoch, kid: a43.block.kid,
     });
     check('FLOOR: a legitimate rekey to 43 advances the floor',
       WEBKEY.readEpochFloor(webKeyRec, CONTEXT.userId, ctx43.phoneDeviceId) === 43n);
@@ -841,7 +841,7 @@ async function main() {
     try {
       await WEBKEY.admitPairEpoch({
         store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
-        phoneDeviceId: ctxReplay.phoneDeviceId, pairEpoch: ctxReplay.pairEpoch,
+        phoneDeviceId: ctxReplay.phoneDeviceId, pairEpoch: ctxReplay.pairEpoch, kid: a42.block.kid,
       });
     } catch (e) { refused = e instanceof WEBKEY.EpochFloorError; }
     check('FLOOR: the REPLAYED epoch 42 is REFUSED (A3-M2)', refused);
@@ -858,7 +858,7 @@ async function main() {
     });
     const rekeyed = await WEBKEY.admitPairEpoch({
       store: keyStore, key: webKeyRec, userId: CONTEXT.userId,
-      phoneDeviceId: ctx44.phoneDeviceId, pairEpoch: ctx44.pairEpoch,
+      phoneDeviceId: ctx44.phoneDeviceId, pairEpoch: ctx44.pairEpoch, kid: a44.block.kid,
     });
     check('FLOOR: a REKEY at 44 is accepted -- refuse-and-rekey, not refuse-forever',
       rekeyed.floor === 44n);
