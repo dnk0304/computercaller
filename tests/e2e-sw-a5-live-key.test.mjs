@@ -155,7 +155,7 @@ await check('every publicIdentity() is a real store read, not a memo', async () 
 // Same technique as tests/ext-pin-provenance.test.mjs: the table under test is
 // the SHIPPED one, extracted from source, so a divergence fails here.
 
-const bg = readFileSync(join(ROOT, 'chrome-extension', 'background.js'), 'utf8');
+const bg = readFileSync(join(ROOT, 'chrome-extension', 'background.js'), 'utf8').replace(/\r\n?/g, '\n');
 
 function liftNullKeyReason() {
   const start = bg.indexOf('function nullKeyReason() {');

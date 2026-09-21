@@ -299,7 +299,7 @@ async function pairedAt(epoch = 4n, kid = KID_A) {
 }
 
 {
-  const src = readFileSync(join(ROOT, 'lib/e2e/webKey.ts'), 'utf8');
+  const src = readFileSync(join(ROOT, 'lib/e2e/webKey.ts'), 'utf8').replace(/\r\n?/g, '\n');
   const fn = src.slice(src.indexOf('export async function admitPairEpoch'));
   const body = fn.slice(0, fn.indexOf('\nexport '));
   check('resumed: the word never appears in admitPairEpoch at all',
@@ -344,12 +344,22 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
 }
 
 {
-  const recorded = readFileSync(join(ROOT, S3_LOG), 'utf8');
+  const recorded = readFileSync(join(ROOT, S3_LOG), 'utf8').replace(/\r\n?/g, '\n');
   check('S3: the evidence log is present on this base', recorded.length > 0);
   check('S3: the recorded defect is the one being fixed (log shows the teardown)',
     recorded.includes('e2e-epoch-replayed') && recorded.includes('leaveActive')
       && recorded.includes('user_left'),
     'the fixture no longer matches the evidence it was written from');
+  // P2.8 / R-BP (d): this sentence is RETIRED from the product — P2.6 split
+  // EpochFloorError into four reason-specific messages and
+  // scripts/e2e-staging-relay-proof.mjs was re-pinned accordingly. This pin is
+  // NOT re-pinned with it, and must not be: `recorded` is a frozen P6.1d
+  // capture of a page console, not live output. The sentence it contains is
+  // what the build at that time actually printed, and changing the assertion
+  // to the current wording would assert that a historical artefact had been
+  // re-recorded — the fixture would then agree with the code no matter what
+  // the code says, which is the one thing a replayed-evidence check exists to
+  // prevent. It moves only if the artefact is captured again.
   check('S3: the recorded epoch and floor were EQUAL (4 and 4)',
     /pairEpoch 4 is at or below the stored floor 4\b/.test(recorded));
 
@@ -450,7 +460,7 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
   // key. The control is positional, so it is asserted positionally: if
   // admitPairEpoch is ever hoisted above them, a pair refused at C-2 (the S4a
   // revoke case) would be resurrected by a reload.
-  const hook = readFileSync(join(ROOT, 'hooks/useE2e.ts'), 'utf8');
+  const hook = readFileSync(join(ROOT, 'hooks/useE2e.ts'), 'utf8').replace(/\r\n?/g, '\n');
   const start = hook.indexOf('const onPairingActive');
   check('MUST2: onPairingActive is where we think it is', start > 0);
   const body = hook.slice(start);
@@ -612,7 +622,7 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
 // reported as a FAILURE below.
 
 {
-  const src = readFileSync(join(ROOT, 'lib/e2e/webKey.ts'), 'utf8');
+  const src = readFileSync(join(ROOT, 'lib/e2e/webKey.ts'), 'utf8').replace(/\r\n?/g, '\n');
   const REAL = `    if (pairEpoch < floor) throw new EpochFloorError(floor, pairEpoch, k, 'below-floor');`;
   check('plant: the rule line to plant against is present, exactly once',
     src.split(REAL).length === 2, `found ${src.split(REAL).length - 1}`);
@@ -699,7 +709,7 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
 {
   // Second plant, aimed at Security MUST #1: delete the seq-state gate and the
   // empty-store cell must go green (i.e. the gate is what refuses it).
-  const src = readFileSync(join(ROOT, 'lib/e2e/webKey.ts'), 'utf8');
+  const src = readFileSync(join(ROOT, 'lib/e2e/webKey.ts'), 'utf8').replace(/\r\n?/g, '\n');
   const GATE = `      if (!hasSeqState || !(await hasSeqState(kid))) {\n        throw new EpochFloorError(floor, pairEpoch, k, 'seq-state-missing');\n      }`;
   check('plant2: the MUST #1 gate is present, exactly once',
     src.split(GATE).length === 2, `found ${src.split(GATE).length - 1}`);
@@ -723,7 +733,7 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
 {
   // Third plant, aimed at MUST #3/#4: make the resume path write, and the
   // put-count assertion must notice.
-  const src = readFileSync(join(ROOT, 'lib/e2e/webKey.ts'), 'utf8');
+  const src = readFileSync(join(ROOT, 'lib/e2e/webKey.ts'), 'utf8').replace(/\r\n?/g, '\n');
   const RESUME = `      return { floor, firstSight: false, resume: true };`;
   check('plant3: the resume return is present, exactly once',
     src.split(RESUME).length === 2, `found ${src.split(RESUME).length - 1}`);

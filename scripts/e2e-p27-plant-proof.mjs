@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SUITE = join(ROOT, 'tests', 'e2e-web-frame-classifier.test.mjs');
 const SRC_PATH = join(ROOT, 'hooks', 'useE2e.ts');
-const SRC = readFileSync(SRC_PATH, 'utf8');
+const SRC = readFileSync(SRC_PATH, 'utf8').replace(/\r\n?/g, '\n');
 
 // Created up front and removed by an exit hook, so the scratch dir is cleaned
 // on the FAILURE path too — the one path cleanup exists for.

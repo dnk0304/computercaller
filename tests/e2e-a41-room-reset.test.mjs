@@ -206,7 +206,7 @@ const SK_ATTACK = new Uint8Array(32).fill(0x77);
 console.log('\nA4.1 — ROOM_RESET erases the TOFU pin; clause (b) is what holds');
 
 await check('0. the MODEL is anchored: background.js really does split ctx-refusal from unwrap-failure, and ROOM_RESET really does clear both', async () => {
-  const bg = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8');
+  const bg = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8').replace(/\r\n?/g, '\n');
   assert(/setCountsOnly\(e instanceof CtxRefused/.test(bg), 'a ctx refusal must land in counts-only');
   assert(/setAborted\(`unwrap:/.test(bg), 'an unwrap failure must land in setAborted (A4-M3)');
   assert(/if \(e2eMode === 'aborted' && block\.kid !== e2eAbortedKid\) clearAborted\(\);/.test(bg),
@@ -374,11 +374,11 @@ await check('5. LOAD-BEARING (A4.1-M2) — clause (a) is NON-AUTHORITATIVE: a MA
   // And structurally: nothing in the decision path gates on the pin. The pin's
   // only output is a CtxRefused (branch 1, counts-only); it can never produce
   // an "approved" that skips the unwrap.
-  const sws = readFileSync(join(ROOT, 'chrome-extension/e2e/sw-session.js'), 'utf8');
+  const sws = readFileSync(join(ROOT, 'chrome-extension/e2e/sw-session.js'), 'utf8').replace(/\r\n?/g, '\n');
   const fn = /export async function admitOwnPairingId\(([\s\S]*?)\n\}/.exec(sws);
   assert(fn, 'admitOwnPairingId must exist');
   assert(!/return true|approved|trusted/i.test(fn[1]), 'the pin must not emit an approval token');
-  const bg = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8');
+  const bg = readFileSync(join(ROOT, 'chrome-extension/background.js'), 'utf8').replace(/\r\n?/g, '\n');
   assert(!/readOwnPairingId\(\)[\s\S]{0,200}?(skip|bypass|trust)/i.test(bg),
     'no decision in background.js may be gated on the pin alone');
 });

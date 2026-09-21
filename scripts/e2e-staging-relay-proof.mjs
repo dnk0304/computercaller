@@ -930,8 +930,39 @@ async function main() {
         check('rebound/ON: the attack actually fired', proxy.tamperCount() > 0, `tampered ${proxy.tamperCount()}`);
         eq('rebound/ON: the pairing was REFUSED', second.computer?.completed, false);
         eq('rebound/ON: refused by the A3-M2 epoch floor specifically', second.computer?.error, 'e2e-epoch-replayed');
+        // ── P2.8 / R-BP (d): re-pinned after P2.6 ────────────────────────
+        // This cell pinned `/pairEpoch 30 is at or below the stored floor 30/`
+        // until P2.6 split `EpochFloorError` into FOUR reason-specific
+        // sentences (lib/e2e/webKey.ts:208-236) and that sentence stopped
+        // existing anywhere in the product. A pinned English sentence inside a
+        // gate-STEP script is a floor the tests/ node sweep never runs, which
+        // is why P2.6's sweep did not see it move and P6.1e found it live.
+        //
+        // The refusal is printed unconditionally, not just on failure: WHICH
+        // of the four cells fired is the finding, and a check that only speaks
+        // when it is red cannot report it.
+        console.log(`    rebound/ON refusal: ${second.computer?.detail}`);
+        // Two checks, because the sentence carries two independent claims.
+        // 1. The resume-shaped refusal — it still names the floor AND the
+        //    offered epoch, which is the property the old pin existed for.
         check('rebound/ON: the refusal names the floor and the offered epoch',
-          /pairEpoch 30 is at or below the stored floor 30/.test(second.computer?.detail ?? ''), second.computer?.detail);
+          /E2E pairEpoch 30 equals the stored floor 30 for /.test(second.computer?.detail ?? ''),
+          second.computer?.detail);
+        // 2. The reason-specific fragment. The harness replays first.accept.block
+        //    — same kid, epoch 30 against a floor of 30 — and `endPair` clears
+        //    the seq store while the floor survives, so the cell that fires is
+        //    `seq-state-missing`. `kid-mismatch` would be a correct refusal too
+        //    (it would mean the harness mints a kid per pairing), so it is
+        //    accepted here and named by the printed line above; `below-floor`
+        //    would NOT be, because it would mean the floor is 31 and this whole
+        //    control is testing something other than the equal-epoch cell.
+        check('rebound/ON: ...and says WHICH cell refused (seq-state-missing, or kid-mismatch)',
+          /has no seq history left to continue/.test(second.computer?.detail ?? '')
+            || /kid is NOT the one admitted/.test(second.computer?.detail ?? ''),
+          second.computer?.detail);
+        check('rebound/ON: ...and it is NOT below-floor (that would mean the floor is 31, not 30)',
+          !/is below the stored floor/.test(second.computer?.detail ?? ''),
+          second.computer?.detail);
         eq('rebound/ON: the badge says Pairing refused', second.computer?.label, 'Pairing refused');
         ne('rebound/ON: the replayed epoch-30 SAS DIFFERS from the epoch-31 code the phone is showing',
           first.accept.sas, second.accept.sas);

@@ -70,12 +70,12 @@ function eq(name, got, want) {
 const USEE2E_PATH = process.env.P27_USEE2E_PATH
   ? process.env.P27_USEE2E_PATH
   : join(ROOT, 'hooks', 'useE2e.ts');
-const USEE2E = readFileSync(USEE2E_PATH, 'utf8');
-const SPEC = readFileSync(join(ROOT, 'e2e-evidence', 'E2E-SPEC-v1.0.md'), 'utf8');
+const USEE2E = readFileSync(USEE2E_PATH, 'utf8').replace(/\r\n?/g, '\n');
+const SPEC = readFileSync(join(ROOT, 'e2e-evidence', 'E2E-SPEC-v1.0.md'), 'utf8').replace(/\r\n?/g, '\n');
 const KOTLIN = readFileSync(
   join(ROOT, 'dnkdialer-android', 'app', 'src', 'main', 'java', 'com', 'dnkdialer', 'companion', 'E2eFrameGate.kt'),
   'utf8',
-);
+).replace(/\r\n?/g, '\n');
 
 /** Transpile a TS fragment to CJS and return its exports/locals. */
 function runFragment(src, injected = {}) {
@@ -406,7 +406,7 @@ function buildChokepoint(refs) {
   eq('(f) ...so the raw send bytes match the chokepoint',
     `APP_PING:${JSON.stringify(out)}`, `APP_PING:${JSON.stringify(ping)}`);
   check('(f) the raw send is documented as §13.7 plaintext', (() => {
-    const bridge = readFileSync(join(ROOT, 'hooks', 'usePhoneBridge.ts'), 'utf8');
+    const bridge = readFileSync(join(ROOT, 'hooks', 'usePhoneBridge.ts'), 'utf8').replace(/\r\n?/g, '\n');
     const i = bridge.indexOf('wsRef.current.send(`APP_PING:');
     return i > 0 && /13\.7/.test(bridge.slice(Math.max(0, i - 1200), i));
   })());
@@ -450,7 +450,7 @@ function buildChokepoint(refs) {
 {
   const fixture = join(ROOT, 'e2e-evidence', 'p61d', 'phone-frames.log');
   let log = null;
-  try { log = readFileSync(fixture, 'utf8'); } catch { /* optional artefact */ }
+  try { log = readFileSync(fixture, 'utf8').replace(/\r\n?/g, '\n'); } catch { /* optional artefact */ }
   check('(g) the P6.1d phone-frames fixture is present', typeof log === 'string');
   if (typeof log === 'string') {
     check('(g) the phone DID send APP_PONG in plaintext', /APP_PONG/.test(log));

@@ -1,1 +1,45 @@
 e2e-evidence/BASE.md text eol=lf
+
+# ── E2E-P2.8 / R-BP (c): pin LF for every path a test reader slices ─────────
+# P6.1e's gate went red on a clean tip for an environment reason:
+# Git-for-Windows' SYSTEM config sets core.autocrlf=true on this box, so a fresh
+# checkout writes CRLF while the blob is LF, and every suite that slices product
+# source on a newline-anchored marker silently degraded to an empty fragment
+# (tests/e2e-web-frame-classifier.test.mjs reported 0/1 instead of 174/174 — a
+# green that was never capable of being red). The readers now normalise at the
+# read site; this pins the other half, so the working tree matches the blob no
+# matter what autocrlf says. `git add --renormalize` over these paths is a no-op.
+# The attributes file itself, so the rule that pins everyone else does not
+# drift to CRLF on this box.
+.gitattributes text eol=lf
+hooks/** text eol=lf
+lib/** text eol=lf
+tests/** text eol=lf
+scripts/** text eol=lf
+# The brief says `extension/**`; the directory in this repo is `chrome-extension/`.
+chrome-extension/** text eol=lf
+
+# Binary guards. `chrome-extension/** text` would otherwise mark the toolbar
+# icons as text, and a PNG's 8-byte signature IS `\x89PNG\r\n\x1a\n` — CRLF
+# inside a header. Normalising it rewrites those two bytes and the icon stops
+# decoding. The rule above is a glob over a directory, so the exclusion has to
+# be explicit rather than inferred.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+
+# ── OUT OF LANE, REPORTED TO KEN (P2.8 STOP, item 3.2) ─────────────────────
+# These six blobs are committed with MIXED CRLF/CR/LF line terminators. Under
+# `scripts/** text eol=lf` every one of them would be rewritten by
+# `git add --renormalize`, and the brief is explicit that a mass line-ending
+# commit is not this lane's to make. Left `-text` (as-is, exactly today's
+# behaviour) so the rule above cannot rewrite them and cannot leave the tree
+# permanently dirty either. None is read or sliced by any suite, so nothing in
+# the gate depends on them. They want their own one-line renormalisation lane.
+scripts/ext-badge-sidepanel-proof.mjs -text
+scripts/ext-dock-gesture-proof.mjs -text
+scripts/ext-in-call-shots.mjs -text
+scripts/ext-indicator-proof.mjs -text
+scripts/ext-sidepanel-shots.mjs -text
+scripts/ext-templates-scroll-call-message-proof.mjs -text
