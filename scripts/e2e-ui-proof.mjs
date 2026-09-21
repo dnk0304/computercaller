@@ -88,7 +88,7 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * a FLOOR, not a target: a run reporting fewer means assertions silently
  * stopped executing, which is the failure mode a bare "N/N passed" hides.
  */
-export const MIN_CHECKS = 85;
+export const MIN_CHECKS = 88;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -362,13 +362,31 @@ try {
   // puts the seed unambiguously on the unread side of it, and a future-dated
   // row is a real case the product handles anyway (clock-skewed phones, which
   // is why openedStamp takes max(now, newest)).
+  /*
+   * BODIES MUST DIFFER, AND DATES MUST BE MINUTES APART.
+   *
+   * usePhoneBridge drops a frame as a duplicate when the body matches, the
+   * conversation matches, and the dates are within 10 s — the guard against
+   * SmsReceiver and the ContentObserver both delivering the same row. Seeding
+   * three IDENTICAL bodies 1 s apart therefore produced one message, not
+   * three, and the chip read "1" where the dispatch asks for "3". The product
+   * was right and the seed was not: three messages from one person are three
+   * different messages.
+   */
   const UNREAD_SEED = [
     // three arrivals → chip "3"
-    { from: '+4790000001', body: 'Are we still on for tonight?', n: 3 },
+    {
+      from: '+4790000001',
+      bodies: [
+        'Are we still on for tonight?',
+        'I can do 8 if that is easier.',
+        'Let me know either way.',
+      ],
+    },
     // one arrival → chip "1" (Dennis said dot/count; the chip IS the dot)
-    { from: '+4790000002', body: 'Package delivered.', n: 1 },
+    { from: '+4790000002', bodies: ['Package delivered.'] },
     // one arrival, but this row gets OPENED before the capture → plain row
-    { from: '+4790000003', body: 'Thanks!', n: 1 },
+    { from: '+4790000003', bodies: ['Thanks!'] },
   ];
   const seedUnread = async (page) => {
     // __ccSend is defined by the stub socket's CONSTRUCTOR, so it does not
@@ -381,13 +399,14 @@ try {
       const base = Date.now() + 60_000;
       let i = 0;
       for (const t of seed) {
-        for (let k = 0; k < t.n; k += 1) {
+        for (const body of t.bodies) {
           i += 1;
           window.__ccSend('SMS_RECEIVED:' + JSON.stringify({
             id: `seed-${i}`,
             from: t.from,
-            body: t.body,
-            time: base + i * 1000,
+            body,
+            // 60 s apart, clear of the bridge's 10 s duplicate window.
+            time: base + i * 60_000,
             type: 'inbox',
           }));
         }
@@ -434,6 +453,12 @@ try {
       before >= 2, `${before} unread rows`);
     check('(unread) the chip renders inside those rows',
       (await page.locator('[data-cc-sms-row="unread"] [data-cc-unread-chip]').count()) === before);
+    // THE COUNT ITSELF, not merely its presence. A chip that renders the wrong
+    // number is the failure this block exists to catch, and asserting only on
+    // row counts let exactly that through once.
+    const appThree = await page.locator('[data-cc-unread-chip="3"]').count();
+    check('(unread) a thread with three arrivals reads "3", not "1"',
+      appThree === 1, `${appThree} chips showing 3`);
 
     // Open the third thread. It must go read; the other two must not.
     // NOT swallowed: a click that cannot land is a finding, and a silent catch
@@ -471,6 +496,9 @@ try {
     const before = await chips.count();
     check(`(unread) [${theme}] the extension Texts list marks unopened threads`,
       before >= 2, `${before} chips`);
+    const extThree = await page.locator('[data-cc-unread-chip="3"]').count();
+    check(`(unread) [${theme}] a thread with three arrivals reads "3", not "1"`,
+      extThree === 1, `${extThree} chips showing 3`);
 
     await page.getByRole('button', { name: /Thanks!|\+4790000003/ }).first()
       .click({ timeout: 4000 }).catch(() => {});
