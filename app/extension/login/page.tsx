@@ -41,9 +41,10 @@
  * SyncSetupPanel off a page that is by definition rendered signed OUT.
  */
 
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { LoginForm } from '@/components/auth/LoginForm';
 import { notifyLoginReady } from '@/lib/extensionBridge';
+import { readAndClearExtSignOutReason } from '@/lib/extensionSignOutReason';
 
 export default function ExtensionLoginPage() {
   // Announce ourselves to the shell. Until this arrives the shell keeps its own
@@ -54,6 +55,35 @@ export default function ExtensionLoginPage() {
     notifyLoginReady();
   }, []);
 
+  /**
+   * Why the surface signed you out, if it did.
+   *
+   * Read-and-CLEARED once, in an effect rather than during render: it mutates
+   * storage, and a reason must explain exactly one sign-in screen — a value
+   * left behind would label the user's next manual sign-in as a timeout.
+   * `?reason=idle` is honoured too, so a surface that DID manage to navigate
+   * (the pop-out, which is a real window) says the same thing as one that
+   * could not.
+   */
+  const [idleSignOut, setIdleSignOut] = useState(false);
+  useEffect(() => {
+    const stored = readAndClearExtSignOutReason();
+    const queried =
+      typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).get('reason') === 'idle';
+    // WHY THE SUPPRESSION BELOW.
+    // The rule catches state that could have been DERIVED during render. This
+    // value cannot be: it comes from localStorage, which does not exist on the
+    // server, so reading it during render would make the server and the first
+    // client render disagree — a hydration mismatch on a sign-in page. The
+    // read is also a read-and-CLEAR, i.e. a mutation, which must not happen
+    // during render at all. Reading browser-only state after mount is the
+    // documented correct use of an effect. Empty deps, and the value can only
+    // ever go false -> true once, so there is no cascade for it to cause.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (stored === 'idle' || queried) setIdleSignOut(true);
+  }, []);
+
   return (
     // `cc-ext` is doing real work here, not decorating: it is the scope every
     // rule in app/extension/extension.css hangs off, so adding it hands this
@@ -62,6 +92,18 @@ export default function ExtensionLoginPage() {
     // slate-50 + blue-600 inside a #0b0b0d popup — a different product in a
     // black box, which is exactly the seam ART-DIRECTION §5 exists to close.
     <div className="cc-ext cc-auth">
+      {/* role="status" and not an alert: the user is being TOLD what already
+          happened, not warned about something they must act on. Sits outside
+          the Suspense boundary so it does not shift when the skeleton hands
+          over to the real form (PIXEL-D, no layout jump). Reserved height is
+          not needed — it renders before the form in the same column, and it is
+          either present for the whole life of the page or never. */}
+      {idleSignOut && (
+        <p className="cc-auth-note cc-auth-idle" role="status">
+          You were signed out after 4 hours of inactivity. Sign in again.
+        </p>
+      )}
+
       <Suspense
         fallback={
           // Matches the real form's column and vertical centring so the

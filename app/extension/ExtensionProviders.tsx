@@ -29,6 +29,9 @@ import { DashboardTabProvider, PhoneModeProvider } from '@/hooks';
 import { UpgradeModalProvider } from '@/hooks/upgradeModalContext';
 import { FreeTierProvider } from '@/hooks/freeTierContext';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
+import { IdleTimeoutGuard } from '@/components/IdleTimeoutGuard';
+import { requestSignOut } from '@/lib/extensionBridge';
+import { writeExtSignOutReason } from '@/lib/extensionSignOutReason';
 
 export function ExtensionProviders({ children }: { children: React.ReactNode }) {
   return (
@@ -54,6 +57,34 @@ export function ExtensionProviders({ children }: { children: React.ReactNode }) 
               {children}
             </div>
             <SyncSetupPanel />
+            {/* THE 4-HOUR IDLE LOGOUT, on the extension surface.
+                Dennis 2026-09-21 14:04Z: "i notice that the extension doesnt log
+                you out automatically after 4 hours, at least its not visible."
+
+                It was not a broken timer — there was no timer. IdleTimeoutGuard
+                was mounted only in app/app/layout.tsx, so the /extension frame
+                never sent a heartbeat and never ticked: the server's idle_token
+                lapsed silently at 4 h while the panel kept rendering stale data,
+                and because Chrome never destroys a side panel, nothing ever
+                re-probed to discover it. Mounting it here is the whole fix.
+
+                INSIDE PhoneModeProvider because the guard needs usePhone() — a
+                live call is keepAlive, and the teardown disconnects the bridge.
+                NOT on /extension/login: that route is the (surface) group's
+                sibling and has no providers, which is correct — a signed-out
+                page has no session to time out.
+
+                onLogout replaces ONLY the last step (the fetch + hard navigate).
+                This page cannot navigate: it is an iframe the shell owns. So it
+                records WHY for the gate to read, then hands off to the shell,
+                which clears both credentials, tells the service worker to drop
+                the pair and the SK, and swaps the frame for the sign-in gate. */}
+            <IdleTimeoutGuard
+              onLogout={() => {
+                writeExtSignOutReason('idle');
+                requestSignOut();
+              }}
+            />
           </FreeTierProvider>
         </UpgradeModalProvider>
       </DashboardTabProvider>

@@ -446,7 +446,7 @@ export default function LandingPage() {
               the H1 (extrabold vs semibold) to feel like a logotype, but a
               size-tier smaller so the H1 still wins the eye. */}
           <p
-            aria-label="Computer Caller"
+            aria-label="ComputerCaller"
             className="text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-[-0.02em] leading-none mb-3"
           >
             <span className="text-white">COMPUTER</span>{' '}

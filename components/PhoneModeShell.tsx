@@ -87,6 +87,12 @@ import {
 import { useTemplates } from '@/hooks/useTemplates';
 import { ChipScroller } from '@/components/ChipScroller';
 
+import {
+  useThreadReadState,
+  useSessionUserId,
+  useMarkOpenThreadRead,
+  threadKeyFor,
+} from '@/hooks/useThreadReadState';
 // ---------- Lightweight helpers (module scope, pure) ------------------------
 
 /**
@@ -919,6 +925,10 @@ function TextsView() {
   const { messages, contacts } = usePhone();
   const { push } = usePhoneMode();
   const [search, setSearch] = useState('');
+  // Same store the /app Texts list reads, same keys: the extension and the web
+  // app in one Chrome profile agree about what has been opened.
+  const sessionUserId = useSessionUserId();
+  const readState = useThreadReadState(sessionUserId);
 
   // Group messages into threads. Same algorithm as SMSInterface but the
   // returned shape is leaner (no avatar palette per row; we compute it at
@@ -941,11 +951,14 @@ function TextsView() {
         name: contact?.name || number,
         lastBody: last.body,
         lastDate: last.date,
-        unread: 0, // SMS read-state isn't tracked on the bridge yet
+        // Was 0 because the BRIDGE tracks no read state — still true, and still
+        // not what this counts. This is "arrived since you opened the thread on
+        // this computer", which needs nothing from the phone.
+        unread: readState.unreadCountFor(threadKeyFor(number), msgs),
       });
     }
     return out.sort((a, b) => b.lastDate - a.lastDate);
-  }, [messages, contacts]);
+  }, [messages, contacts, readState]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1027,17 +1040,42 @@ function TextsView() {
                 type="button"
                 onClick={() => push({ kind: 'thread', threadId: t.id, from: 'texts' })}
                 className="flex w-full items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-slate-50 focus:outline-none focus-visible:bg-slate-50"
-                aria-label={`Open thread with ${t.name}`}
+                aria-label={
+                  t.unread > 0
+                    ? `Open thread with ${t.name}, ${t.unread} unread`
+                    : `Open thread with ${t.name}`
+                }
               >
                 <div className={clsx('flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold', avatarColor(t.name))}>
                   {t.name.charAt(0).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline justify-between gap-2">
-                    <p className="truncate text-sm font-semibold text-slate-800">{t.name}</p>
+                    <p className={clsx(
+                      'truncate text-sm',
+                      t.unread > 0 ? 'cc-ink-strong font-bold' : 'font-semibold text-slate-800',
+                    )}>{t.name}</p>
                     <span className="flex-shrink-0 text-[11px] text-slate-400">{formatRelative(t.lastDate, now)}</span>
                   </div>
-                  <p className="truncate text-xs text-slate-500">{t.lastBody}</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className={clsx(
+                      'truncate text-xs',
+                      t.unread > 0 ? 'cc-ink-strong' : 'text-slate-500',
+                    )}>{t.lastBody}</p>
+                    {/* After the time column, on the preview row: the chip needs
+                        a fixed 20px and the title row is where truncation
+                        happens. Height is unchanged — it shares the preview
+                        line's box rather than adding one. */}
+                    {t.unread > 0 && (
+                      <span
+                        aria-hidden="true"
+                        data-cc-unread-chip={t.unread}
+                        className="cc-unread-chip flex h-5 min-w-[20px] flex-shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none"
+                      >
+                        {t.unread > 9 ? '9+' : t.unread}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </button>
             </li>
@@ -1068,6 +1106,19 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
   );
   const contact = contacts.find(c => c.number === threadId);
   const displayName = contact?.name || threadId;
+
+  // OPENING the thread is the claim, and mounting ThreadView IS opening it.
+  // Putting it here rather than on the Texts row's onClick covers all three
+  // entry points at once: Texts rows, the Dial screens' recent/contact rows,
+  // and a notification deep-link that lands straight in a thread. It also
+  // keeps the thread marked while it stays on screen, so a message arriving
+  // while the user is reading does not tick the row unread behind them.
+  const threadReadState = useThreadReadState(useSessionUserId());
+  useMarkOpenThreadRead(
+    threadReadState,
+    threadKeyFor(threadId),
+    threadMessages.length > 0 ? threadMessages[threadMessages.length - 1].date : 0,
+  );
 
   // Scroll to bottom on mount and whenever a new message arrives. ref pattern
   // (not a fragment + scrollIntoView) so we own the timing and don't rely on

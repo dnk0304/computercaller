@@ -88,7 +88,7 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * a FLOOR, not a target: a run reporting fewer means assertions silently
  * stopped executing, which is the failure mode a bare "N/N passed" hides.
  */
-export const MIN_CHECKS = 74;
+export const MIN_CHECKS = 88;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -347,6 +347,170 @@ try {
     check(`(a) [${theme}] a blocked switch states its reason on this surface too`,
       (await item.innerText()).trim().length > SETTING_LABEL.length);
     await shot(page, `a-ext-menu-${theme}-400`);
+    await ctx.close();
+  }
+
+  // ═══ UI-UNREAD — threads you have not opened look unopened ═════════
+  //
+  // Dennis 2026-09-21 11:12Z: "Messages that are not opened should show they
+  // have not been opened."
+  //
+  // THE SEED IS DATED IN THE FUTURE ON PURPOSE. The read baseline is written
+  // at first hydration for the account (= now), and only messages AFTER it can
+  // count — that is what stops a year of synced history lighting up on day
+  // one. A row stamped `Date.now()` races that baseline by milliseconds; +60s
+  // puts the seed unambiguously on the unread side of it, and a future-dated
+  // row is a real case the product handles anyway (clock-skewed phones, which
+  // is why openedStamp takes max(now, newest)).
+  /*
+   * BODIES MUST DIFFER, AND DATES MUST BE MINUTES APART.
+   *
+   * usePhoneBridge drops a frame as a duplicate when the body matches, the
+   * conversation matches, and the dates are within 10 s — the guard against
+   * SmsReceiver and the ContentObserver both delivering the same row. Seeding
+   * three IDENTICAL bodies 1 s apart therefore produced one message, not
+   * three, and the chip read "1" where the dispatch asks for "3". The product
+   * was right and the seed was not: three messages from one person are three
+   * different messages.
+   */
+  const UNREAD_SEED = [
+    // three arrivals → chip "3"
+    {
+      from: '+4790000001',
+      bodies: [
+        'Are we still on for tonight?',
+        'I can do 8 if that is easier.',
+        'Let me know either way.',
+      ],
+    },
+    // one arrival → chip "1" (Dennis said dot/count; the chip IS the dot)
+    { from: '+4790000002', bodies: ['Package delivered.'] },
+    // one arrival, but this row gets OPENED before the capture → plain row
+    { from: '+4790000003', bodies: ['Thanks!'] },
+  ];
+  const seedUnread = async (page) => {
+    // __ccSend is defined by the stub socket's CONSTRUCTOR, so it does not
+    // exist until the page has actually opened the relay socket. A fixed
+    // settle() raced that: it held on the gate's warm dev server and lost on a
+    // cold production build, where the first route compile alone takes ~11 s.
+    // Wait for the fact instead of guessing a delay.
+    await page.waitForFunction(() => typeof window.__ccSend === 'function', null, { timeout: 20000 });
+    await page.evaluate((seed) => {
+      const base = Date.now() + 60_000;
+      let i = 0;
+      for (const t of seed) {
+        for (const body of t.bodies) {
+          i += 1;
+          window.__ccSend('SMS_RECEIVED:' + JSON.stringify({
+            id: `seed-${i}`,
+            from: t.from,
+            body,
+            // 60 s apart, clear of the bridge's 10 s duplicate window.
+            time: base + i * 60_000,
+            type: 'inbox',
+          }));
+        }
+      }
+    }, UNREAD_SEED);
+  };
+
+  console.log('\n-- UI-UNREAD: /app Texts --');
+  {
+    const { ctx, page } = await open({ route: '/app', width: 1280, height: 900 });
+    await settle(page, 1500);
+    await seedUnread(page);
+    await settle(page, 800);
+    // Into the Texts tab (SMSInterface). The nav item is the route's own.
+    // Not swallowed: if this does not land we are still on the Dashboard and
+    // every assertion below is measuring the wrong surface.
+    let navErr = null;
+    try {
+      await page.getByRole('button', { name: /messages only/i }).first().click({ timeout: 8000 });
+    } catch (e) {
+      navErr = String(e).split('\n')[0].slice(0, 160);
+    }
+    check('(unread) the /app Messages tab is reachable', navErr === null, navErr || '');
+    await settle(page, 1200);
+
+    /*
+     * COUNT THE ROW, NOT THE CHIP.
+     *
+     * `[data-cc-unread-chip]` is on BOTH SMSInterface's chip and Dashboard's
+     * dot, so counting it cannot tell the two surfaces apart — and if the nav
+     * click below had silently failed, this block would have counted the
+     * DASHBOARD's three unread dots, clicked a row selector that does not
+     * exist there, and reported 3 -> 3 as though the feature were broken.
+     * `[data-cc-sms-row]` exists only in SMSInterface, so it is both the
+     * surface check and the count.
+     */
+    const smsRows = page.locator('[data-cc-sms-row]');
+    const unreadRows = page.locator('[data-cc-sms-row="unread"]');
+    check('(unread) the Texts tab actually opened (SMSInterface is on screen)',
+      (await smsRows.count()) >= 3, `${await smsRows.count()} rows`);
+
+    const before = await unreadRows.count();
+    check('(unread) /app Texts shows a count chip on threads never opened here',
+      before >= 2, `${before} unread rows`);
+    check('(unread) the chip renders inside those rows',
+      (await page.locator('[data-cc-sms-row="unread"] [data-cc-unread-chip]').count()) === before);
+    // THE COUNT ITSELF, not merely its presence. A chip that renders the wrong
+    // number is the failure this block exists to catch, and asserting only on
+    // row counts let exactly that through once.
+    const appThree = await page.locator('[data-cc-unread-chip="3"]').count();
+    check('(unread) a thread with three arrivals reads "3", not "1"',
+      appThree === 1, `${appThree} chips showing 3`);
+
+    // Open the third thread. It must go read; the other two must not.
+    // NOT swallowed: a click that cannot land is a finding, and a silent catch
+    // here is what made the first failure read as a product bug.
+    const target = smsRows.filter({ hasText: 'Thanks!' }).first();
+    await target.scrollIntoViewIfNeeded();
+    let clickErr = null;
+    try {
+      await target.click({ timeout: 8000 });
+    } catch (e) {
+      clickErr = String(e).split('\n')[0].slice(0, 160);
+    }
+    check('(unread) the /app row accepted the click', clickErr === null, clickErr || '');
+    await settle(page, 900);
+    const after = await unreadRows.count();
+    check('(unread) opening a conversation clears ONLY that row',
+      after === before - 1, `${before} -> ${after}`);
+    check('(unread) the other threads stay unread after one is opened',
+      after >= 1, `${after} unread rows remain`);
+
+    await shot(page, 'a-app-texts-unread-1280');
+    await ctx.close();
+  }
+
+  console.log('\n-- UI-UNREAD: extension Texts, both themes --');
+  for (const theme of ['light', 'dark']) {
+    const { ctx, page } = await open({ route: '/extension', width: 400, height: 900, theme });
+    await settle(page, 1500);
+    await seedUnread(page);
+    await settle(page, 800);
+    await page.getByRole('tab', { name: /texts/i }).click({ timeout: 5000 }).catch(() => {});
+    await settle(page, 1200);
+
+    const chips = page.locator('[data-cc-unread-chip]');
+    const before = await chips.count();
+    check(`(unread) [${theme}] the extension Texts list marks unopened threads`,
+      before >= 2, `${before} chips`);
+    const extThree = await page.locator('[data-cc-unread-chip="3"]').count();
+    check(`(unread) [${theme}] a thread with three arrivals reads "3", not "1"`,
+      extThree === 1, `${extThree} chips showing 3`);
+
+    await page.getByRole('button', { name: /Thanks!|\+4790000003/ }).first()
+      .click({ timeout: 4000 }).catch(() => {});
+    await settle(page, 900);
+    await page.getByRole('button', { name: /back/i }).first()
+      .click({ timeout: 4000 }).catch(() => {});
+    await settle(page, 900);
+    const after = await chips.count();
+    check(`(unread) [${theme}] the opened thread is read, the others are not`,
+      after === before - 1, `${before} -> ${after}`);
+
+    await shot(page, `a-ext-texts-unread-${theme}-400`);
     await ctx.close();
   }
 

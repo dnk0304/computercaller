@@ -157,38 +157,41 @@ function ExtensionHeader() {
       className="cc-ext-header sticky top-0 z-30 flex h-10 flex-shrink-0 items-center gap-1.5 border-b border-slate-200 bg-white px-2"
       role="banner"
     >
-      {/* THE MARK ALONE — NO WORDMARK (dispatch PIXEL-S2 (a), Dennis
-          2026-09-17 13:26: "We now have duplicate title text showing twice. In
-          the header, remove the 'computer caller' text which is white and
-          blue.")
+      {/* MARK + NAME — "VARIANT B", selected by Dennis (Discord 2026-09-21
+          12:45Z) off his Reflecto reference, which shows exactly this: a small
+          square logo and the product name in a tinted top strip.
 
-          REVERSAL CHAIN — read this before touching the line below:
+          REVERSAL CHAIN — read this before touching the two lines below:
             PIXEL-Q  removed the wordmark (Dennis 09-16, "we now have
                      computercaller x2 on top, its enough with the top bar")
             PIXEL-S  restored the full lockup (Dennis 09-17 10:45, "its not got
                      the ComputerCaller text like the app logo")
-            PIXEL-S2 removes it again (Dennis 09-17 13:26) — and this time the
-                     reason is structural rather than a preference: Chrome's own
-                     title strip above the panel now reads "Computer Caller"
-                     (manifest `name`, deliverable (d)), so the in-panel wordmark
-                     is the product name twice inside 20 vertical px. The name is
-                     still on screen; it is just no longer OUR pixels saying it.
-          Do not re-add <CcLockup> here without a newer instruction than 13:26.
+            PIXEL-S2 removed it again (Dennis 09-17 13:26, "We now have
+                     duplicate title text showing twice. In the header, remove
+                     the 'computer caller' text which is white and blue.")
+            THIS     puts the NAME back, but not the LOCKUP. The 13:26
+                     complaint names what it was about — text "which is white
+                     and blue", i.e. the two-tone ALL-CAPS gradient lockup.
+                     What returns here is a single-weight, single-colour,
+                     sentence-case word at a pinned 12px. Dennis chose that
+                     shape explicitly over the mark-only alternative after
+                     being shown both, so the duplication with Chrome's own
+                     strip is intended, not overlooked.
+          Do not remove it again without an instruction newer than 12:45Z, and
+          do not "restore" <CcLockup> here — that is the artwork he rejected.
 
-          <CcMark> is the same artwork the lockup's mark half is cut from —
-          public/brand/official/cc-mark.png — so nothing about the logo changes
-          except that the letters beside it are gone. It carries NO accessible
-          name on purpose: ConnectionStatus speaks the state, Chrome's own strip
-          and the document <title> carry the product name, and an alt text that
-          repeats a name already two rows up is noise in a screen reader.
-
-          SIZE 18 IS PINNED and does not follow the text-size picker, for the
-          same reason the lockup's was: one fixed-width object in the row means
-          Small/Medium/Large all spend the same pixels on the brand and only
-          ConnectionStatus (which truncates) absorbs the difference. Dropping
-          the wordmark hands ~79px back to that pill at 360px x Large, so the
-          ext-text-size-proof overflow assertions get easier, not harder. */}
+          <CcMark> is the same artwork the lockup's mark half is cut from.
+          SIZE 18 IS PINNED and does not follow the text-size picker; so is the
+          word's 12px (app/extension/extension.css .cc-ext-wordmark). One
+          fixed-width brand block means Small/Medium/Large all spend the same
+          pixels on it and only ConnectionStatus (which truncates) absorbs the
+          difference. Below 380px the word hides and the mark carries the panel
+          alone — AC-1's width budget, enforced by ext-text-size-proof. */}
       <CcMark size={18} className="cc-ext-lockup" />
+      {/* aria-hidden: <title> and Chrome's strip already name the product to a
+          screen reader, and role="banner" is the landmark. A third utterance of
+          the same two words on every panel focus is noise. */}
+      <span className="cc-ext-wordmark" aria-hidden="true">ComputerCaller</span>
 
       {/* min-w-0 is what lets the pill's truncate actually engage — and the
           `cc-ext-conn` hook is what lets it engage one level DOWN as well.

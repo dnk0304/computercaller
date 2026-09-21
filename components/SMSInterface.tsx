@@ -6,6 +6,12 @@ import { clsx } from 'clsx';
 import { usePhone, useDebouncedValue } from '@/hooks';
 import { useFreeTier } from '@/hooks/freeTierContext';
 import type { SmsMessage } from '@/hooks';
+import {
+  useThreadReadState,
+  useSessionUserId,
+  useMarkOpenThreadRead,
+  threadKeyFor,
+} from '@/hooks/useThreadReadState';
 
 interface Conversation {
   id: string;
@@ -308,6 +314,12 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
   const [recipientNumber, setRecipientNumber] = useState('');
   const [showTemplateManager, setShowTemplateManager] = useState(false);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
+
+  // Unread = inbox messages that arrived after you last OPENED the thread on
+  // this computer. See hooks/useThreadReadState.ts for why this is a local
+  // claim and not the phone's read flag.
+  const sessionUserId = useSessionUserId();
+  const readState = useThreadReadState(sessionUserId);
   const [expandedTemplate, setExpandedTemplate] = useState<number | null>(null);
   const [isNewMessage, setIsNewMessage] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -335,11 +347,14 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
         messages: sortedMsgs,
         lastMessage: lastMsg.body,
         time: formatTime(lastMsg.date),
-        unread: 0,
+        // Real count: inbox messages that arrived after this conversation was
+      // last opened ON THIS COMPUTER. Was hard-coded 0 — the chip below has
+      // existed and rendered nothing since the list was written.
+      unread: readState.unreadCountFor(threadKeyFor(number), sortedMsgs),
         avatar: getAvatarColor(contact?.name || number)
       } as Conversation;
     }).sort((a, b) => b.messages[0].date - a.messages[0].date);
-  }, [phoneMessages, contacts]);
+  }, [phoneMessages, contacts, readState]);
 
   // Filter conversations based on search query.
   //
@@ -392,6 +407,9 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
 
   // Handle conversation selection
   const handleConversationClick = (conv: Conversation) => {
+    // THE one place /app's Texts list marks a thread opened. Not on scroll,
+    // not on hover, not on search — opening the conversation is the claim.
+    readState.markOpened(threadKeyFor(conv.number), conv.messages[0]?.date ?? 0);
     setActiveConversation(conv.id);
     setRecipientNumber(conv.number);
     setIsNewMessage(false);
@@ -409,6 +427,15 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
   const currentConversation = useMemo(
     () => conversations.find(c => c.id === activeConversation),
     [conversations, activeConversation]
+  );
+
+  // A message that lands WHILE its thread is open is being read as it arrives,
+  // so it must not tick the row unread the moment the user navigates away.
+  // This is the only marking site that is not a click.
+  useMarkOpenThreadRead(
+    readState,
+    currentConversation ? threadKeyFor(currentConversation.number) : null,
+    currentConversation?.messages[0]?.date ?? 0,
   );
 
   // Stable send callback handed to ComposeBar. Wrapped in useCallback so the
@@ -496,6 +523,7 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
             filteredConversations.map((conv) => (
               <div
                 key={conv.id}
+                data-cc-sms-row={conv.unread > 0 ? 'unread' : 'read'}
                 onClick={() => handleConversationClick(conv)}
                 className={clsx(
                   "p-4 flex items-start gap-3 cursor-pointer transition-colors hover:bg-white border-l-4",
@@ -507,14 +535,31 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-baseline mb-1">
-                    <h3 className="font-semibold text-slate-800 text-sm truncate">{conv.name}</h3>
+                    {/* Unread is never colour-only: the name goes bold AND the
+                        chip appears. Either one alone fails 1.4.1. */}
+                    <h3 className={clsx(
+                      "text-slate-800 text-sm truncate",
+                      conv.unread > 0 ? "font-bold" : "font-semibold",
+                    )}>
+                      {conv.name}
+                      {conv.unread > 0 && (
+                        <span className="sr-only">, {conv.unread} unread</span>
+                      )}
+                    </h3>
                     <span className="text-xs text-slate-400 shrink-0">{conv.time}</span>
                   </div>
-                  <p className="text-sm text-slate-500 truncate">{conv.lastMessage}</p>
+                  <p className={clsx(
+                    "text-sm truncate",
+                    conv.unread > 0 ? "text-slate-800" : "text-slate-500",
+                  )}>{conv.lastMessage}</p>
                 </div>
                 {conv.unread > 0 && (
-                  <div className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
-                    {conv.unread}
+                  <div
+                    aria-hidden="true"
+                    data-cc-unread-chip={conv.unread}
+                    className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0"
+                  >
+                    {conv.unread > 9 ? '9+' : conv.unread}
                   </div>
                 )}
               </div>
