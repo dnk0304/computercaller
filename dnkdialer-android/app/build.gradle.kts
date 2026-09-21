@@ -360,8 +360,13 @@ android {
         // FT-MERGE-2 (c): 58 -> 59 because vc58 is CONSUMED by the signed v58
         // release (P5b (e)); per the note above a consumed code is never
         // re-signed, so the FT-2 file-transfer work ships as v59.
-        versionCode = 59
-        versionName = "1.0.35"
+        // vc60 (2026-09-22): all android commits since the vc59 build 1614ad6 —
+        // P4.2 (E2eDedupe forward-jump bound + observability), P4.4 (account id
+        // persisted beside the token; E2ePairIdentity under the real account id),
+        // P6.1c 1a/1b (DeviceKey register-on-login; SAS before accept),
+        // P6.1d-A t3 (M-A6-5 one frozen SAS rendering). Signed on Security A6 FINAL.
+        versionCode = 60
+        versionName = "1.0.36"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
