@@ -1,0 +1,286 @@
+{
+  "generatedAt": "2026-09-21T10:04:00.405Z",
+  "deliverable": "E2E-P6.1b Part B — the (g) PHONE leg, phone <-> computer",
+  "scope": [
+    "(g) requires that NO side is simulated. scripts/lib/scripted-phone.mjs is not imported anywhere in this run.",
+    "relay: REAL `node server.js` pid 38668 on ephemeral port 4105, scratch Postgres postgresql://pix:pix@localhost:15433/cc",
+    "phone: REAL debug APK (vc59, built from this tree) on a rooted API-34 AVD, reaching the relay through a TLS terminator as https://computercaller.com — the host the APK hardcodes. No app file edited.",
+    "computer: REAL /app page + REAL shipped extension SW in one real Chromium at http://localhost:3000 (the baked app origin), so the relay-ticket CSRF pin is SATISFIED rather than bypassed."
+  ],
+  "apk": {
+    "path": "C:\\Users\\D\\worktrees\\computercaller\\e2e-p61c\\dnkdialer-android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+    "sha256": null,
+    "note": "sha recorded by the runner"
+  },
+  "serial": "emulator-5562",
+  "relayLogRedacted": {
+    "destPath": "C:\\Users\\D\\worktrees\\computercaller\\p61c-logs\\relay-redacted-2026-09-21T09-56-09-668Z.log",
+    "redactions": 0,
+    "bytes": 11818
+  },
+  "findings": [
+    {
+      "id": "A6-P61B-5",
+      "what": "the extension SW is present as a listener but its key is NOT carried into the pairing",
+      "evidence": "relay recorded the SW join (Listener (extension SW) joined lobby — receive-only (deviceId=ext-d7-sZhuk99B3N6CSf_3kLA)) and, for the same room, a browser advert of e2e=v1/mode1/recips1 — one recipient. Scenario 6 is blocked behind this. Per the Part 3 brief this is recorded as a PRODUCT (B9) finding for Security and is NOT patched in this lane."
+    }
+  ],
+  "stopped": [
+    {
+      "scenario": "3 resume / RESET_ROOM",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN — needs a surviving pair across a page reload and a SW restart. Every pairing in this run is torn down by the reload itself (logcat: \"E2E torn down (PAIRING_TERMINATED: user_left)\"), so same-kid resume cannot be observed until the harness keeps one pair alive across the reload rather than re-pairing per scenario."
+    },
+    {
+      "scenario": "4 F1 revocation live / F2 forward-jump live",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN. F2-live is structurally blocked, not merely unfinished: E2eDedupe.observe (E2eDedupe.kt:211) only reaches the forward-jump rule for a frame that AUTHENTICATES, and the seq is bound into the AEAD AAD, so a replayed frame with a relabelled far-future seq fails its tag BEFORE dedupe sees it and refusedForwardJump never increments. Emitting a genuine far-future sealed frame needs the page's own session key AND a caller-chosen seq — and sealFrame() deliberately takes no seq argument precisely so no caller can pick one (tests/e2e-sw-chokepoint asserts that signature). The Android leg of M-A5-2 is therefore proven by android:instrumented-A5 8/8 in Part A (E2eForwardJumpVectorsTest + E2eForwardJumpObservabilityTest, which pins the logcat line), not by this harness. F1-live was not reached."
+    },
+    {
+      "scenario": "5 restore-from-backup replay",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN — E2eSeqStore.simulateRestoreFromBackup() (E2eSeqStore.kt:296) deletes the Keystore wrapping key, which needs a live pair to then attempt a send. Blocked behind the same surviving-pair gap as scenario 3."
+    },
+    {
+      "scenario": "6 two-recipient canonical peer (vector J live)",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN, and finding A6-P61B-5 is why: the browser advertised e2e=v1/mode1/recips1 in EVERY pairing this run, with the extension SW present as a listener. There is no two-recipient pair to measure live on this base, so a \"vector J live\" row here would be a one-recipient pair wearing the wrong label."
+    }
+  ],
+  "tables": [
+    {
+      "scenario": "S1 — ON/ON live pair, SAS",
+      "note": "Both sides encrypted; ONE real pairing; both humans confirm on their own surface.",
+      "rows": [
+        {
+          "field": "browser e2e advert (relay-observed)",
+          "phone": null,
+          "page": "v1/mode1/recips1",
+          "sw": null,
+          "match": null
+        },
+        {
+          "field": "SAS digits (read off the two SURFACES)",
+          "phone": "29057",
+          "page": "29057",
+          "sw": "ABSENT — no SAS impl in the shipped extension",
+          "match": true
+        },
+        {
+          "field": "SAS_REQUIRED receiver match count (M-A6-3)",
+          "phone": "1",
+          "page": null,
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "sealed BEFORE confirmation (M-A6-4)",
+          "phone": "YES — unexpected",
+          "page": null,
+          "sw": null,
+          "match": false
+        },
+        {
+          "field": "sealed AFTER both confirmations (M-A6-4)",
+          "phone": "yes",
+          "page": null,
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "kid",
+          "phone": "AZLsdT-NpkG7H0zxW5m-nQ",
+          "page": null,
+          "sw": null,
+          "match": false
+        },
+        {
+          "field": "mode",
+          "phone": "ON",
+          "page": "Encrypted",
+          "sw": "counts-only",
+          "match": null
+        },
+        {
+          "field": "phone armed line (post-confirm)",
+          "phone": "E2E armed kid=AZLsdT-NpkG7H0zxW5m-nQ epoch=1 mode=ON verified=true recipients=1 sas=29057",
+          "page": null,
+          "sw": null,
+          "match": true
+        }
+      ]
+    },
+    {
+      "scenario": "S1b — refusals are load-bearing",
+      "note": "Each side's \"Doesn't match\" exercised once against a real pair.",
+      "rows": [
+        {
+          "field": "phone refused -> pair sealed?",
+          "phone": "no seal",
+          "page": null,
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "page refused -> refused/torn-down surface",
+          "phone": null,
+          "page": "refusedNodes=1 chip=Pair again",
+          "sw": null,
+          "match": true
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "pass": true,
+      "name": "PRE-adb is root",
+      "detail": "id -u = 0"
+    },
+    {
+      "pass": true,
+      "name": "PRE-hosts maps computercaller.com -> 10.0.2.2",
+      "detail": "10.0.2.2 computercaller.com"
+    },
+    {
+      "pass": true,
+      "name": "PRE-test CA in /system/etc/security/cacerts",
+      "detail": "1738bf2a.0 present"
+    },
+    {
+      "pass": true,
+      "name": "PRE-test CA in the Conscrypt APEX trust store",
+      "detail": "1738bf2a.0 present"
+    },
+    {
+      "pass": true,
+      "name": "PRE-user  real entitled user seeded in the real scratch DB",
+      "detail": "id=cmub2llwv0000l22oibiaj1ve"
+    },
+    {
+      "pass": true,
+      "name": "PRE-page  the real web app loaded on the baked origin",
+      "detail": "http://localhost:3000/app"
+    },
+    {
+      "pass": true,
+      "name": "PH-install  the debug APK installed on this lane's AVD",
+      "detail": "emulator-5562 C:\\Users\\D\\worktrees\\computercaller\\e2e-p61c\\dnkdialer-android\\app\\build\\outputs\\apk\\debug\\app-debug.apk"
+    },
+    {
+      "pass": true,
+      "name": "PH-login-net the app issued POST /api/auth/apk-login through the TLS terminator",
+      "detail": "POST /api/auth/apk-login"
+    },
+    {
+      "pass": true,
+      "name": "PH-signin   SignInActivity dismissed (the real login was accepted)",
+      "detail": "signed in"
+    },
+    {
+      "pass": true,
+      "name": "PRE-phone the RELAY observed the real app open /relay/phone",
+      "detail": "Phone joined lobby (browsers=1, active=false)"
+    },
+    {
+      "pass": true,
+      "name": "S1-pref  the phone's local encrypted-mode setting reads back ON from disk",
+      "detail": "computercaller_e2e_prefs/encrypted_mode=true"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S1-lobby  the page offers Connect (relay reported the phone in the lobby)",
+      "detail": "Connect enabled"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S1-accept the PHONE showed a connection request and Accept was tapped",
+      "detail": "pairAcceptButton tapped"
+    },
+    {
+      "pass": true,
+      "name": "S1-face   the PHONE raised the shipped SAS hero face (M-A6-3 emitter live)",
+      "detail": "homeSasCode=29057"
+    },
+    {
+      "pass": true,
+      "name": "S1-recv   a receiver is registered for ACTION_E2E_SAS_REQUIRED (M-A6-3, match count >= 1)",
+      "detail": "dumpsys match count=1"
+    },
+    {
+      "pass": true,
+      "name": "S1-dialog the PAGE raised its SAS dialog for the same pairing",
+      "detail": "data-cc-sas-digits=29057"
+    },
+    {
+      "pass": true,
+      "name": "S1-item7  the five-digit SAS is IDENTICAL on the phone hero face and the page dialog",
+      "detail": "phone(hero)=29057 page(dialog)=29057"
+    },
+    {
+      "pass": true,
+      "name": "S1-a64-a  NO sealed frame before EITHER confirmation (M-A6-4: unconfirmed pair carries no traffic)",
+      "detail": "no \"E2E armed\" line while the phone face is up and nothing is confirmed"
+    },
+    {
+      "pass": true,
+      "name": "S1-a64-b  the PHONE arms locally once ITS user answers (SPEC 12.2 local-act reading, R-BH)",
+      "detail": "armed after the phone's own confirm, before the page's: E2E armed kid=AZLsdT-NpkG7H0zxW5m-nQ epoch=1 mode=ON verified=true recipients=1 sas=29057"
+    },
+    {
+      "pass": true,
+      "name": "S1-confirm both surfaces were answered by a real tap/click",
+      "detail": "phone Matches tapped=true page confirm clicked=true"
+    },
+    {
+      "pass": true,
+      "name": "S1-a64-c  the pair seals ONLY AFTER BOTH confirmations (M-A6-4 second half)",
+      "detail": "E2E armed kid=AZLsdT-NpkG7H0zxW5m-nQ epoch=1 mode=ON verified=true recipients=1 sas=29057"
+    },
+    {
+      "pass": true,
+      "name": "S1-reset1 the lobby was emptied so a SECOND pairing can be offered",
+      "detail": "Reset lobby clicked; phone re-joins"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S1-declinePhone-lobby  the page offers Connect (relay reported the phone in the lobby)",
+      "detail": "Connect enabled"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S1-declinePhone-accept the PHONE showed a connection request and Accept was tapped",
+      "detail": "pairAcceptButton tapped"
+    },
+    {
+      "pass": true,
+      "name": "S1-tear-phone  \"Doesn't match\" on the PHONE tears the pair down (no seal, existing refusal path)",
+      "detail": "no \"E2E armed\" line after the phone answered \"Doesn't match\" (refusal text in logcat: true)"
+    },
+    {
+      "pass": true,
+      "name": "S1-reset2 the lobby was emptied so a THIRD pairing can be offered",
+      "detail": "Reset lobby clicked; phone re-joins"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S1-declinePage-lobby  the page offers Connect (relay reported the phone in the lobby)",
+      "detail": "Connect enabled"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S1-declinePage-accept the PHONE showed a connection request and Accept was tapped",
+      "detail": "pairAcceptButton tapped"
+    },
+    {
+      "pass": true,
+      "name": "S1-tear-page   \"Doesn't match\" on the PAGE runs the revoking teardown (pair not left usable)",
+      "detail": "data-cc-sas-refused nodes=1 chip=Pair again"
+    },
+    {
+      "pass": true,
+      "name": "A6-P61B-3 CLOSED: a receiver for ACTION_E2E_SAS_REQUIRED is registered by the running app",
+      "detail": "dumpsys match count=1 — the 1b emitter path is reachable; the phone raised its hero face in S1"
+    }
+  ]
+}
