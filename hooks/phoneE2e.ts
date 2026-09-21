@@ -300,6 +300,66 @@ export function findOurWrap(block: E2eAcceptBlock, ourDeviceId: string): string 
 }
 
 /**
+ * A6-P61C-REPAIR-WRAP. Which device key an ACCEPT is evaluated against.
+ *
+ * -- THE DEFECT THIS EXISTS TO CLOSE ---------------------------------------
+ * `useE2e` held the web device key in a ref that had exactly ONE writer:
+ * `buildRequestE2e`, the OUTBOUND advert path. A PAIRING_ACTIVE that this page
+ * did not itself request therefore arrived with the ref still `null`, and
+ * `ourDeviceId` fell back to `''` -- so {@link findOurWrap} compared the empty
+ * string against the wraps and reported "1 wrap(s), none ours" on a block that
+ * was addressed to us correctly. The relay re-sends the stashed accept block
+ * BYTE-IDENTICALLY on a soft-hold resume (E2E-P1 (b)), so every page reload
+ * inside the hold window hit it: the phone was never at fault and no key ever
+ * rotated. The device key is persisted in IndexedDB and survives the reload --
+ * the ref did not.
+ *
+ * -- WHY IT IS A LOAD, NEVER AN ENSURE -------------------------------------
+ * `ensureWebDeviceKey` MINTS a key when the store is empty and POSTs it to the
+ * registry. Doing that here would answer "we cannot open this wrap" by
+ * generating a brand-new identity that provably cannot open it either, and
+ * would register a device row off an inbound relay frame. `load` must be a
+ * read. When the read comes back empty while a block is on the wire, the honest
+ * outcome is the EXISTING sticky refusal `re-pair-needed` -- whose chip already
+ * reads "Pair again" (lib/encryptedModeCopy.ts) -- and not `e2e-setup-failed`,
+ * whose chip says "Pairing refused" and points the user at nothing they can do.
+ *
+ * A thrown error is NOT caught here: a record that fails the version or shape
+ * guard must reach the caller's existing `WebKeyRecordVersionError` /
+ * `WebKeyRecordShapeError` arm, which maps it to the same `re-pair-needed`.
+ * Swallowing it would turn an unreadable record into "absent" and, one call
+ * later, into a regenerated key.
+ */
+export type DeviceKeyForAccept<K> =
+  | { action: 'use'; key: K | null }
+  | { action: 'refuse'; error: 're-pair-needed'; detail: string };
+
+export async function deviceKeyForAccept<K>(input: {
+  /** What the hook already holds. A live ref always wins: no I/O on the hot path. */
+  cached: K | null;
+  /** Whether a usable e2e accept block came with this PAIRING_ACTIVE. */
+  blockPresent: boolean;
+  /** READ-ONLY loader. Never `ensureWebDeviceKey`. */
+  load: () => Promise<K | null>;
+}): Promise<DeviceKeyForAccept<K>> {
+  if (input.cached) return { action: 'use', key: input.cached };
+  // A plaintext accept needs no key, and must not be turned into a refusal by
+  // the absence of one: the downgrade latch in decideAccept owns that call.
+  if (!input.blockPresent) return { action: 'use', key: null };
+  const loaded = await input.load();
+  if (!loaded) {
+    return {
+      action: 'refuse',
+      error: 're-pair-needed',
+      detail:
+        'this pairing is encrypted but this browser holds no device key, so no wrap in it '
+        + 'can be opened - pair again to start a new encrypted session',
+    };
+  }
+  return { action: 'use', key: loaded };
+}
+
+/**
  * C-1: OR, and once ON it never goes back for the life of the pair.
  *
  * ── WHAT `peerMode` IS (GATE1 Addendum A5, F5 — canonical) ────────────────

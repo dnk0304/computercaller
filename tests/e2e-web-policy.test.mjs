@@ -33,6 +33,7 @@ import {
   buildRequestBlock,
   readAcceptBlock,
   findOurWrap,
+  deviceKeyForAccept,
   effectiveMode,
   pinPhoneKey,
   decideAccept,
@@ -42,6 +43,12 @@ import {
   sasKeySet,
   E2E_VIEW_INITIAL,
 } from '../hooks/phoneE2e.ts';
+
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 let passed = 0;
 let failed = 0;
@@ -375,6 +382,104 @@ eq('view: A5 — the initial effective mode is off', E2E_VIEW_INITIAL.effective,
 eq('view: A5 x FT-A1.1 x P6.1c — debug carries the forward-jump counter, the relay-abort counter and the advert record',
   Object.keys(E2E_VIEW_INITIAL.debug).sort().join(','),
   'advertisedRecipients,downgradesDropped,drops,kid,refusedForwardJump,relayAbortsAccepted,swBridge');
+
+
+// -- 9. A6-P61C-REPAIR-WRAP: the key an ACCEPT is evaluated against ---------
+//
+// THE DEFECT, from the P6.1c Part 3 page console: after a reload inside the
+// relay's soft-hold window the page logged
+//   "e2e-setup-failed - the accept block has no wrap for our deviceId
+//    (1 wrap(s), none ours)"
+// on a resumed PAIRING_ACTIVE. The block was the SAME bytes the relay stashed
+// at the first pairing and it WAS addressed to this page. The only thing that
+// had moved was hooks/useE2e.ts's `keyRef`, whose one writer is the OUTBOUND
+// advert path; a resume does not go through it, so `ourDeviceId` was ''.
+//
+// These are real checks, not prose: deviceKeyForAccept is driven with injected
+// loaders, and findOurWrap is driven with the empty deviceId to show that the
+// empty string is what produced the "none ours" reading.
+{
+  const BLOCK = { v: 1, mode: 1, kid: 'k', epk: 'e', recips: [], recipKeys: [],
+    wraps: [{ deviceId: 'aa'.repeat(16), wrap: 'w' }] };
+
+  eq('repair-wrap: the empty deviceId is what matched no wrap',
+    findOurWrap(BLOCK, ''), null);
+  eq('repair-wrap: ...while the real one matches',
+    findOurWrap(BLOCK, 'aa'.repeat(16)), 'w');
+
+  const KEY = { deviceId: 'aa'.repeat(16) };
+  let loads = 0;
+  const loader = (value) => async () => { loads += 1; return value; };
+
+  // (1) a live ref wins and costs no I/O.
+  loads = 0;
+  let r = await deviceKeyForAccept({ cached: KEY, blockPresent: true, load: loader(null) });
+  eq('repair-wrap: a cached key is used', r.action, 'use');
+  eq('repair-wrap: ...and it is the cached one', r.key, KEY);
+  eq('repair-wrap: ...with no store read', loads, 0);
+
+  // (2) THE REGRESSION: no ref, a block on the wire -> load from the store.
+  loads = 0;
+  r = await deviceKeyForAccept({ cached: null, blockPresent: true, load: loader(KEY) });
+  eq('repair-wrap: a resumed accept loads the persisted key', r.action, 'use');
+  eq('repair-wrap: ...and the loaded key is the one used', r.key && r.key.deviceId, KEY.deviceId);
+  eq('repair-wrap: ...read exactly once', loads, 1);
+  eq('repair-wrap: ...so the wrap is now found', findOurWrap(BLOCK, r.key.deviceId), 'w');
+
+  // (3) genuinely no key + an encrypted block -> the EXISTING sticky refusal,
+  // whose chip reads "Pair again". Not e2e-setup-failed ("Pairing refused"),
+  // which names no act the user can perform.
+  r = await deviceKeyForAccept({ cached: null, blockPresent: true, load: loader(null) });
+  eq('repair-wrap: no key at all refuses', r.action, 'refuse');
+  eq('repair-wrap: ...as re-pair-needed, the Pair-again chip', r.error, 're-pair-needed');
+  check('repair-wrap: ...with a detail that names the act', /pair again/i.test(r.detail));
+
+  // (4) a PLAINTEXT accept must not be turned into a refusal by a missing key:
+  // decideAccept's downgrade latch owns that call, not this helper.
+  loads = 0;
+  r = await deviceKeyForAccept({ cached: null, blockPresent: false, load: loader(null) });
+  eq('repair-wrap: a block-less accept still proceeds', r.action, 'use');
+  eq('repair-wrap: ...with a null key', r.key, null);
+  eq('repair-wrap: ...and never touches the store', loads, 0);
+
+  // (5) an unreadable record must NOT be swallowed into "absent" - that is one
+  // call away from minting a replacement identity.
+  let threw = false;
+  try {
+    await deviceKeyForAccept({
+      cached: null, blockPresent: true,
+      load: async () => { throw new Error('WebKeyRecordVersionError'); },
+    });
+  } catch { threw = true; }
+  check('repair-wrap: a throwing load propagates to the caller arm', threw);
+}
+
+// -- 9b. the wiring, pinned at source ---------------------------------------
+// hooks/useE2e.ts is React and cannot be imported here, so the two facts a pure
+// test cannot see are pinned: that onPairingActive goes through the helper, and
+// that the loader it passes is the READ (loadWebDeviceKey), never the MINT
+// (ensureWebDeviceKey, which also POSTs a new row to the registry).
+{
+  const src = readFileSync(join(ROOT, 'hooks', 'useE2e.ts'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '');
+  const accept = src.slice(src.indexOf('const onPairingActive'), src.indexOf('const onPairEnded'));
+  check('repair-wrap wiring: onPairingActive calls deviceKeyForAccept',
+    /deviceKeyForAccept<WebDeviceKey>\(\{/.test(accept));
+  check('repair-wrap wiring: the loader is loadWebDeviceKey',
+    /load:\s*\(\)\s*=>\s*loadWebDeviceKey\(/.test(accept));
+  check('repair-wrap wiring: it does NOT ensure (mint+register) on an inbound frame',
+    !/ensureWebDeviceKey/.test(accept));
+  check('repair-wrap wiring: the resolved key is written back to keyRef',
+    /keyRef\.current = key;/.test(accept));
+  check('repair-wrap wiring: a refuse arm fails with the helper verdict',
+    /fail\(resolved\.error, resolved\.detail\)/.test(accept));
+  check('repair-wrap wiring: ourDeviceId comes from the RESOLVED key',
+    /const key = resolved\.key;/.test(accept)
+    && /const ourDeviceId = key\?\.deviceId \?\? '';/.test(accept));
+  check('repair-wrap wiring: buildRequestE2e is still the only ensure caller',
+    (src.match(/ensureWebDeviceKey\(/g) || []).length === 1);
+}
 
 const total = passed + failed;
 console.log(`e2e-web-policy: ${passed}/${total} checks passed`);
