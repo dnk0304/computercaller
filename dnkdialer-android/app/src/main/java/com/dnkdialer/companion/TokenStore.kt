@@ -37,6 +37,18 @@ object TokenStore {
     private const val KEY_PHONE_TOKEN = "phone_token"
     private const val KEY_DEVICE_NAME = "device_name"
 
+    /**
+     * E2E P4.4 / R-BH. The account id this phone's [KEY_PHONE_TOKEN] resolves
+     * to, as the DeviceKey API reported it.
+     *
+     * It lives HERE, beside the token, for one reason: it is only ever true
+     * *of that token*. Signing out or signing in to another account must not
+     * leave a stale account id behind for the next session to derive keys
+     * under, and putting it in the same encrypted prefs makes [clear] wipe both
+     * in one act -- there is no second place to forget.
+     */
+    private const val KEY_USER_ID = "e2e_user_id"
+
     // Disconnect-from-lobby dispatch (v25, 2026-05-26). When true, the user
     // explicitly tapped "Disconnect from Lobby" in the app and we should
     // NOT auto-dial the relay on:
@@ -100,6 +112,75 @@ object TokenStore {
     fun getDeviceName(ctx: Context): String? = safePrefs(ctx)?.getString(KEY_DEVICE_NAME, null)
 
     /**
+     * The account id for SPEC 13.10.3's pairContext, or null.
+     *
+     * Null when it has never been learned, when the Keystore is unavailable, or
+     * -- deliberately -- when a blank somehow reached the disk. A caller must
+     * treat null as REFUSE, never as `""`: an empty account id is the value
+     * that made every wrap this phone sealed unopenable on the page
+     * (A6-P61B-8), and the JS side's frozen KDF module will not even represent
+     * it.
+     */
+    fun getUserId(ctx: Context): String? =
+        safePrefs(ctx)?.getString(KEY_USER_ID, null)?.takeIf { it.isNotBlank() }
+
+    /** What [putUserId] did. */
+    enum class UserIdWrite {
+        /** There was nothing stored; the value is now stored. */
+        STORED,
+
+        /** Nothing to do: no value offered, or the same one is already stored. */
+        UNCHANGED,
+
+        /**
+         * A DIFFERENT non-blank id is already stored and was NOT overwritten.
+         * Persist-once: see [putUserId].
+         */
+        MISMATCH,
+
+        /** The encrypted prefs could not be opened. Nothing was written. */
+        UNAVAILABLE,
+    }
+
+    /**
+     * Persist the account id ONCE.
+     *
+     * The rule is the same one M-A6-2 applies to the device key: a value the
+     * peers' key schedules already depend on may not be replaced quietly. A
+     * second, different id arriving for the same phoneToken is not a normal
+     * event -- the token resolves to exactly one User row on the server -- so
+     * it is either a server-side identity change or someone answering for it.
+     * Either way, overwriting would silently re-key every pairing, and the only
+     * trace would be that traffic stopped decrypting.
+     *
+     * So the stored value WINS, the new one is dropped, and the caller is told
+     * [UserIdWrite.MISMATCH] so mode ON can fail closed. A legitimate change of
+     * account goes through sign-out, which calls [clear] and takes the token
+     * and the id together.
+     *
+     * A null or blank [userId] is never written. There is no state in which
+     * storing `""` is better than storing nothing.
+     *
+     * A4-M5: the log line carries ids only -- no key material, no token.
+     */
+    fun putUserId(ctx: Context, userId: String?): UserIdWrite {
+        val offered = userId?.takeIf { it.isNotBlank() } ?: return UserIdWrite.UNCHANGED
+        val p = safePrefs(ctx) ?: return UserIdWrite.UNAVAILABLE
+        val stored = p.getString(KEY_USER_ID, null)?.takeIf { it.isNotBlank() }
+        if (stored == offered) return UserIdWrite.UNCHANGED
+        if (stored != null) {
+            android.util.Log.w(
+                "TokenStore",
+                "E2E_USERID_MISMATCH stored=$stored served=$offered - keeping the stored id; " +
+                    "mode ON pairings fail closed until sign-out clears it"
+            )
+            return UserIdWrite.MISMATCH
+        }
+        p.edit().putString(KEY_USER_ID, offered).apply()
+        return UserIdWrite.STORED
+    }
+
+    /**
      * Persist a new phoneToken. Throws [EncryptedPrefsUnavailableException]
      * if the Keystore can't be opened - SignInActivity should catch and
      * present a user-facing error rather than letting the sign-in flow
@@ -112,6 +193,14 @@ object TokenStore {
             .apply()
     }
 
+    /**
+     * Sign out. Wipes the whole prefs file, which is what makes the phoneToken
+     * and the E2E account id ([KEY_USER_ID]) impossible to separate: a phone
+     * that kept the id after signing out would, on the next login to a
+     * DIFFERENT account, either derive under the old account's identity or hit
+     * the [UserIdWrite.MISMATCH] refusal forever. Clearing both together is the
+     * only state where neither can happen.
+     */
     fun clear(ctx: Context) {
         // Clear is best-effort - if the prefs file can't be opened the
         // token effectively doesn't exist on disk anyway, so swallowing

@@ -115,6 +115,18 @@ object E2eDeviceKeyRegistrar {
         val status: Status,
         val detail: String,
         val registry: E2eDeviceKeyClient.Result<List<E2eDeviceKeyClient.DeviceKeyRow>>,
+        /**
+         * R-BH: the account id the registry reported for OUR bearer, or null
+         * when it said nothing. Never `""` -- [E2eDeviceKeyClient] folds an
+         * empty field into null at the parse.
+         */
+        val userId: String? = null,
+        /**
+         * A DIFFERENT id was already persisted and was not overwritten. The
+         * Accept path treats this as fail-closed under mode ON; see
+         * [TokenStore.putUserId].
+         */
+        val userIdMismatch: Boolean = false,
     ) {
         val wrote: Boolean get() = status == Status.REGISTERED || status == Status.ROTATED
     }
@@ -195,10 +207,17 @@ object E2eDeviceKeyRegistrar {
         // that everything downstream keeps the shape it had.
         val rows = listed.value.keys
         val listedRows = E2eDeviceKeyClient.Result.Ok(rows)
+        val listedUserId = listed.value.userId
 
         val decided = plan(rows, deviceId, publicKeySec1)
         if (decided is Plan.UpToDate) {
-            return Outcome(Status.ALREADY_LIVE, "a live row already holds this key", listedRows)
+            // The ALREADY_LIVE path is exactly why LIST has to carry the
+            // account id too: it issues no write at all, so a register-only
+            // channel would never reach a phone whose row already exists --
+            // which, after the first run, is every phone.
+            return Outcome(
+                Status.ALREADY_LIVE, "a live row already holds this key", listedRows, listedUserId,
+            )
         }
         val displacing = (decided as Plan.Register).displacing
 
@@ -218,7 +237,12 @@ object E2eDeviceKeyRegistrar {
                 } else {
                     "registered ${fingerprint(row.publicKey)} for deviceId=$deviceId"
                 }
-                Outcome(status, detail, E2eDeviceKeyClient.Result.Ok(merge(rows, row)))
+                Outcome(
+                    status,
+                    detail,
+                    E2eDeviceKeyClient.Result.Ok(merge(rows, row)),
+                    written.value.userId ?: listedUserId,
+                )
             }
 
             E2eDeviceKeyClient.Result.PairingInFlight -> Outcome(
@@ -226,18 +250,21 @@ object E2eDeviceKeyRegistrar {
                 "409 pairing_in_flight — a handshake is mid-flight; retrying on the " +
                     "next app start or Accept",
                 listedRows,
+                listedUserId,
             )
 
             is E2eDeviceKeyClient.Result.Forbidden -> Outcome(
                 Status.DEFERRED,
                 "registry refused the write (${written.status}): ${written.message}",
                 listedRows,
+                listedUserId,
             )
 
             is E2eDeviceKeyClient.Result.Unavailable -> Outcome(
                 Status.DEFERRED,
                 "registry unavailable for the write: ${written.reason}",
                 listedRows,
+                listedUserId,
             )
         }
     }
@@ -311,6 +338,16 @@ object E2eDeviceKeyRegistrar {
             val why = "${e.javaClass.simpleName}: ${e.message}"
             Outcome(Status.DEFERRED, why, E2eDeviceKeyClient.Result.Unavailable(why))
         }
+        // R-BH: persist the account id off the same round trip. Persist-once,
+        // so a second DIFFERENT id is refused rather than applied -- the phone
+        // keeps what it has and the Accept path fails closed under mode ON.
+        val write = TokenStore.putUserId(app, outcome.userId)
+        val settled = if (write == TokenStore.UserIdWrite.MISMATCH) {
+            Log.w(TAG, "[$reason] E2E_USERID_MISMATCH - refusing to re-key; see TokenStore")
+            outcome.copy(userIdMismatch = true)
+        } else {
+            outcome
+        }
         when (outcome.status) {
             // M-A6-2: the displacement is the one outcome that must never pass
             // unremarked, so it is the one that is not at INFO.
@@ -318,6 +355,6 @@ object E2eDeviceKeyRegistrar {
             Status.DEFERRED -> Log.w(TAG, "[$reason] deferred — ${outcome.detail}")
             else -> Log.i(TAG, "[$reason] ${outcome.status}: ${outcome.detail}")
         }
-        return outcome
+        return settled
     }
 }

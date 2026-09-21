@@ -347,4 +347,99 @@ class E2eDeviceKeyRegistrarTest {
         assertEquals(E2eDeviceKeyRegistrar.Status.SKIPPED, out.status)
         assertNull((out.registry as? E2eDeviceKeyClient.Result.Ok)?.value)
     }
+
+    // ---------------------------------------------- R-BH: the account id
+
+    /**
+     * The LIST-first reason the server had to put `userId` on /list and not
+     * only on /register: an ALREADY_LIVE phone issues NO write, and after the
+     * very first run that is every phone. A register-only channel would reach
+     * the one case that does not need it and miss the one that does.
+     */
+    @Test
+    fun `an ALREADY_LIVE phone still learns its account id, from the LIST`() {
+        val mine = freshKey()
+        val wire = Wire(
+            E2eDeviceKeyClient.Result.Ok(listOf(row(key = mine))),
+            listedUserId = "acct-live",
+        )
+        val out = run(wire, mine)
+
+        assertEquals(E2eDeviceKeyRegistrar.Status.ALREADY_LIVE, out.status)
+        assertEquals(0, wire.writes)
+        assertEquals("acct-live", out.userId)
+    }
+
+    @Test
+    fun `a fresh registration reports the account id the write returned`() {
+        val mine = freshKey()
+        val wire = Wire(
+            E2eDeviceKeyClient.Result.Ok(emptyList()),
+            E2eDeviceKeyClient.Result.Ok(row(key = mine) to false),
+            listedUserId = "acct-from-list",
+            writtenUserId = "acct-from-write",
+        )
+        val out = run(wire, mine)
+
+        assertEquals(E2eDeviceKeyRegistrar.Status.REGISTERED, out.status)
+        assertEquals("acct-from-write", out.userId)
+    }
+
+    /**
+     * A deployment that answers on /list but not on /register must not leave
+     * the phone with nothing. The two are the same account by construction --
+     * both are resolved from the same bearer -- so falling back is not a guess.
+     */
+    @Test
+    fun `a write that says nothing falls back to the account id the list gave`() {
+        val mine = freshKey()
+        val wire = Wire(
+            E2eDeviceKeyClient.Result.Ok(emptyList()),
+            E2eDeviceKeyClient.Result.Ok(row(key = mine) to false),
+            listedUserId = "acct-from-list",
+            writtenUserId = null,
+        )
+        val out = run(wire, mine)
+
+        assertEquals("acct-from-list", out.userId)
+    }
+
+    @Test
+    fun `a 409 still carries the account id the list already gave`() {
+        val mine = freshKey()
+        val wire = Wire(
+            E2eDeviceKeyClient.Result.Ok(emptyList()),
+            E2eDeviceKeyClient.Result.PairingInFlight,
+            listedUserId = "acct-409",
+        )
+        val out = run(wire, mine)
+
+        assertEquals(E2eDeviceKeyRegistrar.Status.DEFERRED, out.status)
+        assertEquals("acct-409", out.userId)
+    }
+
+    /**
+     * An unreachable registry yields NO account id -- not a guess, not a
+     * leftover, not "". Null is what the Accept path turns into a refusal, and
+     * this is the shape that must reach it.
+     */
+    @Test
+    fun `an unreachable registry yields no account id at all`() {
+        val out = run(Wire(E2eDeviceKeyClient.Result.Unavailable("SocketTimeoutException")), freshKey())
+
+        assertEquals(E2eDeviceKeyRegistrar.Status.DEFERRED, out.status)
+        assertNull(out.userId)
+    }
+
+    /**
+     * The flag defaults OFF. Only the Android binding -- which is the only
+     * thing that can read what is already on disk -- ever raises it, so a pure
+     * decision can never accidentally refuse a pairing.
+     */
+    @Test
+    fun `the pure decision never raises the mismatch flag`() {
+        val mine = freshKey()
+        val out = run(Wire(E2eDeviceKeyClient.Result.Ok(listOf(row(key = mine)))), mine)
+        assertFalse(out.userIdMismatch)
+    }
 }

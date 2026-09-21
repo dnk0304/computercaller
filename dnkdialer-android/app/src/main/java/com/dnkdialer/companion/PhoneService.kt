@@ -2791,6 +2791,36 @@ class PhoneService : Service() {
         val registration = E2eDeviceKeyRegistrar.ensureForThisDevice(this, "accept")
         val registry = registration.registry
 
+        // ------------------------------------------- (1a') the account id
+        //
+        // P4.4 / R-BH. The same round trip tells us which account this phone
+        // is, and that value is a SPEC 13.10.3 key-schedule input. A MISMATCH
+        // means a second, different id arrived for a token that resolves to
+        // exactly one User row -- so either the server's answer changed or
+        // something answered for it. TokenStore refused to overwrite; we
+        // refuse to derive.
+        //
+        // Mode ON refuses, mode OFF continues in the clear and is badged
+        // Unencrypted -- 13.1's row for "neither side required it", the same
+        // split every other failure on this path takes.
+        if (registration.userIdMismatch) {
+            if (decision.modeOn) {
+                android.util.Log.w(
+                    "PhoneService",
+                    "E2E refused: E2E_USERID_MISMATCH - the stored account id is not the one " +
+                        "the registry served; refusing rather than re-keying"
+                )
+                e2eDowngradeLatch.latch()
+                sendPairingDecision("DECLINE_PAIRING", pairingId, null)
+                broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
+                return
+            }
+            android.util.Log.w(
+                "PhoneService",
+                "E2E_USERID_MISMATCH with the mode off - continuing in plaintext"
+            )
+        }
+
         // ---------------------------------------------------------- (e) pin
         val verdict = E2eKeyPin.verify(decision.recipients, registry, decision.modeOn)
         if (!E2eKeyPin.mayProceed(verdict)) {
