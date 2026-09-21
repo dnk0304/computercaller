@@ -492,8 +492,8 @@ const MIN_CHECKS_OVERRIDE = {
   // it: 14 assertions.
   'unit:ctx-parity': 14,
   // GATE-PREFLIGHT. Post-dates the parity baseline, so the floor is declared
-  // here. Measured at the commit that adds it: 49 assertions.
-  'unit:headroom': 49,
+  // here. Measured after the dual-guard: 54 assertions.
+  'unit:headroom': 54,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -1031,6 +1031,36 @@ function rssCensus() {
   }
 }
 
+/**
+ * GATE-PREFLIGHT. Refuse to start browser work when the box cannot survive it.
+ *
+ * Memoised: it is called at EVERY point where this gate is about to launch a
+ * browser, and there are two of them, but the machine is only asked once and
+ * only one `env:headroom` step is ever recorded.
+ *
+ * @param {string} where names the browser stage being guarded, so the console
+ *        says which one stopped.
+ */
+let headroomChecked = false;
+function preflightHeadroom(where) {
+  if (headroomChecked) return;
+  headroomChecked = true;
+  const verdict = classifyHeadroom({ freeBytes: osFreemem(), requiredGib: HEADROOM_GIB });
+  record('env:headroom', `os.freemem() >= ${HEADROOM_GIB} GiB (before ${where})`, 0, 0,
+    { freeGib: verdict.freeGib, requiredGib: verdict.requiredGib },
+    verdict.ok ? {} : { outcome: 'ENV-NONRUN', before: where });
+  if (verdict.ok) {
+    console.log(`  ok    env:headroom — ${verdict.freeGib} GiB free >= ${verdict.requiredGib} GiB (before ${where})`);
+    return;
+  }
+  console.log(headroomReport(verdict, topRssHolders(rssCensus())));
+  console.log(`    stopped before: ${where}\n`);
+  // Rule 14 applies to a refusal exactly as it applies to a pass. A no-op when
+  // nothing has been started yet.
+  stopDevServer();
+  process.exit(3);
+}
+
 function stopDevServer() {
   // Rule 12: never kill by image name. Only the PID we started.
   if (devProc && devProc.pid) {
@@ -1560,6 +1590,14 @@ if (WEB) {
       // (g) cross-implementation. Emits its cross-match table as JSON.
       ['p6:cross-impl', 'scripts/e2e-cross-impl-proof.mjs'],
     ];
+    /**
+     * The FIRST browser launch in the whole gate at these phases is HERE, not
+     * at the Playwright block in step 9: scripts/e2e-cross-impl-proof.mjs
+     * drives a real Chromium. The pre-flight has to sit above the earliest
+     * browser or it is guarding the second door and leaving the first open —
+     * and P6.1C run 3 died at step 80, which is in this neighbourhood.
+     */
+    preflightHeadroom('the P6 real-relay proofs (p6:cross-impl drives Chromium)');
     for (const [name, rel] of P6_REAL_RELAY) {
       if (!existsSync(join(ROOT, rel))) {
         // Never a silent skip. A P6 proof that is absent at --phase P6 is a
@@ -1692,23 +1730,7 @@ if (WEB) {
          * is mostly Dennis's own Chrome under explorer.exe and it is not ours
          * to kill. It is printed so a human knows what to close.
          */
-        {
-          const verdict = classifyHeadroom({
-            freeBytes: osFreemem(), requiredGib: HEADROOM_GIB,
-          });
-          record('env:headroom', `os.freemem() >= ${HEADROOM_GIB} GiB`, 0, 0,
-            { freeGib: verdict.freeGib, requiredGib: verdict.requiredGib },
-            verdict.ok ? {} : { outcome: 'ENV-NONRUN' });
-          if (verdict.ok) {
-            console.log(`  ok    env:headroom — ${verdict.freeGib} GiB free >= ${verdict.requiredGib} GiB`);
-          } else {
-            console.log(headroomReport(verdict, topRssHolders(rssCensus())));
-            // Leave nothing running. Rule 14 applies to a refusal exactly as it
-            // applies to a pass — this gate started a dev server.
-            stopDevServer();
-            process.exit(3);
-          }
-        }
+        preflightHeadroom('the Playwright harnesses');
 
         const harnessSpecs = HARNESS.map((h) => ({ h, rel: `scripts/${h}.mjs` }))
           .filter(({ h, rel }) => {

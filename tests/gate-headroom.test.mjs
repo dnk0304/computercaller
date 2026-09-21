@@ -151,19 +151,39 @@ throws('a non-finite requiredGib throws',
   check('the gate imports the classifier', gate.includes("from './lib/headroom.mjs'"));
   check('the gate records an env:headroom step', gate.includes("record('env:headroom'"));
   check('the gate marks it ENV-NONRUN', gate.includes("outcome: 'ENV-NONRUN'"));
-  check('the gate exits 3, not 1 and not 2', /stopDevServer\(\);\s*\r?\n\s*process\.exit\(3\);/.test(gate));
 
-  // ORDER is the whole point: the check has to sit BEFORE the harnesses are
-  // dispatched, or it reports on a browser that has already been launched.
-  const iCheck = gate.indexOf("classifyHeadroom({");
+  // The refusal lives in ONE function, and everything about the contract is
+  // asserted against THAT function's body rather than against a slice of the
+  // file — a slice moves whenever anything around it moves, and an assertion
+  // that quietly starts measuring a different region is worse than none.
+  const body = /function preflightHeadroom\([\s\S]*?\n\}/.exec(gate)?.[0] ?? '';
+  check('preflightHeadroom() was found', body.length > 0);
+  check('it exits 3 — neither pass (0), fail (1) nor refuse-to-run (2)',
+    body.includes('process.exit(3)'));
+  check('it stops the dev server before exiting (rule 14)',
+    body.indexOf('stopDevServer()') < body.indexOf('process.exit(3)'));
+  check('it never writes an evidence file on the refusal path',
+    !body.includes('writeFileSync') && !body.includes('OUTDIR'));
+  check('it asks the machine only once (memoised)',
+    body.includes('headroomChecked') || gate.includes('let headroomChecked'));
+
+  // ORDER is the whole point: the check must sit above EVERY browser launch.
+  // There are two, and the earlier one is not the Playwright block — at P6.1C
+  // scripts/e2e-cross-impl-proof.mjs drives Chromium in the real-relay step
+  // set, which runs first. Guarding only the later one leaves the first door
+  // open, and the P6.1C run that died at step 80 died in that neighbourhood.
+  const iRelayGuard = gate.indexOf("preflightHeadroom('the P6 real-relay proofs");
+  const iRelayLoop = gate.indexOf('for (const [name, rel] of P6_REAL_RELAY)');
+  check('the pre-flight guards the P6 real-relay proofs (the FIRST browser)',
+    iRelayGuard > 0 && iRelayLoop > 0 && iRelayGuard < iRelayLoop);
+
+  const iHarnessGuard = gate.indexOf("preflightHeadroom('the Playwright harnesses')");
   const iHarness = gate.indexOf('const harnessSpecs = HARNESS.map(');
-  check('the pre-flight runs BEFORE the harness dispatch',
-    iCheck > 0 && iHarness > 0 && iCheck < iHarness);
+  check('the pre-flight guards the Playwright harness dispatch',
+    iHarnessGuard > 0 && iHarness > 0 && iHarnessGuard < iHarness);
 
-  // And it must not be able to write a JSON on the way out.
-  const tail = gate.slice(iCheck, iHarness);
-  check('the refusal path writes no evidence file',
-    !tail.includes('writeFileSync') && !tail.includes('OUTDIR'));
+  check('both guards are above the harness dispatch',
+    iRelayGuard < iHarness && iHarnessGuard < iHarness);
 }
 
 console.log(`\n${passed}/${passed + failed} checks passed`);
