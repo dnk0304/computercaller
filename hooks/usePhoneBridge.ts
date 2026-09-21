@@ -4757,6 +4757,16 @@ export function usePhoneBridge() {
     lastPongAtRef.current = Date.now();
     const id = window.setInterval(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // P2.7 / R-BM. This raw send deliberately bypasses `sendCommand`, and
+        // that is NOT an E2E leak: §13.7 makes heartbeat frames PLAINTEXT and
+        // Android pins APP_PING/APP_PONG unsealed (E2eFrameGateTest.kt:68-74),
+        // so `isSealedFrameType('APP_PING')` is false and the chokepoint would
+        // emit these exact bytes. Routing it through `sendCommand` in order to
+        // SEAL it would make the phone's gate pass the envelope through as a
+        // plaintext body and log "APP_PING missing ts field"
+        // (PhoneService.kt:4956) — no pong, and the 30 s watchdog below fires
+        // on every encrypted pair. tests/e2e-web-frame-classifier.test.mjs
+        // pins raw == chokepoint bytes.
         wsRef.current.send(`APP_PING:${JSON.stringify({ ts: Date.now() })}`);
       }
     }, 15000);

@@ -96,22 +96,102 @@ import {
 import {
   isMalformedRelayMark, isRelayMintedAbort,
 } from '@/lib/fileTransfer/relayAbort.ts';
+import { FILE_FRAME_TYPES } from '@/lib/fileTransfer/frames.ts';
 
 /** How long Connect waits for the SW's key before pairing without it (brief (b)). */
 export const SW_KEY_WAIT_MS = 1000;
 
-/** §13.7's sealed list is defined by EXCLUSION: GET_* stays plaintext by spec. */
-export function isSealedFrameType(type: string): boolean {
-  if (type.startsWith('GET_')) return false;
-  // Control-plane frames are relay-addressed, not peer-addressed — the relay
-  // must be able to read them to do its job, and none carries user content.
-  return !CONTROL_PLANE.has(type);
-}
-
-const CONTROL_PLANE = new Set([
-  'BROWSER_REQUEST_PAIRING', 'LEAVE_ACTIVE', 'ACCEPT_PAIRING', 'DECLINE_PAIRING',
-  'PING', 'PONG', 'HELLO', 'RESET_ROOM', 'TAB_VIEWED',
+/**
+ * §13.7's FROZEN sealed list, by INCLUSION.
+ *
+ * ── WHY INCLUSION, AND WHY THIS WAS A LIVE DEFECT (P2.7 / R-BM) ────────────
+ * This predicate used to be an EXCLUSION rule: "sealed unless GET_* or one of
+ * nine CONTROL_PLANE types". §13.7 and both other implementations —
+ * `E2eFrameGate.SEALED_TYPES` (Android) and `SEALED_FRAME_TYPES`
+ * (chrome-extension/e2e/sw-session.js) — are INCLUSION lists. The three
+ * disagreed on every frame type that is neither in the nine nor in §13.7's
+ * sealed list, which is most of the control plane.
+ *
+ * The consequence was inbound and it was not theoretical. With a live session,
+ * a plaintext frame the exclusion rule called "sealed" reached
+ * `session.open()`, came back `reason:'shape'` (it is not an envelope), missed
+ * the relay-minted-abort exception and fell into C-1's downgrade latch:
+ * DROPPED AND COUNTED. That silently killed `APP_PONG`, `DEVICE_INFO`,
+ * `PEER_RECONNECTING`, `PAIRING_TERMINATED`, `SESSION_SUPERSEDED`,
+ * `SERVER_RESTART`, `PERMISSIONS_STATUS`, `AUDIO_STATUS`, `LOBBY_STATUS` and
+ * the rest on every encrypted pair. Because `APP_PONG` never reached
+ * usePhoneBridge.ts:2842, the 30 s heartbeat watchdog at :4779 marked the
+ * phone stale on EVERY healthy ON pair — `isConnected=false`, pill
+ * `phone_unresponsive`, the user re-pairs, SAS fatigue. `downgradesDropped`
+ * climbed every 15 s in a healthy pair too, poisoning the one counter that is
+ * supposed to mean "someone stripped a seal".
+ *
+ * So the rule is stated positively over the frozen list. A frame type this
+ * file has never heard of is PLAINTEXT — the same direction Android takes
+ * ("plaintext until someone puts it in SEALED_TYPES"), and the safe direction
+ * for ROUTING. The latch it must not weaken is the other one: a type that IS
+ * on this list and arrives without an envelope is still dropped and counted,
+ * and `sealOutbound` still refuses rather than downgrades.
+ *
+ * Grouped exactly as §13.7 groups them (e2e-evidence/E2E-SPEC-v1.0.md:483-487)
+ * so the three surfaces can be diffed by eye; the three-way string equality is
+ * pinned by tests/e2e-web-frame-classifier.test.mjs, which reads the spec text
+ * and the Kotlin source, so drift on ANY surface fails there.
+ */
+export const SEALED_FRAME_TYPES: ReadonlySet<string> = new Set([
+  'PHONE_NOTIFICATION', 'SMS_RECEIVED',
+  'MESSAGES', 'MESSAGES_CHUNK',
+  'CONTACTS', 'CONTACTS_CHUNK',
+  'CALL_LOGS', 'CALL_LOGS_CHUNK', 'CALL_LOG_ENTRY',
+  'MMS_MEDIA_CHUNK', 'MMS_MEDIA_ERROR',
+  'CALL_INCOMING', 'CALL_ADD', 'CALL_UPDATE', 'CALL_WAITING',
+  'CALL_ANSWERED', 'CALL_ENDED', 'CALL_REMOVE',
+  'SIM_LIST', 'SMS_SEND_STATUS', 'SYNC_ESTIMATE',
+  'SEND_SMS', 'MAKE_CALL',
+  'NOTIFICATION_REPLY', 'NOTIFICATION_DISMISS',
+  'NOTIFICATION_REPLY_SENT', 'NOTIFICATION_REPLY_FAILED', 'NOTIFICATION_REMOVED',
 ]);
+
+/**
+ * §13.7's mandatorily-plaintext trio, held SEPARATELY rather than left to fall
+ * through `SEALED_FRAME_TYPES`, exactly as Android holds
+ * `E2eFrameGate.MANDATORY_PLAINTEXT` and the SW holds
+ * `MANDATORY_PLAINTEXT_FRAME_TYPES`. `gateBrowserSyncFrame()` on the relay is
+ * the only tier-enforcement chokepoint in the product; sealing these would move
+ * billing enforcement to the client, which is the same as deleting it. Adding
+ * one of them to the sealed set must therefore be a TEST FAILURE, not a silent
+ * billing outage — which it is, because this check runs first.
+ */
+export const MANDATORY_PLAINTEXT_FRAME_TYPES: ReadonlySet<string> = new Set([
+  'GET_MESSAGES', 'GET_CALL_LOGS', 'GET_CONTACTS',
+]);
+
+/**
+ * FT-A1 §3 (C): all eight FILE_* frames are sealed when the session is ON.
+ *
+ * The membership is NOT re-typed here. `FILE_FRAME_TYPES` in
+ * lib/fileTransfer/frames.ts is the single owner of the family, so a ninth
+ * FILE_* frame is covered by this predicate the moment it is declared there —
+ * there is no second list to forget. (The SW keeps its own
+ * `SEALED_PASSTHROUGH_FRAME_TYPES` because it needs the DISPOSITION split —
+ * routed, never opened — which this page does not.)
+ */
+export const SEALED_FILE_FRAME_TYPES: ReadonlySet<string> = new Set(FILE_FRAME_TYPES);
+
+/**
+ * Is this frame sealed when a session is live?
+ *
+ * `CALL_STATUS` is §13.7's one FIELD-level entry (`{state}` clear, number and
+ * name sealed). It answers true here and `sealOutbound` applies the split via
+ * {@link splitCallStatus} — the split lives in one place rather than at every
+ * producer.
+ */
+export function isSealedFrameType(type: string): boolean {
+  if (MANDATORY_PLAINTEXT_FRAME_TYPES.has(type)) return false;
+  if (SEALED_FILE_FRAME_TYPES.has(type)) return true;
+  if (type === 'CALL_STATUS') return true;
+  return SEALED_FRAME_TYPES.has(type);
+}
 
 /**
  * CALL_STATUS is the one frame that is PARTLY sealed: `{state}` stays clear so
