@@ -3676,13 +3676,18 @@ export function usePhoneBridge() {
     // routes audio through the loudspeaker as soon as the call goes active.
     // `simId` is forwarded so dual-SIM phones route the call through the
     // user's chosen SIM (Android falls back to its default when null).
-    const message = `MAKE_CALL:${JSON.stringify({ number, speaker, simId: selectedSimId })}`;
-    console.log('[PhoneBridge] Sending MAKE_CALL command:', message);
-    wsRef.current.send(message);
+    // E2E-P2.8 — MAKE_CALL is a §13.7 SEALED type, so it leaves through the ONE
+    // outbound chokepoint (sendCommand) like every other sealed frame. The raw
+    // `wsRef.current.send` here bypassed the seal: on an ON pair the phone's
+    // E2eFrameGate.inbound() dropped it as plaintext-under-latch (dialling did
+    // nothing) and the dialled number crossed the relay in the clear. The
+    // payload is byte-identical to the frame this used to build. Fire-and-forget
+    // exactly as the raw send was; a seal FAILURE refuses rather than downgrades.
+    sendCommand('MAKE_CALL', { number, speaker, simId: selectedSimId });
     console.log('[PhoneBridge] MAKE_CALL command sent successfully');
 
     return true;
-  }, [selectedSimId, upsertCall, stopCallTimer]);
+  }, [selectedSimId, upsertCall, stopCallTimer, sendCommand]);
 
   // Toggle speakerphone mid-call. Android applies it live via AudioManager.
   // Legacy alias retained for any callers that haven't been migrated to the
@@ -4466,20 +4471,23 @@ export function usePhoneBridge() {
   // on the UI side) or the next PHONE_NOTIFICATION refresh corrects state.
   const sendNotificationReply = useCallback((notificationKey: string, replyKey: string, text: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(`NOTIFICATION_REPLY:${JSON.stringify({ notificationKey, replyKey, text })}`);
+    // E2E-P2.8 — SEALED (§13.7): through the chokepoint, never raw. The reply
+    // TEXT is user content and crossed the relay in the clear before this.
+    sendCommand('NOTIFICATION_REPLY', { notificationKey, replyKey, text });
     // Mark as read locally
     setPhoneNotifications(prev => prev.map(n =>
       n.notificationKey === notificationKey ? { ...n, read: true } : n
     ));
-  }, []);
+  }, [sendCommand]);
 
   // Ask the phone to cancel a real notification by its sbn.key. Fire-and-forget;
   // a closed WS drops the command silently (see clearNotification's note).
   const sendNotificationDismiss = useCallback((notificationKey: string) => {
     if (!notificationKey) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(`NOTIFICATION_DISMISS:${JSON.stringify({ notificationKey })}`);
-  }, []);
+    // E2E-P2.8 — SEALED (§13.7): through the chokepoint, never raw.
+    sendCommand('NOTIFICATION_DISMISS', { notificationKey });
+  }, [sendCommand]);
 
   // Dismiss a single mirrored notification. Removes it locally AND asks the
   // phone to cancel the real notification (NOTIFICATION_DISMISS), so the two
