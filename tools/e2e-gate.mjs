@@ -39,7 +39,9 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // (E2E-P0.3) The moving-base decision and the authored/inherited lint split,
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
-import { harnessesFor, KNOWN_PHASES, phaseTableProblems } from './lib/harness-list.mjs';
+import {
+  harnessesFor, KNOWN_PHASES, phaseTableProblems, stepSetHas,
+} from './lib/harness-list.mjs';
 import { porcelainLines as porcelainOf, porcelainPath } from './lib/porcelain.mjs';
 import { resolveJavaHome } from './lib/java-home.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
@@ -121,9 +123,9 @@ const PHASE = PHASE_RAW.toUpperCase();
  */
 const phaseProblems = phaseTableProblems();
 if (phaseProblems.length) {
-  for (const { harness, unknown, undecided, both } of phaseProblems) {
+  for (const { source, harness, unknown, undecided, both } of phaseProblems) {
     console.error(
-      `\ne2e-gate: REFUSING TO RUN — PHASE_HARNESSES["${harness}"] does not cover KNOWN_PHASES.\n`
+      `\ne2e-gate: REFUSING TO RUN — ${source}["${harness}"] does not agree with KNOWN_PHASES.\n`
       + (unknown.length ? `    not a known phase: ${unknown.join(', ')}\n` : '')
       + (undecided.length ? `    known phase with no decision: ${undecided.join(', ')}\n` : '')
       + (both.length ? `    listed in BOTH runs and skips: ${both.join(', ')}\n` : '')
@@ -454,7 +456,11 @@ const MIN_CHECKS_OVERRIDE = {
   // measured 127 on this lane's base 165f165, i.e. 20 checks above the number
   // guarding it, so a deletion of twenty assertions would have printed a
   // cheerful N/N. Re-measured here rather than bumped by three.
-  'unit:harness-list': 130,
+  // GATE-FOLD (b) min-checks raise 130 -> 222. The three inline gate phase
+  // arrays became PHASE_STEP_SETS, and each is now pinned as a frozen sorted
+  // string plus a per-phase membership arm (25 phases x 3 sets), with controls
+  // for the unknown-phase and duplicate rules. Re-measured, not bumped.
+  'unit:harness-list': 222,
   // GATE-FOLD (a). tests/gate-porcelain.test.mjs — the ONE porcelain parser
   // (tools/lib/porcelain.mjs), asserted directly plus a reconstructed plant of
   // the pre-fix block-trim so the arms cannot be vacuous. Measured: 16.
@@ -1463,7 +1469,9 @@ if (WEB) {
   // Gated to P6 and later because they are P6 deliverables and did not exist at
   // BASE_SHA; running them under an earlier --phase would report `missing` for
   // a file that was never supposed to be there yet.
-  if (['P6', 'P6.1', 'P7', 'P8', 'D1'].includes(PHASE)) {
+  // GATE-FOLD (b): was this exact array inline. Moved to
+  // PHASE_STEP_SETS.RELAY_PROOF_PHASES; P7/P8 dropped (they are not phases).
+  if (stepSetHas('RELAY_PROOF_PHASES', PHASE)) {
     const P6_REAL_RELAY = [
       // (e) 10,000 frames across a resume, counters asserted on all three lanes.
       ['p6:replay', 'scripts/e2e-replay-proof.mjs'],
@@ -1798,16 +1806,18 @@ if (ANDROID) {
     }
 
     const ANDROID_TEST_RESULTS = join(AROOT, 'app/build/outputs/androidTest-results/connected');
-    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P7', 'P8'].includes(PHASE)) {
-      // FINDING (E2E-P4.2 (e)): this is a SECOND phase table that has to agree
-      // with KNOWN_PHASES and does not — the exact defect tools/lib/harness-
-      // list.mjs was created to fold away. It still names 'P7' and 'P8', which
-      // are not phases (the gate refuses them before reaching here, so they are
-      // dead entries rather than live bugs), and it silently omitted P4.2 — an
-      // android phase whose ONLY instrumented step is this one. A phase missing
-      // from this list does not fail: it runs nothing and the gate prints PASS,
-      // which is "0 tests ran" wearing a green hat. P4.2 added; folding the
-      // table into harness-list.mjs is Ken's call, not this lane's.
+    if (stepSetHas('ANDROID_INSTRUMENTED_PHASES', PHASE)) {
+      // GATE-FOLD (b) DONE. This guard used to hold a SECOND phase table
+      // inline -- ['P4','P4.2','P5B','P6','P6.1','P7','P8'] -- which had to
+      // agree with KNOWN_PHASES and did not: it named P7 and P8, which are not
+      // phases, and it had silently omitted P4.2, an android phase whose ONLY
+      // instrumented step is this one. A phase missing from such a list does
+      // not fail; it runs nothing and the gate prints PASS, which is "0 tests
+      // ran" wearing a green hat. The list now lives in
+      // PHASE_STEP_SETS.ANDROID_INSTRUMENTED_PHASES beside KNOWN_PHASES, P7/P8
+      // are gone, and phaseTableProblems() refuses any step set naming a phase
+      // that is not registered. Membership is otherwise byte-identical, pinned
+      // in tests/harness-list.test.mjs.
       // FINDING (E2E-P4.2 (e)): this step could never have run. `--tests` is a
       // JVM `Test` task option; :app:connectedDebugAndroidTest is a
       // DeviceProviderInstrumentTestTask and REFUSES it —
@@ -1845,15 +1855,15 @@ if (ANDROID) {
     // ran wearing a green hat" shape the comment at :1822-1830 warns about,
     // one guard below where it is written.
     //
-    // NOT the known P7/P8 second-table item the brief set aside: that table
-    // (:1789) already lists P6.1 and did run android:SasVectorsTest. This is a
-    // separate guard with a separate defect.
+    // GATE-FOLD (b): the P7/P8 second-table item that finding set aside is now
+    // folded too -- this guard's ['P4.2','P6.1'] is
+    // PHASE_STEP_SETS.ANDROID_FLOOR_PHASES, membership unchanged.
     //
     // P6.1 only is added here. P4/P5B/P6 are deliberately NOT: their briefs
     // never declared these floors, the A5 classes post-date P4/P5B/P6, and
     // widening a gate to phases that never agreed to it turns other lanes'
     // recorded PASSes into retro-active failures — Ken's call, not this lane's.
-    if (['P4.2', 'P6.1'].includes(PHASE)) {
+    if (stepSetHas('ANDROID_FLOOR_PHASES', PHASE)) {
       const A5_CLASSES = [
         'com.dnkdialer.companion.E2eForwardJumpVectorsTest',
         'com.dnkdialer.companion.E2eForwardJumpObservabilityTest',

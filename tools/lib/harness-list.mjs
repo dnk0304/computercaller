@@ -126,16 +126,84 @@ export const PHASE_HARNESSES = {
 };
 
 /**
+ * ── THE SECOND FOLD (GATE-FOLD (b), from E2E-P4.2 finding 3) ───────────────
+ *
+ * PHASE_HARNESSES above answers "which browser harnesses does this phase run".
+ * tools/e2e-gate.mjs also carried THREE hand-written phase arrays answering the
+ * same kind of question for its gradle/relay steps, each living beside the
+ * others and agreeing with none of them:
+ *
+ *   · :1454  ['P6','P6.1','P7','P8','D1']            the real-relay proofs
+ *   · :1789  ['P4','P4.2','P5B','P6','P6.1','P7','P8'] connectedAndroidTest
+ *   · :1831  ['P4.2','P6.1']                          the A5 instrumented floors
+ *
+ * Two of them still named P7 and P8, which are not phases — dead entries that
+ * read as coverage. And the third had to be patched by E2E-P6.1b after P6.1's
+ * own sweep was found never to dispatch (`PHASE === 'P4.2'`, an equality test
+ * where every sibling used a list): no step, no counts, no MIN_CHECKS floor,
+ * and the gate printed PASS 107/107. "0 tests ran" wearing a green hat is the
+ * exact failure the file you are reading exists to make impossible, so these
+ * live here too, named, exported and validated.
+ *
+ * The fold is a MOVE, not a change: membership for every registered phase is
+ * identical to what the gate shipped. Only P7/P8 are gone, and they are gone
+ * because phaseTableProblems() now REFUSES a step-set naming a phase that is
+ * not in KNOWN_PHASES. tests/harness-list.test.mjs pins each set as a frozen
+ * sorted string, so the next edit is a deliberate one.
+ *
+ * P6.1C is deliberately in NO set — the P6.1c lane registers itself.
+ */
+export const PHASE_STEP_SETS = {
+  /**
+   * tools/e2e-gate.mjs step 7b — the four P6 real-relay proofs (replay, canary,
+   * staging-relay, cross-impl). P6 and later only: they are P6 deliverables and
+   * did not exist at BASE_SHA, so an earlier --phase would report `missing` for
+   * a file that was never meant to be there yet.
+   */
+  RELAY_PROOF_PHASES: ['P6', 'P6.1', 'D1'],
+  /**
+   * The android instrumented step (:app:connectedDebugAndroidTest). Every
+   * android phase plus the integration phases that carry android surfaces.
+   * P4.2 was added by E2E-P4.2 (e) — it is an android phase whose ONLY
+   * instrumented step is this one, and it had been silently omitted.
+   */
+  ANDROID_INSTRUMENTED_PHASES: ['P4', 'P4.2', 'P5B', 'P6', 'P6.1'],
+  /**
+   * The A5 instrumented-class sweep and its MIN_CHECKS floors
+   * (android:testDebugUnitTest >= 200, android:instrumented-A5 >= 8). P4.2 and
+   * P6.1 only, deliberately: P4/P5B/P6 never declared these floors and the A5
+   * classes post-date them, so widening this set would retro-actively fail
+   * other lanes' recorded PASSes. That is Ken's call, not a fold's.
+   */
+  ANDROID_FLOOR_PHASES: ['P4.2', 'P6.1'],
+};
+
+/**
+ * @param {string} name - a key of PHASE_STEP_SETS.
+ * @param {string} phase - the `--phase` value, matched case-insensitively.
+ * @returns {boolean} whether the step gated on that set runs for this phase.
+ */
+export function stepSetHas(name, phase) {
+  const set = PHASE_STEP_SETS[name];
+  if (!set) throw new Error(`unknown step set: ${name}`);
+  return set.includes(String(phase ?? '').toUpperCase());
+}
+/**
  * The coverage rule, as data rather than a thrown error, so the gate can exit 2
  * with usage and the test can assert the rule itself is able to fire.
  *
  * @param {string[]} [phases] - defaults to KNOWN_PHASES; a caller may pass a
  *   mutated list to prove this function can report a problem.
  * @param {object} [table] - defaults to PHASE_HARNESSES.
- * @returns {{harness: string, unknown: string[], undecided: string[], both: string[]}[]}
+ * @param {object} [stepSets] - defaults to PHASE_STEP_SETS. A step set is a
+ *   plain membership list, not an exhaustive decision, so only the UNKNOWN-
+ *   phase and duplicate rules apply to it — but those are the two that let a
+ *   dead entry (P7, P8) sit in a gate table looking like coverage.
+ * @returns {{source: string, harness: string, unknown: string[], undecided: string[], both: string[]}[]}
  *   one entry per harness with a problem; empty means the table is complete.
  */
-export function phaseTableProblems(phases = KNOWN_PHASES, table = PHASE_HARNESSES) {
+export function phaseTableProblems(phases = KNOWN_PHASES, table = PHASE_HARNESSES,
+  stepSets = PHASE_STEP_SETS) {
   const out = [];
   for (const [harness, { runs, skips }] of Object.entries(table)) {
     const declared = [...runs, ...skips];
@@ -143,7 +211,19 @@ export function phaseTableProblems(phases = KNOWN_PHASES, table = PHASE_HARNESSE
     const undecided = phases.filter((p) => !declared.includes(p));
     const both = runs.filter((p) => skips.includes(p));
     if (unknown.length || undecided.length || both.length) {
-      out.push({ harness, unknown, undecided, both });
+      out.push({ source: 'PHASE_HARNESSES', harness, unknown, undecided, both });
+    }
+  }
+  // GATE-FOLD (b). A step set is a membership list, not a runs/skips decision,
+  // so `undecided` does not apply — a phase absent from RELAY_PROOF_PHASES is a
+  // phase that correctly does not run those proofs. What DOES apply is the rule
+  // P7 and P8 broke for years: a name in a gate's phase table that is not a
+  // phase is dead weight reading as coverage, and it is now a REFUSAL.
+  for (const [name, set] of Object.entries(stepSets ?? {})) {
+    const unknown = set.filter((p) => !phases.includes(p));
+    const both = set.filter((p, i) => set.indexOf(p) !== i);
+    if (unknown.length || both.length) {
+      out.push({ source: 'PHASE_STEP_SETS', harness: name, unknown, undecided: [], both });
     }
   }
   return out;

@@ -34,7 +34,9 @@
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { harnessesFor, phaseTableProblems } from '../tools/lib/harness-list.mjs';
+import {
+  harnessesFor, phaseTableProblems, PHASE_STEP_SETS as STEP_SETS,
+} from '../tools/lib/harness-list.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -163,6 +165,30 @@ check('the refusal explains WHY silence was the danger (the 62/69 incident)',
     !/\['P5A', 'P5B', 'P6', 'P7', 'P8'(, 'D1')?\]\.includes\(PHASE\)\) HARNESS/.test(src));
   check('the gate keeps no second copy of the table',
     !/const PHASE_HARNESSES = \{/.test(src) && !/const phaseRuns =/.test(src));
+
+  // GATE-FOLD (b). The gate also carried THREE inline phase arrays for its
+  // gradle/relay steps (the real-relay proofs, connectedAndroidTest, the A5
+  // instrumented floors). Two of them still named P7 and P8, which are not
+  // phases, and the third had to be patched by P6.1b after P6.1's sweep was
+  // found never to dispatch. They are PHASE_STEP_SETS now, and this arm is the
+  // thing that stops a fourth one from being written inline tomorrow.
+  const inlinePhaseArrays = src.match(/\[(?:\s*'P[0-9][^']*',){2,}[^\]]*\]\.includes\(PHASE\)/g) || [];
+  check('no gate step is gated on an inline phase array any more',
+    inlinePhaseArrays.length === 0, inlinePhaseArrays.join(' | '));
+  // The control is the EXACT array this fold removed, so the detector is proved
+  // against the real defect rather than against a toy.
+  check('CONTROL: the inline-array detector reports the removed array as inline',
+    ("if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P7', 'P8'].includes(PHASE)) {".match(/\[(?:\s*'P[0-9][^']*',){2,}[^\]]*\]\.includes\(PHASE\)/g) || []).length === 1);
+  check('the gate gates those steps through stepSetHas()',
+    (src.match(/stepSetHas\('[A-Z_]+', PHASE\)/g) || []).length === 3,
+    (src.match(/stepSetHas\('[A-Z_]+', PHASE\)/g) || []).join(' | '));
+  check('the step sets are declared in tools/lib/harness-list.mjs',
+    /export const PHASE_STEP_SETS = \{/.test(listSrc));
+  check('P7 and P8 are gone from the step sets (they were never phases)',
+    Object.values(STEP_SETS).every((set) => !set.includes('P7') && !set.includes('P8')),
+    JSON.stringify(STEP_SETS));
+  check('the refusal names the table that is wrong, not always PHASE_HARNESSES',
+    /\$\{source\}\[/.test(src));
 
   // The rule itself, exercised rather than read.
   check('the shipped table has no gaps', phaseTableProblems().length === 0,

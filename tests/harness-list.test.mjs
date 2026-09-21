@@ -28,7 +28,8 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  harnessesFor, HARNESS_PHASES, KNOWN_PHASES, PHASE_HARNESSES, phaseTableProblems,
+  harnessesFor, HARNESS_PHASES, KNOWN_PHASES, PHASE_HARNESSES, PHASE_STEP_SETS,
+  phaseTableProblems, stepSetHas,
 } from '../tools/lib/harness-list.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -212,15 +213,85 @@ for (const p of KNOWN_PHASES) {
 // returning something else. Three plants, one per problem class. Without these
 // the rule could be `return []` and every arm in section 6 would still pass.
 check('CONTROL: an UNDECIDED phase is reported',
-  phaseTableProblems([...KNOWN_PHASES, 'P9']).some((x) => x.undecided.includes('P9')));
+  phaseTableProblems([...KNOWN_PHASES, 'P9'], PHASE_HARNESSES, {}).some((x) => x.undecided.includes('P9')));
 check('CONTROL: an UNKNOWN phase in the table is reported',
-  phaseTableProblems(KNOWN_PHASES, { fake: { runs: ['NOT_A_PHASE'], skips: KNOWN_PHASES } })
+  phaseTableProblems(KNOWN_PHASES, { fake: { runs: ['NOT_A_PHASE'], skips: KNOWN_PHASES } }, {})
     .some((x) => x.unknown.includes('NOT_A_PHASE')));
 check('CONTROL: a phase in BOTH runs and skips is reported',
-  phaseTableProblems(['P0'], { fake: { runs: ['P0'], skips: ['P0'] } })
+  phaseTableProblems(['P0'], { fake: { runs: ['P0'], skips: ['P0'] } }, {})
     .some((x) => x.both.includes('P0')));
 check('CONTROL: …and a complete table reports nothing, so it is not stuck on "yes"',
-  phaseTableProblems(['P0'], { fake: { runs: ['P0'], skips: [] } }).length === 0);
+  phaseTableProblems(['P0'], { fake: { runs: ['P0'], skips: [] } }, {}).length === 0);
+
+// ── 8. GATE-FOLD (b): the step sets ──────────────────────────────────
+// Three hand-written phase arrays in tools/e2e-gate.mjs (the real-relay proofs,
+// connectedAndroidTest, and the A5 instrumented floors) moved here. The fold is
+// only trustworthy if it is provably a MOVE: each set is pinned below as a
+// frozen sorted string, exactly as KNOWN_PHASES is, so the next edit to any of
+// them is deliberate and conflicts rather than interleaves.
+//
+// The ONE intended change is P7/P8: they were never phases, they sat in two of
+// these arrays reading as coverage, and phaseTableProblems() now refuses them.
+{
+  const frozen = (name) => [...PHASE_STEP_SETS[name]].sort().join(',');
+  check('RELAY_PROOF_PHASES is the frozen set, byte for byte',
+    frozen('RELAY_PROOF_PHASES') === 'D1,P6,P6.1', frozen('RELAY_PROOF_PHASES'));
+  check('ANDROID_INSTRUMENTED_PHASES is the frozen set, byte for byte',
+    frozen('ANDROID_INSTRUMENTED_PHASES') === 'P4,P4.2,P5B,P6,P6.1',
+    frozen('ANDROID_INSTRUMENTED_PHASES'));
+  check('ANDROID_FLOOR_PHASES is the frozen set, byte for byte',
+    frozen('ANDROID_FLOOR_PHASES') === 'P4.2,P6.1', frozen('ANDROID_FLOOR_PHASES'));
+
+  // The move, phase by phase: membership is unchanged for every REGISTERED
+  // phase. Stated as explicit yes/no rather than as a count, because a count
+  // passes when one phase is swapped for another.
+  const WAS = {
+    RELAY_PROOF_PHASES: ['P6', 'P6.1', 'D1'],
+    ANDROID_INSTRUMENTED_PHASES: ['P4', 'P4.2', 'P5B', 'P6', 'P6.1'],
+    ANDROID_FLOOR_PHASES: ['P4.2', 'P6.1'],
+  };
+  for (const [name, was] of Object.entries(WAS)) {
+    for (const p of KNOWN_PHASES) {
+      check(`${name}: ${p} membership is unchanged by the fold (${was.includes(p) ? 'in' : 'out'})`,
+        stepSetHas(name, p) === was.includes(p));
+    }
+  }
+
+  // P7 and P8 are GONE, and cannot come back quietly.
+  for (const name of Object.keys(PHASE_STEP_SETS)) {
+    check(`${name} names no P7/P8 (they are not phases)`,
+      !PHASE_STEP_SETS[name].includes('P7') && !PHASE_STEP_SETS[name].includes('P8'),
+      PHASE_STEP_SETS[name].join(', '));
+    check(`${name} names only phases in KNOWN_PHASES`,
+      PHASE_STEP_SETS[name].every((p) => KNOWN_PHASES.includes(p)),
+      PHASE_STEP_SETS[name].filter((p) => !KNOWN_PHASES.includes(p)).join(', '));
+  }
+
+  // P6.1c registers itself; the fold adds it to nothing.
+  check('the fold adds P6.1C to no step set',
+    Object.values(PHASE_STEP_SETS).every((set) => !set.includes('P6.1C')));
+
+  // Case-insensitivity, same as harnessesFor().
+  check('stepSetHas is case-insensitive', stepSetHas('ANDROID_FLOOR_PHASES', 'p6.1'));
+  check('an unknown step set name throws rather than returning false', (() => {
+    try { stepSetHas('NOPE', 'P6'); return false; } catch { return true; }
+  })());
+
+  // CONTROLS. Each arm above must be able to say no.
+  check('CONTROL: stepSetHas reports a NON-member as absent',
+    stepSetHas('ANDROID_FLOOR_PHASES', 'P0') === false);
+  check('CONTROL: a step set naming an unknown phase is REFUSED (the P7/P8 rule)',
+    phaseTableProblems(KNOWN_PHASES, {}, { FAKE_SET: ['P6', 'P7'] })
+      .some((x) => x.source === 'PHASE_STEP_SETS' && x.harness === 'FAKE_SET'
+        && x.unknown.includes('P7')));
+  check('CONTROL: a step set with a DUPLICATE entry is reported',
+    phaseTableProblems(KNOWN_PHASES, {}, { FAKE_SET: ['P6', 'P6'] })
+      .some((x) => x.both.includes('P6')));
+  check('CONTROL: ...and a clean step set reports nothing, so it is not stuck on yes',
+    phaseTableProblems(KNOWN_PHASES, {}, { FAKE_SET: ['P6'] }).length === 0);
+  check('the SHIPPED step sets have no problems', phaseTableProblems().length === 0,
+    JSON.stringify(phaseTableProblems()));
+}
 
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
