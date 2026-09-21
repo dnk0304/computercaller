@@ -115,7 +115,7 @@ check('CONTROL: …and a present entry as present, so it is not stuck on "no"',
 // The phase set itself, as the full sorted string.
 check('KNOWN_PHASES is the frozen set, byte for byte',
   [...KNOWN_PHASES].sort().join(',')
-    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P4.2,P5A,P5B,P6,P6.1,P6.1C',
+    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P4.2,P5A,P5B,P6,P6.1,P6.1C,P6.1D',
   KNOWN_PHASES.join(','));
 
 // E2E-P2.2. The A5 web fix-before-flip lane. It RUNS both browser harnesses,
@@ -248,14 +248,20 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     return gate.slice(open, gate.indexOf(']', open) + 1);
   };
   const REAL_RELAY = listAfter("if (['P6', 'P6.1'");
-  check('gate: P6.1C runs the P6 real-relay steps',
-    REAL_RELAY !== null && REAL_RELAY.includes("'P6.1C'"), String(REAL_RELAY));
   const ANDROID_RESULTS = listAfter("if (['P4', 'P4.2', 'P5B'");
-  check('gate: P6.1C clears the android instrumented-results dir',
-    ANDROID_RESULTS !== null && ANDROID_RESULTS.includes("'P6.1C'"), String(ANDROID_RESULTS));
   const ANDROID_A5 = listAfter("if (['P4.2', 'P6.1'");
-  check('gate: P6.1C dispatches testDebugUnitTest and instrumented-A5',
-    ANDROID_A5 !== null && ANDROID_A5.includes("'P6.1C'"), String(ANDROID_A5));
+  // E2E-P6.1d-A: P6.1D is registered in the SAME three lists, and each is
+  // asserted for BOTH phases. A new phase added to KNOWN_PHASES only would
+  // reproduce the P6.1b defect one phase later, which is the whole point of
+  // this section existing.
+  for (const phase of ['P6.1C', 'P6.1D']) {
+    check(`gate: ${phase} runs the P6 real-relay steps`,
+      REAL_RELAY !== null && REAL_RELAY.includes(`'${phase}'`), String(REAL_RELAY));
+    check(`gate: ${phase} clears the android instrumented-results dir`,
+      ANDROID_RESULTS !== null && ANDROID_RESULTS.includes(`'${phase}'`), String(ANDROID_RESULTS));
+    check(`gate: ${phase} dispatches testDebugUnitTest and instrumented-A5`,
+      ANDROID_A5 !== null && ANDROID_A5.includes(`'${phase}'`), String(ANDROID_A5));
+  }
   // The floors are only floors if they are declared. A step that runs with no
   // floor reports whatever it feels like and still passes.
   for (const [name, floor] of [
@@ -264,11 +270,11 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // under a green N/N. Re-measured with this lane's seven new cases.
     ['android:testDebugUnitTest', 238],
     ['android:instrumented-A5', 8],
-    ['unit:harness-list', 143],
+    ['unit:harness-list', 149],
     // E2E-P4.4: the §13.10.3 userId parity proof, registered as a node-only
     // gate step. Declared here for the same reason as the rest of this list.
     ['unit:ctx-parity', 14],
-    ['relay:e2e-web-sas-confirm.test.mjs', 47],
+    ['relay:e2e-web-sas-confirm.test.mjs', 58],
     ['relay:e2e-web-sw-advert.test.mjs', 47],
   ]) {
     check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,

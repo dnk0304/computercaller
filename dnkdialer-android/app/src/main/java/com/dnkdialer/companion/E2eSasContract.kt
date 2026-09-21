@@ -79,24 +79,42 @@ object E2eSasContract {
     const val SAS_DIGIT_COUNT = E2eSas.DIGIT_LENGTH
 
     /**
-     * Group the digits for display and for TalkBack: "41290" → "412 90".
+     * M-A6-5 / SPEC §13.3 "Rendering — FROZEN (R-BK)". The VISIBLE code is the
+     * five digits verbatim: no space, hyphen or other separator.
      *
-     * One function, used for BOTH the visible text and the spoken description,
-     * so the two can never drift — and because an ungrouped run of six digits
-     * is read out as "four hundred twelve thousand nine hundred and eight",
-     * which cannot be checked against a screen. Grouping is what makes the
-     * code confirmable, so it is part of the security feature and not styling.
+     * This function used to return "412 90" (3+2) while the page dialog
+     * rendered the same code "41 290" (2+3) — the P6.1c Part 3 screenshots
+     * show "316 44" on the phone against "31 644" on the page. That is not a
+     * styling difference. The SAS is a human EXACT-STRING compare, and a user
+     * who learns that the two surfaces legitimately look different has been
+     * trained to accept the one thing a key-substitution attack needs. The
+     * spec froze ONE rendering; both surfaces now emit it.
+     *
+     * The TalkBack problem that motivated grouping is real and is solved
+     * separately by [spoken] — grouping never solved it properly anyway
+     * ("412 90" is still read as two numbers, not five digits).
      *
      * Returns the input unchanged when it is not exactly five digits; the
      * caller is expected to have refused such a payload already.
      */
     @JvmStatic
-    fun group(digits: String): String =
-        if (digits.length == SAS_DIGIT_COUNT && digits.all { it.isDigit() }) {
-            "${digits.substring(0, 3)} ${digits.substring(3)}"
-        } else {
-            digits
-        }
+    fun render(digits: String): String = digits
+
+    /**
+     * What TalkBack says: the digits SPELLED OUT, one at a time — "4 1 2 9 0".
+     * Ungrouped, a screen reader reads "41290" as "forty-one thousand two
+     * hundred and ninety", which cannot be checked against a computer screen;
+     * grouped, it reads two numbers instead of one. Only digit-by-digit gives
+     * a screen-reader user the same string a sighted user is comparing. This
+     * is the exact form the page dialog already speaks (sasSpokenLabel in
+     * lib/encryptedModeCopy.ts), so the two surfaces match when spoken as well
+     * as when seen.
+     *
+     * Returns the input unchanged when it is not a well-formed SAS.
+     */
+    @JvmStatic
+    fun spoken(digits: String): String =
+        if (isWellFormed(digits)) digits.toCharArray().joinToString(" ") else digits
 
     /** True when [digits] is a well-formed SAS per §13.3. */
     @JvmStatic

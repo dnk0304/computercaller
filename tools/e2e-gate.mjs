@@ -453,8 +453,11 @@ const MIN_CHECKS_OVERRIDE = {
   // tests/e2e-*.test.mjs sweep like every other e2e-* file, so what it needs
   // here is the half the sweep does not give it: a floor, so a deletion of the
   // chokepoint assertions cannot take the count down and still print N/N.
-  // Measured at the commit that adds it: 47 assertions.
-  'relay:e2e-web-sas-confirm.test.mjs': 47,
+  // Measured at the commit that adds it: 47 assertions. E2E-P6.1d-A raised it
+  // to 58: M-A6-5 added the frozen-rendering pins (SPEC 13.3 R-BK). The floor
+  // moves WITH the suite deliberately - a floor left at 47 would let all
+  // eleven rendering checks be deleted and still print a cheerful N/N.
+  'relay:e2e-web-sas-confirm.test.mjs': 58,
   // E2E-P6.1c (2b). The advert/attribution suite for A6-P61B-5. Same reasoning
   // as above: auto-discovered, so the floor is what it needs from this table.
   // Measured at the commit that adds it: 44 assertions.
@@ -483,7 +486,7 @@ const MIN_CHECKS_OVERRIDE = {
   // no-FT-proofs arm, and the frozen phase-set string). Re-measured: 133.
   // E2E-P4.4: 142 -> 143, the one check this lane's ctx-parity floor adds to
   // the suite. Kept exact rather than left with a point of slack.
-  'unit:harness-list': 143,
+  'unit:harness-list': 149,
   // E2E-P4.4. The §13.10.3 userId parity proof. Post-dates the parity baseline
   // file, so the floor cannot be read from it and has to be declared here or
   // the step could be emptied to two checks and still print a cheerful N/N —
@@ -1578,7 +1581,7 @@ if (WEB) {
   // E2E-P6.1c (2c): P6.1C added. These are P6 deliverables and P6.1C is a P6.1
   // continuation over the same tree — omitting it would run none of them and
   // print PASS, which is the "0 tests ran wearing a green hat" shape below.
-  if (['P6', 'P6.1', 'P6.1C', 'P7', 'P8', 'D1'].includes(PHASE)) {
+  if (['P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8', 'D1'].includes(PHASE)) {
     const P6_REAL_RELAY = [
       // (e) 10,000 frames across a resume, counters asserted on all three lanes.
       ['p6:replay', 'scripts/e2e-replay-proof.mjs'],
@@ -1942,7 +1945,7 @@ if (ANDROID) {
     }
 
     const ANDROID_TEST_RESULTS = join(AROOT, 'app/build/outputs/androidTest-results/connected');
-    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P7', 'P8'].includes(PHASE)) {
+    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8'].includes(PHASE)) {
       // FINDING (E2E-P4.2 (e)): this is a SECOND phase table that has to agree
       // with KNOWN_PHASES and does not — the exact defect tools/lib/harness-
       // list.mjs was created to fold away. It still names 'P7' and 'P8', which
@@ -2005,7 +2008,7 @@ if (ANDROID) {
     // steps would simply not exist at --phase P6.1C and the gate would print a
     // cheerful PASS over an android lane it never ran — the P6.1b defect
     // documented immediately above, repeated one phase later.
-    if (['P4.2', 'P6.1', 'P6.1C'].includes(PHASE)) {
+    if (['P4.2', 'P6.1', 'P6.1C', 'P6.1D'].includes(PHASE)) {
       const A5_CLASSES = [
         'com.dnkdialer.companion.E2eForwardJumpVectorsTest',
         'com.dnkdialer.companion.E2eForwardJumpObservabilityTest',

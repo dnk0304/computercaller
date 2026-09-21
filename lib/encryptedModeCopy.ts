@@ -140,12 +140,27 @@ export const SAS_DIGIT_COUNT = 5;
 export const SAS_REFUSED_TITLE = 'Pairing refused';
 export const SAS_REFUSED_BODY = `${ABORT_SETUP_FAILED}. If the codes keep differing, something between your phone and this computer is changing them.`;
 
-/** Groups the digits for reading aloud over a room: "12 345". Never mutates
- *  or pads — a wrong-length code is a bug and must LOOK wrong, not be tidied
- *  into looking right. */
-export function groupSasDigits(digits: string): string {
-  if (digits.length !== SAS_DIGIT_COUNT) return digits;
-  return `${digits.slice(0, 2)} ${digits.slice(2)}`;
+/**
+ * M-A6-5 / SPEC §13.3 "Rendering — FROZEN (R-BK)". The visible SAS is the five
+ * digits UNGROUPED and verbatim: no space, hyphen or other separator.
+ *
+ * This function used to group them `31 644` while the phone hero face grouped
+ * the same code `316 44` (E2eSasContract.group, 3+2). Two renderings of one
+ * code is not a cosmetic difference: the SAS is a human EXACT-STRING compare,
+ * and a user trained to accept "looks a bit different" is the user a
+ * substitution attack needs. The spec froze one rendering rather than one
+ * grouping, and both surfaces now emit it.
+ *
+ * It is kept as a named function, rather than inlining `digits`, so the
+ * rendering has one door on this side that a test can pin and a future edit
+ * cannot re-introduce a separator behind.
+ *
+ * Never mutates or pads — a wrong-length code is a bug and must LOOK wrong,
+ * not be tidied into looking right; SasConfirmDialog renders its own warning
+ * for that case.
+ */
+export function renderSasDigits(digits: string): string {
+  return digits;
 }
 
 /** What a screen reader says. Digits are spelled out one at a time, because

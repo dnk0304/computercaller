@@ -49,7 +49,7 @@ import {
   SAS_CONFIRM_LABEL,
   SAS_REJECT_LABEL,
   SAS_REFUSED_TITLE,
-  groupSasDigits,
+  renderSasDigits,
   sasSpokenLabel,
   encryptionIndicator,
 } from '../lib/encryptedModeCopy.ts';
@@ -480,8 +480,8 @@ try {
         shown === built.expectedSasDigits, `page=${shown} phone=${built.expectedSasDigits}`);
       check('(b) it is FIVE digits, per the frozen Sec 13.3 transcript',
         String(shown).length === 5, String(shown));
-      check('(b) the digits are grouped 2+3 on screen for reading aloud',
-        (await digitEl.innerText()).trim() === groupSasDigits(shown));
+      check('(b) the digits are UNGROUPED on screen (SPEC 13.3 R-BK, M-A6-5) so the page and the phone hero face are one exact-string compare',
+        (await digitEl.innerText()).trim() === renderSasDigits(shown));
       check('(b) a screen reader hears the code spelled out, not read as a number',
         (await digitEl.getAttribute('aria-label')) === sasSpokenLabel(shown));
       const text = await dialog.innerText();

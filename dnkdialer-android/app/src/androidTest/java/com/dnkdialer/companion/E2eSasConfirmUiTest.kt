@@ -29,10 +29,16 @@ import java.util.concurrent.TimeUnit
  *
  * What is asserted, and why each one matters:
  *
- *  * the digits are shown GROUPED, and the spoken description is built from
- *    the same grouping — TalkBack reads "412908" as "four hundred twelve
- *    thousand nine hundred and eight", which no user can check against a
- *    computer screen;
+ *  * the digits are shown UNGROUPED and verbatim (SPEC 13.3 "Rendering —
+ *    FROZEN (R-BK)", M-A6-5): this face used to group 3+2 while the page
+ *    dialog grouped 2+3, so one live code read "316 44" on the phone and
+ *    "31 644" on the computer. The SAS is a human exact-string compare, and a
+ *    user taught that the two screens legitimately differ is a user taught to
+ *    accept the substitution the SAS exists to catch;
+ *  * the spoken description is the SAME digits SPELLED OUT one at a time —
+ *    TalkBack reads "41290" as "forty-one thousand two hundred and ninety"
+ *    and "412 90" as two numbers, and neither is what a sighted user is
+ *    comparing; only digit-by-digit is;
  *  * BLOCKING: no dismiss, Back swallowed, and the default face stays covered
  *    even if something calls the request-teardown path underneath;
  *  * "Matches" and "Doesn't match" both emit the contract broadcast with the
@@ -52,7 +58,12 @@ class E2eSasConfirmUiTest {
     private companion object {
         const val PAIRING_ID = "sas-ui-test-pairing"
         const val DIGITS = "41290"
-        const val GROUPED = "412 90"
+
+        /** SPEC 13.3 R-BK: the visible code IS the digits, ungrouped. */
+        const val RENDERED = DIGITS
+
+        /** What TalkBack must say: the same digits, one at a time. */
+        const val SPOKEN = "4 1 2 9 0"
     }
 
     @Before
@@ -66,22 +77,26 @@ class E2eSasConfirmUiTest {
     }
 
     @Test
-    fun the_code_is_shown_grouped_and_spoken_the_same_way() {
+    fun the_code_is_shown_ungrouped_and_spelled_out_when_spoken() {
         withSasShowing { activity ->
             val code = activity.findViewById<TextView>(R.id.homeSasCode)
             assertEquals(
-                "ungrouped digits cannot be compared against a screen",
-                GROUPED, code.text.toString()
+                "SPEC 13.3 R-BK: the visible code is the five digits verbatim, " +
+                    "byte-identical to what the page dialog shows",
+                RENDERED, code.text.toString()
+            )
+            assertFalse(
+                "no separator of any kind may reach the visible code",
+                code.text.toString().any { !it.isDigit() }
             )
             val spoken = code.contentDescription?.toString().orEmpty()
             assertTrue(
-                "the spoken code must be the GROUPED code, was '$spoken'",
-                spoken.contains(GROUPED)
+                "the spoken code must spell the digits out, was '$spoken'",
+                spoken.contains(SPOKEN)
             )
-            assertFalse(
-                "the spoken code must not contain the ungrouped run, or a " +
-                    "screen-reader user is comparing a different string",
-                spoken.replace(GROUPED, "").contains(DIGITS)
+            assertEquals(
+                "what is spoken must be what is shown, only spaced",
+                RENDERED, SPOKEN.replace(" ", "")
             )
             // Parity with the web/extension surface, which asks the same
             // question in the other direction.

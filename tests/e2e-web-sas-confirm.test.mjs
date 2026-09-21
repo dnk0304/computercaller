@@ -36,6 +36,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { E2E_VIEW_INITIAL, viewAfterSasConfirmed } from '../hooks/phoneE2e.ts';
+import { renderSasDigits, sasSpokenLabel, SAS_DIGIT_COUNT } from '../lib/encryptedModeCopy.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -239,6 +240,45 @@ check('SasConfirmDialog calls confirmSas with the answer',
   dialog.includes('phone?.confirmSas?.(matches)'));
 check('SasConfirmDialog declares the prop it calls',
   /confirmSas\?: \(matches: boolean\) => void;/.test(dialog));
+
+
+// -- M-A6-5 / SPEC 13.3 "Rendering - FROZEN (R-BK)" -------------------------
+//
+// THE DEFECT, read off the two P6.1c Part 3 screenshots: the SAME live code was
+// "31 644" in this dialog and "316 44" on the phone hero face. groupSasDigits
+// split 2+3, E2eSasContract.group split 3+2. Each surface was self-consistent,
+// which is why it reached a live run with both sides green.
+//
+// It is not styling. The SAS is a human EXACT-STRING compare and it is the
+// whole defence against a key substitution at the relay; a user taught that the
+// two screens legitimately differ has been taught to accept "looks a bit
+// different". The spec froze ONE rendering - the five digits, ungrouped - and
+// both surfaces emit it. The phone half is pinned by
+// dnkdialer-android/.../E2eSasRenderingTest.kt, which also reads THIS file.
+const LIVE = '31644';
+check('render: SPEC 13.3 R-BK - the digits are rendered verbatim',
+  renderSasDigits(LIVE) === LIVE, renderSasDigits(LIVE));
+check('render: ...with no separator of any kind',
+  [' ', '\u00A0', '-', '\u2010', '.', '/', '\u2009'].every((s) => !renderSasDigits(LIVE).includes(s)));
+check('render: ...and no leading-zero suppression',
+  renderSasDigits('00042') === '00042' && renderSasDigits('00000') === '00000');
+check('render: the length is the frozen digit count',
+  renderSasDigits(LIVE).length === SAS_DIGIT_COUNT);
+check('render: a wrong-length code is NOT tidied into looking right',
+  renderSasDigits('123') === '123' && renderSasDigits('1234567') === '1234567');
+check('render: the grouping door is gone from the copy module',
+  !readFileSync(join(ROOT, 'lib', 'encryptedModeCopy.ts'), 'utf8')
+    .includes('export function groupSasDigits'));
+check('render: the spoken label spells the same digits in the same order',
+  sasSpokenLabel(LIVE).replace(/[^0-9]/g, '') === renderSasDigits(LIVE));
+check('render: ...one at a time, never as a number',
+  sasSpokenLabel(LIVE).includes('3 1 6 4 4'));
+check('render: the dialog renders through the render door',
+  dialog.includes('{renderSasDigits(digits)}'));
+check('render: ...and no grouping call survives in it',
+  !dialog.includes('groupSasDigits'));
+check('render: the visible element and the a11y label are fed the same digits',
+  /data-cc-sas-digits=\{digits\}/.test(dialog) && /aria-label=\{sasSpokenLabel\(digits\)\}/.test(dialog));
 
 console.log(`\ne2e-web-sas-confirm: ${passed}/${total} checks passed`);
 if (failures.length) {

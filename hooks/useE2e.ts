@@ -51,6 +51,7 @@ import {
   EpochFloorError,
   ensureWebDeviceKey,
   indexedDbWebKeyStore,
+  loadWebDeviceKey,
   WebKeyRecordShapeError,
   WebKeyRecordVersionError,
   type WebDeviceKey,
@@ -68,6 +69,8 @@ import { sasDigits } from '@/lib/e2e/sas.mjs';
 import {
   buildRequestBlock,
   decideAccept,
+  deviceKeyForAccept,
+  type DeviceKeyForAccept,
   E2E_VIEW_INITIAL,
   readAcceptBlock,
   readEncryptedMode,
@@ -489,7 +492,38 @@ export function useE2e(emailProp?: string | null): E2eApi {
   // ── (c) + (d) ───────────────────────────────────────────────────────────
   const onPairingActive = useCallback(async (payload: Record<string, unknown>): Promise<boolean> => {
     const block = readAcceptBlock(payload.e2e);
-    const key = keyRef.current;
+
+    // A6-P61C-REPAIR-WRAP. `keyRef` is written by buildRequestE2e ONLY, i.e. by
+    // the advert this page sent. A resumed PAIRING_ACTIVE after a reload is not
+    // preceded by one, so the ref was null here and `ourDeviceId` fell back to
+    // '' -- which matches no wrap, and reported the phone's correctly addressed
+    // block as "none ours". The key itself is in IndexedDB and never moved.
+    // LOAD, never ensure: see deviceKeyForAccept in hooks/phoneE2e.ts.
+    let resolved: DeviceKeyForAccept<WebDeviceKey>;
+    try {
+      resolved = await deviceKeyForAccept<WebDeviceKey>({
+        cached: keyRef.current,
+        blockPresent: block !== null,
+        load: () => loadWebDeviceKey({ store: keyStoreRef.current }),
+      });
+    } catch (e) {
+      // Same arm as buildRequestE2e: an unreadable record is a re-pair, and it
+      // must never be mistaken for an absent one.
+      if (e instanceof WebKeyRecordVersionError || e instanceof WebKeyRecordShapeError) {
+        fail('re-pair-needed', e.message);
+        return true;
+      }
+      fail('e2e-setup-failed', (e as Error).message);
+      return true;
+    }
+    if (resolved.action === 'refuse') {
+      sessionRef.current = null;
+      refuseUnsealRef.current = true;
+      fail(resolved.error, resolved.detail);
+      return true;
+    }
+    const key = resolved.key;
+    keyRef.current = key;
     const ourDeviceId = key?.deviceId ?? '';
 
     // A NEW pairing outcome is one of the two things that clears a sticky
