@@ -68,7 +68,7 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
      Measured (WCAG 2.x relative luminance, ink on fill):
        light  #0b1220 on #cfe6ff = 14.64:1
-       dark   #0b1220 on #9cc8ff = 10.80:1
+       dark   #0b1220 on #9cc8ff = 10.81:1
      Both clear AA (4.5:1) with an order of magnitude to spare, and clear AAA
      (7:1) as well, so the bubble stays legible at the 0.8x density this panel
      runs and at the Small type step. */
@@ -136,7 +136,7 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   /* Outgoing bubble, dark. A LIGHTER blue than light mode, not a darker one:
      the ink stays the same near-black in both themes (spec default), so the
      fill has to carry enough luminance to hold it at 4.5:1 — it measures
-     10.80:1. See the résumé for the one judgement call flagged for Dennis:
+     10.81:1. See the résumé for the one judgement call flagged for Dennis:
      black-on-light-blue is bright against a #0b0b0d panel, and a dark-only
      alternative is offered there rather than chosen here. */
   --cc-bubble-out: #9cc8ff;

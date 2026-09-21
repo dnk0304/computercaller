@@ -544,6 +544,15 @@ const MIN_CHECKS_OVERRIDE = {
   // literals, so removing any one of them shows up here as a missing check.
   // Measured at the commit that adds it: 108 assertions.
   'unit:no-daily-caps': 108,
+  // EXT-HIST. tests/ext-load-more.test.mjs — the FEATURE-SPEC §1 paging
+  // arithmetic plus the §2 bubble tokens. It needs a floor for the same reason
+  // no-daily-caps does: half of what it asserts is an ABSENCE (no cap inside the
+  // dedupe loop, no hand-rolled button left in Dashboard, no bg-blue-600 on the
+  // sent bubble), and an absence assertion passes by finding nothing. Deleting a
+  // pin, a boundary case or a negative control makes the suite GREENER — the
+  // count is the only thing that notices. Measured at the commit that adds it:
+  // 75 assertions.
+  'unit:ext-load-more': 75,
   // BAT-2 (d) min-checks raise 149 -> 165. Registering the BAT phase adds its
   // resolved-list arms, the bat-ui-proof ownership cell, the pending-script
   // cells and the frozen phase-set string. Re-MEASURED at this commit rather
@@ -1596,6 +1605,11 @@ if (WEB) {
     // only tests/e2e-*.test.mjs. Node-only — no browser, no database (rule 17).
     // ONLY e2e-gate.mjs change made by TRIAL-CAPS; declared in the résumé.
     ['no-daily-caps', 'tests/no-daily-caps.test.js', true],
+    // EXT-HIST. The load-more sentinel arithmetic and the outgoing-bubble
+    // tokens. Named explicitly because the sweep above matches only
+    // tests/e2e-*.test.mjs. Node-only — no browser, no database (rule 17).
+    // ONLY e2e-gate.mjs change made by EXT-HIST; declared in the résumé.
+    ['ext-load-more', 'tests/ext-load-more.test.mjs', true],
   ];
   // The one unit suite that needs a database, named for the same reason
   // DB_BACKED names devicekey-authz above: explicit beats widening the scrub.
