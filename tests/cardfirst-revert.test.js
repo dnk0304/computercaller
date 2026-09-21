@@ -32,6 +32,9 @@ process.env.ENTITLEMENT_ALLOWLIST =
 const assert = require('node:assert').strict;
 const { evaluateEntitlement } = require('../lib/entitlement-core.js');
 const { isFreeTierEnabled } = require('../lib/freeTierMode-core.js');
+// trial-caps-purge 2026-09-21: the grandfathered limit-set pin below compares
+// against the source of truth instead of probing a cap field that no longer exists.
+const { TIER_LIMITS } = require('../lib/tiers-core.js');
 
 let passed = 0;
 function eq(name, actual, expected) {
@@ -333,11 +336,16 @@ withFlag('off', () => {
     allowed: true, state: 'free_tier', reason: 'free_tier_grandfathered',
     trialDaysLeft: null, tier: 'free',
   });
-  // A grandfathered user keeps the free CAPS, not an upgrade — the carve-out
-  // preserves what they had, it does not hand them a paid tier.
+  // A grandfathered user keeps the free LIMIT SET, not an upgrade — the
+  // carve-out preserves what they had, it does not hand them a paid tier.
+  // Pinned by deep equality against TIER_LIMITS.free rather than by probing a
+  // cap field: the two cap fields were removed 2026-09-21 (trial-caps-purge),
+  // and `callsPerDay > 0` would now be a check that can only ever be false.
   const full = evaluateEntitlement(GRANDFATHERED, NOW);
-  eq('[off] grandfathered keeps the free tier caps', full.tier, 'free');
-  ok('[off] grandfathered limits are the free limit set', full.limits && full.limits.callsPerDay > 0);
+  eq('[off] grandfathered keeps the free tier', full.tier, 'free');
+  eq('[off] grandfathered limits are the free limit set', full.limits, TIER_LIMITS.free);
+  eq('[off] grandfathered limits carry no daily call cap', 'callsPerDay' in full.limits, false);
+  eq('[off] grandfathered limits carry no daily message cap', 'messagesPerDay' in full.limits, false);
 
   // Explicit false and undefined must both mean NOT grandfathered — the
   // documented default direction (absent ⇒ new-world row).

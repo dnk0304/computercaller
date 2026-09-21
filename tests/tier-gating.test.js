@@ -100,13 +100,17 @@ eq('gf: unknown → solo', planIdToTierGrandfathered('nope'), 'solo');
 }
 
 // ── 2. tier → limit set (NEW world) ─────────────────────────────────────────
-// FREE TIER (forge/free-tier-p1): 6-key set, carries the two daily-cap fields
-// (callsPerDay/messagesPerDay) that mark it as relay-metered. No paid tier does.
-eq('free limits (daily-capped entry point)', TIER_LIMITS.free, {
-  templates: 0, quickReplies: 0, syncRangeMax: '14d', contactSync: true, callsPerDay: 20, messagesPerDay: 10,
+// FREE TIER — grandfathered-only, and now the SAME 4-key shape as every paid
+// set. The two daily-cap fields (callsPerDay/messagesPerDay) were removed
+// 2026-09-21 (trial-caps-purge, SPEC-TRIAL-RULES-2026-09-21 §3): no tier in
+// this file carries a per-day cap any more. The deep-equality below is the pin
+// — an extra key fails it. tests/no-daily-caps.test.js pins the same absence
+// across every tier and every entitlement path.
+eq('free limits (grandfathered, unmetered)', TIER_LIMITS.free, {
+  templates: 0, quickReplies: 0, syncRangeMax: '14d', contactSync: true,
 });
-eq('free carries callsPerDay', TIER_LIMITS.free.callsPerDay, 20);
-eq('free carries messagesPerDay', TIER_LIMITS.free.messagesPerDay, 10);
+eq('free has NO callsPerDay (unmetered)', 'callsPerDay' in TIER_LIMITS.free, false);
+eq('free has NO messagesPerDay (unmetered)', 'messagesPerDay' in TIER_LIMITS.free, false);
 eq('solo has NO callsPerDay (unlimited)', 'callsPerDay' in TIER_LIMITS.solo, false);
 eq('plus has NO callsPerDay (unlimited)', 'callsPerDay' in TIER_LIMITS.plus, false);
 eq('pro has NO messagesPerDay (unlimited)', 'messagesPerDay' in TIER_LIMITS.pro, false);
@@ -150,7 +154,7 @@ eq('gf-plus limits floor = 180d', syncSinceFloorMsFromLimits(GRANDFATHERED_TIER_
 eq('trial limits floor = 3d', syncSinceFloorMsFromLimits(TIER_LIMITS.trial, NOW), NOW - 3 * DAY_MS);
 
 // ── 3b. upgrade-path signal ─────────────────────────────────────────────────
-eq('free → subscribe ($5)', upgradePathForTier('free'), { reason: 'free-limit-hit', cta: 'subscribe', targetTier: 'plus' });
+eq('free → subscribe ($5)', upgradePathForTier('free'), { reason: 'free-tier', cta: 'subscribe', targetTier: 'plus' });
 eq('trial → activate $5', upgradePathForTier('trial'), { reason: 'trial-limit-hit', cta: 'activate-5', targetTier: 'plus' });
 eq('plus → upgrade $7', upgradePathForTier('plus'), { reason: 'plus-limit-hit', cta: 'upgrade-7', targetTier: 'pro' });
 eq('pro → nowhere up', upgradePathForTier('pro'), { reason: null, cta: null, targetTier: null });
@@ -228,7 +232,10 @@ eq('gf $5 (same id) → solo (frozen)', r.tier, 'solo');
 // ── 4c. FREE TIER: no subscription → ALLOWED entry point (forge/free-tier-p1) ─
 // PREVIOUSLY this was {allowed:false, state:'none'}. Free tier makes a logged-in
 // user with NO subscription the no-card entry point: allowed:true, state
-// 'free_tier', tier 'free', with daily outbound caps. Updated DELIBERATELY.
+// 'free_tier', tier 'free'. Updated DELIBERATELY. The daily outbound caps this
+// path used to carry were removed 2026-09-21 (trial-caps-purge) — asserted as
+// an ABSENCE below, because the entitlement decoration is the only other place
+// a cap key could reappear.
 r = ent({ isAdmin: false, email: 'a@b.c', subscription: null });
 eq('no-sub → allowed (free tier)', r.allowed, true);
 eq('no-sub → free_tier state', r.state, 'free_tier');
@@ -237,9 +244,9 @@ eq('free → 0 templates', r.limits.templates, 0);
 eq('free → 0 quick-replies', r.limits.quickReplies, 0);
 eq('free → 14d sync', r.limits.syncRangeMax, '14d');
 eq('free → contacts ON', r.limits.contactSync, true);
-eq('free → 20 calls/day', r.limits.callsPerDay, 20);
-eq('free → 10 messages/day', r.limits.messagesPerDay, 10);
-eq('free → subscribe upgrade', r.upgrade, { reason: 'free-limit-hit', cta: 'subscribe', targetTier: 'plus' });
+eq('free → NO calls/day cap', 'callsPerDay' in r.limits, false);
+eq('free → NO messages/day cap', 'messagesPerDay' in r.limits, false);
+eq('free → subscribe upgrade', r.upgrade, { reason: 'free-tier', cta: 'subscribe', targetTier: 'plus' });
 eq('free not grandfathered', r.grandfathered, false);
 eq('free → null trialDaysLeft', r.trialDaysLeft, null);
 

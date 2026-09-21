@@ -1834,99 +1834,32 @@ function startRelay(httpServer) {
     return false;
   }
 
-  /** 'YYYY-MM-DD' in UTC for a Date — the free-tier daily-counter bucket key. */
+  /**
+   * 'YYYY-MM-DD' in UTC for a Date — the file-transfer daily-quota bucket key
+   * (FT-1). Introduced 2026-08-28 for the free-tier daily call/SMS counters;
+   * those were removed 2026-09-21 (trial-caps-purge) and the FT quota is now
+   * its only caller.
+   */
   function utcDayKey(d) {
     return d.toISOString().slice(0, 10);
   }
 
-  /** Epoch-ms of the next UTC midnight after `d` — when the daily counters reset. */
-  function nextUtcMidnightMs(d) {
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
-  }
-
-  /**
-   * FREE-TIER daily OUTBOUND cap gate (2026-08-28, dispatch forge/free-tier-p1).
-   *
-   * The relay is the ONLY server chokepoint for MAKE_CALL / SEND_SMS (the browser
-   * drives the phone directly over this WS, no REST), so the free tier's daily
-   * caps (20 calls / 10 messages) MUST be enforced here, server-authoritative.
-   *
-   * Only tiers that carry a FINITE `callsPerDay` / `messagesPerDay` in their
-   * cached limits are metered — i.e. the `free` tier alone. Every paid tier omits
-   * those fields, so this returns null (unlimited) immediately with ZERO DB
-   * traffic for paying users. INBOUND frames never reach this (it is called only
-   * on the active-browser→phone data-plane forward, and matches only the two
-   * outbound verbs).
-   *
-   * The check-and-increment is a SINGLE atomic statement (INSERT … ON CONFLICT DO
-   * UPDATE … WHERE col < cap RETURNING) so two racing frames can never both slip
-   * past the cap — no read-modify-write. On breach: 0 rows returned → blocked. On
-   * pass: the counter is incremented and the frame is forwarded (increment-then-
-   * forward; a dropped/blocked frame never increments — the WHERE fails so no
-   * write happens).
-   *
-   * FAIL-OPEN on a DB error: a counter-store outage must NOT block a legitimate
-   * action. Admission (the money gate) already happened at the entitlement
-   * chokepoint; this is a usage cap, not the paywall.
-   *
-   * @param {{userId:string, tierLimits?:object}} ws
-   * @param {string} msg  the browser→phone frame about to be forwarded
-   * @returns {Promise<null | {blocked:boolean, kind:'call'|'message', limit:number, resetAt:number}>}
-   */
-  async function checkDailyOutboundLimit(ws, msg) {
-    const limits = ws.tierLimits || {};
-    let kind;
-    let cap;
-    let column;
-    if (msg.startsWith('MAKE_CALL')) {
-      kind = 'call';
-      cap = limits.callsPerDay;
-      column = 'calls';
-    } else if (msg.startsWith('SEND_SMS')) {
-      kind = 'message';
-      cap = limits.messagesPerDay;
-      column = 'messages';
-    } else {
-      return null; // not a metered frame
-    }
-    // Unlimited tier (no finite cap field) → never metered, no DB touch.
-    if (typeof cap !== 'number' || !Number.isFinite(cap)) return null;
-
-    const now = new Date();
-    const dayKey = utcDayKey(now);
-    const resetAt = nextUtcMidnightMs(now);
-
-    // A non-positive cap blocks unconditionally without a DB round-trip (the
-    // atomic INSERT below would otherwise seed a first row at 1 and wrongly
-    // admit it). Defensive: the free tier's caps are 20/10, never ≤ 0.
-    if (cap < 1) return { blocked: true, kind, limit: cap, resetAt };
-
-    const callSeed = kind === 'call' ? 1 : 0;
-    const msgSeed = kind === 'message' ? 1 : 0;
-    try {
-      // Column names are code-controlled literals (never user input); the
-      // user-supplied values (id/userId/dayKey/cap) are bound parameters.
-      const rows = await db.$queryRawUnsafe(
-        `INSERT INTO "UsageCounter" ("id","userId","dayKey","calls","messages","createdAt","updatedAt")
-         VALUES ($1,$2,$3,${callSeed},${msgSeed},now(),now())
-         ON CONFLICT ("userId","dayKey")
-         DO UPDATE SET "${column}" = "UsageCounter"."${column}" + 1, "updatedAt" = now()
-         WHERE "UsageCounter"."${column}" < $4
-         RETURNING "${column}" AS used`,
-        crypto.randomUUID(),
-        ws.userId,
-        dayKey,
-        cap,
-      );
-      if (!rows || rows.length === 0) {
-        return { blocked: true, kind, limit: cap, resetAt };
-      }
-      return { blocked: false, kind, limit: cap, resetAt };
-    } catch (e) {
-      console.error(`[Relay] usage-meter error (fail-open, user=${ws.userId} kind=${kind}): ${e.message}`);
-      return null;
-    }
-  }
+  // REMOVED 2026-09-21 (trial-caps-purge, SPEC-TRIAL-RULES-2026-09-21 §3): the
+  // free-tier daily OUTBOUND cap gate and its next-UTC-midnight helper (20
+  // calls / 10 messages, forge/free-tier-p1 2026-08-28). Dennis's rule of
+  // record is "No call / sms limits for incoming/outgoing calls" — so the relay
+  // does not meter MAKE_CALL / SEND_SMS at all any more, for any tier, in
+  // either direction. There is no replacement gate and no feature flag around
+  // the removal.
+  //
+  // Nothing writes the usage-counter table any more. The Prisma model and the
+  // table itself stay: FILE-TRANSFER-SPEC Addendum A claimed them for a
+  // per-account daily-BYTES counter.
+  //
+  // The removed gate's two identifiers are deliberately not spelled out here.
+  // tests/no-daily-caps.test.js asserts this file contains neither of them as a
+  // plain substring, and a pin that has to strip comments before it can be
+  // trusted is a pin with a second thing that can quietly break.
 
   /**
    * Tier-gate a BROWSER→phone frame (2026-07-27, dispatch feature/tier-gating).
@@ -2149,14 +2082,13 @@ function startRelay(httpServer) {
    * Reserve `size` raw bytes against the sender's UTC-day quota.
    *
    * ATOMIC check-and-increment in a single statement (INSERT … ON CONFLICT DO
-   * UPDATE … WHERE bytes + size <= cap RETURNING) — the same shape as
-   * checkDailyOutboundLimit, and for the same reason: two offers racing on one
+   * UPDATE … WHERE bytes + size <= cap RETURNING): two offers racing on one
    * account must never both slip past the cap, which a read-then-write cannot
    * guarantee.
    *
-   * NOTE THE DELIBERATE DIVERGENCE FROM checkDailyOutboundLimit: that gate fails
-   * OPEN on a DB error, because blocking a phone call over a counter-store blip
-   * is worse than one uncounted call. This one fails CLOSED. A single admitted
+   * This gate fails CLOSED. (The now-removed free-tier call/SMS meter failed
+   * OPEN, because blocking a phone call over a counter-store blip was worse
+   * than one uncounted call.) A single admitted
    * offer here is up to 1 GB of relay egress, and the cap IS the abuse control —
    * failing open turns a DB outage into unbounded bandwidth. The cost of failing
    * closed is one retry after the blip; the cost of failing open is a bill.
@@ -3577,12 +3509,12 @@ function startRelay(httpServer) {
 
       // FILE TRANSFER (FT-1) — the mirror image of the phone branch above, same
       // function, same gate. Placed ahead of gateBrowserSyncFrame and the
-      // free-tier outbound meter because neither matches a FILE_* frame
-      // (gateBrowserSyncFrame passes anything that is not GET_CONTACTS /
-      // GET_MESSAGES / GET_CALL_LOGS; checkDailyOutboundLimit returns null for
-      // anything that is not MAKE_CALL / SEND_SMS) — running a 21 800-chunk
-      // stream through both only to be told "pass, null" twice per chunk is
-      // work with no decision attached to it.
+      // tier gate because it does not match a FILE_* frame (gateBrowserSyncFrame
+      // passes anything that is not GET_CONTACTS / GET_MESSAGES /
+      // GET_CALL_LOGS) — running a 21 800-chunk stream through it only to be
+      // told "pass" once per chunk is work with no decision attached to it.
+      // (It also used to sit ahead of the free-tier outbound meter, removed
+      // 2026-09-21 by trial-caps-purge.)
       //
       // Passive listeners never reach here: the `if (ws.listener) return` far
       // above short-circuits them, so a receive-only extension SW cannot open,
@@ -3618,21 +3550,9 @@ function startRelay(httpServer) {
 
       // Data plane — only allowed when this socket is the active browser.
       if (ws === room.active.browser) {
-        // FREE-TIER daily outbound cap (2026-08-28, forge/free-tier-p1). Meter
-        // MAKE_CALL/SEND_SMS here — the ONLY point a frame is about to be
-        // forwarded to the phone (so we count only a real, successful outbound;
-        // a frame dropped for "no active phone" below never counts because the
-        // atomic increment only happens on a pass). Unlimited (paid) tiers →
-        // null, no DB touch. On breach: DROP the frame + tell the browser.
-        const meter = await checkDailyOutboundLimit(ws, forwardMsg);
-        if (meter && meter.blocked) {
-          rlog(`[Relay][${redactToken(token)}] Free-tier daily ${meter.kind} cap hit (tier=${ws.tier} limit=${meter.limit}) — frame DROPPED`);
-          safeSend(
-            ws,
-            `LIMIT_REACHED:${JSON.stringify({ kind: meter.kind, limit: meter.limit, resetAt: meter.resetAt, cta: 'subscribe' })}`,
-          );
-          return;
-        }
+        // No outbound metering here (trial-caps-purge 2026-09-21). MAKE_CALL /
+        // SEND_SMS are forwarded like any other data frame; the tier gate above
+        // still applies to the sync frames it owns.
         try {
           if (!forwardDataPlane(room, ws, forwardMsg)) {
             rlog(`[Relay][${redactToken(token)}] Browser data frame dropped — no active phone`);
@@ -3648,22 +3568,10 @@ function startRelay(httpServer) {
       // means the pair hasn't re-formed yet. Re-form now, or passthrough to the
       // held survivor phone, instead of dropping (Bug A, browser→phone half).
       //
-      // FREE-TIER meter (2026-08-28, forge/free-tier-p1): this passthrough also
-      // reaches the phone, so a MAKE_CALL/SEND_SMS crossing it during a resume
-      // window must be metered too — otherwise the daily cap could be bypassed
-      // by acting mid-reconnect. checkDailyOutboundLimit is a no-op for every
-      // non-outbound frame (returns null), so control/resume frames are
-      // unaffected. On breach: drop + notify, exactly as the active-pair path.
+      // The free-tier meter that used to sit here (so a capped MAKE_CALL /
+      // SEND_SMS could not be slipped through mid-reconnect) is gone with the
+      // caps themselves — trial-caps-purge 2026-09-21.
       if (!LEGACY_RESUME_TEARDOWN) {
-        const meter = await checkDailyOutboundLimit(ws, forwardMsg);
-        if (meter && meter.blocked) {
-          rlog(`[Relay][${redactToken(token)}] Free-tier daily ${meter.kind} cap hit during resume (limit=${meter.limit}) — frame DROPPED`);
-          safeSend(
-            ws,
-            `LIMIT_REACHED:${JSON.stringify({ kind: meter.kind, limit: meter.limit, resetAt: meter.resetAt, cta: 'subscribe' })}`,
-          );
-          return;
-        }
         if (deliverLobbyFrameDuringResume(room, ws, forwardMsg, 'browser', token)) {
           return;
         }

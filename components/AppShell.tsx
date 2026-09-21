@@ -9,7 +9,6 @@ import { SasConfirmDialog } from '@/components/SasConfirmDialog';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
 import { TierBadge } from '@/components/TierBadge';
-import { UsageMeter } from '@/components/UsageMeter';
 import { PhoneModeShell } from '@/components/PhoneModeShell';
 import { SyncMenuButton } from '@/components/SyncMenuButton';
 import { ReconnectionPill } from '@/components/ReconnectionPill';
@@ -212,10 +211,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* UsageMeter (Pixel, forge/free-tier-p1, 2026-08-28) — free-tier
-                remaining calls/messages today. Renders null for every paid
-                (unlimited) tier, so the header collapses cleanly for them. */}
-            <UsageMeter variant="pill" />
             {/* PC-audio route control removed from the header (Pixel,
                 2026-09-14). PC call audio needs the PC to expose a Bluetooth
                 hands-free (HFP/AG) profile, which only a minority of PC/BT

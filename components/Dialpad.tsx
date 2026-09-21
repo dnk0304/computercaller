@@ -4,7 +4,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Phone, Delete, Video, MessageSquare, Grid3x3 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { usePhone } from '@/hooks';
-import { useFreeTier } from '@/hooks/freeTierContext';
 import { useExtensionShell } from '@/lib/extensionBridge';
 import { useDialpadOpen, usePrefersReducedMotion } from '@/lib/dialpadPref';
 
@@ -104,9 +103,8 @@ export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: 
   // falls back to the shared `last` mirror; see lib/dialpadPref.ts.
   const { email } = useExtensionShell();
   const [padOpen, togglePad, padAnimate] = useDialpadOpen(email);
-  const { guard } = useFreeTier();
   // Guarded dial — free-tier daily cap opens the block modal instead of dialing.
-  const dial = (n: string) => { if (guard('call')) makeCall(n); };
+  const dial = (n: string) => { makeCall(n); };
   const [number, setNumber] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 

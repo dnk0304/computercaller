@@ -17,8 +17,7 @@
  * duplication:
  *   PhoneModeProvider    → usePhoneMode() (push/pop/tab nav inside the shell)
  *   DashboardTabProvider → useDashboardTab() (shared active-tab state)
- *   UpgradeModalProvider → upgrade CTA plumbing (FreeTierProvider depends on it)
- *   FreeTierProvider     → useFreeTier() daily-cap UX
+ *   UpgradeModalProvider → upgrade CTA plumbing (tier badge / upgrade modal)
  * PhoneProvider (usePhone/useNotifications) already wraps everything at the root.
  *
  * SyncSetupPanel is mounted so a not-yet-paired user can still pair from inside
@@ -27,7 +26,6 @@
 
 import { DashboardTabProvider, PhoneModeProvider } from '@/hooks';
 import { UpgradeModalProvider } from '@/hooks/upgradeModalContext';
-import { FreeTierProvider } from '@/hooks/freeTierContext';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
 import { IdleTimeoutGuard } from '@/components/IdleTimeoutGuard';
 import { requestSignOut } from '@/lib/extensionBridge';
@@ -38,7 +36,7 @@ export function ExtensionProviders({ children }: { children: React.ReactNode }) 
     <PhoneModeProvider>
       <DashboardTabProvider>
         <UpgradeModalProvider>
-          <FreeTierProvider>
+          <>
             {/* 100% (not 100vh): the surface is sized by the extension window
                 that iframes it. 100vh made the column taller than its own
                 frame in the pop-out, which pushed the composer and the Recent
@@ -85,7 +83,7 @@ export function ExtensionProviders({ children }: { children: React.ReactNode }) 
                 requestSignOut();
               }}
             />
-          </FreeTierProvider>
+          </>
         </UpgradeModalProvider>
       </DashboardTabProvider>
     </PhoneModeProvider>
