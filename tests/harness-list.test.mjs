@@ -259,9 +259,15 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
   // The floors are only floors if they are declared. A step that runs with no
   // floor reports whatever it feels like and still passes.
   for (const [name, floor] of [
-    ['android:testDebugUnitTest', 200],
+    // E2E-P4.4: 200 -> 237. The suite had been at 231 since P6.1c part 1 while
+    // the floor stayed at its P4.2 measurement, so 37 assertions were deletable
+    // under a green N/N. Re-measured with this lane's six new cases.
+    ['android:testDebugUnitTest', 237],
     ['android:instrumented-A5', 8],
-    ['unit:harness-list', 142],
+    ['unit:harness-list', 143],
+    // E2E-P4.4: the §13.10.3 userId parity proof, registered as a node-only
+    // gate step. Declared here for the same reason as the rest of this list.
+    ['unit:ctx-parity', 14],
     ['relay:e2e-web-sas-confirm.test.mjs', 47],
     ['relay:e2e-web-sw-advert.test.mjs', 47],
   ]) {

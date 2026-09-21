@@ -466,7 +466,16 @@ const MIN_CHECKS_OVERRIDE = {
   // E2E-P6.1c (2c) min-checks raise 130 -> 133. Registering P6.1C in
   // KNOWN_PHASES generates three more checks (its resolved harness list, its
   // no-FT-proofs arm, and the frozen phase-set string). Re-measured: 133.
-  'unit:harness-list': 142,
+  // E2E-P4.4: 142 -> 143, the one check this lane's ctx-parity floor adds to
+  // the suite. Kept exact rather than left with a point of slack.
+  'unit:harness-list': 143,
+  // E2E-P4.4. The §13.10.3 userId parity proof. Post-dates the parity baseline
+  // file, so the floor cannot be read from it and has to be declared here or
+  // the step could be emptied to two checks and still print a cheerful N/N —
+  // which is the exact shape of the defect this step exists to close (a
+  // pairContext input that nothing pinned). Measured at the commit that flips
+  // it: 14 assertions.
+  'unit:ctx-parity': 14,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -474,7 +483,12 @@ const MIN_CHECKS_OVERRIDE = {
   // e2e/p4.2-a5-android at 9fac09c, AVD e2e_p42 (API 34):
   //   testDebugUnitTest 200 · instrumented-A5 8 (4 vectors + 2 observability
   //   + 2 vector-M) · SasVectorsTest 7.
-  'android:testDebugUnitTest': 200,
+  // E2E-P4.4 re-measure 200 -> 237. P6.1c part 1 took the suite to 231 and this
+  // lane adds 6 (the R-BH account-id propagation cases), but the floor had sat
+  // at 200 throughout — i.e. 37 assertions could have been deleted under a
+  // green N/N. Re-measured at this commit rather than bumped by six, for the
+  // same reason unit:harness-list was re-measured at P4.2 instead of +3.
+  'android:testDebugUnitTest': 237,
   'android:instrumented-A5': 8,
   'android:SasVectorsTest': 7,
 };
@@ -1437,6 +1451,22 @@ if (WEB) {
     run('unit:idb-migration', 'node scripts/e2e-idb-migration-proof.mjs', { parse: passLine, scrub: true });
   } else if (!BASELINE) {
     record('unit:idb-migration', 'node scripts/e2e-idb-migration-proof.mjs', 1, 0, { missing: 1 });
+  }
+
+  // E2E-P4.4. The §13.10.3 `userId` channel (R-BH option B): the phone's
+  // account id is a KEY-SCHEDULE input, and for the whole of P4–P6.1b the
+  // production path fed it a hard-coded "". Nothing caught that, because both
+  // vector suites build a PairContext DIRECTLY from the frozen vectors and so
+  // pin the KDF rather than its inputs. This step is the node-side half of the
+  // fix's evidence: the constant is gone from the Kotlin source (comments
+  // stripped — the file discusses "" at length), the channel is wired, and the
+  // two sides' KEKs are byte-equal on the same account id while still
+  // diverging on the id alone. Node-only, no browser (rule 17).
+  if (existsSync(join(ROOT, 'scripts', 'e2e-p61c-ctx-divergence-proof.mjs'))) {
+    run('unit:ctx-parity', 'node scripts/e2e-p61c-ctx-divergence-proof.mjs',
+      { parse: passLine, scrub: true });
+  } else if (!BASELINE) {
+    record('unit:ctx-parity', 'node scripts/e2e-p61c-ctx-divergence-proof.mjs', 1, 0, { missing: 1 });
   }
 
   if (existsSync(join(ROOT, 'scripts', 'ext-bridge-origin-pin-proof.mjs'))) {
