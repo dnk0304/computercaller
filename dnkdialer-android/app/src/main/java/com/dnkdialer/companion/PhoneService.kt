@@ -325,6 +325,17 @@ class PhoneService : Service() {
      */
     private val e2eFrameGate = E2eFrameGate({ e2eSession }, { e2eLatchedOn })
 
+    /**
+     * P6.1c 1b. The SAS wait currently in flight, or null.
+     *
+     * Held so a teardown can release it. The Accept worker is a SINGLE thread,
+     * so a wait nobody can cancel would hold every later Accept behind it for
+     * the whole deadline — on a pairing that no longer exists. Volatile
+     * because it is written on that worker and read from the socket thread.
+     */
+    @Volatile
+    private var pendingSasGate: E2eSasGate.Pending? = null
+
     private val e2eExecutor: java.util.concurrent.ExecutorService =
         java.util.concurrent.Executors.newSingleThreadExecutor { r ->
             Thread(r, "e2e-accept").apply { isDaemon = true }
@@ -2822,6 +2833,40 @@ class PhoneService : Service() {
                         "silently continue in plaintext"
                 )
 
+            // ------------------------------------------------- (1b) the SAS
+            //
+            // P6.1c 1b / E2eSasContract. The digits exist at this point and up
+            // to this commit were only ever LOGGED. Mode ON means the user
+            // must compare them against the computer's before anything is
+            // accepted, so the wait goes HERE: after prepare (which is what
+            // produces the digits) and before the session is installed or the
+            // ACCEPT is sent. A SAS the peer learns about only after we have
+            // armed and accepted verifies nothing.
+            //
+            // Mode OFF/UNVERIFIED returns NOT_REQUIRED without prompting —
+            // unchanged behaviour, §13.1's row for a pairing nobody required.
+            val sas = E2eSasGate.await(
+                ctx = this,
+                pairingId = pairingId,
+                modeOn = prepared.modeOn,
+                digits = prepared.sasDigits,
+                timeoutMs = PENDING_REQUEST_TIMEOUT_MS,
+                onArmed = { pendingSasGate = it },
+            )
+            if (!E2eSasGate.mayProceed(sas)) {
+                // The EXISTING refusal path, verbatim — latch, DECLINE,
+                // broadcastE2eRefusal. E2eSasContract forbids a second
+                // implementation, and this is why: "the user says the codes
+                // differ" must be indistinguishable downstream from every
+                // other refusal.
+                android.util.Log.w("PhoneService", "E2E SAS not confirmed ($sas) for $pairingId")
+                prepared.session.close()
+                e2eDowngradeLatch.latch()
+                sendPairingDecision("DECLINE_PAIRING", pairingId, null)
+                broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
+                return
+            }
+
             // A new Accept replaces whatever was live; the old SK is dropped,
             // never carried across (§13.8).
             e2eSession?.close()
@@ -2880,6 +2925,10 @@ class PhoneService : Service() {
      * whole attack it exists to stop.
      */
     private fun tearDownE2e(reason: String) {
+        // P6.1c 1b — release an in-flight SAS wait. Cancelling is a REFUSAL
+        // (E2eSasGate.mayProceed says so), so a pair that vanished mid-prompt
+        // can never be accepted by the answer arriving late.
+        pendingSasGate?.cancel()
         val outcome = E2eLifecycle.onPairEnded(e2eSession)
         e2eSession = null
         e2eLatchedOn = false
