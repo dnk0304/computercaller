@@ -39,7 +39,11 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // (E2E-P0.3) The moving-base decision and the authored/inherited lint split,
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
+import { freemem } from 'node:os';
 import { harnessesFor, KNOWN_PHASES, phaseTableProblems } from './lib/harness-list.mjs';
+import {
+  classifyHeadroom, parseHeadroomGib, topRssHolders, headroomReport, DEFAULT_HEADROOM_GIB,
+} from './lib/headroom.mjs';
 import { resolveJavaHome } from './lib/java-home.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
 // longer encodes the phase in the worktree name.
@@ -145,6 +149,17 @@ if (!KNOWN_PHASES.includes(PHASE)) {
     + '    add it here deliberately rather than letting it through.\n'
   );
   process.exit(2);
+}
+/**
+ * GATE-PREFLIGHT. The memory floor for the browser harnesses, in GiB.
+ * Parsed HERE, with the other options, so a malformed value refuses the run at
+ * the top (exit 2) instead of thirty minutes in, at the check it disables.
+ */
+let HEADROOM_GIB = DEFAULT_HEADROOM_GIB;
+try {
+  HEADROOM_GIB = parseHeadroomGib(process.argv, DEFAULT_HEADROOM_GIB).gib;
+} catch (e) {
+  refuse(e.message);
 }
 const BASELINE = has('baseline');
 const OUTDIR = join(ROOT, flag('out', 'e2e-evidence'));
@@ -476,6 +491,9 @@ const MIN_CHECKS_OVERRIDE = {
   // pairContext input that nothing pinned). Measured at the commit that flips
   // it: 14 assertions.
   'unit:ctx-parity': 14,
+  // GATE-PREFLIGHT. Post-dates the parity baseline, so the floor is declared
+  // here. Measured at the commit that adds it: 49 assertions.
+  'unit:headroom': 49,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -987,6 +1005,32 @@ function killTree(pid) {
   try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already gone */ }
 }
 
+/**
+ * GATE-PREFLIGHT's two impure halves, deliberately tiny and deliberately
+ * separate from tools/lib/headroom.mjs, which stays pure and testable.
+ */
+const osFreemem = () => freemem();
+
+/**
+ * A read-only process census: image name + working set. NEVER a pid — rule 12
+ * says the gate does not kill what it did not start, and a census that cannot
+ * name a pid cannot be fed to a killer by a later edit.
+ */
+function rssCensus() {
+  const ps = spawnSync('powershell', ['-NoProfile', '-Command',
+    'Get-Process | Select-Object ProcessName,WorkingSet64 | ConvertTo-Json -Compress'],
+  { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  try {
+    const raw = JSON.parse(ps.stdout || '[]');
+    const rows = Array.isArray(raw) ? raw : [raw];
+    return rows.map((r) => ({ name: `${r.ProcessName}.exe`, rssBytes: Number(r.WorkingSet64) }));
+  } catch {
+    // A census we cannot read is a missing convenience, never a reason to
+    // change the verdict — the verdict came from os.freemem().
+    return [];
+  }
+}
+
 function stopDevServer() {
   // Rule 12: never kill by image name. Only the PID we started.
   if (devProc && devProc.pid) {
@@ -1387,6 +1431,12 @@ if (WEB) {
     // matches only tests/e2e-*.test.mjs — and because a step quietly absent
     // from a phase's list is the one failure mode the gate cannot report.
     ['harness-list', 'tests/harness-list.test.mjs', true],
+    // GATE-PREFLIGHT. The memory-headroom classifier, with freemem MOCKED —
+    // the pre-flight it guards can only fire on a box that is actually out of
+    // memory, so without this suite the only way to test it would be to run
+    // out of memory. Includes the boundary (exactly-at-the-floor RUNS) and the
+    // rule-12 property that the census can never name a pid.
+    ['headroom', 'tests/gate-headroom.test.mjs', true],
     // SOAK-RIG (c). 48 checks. The R-AM soak rig: that importing soak-runner /
     // verify-soak / relay-auth starts no clock and opens no socket, and that
     // verify-soak's rule-8 guards can actually go RED — a >10 min gap, a <24 h
@@ -1623,6 +1673,43 @@ if (WEB) {
          * exists and the sequential path stays the default until P5a fixes the
          * flake at source; the measured comparison is in the P1 résumé.
          */
+        /**
+         * ── GATE-PREFLIGHT: memory headroom ──────────────────────────────
+         *
+         * The LAST thing before a browser is launched. Everything above — the
+         * node suites, the android lane, the build, the dev server — has run
+         * and printed; nothing below it can run at all if the box is out of
+         * memory, and three P6.1C runs proved that it dies SILENTLY, with 0
+         * FAIL and 0 WARN, which is indistinguishable from a run on its way to
+         * a pass.
+         *
+         * So: refuse, with an outcome that is neither FAIL nor WARN, an exit
+         * code that is neither pass nor fail nor refuse-to-run, and — the
+         * important part — NO gate JSON. A JSON is a claim about this tree, and
+         * there is no honest claim to make about steps that never ran.
+         *
+         * The census is READ-ONLY and by image name (rule 12): the memory here
+         * is mostly Dennis's own Chrome under explorer.exe and it is not ours
+         * to kill. It is printed so a human knows what to close.
+         */
+        {
+          const verdict = classifyHeadroom({
+            freeBytes: osFreemem(), requiredGib: HEADROOM_GIB,
+          });
+          record('env:headroom', `os.freemem() >= ${HEADROOM_GIB} GiB`, 0, 0,
+            { freeGib: verdict.freeGib, requiredGib: verdict.requiredGib },
+            verdict.ok ? {} : { outcome: 'ENV-NONRUN' });
+          if (verdict.ok) {
+            console.log(`  ok    env:headroom — ${verdict.freeGib} GiB free >= ${verdict.requiredGib} GiB`);
+          } else {
+            console.log(headroomReport(verdict, topRssHolders(rssCensus())));
+            // Leave nothing running. Rule 14 applies to a refusal exactly as it
+            // applies to a pass — this gate started a dev server.
+            stopDevServer();
+            process.exit(3);
+          }
+        }
+
         const harnessSpecs = HARNESS.map((h) => ({ h, rel: `scripts/${h}.mjs` }))
           .filter(({ h, rel }) => {
             if (existsSync(join(ROOT, rel))) return true;
