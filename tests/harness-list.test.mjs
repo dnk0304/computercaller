@@ -24,7 +24,7 @@
  *
  * Run: node tests/harness-list.test.mjs
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -115,7 +115,7 @@ check('CONTROL: …and a present entry as present, so it is not stuck on "no"',
 // The phase set itself, as the full sorted string.
 check('KNOWN_PHASES is the frozen set, byte for byte',
   [...KNOWN_PHASES].sort().join(',')
-    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P4.2,P5A,P5B,P6,P6.1',
+    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P4.2,P5A,P5B,P6,P6.1,P6.1C',
   KNOWN_PHASES.join(','));
 
 // E2E-P2.2. The A5 web fix-before-flip lane. It RUNS both browser harnesses,
@@ -221,6 +221,58 @@ check('CONTROL: a phase in BOTH runs and skips is reported',
     .some((x) => x.both.includes('P0')));
 check('CONTROL: …and a complete table reports nothing, so it is not stuck on "yes"',
   phaseTableProblems(['P0'], { fake: { runs: ['P0'], skips: [] } }).length === 0);
+
+// == 8. E2E-P6.1c (2c): P6.1C is registered EVERYWHERE, not just here =========
+//
+// KNOWN_PHASES is necessary and nowhere near sufficient. tools/e2e-gate.mjs
+// carries THREE more phase lists that this module does not own, and a phase
+// missing from one of them does not fail: the step is never created, so there
+// are no counts, so MIN_CHECKS has nothing to grade, and the gate prints PASS
+// over a lane it never ran. That is the P6.1b defect verbatim
+// (gate-P6.1-815bba5.json: PASS 107/107 with the whole android leg absent),
+// and it was an EQUALITY test one line below a comment warning about it.
+//
+// So the gate source is read and each list is asserted by name. A source-text
+// assertion is the right shape here precisely because importing the gate would
+// RUN it.
+{
+  // NOT comment-stripped and NOT newline-normalised, deliberately: every
+  // marker below lives inside a single source line, so CRLF cannot split one,
+  // and the gate's own comments name these lists in prose — a stripper here
+  // would be doing nothing while looking like it did something.
+  const gate = readFileSync(join(ROOT, 'tools', 'e2e-gate.mjs'), 'utf8');
+  const listAfter = (marker) => {
+    const i = gate.indexOf(marker);
+    if (i < 0) return null;
+    const open = gate.indexOf('[', i);
+    return gate.slice(open, gate.indexOf(']', open) + 1);
+  };
+  const REAL_RELAY = listAfter("if (['P6', 'P6.1'");
+  check('gate: P6.1C runs the P6 real-relay steps',
+    REAL_RELAY !== null && REAL_RELAY.includes("'P6.1C'"), String(REAL_RELAY));
+  const ANDROID_RESULTS = listAfter("if (['P4', 'P4.2', 'P5B'");
+  check('gate: P6.1C clears the android instrumented-results dir',
+    ANDROID_RESULTS !== null && ANDROID_RESULTS.includes("'P6.1C'"), String(ANDROID_RESULTS));
+  const ANDROID_A5 = listAfter("if (['P4.2', 'P6.1'");
+  check('gate: P6.1C dispatches testDebugUnitTest and instrumented-A5',
+    ANDROID_A5 !== null && ANDROID_A5.includes("'P6.1C'"), String(ANDROID_A5));
+  // The floors are only floors if they are declared. A step that runs with no
+  // floor reports whatever it feels like and still passes.
+  for (const [name, floor] of [
+    ['android:testDebugUnitTest', 200],
+    ['android:instrumented-A5', 8],
+    ['unit:harness-list', 142],
+    ['relay:e2e-web-sas-confirm.test.mjs', 47],
+    ['relay:e2e-web-sw-advert.test.mjs', 47],
+  ]) {
+    check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,
+      gate.includes(`'${name}': ${floor},`));
+  }
+  // CONTROL: listAfter must be able to come back empty-handed, or the three
+  // arms above are asserting the truthiness of a string that is always there.
+  check('CONTROL: listAfter returns null for a marker that is not in the gate',
+    listAfter("if (['NOT_A_REAL_MARKER'") === null);
+}
 
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

@@ -463,7 +463,10 @@ const MIN_CHECKS_OVERRIDE = {
   // measured 127 on this lane's base 165f165, i.e. 20 checks above the number
   // guarding it, so a deletion of twenty assertions would have printed a
   // cheerful N/N. Re-measured here rather than bumped by three.
-  'unit:harness-list': 130,
+  // E2E-P6.1c (2c) min-checks raise 130 -> 133. Registering P6.1C in
+  // KNOWN_PHASES generates three more checks (its resolved harness list, its
+  // no-FT-proofs arm, and the frozen phase-set string). Re-measured: 133.
+  'unit:harness-list': 142,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -1461,7 +1464,10 @@ if (WEB) {
   // Gated to P6 and later because they are P6 deliverables and did not exist at
   // BASE_SHA; running them under an earlier --phase would report `missing` for
   // a file that was never supposed to be there yet.
-  if (['P6', 'P6.1', 'P7', 'P8', 'D1'].includes(PHASE)) {
+  // E2E-P6.1c (2c): P6.1C added. These are P6 deliverables and P6.1C is a P6.1
+  // continuation over the same tree — omitting it would run none of them and
+  // print PASS, which is the "0 tests ran wearing a green hat" shape below.
+  if (['P6', 'P6.1', 'P6.1C', 'P7', 'P8', 'D1'].includes(PHASE)) {
     const P6_REAL_RELAY = [
       // (e) 10,000 frames across a resume, counters asserted on all three lanes.
       ['p6:replay', 'scripts/e2e-replay-proof.mjs'],
@@ -1796,7 +1802,7 @@ if (ANDROID) {
     }
 
     const ANDROID_TEST_RESULTS = join(AROOT, 'app/build/outputs/androidTest-results/connected');
-    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P7', 'P8'].includes(PHASE)) {
+    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P7', 'P8'].includes(PHASE)) {
       // FINDING (E2E-P4.2 (e)): this is a SECOND phase table that has to agree
       // with KNOWN_PHASES and does not — the exact defect tools/lib/harness-
       // list.mjs was created to fold away. It still names 'P7' and 'P8', which
@@ -1851,7 +1857,15 @@ if (ANDROID) {
     // never declared these floors, the A5 classes post-date P4/P5B/P6, and
     // widening a gate to phases that never agreed to it turns other lanes'
     // recorded PASSes into retro-active failures — Ken's call, not this lane's.
-    if (['P4.2', 'P6.1'].includes(PHASE)) {
+    //
+    // E2E-P6.1c (2c). P6.1C added for exactly the reason P6.1 was: this lane's
+    // brief declares android:testDebugUnitTest >= 200 and
+    // android:instrumented-A5 >= 8 as floors the gate must GRADE, and a floor
+    // only grades a step that was DISPATCHED. Left out of this list, both
+    // steps would simply not exist at --phase P6.1C and the gate would print a
+    // cheerful PASS over an android lane it never ran — the P6.1b defect
+    // documented immediately above, repeated one phase later.
+    if (['P4.2', 'P6.1', 'P6.1C'].includes(PHASE)) {
       const A5_CLASSES = [
         'com.dnkdialer.companion.E2eForwardJumpVectorsTest',
         'com.dnkdialer.companion.E2eForwardJumpObservabilityTest',
