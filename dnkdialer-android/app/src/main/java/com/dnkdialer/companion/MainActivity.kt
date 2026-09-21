@@ -2365,15 +2365,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         sasPairingId = pairingId
-        val grouped = E2eSasContract.group(digits)
+        // M-A6-5 / SPEC §13.3 R-BK: the VISIBLE code is ungrouped and identical
+        // to what the page dialog shows, so the two surfaces are one exact
+        // string compare. The SPOKEN description spells the same digits out
+        // one at a time — a screen-reader user must be comparing the same
+        // string a sighted user is, and neither "41290" nor "412 90" is read
+        // as digits by TalkBack. Both come from E2eSasContract, one door each.
+        val rendered = E2eSasContract.render(digits)
         val code = findViewById<TextView>(R.id.homeSasCode)
-        code.text = grouped
-        // The visible text and the spoken description come from the SAME
-        // grouping call, so a screen reader and a sighted user can never be
-        // comparing different codes. Spoken as "412 908"; ungrouped, TalkBack
-        // says "four hundred twelve thousand nine hundred and eight", which
-        // cannot be checked against a computer screen.
-        code.contentDescription = getString(R.string.e2e_sas_code_a11y, grouped)
+        code.text = rendered
+        code.contentDescription = getString(R.string.e2e_sas_code_a11y, E2eSasContract.spoken(digits))
 
         heroRequestFace.visibility = View.GONE
         heroDefaultFace.visibility = View.GONE

@@ -28,7 +28,7 @@ import {
   UPDATE_COMPUTER,
   PAIRING_UNAVAILABLE_LABEL,
   PAIRING_UNAVAILABLE_DETAIL,
-  groupSasDigits,
+  renderSasDigits,
   sasSpokenLabel,
   settingAvailability,
   encryptionIndicator,
@@ -224,12 +224,17 @@ export function runCopyCases(check) {
     blk('on', 'encrypted-unverified', '54321', false) === true);
 
   // ── digit presentation ───────────────────────────────────────────────────
-  check('digits: a 5-digit code is grouped 2+3 for reading aloud',
-    groupSasDigits('12345') === '12 345');
+  // M-A6-5 / SPEC 13.3 R-BK: UNGROUPED on every surface. This used to assert
+  // 2+3 while the phone hero face rendered 3+2 -- one code, two screens, two
+  // strings, and the SAS is a human exact-string compare.
+  check('digits: a 5-digit code is rendered ungrouped and verbatim',
+    renderSasDigits('12345') === '12345');
+  check('digits: no separator of any kind survives the render',
+    [' ', '-', '.', ' '].every((s) => !renderSasDigits('12345').includes(s)));
   check('digits: a wrong-length code is returned UNTOUCHED, never tidied to look right',
-    groupSasDigits('1234') === '1234' && groupSasDigits('123456') === '123456');
+    renderSasDigits('1234') === '1234' && renderSasDigits('123456') === '123456');
   check('digits: the spoken label spells the code out digit by digit',
     sasSpokenLabel('12345') === 'Code 1 2 3 4 5');
   check('digits: a zero-padded code keeps its leading zeros in both forms',
-    groupSasDigits('00042') === '00 042' && sasSpokenLabel('00042') === 'Code 0 0 0 4 2');
+    renderSasDigits('00042') === '00042' && sasSpokenLabel('00042') === 'Code 0 0 0 4 2');
 }

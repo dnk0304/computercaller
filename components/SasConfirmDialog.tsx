@@ -14,7 +14,7 @@ import {
   SAS_REFUSED_TITLE,
   SAS_REFUSED_BODY,
   SAS_DIGIT_COUNT,
-  groupSasDigits,
+  renderSasDigits,
   sasSpokenLabel,
   sasIsBlocking,
   type E2eStateName,
@@ -252,7 +252,10 @@ function SasDialogSurface({
               {SAS_BODY}
             </p>
 
-            {/* The code. Tabular figures and generous tracking because the whole
+            {/* The code. Rendered UNGROUPED per SPEC §13.3 R-BK (M-A6-5): the
+                phone hero face shows the same five characters with no
+                separator, so the two surfaces are one exact string compare.
+                Tabular figures and generous tracking because the whole
                 job of this element is character-by-character comparison against
                 a phone held next to the screen — this is the one place in the
                 product where legibility beats every other typographic concern.
@@ -269,7 +272,7 @@ function SasDialogSurface({
                 className="font-mono text-[30px] font-semibold leading-none tracking-[0.18em] text-slate-900"
                 style={{ fontVariantNumeric: 'tabular-nums' }}
               >
-                {groupSasDigits(digits)}
+                {renderSasDigits(digits)}
               </span>
             </div>
             {digits.length !== SAS_DIGIT_COUNT && (

@@ -344,6 +344,17 @@ ikm  = 0x01 || u8(len(epk)) || epk
 digits = be32(HKDF-SHA256(salt, ikm, info)[0..4]) mod 100000, zero-padded to 5
 ```
 
+**Rendering — FROZEN (R-BK, 2026-09-21, closes M-A6-5).** Every surface that
+shows the SAS renders the five digits **ungrouped**, as one contiguous string
+(`31644`), no space, hyphen or other separator, tabular/monospace numerals, no
+leading-zero suppression. Phone hero face (`R.id.homeSasCode`), page dialog
+(`[data-cc-sas-digits]`) and any future surface MUST be byte-identical to the
+zero-padded 5-digit string above. Rationale: the SAS is a human exact-string
+compare; two groupings of the same digits raise the miscompare rate and train the
+user to accept "looks a bit different" — the exact judgment a substitution attack
+needs. Pinned by a unit test on each surface (P6.1d-A) and read off both
+screenshots in P6.1d-B.
+
 `K_1…K_n` are **all** static public keys in the pairing — the phone plus every
 recipient (web, service worker, any further computer) — deduplicated and sorted
 by **unsigned** lexicographic byte comparison. `modeByte` is the effective mode
