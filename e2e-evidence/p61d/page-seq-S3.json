@@ -1,0 +1,24 @@
+{
+  "before": {
+    "ok": true,
+    "rows": [
+      {
+        "key": "Y6tH61hEzvx1v97K5vUgYQ:2",
+        "kid": "Y6tH61hEzvx1v97K5vUgYQ",
+        "direction": 2,
+        "next": 0
+      }
+    ]
+  },
+  "after": {
+    "ok": true,
+    "rows": [
+      {
+        "key": "Y6tH61hEzvx1v97K5vUgYQ:2",
+        "kid": "Y6tH61hEzvx1v97K5vUgYQ",
+        "direction": 2,
+        "next": 0
+      }
+    ]
+  }
+}

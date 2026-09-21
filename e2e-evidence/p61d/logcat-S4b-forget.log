@@ -1,0 +1,111 @@
+--------- beginning of main
+09-21 15:27:29.093 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:29.683 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:31.704 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:32.303 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:34.432 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:34.675 17888 17928 D PhoneService: handleCommand: PAIRING_REQUEST, viaClient: true
+09-21 15:27:34.678 17888 17928 D PhoneService: PAIRING_REQUEST id=151c044b-122f-43e6-aec1-02dec282216e identity=Chrome on Windows label=Chrome on Windows
+09-21 15:27:34.735 17888 17928 D PhoneService: PAIRING_REQUEST e2e offer id=151c044b-122f-43e6-aec1-02dec282216e advertisement=ON recipients=1 peerSupported=true
+09-21 15:27:35.020 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:35.043 17888 17888 D MainActivity: Pairing request surfaced in hero card for 151c044b-122f-43e6-aec1-02dec282216e
+09-21 15:27:37.022 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:37.343 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:39.344 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:39.674 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:40.045 17888 17888 D MainActivity: Dispatched com.dnkdialer.companion.ACTION_ACCEPT_CONNECTION for 151c044b-122f-43e6-aec1-02dec282216e
+09-21 15:27:40.346 17888 17888 D PhoneService: handleConnectionDecision: 151c044b-122f-43e6-aec1-02dec282216e accept=true
+09-21 15:27:41.753 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:42.385 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:44.422 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:44.708 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:46.731 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:47.011 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:47.550 17888 17888 D MainActivity: SAS confirm surfaced for 151c044b-122f-43e6-aec1-02dec282216e
+09-21 15:27:49.012 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:49.268 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:51.274 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:51.477 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:53.477 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:53.636 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:55.638 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:56.015 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:58.019 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:27:58.183 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:27:58.721 17888 17888 D MainActivity: SAS verdict for 151c044b-122f-43e6-aec1-02dec282216e: matched=true
+09-21 15:27:58.743 17888 17917 I PhoneService: E2E armed kid=9-JTfBfibljWdDqoeSHaXw epoch=7 mode=ON verified=true recipients=1 sas=63944
+09-21 15:27:58.752 17888 17917 D PhoneService: ACCEPT_PAIRING sent for pairingId=151c044b-122f-43e6-aec1-02dec282216e
+09-21 15:27:58.797 17888 17928 D PhoneService: handleCommand: PAIRING_ACTIVE, viaClient: true
+09-21 15:27:58.797 17888 17928 D PhoneService: PAIRING_ACTIVE ua=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 ip=127.0.0.1
+09-21 15:27:58.963 17888 17928 W PhoneService: backfill (PAIRING_ACTIVE): listener not connected
+09-21 15:27:59.607 17888 17928 D PhoneService: handleCommand: GET_SYNC_ESTIMATE, viaClient: true
+09-21 15:27:59.609 17888 18138 D PhoneService: Building sync estimate (since=null, until=null, types=[contacts, messages, callLogs])...
+09-21 15:27:59.843 17888 18138 D PhoneService: Estimate built: {contacts={total=0}, messages={total=0}, callLogs={total=0}}
+09-21 15:27:59.844 17888 18138 D PhoneService: sendResponse: type=SYNC_ESTIMATE, viaClient=true, clientOpen=true
+09-21 15:27:59.873 17888 18138 D PhoneService: Response sent via relay client
+09-21 15:28:00.265 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:00.710 17888 17888 D MainActivity: Status updated: Connected · Encrypted
+09-21 15:28:00.816 17888 17928 D PhoneService: handleCommand: GET_CONTACTS, viaClient: true
+09-21 15:28:00.817 17888 17928 D PhoneService: Getting contacts...
+09-21 15:28:00.895 17888 17928 D PhoneService: Got 0 contacts, sending in chunks...
+09-21 15:28:00.895 17888 17928 D PhoneService: sendResponse: type=CONTACTS_CHUNK, viaClient=true, clientOpen=true
+09-21 15:28:00.901 17888 17928 D PhoneService: Response sent via relay client
+09-21 15:28:01.113 17888 17928 D PhoneService: handleCommand: GET_MESSAGES, viaClient: true
+09-21 15:28:01.114 17888 17928 D PhoneService: Getting messages...
+09-21 15:28:01.167 17888 17928 D PhoneService: Got 0 messages (SMS+MMS, since=1787405281479, limit=2147483647, before=0, address=all), sending in chunks...
+09-21 15:28:01.167 17888 17928 D PhoneService: sendResponse: type=MESSAGES_CHUNK, viaClient=true, clientOpen=true
+09-21 15:28:01.175 17888 17928 D PhoneService: Response sent via relay client
+09-21 15:28:01.407 17888 17928 D PhoneService: handleCommand: GET_CALL_LOGS, viaClient: true
+09-21 15:28:01.408 17888 17928 D PhoneService: Getting call logs...
+09-21 15:28:01.426 17888 17928 D PhoneService: Got 0 call logs (since=1787405281479, limit=2147483647), sending in chunks...
+09-21 15:28:01.427 17888 17928 D PhoneService: sendResponse: type=CALL_LOGS_CHUNK, viaClient=true, clientOpen=true
+09-21 15:28:01.434 17888 17928 D PhoneService: Response sent via relay client
+09-21 15:28:02.713 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:02.971 17888 17888 D MainActivity: Status updated: Connected · Encrypted
+09-21 15:28:04.975 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:05.149 17888 17888 D MainActivity: Status updated: Connected · Encrypted
+09-21 15:28:07.152 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:07.292 17888 17888 D MainActivity: Status updated: Connected · Encrypted
+09-21 15:28:09.296 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:09.465 17888 17888 D MainActivity: Status updated: Connected · Encrypted
+09-21 15:28:11.467 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:11.635 17888 17928 D PhoneService: handleCommand: PAIRING_TERMINATED, viaClient: true
+09-21 15:28:11.635 17888 17928 D PhoneService: PAIRING_TERMINATED reason=room_reset
+09-21 15:28:11.714 17888 17888 D MainActivity: Status updated: Connected · Encrypted
+09-21 15:28:11.840 17888 17928 I PhoneService: E2E torn down (PAIRING_TERMINATED: room_reset): [SK dropped for kid=9-JTfBfibljWdDqoeSHaXw, device key kept — leaving a room is not losing a key]
+09-21 15:28:11.852 17888 17928 D PhoneService: handleCommand: ROOM_RESET, viaClient: true
+09-21 15:28:11.853 17888 17928 W PhoneService: Unknown command: ROOM_RESET
+09-21 15:28:11.856 17888 17928 D PhoneService: Disconnected from relay
+09-21 15:28:12.237 17888 17928 D PhoneService: Lobby auto-reconnect scheduled in 5000ms (reason=relay socket closed)
+09-21 15:28:13.718 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:13.960 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:28:16.034 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:16.380 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:28:17.295 17888 17888 D PhoneService: Lobby reconnect firing
+09-21 15:28:17.296 17888 17888 D PhoneService: Connecting to relay: wss://computercaller.com/relay/phone?token=<redacted>
+09-21 15:28:17.342 17888 17888 D MainActivity: Relay phase: CONNECTING
+09-21 15:28:17.395 17888 18146 D PhoneService: Connected to relay!
+09-21 15:28:17.642 17888 18146 D PhoneService: Connect watchdog cancelled
+09-21 15:28:17.653 17888 18146 D PhoneService: handleCommand: LOBBY_STATUS, viaClient: true
+09-21 15:28:17.659 17888 18146 W PhoneService: Unknown command: LOBBY_STATUS
+09-21 15:28:17.660 17888 18146 D PhoneService: handleCommand: HELLO, viaClient: true
+09-21 15:28:17.662 17888 18146 D PhoneService: HELLO received from: computercaller
+09-21 15:28:17.663 17888 18146 D PhoneService: sendResponse: type=NOTIFICATION_PERMISSION, viaClient=true, clientOpen=true
+09-21 15:28:17.667 17888 18146 D PhoneService: Response sent via relay client
+09-21 15:28:17.685 17888 18146 D PhoneService: sendResponse: type=SIM_LIST, viaClient=true, clientOpen=true
+09-21 15:28:17.693 17888 18146 D PhoneService: Response sent via relay client
+09-21 15:28:17.703 17888 17888 D MainActivity: Relay phase: OPEN
+09-21 15:28:17.704 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:17.968 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:28:18.458 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:18.677 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:28:20.770 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:21.100 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:28:23.189 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:23.486 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:28:25.565 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:25.912 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:28:27.992 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:28.232 17888 17888 D MainActivity: Status updated: Waiting for your computer
+09-21 15:28:30.284 17888 17888 D MainActivity: updateStatus - serviceBound: true, phoneService: true
+09-21 15:28:30.541 17888 17888 D MainActivity: Status updated: Waiting for your computer
