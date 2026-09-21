@@ -88,7 +88,7 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * a FLOOR, not a target: a run reporting fewer means assertions silently
  * stopped executing, which is the failure mode a bare "N/N passed" hides.
  */
-export const MIN_CHECKS = 74;
+export const MIN_CHECKS = 85;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -371,6 +371,12 @@ try {
     { from: '+4790000003', body: 'Thanks!', n: 1 },
   ];
   const seedUnread = async (page) => {
+    // __ccSend is defined by the stub socket's CONSTRUCTOR, so it does not
+    // exist until the page has actually opened the relay socket. A fixed
+    // settle() raced that: it held on the gate's warm dev server and lost on a
+    // cold production build, where the first route compile alone takes ~11 s.
+    // Wait for the fact instead of guessing a delay.
+    await page.waitForFunction(() => typeof window.__ccSend === 'function', null, { timeout: 20000 });
     await page.evaluate((seed) => {
       const base = Date.now() + 60_000;
       let i = 0;
@@ -396,24 +402,57 @@ try {
     await seedUnread(page);
     await settle(page, 800);
     // Into the Texts tab (SMSInterface). The nav item is the route's own.
-    await page.getByRole('button', { name: /^messages$/i }).first()
-      .click({ timeout: 5000 }).catch(() => {});
+    // Not swallowed: if this does not land we are still on the Dashboard and
+    // every assertion below is measuring the wrong surface.
+    let navErr = null;
+    try {
+      await page.getByRole('button', { name: /messages only/i }).first().click({ timeout: 8000 });
+    } catch (e) {
+      navErr = String(e).split('\n')[0].slice(0, 160);
+    }
+    check('(unread) the /app Messages tab is reachable', navErr === null, navErr || '');
     await settle(page, 1200);
 
-    const rows = page.locator('[data-cc-sms-row]');
-    const chips = page.locator('[data-cc-unread-chip]');
-    const before = await chips.count();
+    /*
+     * COUNT THE ROW, NOT THE CHIP.
+     *
+     * `[data-cc-unread-chip]` is on BOTH SMSInterface's chip and Dashboard's
+     * dot, so counting it cannot tell the two surfaces apart — and if the nav
+     * click below had silently failed, this block would have counted the
+     * DASHBOARD's three unread dots, clicked a row selector that does not
+     * exist there, and reported 3 -> 3 as though the feature were broken.
+     * `[data-cc-sms-row]` exists only in SMSInterface, so it is both the
+     * surface check and the count.
+     */
+    const smsRows = page.locator('[data-cc-sms-row]');
+    const unreadRows = page.locator('[data-cc-sms-row="unread"]');
+    check('(unread) the Texts tab actually opened (SMSInterface is on screen)',
+      (await smsRows.count()) >= 3, `${await smsRows.count()} rows`);
+
+    const before = await unreadRows.count();
     check('(unread) /app Texts shows a count chip on threads never opened here',
-      before >= 2, `${before} chips`);
+      before >= 2, `${before} unread rows`);
+    check('(unread) the chip renders inside those rows',
+      (await page.locator('[data-cc-sms-row="unread"] [data-cc-unread-chip]').count()) === before);
 
     // Open the third thread. It must go read; the other two must not.
-    await rows.filter({ hasText: 'Thanks!' }).first().click({ timeout: 5000 }).catch(() => {});
+    // NOT swallowed: a click that cannot land is a finding, and a silent catch
+    // here is what made the first failure read as a product bug.
+    const target = smsRows.filter({ hasText: 'Thanks!' }).first();
+    await target.scrollIntoViewIfNeeded();
+    let clickErr = null;
+    try {
+      await target.click({ timeout: 8000 });
+    } catch (e) {
+      clickErr = String(e).split('\n')[0].slice(0, 160);
+    }
+    check('(unread) the /app row accepted the click', clickErr === null, clickErr || '');
     await settle(page, 900);
-    const after = await chips.count();
+    const after = await unreadRows.count();
     check('(unread) opening a conversation clears ONLY that row',
       after === before - 1, `${before} -> ${after}`);
     check('(unread) the other threads stay unread after one is opened',
-      after >= 1, `${after} chips remain`);
+      after >= 1, `${after} unread rows remain`);
 
     await shot(page, 'a-app-texts-unread-1280');
     await ctx.close();

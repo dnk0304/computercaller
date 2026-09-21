@@ -71,6 +71,16 @@ export default function ExtensionLoginPage() {
     const queried =
       typeof window !== 'undefined'
       && new URLSearchParams(window.location.search).get('reason') === 'idle';
+    // WHY THE SUPPRESSION BELOW.
+    // The rule catches state that could have been DERIVED during render. This
+    // value cannot be: it comes from localStorage, which does not exist on the
+    // server, so reading it during render would make the server and the first
+    // client render disagree — a hydration mismatch on a sign-in page. The
+    // read is also a read-and-CLEAR, i.e. a mutation, which must not happen
+    // during render at all. Reading browser-only state after mount is the
+    // documented correct use of an effect. Empty deps, and the value can only
+    // ever go false -> true once, so there is no cascade for it to cause.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (stored === 'idle' || queried) setIdleSignOut(true);
   }, []);
 
