@@ -253,8 +253,9 @@ async function main() {
     && (await db.deviceKey.count({ where: { userId: victim.id } })) > 0);
 
   // ── 7. drift guard: the real service/routes match what was tested ───────
-  const svc = readFileSync(join(ROOT, 'lib', 'deviceKeys.ts'), 'utf8')
+  const stripComments = (t) => t
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const svc = stripComments(readFileSync(join(ROOT, 'lib', 'deviceKeys.ts'), 'utf8'));
   const auth = readFileSync(join(ROOT, 'lib', 'deviceKeyAuth.ts'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   check('the comment-stripper did not empty deviceKeys.ts', /registerDeviceKey/.test(svc));
@@ -286,6 +287,36 @@ async function main() {
       !/(body|input|params|searchParams)[^\n]*\buserId\b/.test(src)
       && !/\buserId\s*[:=]\s*(input|body)\./.test(src));
   }
+  // -- 7b. R-BH option B: the top-level `userId` echo, and where it may NOT
+  //    come from. That field is the phone's ONLY channel to its own account id,
+  //    and the account id is a SPEC 13.10.3 key-schedule input. A route that
+  //    ever sourced it from the request would let a caller choose the identity
+  //    a phone derives under -- B8, reached through a new door.
+  for (const route of ['register', 'list']) {
+    const src = stripComments(
+      readFileSync(join(ROOT, 'app', 'api', 'devicekeys', route, 'route.ts'), 'utf8'));
+    check(`${route}: the comment-stripper did not empty the route`, src.includes('resolveCaller'));
+    check(`${route}: the response carries a TOP-LEVEL userId, taken from the caller`,
+      src.includes('userId: caller.userId'));
+    // The response body is one object literal per route; the new field must sit
+    // in it directly, not nested inside the key row.
+    check(`${route}: the userId is a sibling of the payload, not a row field`,
+      /NextResponse\.json\(\{[^{}]*userId: caller\.userId/.test(src));
+    for (const forbidden of ['userId: input', 'userId: body', 'userId: req',
+      'userId: params', 'userId: searchParams', 'userId = input', 'userId = body']) {
+      check(`${route}: the userId is never taken from the request (${forbidden})`,
+        !src.includes(forbidden));
+    }
+  }
+  // ...and it is NOT smuggled into the row shape either: PUBLIC_SELECT decides
+  // which per-row fields are exposed, and R-BH does not widen it.
+  {
+    const sel = /PUBLIC_SELECT\s*=\s*\{([^}]*)\}/.exec(svc);
+    check('PUBLIC_SELECT is still findable (this scan is not vacuous)', Boolean(sel));
+    check('PUBLIC_SELECT still does not expose userId on a row',
+      sel ? !/\buserId\b/.test(sel[1]) : false);
+  }
+
   const registerSrc = readFileSync(join(ROOT, 'app', 'api', 'devicekeys', 'register', 'route.ts'), 'utf8');
   check('register returns 409 while a pairing handshake is in flight',
     /__relayPairingInFlight/.test(registerSrc) && /status:\s*409/.test(registerSrc));
