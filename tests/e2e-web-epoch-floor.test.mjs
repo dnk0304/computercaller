@@ -103,6 +103,16 @@ async function loadPlanted(source, tag) {
   return import(pathToFileURL(file).href);
 }
 const plantedFiles = [];
+// Registered ON THE EXIT EVENT, not written as a line at the bottom of the
+// file: the bottom of the file is exactly where control does NOT arrive when a
+// regression makes an assertion throw, and the first planted run of this suite
+// left six scratch files behind in the temp dir proving it. Reap what you
+// spawn, on the failure path too (WORKTREE_STANDARD rule 14).
+process.on('exit', () => {
+  for (const f of plantedFiles) {
+    try { rmSync(f, { force: true }); } catch { /* best effort */ }
+  }
+});
 
 /**
  * An admission that is EXPECTED to succeed.
@@ -736,11 +746,6 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
   });
   check('plant3: RED — a resume that writes is visible to the put counter', puts === 1,
     `puts=${puts}`);
-}
-
-// The plants are scratch files in the OS temp dir; reap them on every path.
-for (const f of plantedFiles) {
-  try { rmSync(f, { force: true }); } catch { /* best effort */ }
 }
 
 const total = passed + failed;
