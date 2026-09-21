@@ -687,6 +687,23 @@ async function main() {
           check('S1-a64-c  the pair seals ONLY AFTER BOTH confirmations (M-A6-4 second half)',
             !!armed2, armed2?.line || 'no "E2E armed" line even after both confirmations');
 
+          // M-A6-1 SECOND HALF — the Critical MUST. Snapshotted HERE, right
+          // after THIS pairing's confirmations, because the page console is
+          // cumulative across all three pairings in this scenario and a
+          // failure read at the end could belong to either deliberate
+          // teardown. Attribution is the whole value of the check.
+          const setupFailed = pageConsole.filter((l) => /e2e-setup-failed/.test(l));
+          check('S1-wrap   M-A6-1 second half: the PAGE opened the PHONE\'s wrap in mode ON',
+            setupFailed.length === 0,
+            setupFailed.length === 0
+              ? 'no e2e-setup-failed in the page console for this pairing'
+              : `page refused the accept block: ${setupFailed[setupFailed.length - 1]}`);
+          if (setupFailed.length) {
+            finding('A6-P61C-WRAP',
+              'the page cannot open the phone\'s wrap even in a mode-ON pair whose SAS matched on BOTH surfaces',
+              `${setupFailed[setupFailed.length - 1]} — the phone armed (${armed2?.line ?? 'no armed line'}) and both surfaces displayed ${r.sas.phone}, yet the accept block carries no wrap addressed to the page's own deviceId. So the SAS agreement is real while the page-side session setup still fails: M-A6-1's SECOND half (a live wrap-open in mode ON) is NOT met on this tip. This is the A6-P61B-8 family surfacing in mode ON, where P6.1b could not see it because the C-2 pin failed first. Recorded for Security, NOT patched (product frozen).`);
+          }
+
           // The relay prints what the BROWSER actually advertised. This is the
           // only place the recipient COUNT is visible from outside the page,
           // and it is the discriminator for whether the extension SW's key was
@@ -752,6 +769,18 @@ async function main() {
             check('S1-tear-page   "Doesn\'t match" on the PAGE runs the revoking teardown (pair not left usable)',
               refusedAttr > 0 || /re-pair|refus|unavailable/i.test(String(chipAfter ?? '')),
               `data-cc-sas-refused nodes=${refusedAttr} chip=${chipAfter}`);
+            // The FIRST pairing opened its wrap cleanly (S1-wrap above). If a
+            // setup failure shows up only AFTER a lobby reset, then it is the
+            // RE-PAIR that is broken, not the pairing — a distinction that is
+            // invisible to anyone reading the cumulative console at the end
+            // and attributing its worst line to the headline pair.
+            const failedNow = pageConsole.filter((l) => /e2e-setup-failed/.test(l));
+            if (failedNow.length > setupFailed.length) {
+              finding('A6-P61C-REPAIR-WRAP',
+                'the page fails to find its wrap when RE-pairing after a lobby reset, though the first pairing opened cleanly',
+                `zero e2e-setup-failed at the end of the first ON/ON pairing, ${failedNow.length} after the reset-and-re-pair cycles. Last line: ${failedNow[failedNow.length - 1]}. The phone re-wraps to a recipient the reloaded page no longer recognises as itself, which is the A6-P61B-8 family surfacing on the re-pair path specifically. Recorded for Security, NOT patched (product frozen after Step A).`);
+            }
+
             emit('S1b — refusals are load-bearing', 'Each side\'s "Doesn\'t match" exercised once against a real pair.', [
               { field: 'phone refused -> pair sealed?', phone: dPhone?.armed ? 'STILL ARMED' : 'no seal', page: null, sw: null, match: !dPhone?.armed },
               { field: 'page refused -> refused/torn-down surface', phone: null, page: `refusedNodes=${refusedAttr} chip=${chipAfter}`, sw: null, match: refusedAttr > 0 },
