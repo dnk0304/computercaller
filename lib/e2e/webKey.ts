@@ -921,6 +921,11 @@ export async function clearEpochFloors(opts: {
   store: WebKeyStore;
   key: WebDeviceKey;
 }): Promise<void> {
-  await opts.store.put(toRecord({ ...opts.key, epochFloors: {} }));
+  // BOTH maps. A kid that survived an unpair would be a kid the next floor at
+  // the same epoch could be resumed onto — the control this function exists to
+  // drop, dropped by half. (P2.6: caught by tests/e2e-web-epoch-floor.test.mjs
+  // on the first run, which is the argument for the clear having a test at all.)
+  await opts.store.put(toRecord({ ...opts.key, epochFloors: {}, epochFloorKids: {} }));
   opts.key.epochFloors = {};
+  opts.key.epochFloorKids = {};
 }
