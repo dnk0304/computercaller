@@ -36,6 +36,7 @@ import {
   IDLE_BROADCAST_CHANNEL,
   IDLE_LOGOUT_REASON,
 } from '@/lib/idleTimeout';
+import { idleVerdict } from '@/lib/idleClock';
 
 // Interaction signals that reset the idle clock. `mousemove`/`scroll`/`wheel`
 // are passive; the listeners are throttled downstream (heartbeat + broadcast),
@@ -67,7 +68,23 @@ type IdleBroadcast =
   | { type: 'activity'; ts: number }
   | { type: 'logout' };
 
-export function IdleTimeoutGuard() {
+export interface IdleTimeoutGuardProps {
+  /**
+   * What to do at cutoff INSTEAD of the logout fetch + hard navigation.
+   *
+   * Supplied only by the extension surface, which cannot navigate: it is an
+   * iframe the shell owns, so at cutoff it asks the SHELL to sign out and the
+   * shell replaces the frame. Omitted on /app, where the default path below is
+   * unchanged byte-for-byte.
+   *
+   * The teardown that runs BEFORE this (broadcast, phone disconnect,
+   * signOutEverywhere) is identical on both surfaces — an idle auto-logout is
+   * a sign-out on either one, and M-A5-1 does not care which surface asked.
+   */
+  onLogout?: () => void | Promise<void>;
+}
+
+export function IdleTimeoutGuard({ onLogout }: IdleTimeoutGuardProps = {}) {
   const phone = usePhone();
   const calls = (phone as unknown as { calls?: CallInfo[] }).calls;
   const phoneDisconnect = (phone as unknown as { disconnect?: () => void }).disconnect;
@@ -101,6 +118,7 @@ export function IdleTimeoutGuard() {
   const keepAliveRef = React.useRef<boolean>(phoneKeepsSessionAlive);
   const phoneDisconnectRef = React.useRef<typeof phoneDisconnect>(phoneDisconnect);
   const signOutEverywhereRef = React.useRef<typeof signOutEverywhere>(signOutEverywhere);
+  const onLogoutRef = React.useRef<typeof onLogout>(onLogout);
   const stayBtnRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -112,6 +130,7 @@ export function IdleTimeoutGuard() {
     keepAliveRef.current = phoneKeepsSessionAlive;
     phoneDisconnectRef.current = phoneDisconnect;
     signOutEverywhereRef.current = signOutEverywhere;
+    onLogoutRef.current = onLogout;
   });
 
   const sendHeartbeat = React.useCallback((force: boolean) => {
@@ -143,14 +162,32 @@ export function IdleTimeoutGuard() {
     // the hard navigation still happens on every path.
     void (signOutEverywhereRef.current?.('sign-out') ?? Promise.resolve())
       .catch(() => {})
-      .then(() =>
-        // Best-effort server logout (clears BOTH cookies), then a HARD
-        // navigation so proxy re-runs on a clean slate and the app tree
-        // unmounts.
-        fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {}),
-      )
-      .finally(() => {
+      .then(async () => {
+        // THE SURFACE DECIDES ONLY THE LAST STEP. Everything above this line —
+        // the broadcast, the phone disconnect, and the P2.3 revoking teardown —
+        // already ran identically for both callers, because an idle auto-logout
+        // revokes the same way wherever it happens.
+        const handoff = onLogoutRef.current;
+        if (handoff) {
+          // EXTENSION. No fetch and no navigation from here: the page is an
+          // iframe the shell owns. The handoff asks the shell to sign out, and
+          // the shell clears both credentials, tells the service worker (which
+          // drops the pair and the SK) and swaps this frame for the sign-in
+          // gate. Calling location.replace() here would navigate the IFRAME to
+          // a login page inside a surface that is still nominally signed in.
+          await handoff();
+          return;
+        }
+        // /app, unchanged: best-effort server logout (clears BOTH cookies),
+        // then a HARD navigation so proxy re-runs on a clean slate and the app
+        // tree unmounts.
+        await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
         window.location.replace(`/auth/login?reason=${IDLE_LOGOUT_REASON}`);
+      })
+      .catch(() => {
+        // A handoff that threw must not strand the user inside a surface they
+        // are being signed out of. There is nothing left to try on the
+        // extension path (no navigation exists), so this is the floor.
       });
   }, []);
 
@@ -222,12 +259,21 @@ export function IdleTimeoutGuard() {
         return;
       }
 
+      // The arithmetic lives in lib/idleClock.ts so the 4h boundary can be
+      // tested on a fake clock (tests/idle-clock.test.ts) instead of by waiting
+      // four hours. This tick decides nothing about WHERE the edges fall.
       const remaining = IDLE_TIMEOUT_MS - (now - lastActivityRef.current);
-      if (remaining <= 0) {
+      const verdict = idleVerdict({
+        now,
+        lastActivity: lastActivityRef.current,
+        keepAlive: false, // handled above; reaching here means not keepAlive
+        warnEnabled: IDLE_WARN_ENABLED,
+      });
+      if (verdict === 'logout') {
         doLogout(true);
         return;
       }
-      if (IDLE_WARN_ENABLED && remaining <= IDLE_WARN_BEFORE_MS) {
+      if (verdict === 'warn') {
         if (!showWarnRef.current) setShowWarn(true);
         setRemainingMs(remaining);
       } else if (showWarnRef.current) {

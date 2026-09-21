@@ -389,8 +389,7 @@ try {
     }, UNREAD_SEED);
   };
 
-  console.log('
--- UI-UNREAD: /app Texts --');
+  console.log('\n-- UI-UNREAD: /app Texts --');
   {
     const { ctx, page } = await open({ route: '/app', width: 1280, height: 900 });
     await settle(page, 1500);
@@ -420,8 +419,7 @@ try {
     await ctx.close();
   }
 
-  console.log('
--- UI-UNREAD: extension Texts, both themes --');
+  console.log('\n-- UI-UNREAD: extension Texts, both themes --');
   for (const theme of ['light', 'dark']) {
     const { ctx, page } = await open({ route: '/extension', width: 400, height: 900, theme });
     await settle(page, 1500);

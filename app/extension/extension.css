@@ -671,6 +671,15 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 :where([data-cc-theme=dark]) .cc-ext .cc-auth-note-error { color: #f87171; }
 :where([data-cc-theme=dark]) .cc-ext .cc-auth-note-ok { color: #34d399; }
 
+/* The idle sign-out line. NOT an error tone: nothing failed and the user has
+   nothing to fix — they were away, and the product did what it said it would.
+   So it takes the base note's neutral tonal surface, which already resolves
+   correctly in both themes off --cc-field / --cc-sec / --cc-hair, and adds
+   only the gap to the form beneath it. */
+.cc-ext .cc-auth-idle {
+  margin: 0 0 12px;
+}
+
 /* ---- Foot links. space-between rather than a middle-dot separator: two
        links do not need a glyph between them to be read as two links. ---- */
 .cc-ext .cc-auth-links {

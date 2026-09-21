@@ -1480,6 +1480,16 @@ if (WEB) {
     // device key gains an upgrade path that an unread tick can bump, and
     // nothing else in the gate would notice.
     ['thread-read-state', 'tests/thread-read-state.test.mjs', true],
+    // UI-AUTOLOGOUT. The 4 h idle boundary, on a fake clock. Named explicitly
+    // (the sweep matches only tests/e2e-*.test.mjs). Worth a gate row because
+    // the failure it guards is invisible by construction: a wrong comparison
+    // here does not crash, it just moves when people get signed out — and the
+    // only other way to notice is to wait four hours.
+    ['idle-clock', 'tests/idle-clock.test.ts', true],
+    // UI-AUTOLOGOUT. The reason line that survives the extension frame swap.
+    // Its read-and-CLEAR is the assertion that matters: a reason left behind
+    // labels the user's next manual sign-in as a timeout.
+    ['ext-signout-reason', 'tests/ext-signout-reason.test.ts', true],
     // GATE-JAVA-HOME. tools/lib/java-home.mjs decides whether the android
     // lane runs at all. Named explicitly (the sweep matches only
     // tests/e2e-*.test.mjs) because its silent-failure mode is the one this
