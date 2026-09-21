@@ -1421,7 +1421,15 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
                 className={clsx(
                   'max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm',
                   isSent
-                    ? 'rounded-tr-md bg-blue-600 text-white'
+                    // EXT-HIST (e) / FEATURE-SPEC 2. NOT `bg-blue-600`:
+                    // extension.css remaps every `.cc-ext .bg-blue-600` to the
+                    // brand gradient, which is what made this bubble dark
+                    // enough to force white text. That remap still drives the
+                    // primary buttons and the file-transfer bar and must stay,
+                    // so the bubble gets its own token pair instead. On /app,
+                    // where no remap exists, `cc-bubble-out` carries the same
+                    // light blue with the same near-black ink.
+                    ? 'cc-bubble-out rounded-tr-md'
                     : 'rounded-tl-md border border-slate-200 bg-white text-slate-800',
                 )}
               >

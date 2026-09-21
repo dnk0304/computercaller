@@ -54,6 +54,27 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-grad: linear-gradient(135deg, #35c977 0%, #22a89a 55%, #1e8fb2 100%);
   --cc-ring: rgba(53, 201, 119, 0.45);
 
+  /* ---- outgoing message bubble (EXT-HIST / FEATURE-SPEC 2) ----
+     Dennis 2026-09-21: "The gradient color for outgoing messages is too dark.
+     Change it into a lighter blue so we can make the text black instead of
+     white for outgoing messages."
+
+     The bubble used to paint `bg-blue-600`, which the remap ~200 lines below
+     turns into the brand gradient for EVERY blue-600 in this panel. That remap
+     is correct for the primary buttons and the file-transfer bar and stays; it
+     was only ever wrong on a bubble, where a saturated gradient behind body
+     copy is a background pretending to be a surface. The bubble therefore gets
+     its own pair of tokens and stops answering to the remap at all.
+
+     Measured (WCAG 2.x relative luminance, ink on fill):
+       light  #0b1220 on #cfe6ff = 14.64:1
+       dark   #0b1220 on #9cc8ff = 10.80:1
+     Both clear AA (4.5:1) with an order of magnitude to spare, and clear AAA
+     (7:1) as well, so the bubble stays legible at the 0.8x density this panel
+     runs and at the Small type step. */
+  --cc-bubble-out: #cfe6ff;
+  --cc-bubble-out-ink: #0b1220;
+
   /* ---- radius ladder — locked; no other values on this surface ---- */
   --r-pill: 999px;
   --r-chip: 10px;
@@ -111,6 +132,15 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      readable and stay recognisably the brand blue. Both clear 4.5:1. */
   --cc-wordmark-1: #fafafa;
   --cc-wordmark-2: #5fb0e8;
+
+  /* Outgoing bubble, dark. A LIGHTER blue than light mode, not a darker one:
+     the ink stays the same near-black in both themes (spec default), so the
+     fill has to carry enough luminance to hold it at 4.5:1 — it measures
+     10.80:1. See the résumé for the one judgement call flagged for Dennis:
+     black-on-light-blue is bright against a #0b0b0d panel, and a dark-only
+     alternative is offered there rather than chosen here. */
+  --cc-bubble-out: #9cc8ff;
+  --cc-bubble-out-ink: #0b1220;
 }
 
 /* ===========================================================================
@@ -1206,6 +1236,27 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   background-color: transparent;
   filter: brightness(1.06);
 }
+
+/* ---------------------------------------------------------------------------
+   OUTGOING BUBBLE — EXT-HIST / FEATURE-SPEC 2
+   ---------------------------------------------------------------------------
+   Deliberately NOT scoped to `.cc-ext`. `components/PhoneModeShell.tsx` is one
+   component rendered on two surfaces (the extension panel and /app's Phone
+   Mode), so a `.cc-ext`-only rule would leave the /app copy of the very same
+   bubble with no background at all. The fallbacks in the `var()` calls are what
+   paint it there; inside `.cc-ext` the tokens above win, and the dark block
+   swaps them. The web app's OWN SMS bubble — `components/Dashboard.tsx`, plain
+   Tailwind `bg-blue-600 text-white` — does not use this class and is untouched.
+
+   `background-image: none` is load-bearing: it is what makes this bubble immune
+   to the gradient remap above, whatever order the two rules end up in.
+   --------------------------------------------------------------------------- */
+.cc-bubble-out {
+  background-color: var(--cc-bubble-out, #cfe6ff);
+  background-image: none;
+  color: var(--cc-bubble-out-ink, #0b1220);
+}
+
 /* ---------------------------------------------------------------------------
    LOAD-MORE — EXT-HIST / FEATURE-SPEC 1
    ---------------------------------------------------------------------------
