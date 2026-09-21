@@ -794,6 +794,12 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      L0 and vanishes on it (1.11:1); this is the one boundary in the panel whose
      two sides are far enough apart to need its own value. */
   --cc-hair-hdr: #c3c5cc;
+  /* Unread chip. NOT `bg-blue-600`: that class is remapped to the brand
+     gradient inside .cc-ext, and §0 trait 3 keeps the gradient on exactly
+     three objects (the mark, the avatar, the one primary action). A count
+     chip is none of those. White digits on this fill measure 5.17:1. */
+  --cc-unread: #2563eb;
+  --cc-unread-ink: #ffffff;
 
   --cc-page: var(--cc-l2);
   --cc-card: var(--cc-l3);
@@ -819,6 +825,11 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-hair-card: #303036;
   /* One step lighter again: #303036 is only 1.11:1 on the new L0. */
   --cc-hair-hdr: #3a3b41;
+  /* Dark inverts the chip rather than darkening the fill: a blue dark enough
+     to carry white digits disappears into an L3 card, so the fill goes light
+     and the digits go dark. 7.36:1 digits-on-fill, 6.31:1 fill-on-card. */
+  --cc-unread: #60a5fa;
+  --cc-unread-ink: #0b1220;
   --cc-zebra: #1c1c20;
   /* Bare-on-band ink. The popout/dock glyphs and the plain EncryptionChip are
      the only things painted DIRECTLY on L0 (everything else in the row sits on
@@ -895,6 +906,15 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    nothing is lost that is not said twice elsewhere. */
 @media (max-width: 379px) {
   .cc-ext .cc-ext-wordmark { display: none; }
+}
+
+/* --- the unread count chip ------------------------------------------------ */
+/* Round, 20px, one or two glyphs ("9+" above nine). aria-hidden by
+   construction — the row's accessible name carries ", N unread" as real text,
+   so the chip is decoration and a screen reader never reads a bare digit. */
+.cc-ext .cc-unread-chip {
+  background: var(--cc-unread);
+  color: var(--cc-unread-ink);
 }
 
 /* --- L1: tab strip, toolbars, composer, usage strip ---------------------- */

@@ -94,6 +94,11 @@ import {
   findContactByNumber,
 } from '@/lib/normalizeNumber';
 
+import {
+  useThreadReadState,
+  useSessionUserId,
+  threadKeyFor,
+} from '@/hooks/useThreadReadState';
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
 }
@@ -631,6 +636,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // Thread list (column 2) is always visible regardless of this value.
   const [selectedThread, setSelectedThread] = useState<string | null>(null);
 
+  // Per-thread "opened on this computer" state. Shared with /app Texts and the
+  // extension panel — same database, same keys.
+  const sessionUserId = useSessionUserId();
+  const readState = useThreadReadState(sessionUserId);
+
   // Search query for the thread list — filters by contact name or phone number.
   const [threadSearch, setThreadSearch] = useState<string>('');
 
@@ -815,19 +825,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     const result = new Map<string, Thread>();
     for (const m of deferredMessages) {
       const key = normalizeNumber(m.address) || m.address || 'Unknown';
-      if (!result.has(key)) {
-        result.set(key, {
+      let entry = result.get(key);
+      if (!entry) {
+        entry = {
           address: m.address,
           contact: findContactFast(m.address),
           lastMessage: m,
-          // unreadCount: 1 if newest message is inbox (unread indicator),
-          // 0 otherwise. Simplified from counting all unread — accurate enough
-          // for the thread list dot indicator and the header badge.
-          unreadCount: m.type === 'inbox' ? 1 : 0,
-        });
+          unreadCount: 0,
+        };
+        result.set(key, entry);
       }
-      // Once we've seen all unique threads, every subsequent message is a
-      // duplicate address — no more useful work to do.
+      // REAL counts, replacing `m.type === 'inbox' ? 1 : 0` — a newest-is-inbox
+      // heuristic that called every thread whose last message came in "1
+      // unread" forever, including ones the user had just read. The loop
+      // already visited every message, so counting properly costs one extra
+      // comparison per row rather than a second pass: isUnread is a compare
+      // against this thread's opened marker, not a scan.
+      if (m.type === 'inbox' && readState.isUnread(threadKeyFor(m.address), m.date)) {
+        entry.unreadCount += 1;
+      }
     }
     return Array.from(result.values()).sort(
       (a, b) => b.lastMessage.date - a.lastMessage.date
@@ -835,7 +851,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // findContactFast intentionally omitted from deps — it's an inline function (new ref
   // every render). Including it defeats the memo. contactByTail covers the same dependency.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deferredMessages, contactByTail]);
+  }, [deferredMessages, contactByTail, readState]);
 
   const totalUnread = useMemo(
     () => threads.reduce((sum, t) => sum + t.unreadCount, 0),
@@ -1090,11 +1106,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   );
 
   const handleOpenThread = useCallback((address: string) => {
+    readState.markOpened(threadKeyFor(address));
     setSelectedThread(address);
     // Selecting a thread always exits the new-message compose flow — they're
     // mutually exclusive views in column 3.
     setComposingNew(false);
-  }, []);
+  }, [readState]);
 
   // handleSmsFromQuickDial removed 2026-05-22 — the Quick Dial header SMS
   // button was deleted and ActiveCallCard's onSendSms now inlines the same
@@ -1118,12 +1135,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     const trimmed = address.trim();
     if (!trimmed) return;
     // Switch directly to this thread — same as clicking an existing contact
+    readState.markOpened(threadKeyFor(trimmed));
     setSelectedThread(trimmed);
     setComposingNew(false);
     setNewMsgRecipient('');
     // Fetch history for this contact in the background
     if (getContactMessages) getContactMessages(trimmed);
-  }, [getContactMessages]);
+  }, [getContactMessages, readState]);
 
   const handleSendToNew = useCallback(() => {
     const recipient = newMsgRecipient.trim();
@@ -1135,11 +1153,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     sendSms(recipient, body);
     // Drop the user straight into the conversation they just started — much
     // less jarring than bouncing back to the empty state.
+    readState.markOpened(threadKeyFor(recipient));
     setSelectedThread(recipient);
     setComposingNew(false);
     setNewMsgRecipient('');
     setNewMsgBody('');
-  }, [newMsgRecipient, newMsgBody, sendSms, guard]);
+  }, [newMsgRecipient, newMsgBody, sendSms, guard, readState]);
 
   const handleFavoriteClick = useCallback(
     (contact: Contact) => {
@@ -1906,23 +1925,35 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                       <div className="flex-1 min-w-0">
                         <div className="flex items-baseline justify-between gap-2">
                           <p className={clsx(
-                            'font-semibold text-sm truncate',
+                            'text-sm truncate',
+                            thread.unreadCount > 0 ? 'font-bold' : 'font-semibold',
                             isSelected ? 'text-blue-900' : 'text-slate-800'
                           )}>
                             {displayName}
+                            {thread.unreadCount > 0 && (
+                              <span className="sr-only">, {thread.unreadCount} unread</span>
+                            )}
                           </p>
                           <span className="text-[11px] text-slate-600 font-semibold flex-shrink-0">
                             {formatCallTime(thread.lastMessage.date, now)}
                           </span>
                         </div>
-                        <p className="text-xs text-slate-500 truncate whitespace-pre-wrap">
+                        <p className={clsx(
+                          'text-xs truncate whitespace-pre-wrap',
+                          thread.unreadCount > 0 ? 'text-slate-800' : 'text-slate-500'
+                        )}>
                           {preview || ' '}
                         </p>
                       </div>
+                      {/* The existing indicator, now driven by a real count.
+                          aria-label moved off it and into the row's own name as
+                          sr-only text: a decorative dot carrying the only
+                          statement of "unread" meant the row's accessible name
+                          did not include it. */}
                       {thread.unreadCount > 0 && (
                         <span
+                          aria-hidden="true"
                           className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"
-                          aria-label={`${thread.unreadCount} unread`}
                         />
                       )}
                     </button>

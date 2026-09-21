@@ -24,6 +24,7 @@ import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 import { useE2e } from './useE2e';
 // P2.3 (a)+(b): the ORDER of a revoking teardown, pure and node-testable.
 import { runRevokingTeardown } from '@/lib/e2e/signOutEverywhere';
+import { clearThreadReadStateForCurrentUser } from '@/hooks/useThreadReadState';
 import { useFileTransfer } from './useFileTransfer';
 import type { FileTransferBridgeSlot } from './useFileTransfer';
 import { isFileFrameType } from '@/lib/fileTransfer/frames.ts';
@@ -3576,6 +3577,12 @@ export function usePhoneBridge() {
       },
       { reason, signOut: true },
     );
+    // Per-thread "opened here" markers go with the account. Sign-out is one of
+    // exactly TWO acts that clear them (the other is Forget below) — NOT
+    // PAIRING_TERMINATED, RESET_ROOM, a relay drop, a reconnect or a re-sync.
+    // Those wipe the message caches, and when the caches refill the threads the
+    // user already opened must still look opened.
+    clearThreadReadStateForCurrentUser();
   }, [resetRoom]);
 
   // "Forget this computer" (P2.3 (b)). NOT a sign-out — the user stays logged
@@ -3592,6 +3599,9 @@ export function usePhoneBridge() {
       },
       { reason: 'user-forget', signOut: false },
     );
+    // The second (and last) clearing act. "Forget this computer" means exactly
+    // that: what this browser remembered about the account stops existing here.
+    clearThreadReadStateForCurrentUser();
   }, [resetRoom]);
 
   /**

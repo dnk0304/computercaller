@@ -83,3 +83,24 @@ export declare function ccFtWrite(
   storeName: string,
   fn: (store: IDBObjectStore) => void,
 ): Promise<void>;
+
+export declare const CC_READ_DB_NAME: 'cc-read';
+export declare const CC_READ_DB_VERSION: number;
+export declare const CC_READ_STORE_THREAD_OPENED: 'threadOpened';
+export declare const CC_READ_STORES: readonly string[];
+
+export declare function openCcReadDb(
+  factory?: IDBFactory | undefined,
+): Promise<IDBDatabase>;
+
+export declare function ccReadRead<T>(
+  factory: IDBFactory | undefined,
+  storeName: string,
+  fn: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T>;
+
+export declare function ccReadWrite(
+  factory: IDBFactory | undefined,
+  storeName: string,
+  fn: (store: IDBObjectStore) => void,
+): Promise<void>;
