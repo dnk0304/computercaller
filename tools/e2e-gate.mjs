@@ -1822,7 +1822,26 @@ if (ANDROID) {
     // filter matching nothing, an instrumentation that never installed, a suite
     // renamed out from under its own gate step — all three exit 0. The
     // MIN_CHECKS floors turn "0 tests ran" into a FAIL, structurally.
-    if (PHASE === 'P4.2') {
+    // E2E-P6.1b FINDING + FIX. This was `PHASE === 'P4.2'` — an EQUALITY test
+    // where every other android step uses a phase LIST. P6.1's brief requires
+    // this sweep to show android:testDebugUnitTest (>=200) and
+    // android:instrumented-A5 (>=8), and under the equality guard neither step
+    // was dispatched at --phase P6.1: no step, no counts, no MIN_CHECKS, and
+    // the gate printed PASS 107/107 (gate-P6.1-815bba5.json). The floors at
+    // :464-465 cannot rescue that — MIN_CHECKS grades a step that RAN, and is
+    // silent about one that was never created. That is precisely the "0 tests
+    // ran wearing a green hat" shape the comment at :1822-1830 warns about,
+    // one guard below where it is written.
+    //
+    // NOT the known P7/P8 second-table item the brief set aside: that table
+    // (:1789) already lists P6.1 and did run android:SasVectorsTest. This is a
+    // separate guard with a separate defect.
+    //
+    // P6.1 only is added here. P4/P5B/P6 are deliberately NOT: their briefs
+    // never declared these floors, the A5 classes post-date P4/P5B/P6, and
+    // widening a gate to phases that never agreed to it turns other lanes'
+    // recorded PASSes into retro-active failures — Ken's call, not this lane's.
+    if (['P4.2', 'P6.1'].includes(PHASE)) {
       const A5_CLASSES = [
         'com.dnkdialer.companion.E2eForwardJumpVectorsTest',
         'com.dnkdialer.companion.E2eForwardJumpObservabilityTest',
