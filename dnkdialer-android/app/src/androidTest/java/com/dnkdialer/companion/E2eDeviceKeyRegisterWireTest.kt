@@ -112,7 +112,7 @@ class E2eDeviceKeyRegisterWireTest {
     fun register_sends_a_Bearer_and_no_Origin() {
         status = "200 OK"
         payload = """{"key":{"deviceId":"d1","kind":"phone","publicKey":"AAAA",""" +
-            """"label":null,"revokedAt":null},"rotated":false}"""
+            """"label":null,"revokedAt":null},"rotated":false,"userId":"u_wire1"}"""
 
         val result = E2eDeviceKeyClient.register(
             phoneToken = "tok-abc",
@@ -138,6 +138,42 @@ class E2eDeviceKeyRegisterWireTest {
         assertTrue(bodies.single().contains("\"kind\":\"phone\""))
         assertTrue("a body userId would be ignored — do not send one",
             !bodies.single().contains("userId"))
+
+        // R-BH: the account id comes back on the RESPONSE, from the top level,
+        // and this is the phone's only channel to it. Parsed off real HTTP
+        // rather than a hand-built JSONObject, because "the server says it" is
+        // the claim, not "the parser can parse it".
+        assertEquals(
+            "u_wire1",
+            (result as E2eDeviceKeyClient.Result.Ok).value.userId,
+        )
+    }
+
+    /**
+     * R-BH, the fail-closed half: a deployment that does not send the field
+     * must read as NULL, never as `""`. An empty account id is the exact value
+     * that produced A6-P61B-8 — the phone sealing every wrap under a context
+     * the page cannot even represent — so the parser must never manufacture
+     * one, and the refusal happens upstream where it can be seen.
+     */
+    @Test
+    fun a_register_response_without_a_userId_parses_as_null_not_empty() {
+        status = "200 OK"
+        payload = """{"key":{"deviceId":"d1","kind":"phone","publicKey":"AAAA",""" +
+            """"label":null,"revokedAt":null},"rotated":false}"""
+
+        val result = E2eDeviceKeyClient.register(
+            phoneToken = "tok-abc",
+            deviceId = "d1",
+            publicKeySec1 = ByteArray(65).also { it[0] = 4 },
+        )
+
+        assertTrue(served.await(10, TimeUnit.SECONDS))
+        assertTrue("result was $result", result is E2eDeviceKeyClient.Result.Ok)
+        assertNull(
+            "an absent userId is null, never the empty string",
+            (result as E2eDeviceKeyClient.Result.Ok).value.userId,
+        )
     }
 
     @Test

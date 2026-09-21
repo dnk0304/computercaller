@@ -169,10 +169,10 @@ object E2eDeviceKeyRegistrar {
         deviceId: String,
         publicKeySec1: ByteArray,
         label: String? = null,
-        lister: (String) -> E2eDeviceKeyClient.Result<List<E2eDeviceKeyClient.DeviceKeyRow>> =
+        lister: (String) -> E2eDeviceKeyClient.Result<E2eDeviceKeyClient.Listing> =
             { E2eDeviceKeyClient.list(it) },
         registrar: (String, String, ByteArray, String?)
-        -> E2eDeviceKeyClient.Result<Pair<E2eDeviceKeyClient.DeviceKeyRow, Boolean>> =
+        -> E2eDeviceKeyClient.Result<E2eDeviceKeyClient.Registration> =
             { t, d, k, l -> E2eDeviceKeyClient.register(t, d, k, l) },
     ): Outcome {
         if (phoneToken.isNullOrBlank()) {
@@ -186,20 +186,26 @@ object E2eDeviceKeyRegistrar {
 
         val listed = lister(phoneToken)
         if (listed !is E2eDeviceKeyClient.Result.Ok) {
-            // Pass the real result through. The pin must see "unreachable" as
+            // Pass the real failure through. The pin must see "unreachable" as
             // unreachable, not as "no phone row" — those fail differently.
-            return Outcome(Status.DEFERRED, "registry list failed: $listed", listed)
+            return Outcome(Status.DEFERRED, "registry list failed: $listed", failureAs(listed))
         }
+        // R-BH: one round trip now yields two things — the rows the pin reads,
+        // and the account id the key schedule needs. They are separated here so
+        // that everything downstream keeps the shape it had.
+        val rows = listed.value.keys
+        val listedRows = E2eDeviceKeyClient.Result.Ok(rows)
 
-        val decided = plan(listed.value, deviceId, publicKeySec1)
+        val decided = plan(rows, deviceId, publicKeySec1)
         if (decided is Plan.UpToDate) {
-            return Outcome(Status.ALREADY_LIVE, "a live row already holds this key", listed)
+            return Outcome(Status.ALREADY_LIVE, "a live row already holds this key", listedRows)
         }
         val displacing = (decided as Plan.Register).displacing
 
         return when (val written = registrar(phoneToken, deviceId, publicKeySec1, label)) {
             is E2eDeviceKeyClient.Result.Ok -> {
-                val (row, serverRotated) = written.value
+                val row = written.value.key
+                val serverRotated = written.value.rotated
                 val status = if (displacing != null || serverRotated) {
                     Status.ROTATED
                 } else {
@@ -212,28 +218,45 @@ object E2eDeviceKeyRegistrar {
                 } else {
                     "registered ${fingerprint(row.publicKey)} for deviceId=$deviceId"
                 }
-                Outcome(status, detail, E2eDeviceKeyClient.Result.Ok(merge(listed.value, row)))
+                Outcome(status, detail, E2eDeviceKeyClient.Result.Ok(merge(rows, row)))
             }
 
             E2eDeviceKeyClient.Result.PairingInFlight -> Outcome(
                 Status.DEFERRED,
                 "409 pairing_in_flight — a handshake is mid-flight; retrying on the " +
                     "next app start or Accept",
-                listed,
+                listedRows,
             )
 
             is E2eDeviceKeyClient.Result.Forbidden -> Outcome(
                 Status.DEFERRED,
                 "registry refused the write (${written.status}): ${written.message}",
-                listed,
+                listedRows,
             )
 
             is E2eDeviceKeyClient.Result.Unavailable -> Outcome(
                 Status.DEFERRED,
                 "registry unavailable for the write: ${written.reason}",
-                listed,
+                listedRows,
             )
         }
+    }
+
+    /**
+     * Re-type a NON-Ok [E2eDeviceKeyClient.Result]. Every failure arm carries
+     * no value and is a `Result<Nothing>`, so this is total and lossless — it
+     * exists only because the lister now yields a [E2eDeviceKeyClient.Listing]
+     * while [Outcome.registry] still yields rows, and the §13.6 pin must keep
+     * seeing the ORIGINAL failure rather than a flattened one.
+     */
+    private fun <T> failureAs(
+        r: E2eDeviceKeyClient.Result<*>,
+    ): E2eDeviceKeyClient.Result<T> = when (r) {
+        is E2eDeviceKeyClient.Result.Ok ->
+            throw IllegalArgumentException("failureAs is for failures only")
+        E2eDeviceKeyClient.Result.PairingInFlight -> E2eDeviceKeyClient.Result.PairingInFlight
+        is E2eDeviceKeyClient.Result.Forbidden -> r
+        is E2eDeviceKeyClient.Result.Unavailable -> r
     }
 
     /**

@@ -12,10 +12,25 @@ import java.net.URL
  * Talks to P1's routes (merged at `96042d0`):
  * ```
  *   POST /api/devicekeys/register  {deviceId, kind, publicKey, label?}
- *                                  -> {key, rotated}      409 pairing_in_flight
- *   GET  /api/devicekeys/list      -> {keys: [...]}
+ *                                  -> {key, rotated, userId}  409 pairing_in_flight
+ *   GET  /api/devicekeys/list      -> {keys: [...], userId}
  *   POST /api/devicekeys/revoke    {deviceId} -> {key, alreadyRevoked}
  * ```
+ *
+ * ## The top-level `userId` (R-BH, 2026-09-21)
+ *
+ * `list` and `register` echo the account id the server resolved OUR bearer to.
+ * It is the same `User.id` string `/api/auth/me` hands the browser, which is
+ * the entire reason it is here: SPEC 13.10.3 binds the account id into every
+ * pair context, and before this the phone had no channel to learn its own, so
+ * it derived under `""` and nothing it sealed could open on the page.
+ *
+ * It is read from the TOP LEVEL, never from a key row — the row shape
+ * (`PUBLIC_SELECT`) is unchanged and carries no owner field. It is nullable
+ * here rather than defaulted, because "the server did not say" and "the server
+ * said something" must stay distinguishable all the way up to [TokenStore]:
+ * an empty string is the value that caused this bug, and it will never be
+ * manufactured by this parser.
  *
  * ## Auth: the phone's bearer, and why no CSRF header is sent
  *
@@ -81,6 +96,19 @@ object E2eDeviceKeyClient {
     }
 
     /**
+     * A `list` response: the caller's rows, plus the account id the server
+     * resolved the bearer to. [userId] is null when the server did not say —
+     * an older deployment, or a field that failed to parse.
+     */
+    data class Listing(val keys: List<DeviceKeyRow>, val userId: String?)
+
+    /**
+     * A `register` response. [rotated] is the server's own N-4 verdict;
+     * [userId] is as in [Listing].
+     */
+    data class Registration(val key: DeviceKeyRow, val rotated: Boolean, val userId: String?)
+
+    /**
      * Every outcome, as a type. A boolean or a nullable would collapse
      * "the registry says no" into "the registry is unreachable", and §13.6
      * gives those two OPPOSITE handling: a mismatch always refuses, while an
@@ -105,7 +133,7 @@ object E2eDeviceKeyClient {
         deviceId: String,
         publicKeySec1: ByteArray,
         label: String? = null,
-    ): Result<Pair<DeviceKeyRow, Boolean>> {
+    ): Result<Registration> {
         val body = JSONObject().apply {
             put("deviceId", deviceId)
             put("kind", "phone")
@@ -116,17 +144,28 @@ object E2eDeviceKeyClient {
         }.toString()
 
         return request("POST", "$base/register", phoneToken, body) { json ->
-            val row = parseRow(json.getJSONObject("key"))
-            row to json.optBoolean("rotated", false)
+            Registration(
+                key = parseRow(json.getJSONObject("key")),
+                rotated = json.optBoolean("rotated", false),
+                userId = parseUserId(json),
+            )
         }
     }
 
-    /** The caller's OWN rows. There is no userId parameter, by design. Blocking. */
-    fun list(phoneToken: String, includeRevoked: Boolean = true): Result<List<DeviceKeyRow>> {
+    /**
+     * The caller's OWN rows, plus the caller's own account id. There is still
+     * no userId PARAMETER — that is the security property, and the response
+     * field does not change it: nothing the caller sends can vary either one.
+     * Blocking.
+     */
+    fun list(phoneToken: String, includeRevoked: Boolean = true): Result<Listing> {
         val url = "$base/list" + if (includeRevoked) "" else "?includeRevoked=0"
         return request("GET", url, phoneToken, null) { json ->
             val arr: JSONArray = json.optJSONArray("keys") ?: JSONArray()
-            (0 until arr.length()).map { parseRow(arr.getJSONObject(it)) }
+            Listing(
+                keys = (0 until arr.length()).map { parseRow(arr.getJSONObject(it)) },
+                userId = parseUserId(json),
+            )
         }
     }
 
@@ -139,6 +178,15 @@ object E2eDeviceKeyClient {
     }
 
     // ------------------------------------------------------------ internal
+
+    /**
+     * The TOP-LEVEL `userId`, or null. Never `""`: a zero-length account id is
+     * precisely the value that produced A6-P61B-8, so it is folded into "the
+     * server did not say" here and refused fail-closed further up rather than
+     * being carried into a key schedule.
+     */
+    private fun parseUserId(o: JSONObject): String? =
+        if (o.isNull("userId")) null else o.optString("userId", "").takeIf { it.isNotEmpty() }
 
     private fun parseRow(o: JSONObject) = DeviceKeyRow(
         deviceId = o.optString("deviceId", ""),

@@ -51,18 +51,52 @@ class E2eDeviceKeyRegistrarTest {
         val listed: E2eDeviceKeyClient.Result<List<E2eDeviceKeyClient.DeviceKeyRow>>,
         val written: E2eDeviceKeyClient.Result<Pair<E2eDeviceKeyClient.DeviceKeyRow, Boolean>> =
             E2eDeviceKeyClient.Result.Unavailable("the test did not expect a write"),
+        val listedUserId: String? = "acct-1",
+        val writtenUserId: String? = "acct-1",
     ) {
         var lists = 0
         var writes = 0
         var wroteKey: ByteArray? = null
         var wroteLabel: String? = null
 
-        val lister: (String) -> E2eDeviceKeyClient.Result<List<E2eDeviceKeyClient.DeviceKeyRow>> =
-            { lists++; listed }
+        /**
+         * R-BH: the wire now yields rows AND the caller's account id. The
+         * fixture keeps taking rows, and re-wraps them here, so that every
+         * existing case reads exactly as it did and only the cases that care
+         * about the account id mention it.
+         */
+        val lister: (String) -> E2eDeviceKeyClient.Result<E2eDeviceKeyClient.Listing> =
+            {
+                lists++
+                when (listed) {
+                    is E2eDeviceKeyClient.Result.Ok ->
+                        E2eDeviceKeyClient.Result.Ok(
+                            E2eDeviceKeyClient.Listing(listed.value, listedUserId)
+                        )
+                    E2eDeviceKeyClient.Result.PairingInFlight ->
+                        E2eDeviceKeyClient.Result.PairingInFlight
+                    is E2eDeviceKeyClient.Result.Forbidden -> listed
+                    is E2eDeviceKeyClient.Result.Unavailable -> listed
+                }
+            }
 
         val registrar: (String, String, ByteArray, String?)
-        -> E2eDeviceKeyClient.Result<Pair<E2eDeviceKeyClient.DeviceKeyRow, Boolean>> =
-            { _, _, k, l -> writes++; wroteKey = k; wroteLabel = l; written }
+        -> E2eDeviceKeyClient.Result<E2eDeviceKeyClient.Registration> =
+            { _, _, k, l ->
+                writes++; wroteKey = k; wroteLabel = l
+                when (written) {
+                    is E2eDeviceKeyClient.Result.Ok ->
+                        E2eDeviceKeyClient.Result.Ok(
+                            E2eDeviceKeyClient.Registration(
+                                written.value.first, written.value.second, writtenUserId
+                            )
+                        )
+                    E2eDeviceKeyClient.Result.PairingInFlight ->
+                        E2eDeviceKeyClient.Result.PairingInFlight
+                    is E2eDeviceKeyClient.Result.Forbidden -> written
+                    is E2eDeviceKeyClient.Result.Unavailable -> written
+                }
+            }
     }
 
     private fun run(
@@ -267,7 +301,16 @@ class E2eDeviceKeyRegistrarTest {
         assertFalse(out.wrote)
         // The listing still stands; it just has no row for us yet, and the pin
         // is entitled to see that truthfully.
-        assertSame(listed, out.registry)
+        //
+        // assertEquals, not assertSame, since R-BH: the lister now returns a
+        // Listing (rows + the caller's account id) and the registrar splits it,
+        // so the rows reach the pin in a NEW Ok wrapper. Identity stopped being
+        // the property worth asserting; equality is, and it is the one the
+        // comment above was always really about. The UNREACHABLE case above
+        // still asserts identity, because there the whole Result must travel
+        // untouched and nothing rebuilds it.
+        assertEquals(E2eDeviceKeyClient.Result.Ok(emptyList<E2eDeviceKeyClient.DeviceKeyRow>()),
+            out.registry)
     }
 
     @Test
