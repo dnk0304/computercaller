@@ -123,6 +123,21 @@ for (const [label, sw, want] of [
   const block = buildRequestBlock({ localMode: 'on', webKey: WEB_KEY, sw: UNKNOWN });
   check('an unanswered bridge never puts a guessed key on the wire',
     !JSON.stringify(block).includes(PUB_SW));
+  /**
+   * The STATUS is the gate, not the presence of a recipient object. readSwKey
+   * never produces this shape — a recipient alongside a non-`present` status —
+   * and that is exactly why it is tested here: the guard that keeps the two in
+   * step is one `&&` in buildRequestBlock, and a refactor that reads the
+   * recipient alone would put an unconfirmed key in the SAS transcript while
+   * every other assertion in this file stayed green.
+   */
+  const LIAR = { status: 'unknown', recipient: PRESENT.recipient, pairingId: null };
+  const lied = buildRequestBlock({ localMode: 'on', webKey: WEB_KEY, sw: LIAR });
+  eq('a recipient without a `present` status is NOT advertised', lied.recips.length, 1);
+  check('...and its key is nowhere on the wire', !JSON.stringify(lied).includes(PUB_SW));
+  const LIAR2 = { status: 'absent', recipient: PRESENT.recipient, pairingId: null };
+  eq('an `absent` reading with a stale recipient advertises one key',
+    buildRequestBlock({ localMode: 'on', webKey: WEB_KEY, sw: LIAR2 }).recips.length, 1);
 }
 
 // ── 3. coversSw is COMPUTED, never inferred from the count ──────────────────
