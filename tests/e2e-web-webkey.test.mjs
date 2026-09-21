@@ -173,7 +173,7 @@ check('record: pubB64Url is derived, not stored', !('pubB64Url' in record));
 // persisted nonce prefix (A2 MUST #2) — precisely the kind of thing that gets
 // added by someone optimising a re-derivation away.
 eq('record: field set', Object.keys(record).sort().join(','),
-  'createdAt,deviceId,epochFloors,kind,privateKey,pub,publicKey,v');
+  'createdAt,deviceId,epochFloorKids,epochFloors,kind,privateKey,pub,publicKey,v');
 
 // A2 MUST #2, asserted as an ABSENCE and asserted by SHAPE rather than by one
 // spelling: the prefix is derived per session and must never be persisted, and
@@ -193,7 +193,8 @@ check('record: the prefix guard can actually fail (control)',
   eq('record: hydrate re-derives pubB64Url', rehydrated.pubB64Url, key.pubB64Url);
 }
 
-await throws('record: unknown v THROWS', () => hydrateRecord({ ...record, v: 3 }),
+// v4: this build writes 3 and reads {2,3} (P2.6), so 4 is the next unknown.
+await throws('record: unknown v THROWS', () => hydrateRecord({ ...record, v: 4 }),
   (e) => e instanceof WebKeyRecordVersionError && e.state === 're-pair-needed');
 // The v1 -> v2 bump (A3-M2) has NO upgrade path, deliberately: a v1 record was
 // written by a build with no epoch floor, so continuing to use it would accept
@@ -322,12 +323,16 @@ await throws('floor: empty phoneDeviceId is refused', () => epochFloorKey('u', '
   const key = k.key;
   const USER = 'user-0191aa';
   const PHONE = 'dev-phone-01';
+  // P2.6: every Accept mints its own kid, so the kid is derived from the epoch
+  // here. A replay of an old block therefore carries an old kid, which is what
+  // the equal-epoch cell discriminates on.
+  const KID = (n) => `kid-e${n}`;
 
   eq('floor: a fresh record has an empty map', Object.keys(key.epochFloors).length, 0);
   eq('floor: unseen pair reads null', readEpochFloor(key, USER, PHONE), null);
 
   // TOFU -- first sight is accepted with NO comparison and becomes the floor.
-  const first = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n });
+  const first = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n, kid: KID(42) });
   check('floor: first sight is TOFU', first.firstSight === true);
   eq('floor: first sight sets the floor', first.floor, 42n);
   eq('floor: in-memory floor updated', readEpochFloor(key, USER, PHONE), 42n);
@@ -343,19 +348,21 @@ await throws('floor: empty phoneDeviceId is refused', () => epochFloorKey('u', '
   }
 
   // Monotonic: forward is fine.
-  const next = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n });
+  const next = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n, kid: KID(43) });
   eq('floor: a HIGHER epoch advances the floor', next.floor, 43n);
   check('floor: advancing is not first sight', next.firstSight === false);
 
-  // <=, not <. Re-offering the CURRENT epoch is the replay: the phone bumps on
-  // every Accept and every Reset, so an epoch already installed arriving again
-  // is either a duplicated or a replayed frame, and both mint a second kid
-  // under one epoch.
-  await throws('floor: the SAME epoch is REFUSED (<= not <)',
-    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n }),
-    (e) => e instanceof EpochFloorError && e.floor === 43n && e.offered === 43n);
+  // The CURRENT epoch arriving under a DIFFERENT kid is the replay, and it is
+  // still refused (P2.6 narrowed the old blanket `<=` to this cell; the
+  // same-epoch-same-kid RESUME cell lives in tests/e2e-web-epoch-floor.test.mjs
+  // with its own detector proof). A replayed block carries the kid it was
+  // minted with, so a replay of epoch 43's block after a re-key is exactly it.
+  await throws('floor: the SAME epoch under ANOTHER kid is REFUSED',
+    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n, kid: KID(99) }),
+    (e) => e instanceof EpochFloorError && e.floor === 43n && e.offered === 43n
+      && e.reason === 'kid-mismatch');
   await throws('floor: a LOWER epoch is refused',
-    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n }),
+    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n, kid: KID(42) }),
     (e) => e instanceof EpochFloorError && e.state === 're-pair-needed');
   eq('floor: a refused admit did not move the floor', readEpochFloor(key, USER, PHONE), 43n);
   eq('floor: a refused admit did not touch storage',
@@ -363,20 +370,20 @@ await throws('floor: empty phoneDeviceId is refused', () => epochFloorKey('u', '
 
   // Scoped per (userId, phoneDeviceId): another phone, or another account on
   // this shared profile, starts at its own TOFU rather than inheriting a floor.
-  const other = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'dev-phone-02', pairEpoch: 1n });
+  const other = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'dev-phone-02', pairEpoch: 1n, kid: KID(1) });
   check('floor: a DIFFERENT phone gets its own TOFU', other.firstSight === true);
-  const otherUser = await admitPairEpoch({ store, key, userId: 'user-0191ab', phoneDeviceId: PHONE, pairEpoch: 1n });
+  const otherUser = await admitPairEpoch({ store, key, userId: 'user-0191ab', phoneDeviceId: PHONE, pairEpoch: 1n, kid: KID(1) });
   check('floor: a DIFFERENT user gets its own TOFU', otherUser.firstSight === true);
   eq('floor: the original pair is unaffected', readEpochFloor(key, USER, PHONE), 43n);
 
   // uint64, and a Number is refused outright rather than rounded.
   await throws('floor: a NUMBER epoch is refused (it would round above 2^53)',
-    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p3', pairEpoch: 44 }),
+    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p3', pairEpoch: 44, kid: KID('x') }),
     (e) => e instanceof TypeError);
   await throws('floor: above 2^64-1 is refused',
-    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p4', pairEpoch: MAX_UINT64 + 1n }));
+    () => admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p4', pairEpoch: MAX_UINT64 + 1n, kid: KID('x') }));
   {
-    const big = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p5', pairEpoch: MAX_UINT64 });
+    const big = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: 'p5', pairEpoch: MAX_UINT64, kid: KID('x') });
     eq('floor: exactly 2^64-1 is accepted and survives the round trip',
       readEpochFloor(key, USER, 'p5'), MAX_UINT64);
     check('floor: the big value did not lose precision in storage',
@@ -386,8 +393,10 @@ await throws('floor: empty phoneDeviceId is refused', () => epochFloorKey('u', '
   // Cleared ONLY by an explicit user action.
   await clearEpochFloors({ store, key });
   eq('floor: unpair clears every floor', Object.keys(key.epochFloors).length, 0);
+  eq('floor: unpair clears every KID too (P2.6)', Object.keys(key.epochFloorKids).length, 0);
   eq('floor: the clear reached storage', Object.keys((await store.get()).epochFloors).length, 0);
-  const afterClear = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 1n });
+  eq('floor: ...for the kids as well', Object.keys((await store.get()).epochFloorKids).length, 0);
+  const afterClear = await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 1n, kid: KID(1) });
   check('floor: after an explicit unpair, TOFU applies again', afterClear.firstSight === true);
 }
 
@@ -407,13 +416,14 @@ await throws('floor: empty phoneDeviceId is refused', () => epochFloorKey('u', '
   const key = (await ensureWebDeviceKey({ store, register: async () => ({ ok: true }) })).key;
   const USER = 'user-0191aa';
   const PHONE = 'dev-phone-01';
+  const KID = (n) => `kid-e${n}`;
 
   // Live history: the pair has run through epochs 42 and 43.
-  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n });
-  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n });
+  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n, kid: KID(42) });
+  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n, kid: KID(43) });
   const backup = { epochFloors: { ...key.epochFloors } };
 
-  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 44n });
+  await admitPairEpoch({ store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 44n, kid: KID(44) });
   eq('restore: the live floor is 44', readEpochFloor(key, USER, PHONE), 44n);
 
   // Now restore the profile to the backup -- IndexedDB rolled back in time.
@@ -426,15 +436,15 @@ await throws('floor: empty phoneDeviceId is refused', () => epochFloorKey('u', '
   // rolled-back floor this is <= 43 and MUST be refused, not accepted because
   // "43 is greater than nothing".
   await throws('restore: a replayed epoch 43 is REFUSED after a restore',
-    () => admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n }),
+    () => admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n, kid: KID(43) }),
     (e) => e instanceof EpochFloorError);
   await throws('restore: the older epoch 42 is refused too',
-    () => admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n }),
+    () => admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 42n, kid: KID(42) }),
     (e) => e instanceof EpochFloorError);
 
   // REKEY is the recovery, and it is the ONLY one: the phone mints a fresh SK
   // at a higher epoch (what the user re-pairing does) and that is accepted.
-  const rekeyed = await admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 45n });
+  const rekeyed = await admitPairEpoch({ store, key: restoredKey, userId: USER, phoneDeviceId: PHONE, pairEpoch: 45n, kid: KID(45) });
   eq('restore: a REKEY at a higher epoch is accepted', rekeyed.floor, 45n);
   eq('restore: and it persisted', (await store.get()).epochFloors[epochFloorKey(USER, PHONE)], '45');
 
@@ -442,7 +452,7 @@ await throws('floor: empty phoneDeviceId is refused', () => epochFloorKey('u', '
   // that a floor-less record really does accept the replay. If this line ever
   // fails, the refusals above are passing for some other reason.
   const naive = { ...key, epochFloors: {} };
-  const replayed = await admitPairEpoch({ store: memoryWebKeyStore(), key: naive, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n });
+  const replayed = await admitPairEpoch({ store: memoryWebKeyStore(), key: naive, userId: USER, phoneDeviceId: PHONE, pairEpoch: 43n, kid: KID(43) });
   check('restore: CONTROL -- with no floor, the replay IS accepted (so the guard is load-bearing)',
     replayed.firstSight === true);
 }

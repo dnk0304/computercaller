@@ -104,6 +104,27 @@ async function loadPlanted(source, tag) {
 }
 const plantedFiles = [];
 
+/**
+ * An admission that is EXPECTED to succeed.
+ *
+ * Bare `await admitPairEpoch(...)` at a success site means a regression does
+ * not fail the cell, it CRASHES the process — and every later cell then goes
+ * unmeasured, so the first plant of the old rule reported one stack trace
+ * instead of the eleven red cells it actually caused. Wrapping turns a
+ * regression into counted failures with names, which is what a detector proof
+ * needs in order to say WHICH cells it can see.
+ */
+async function mustAdmit(name, opts) {
+  try {
+    const r = await admitPairEpoch(opts);
+    passed++;
+    return r;
+  } catch (e) {
+    check(name, false, `refused: ${e?.name}: ${e?.message}`);
+    return { floor: -1n, firstSight: false, resume: false };
+  }
+}
+
 const USER = 'cmub9k3rb0000l2acr3e6j8a1';
 const PHONE = 'ivzpm4LyJUxjx9h8INm9jw';
 const KID_A = 'kid-aaaaaaaaaaaaaaaaaaaa';
@@ -122,7 +143,9 @@ async function pairedAt(epoch = 4n, kid = KID_A) {
   const seq = memorySeqStore();
   await store.put(toRecord(key));
   const probe = (k) => hasSeqRecord({ store: seq, kid: k });
-  await admitPairEpoch({
+  // The original Accept. TOFU, so it cannot be refused by any version of the
+  // rule; if it ever is, every cell below is meaningless and says so.
+  await mustAdmit('fixture: the original Accept is admitted (TOFU)', {
     store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: epoch, kid, hasSeqState: probe,
   });
   // The counter the pair has been sealing with. Committed the way the real
@@ -142,10 +165,10 @@ async function pairedAt(epoch = 4n, kid = KID_A) {
   eq('cell: ...and the floor itself', readEpochFloor(key, USER, PHONE), 4n);
 
   // > floor — unchanged behaviour, a legitimate re-key.
-  const up = await admitPairEpoch({
+  const up = await mustAdmit('cell: a HIGHER epoch is admitted', {
     store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 5n, kid: KID_B, hasSeqState: probe,
   });
-  eq('cell: a HIGHER epoch is admitted', up.floor, 5n);
+  eq('cell: a HIGHER epoch sets the floor to 5', up.floor, 5n);
   eq('cell: ...as a new pairing, not a resume', up.resume, false);
   eq('cell: ...and it re-keys the stored kid', readEpochFloorKid(key, USER, PHONE), KID_B);
 }
@@ -153,10 +176,10 @@ async function pairedAt(epoch = 4n, kid = KID_A) {
 {
   const { store, key, probe } = await pairedAt();
   // == floor && same kid — THE FIX.
-  const r = await admitPairEpoch({
+  const r = await mustAdmit('cell: EQUAL epoch under the SAME kid is ADMITTED', {
     store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 4n, kid: KID_A, hasSeqState: probe,
   });
-  eq('cell: EQUAL epoch under the SAME kid is ADMITTED', r.resume, true);
+  eq('cell: ...as a RESUME', r.resume, true);
   eq('cell: ...the floor did not move', r.floor, 4n);
   eq('cell: ...and firstSight is false (this pair is not new)', r.firstSight, false);
 }
@@ -195,7 +218,7 @@ async function pairedAt(epoch = 4n, kid = KID_A) {
     }),
     (e) => e instanceof EpochFloorError && e.reason === 'kid-unknown');
   // ...and the next genuine re-pair writes one, so the pair heals itself.
-  const healed = await admitPairEpoch({
+  const healed = await mustAdmit('cell: a legacy pair can still re-key', {
     store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 5n, kid: KID_B, hasSeqState: probe,
   });
   eq('cell: ...and a genuine re-pair records a kid', healed.resume, false);
@@ -205,7 +228,7 @@ async function pairedAt(epoch = 4n, kid = KID_A) {
     v: 1, kid: KID_B, direction: DIR_C2P, next: 2, sk: 'f'.repeat(64),
   });
   eq('cell: ...so the NEXT reload can resume',
-    (await admitPairEpoch({
+    (await mustAdmit('cell: the healed pair admits its reload', {
       store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 5n, kid: KID_B, hasSeqState: probe,
     })).resume, true);
 }
@@ -216,11 +239,11 @@ async function pairedAt(epoch = 4n, kid = KID_A) {
   const store = memoryWebKeyStore();
   const key = await generateWebDeviceKey({});
   await store.put(toRecord(key));
-  const first = await admitPairEpoch({
+  const first = await mustAdmit('cell: first sight is admitted (TOFU)', {
     store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 4n, kid: KID_A,
     hasSeqState: () => false,
   });
-  eq('cell: first sight is admitted (TOFU)', first.firstSight, true);
+  eq('cell: ...and reports firstSight', first.firstSight, true);
   eq('cell: ...and is not a resume', first.resume, false);
   eq('cell: ...even with an empty seq store — MUST #1 gates only the equal-epoch cell',
     readEpochFloorKid(key, USER, PHONE), KID_A);
@@ -245,10 +268,10 @@ async function pairedAt(epoch = 4n, kid = KID_A) {
 
 {
   const { store, key, probe } = await pairedAt();
-  const r = await admitPairEpoch({
+  const r = await mustAdmit('resumed: the SAME kid at the equal epoch is admitted with NO resumed bit present', {
     store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 4n, kid: KID_A, hasSeqState: probe,
   });
-  eq('resumed: the SAME kid at the equal epoch is admitted with NO resumed bit present', r.resume, true);
+  eq('resumed: ...as a resume', r.resume, true);
 }
 
 {
@@ -396,7 +419,7 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
       return skFingerprint(sessionKey);
     })(),
   });
-  const admitted = await admitPairEpoch({
+  const admitted = await mustAdmit('MUST1: the resume onto surviving seq history is admitted', {
     store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 4n, kid: KID_A, hasSeqState: probe,
   });
   const session = await createComputerSession({
@@ -446,11 +469,11 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
   const { store, key, probe } = await pairedAt();
   let puts = 0;
   const counting = { ...store, put: async (r) => { puts++; return store.put(r); } };
-  const r = await admitPairEpoch({
+  const r = await mustAdmit('MUST3: the resume was admitted', {
     store: counting, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 4n, kid: KID_A,
     hasSeqState: probe,
   });
-  eq('MUST3: the resume was admitted', r.resume, true);
+  eq('MUST3: ...as a resume', r.resume, true);
   eq('MUST3: ...and it performed NO store write', puts, 0);
   eq('MUST3: ...and the stored kid is still the one from the Accept',
     readEpochFloorKid(key, USER, PHONE), KID_A);
@@ -463,7 +486,7 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
     persisted.epochFloorKids[epochFloorKey(USER, PHONE)], KID_A);
 
   // A re-key DOES write, so the count above is measuring something.
-  await admitPairEpoch({
+  await mustAdmit('MUST3: a genuine re-key is admitted', {
     store: counting, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 5n, kid: KID_B,
     hasSeqState: probe,
   });
@@ -565,7 +588,7 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
   const persisted = await store.get();
   eq('clear: ...in storage as well', Object.keys(persisted.epochFloorKids).length, 0);
   eq('clear: and the next pair is TOFU again',
-    (await admitPairEpoch({
+    (await mustAdmit('clear: the post-clear pair is admitted', {
       store, key, userId: USER, phoneDeviceId: PHONE, pairEpoch: 1n, kid: KID_A, hasSeqState: probe,
     })).firstSight, true);
 }
