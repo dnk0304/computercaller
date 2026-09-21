@@ -350,6 +350,16 @@ async function pageOnPairingActive({ store, key, probe, payload }) {
     recorded.includes('e2e-epoch-replayed') && recorded.includes('leaveActive')
       && recorded.includes('user_left'),
     'the fixture no longer matches the evidence it was written from');
+  // P2.8 / R-BP (d): this sentence is RETIRED from the product — P2.6 split
+  // EpochFloorError into four reason-specific messages and
+  // scripts/e2e-staging-relay-proof.mjs was re-pinned accordingly. This pin is
+  // NOT re-pinned with it, and must not be: `recorded` is a frozen P6.1d
+  // capture of a page console, not live output. The sentence it contains is
+  // what the build at that time actually printed, and changing the assertion
+  // to the current wording would assert that a historical artefact had been
+  // re-recorded — the fixture would then agree with the code no matter what
+  // the code says, which is the one thing a replayed-evidence check exists to
+  // prevent. It moves only if the artefact is captured again.
   check('S3: the recorded epoch and floor were EQUAL (4 and 4)',
     /pairEpoch 4 is at or below the stored floor 4\b/.test(recorded));
 
