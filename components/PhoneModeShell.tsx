@@ -1069,6 +1069,7 @@ function TextsView() {
                     {t.unread > 0 && (
                       <span
                         aria-hidden="true"
+                        data-cc-unread-chip={t.unread}
                         className="cc-unread-chip flex h-5 min-w-[20px] flex-shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none"
                       >
                         {t.unread > 9 ? '9+' : t.unread}

@@ -523,6 +523,7 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
             filteredConversations.map((conv) => (
               <div
                 key={conv.id}
+                data-cc-sms-row={conv.unread > 0 ? 'unread' : 'read'}
                 onClick={() => handleConversationClick(conv)}
                 className={clsx(
                   "p-4 flex items-start gap-3 cursor-pointer transition-colors hover:bg-white border-l-4",
@@ -555,6 +556,7 @@ export const SMSInterface = ({ initialNumber }: SMSInterfaceProps = {}) => {
                 {conv.unread > 0 && (
                   <div
                     aria-hidden="true"
+                    data-cc-unread-chip={conv.unread}
                     className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0"
                   >
                     {conv.unread > 9 ? '9+' : conv.unread}

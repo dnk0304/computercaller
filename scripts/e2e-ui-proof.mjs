@@ -350,6 +350,105 @@ try {
     await ctx.close();
   }
 
+  // ═══ UI-UNREAD — threads you have not opened look unopened ═════════
+  //
+  // Dennis 2026-09-21 11:12Z: "Messages that are not opened should show they
+  // have not been opened."
+  //
+  // THE SEED IS DATED IN THE FUTURE ON PURPOSE. The read baseline is written
+  // at first hydration for the account (= now), and only messages AFTER it can
+  // count — that is what stops a year of synced history lighting up on day
+  // one. A row stamped `Date.now()` races that baseline by milliseconds; +60s
+  // puts the seed unambiguously on the unread side of it, and a future-dated
+  // row is a real case the product handles anyway (clock-skewed phones, which
+  // is why openedStamp takes max(now, newest)).
+  const UNREAD_SEED = [
+    // three arrivals → chip "3"
+    { from: '+4790000001', body: 'Are we still on for tonight?', n: 3 },
+    // one arrival → chip "1" (Dennis said dot/count; the chip IS the dot)
+    { from: '+4790000002', body: 'Package delivered.', n: 1 },
+    // one arrival, but this row gets OPENED before the capture → plain row
+    { from: '+4790000003', body: 'Thanks!', n: 1 },
+  ];
+  const seedUnread = async (page) => {
+    await page.evaluate((seed) => {
+      const base = Date.now() + 60_000;
+      let i = 0;
+      for (const t of seed) {
+        for (let k = 0; k < t.n; k += 1) {
+          i += 1;
+          window.__ccSend('SMS_RECEIVED:' + JSON.stringify({
+            id: `seed-${i}`,
+            from: t.from,
+            body: t.body,
+            time: base + i * 1000,
+            type: 'inbox',
+          }));
+        }
+      }
+    }, UNREAD_SEED);
+  };
+
+  console.log('
+-- UI-UNREAD: /app Texts --');
+  {
+    const { ctx, page } = await open({ route: '/app', width: 1280, height: 900 });
+    await settle(page, 1500);
+    await seedUnread(page);
+    await settle(page, 800);
+    // Into the Texts tab (SMSInterface). The nav item is the route's own.
+    await page.getByRole('button', { name: /^messages$/i }).first()
+      .click({ timeout: 5000 }).catch(() => {});
+    await settle(page, 1200);
+
+    const rows = page.locator('[data-cc-sms-row]');
+    const chips = page.locator('[data-cc-unread-chip]');
+    const before = await chips.count();
+    check('(unread) /app Texts shows a count chip on threads never opened here',
+      before >= 2, `${before} chips`);
+
+    // Open the third thread. It must go read; the other two must not.
+    await rows.filter({ hasText: 'Thanks!' }).first().click({ timeout: 5000 }).catch(() => {});
+    await settle(page, 900);
+    const after = await chips.count();
+    check('(unread) opening a conversation clears ONLY that row',
+      after === before - 1, `${before} -> ${after}`);
+    check('(unread) the other threads stay unread after one is opened',
+      after >= 1, `${after} chips remain`);
+
+    await shot(page, 'a-app-texts-unread-1280');
+    await ctx.close();
+  }
+
+  console.log('
+-- UI-UNREAD: extension Texts, both themes --');
+  for (const theme of ['light', 'dark']) {
+    const { ctx, page } = await open({ route: '/extension', width: 400, height: 900, theme });
+    await settle(page, 1500);
+    await seedUnread(page);
+    await settle(page, 800);
+    await page.getByRole('tab', { name: /texts/i }).click({ timeout: 5000 }).catch(() => {});
+    await settle(page, 1200);
+
+    const chips = page.locator('[data-cc-unread-chip]');
+    const before = await chips.count();
+    check(`(unread) [${theme}] the extension Texts list marks unopened threads`,
+      before >= 2, `${before} chips`);
+
+    await page.getByRole('button', { name: /Thanks!|\+4790000003/ }).first()
+      .click({ timeout: 4000 }).catch(() => {});
+    await settle(page, 900);
+    await page.getByRole('button', { name: /back/i }).first()
+      .click({ timeout: 4000 }).catch(() => {});
+    await settle(page, 900);
+    const after = await chips.count();
+    check(`(unread) [${theme}] the opened thread is read, the others are not`,
+      after === before - 1, `${before} -> ${after}`);
+
+    await shot(page, `a-ext-texts-unread-${theme}-400`);
+    await ctx.close();
+  }
+
   // ═══ (c) the indicator, and the independence rule ════════════════════════
   console.log('\n-- (c) indicator + independence --');
   const unencrypted = encryptionIndicator({ state: 'unencrypted', peer: { supports: false } });

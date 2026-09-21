@@ -1953,6 +1953,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
                       {thread.unreadCount > 0 && (
                         <span
                           aria-hidden="true"
+                          data-cc-unread-chip={thread.unreadCount}
                           className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"
                         />
                       )}
