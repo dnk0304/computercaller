@@ -51,22 +51,57 @@ class E2ePairIdentityTest {
     }
 
     /**
-     * Pins the gap itself, so that a future change to
-     * [E2ePairIdentity.userIdForPairContext] is a deliberate act with a failing
-     * test in front of it rather than a quiet edit. When the ruling lands, this
-     * assertion changes with the implementation — that is the intent.
+     * The ruling landed (R-BH). This is what changed and, just as importantly,
+     * what did NOT.
+     *
+     * The LAYOUT is untouched: field 0x11 is still `u8(len) ‖ userId`, and the
+     * frozen vectors A–M still reproduce byte-for-byte, because the gap was
+     * never in the encoding — it was in what the production path fed the
+     * encoder. The old `the_user_id_is_still_unchannelled` case pinned that
+     * gap so a change to it would be deliberate; this is the deliberate
+     * change, and it pins the replacement property instead.
+     *
+     * The refusal itself needs a real [android.content.Context] (TokenStore is
+     * Keystore-backed), so it is asserted in E2ePairContextParityTest, which
+     * also proves the production path reproduces the frozen `/context` vector.
      */
     @Test
-    fun the_user_id_is_still_unchannelled() {
-        // Recorded as a fact about the CONTEXT layout, not about Android: the
-        // 0x11 field is fed an empty string, so pairContext carries
-        // `0x11 0x00` there. See PAIRCONTEXT-CHANNEL-GAP.md.
+    fun the_user_id_field_is_length_prefixed_and_carries_a_real_account_id() {
         val ctx = E2eKdf.PairContext(
-            pairingId = "p", userId = "", phoneDeviceId = "d", peerDeviceId = "w", pairEpoch = 1L
+            pairingId = "p", userId = "user-0191aa",
+            phoneDeviceId = "d", peerDeviceId = "w", pairEpoch = 1L
         )
         val bytes = E2eKdf.pairContextBytes(ctx)
         assertEquals("the userId tag", 0x11, bytes[0].toInt() and 0xff)
-        assertEquals("…with a zero length", 0x00, bytes[1].toInt() and 0xff)
-        assertTrue("and the rest of the context still encodes", bytes.size > 2)
+        assertEquals("…with the id's UTF-8 length", 11, bytes[1].toInt() and 0xff)
+        assertEquals(
+            "…and the id itself",
+            "user-0191aa",
+            String(bytes, 2, 11, Charsets.UTF_8),
+        )
+        assertTrue("and the rest of the context still encodes", bytes.size > 13)
+    }
+
+    /**
+     * The encoding a zero-length id WOULD produce, kept as the negative half:
+     * `0x11 0x00`, which is a context the page's frozen `lib/e2e/kdf.mjs`
+     * refuses outright (`userId may not be empty`). This is the state the phone
+     * shipped in for the whole of P4–P6.1b, and no wrap it sealed could open.
+     * It is recorded here so the two encodings are visibly different — the
+     * reason the fix had to be a channel and not a cast.
+     */
+    @Test
+    fun an_empty_account_id_encodes_to_a_context_the_page_cannot_represent() {
+        val empty = E2eKdf.pairContextBytes(
+            E2eKdf.PairContext("p", "", "d", "w", 1L)
+        )
+        val real = E2eKdf.pairContextBytes(
+            E2eKdf.PairContext("p", "user-0191aa", "d", "w", 1L)
+        )
+        assertEquals("the empty id is a zero-length field", 0x00, empty[1].toInt() and 0xff)
+        assertTrue(
+            "the two contexts must differ — that difference is A6-P61B-8",
+            !empty.contentEquals(real),
+        )
     }
 }

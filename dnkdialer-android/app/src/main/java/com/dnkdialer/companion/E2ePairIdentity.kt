@@ -26,43 +26,50 @@ import androidx.core.content.edit
  * lane has had to actually *source* those four values on a real device, and
  * three of the four turn out to have no channel to the peer:
  *
- * | field           | phone has it?              | peer can learn it?                        |
- * |-----------------|----------------------------|-------------------------------------------|
- * | `pairingId`     | yes (PAIRING_REQUEST)      | yes — shared, and it is the HKDF salt      |
- * | `userId`        | **no**                     | n/a — the phone never learns it            |
- * | `phoneDeviceId` | yes (local, [E2eLifecycle])| **no** — not in any frozen frame           |
- * | `peerDeviceId`  | yes (from `recips[]`)      | ambiguous — see "multi-recipient" below    |
- * | `pairEpoch`     | yes (minted here)          | **no** — not in any frozen frame           |
+ * | field           | phone has it?                                        |
+ * |-----------------|------------------------------------------------------|
+ * | `pairingId`     | yes (PAIRING_REQUEST) — shared, and the HKDF salt     |
+ * | `userId`        | yes — [TokenStore], from the authed devicekeys API   |
+ * | `phoneDeviceId` | yes (local, [E2eLifecycle])                          |
+ * | `peerDeviceId`  | yes (from `recips[]`) — see "multi-recipient" below  |
+ * | `pairEpoch`     | yes (minted here)                                    |
  *
- * `userId` is the flat one: `POST /api/auth/apk-login` returns
- * `{phoneToken, deviceName}` and nothing else, `GET /api/devicekeys/list`'s
- * `PUBLIC_SELECT` is `{id, deviceId, kind, publicKey, label, createdAt,
- * lastSeen, revokedAt}`, and no relay frame carries it. The account id is
- * deliberately server-side only (B8). The phone cannot put a value in that
- * field that the browser would also compute.
+ * ## `userId`: R-BH (Ken, 2026-09-21), option B
  *
- * Full write-up, options and a recommendation:
- * `dnkdialer-android/e2e-evidence/PAIRCONTEXT-CHANNEL-GAP.md`. It is the same
- * class of defect as the AEAD nonce prefix (Security Addendum A2) and wants
- * the same kind of ruling.
+ * This was the open one, and for the whole of P4–P6.1b it was **not** open in
+ * a safe way: it returned a hard-coded `""`. §13.10.3 binds the account id
+ * into every KEK, every traffic key and every nonce prefix, the page derives
+ * under its real `/api/auth/me` session id, and `lib/e2e/kdf.mjs` REFUSES a
+ * zero-length one — so the page could not even represent what this phone was
+ * sealing under. No wrap the phone minted could ever open, in any mode. That
+ * is A6-P61B-8, attributed in P6.1c part 0.
  *
- * ## What this implementation does, and why it is the safe choice
+ * R-BH's channel: the phone learns its account id from the DeviceKey API it
+ * already calls, authenticated by `Authorization: Bearer <phoneToken>`, which
+ * `lib/deviceKeyAuth.ts` resolves to a `User.id` with the *same* lookup the
+ * session path uses. That is the identical string `/api/auth/me` hands the
+ * page (`hooks/useE2e.ts:143`) — same trust root, same value, symmetric.
  *
- * It feeds the context the **real** values this phone holds, and leaves
- * `userId` empty because there is no value to put there.
+ * SPEC l.934 ("`userId` is deliberately not transmitted. Each side uses its
+ * own authenticated session userId and a mismatch fails closed") is satisfied,
+ * not bent: nothing about the account id travels over the pairing wire, and no
+ * peer or relay proposes it. It is learned once from the account API, persisted
+ * beside the token it belongs to, and never overwritten — see
+ * [TokenStore.putUserId].
  *
- * The alternative — blanking every unchannelled field so that a peer could
- * reproduce the context from `pairingId` alone — was rejected. It would make
- * cross-implementation traffic *appear* to work while silently deleting the
- * transcript binding that §13.10.3 exists to provide: a downgrade shipped
- * under the appearance of success. What this file does instead makes the gap
- * fail **loudly** — P2's cross-implementation harness will not be able to open
- * a wrap — which is the failure mode this programme has chosen every time it
- * has had the choice (see [E2eNegotiation.buildAcceptBlock] refusing an
- * oversized block rather than letting the relay drop it into plaintext).
+ * Ctx BYTES are unchanged by all of this, and so is every frozen vector A–M:
+ * each already carries a non-empty `userId`, and this lane finally makes the
+ * production path capable of producing one.
  *
- * P4's own suites are unaffected: they are same-implementation loopbacks, both
- * halves compute the identical context in-process, and they say so.
+ * ## Fail closed, never `""`
+ *
+ * When the id is not known — never learned, Keystore unavailable, signed out —
+ * [contextFor] THROWS rather than substituting a blank. That mirrors the page,
+ * which treats a null session userId as a mode-ON refusal for the same reason
+ * (`useE2e.ts:147`): deriving under a guessed identity is the silent divergence
+ * §13.10.3 exists to prevent, and this file already refuses every other version
+ * of that (see [E2eNegotiation.buildAcceptBlock] refusing an oversized block
+ * rather than letting the relay drop it into plaintext).
  *
  * ## Multi-recipient
  *
@@ -104,16 +111,19 @@ object E2ePairIdentity {
     private const val EPOCH_KEY = "pair_epoch"
 
     /**
-     * The account id for [E2eKdf.PairContext].
+     * The account id for [E2eKdf.PairContext], or **null when this phone does
+     * not know it**.
      *
-     * **Returns the empty string, because the phone has no account id.** See
-     * the class doc: this is the single function a ruling changes. When the
-     * ruling lands — whether it adds `userId` to P1's `e2e` block, returns it
-     * from `apk-login`, or formally blanks the field — this body changes and
-     * nothing else does.
+     * R-BH landed here, and the `""` constant that used to be returned is
+     * gone. The value comes from [TokenStore], which learned it from the
+     * authenticated devicekeys API and persists it once beside the phoneToken.
+     *
+     * Null is a real answer, and the only honest one when the id has not been
+     * learned: it is never papered over with a blank. [contextFor] turns it
+     * into a refusal.
      */
     @JvmStatic
-    fun userIdForPairContext(@Suppress("UNUSED_PARAMETER") ctx: Context): String = ""
+    fun userIdForPairContext(ctx: Context): String? = TokenStore.getUserId(ctx)
 
     /**
      * Pick the peer device id for a multi-recipient offer. Deterministic and
@@ -216,8 +226,10 @@ object E2ePairIdentity {
      * Ken's Addendum A3 proposal (A): the phone carries the context it minted
      * inside the existing `e2e` block, so the browser and the SW can rebuild
      * §13.10.3's `pairContext` byte-for-byte. `userId` is deliberately NOT
-     * transmitted — B8 keeps the account id server-side, and [contextFor]
-     * feeds that field empty on both sides.
+     * transmitted (SPEC l.934) — each side supplies its OWN authenticated
+     * account id and a mismatch fails closed. Since R-BH the phone genuinely
+     * has one ([userIdForPairContext]), which is what makes that rule work
+     * instead of merely hold vacuously.
      *
      * ```
      *   ctx: { pairingId, phoneDeviceId, peerDeviceId, pairEpoch }
@@ -390,8 +402,25 @@ object E2ePairIdentity {
     }
 
     /**
+     * Thrown when the context cannot be assembled from values this phone
+     * actually holds. Always fail closed.
+     *
+     * A [RuntimeException], which is not incidental: [PhoneService]'s Accept
+     * path already catches `RuntimeException` and turns it into a DECLINE
+     * under mode ON and a plaintext pairing under mode OFF — §13.1's split. A
+     * new refusal path here would be a second implementation of a decision
+     * that must have exactly one.
+     */
+    class PairContextUnavailableException(message: String) : IllegalStateException(message)
+
+    /**
      * Assemble the context for one Accept. The only caller is the Accept path
      * in [PhoneService]; everything above is exposed for the unit suite.
+     *
+     * @throws PairContextUnavailableException when the account id is unknown.
+     *         REFUSING is the whole point — feeding `""` here is precisely the
+     *         bug this lane exists to delete, and it is unfixable downstream
+     *         because by then the bytes are already wrong.
      */
     @JvmStatic
     fun contextFor(
@@ -399,11 +428,21 @@ object E2ePairIdentity {
         pairingId: String,
         recipients: List<E2eNegotiation.Recipient>,
         pairEpoch: Long,
-    ): E2eKdf.PairContext = E2eKdf.PairContext(
-        pairingId = pairingId,
-        userId = userIdForPairContext(ctx),
-        phoneDeviceId = E2eLifecycle.deviceId(ctx),
-        peerDeviceId = peerDeviceIdFor(recipients),
-        pairEpoch = pairEpoch,
-    )
+    ): E2eKdf.PairContext {
+        val userId = userIdForPairContext(ctx)
+        if (userId.isNullOrEmpty()) {
+            throw PairContextUnavailableException(
+                "this phone does not know its account id, so it cannot build a §13.10.3 " +
+                    "pairContext the peer could reproduce; refusing rather than deriving " +
+                    "under an empty userId (R-BH; SPEC l.934 fails closed on a mismatch)"
+            )
+        }
+        return E2eKdf.PairContext(
+            pairingId = pairingId,
+            userId = userId,
+            phoneDeviceId = E2eLifecycle.deviceId(ctx),
+            peerDeviceId = peerDeviceIdFor(recipients),
+            pairEpoch = pairEpoch,
+        )
+    }
 }

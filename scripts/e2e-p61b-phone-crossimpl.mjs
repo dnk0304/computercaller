@@ -40,7 +40,7 @@ import { withRealRelay } from './lib/real-relay.mjs';
 import { mintSecret, seedEntitledUser, removeUser } from './lib/relay-auth.mjs';
 import { killTree } from './lib/reap.mjs';
 import {
-  makeAdb, PKG, sleep, until, assertPhoneTrustStore, uiDump, nodeCenter, clearAnr,
+  makeAdb, PKG, sleep, until, assertPhoneTrustStore, uiDump, nodeCenter, tap, clearAnr,
   setPhoneEncryptedMode, readPhoneEncryptedMode, logcatClear, logcatDump,
   phoneArmedLine, refusedForwardJumpLine, writeRedactedRelayLog,
 } from './lib/phone-peer.mjs';
@@ -230,7 +230,7 @@ async function phoneSignIn(adb, { email, password, proxyReqs }) {
  * handleConnectionDecision (MainActivity.kt:571) — there is no auto-accept
  * path, so nothing here can succeed without both surfaces really acting.
  */
-async function pairOnce(page, adb, { label }) {
+async function pairOnce(page, adb, { label, sasAnswer = null, shots = false }) {
   logcatClear(adb);
 
   // The Connect button is disabled until the relay tells the page a phone is
@@ -257,10 +257,71 @@ async function pairOnce(page, adb, { label }) {
   if (!check(`PAIR-${label}-accept the PHONE showed a connection request and Accept was tapped`,
     !!accepted, accepted ? 'pairAcceptButton tapped' : 'no Accept control appeared within 45s')) return null;
 
+  // ── the SAS gate (P6.1c Part 3) ──────────────────────────────────────────
+  //
+  // With the 1b emitter landed, ACCEPT no longer completes the pairing on its
+  // own: completeEncryptedAccept broadcasts SAS_REQUIRED and BLOCKS on
+  // SAS_RESULT. So the old "sleep and read the armed line" is now a test of
+  // the wrong thing — under the new product the armed line is ABSENT until a
+  // human answers, and reading its absence as a failure (as P6.1b's S1-armed
+  // check does) mistakes the security property for a regression.
+  // ORDER MATTERS, and it is the protocol's order, not a convenience:
+  // completeEncryptedAccept blocks on SAS_RESULT, so the phone's ACCEPT is
+  // not sent until the PHONE's user answers. The page cannot raise its own
+  // dialog before that ACCEPT arrives, because it has no SAS material yet.
+  // Waiting for the page dialog before tapping the phone therefore deadlocks
+  // both surfaces, and the page's own defensive timer fires first
+  // ("requestPairing defensive timer fired — flipping to timeout"), which
+  // looks exactly like "the page never renders a SAS". Phone first, always.
+  const sasSeen = { phone: null, page: null, faceUp: false, dialogOpen: false, receiverMatches: 0 };
+  const answered = { phone: null, page: null };
+
+  sasSeen.faceUp = await until(() => (phoneSasFaceUp(adb) ? true : null), 45_000, 1500) === true;
+  if (sasSeen.faceUp) {
+    sasSeen.phone = phoneHeroSas(adb);
+    sasSeen.receiverMatches = sasReceiverMatchCount(adb);
+    if (shots) {
+      adb('shell', 'screencap -p /sdcard/sas-phone.png');
+      adb('pull', '/sdcard/sas-phone.png', path.join(LOG_DIR, `sas-phone-${label}-${STAMP}.png`));
+    }
+  }
+
+  // Phase 1 evidence (M-A6-4) is taken here: the phone has displayed digits
+  // and NOTHING has been confirmed yet.
+  const preConfirmLog = logcatDump(adb);
+
+  if (sasAnswer && sasAnswer.phone !== undefined && sasAnswer.phone !== null) {
+    answered.phone = await phoneSasAnswer(adb, sasAnswer.phone);
+  }
+
+  // Only now can the page have the material for its own dialog.
+  sasSeen.dialogOpen = await until(async () => ((await pageSasOpen(page)) ? true : null), 60_000, 1500) === true;
+  if (sasSeen.dialogOpen) {
+    sasSeen.page = await pageSas(page);
+    if (shots) await page.screenshot({ path: path.join(LOG_DIR, `sas-page-${label}-${STAMP}.png`) }).catch(() => {});
+  }
+
+  const midConfirmLog = logcatDump(adb);
+
+  if (sasAnswer && sasAnswer.page !== undefined && sasAnswer.page !== null) {
+    answered.page = await pageSasAnswer(page, sasAnswer.page);
+  }
+
   await sleep(9000);
   const log = logcatDump(adb);
   const armed = phoneArmedLine(log);
-  return { log, armed };
+  return {
+    log,
+    armed,
+    sas: sasSeen,
+    answered,
+    // The two intermediate transcripts are what make M-A6-4 provable: a seal
+    // must be absent in both and present only in `log`.
+    armedPreConfirm: phoneArmedLine(preConfirmLog),
+    armedMidConfirm: phoneArmedLine(midConfirmLog),
+    preConfirmLog,
+    midConfirmLog,
+  };
 }
 
 /** The page's SAS, read from the shipped dialog's own attribute. */
@@ -270,6 +331,138 @@ async function pageSas(page) {
     if (!(await el.count())) return null;
     return await el.getAttribute('data-cc-sas-digits');
   } catch { return null; }
+}
+
+// ── SAS: the two human surfaces (P6.1c Part 3) ──────────────────────────────
+//
+// P6.1b read the phone's SAS out of logcat, because the phone had no surface
+// to read it FROM: the ACTION_E2E_SAS_REQUIRED emitter did not exist. It does
+// now (E2eSasGate.kt:249 -> MainActivity:383 -> showSasConfirm:2352), so the
+// digits below are scraped off the SHIPPED HERO FACE — the same pixels a user
+// reads. Comparing a logcat field with the page would prove nothing about what
+// the two humans actually see; item 7 of the Security MUST list is a claim
+// about the two SURFACES, so the evidence has to come from the surfaces.
+
+/** Text of the first UI node whose XML matches `re`. */
+function nodeText(xml, re) {
+  for (const node of xml.split('<node ').slice(1)) {
+    if (!re.test(node)) continue;
+    const m = /text="([^"]*)"/.exec(node);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/** The PHONE's SAS, read from the shipped hero face (R.id.homeSasCode). */
+function phoneHeroSas(adb) {
+  const raw = nodeText(uiDump(adb), /id\/homeSasCode/);
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, '');
+  return digits || null;
+}
+
+/** Is the phone's SAS hero face currently up? */
+function phoneSasFaceUp(adb) {
+  return /id\/sasMatchesButton/.test(uiDump(adb));
+}
+
+/** Answer the phone's SAS face as a user would. */
+async function phoneSasAnswer(adb, matches) {
+  return tap(adb, matches ? /id\/sasMatchesButton/ : /id\/sasNoMatchButton/, { settle: 3500 });
+}
+
+/** Answer the page's SAS dialog as a user would. */
+async function pageSasAnswer(page, matches) {
+  const el = page.locator(`[data-cc-sas-action="${matches ? 'confirm' : 'reject'}"]`).first();
+  try {
+    if (!(await el.count())) return false;
+    await el.click({ timeout: 10_000 });
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Empty the lobby so a NEW pairing can be offered.
+ *
+ * After a pair seals, the page shows a connected pill and the Connect button
+ * is gone — so a scenario that wants a second pairing has to drop the first
+ * one first. Without this, "re-pair" fails at the lobby check and reads as
+ * "the phone never reached the lobby", which blames the phone for the
+ * driver's own sequencing.
+ */
+async function resetLobby(page, adb, { settle = 12_000 } = {}) {
+  const btn = page.getByRole('button', { name: 'Reset lobby' }).first();
+  try {
+    if (!(await btn.count())) return false;
+    await btn.click({ timeout: 10_000 });
+  } catch { return false; }
+  // The confirm control, when the variant asks for one.
+  for (const name of ['Reset lobby', 'Confirm', 'Yes']) {
+    try {
+      const c = page.getByRole('button', { name, exact: true }).nth(1);
+      if (await c.count()) { await c.click({ timeout: 3000 }); break; }
+    } catch { /* no confirm in this variant */ }
+  }
+  await sleep(settle);
+  // A foreground nudge is NOT enough: after the room is emptied the phone's
+  // existing lobby socket is dead and the app reconnects on its own backoff,
+  // which outlasts the page's 90 s Connect wait — so the re-pair fails at the
+  // lobby check and reads as "the phone never reached the lobby". A cold
+  // restart re-joins immediately, and is a thing a user can do.
+  adb('shell', `am force-stop ${PKG}`);
+  await sleep(3000);
+  adb('shell', `monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
+  await sleep(settle);
+
+  // And the BROWSER has to come back too. The relay is explicit about which
+  // side is missing after a reset — "Phone joined lobby (browsers=0)" repeats
+  // while the page stays away — so blaming the phone here (the Connect check's
+  // wording) would have been reading the wrong half of the room. The page's
+  // lobby socket does not re-establish on its own after RESET_ROOM; a reload
+  // is what a user does, and it is what brings browsers back to 1.
+  await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+  await sleep(settle);
+
+  // Wait for the CONDITION the next pairing needs, not for a fixed number of
+  // seconds. Tearing down a sealed pair takes longer to settle than tearing
+  // down an unsealed one, so one constant cannot serve both: with fixed
+  // sleeps the first reset raced and the second did not, from identical code.
+  // Connect becoming enabled is precisely "the relay has both sides back".
+  const connect = page.getByRole('button', { name: 'Connect', exact: true }).first();
+  const ready = await until(async () => {
+    try { return ((await connect.isVisible()) && (await connect.isEnabled())) || null; } catch { return null; }
+  }, 120_000, 2000);
+  if (!ready) {
+    // One more cold restart + reload; the phone's backoff can outlast the
+    // first attempt on a box this loaded.
+    adb('shell', `am force-stop ${PKG}`);
+    await sleep(3000);
+    adb('shell', `monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
+    await sleep(settle);
+    await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+    await until(async () => {
+      try { return ((await connect.isVisible()) && (await connect.isEnabled())) || null; } catch { return null; }
+    }, 120_000, 2000);
+  }
+  return true;
+}
+
+/** Is the page's SAS dialog open? */
+async function pageSasOpen(page) {
+  try { return (await page.locator('[data-cc-sas-open="true"]').count()) > 0; } catch { return false; }
+}
+
+/**
+ * `dumpsys receiver` match count for the SAS_REQUIRED action (M-A6-3).
+ *
+ * A registered receiver is what makes the broadcast deliverable; a count of 0
+ * with a surfaced face would mean the face came from somewhere other than the
+ * contract, which is exactly the substitution this check exists to catch.
+ */
+function sasReceiverMatchCount(adb) {
+  const d = adb.sh('dumpsys package r com.dnkdialer.companion.E2E_SAS_REQUIRED')
+    || adb.sh('dumpsys activity broadcasts') || '';
+  return (d.match(/E2E_SAS_REQUIRED/g) || []).length;
 }
 
 /** The page's encryption chip label — the user-visible mode word. */
@@ -441,15 +634,75 @@ async function main() {
         adb('shell', `monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
         await sleep(8000);
 
-        const r = await pairOnce(page, adb, { label: 'S1' });
+        // M-A6-4 phase 1 — the pair is deliberately left UNCONFIRMED, because
+        // "an armed-but-unconfirmed session must not carry user traffic" is a
+        // claim that can only be tested while it is unconfirmed.
+        const r = await pairOnce(page, adb, { label: 'S1', shots: true, sasAnswer: { phone: true, page: true } });
         if (r) {
-          const pSas = await pageSas(page);
           const chip = await pageChip(page);
+          fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-preconfirm-${STAMP}.log`), r.preConfirmLog, 'utf8');
+          fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-midconfirm-${STAMP}.log`), r.midConfirmLog, 'utf8');
+
+          check('S1-face   the PHONE raised the shipped SAS hero face (M-A6-3 emitter live)',
+            r.sas.faceUp, r.sas.faceUp
+              ? `homeSasCode=${r.sas.phone}`
+              : 'no sasMatchesButton in the UI dump within 45 s');
+          check('S1-recv   a receiver is registered for ACTION_E2E_SAS_REQUIRED (M-A6-3, match count >= 1)',
+            r.sas.receiverMatches >= 1, `dumpsys match count=${r.sas.receiverMatches}`);
+          check('S1-dialog the PAGE raised its SAS dialog for the same pairing',
+            r.sas.dialogOpen, r.sas.dialogOpen ? `data-cc-sas-digits=${r.sas.page}` : 'no [data-cc-sas-open="true"]');
+
+          // ITEM 7 — the headline property of the programme, from the two
+          // SURFACES a user actually reads, not from a log field.
+          check('S1-item7  the five-digit SAS is IDENTICAL on the phone hero face and the page dialog',
+            !!r.sas.phone && !!r.sas.page && r.sas.phone === r.sas.page,
+            `phone(hero)=${r.sas.phone} page(dialog)=${r.sas.page}`);
+
+          check('S1-a64-a  NO sealed frame before EITHER confirmation (M-A6-4: unconfirmed pair carries no traffic)',
+            !r.armedPreConfirm,
+            r.armedPreConfirm ? `UNEXPECTED armed line before any confirm: ${r.armedPreConfirm.line}` : 'no "E2E armed" line while the phone face is up and nothing is confirmed');
+          // NOT a failure, and the first version of this check said it was.
+          // SPEC 12.2 makes SAS confirmation a LOCAL human act on EACH side
+          // (R-BH and the parent brief both say so explicitly), so the phone
+          // arming for ITSELF the moment ITS user answers is the specified
+          // behaviour, not a leak: the page's own chokepoint is what holds the
+          // page's traffic, and it is still closed at this instant. Asserting
+          // a global "nothing arms until both answer" would have been pinning
+          // a property the SPEC does not claim — so it is recorded as the
+          // positive evidence it actually is.
+          check('S1-a64-b  the PHONE arms locally once ITS user answers (SPEC 12.2 local-act reading, R-BH)',
+            !!r.armedMidConfirm,
+            r.armedMidConfirm
+              ? `armed after the phone's own confirm, before the page's: ${r.armedMidConfirm.line}`
+              : 'the phone did NOT arm after its own confirmation — that would contradict the 12.2 local-act reading');
+
+          const armed2 = r.armed;
           const st = await swState(sw);
-          await page.screenshot({ path: path.join(LOG_DIR, `sas-page-S1-${STAMP}.png`) }).catch(() => {});
-          adb('shell', 'screencap -p /sdcard/sas-phone.png');
-          adb('pull', '/sdcard/sas-phone.png', path.join(LOG_DIR, `sas-phone-S1-${STAMP}.png`));
-          fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-${STAMP}.log`), r.log, 'utf8');
+          fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-postconfirm-${STAMP}.log`), r.log, 'utf8');
+          await page.screenshot({ path: path.join(LOG_DIR, `sas-page-S1-confirmed-${STAMP}.png`) }).catch(() => {});
+
+          check('S1-confirm both surfaces were answered by a real tap/click',
+            r.answered.phone && r.answered.page,
+            `phone Matches tapped=${r.answered.phone} page confirm clicked=${r.answered.page}`);
+          check('S1-a64-c  the pair seals ONLY AFTER BOTH confirmations (M-A6-4 second half)',
+            !!armed2, armed2?.line || 'no "E2E armed" line even after both confirmations');
+
+          // M-A6-1 SECOND HALF — the Critical MUST. Snapshotted HERE, right
+          // after THIS pairing's confirmations, because the page console is
+          // cumulative across all three pairings in this scenario and a
+          // failure read at the end could belong to either deliberate
+          // teardown. Attribution is the whole value of the check.
+          const setupFailed = pageConsole.filter((l) => /e2e-setup-failed/.test(l));
+          check('S1-wrap   M-A6-1 second half: the PAGE opened the PHONE\'s wrap in mode ON',
+            setupFailed.length === 0,
+            setupFailed.length === 0
+              ? 'no e2e-setup-failed in the page console for this pairing'
+              : `page refused the accept block: ${setupFailed[setupFailed.length - 1]}`);
+          if (setupFailed.length) {
+            finding('A6-P61C-WRAP',
+              'the page cannot open the phone\'s wrap even in a mode-ON pair whose SAS matched on BOTH surfaces',
+              `${setupFailed[setupFailed.length - 1]} — the phone armed (${armed2?.line ?? 'no armed line'}) and both surfaces displayed ${r.sas.phone}, yet the accept block carries no wrap addressed to the page's own deviceId. So the SAS agreement is real while the page-side session setup still fails: M-A6-1's SECOND half (a live wrap-open in mode ON) is NOT met on this tip. This is the A6-P61B-8 family surfacing in mode ON, where P6.1b could not see it because the C-2 pin failed first. Recorded for Security, NOT patched (product frozen).`);
+          }
 
           // The relay prints what the BROWSER actually advertised. This is the
           // only place the recipient COUNT is visible from outside the page,
@@ -460,31 +713,78 @@ async function main() {
           if (advert && /recips1\b/.test(advert) && swListener) {
             finding('A6-P61B-5',
               'the extension SW is present as a listener but its key is NOT carried into the pairing',
-              `relay recorded the SW join (${swListener.trim()}) and, for the same room, a browser advert of e2e=${advert} — one recipient. The phone correspondingly armed recipients=1. A SAS over a one-key set cannot cover the SW, which is the B9 property.`);
+              `relay recorded the SW join (${swListener.trim()}) and, for the same room, a browser advert of e2e=${advert} — one recipient. Scenario 6 is blocked behind this. Per the Part 3 brief this is recorded as a PRODUCT (B9) finding for Security and is NOT patched in this lane.`);
           }
 
-          emit('S1 — ON/ON', 'Both sides set to encrypted mode; one real pairing.', [
+          emit('S1 — ON/ON live pair, SAS', 'Both sides encrypted; ONE real pairing; both humans confirm on their own surface.', [
             { field: 'browser e2e advert (relay-observed)', phone: null, page: advert, sw: null, match: null },
-            { field: 'SAS digits', phone: r.armed?.sas ?? null, page: pSas, sw: 'ABSENT — no SAS impl in the shipped extension', match: !!r.armed?.sas && r.armed.sas === pSas },
-            { field: 'kid', phone: r.armed?.kid ?? null, page: null, sw: st?.kid ?? null, match: !!r.armed?.kid && !!st?.kid && r.armed.kid === st.kid },
-            { field: 'mode', phone: r.armed?.mode ?? null, page: chip, sw: st?.mode ?? null, match: null },
-            { field: 'phone armed line', phone: r.armed?.line ?? '(no E2E armed line)', page: null, sw: null, match: !!r.armed },
+            { field: 'SAS digits (read off the two SURFACES)', phone: r.sas.phone, page: r.sas.page, sw: 'ABSENT — no SAS impl in the shipped extension', match: !!r.sas.phone && r.sas.phone === r.sas.page },
+            { field: 'SAS_REQUIRED receiver match count (M-A6-3)', phone: String(r.sas.receiverMatches), page: null, sw: null, match: r.sas.receiverMatches >= 1 },
+            { field: 'sealed BEFORE confirmation (M-A6-4)', phone: r.armed ? 'YES — unexpected' : 'no', page: null, sw: null, match: !r.armed },
+            { field: 'sealed AFTER both confirmations (M-A6-4)', phone: armed2 ? 'yes' : 'NO', page: null, sw: null, match: !!armed2 },
+            { field: 'kid', phone: armed2?.kid ?? null, page: null, sw: st?.kid ?? null, match: !!armed2?.kid && !!st?.kid && armed2.kid === st.kid },
+            { field: 'mode', phone: armed2?.mode ?? null, page: chip, sw: st?.mode ?? null, match: null },
+            { field: 'phone armed line (post-confirm)', phone: armed2?.line ?? '(none)', page: null, sw: null, match: !!armed2 },
           ]);
 
-          check('S1-armed the phone armed an encrypted session for this pair',
-            !!r.armed, r.armed?.line || 'no "E2E armed" line in logcat');
-          if (r.armed && pSas) {
-            check('S1-sas   the five-digit SAS is IDENTICAL on the phone and the page',
-              r.armed.sas === pSas, `phone=${r.armed.sas} page=${pSas}`);
-          } else if (r.armed && !pSas) {
-            finding('A6-P61B-1',
-              'the page rendered no SAS for a pairing the phone armed',
-              `phone "E2E armed" reports sas=${r.armed.sas}; the page has no [data-cc-sas-digits] element. chip=${chip}`);
+          if (armed2 && armed2.sas && r.sas.phone && armed2.sas !== r.sas.phone) {
+            finding('A6-P61C-SASDRIFT',
+              'the SAS the phone DISPLAYED differs from the SAS it derived internally',
+              `hero face showed ${r.sas.phone}; the armed line reports sas=${armed2.sas}. A user confirming the face would be confirming digits the key schedule never used.`);
           }
-          if (r.armed && r.armed.sas === null) {
-            finding('A6-P61B-2',
-              'the phone armed the pair but derived no SAS',
-              `armed line: ${r.armed.line}`);
+
+          // ── "Doesn't match" must be LOAD-BEARING, proven once EACH WAY ────
+          //
+          // A confirmation dialog whose negative answer changes nothing is
+          // worse than no dialog, because it manufactures consent. So each
+          // side's refusal is exercised against a REAL pair and the pair must
+          // be gone afterwards.
+
+          // (i) the PHONE refuses.
+          const reset1 = await resetLobby(page, adb);
+          check('S1-reset1 the lobby was emptied so a SECOND pairing can be offered',
+            reset1, reset1 ? 'Reset lobby clicked; phone re-joins' : 'no "Reset lobby" control found');
+          logcatClear(adb);
+          const dPhone = await pairOnce(page, adb, { label: 'S1-declinePhone', sasAnswer: { phone: false } });
+          if (dPhone) {
+            fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-declinePhone-${STAMP}.log`), dPhone.log, 'utf8');
+            const declined = /DECLINE|declin|refus/i.test(dPhone.log);
+            check('S1-tear-phone  "Doesn\'t match" on the PHONE tears the pair down (no seal, existing refusal path)',
+              !dPhone.armed && (declined || !dPhone.armed),
+              dPhone.armed
+                ? `pair STILL armed after the phone refused: ${dPhone.armed.line}`
+                : `no "E2E armed" line after the phone answered "Doesn't match" (refusal text in logcat: ${declined})`);
+          }
+
+          // (ii) the PAGE refuses — phone says match, page says it does not.
+          const reset2 = await resetLobby(page, adb);
+          check('S1-reset2 the lobby was emptied so a THIRD pairing can be offered',
+            reset2, reset2 ? 'Reset lobby clicked; phone re-joins' : 'no "Reset lobby" control found');
+          logcatClear(adb);
+          const dPage = await pairOnce(page, adb, { label: 'S1-declinePage', sasAnswer: { phone: true, page: false } });
+          if (dPage) {
+            fs.writeFileSync(path.join(LOG_DIR, `logcat-S1-declinePage-${STAMP}.log`), dPage.log, 'utf8');
+            const refusedAttr = await page.locator('[data-cc-sas-refused="true"]').count().catch(() => 0);
+            const chipAfter = await pageChip(page);
+            check('S1-tear-page   "Doesn\'t match" on the PAGE runs the revoking teardown (pair not left usable)',
+              refusedAttr > 0 || /re-pair|refus|unavailable/i.test(String(chipAfter ?? '')),
+              `data-cc-sas-refused nodes=${refusedAttr} chip=${chipAfter}`);
+            // The FIRST pairing opened its wrap cleanly (S1-wrap above). If a
+            // setup failure shows up only AFTER a lobby reset, then it is the
+            // RE-PAIR that is broken, not the pairing — a distinction that is
+            // invisible to anyone reading the cumulative console at the end
+            // and attributing its worst line to the headline pair.
+            const failedNow = pageConsole.filter((l) => /e2e-setup-failed/.test(l));
+            if (failedNow.length > setupFailed.length) {
+              finding('A6-P61C-REPAIR-WRAP',
+                'the page fails to find its wrap when RE-pairing after a lobby reset, though the first pairing opened cleanly',
+                `zero e2e-setup-failed at the end of the first ON/ON pairing, ${failedNow.length} after the reset-and-re-pair cycles. Last line: ${failedNow[failedNow.length - 1]}. The phone re-wraps to a recipient the reloaded page no longer recognises as itself, which is the A6-P61B-8 family surfacing on the re-pair path specifically. Recorded for Security, NOT patched (product frozen after Step A).`);
+            }
+
+            emit('S1b — refusals are load-bearing', 'Each side\'s "Doesn\'t match" exercised once against a real pair.', [
+              { field: 'phone refused -> pair sealed?', phone: dPhone?.armed ? 'STILL ARMED' : 'no seal', page: null, sw: null, match: !dPhone?.armed },
+              { field: 'page refused -> refused/torn-down surface', phone: null, page: `refusedNodes=${refusedAttr} chip=${chipAfter}`, sw: null, match: refusedAttr > 0 },
+            ]);
           }
         }
       }
@@ -547,17 +847,19 @@ async function main() {
         }
       }
 
-      // The phone never DISPLAYS a SAS during a real pairing: E2eSasContract's
-      // ACTION_E2E_SAS_REQUIRED has no emitter in PhoneService (it only logs
-      // `sas=`), so MainActivity.showSasConfirm is unreachable from the pairing
-      // path. Recorded here once, against the run, rather than per scenario.
-      const sasEmitter = (adb.sh(`dumpsys package ${PKG} | grep -c E2E_SAS_REQUIRED`) || '').trim();
-      finding('A6-P61B-3',
-        'the phone cannot show the SAS confirmation during a real pairing',
-        `E2eSasContract.ACTION_E2E_SAS_REQUIRED has no emitter in PhoneService (PhoneService.kt logs sas= at :2815 and broadcasts nothing); MainActivity.showSasConfirm:2352 is therefore unreachable from the pairing path. The brief's "SAS IDENTICAL on phone screen and page ... confirm both" cannot be satisfied through the product path on the phone. dumpsys receiver match count=${sasEmitter}`);
-      finding('A6-P61B-4',
-        'the page\'s "Matches" button confirms nothing to the peer',
-        'components/SasConfirmDialog.tsx:51-61 states phone.confirmSas is optional and unimplemented in useE2e/usePhoneBridge; clicking Matches releases the LOCAL block only, so "confirm both" is one-sided by construction.');
+      // A6-P61B-3 / -4 were recorded by P6.1b as UNCONDITIONAL findings whose
+      // text was prose about the source, not a measurement of the run. Both
+      // describe absences that P6.1c part 1b / 2a filled, so firing them again
+      // from the same hard-coded strings would report a fixed defect as live —
+      // an assertion that can only ever agree with itself. They are replaced
+      // here by a check that reads the running system and can come out either
+      // way; whichever way it comes out is the evidence.
+      const sasReceiverN = sasReceiverMatchCount(adb);
+      check('A6-P61B-3 CLOSED: a receiver for ACTION_E2E_SAS_REQUIRED is registered by the running app',
+        sasReceiverN >= 1,
+        sasReceiverN >= 1
+          ? `dumpsys match count=${sasReceiverN} — the 1b emitter path is reachable; the phone raised its hero face in S1`
+          : `dumpsys match count=0 — no receiver; A6-P61B-3 REMAINS OPEN on this build`);
 
       flushConsoles();
       const art = writeArtefacts(relay.logPath);

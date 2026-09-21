@@ -325,6 +325,17 @@ class PhoneService : Service() {
      */
     private val e2eFrameGate = E2eFrameGate({ e2eSession }, { e2eLatchedOn })
 
+    /**
+     * P6.1c 1b. The SAS wait currently in flight, or null.
+     *
+     * Held so a teardown can release it. The Accept worker is a SINGLE thread,
+     * so a wait nobody can cancel would hold every later Accept behind it for
+     * the whole deadline — on a pairing that no longer exists. Volatile
+     * because it is written on that worker and read from the socket thread.
+     */
+    @Volatile
+    private var pendingSasGate: E2eSasGate.Pending? = null
+
     private val e2eExecutor: java.util.concurrent.ExecutorService =
         java.util.concurrent.Executors.newSingleThreadExecutor { r ->
             Thread(r, "e2e-accept").apply { isDaemon = true }
@@ -2116,6 +2127,19 @@ class PhoneService : Service() {
         createNotificationChannel()
         createConnectionRequestChannel()
 
+        // P6.1c 1a — SPEC v1.0 l.118 "registered on login". Sign-in covers the
+        // login edge; this covers every app start where the registry has no
+        // live row for us (a register that failed while offline, a 409 during
+        // someone else's handshake, an install that signed in before this build
+        // shipped). Idempotent, so the steady state costs one GET.
+        //
+        // On the e2e executor, never the main thread: E2eDeviceKeyClient
+        // blocks. It is the same single worker the Accept uses, so a start-up
+        // registration and an Accept can never race to write the same row.
+        e2eExecutor.execute {
+            E2eDeviceKeyRegistrar.ensureForThisDevice(this, "service start")
+        }
+
         // Register the connection-request action receiver. Hooks the shared
         // serviceHandler so Accept/Decline broadcasts route through here.
         // Internal-only intents so we keep them NOT_EXPORTED to prevent
@@ -2753,13 +2777,51 @@ class PhoneService : Service() {
         pairingId: String,
         decision: E2eNegotiation.Decision.Encrypted,
     ) {
-        // ---------------------------------------------------------- (e) pin
-        val token = TokenStore.getPhoneToken(this)
-        val registry = if (token.isNullOrBlank()) {
-            E2eDeviceKeyClient.Result.Unavailable("no phone token")
-        } else {
-            E2eDeviceKeyClient.list(token)
+        // ------------------------------------------------- (1a) registration
+        //
+        // P6.1c 1a. The page pins US at Accept (its C-2 check), so our row has
+        // to be in the registry BEFORE this ACCEPT reaches it — not "at some
+        // point after login". Registering here rather than only at start-up is
+        // what makes that a guarantee instead of a hope: a start-up attempt
+        // that hit a 409 or was offline retries at exactly the moment it
+        // matters. It is idempotent, so the normal case issues no write.
+        //
+        // It also returns the registry listing, which is the same round trip
+        // the (e) pin below needs — one GET, not two.
+        val registration = E2eDeviceKeyRegistrar.ensureForThisDevice(this, "accept")
+        val registry = registration.registry
+
+        // ------------------------------------------- (1a') the account id
+        //
+        // P4.4 / R-BH. The same round trip tells us which account this phone
+        // is, and that value is a SPEC 13.10.3 key-schedule input. A MISMATCH
+        // means a second, different id arrived for a token that resolves to
+        // exactly one User row -- so either the server's answer changed or
+        // something answered for it. TokenStore refused to overwrite; we
+        // refuse to derive.
+        //
+        // Mode ON refuses, mode OFF continues in the clear and is badged
+        // Unencrypted -- 13.1's row for "neither side required it", the same
+        // split every other failure on this path takes.
+        if (registration.userIdMismatch) {
+            if (decision.modeOn) {
+                android.util.Log.w(
+                    "PhoneService",
+                    "E2E refused: E2E_USERID_MISMATCH - the stored account id is not the one " +
+                        "the registry served; refusing rather than re-keying"
+                )
+                e2eDowngradeLatch.latch()
+                sendPairingDecision("DECLINE_PAIRING", pairingId, null)
+                broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
+                return
+            }
+            android.util.Log.w(
+                "PhoneService",
+                "E2E_USERID_MISMATCH with the mode off - continuing in plaintext"
+            )
         }
+
+        // ---------------------------------------------------------- (e) pin
         val verdict = E2eKeyPin.verify(decision.recipients, registry, decision.modeOn)
         if (!E2eKeyPin.mayProceed(verdict)) {
             // §13.6. A MISMATCH refuses in BOTH modes — a key that disagrees
@@ -2800,6 +2862,40 @@ class PhoneService : Service() {
                         "ctx is attached; the relay would DROP it and the pairing would " +
                         "silently continue in plaintext"
                 )
+
+            // ------------------------------------------------- (1b) the SAS
+            //
+            // P6.1c 1b / E2eSasContract. The digits exist at this point and up
+            // to this commit were only ever LOGGED. Mode ON means the user
+            // must compare them against the computer's before anything is
+            // accepted, so the wait goes HERE: after prepare (which is what
+            // produces the digits) and before the session is installed or the
+            // ACCEPT is sent. A SAS the peer learns about only after we have
+            // armed and accepted verifies nothing.
+            //
+            // Mode OFF/UNVERIFIED returns NOT_REQUIRED without prompting —
+            // unchanged behaviour, §13.1's row for a pairing nobody required.
+            val sas = E2eSasGate.await(
+                ctx = this,
+                pairingId = pairingId,
+                modeOn = prepared.modeOn,
+                digits = prepared.sasDigits,
+                timeoutMs = PENDING_REQUEST_TIMEOUT_MS,
+                onArmed = { pendingSasGate = it },
+            )
+            if (!E2eSasGate.mayProceed(sas)) {
+                // The EXISTING refusal path, verbatim — latch, DECLINE,
+                // broadcastE2eRefusal. E2eSasContract forbids a second
+                // implementation, and this is why: "the user says the codes
+                // differ" must be indistinguishable downstream from every
+                // other refusal.
+                android.util.Log.w("PhoneService", "E2E SAS not confirmed ($sas) for $pairingId")
+                prepared.session.close()
+                e2eDowngradeLatch.latch()
+                sendPairingDecision("DECLINE_PAIRING", pairingId, null)
+                broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
+                return
+            }
 
             // A new Accept replaces whatever was live; the old SK is dropped,
             // never carried across (§13.8).
@@ -2859,6 +2955,10 @@ class PhoneService : Service() {
      * whole attack it exists to stop.
      */
     private fun tearDownE2e(reason: String) {
+        // P6.1c 1b — release an in-flight SAS wait. Cancelling is a REFUSAL
+        // (E2eSasGate.mayProceed says so), so a pair that vanished mid-prompt
+        // can never be accepted by the answer arriving late.
+        pendingSasGate?.cancel()
         val outcome = E2eLifecycle.onPairEnded(e2eSession)
         e2eSession = null
         e2eLatchedOn = false

@@ -3594,6 +3594,32 @@ export function usePhoneBridge() {
     );
   }, [resetRoom]);
 
+  /**
+   * SPEC 12.2 / M-A6-4 — the SAS answer, E2E-P6.1c (2a).
+   *
+   * SasConfirmDialog already calls `phone.confirmSas(matches)`; until this
+   * lane it called nothing, because the action did not exist. It is wired here
+   * rather than in useE2e because the REFUSAL half is a pair teardown, and
+   * runRevokingTeardown is the one implementation of that — the same one
+   * "Forget this computer" uses. `signOut:false`: the user rejected a PAIRING
+   * CODE, not their session.
+   *
+   * No peer frame. 13.1: enforcement is "local, at Accept ... using only state
+   * it holds itself", so each side answers its own dialog; the phone's DECLINE
+   * arrives over the existing pairing path, not over a new SAS frame.
+   */
+  const confirmSas = useCallback((matches: boolean) => {
+    if (!e2eRef.current.confirmSas(matches)) return;
+    void runRevokingTeardown(
+      {
+        revokeLocalPair: (r) => e2eRef.current.revokeLocalPair(r),
+        resetRoom: () => resetRoom(),
+        onSignOut: () => {},
+      },
+      { reason: 'sas-mismatch', signOut: false },
+    );
+  }, [resetRoom]);
+
   const makeCall = useCallback((number: string, speaker: boolean = false): boolean => {
     // Check if WebSocket is connected before making call
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -4981,6 +5007,9 @@ export function usePhoneBridge() {
     setE2eLocalMode: e2eApi.setLocalMode,
     // E2E-P2.1: the explicit user act that clears a sticky encryption error.
     dismissE2eError: e2eApi.dismissError,
+    // E2E-P6.1c (2a) / SPEC 12.2. The blocking short-code answer.
+    // SasConfirmDialog reads this name off the phone context.
+    confirmSas,
 
     // FT-3a. The file-transfer view-model FT-3b renders: pendingOffer, progress
     // (bytes / bytesPerSecond / etaSeconds), error.copy, and the actions.

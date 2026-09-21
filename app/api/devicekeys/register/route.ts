@@ -77,7 +77,12 @@ export async function POST(req: NextRequest) {
       label: input.label,
     });
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
-    return NextResponse.json({ key: result.key, rotated: result.rotated });
+    /*
+     * R-BH option B -- see the long note in ../list/route.ts. Same field, same
+     * source, same reason: the phone learns its account id from the proof it
+     * has already presented. Top-level; the key row shape is unchanged.
+     */
+    return NextResponse.json({ key: result.key, rotated: result.rotated, userId: caller.userId });
   } catch (e) {
     console.error(`[DeviceKey] register failed: ${(e as Error).message}`);
     return NextResponse.json({ error: 'internal_error' }, { status: 500 });

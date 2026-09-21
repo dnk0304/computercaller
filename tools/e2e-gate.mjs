@@ -39,7 +39,11 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // (E2E-P0.3) The moving-base decision and the authored/inherited lint split,
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
+import { freemem } from 'node:os';
 import { harnessesFor, KNOWN_PHASES, phaseTableProblems } from './lib/harness-list.mjs';
+import {
+  classifyHeadroom, parseHeadroomGib, topRssHolders, headroomReport, DEFAULT_HEADROOM_GIB,
+} from './lib/headroom.mjs';
 import { resolveJavaHome } from './lib/java-home.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
 // longer encodes the phase in the worktree name.
@@ -145,6 +149,17 @@ if (!KNOWN_PHASES.includes(PHASE)) {
     + '    add it here deliberately rather than letting it through.\n'
   );
   process.exit(2);
+}
+/**
+ * GATE-PREFLIGHT. The memory floor for the browser harnesses, in GiB.
+ * Parsed HERE, with the other options, so a malformed value refuses the run at
+ * the top (exit 2) instead of thirty minutes in, at the check it disables.
+ */
+let HEADROOM_GIB = DEFAULT_HEADROOM_GIB;
+try {
+  HEADROOM_GIB = parseHeadroomGib(process.argv, DEFAULT_HEADROOM_GIB).gib;
+} catch (e) {
+  refuse(e.message);
 }
 const BASELINE = has('baseline');
 const OUTDIR = join(ROOT, flag('out', 'e2e-evidence'));
@@ -434,6 +449,16 @@ const MIN_CHECKS_OVERRIDE = {
   // silently drops half the union cannot take the count down with it and still
   // print a cheerful N/N. Measured: 44 assertions.
   'relay:e2e-ft-sw-union.test.mjs': 44,
+  // E2E-P6.1c (2a). The SPEC 12.2 confirmation suite. Auto-discovered by the
+  // tests/e2e-*.test.mjs sweep like every other e2e-* file, so what it needs
+  // here is the half the sweep does not give it: a floor, so a deletion of the
+  // chokepoint assertions cannot take the count down and still print N/N.
+  // Measured at the commit that adds it: 47 assertions.
+  'relay:e2e-web-sas-confirm.test.mjs': 47,
+  // E2E-P6.1c (2b). The advert/attribution suite for A6-P61B-5. Same reasoning
+  // as above: auto-discovered, so the floor is what it needs from this table.
+  // Measured at the commit that adds it: 44 assertions.
+  'relay:e2e-web-sw-advert.test.mjs': 47,
   // FT-3b (g). The file-transfer harnesses post-date BASELINE-harness.json, so
   // the floor cannot be read from it. Measured totals at the commit that
   // registers them: ft-ui-proof 96 (FT-3b (d)), ft-web-proof 26 (FT-3a).
@@ -453,7 +478,22 @@ const MIN_CHECKS_OVERRIDE = {
   // measured 127 on this lane's base 165f165, i.e. 20 checks above the number
   // guarding it, so a deletion of twenty assertions would have printed a
   // cheerful N/N. Re-measured here rather than bumped by three.
-  'unit:harness-list': 130,
+  // E2E-P6.1c (2c) min-checks raise 130 -> 133. Registering P6.1C in
+  // KNOWN_PHASES generates three more checks (its resolved harness list, its
+  // no-FT-proofs arm, and the frozen phase-set string). Re-measured: 133.
+  // E2E-P4.4: 142 -> 143, the one check this lane's ctx-parity floor adds to
+  // the suite. Kept exact rather than left with a point of slack.
+  'unit:harness-list': 143,
+  // E2E-P4.4. The §13.10.3 userId parity proof. Post-dates the parity baseline
+  // file, so the floor cannot be read from it and has to be declared here or
+  // the step could be emptied to two checks and still print a cheerful N/N —
+  // which is the exact shape of the defect this step exists to close (a
+  // pairContext input that nothing pinned). Measured at the commit that flips
+  // it: 14 assertions.
+  'unit:ctx-parity': 14,
+  // GATE-PREFLIGHT. Post-dates the parity baseline, so the floor is declared
+  // here. Measured after the dual-guard: 54 assertions.
+  'unit:headroom': 54,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -461,7 +501,13 @@ const MIN_CHECKS_OVERRIDE = {
   // e2e/p4.2-a5-android at 9fac09c, AVD e2e_p42 (API 34):
   //   testDebugUnitTest 200 · instrumented-A5 8 (4 vectors + 2 observability
   //   + 2 vector-M) · SasVectorsTest 7.
-  'android:testDebugUnitTest': 200,
+  // E2E-P4.4 re-measure 200 -> 237. P6.1c part 1 took the suite to 231 and this
+  // lane adds 7 (6 R-BH account-id propagation cases + the split pairContext
+  // userId case), but the floor had sat
+  // at 200 throughout — i.e. 37 assertions could have been deleted under a
+  // green N/N. Re-measured at this commit rather than bumped by six, for the
+  // same reason unit:harness-list was re-measured at P4.2 instead of +3.
+  'android:testDebugUnitTest': 238,
   'android:instrumented-A5': 8,
   'android:SasVectorsTest': 7,
 };
@@ -959,6 +1005,62 @@ function killTree(pid) {
   try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already gone */ }
 }
 
+/**
+ * GATE-PREFLIGHT's two impure halves, deliberately tiny and deliberately
+ * separate from tools/lib/headroom.mjs, which stays pure and testable.
+ */
+const osFreemem = () => freemem();
+
+/**
+ * A read-only process census: image name + working set. NEVER a pid — rule 12
+ * says the gate does not kill what it did not start, and a census that cannot
+ * name a pid cannot be fed to a killer by a later edit.
+ */
+function rssCensus() {
+  const ps = spawnSync('powershell', ['-NoProfile', '-Command',
+    'Get-Process | Select-Object ProcessName,WorkingSet64 | ConvertTo-Json -Compress'],
+  { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  try {
+    const raw = JSON.parse(ps.stdout || '[]');
+    const rows = Array.isArray(raw) ? raw : [raw];
+    return rows.map((r) => ({ name: `${r.ProcessName}.exe`, rssBytes: Number(r.WorkingSet64) }));
+  } catch {
+    // A census we cannot read is a missing convenience, never a reason to
+    // change the verdict — the verdict came from os.freemem().
+    return [];
+  }
+}
+
+/**
+ * GATE-PREFLIGHT. Refuse to start browser work when the box cannot survive it.
+ *
+ * Memoised: it is called at EVERY point where this gate is about to launch a
+ * browser, and there are two of them, but the machine is only asked once and
+ * only one `env:headroom` step is ever recorded.
+ *
+ * @param {string} where names the browser stage being guarded, so the console
+ *        says which one stopped.
+ */
+let headroomChecked = false;
+function preflightHeadroom(where) {
+  if (headroomChecked) return;
+  headroomChecked = true;
+  const verdict = classifyHeadroom({ freeBytes: osFreemem(), requiredGib: HEADROOM_GIB });
+  record('env:headroom', `os.freemem() >= ${HEADROOM_GIB} GiB (before ${where})`, 0, 0,
+    { freeGib: verdict.freeGib, requiredGib: verdict.requiredGib },
+    verdict.ok ? {} : { outcome: 'ENV-NONRUN', before: where });
+  if (verdict.ok) {
+    console.log(`  ok    env:headroom — ${verdict.freeGib} GiB free >= ${verdict.requiredGib} GiB (before ${where})`);
+    return;
+  }
+  console.log(headroomReport(verdict, topRssHolders(rssCensus())));
+  console.log(`    stopped before: ${where}\n`);
+  // Rule 14 applies to a refusal exactly as it applies to a pass. A no-op when
+  // nothing has been started yet.
+  stopDevServer();
+  process.exit(3);
+}
+
 function stopDevServer() {
   // Rule 12: never kill by image name. Only the PID we started.
   if (devProc && devProc.pid) {
@@ -1359,6 +1461,12 @@ if (WEB) {
     // matches only tests/e2e-*.test.mjs — and because a step quietly absent
     // from a phase's list is the one failure mode the gate cannot report.
     ['harness-list', 'tests/harness-list.test.mjs', true],
+    // GATE-PREFLIGHT. The memory-headroom classifier, with freemem MOCKED —
+    // the pre-flight it guards can only fire on a box that is actually out of
+    // memory, so without this suite the only way to test it would be to run
+    // out of memory. Includes the boundary (exactly-at-the-floor RUNS) and the
+    // rule-12 property that the census can never name a pid.
+    ['headroom', 'tests/gate-headroom.test.mjs', true],
     // SOAK-RIG (c). 48 checks. The R-AM soak rig: that importing soak-runner /
     // verify-soak / relay-auth starts no clock and opens no socket, and that
     // verify-soak's rule-8 guards can actually go RED — a >10 min gap, a <24 h
@@ -1426,6 +1534,22 @@ if (WEB) {
     record('unit:idb-migration', 'node scripts/e2e-idb-migration-proof.mjs', 1, 0, { missing: 1 });
   }
 
+  // E2E-P4.4. The §13.10.3 `userId` channel (R-BH option B): the phone's
+  // account id is a KEY-SCHEDULE input, and for the whole of P4–P6.1b the
+  // production path fed it a hard-coded "". Nothing caught that, because both
+  // vector suites build a PairContext DIRECTLY from the frozen vectors and so
+  // pin the KDF rather than its inputs. This step is the node-side half of the
+  // fix's evidence: the constant is gone from the Kotlin source (comments
+  // stripped — the file discusses "" at length), the channel is wired, and the
+  // two sides' KEKs are byte-equal on the same account id while still
+  // diverging on the id alone. Node-only, no browser (rule 17).
+  if (existsSync(join(ROOT, 'scripts', 'e2e-p61c-ctx-divergence-proof.mjs'))) {
+    run('unit:ctx-parity', 'node scripts/e2e-p61c-ctx-divergence-proof.mjs',
+      { parse: passLine, scrub: true });
+  } else if (!BASELINE) {
+    record('unit:ctx-parity', 'node scripts/e2e-p61c-ctx-divergence-proof.mjs', 1, 0, { missing: 1 });
+  }
+
   if (existsSync(join(ROOT, 'scripts', 'ext-bridge-origin-pin-proof.mjs'))) {
     run('unit:bridge-origin-pin', 'node scripts/ext-bridge-origin-pin-proof.mjs', { parse: passLine, scrub: true });
   } else {
@@ -1451,7 +1575,10 @@ if (WEB) {
   // Gated to P6 and later because they are P6 deliverables and did not exist at
   // BASE_SHA; running them under an earlier --phase would report `missing` for
   // a file that was never supposed to be there yet.
-  if (['P6', 'P6.1', 'P7', 'P8', 'D1'].includes(PHASE)) {
+  // E2E-P6.1c (2c): P6.1C added. These are P6 deliverables and P6.1C is a P6.1
+  // continuation over the same tree — omitting it would run none of them and
+  // print PASS, which is the "0 tests ran wearing a green hat" shape below.
+  if (['P6', 'P6.1', 'P6.1C', 'P7', 'P8', 'D1'].includes(PHASE)) {
     const P6_REAL_RELAY = [
       // (e) 10,000 frames across a resume, counters asserted on all three lanes.
       ['p6:replay', 'scripts/e2e-replay-proof.mjs'],
@@ -1463,6 +1590,14 @@ if (WEB) {
       // (g) cross-implementation. Emits its cross-match table as JSON.
       ['p6:cross-impl', 'scripts/e2e-cross-impl-proof.mjs'],
     ];
+    /**
+     * The FIRST browser launch in the whole gate at these phases is HERE, not
+     * at the Playwright block in step 9: scripts/e2e-cross-impl-proof.mjs
+     * drives a real Chromium. The pre-flight has to sit above the earliest
+     * browser or it is guarding the second door and leaving the first open —
+     * and P6.1C run 3 died at step 80, which is in this neighbourhood.
+     */
+    preflightHeadroom('the P6 real-relay proofs (p6:cross-impl drives Chromium)');
     for (const [name, rel] of P6_REAL_RELAY) {
       if (!existsSync(join(ROOT, rel))) {
         // Never a silent skip. A P6 proof that is absent at --phase P6 is a
@@ -1576,6 +1711,27 @@ if (WEB) {
          * exists and the sequential path stays the default until P5a fixes the
          * flake at source; the measured comparison is in the P1 résumé.
          */
+        /**
+         * ── GATE-PREFLIGHT: memory headroom ──────────────────────────────
+         *
+         * The LAST thing before a browser is launched. Everything above — the
+         * node suites, the android lane, the build, the dev server — has run
+         * and printed; nothing below it can run at all if the box is out of
+         * memory, and three P6.1C runs proved that it dies SILENTLY, with 0
+         * FAIL and 0 WARN, which is indistinguishable from a run on its way to
+         * a pass.
+         *
+         * So: refuse, with an outcome that is neither FAIL nor WARN, an exit
+         * code that is neither pass nor fail nor refuse-to-run, and — the
+         * important part — NO gate JSON. A JSON is a claim about this tree, and
+         * there is no honest claim to make about steps that never ran.
+         *
+         * The census is READ-ONLY and by image name (rule 12): the memory here
+         * is mostly Dennis's own Chrome under explorer.exe and it is not ours
+         * to kill. It is printed so a human knows what to close.
+         */
+        preflightHeadroom('the Playwright harnesses');
+
         const harnessSpecs = HARNESS.map((h) => ({ h, rel: `scripts/${h}.mjs` }))
           .filter(({ h, rel }) => {
             if (existsSync(join(ROOT, rel))) return true;
@@ -1786,7 +1942,7 @@ if (ANDROID) {
     }
 
     const ANDROID_TEST_RESULTS = join(AROOT, 'app/build/outputs/androidTest-results/connected');
-    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P7', 'P8'].includes(PHASE)) {
+    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P7', 'P8'].includes(PHASE)) {
       // FINDING (E2E-P4.2 (e)): this is a SECOND phase table that has to agree
       // with KNOWN_PHASES and does not — the exact defect tools/lib/harness-
       // list.mjs was created to fold away. It still names 'P7' and 'P8', which
@@ -1841,7 +1997,15 @@ if (ANDROID) {
     // never declared these floors, the A5 classes post-date P4/P5B/P6, and
     // widening a gate to phases that never agreed to it turns other lanes'
     // recorded PASSes into retro-active failures — Ken's call, not this lane's.
-    if (['P4.2', 'P6.1'].includes(PHASE)) {
+    //
+    // E2E-P6.1c (2c). P6.1C added for exactly the reason P6.1 was: this lane's
+    // brief declares android:testDebugUnitTest >= 200 and
+    // android:instrumented-A5 >= 8 as floors the gate must GRADE, and a floor
+    // only grades a step that was DISPATCHED. Left out of this list, both
+    // steps would simply not exist at --phase P6.1C and the gate would print a
+    // cheerful PASS over an android lane it never ran — the P6.1b defect
+    // documented immediately above, repeated one phase later.
+    if (['P4.2', 'P6.1', 'P6.1C'].includes(PHASE)) {
       const A5_CLASSES = [
         'com.dnkdialer.companion.E2eForwardJumpVectorsTest',
         'com.dnkdialer.companion.E2eForwardJumpObservabilityTest',
