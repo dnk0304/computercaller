@@ -2,6 +2,7 @@ package com.dnkdialer.companion
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
@@ -181,7 +182,7 @@ object TokenStore {
         // from the same API on the next start and stores the same id, so there
         // is no persist-before-use hazard to defend against -- and it matches
         // how the phoneToken beside it is written.
-        p.edit().putString(KEY_USER_ID, offered).apply()
+        p.edit { putString(KEY_USER_ID, offered) }
         return UserIdWrite.STORED
     }
 

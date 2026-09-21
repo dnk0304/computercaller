@@ -484,11 +484,12 @@ const MIN_CHECKS_OVERRIDE = {
   //   testDebugUnitTest 200 · instrumented-A5 8 (4 vectors + 2 observability
   //   + 2 vector-M) · SasVectorsTest 7.
   // E2E-P4.4 re-measure 200 -> 237. P6.1c part 1 took the suite to 231 and this
-  // lane adds 6 (the R-BH account-id propagation cases), but the floor had sat
+  // lane adds 7 (6 R-BH account-id propagation cases + the split pairContext
+  // userId case), but the floor had sat
   // at 200 throughout — i.e. 37 assertions could have been deleted under a
   // green N/N. Re-measured at this commit rather than bumped by six, for the
   // same reason unit:harness-list was re-measured at P4.2 instead of +3.
-  'android:testDebugUnitTest': 237,
+  'android:testDebugUnitTest': 238,
   'android:instrumented-A5': 8,
   'android:SasVectorsTest': 7,
 };

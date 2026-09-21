@@ -260,9 +260,9 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
   // floor reports whatever it feels like and still passes.
   for (const [name, floor] of [
     // E2E-P4.4: 200 -> 237. The suite had been at 231 since P6.1c part 1 while
-    // the floor stayed at its P4.2 measurement, so 37 assertions were deletable
-    // under a green N/N. Re-measured with this lane's six new cases.
-    ['android:testDebugUnitTest', 237],
+    // the floor stayed at its P4.2 measurement, so 38 assertions were deletable
+    // under a green N/N. Re-measured with this lane's seven new cases.
+    ['android:testDebugUnitTest', 238],
     ['android:instrumented-A5', 8],
     ['unit:harness-list', 143],
     // E2E-P4.4: the §13.10.3 userId parity proof, registered as a node-only
