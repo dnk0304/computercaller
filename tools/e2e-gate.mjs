@@ -467,6 +467,21 @@ const MIN_CHECKS_OVERRIDE = {
   // section, the replayed P6.1d S3 console shape, Security MUSTs #1-#4, the
   // v2->v3 record carry-forward, and three plants that must go red).
   'relay:e2e-web-epoch-floor.test.mjs': 123,
+  // E2E-P2.7 / R-BM. The §13.7 frame classifier. Auto-discovered by the
+  // tests/e2e-*.test.mjs sweep, so what it needs from this table is a FLOOR —
+  // and this suite needs one badly. Its parity cell is a THREE-WAY string
+  // equality (web list == E2eFrameGate.SEALED_TYPES == the spec text), which
+  // means the cheapest way to make a drift "pass" is to delete the cell, and
+  // its behaviour cells replay 22 plaintext control frames through the shipped
+  // openInbound one type at a time — a loop whose source array can be emptied
+  // without failing anything. Both shrink the count instead, which this floor
+  // turns into a step failure. Measured at the commit that adds it: 174
+  // assertions (the expander control, (a) the 28 spec types + CALL_STATUS +
+  // the eight FILE_*, (b) the GET_* trio incl. the planted-into-the-list
+  // control, (c) 22 plaintext control frames + the old nine + an undeclared
+  // type, (d) the three-way parity cell, (e)/(f) the behaviour cells against a
+  // real session, and (g) the P6.1d fixture replay).
+  'relay:e2e-web-frame-classifier.test.mjs': 174,
   // E2E-P6.1c (2b). The advert/attribution suite for A6-P61B-5. Same reasoning
   // as above: auto-discovered, so the floor is what it needs from this table.
   // Measured at the commit that adds it: 44 assertions.
