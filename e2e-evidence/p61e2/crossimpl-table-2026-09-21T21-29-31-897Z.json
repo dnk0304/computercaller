@@ -1,0 +1,370 @@
+{
+  "generatedAt": "2026-09-21T21:35:45.972Z",
+  "deliverable": "E2E-P6.1b Part B — the (g) PHONE leg, phone <-> computer",
+  "scope": [
+    "(g) requires that NO side is simulated. scripts/lib/scripted-phone.mjs is not imported anywhere in this run.",
+    "relay: REAL `node server.js` pid 43476 on ephemeral port 3515, scratch Postgres postgresql://pix:pix@localhost:15433/cc",
+    "phone: REAL debug APK (vc59, built from this tree) on a rooted API-34 AVD, reaching the relay through a TLS terminator as https://computercaller.com — the host the APK hardcodes. No app file edited.",
+    "computer: REAL /app page + REAL shipped extension SW in one real Chromium at http://localhost:3000 (the baked app origin), so the relay-ticket CSRF pin is SATISFIED rather than bypassed."
+  ],
+  "apk": {
+    "path": "C:\\Users\\D\\worktrees\\computercaller\\e2e-p61c\\dnkdialer-android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+    "sha256": null,
+    "note": "sha recorded by the runner"
+  },
+  "serial": "emulator-5562",
+  "relayLogRedacted": {
+    "destPath": "C:\\Users\\D\\worktrees\\computercaller\\p61e2-logs\\relay-redacted-2026-09-21T21-29-31-897Z.log",
+    "redactions": 0,
+    "bytes": 6548
+  },
+  "findings": [],
+  "stopped": [
+    {
+      "scenario": "3 resume / RESET_ROOM",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN — needs a surviving pair across a page reload and a SW restart. Every pairing in this run is torn down by the reload itself (logcat: \"E2E torn down (PAIRING_TERMINATED: user_left)\"), so same-kid resume cannot be observed until the harness keeps one pair alive across the reload rather than re-pairing per scenario."
+    },
+    {
+      "scenario": "4 F1 revocation live / F2 forward-jump live",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN. F2-live is structurally blocked, not merely unfinished: E2eDedupe.observe (E2eDedupe.kt:211) only reaches the forward-jump rule for a frame that AUTHENTICATES, and the seq is bound into the AEAD AAD, so a replayed frame with a relabelled far-future seq fails its tag BEFORE dedupe sees it and refusedForwardJump never increments. Emitting a genuine far-future sealed frame needs the page's own session key AND a caller-chosen seq — and sealFrame() deliberately takes no seq argument precisely so no caller can pick one (tests/e2e-sw-chokepoint asserts that signature). The Android leg of M-A5-2 is therefore proven by android:instrumented-A5 8/8 in Part A (E2eForwardJumpVectorsTest + E2eForwardJumpObservabilityTest, which pins the logcat line), not by this harness. F1-live was not reached."
+    },
+    {
+      "scenario": "5 restore-from-backup replay",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN — E2eSeqStore.simulateRestoreFromBackup() (E2eSeqStore.kt:296) deletes the Keystore wrapping key, which needs a live pair to then attempt a send. Blocked behind the same surviving-pair gap as scenario 3."
+    },
+    {
+      "scenario": "6 two-recipient canonical peer (vector J live)",
+      "status": "STOP — NOT RUN",
+      "why": "NOT RUN, and finding A6-P61B-5 is why: the browser advertised e2e=v1/mode1/recips1 in EVERY pairing this run, with the extension SW present as a listener. There is no two-recipient pair to measure live on this base, so a \"vector J live\" row here would be a one-recipient pair wearing the wrong label."
+    }
+  ],
+  "tables": [
+    {
+      "scenario": "S3 — ONE pair held across a page reload and an SW restart",
+      "note": "The surviving-pair capability scenarios 4 and 5 are blocked behind, and the live exercise of P6.1d-A 20fc058 (deviceKeyForAccept on the resume path).",
+      "rows": [
+        {
+          "field": "kid before the reload",
+          "phone": "cM8-C43Ux3glgHt712HHgQ",
+          "page": null,
+          "sw": null,
+          "match": null
+        },
+        {
+          "field": "relay auto-resumed (same pair)",
+          "phone": null,
+          "page": "yes",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "new BROWSER_REQUEST_PAIRING in the window (would mean re-pair)",
+          "phone": null,
+          "page": "no",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "terminateActivePair in the window",
+          "phone": null,
+          "page": "none",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "page console resume marker",
+          "phone": null,
+          "page": "[log] [PhoneBridge] relay-confirmed resume — silent backfill since 2026-09-21T21:23:24.858Z {heldForMs: 754}",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "e2e-setup-failed on the RESUME (REPAIR-WRAP)",
+          "phone": null,
+          "page": "0",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "kid after the reload",
+          "phone": null,
+          "page": null,
+          "sw": "(none)",
+          "match": false
+        },
+        {
+          "field": "kid after the SW restart",
+          "phone": null,
+          "page": null,
+          "sw": "(none)",
+          "match": false
+        },
+        {
+          "field": "persisted seq max(next) before -> after",
+          "phone": null,
+          "page": "0 -> 2",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "\"E2E armed\" lines before -> after (phone re-arm?)",
+          "phone": "1 -> 1",
+          "page": null,
+          "sw": null,
+          "match": true
+        }
+      ]
+    },
+    {
+      "scenario": "S3b — RESET_ROOM: new epoch, new SAS, and the REPAIR-WRAP re-proof",
+      "note": "Item 6. The console is snapshotted per pairing (Part 3's near-miss: read cumulatively at the end, a re-pair failure reads as a Critical against the FIRST pairing).",
+      "rows": [
+        {
+          "field": "kid before RESET_ROOM",
+          "phone": "cM8-C43Ux3glgHt712HHgQ",
+          "page": null,
+          "sw": null,
+          "match": null
+        },
+        {
+          "field": "kid after RESET_ROOM + re-pair",
+          "phone": "(none)",
+          "page": null,
+          "sw": null,
+          "match": false
+        },
+        {
+          "field": "SAS on the new epoch (phone / page)",
+          "phone": "-",
+          "page": "-",
+          "sw": null,
+          "match": false
+        },
+        {
+          "field": "e2e-setup-failed for THIS pairing only",
+          "phone": null,
+          "page": "0",
+          "sw": null,
+          "match": true
+        },
+        {
+          "field": "reset performed",
+          "phone": null,
+          "page": "NO",
+          "sw": null,
+          "match": false
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "pass": true,
+      "name": "PRE-adb is root",
+      "detail": "id -u = 0"
+    },
+    {
+      "pass": true,
+      "name": "PRE-hosts maps computercaller.com -> 10.0.2.2",
+      "detail": "10.0.2.2 computercaller.com"
+    },
+    {
+      "pass": true,
+      "name": "PRE-test CA in /system/etc/security/cacerts",
+      "detail": "1738bf2a.0 present"
+    },
+    {
+      "pass": true,
+      "name": "PRE-test CA in the Conscrypt APEX trust store",
+      "detail": "1738bf2a.0 present"
+    },
+    {
+      "pass": true,
+      "name": "PRE-user  real entitled user seeded in the real scratch DB",
+      "detail": "id=cmubrddj30000l270gnbhb5vy"
+    },
+    {
+      "pass": true,
+      "name": "PRE-page  the real web app loaded on the baked origin",
+      "detail": "http://localhost:3000/app"
+    },
+    {
+      "pass": true,
+      "name": "PH-install  the debug APK installed on this lane's AVD",
+      "detail": "emulator-5562 C:\\Users\\D\\worktrees\\computercaller\\e2e-p61c\\dnkdialer-android\\app\\build\\outputs\\apk\\debug\\app-debug.apk"
+    },
+    {
+      "pass": true,
+      "name": "PH-login-net the app issued POST /api/auth/apk-login through the TLS terminator",
+      "detail": "POST /api/auth/apk-login"
+    },
+    {
+      "pass": true,
+      "name": "PH-signin   SignInActivity dismissed (the real login was accepted)",
+      "detail": "signed in"
+    },
+    {
+      "pass": true,
+      "name": "PRE-phone the RELAY observed the real app open /relay/phone",
+      "detail": "Phone joined lobby (browsers=1, active=false)"
+    },
+    {
+      "pass": true,
+      "name": "M-A6-2a  GET /api/devicekeys/list answered as the phone's user, BEFORE any pairing was offered",
+      "detail": "1 live row(s); top-level userId=cmubrddj30000l270gnbhb5vy"
+    },
+    {
+      "pass": true,
+      "name": "M-A6-2b  a LIVE phone DeviceKey row exists at that moment (register-on-login, not register-on-pair)",
+      "detail": "deviceId=gVCv7s5bvqVzzJetKPlRHQ kind=phone"
+    },
+    {
+      "pass": true,
+      "name": "M-A6-2c  the registry states the SAME account id the page derives its context under (R-BH option B)",
+      "detail": "list.userId=cmubrddj30000l270gnbhb5vy vs seeded User.id=cmubrddj30000l270gnbhb5vy"
+    },
+    {
+      "pass": true,
+      "name": "A6-P61B-3 CLOSED: a receiver for ACTION_E2E_SAS_REQUIRED is registered by the running app",
+      "detail": "dumpsys match count=1 — the 1b emitter path is reachable; the phone raised its hero face in S1"
+    },
+    {
+      "pass": true,
+      "name": "S3-pref  the phone's local encrypted-mode setting reads back ON from disk",
+      "detail": "computercaller_e2e_prefs/encrypted_mode=true"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S3-lobby  the page offers Connect (relay reported the phone in the lobby)",
+      "detail": "Connect enabled"
+    },
+    {
+      "pass": true,
+      "name": "PAIR-S3-accept the PHONE showed a connection request and Accept was tapped",
+      "detail": "pairAcceptButton tapped"
+    },
+    {
+      "pass": true,
+      "name": "S3-pair   a confirmed ON pair exists to hold across the reload",
+      "detail": "E2E armed kid=cM8-C43Ux3glgHt712HHgQ epoch=1 mode=ON verified=true recipients=1 sas=51386"
+    },
+    {
+      "pass": true,
+      "name": "S3-hold   the pair was held ON for >= 45 s before the reload (actual 50 s)",
+      "detail": "held 50 s across 8 console line(s)"
+    },
+    {
+      "pass": true,
+      "name": "S3-pong   APP_PONG reached the page at least once while ON (P2.7 live -- the inbound classifier no longer drops the heartbeat)",
+      "detail": "4 \"Handling message type: APP_PONG\" line(s); first: [log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026345869}"
+    },
+    {
+      "pass": true,
+      "name": "S3-nostale the page never marked the phone stale during the hold (usePhoneBridge.ts:4808)",
+      "detail": "zero \"marking phone stale\" lines in the hold window"
+    },
+    {
+      "pass": false,
+      "name": "S3-pill   NOT GRADED — no bridgeStatus value was readable from the live hook state during the hold",
+      "detail": "The assertion \"bridgeStatus never became phone_unresponsive\" is satisfied by an empty sample set no matter what the product did, so a green here would prove nothing. readPageE2eDebug() resolved debug.downgradesDropped (see S3-nodrop) but found no bridgeStatus in the fiber tree. The REAL evidence for this clause in this run is S3-nostale: zero \"marking phone stale\" lines, and usePhoneBridge.ts:4808 is what drives phone_unresponsive in the first place."
+    },
+    {
+      "pass": true,
+      "name": "S3-nodrop debug.downgradesDropped == 0 at the end of the hold",
+      "detail": "downgradesDropped=0"
+    },
+    {
+      "pass": true,
+      "name": "S3-probe  the page's OWN sendNotificationDismiss was invoked with a bogus key (the product path, not a harness re-implementation of sealing)",
+      "detail": "fiber matches=1 called=1 key=p61e-seq-probe-1790026393713"
+    },
+    {
+      "pass": true,
+      "name": "S3-callsend the page's OWN makeCall was invoked with the invalid number 000",
+      "detail": "fiber matches=1 called=1"
+    },
+    {
+      "pass": true,
+      "name": "S3-seal2  the NOTIFICATION_DISMISS probe reached the phone SEALED (sealed=1 on the wire)",
+      "detail": "1 NOTIFICATION_DISMISS frame(s) inbound, sealed flags: 1"
+    },
+    {
+      "pass": true,
+      "name": "S3-seal9  MAKE_CALL reached the phone SEALED (P2.8 live -- item 9; the dial outcome is not graded)",
+      "detail": "1 MAKE_CALL frame(s) inbound, sealed flags: 1"
+    },
+    {
+      "pass": true,
+      "name": "S3-phonelog the PHONE accepted the sealed probe and no-opped it (PhoneService.kt:4928 ok=false)",
+      "detail": "09-21 23:33:12.805  4958  5006 D PhoneService: NOTIFICATION_DISMISS key=p61e-seq-probe-1790026393713 ok=false\r"
+    },
+    {
+      "pass": true,
+      "name": "S3-nolatch the phone did NOT drop the probe as plaintext-under-latch (the A6-P61E-WEB-RAWSEND-3 failure mode)",
+      "detail": "no E2eFrameGate plaintext/drop line in the probe window"
+    },
+    {
+      "pass": true,
+      "name": "S3-resume the relay auto-resumed the SAME pair after the page reload",
+      "detail": "[Relay][B74oGEHB:d3bc1717] auto-resumed pair after socket_closed (gap=754ms, heldFor=754ms, droppedRole=browser, panelHold=true, survivorHeld=true)"
+    },
+    {
+      "pass": true,
+      "name": "S3-norepair no new pairing was requested across the reload (the pair SURVIVED, it was not rebuilt)",
+      "detail": "no BROWSER_REQUEST_PAIRING in the reload window"
+    },
+    {
+      "pass": true,
+      "name": "S3-repairwrap  the RESUMED page opened the accept block's wrap — no e2e-setup-failed on the resume (A6-P61C-REPAIR-WRAP, the 20fc058 fix)",
+      "detail": "zero e2e-setup-failed lines in the reload window"
+    },
+    {
+      "pass": false,
+      "name": "S3-samekid the computer side is back on the SAME kid after the reload (no new epoch)",
+      "detail": "kid before=cM8-C43Ux3glgHt712HHgQ after=(none)"
+    },
+    {
+      "pass": true,
+      "name": "S3-seq    LOAD-BEARING: the persisted send counter ADVANCED past the pre-reload value and survived the resume (after > before)",
+      "detail": "max next before=0 after=2 (probe key p61e-seq-probe-1790026393713). A sealed frame was sent before the reload and the counter carried across it."
+    },
+    {
+      "pass": true,
+      "name": "S3-phone  the PHONE did not re-arm across the reload (same session, not a rebuilt one)",
+      "detail": "\"E2E armed\" lines before=1 after=1"
+    },
+    {
+      "pass": false,
+      "name": "S3-swrestart the pair survived an extension SW restart on the same kid",
+      "detail": "method=CDP stopWorker + stopAllWorkers kid after SW restart=(none) (expected cM8-C43Ux3glgHt712HHgQ)"
+    },
+    {
+      "pass": true,
+      "name": "S3-seq2   the send counter also carried across the SW RESTART (item 8 -- continuous over both survivals)",
+      "detail": "max next: before reload=0 after reload=2 after SW restart=2"
+    },
+    {
+      "pass": false,
+      "name": "PAIR-S3-repair-lobby  the page offers Connect (relay reported the phone in the lobby)",
+      "detail": "Connect never enabled — the phone never reached the lobby"
+    },
+    {
+      "pass": false,
+      "name": "S3-reset  RESET_ROOM then a fresh pairing yields a NEW kid (a new epoch, not the old session)",
+      "detail": "old kid=cM8-C43Ux3glgHt712HHgQ new kid=(none)"
+    },
+    {
+      "pass": false,
+      "name": "S3-resetsas the new epoch shows a NEW SAS on both surfaces, identical to each other",
+      "detail": "phone=undefined page=undefined (previous epoch SAS was 51386)"
+    },
+    {
+      "pass": true,
+      "name": "S3-repairwrap2 the RE-PAIRED page opened the new accept block's wrap — e2e-setup-failed = 0 for this pairing",
+      "detail": "zero e2e-setup-failed lines for this pairing (snapshotted per pairing, not read cumulatively)"
+    }
+  ]
+}

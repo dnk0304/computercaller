@@ -1,0 +1,5 @@
+[Relay][B74oGEHB:d3bc1717] socket_closed: soft-hold survivor (droppedRole=browser, code=1000 reason="page_unload"), resume window armed (180000ms), panelHold=YES (renewed each tick while a listener is present; grace 600000ms)
+[Relay][B74oGEHB:d3bc1717] Browser disconnected (was_active=true, code=1000, reason="page_unload")
+[Relay] Connection authed user=cmubrddj30000l270gnbhb5vy via relay-ticket room=B74oGEHB:d3bc1717
+[Relay][B74oGEHB:d3bc1717] Browser joined lobby (phones=0, active=true, listener=false, claim=armed(droppedRole=browser))
+[Relay][B74oGEHB:d3bc1717] auto-resumed pair after socket_closed (gap=754ms, heldFor=754ms, droppedRole=browser, panelHold=true, survivorHeld=true)

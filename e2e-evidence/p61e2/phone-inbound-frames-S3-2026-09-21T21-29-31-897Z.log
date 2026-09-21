@@ -1,0 +1,6 @@
+# page -> relay -> PHONE, read post-TLS in the harness's own terminator.
+# columns: idx iso window type user sealed bytes
+23 2026-09-21T21:33:13.773Z window=S3 type=NOTIFICATION_DISMISS user=1 sealed=1 bytes=179
+24 2026-09-21T21:33:13.813Z window=S3 type=SET_AUDIO_SOURCE user=0 sealed=- bytes=35
+25 2026-09-21T21:33:13.814Z window=S3 type=MAKE_CALL user=1 sealed=1 bytes=168
+26 2026-09-21T21:33:15.534Z window=S3 type=SET_AUDIO_SOURCE user=0 sealed=- bytes=35

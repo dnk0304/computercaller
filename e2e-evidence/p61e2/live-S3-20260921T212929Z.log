@@ -1,0 +1,70 @@
+=== LIVE RUN --only=3 START 2026-09-21T21:29:29Z ===
+device: emulator-5562	device
+ok   PRE-adb is root — id -u = 0
+ok   PRE-hosts maps computercaller.com -> 10.0.2.2 — 10.0.2.2 computercaller.com
+ok   PRE-test CA in /system/etc/security/cacerts — 1738bf2a.0 present
+ok   PRE-test CA in the Conscrypt APEX trust store — 1738bf2a.0 present
+relay pid=43476 port=3515
+relay log: C:\Users\D\worktrees\computercaller\p61e2-logs\p61b-crossimpl-3515-2026-09-21T21-29-36-555Z.log
+ok   PRE-user  real entitled user seeded in the real scratch DB — id=cmubrddj30000l270gnbhb5vy
+  [computer] launching chromium (extension: C:\Users\D\worktrees\computercaller\e2e-p61c\chrome-extension)
+  [computer] waiting for the extension service worker
+  [computer] extension service worker up: helkcjjlidcceiifjccolmppanfmcjjg
+ok   PRE-page  the real web app loaded on the baked origin — http://localhost:3000/app
+ok   PH-install  the debug APK installed on this lane's AVD — emulator-5562 C:\Users\D\worktrees\computercaller\e2e-p61c\dnkdialer-android\app\build\outputs\apk\debug\app-debug.apk
+  [app-proxy] UPGRADE /relay
+  [app-proxy] UPGRADE /relay
+ok   PH-login-net the app issued POST /api/auth/apk-login through the TLS terminator — POST /api/auth/apk-login
+ok   PH-signin   SignInActivity dismissed (the real login was accepted) — signed in
+  [phone-proxy] UPGRADE /relay/phone
+  [phone-proxy] UPGRADE /relay/phone
+ok   PRE-phone the RELAY observed the real app open /relay/phone — Phone joined lobby (browsers=1, active=false)
+ok   M-A6-2a  GET /api/devicekeys/list answered as the phone's user, BEFORE any pairing was offered — 1 live row(s); top-level userId=cmubrddj30000l270gnbhb5vy
+ok   M-A6-2b  a LIVE phone DeviceKey row exists at that moment (register-on-login, not register-on-pair) — deviceId=gVCv7s5bvqVzzJetKPlRHQ kind=phone
+ok   M-A6-2c  the registry states the SAME account id the page derives its context under (R-BH option B) — list.userId=cmubrddj30000l270gnbhb5vy vs seeded User.id=cmubrddj30000l270gnbhb5vy
+ok   A6-P61B-3 CLOSED: a receiver for ACTION_E2E_SAS_REQUIRED is registered by the running app — dumpsys match count=1 — the 1b emitter path is reachable; the phone raised its hero face in S1
+ok   S3-pref  the phone's local encrypted-mode setting reads back ON from disk — computercaller_e2e_prefs/encrypted_mode=true
+  [app-proxy] UPGRADE /relay
+  [phone-proxy] UPGRADE /relay/phone
+  [phone-proxy] UPGRADE /relay/phone
+  [phone-proxy] UPGRADE /relay/phone
+  [phone-proxy] UPGRADE /relay/phone
+  [app-proxy] UPGRADE /relay
+ok   PAIR-S3-lobby  the page offers Connect (relay reported the phone in the lobby) — Connect enabled
+ok   PAIR-S3-accept the PHONE showed a connection request and Accept was tapped — pairAcceptButton tapped
+ok   S3-pair   a confirmed ON pair exists to hold across the reload — E2E armed kid=cM8-C43Ux3glgHt712HHgQ epoch=1 mode=ON verified=true recipients=1 sas=51386
+ok   S3-hold   the pair was held ON for >= 45 s before the reload (actual 50 s) — held 50 s across 8 console line(s)
+ok   S3-pong   APP_PONG reached the page at least once while ON (P2.7 live -- the inbound classifier no longer drops the heartbeat) — 4 "Handling message type: APP_PONG" line(s); first: [log] [PhoneBridge] Handling message type: APP_PONG payload: {ts: 1790026345869}
+ok   S3-nostale the page never marked the phone stale during the hold (usePhoneBridge.ts:4808) — zero "marking phone stale" lines in the hold window
+FAIL S3-pill   NOT GRADED — no bridgeStatus value was readable from the live hook state during the hold — The assertion "bridgeStatus never became phone_unresponsive" is satisfied by an empty sample set no matter what the product did, so a green here would prove nothing. readPageE2eDebug() resolved debug.downgradesDropped (see S3-nodrop) but found no bridgeStatus in the fiber tree. The REAL evidence for this clause in this run is S3-nostale: zero "marking phone stale" lines, and usePhoneBridge.ts:4808 is what drives phone_unresponsive in the first place.
+ok   S3-nodrop debug.downgradesDropped == 0 at the end of the hold — downgradesDropped=0
+ok   S3-probe  the page's OWN sendNotificationDismiss was invoked with a bogus key (the product path, not a harness re-implementation of sealing) — fiber matches=1 called=1 key=p61e-seq-probe-1790026393713
+ok   S3-callsend the page's OWN makeCall was invoked with the invalid number 000 — fiber matches=1 called=1
+ok   S3-seal2  the NOTIFICATION_DISMISS probe reached the phone SEALED (sealed=1 on the wire) — 1 NOTIFICATION_DISMISS frame(s) inbound, sealed flags: 1
+ok   S3-seal9  MAKE_CALL reached the phone SEALED (P2.8 live -- item 9; the dial outcome is not graded) — 1 MAKE_CALL frame(s) inbound, sealed flags: 1
+ok   S3-phonelog the PHONE accepted the sealed probe and no-opped it (PhoneService.kt:4928 ok=false) — 09-21 23:33:12.805  4958  5006 D PhoneService: NOTIFICATION_DISMISS key=p61e-seq-probe-1790026393713 ok=false
+ok   S3-nolatch the phone did NOT drop the probe as plaintext-under-latch (the A6-P61E-WEB-RAWSEND-3 failure mode) — no E2eFrameGate plaintext/drop line in the probe window
+  [app-proxy] UPGRADE /relay
+ok   S3-resume the relay auto-resumed the SAME pair after the page reload — [Relay][B74oGEHB:d3bc1717] auto-resumed pair after socket_closed (gap=754ms, heldFor=754ms, droppedRole=browser, panelHold=true, survivorHeld=true)
+ok   S3-norepair no new pairing was requested across the reload (the pair SURVIVED, it was not rebuilt) — no BROWSER_REQUEST_PAIRING in the reload window
+ok   S3-repairwrap  the RESUMED page opened the accept block's wrap — no e2e-setup-failed on the resume (A6-P61C-REPAIR-WRAP, the 20fc058 fix) — zero e2e-setup-failed lines in the reload window
+FAIL S3-samekid the computer side is back on the SAME kid after the reload (no new epoch) — kid before=cM8-C43Ux3glgHt712HHgQ after=(none)
+ok   S3-seq    LOAD-BEARING: the persisted send counter ADVANCED past the pre-reload value and survived the resume (after > before) — max next before=0 after=2 (probe key p61e-seq-probe-1790026393713). A sealed frame was sent before the reload and the counter carried across it.
+ok   S3-phone  the PHONE did not re-arm across the reload (same session, not a rebuilt one) — "E2E armed" lines before=1 after=1
+  sw stopWorker(versionId=0) sent
+FAIL S3-swrestart the pair survived an extension SW restart on the same kid — method=CDP stopWorker + stopAllWorkers kid after SW restart=(none) (expected cM8-C43Ux3glgHt712HHgQ)
+ok   S3-seq2   the send counter also carried across the SW RESTART (item 8 -- continuous over both survivals) — max next: before reload=0 after reload=2 after SW restart=2
+FAIL PAIR-S3-repair-lobby  the page offers Connect (relay reported the phone in the lobby) — Connect never enabled — the phone never reached the lobby
+FAIL S3-reset  RESET_ROOM then a fresh pairing yields a NEW kid (a new epoch, not the old session) — old kid=cM8-C43Ux3glgHt712HHgQ new kid=(none)
+FAIL S3-resetsas the new epoch shows a NEW SAS on both surfaces, identical to each other — phone=undefined page=undefined (previous epoch SAS was 51386)
+ok   S3-repairwrap2 the RE-PAIRED page opened the new accept block's wrap — e2e-setup-failed = 0 for this pairing — zero e2e-setup-failed lines for this pairing (snapshotted per pairing, not read cumulatively)
+
+artefacts:
+  C:\Users\D\worktrees\computercaller\p61e2-logs\crossimpl-table-2026-09-21T21-29-31-897Z.json
+  C:\Users\D\worktrees\computercaller\p61e2-logs\crossimpl-table-2026-09-21T21-29-31-897Z.md
+  C:\Users\D\worktrees\computercaller\p61e2-logs\relay-redacted-2026-09-21T21-29-31-897Z.log
+reaped 10 chromium pid(s) by pid
+
+35 passed, 6 failed, 0 finding(s)
+LIVE_EXIT=1
+=== LIVE RUN END 2026-09-21T21:36:18Z ===

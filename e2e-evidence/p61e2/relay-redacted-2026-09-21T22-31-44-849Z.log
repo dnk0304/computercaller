@@ -1,0 +1,67 @@
+[e2e] encrypted pairing ENABLED (E2E_PAIRING_ENABLED === '1')
+[Server] Starting ComputerCaller...
+[Server] Mode: production
+[Server] Preparing Next.js on port 5377...
+[Server] Mounting relay WebSocket server on shared httpServer at /relay...
+[Relay] Mounted on shared httpServer at /relay (browser) and /relay/phone (sign-in). Connect+Accept lobby model active (dispatch #32).
+[Server] Next.js ready on http://localhost:5377
+[Server] Relay WebSocket ready on ws://localhost:5377/relay (browser) and /relay/phone (phone).
+(node:46920) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via relay-ticket room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Listener (extension SW) joined lobby — receive-only (deviceId=ext-WAiB9t_rc0TcLviLw89SLw)
+[Relay][AmWGKC9X:3c8d07ce] Browser joined lobby (phones=0, active=false, listener=true, claim=none)
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via relay-ticket room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Browser joined lobby (phones=0, active=false, listener=false, claim=none)
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via legacy-token room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Phone joined lobby (browsers=1, active=false)
+[Relay][AmWGKC9X:3c8d07ce] Phone device name: Google sdk_gphone64_x86_64
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=41 (type=NOTIFICATION_PERMISSION count=1; room totals: NOTIFICATION_PERMISSION=1)
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=79 (type=SIM_LIST count=1; room totals: NOTIFICATION_PERMISSION=1 SIM_LIST=1)
+[Relay][AmWGKC9X:3c8d07ce] Phone disconnected (was_active=false, code=1000, reason="(none)")
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via legacy-token room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Phone joined lobby (browsers=1, active=false)
+[Relay][AmWGKC9X:3c8d07ce] Phone device name: Google sdk_gphone64_x86_64
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=41 (type=NOTIFICATION_PERMISSION count=2; room totals: NOTIFICATION_PERMISSION=2 SIM_LIST=1)
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=79 (type=SIM_LIST count=2; room totals: NOTIFICATION_PERMISSION=2 SIM_LIST=2)
+[Relay][AmWGKC9X:3c8d07ce] Phone disconnected (was_active=false, code=1006, reason="(none)")
+[Relay][AmWGKC9X:3c8d07ce] Browser disconnected (was_active=false, code=1000, reason="page_unload")
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via relay-ticket room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Browser joined lobby (phones=0, active=false, listener=false, claim=none)
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via legacy-token room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Phone joined lobby (browsers=1, active=false)
+[Relay][AmWGKC9X:3c8d07ce] Phone device name: Google sdk_gphone64_x86_64
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=41 (type=NOTIFICATION_PERMISSION count=3; room totals: NOTIFICATION_PERMISSION=3 SIM_LIST=2)
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=79 (type=SIM_LIST count=3; room totals: NOTIFICATION_PERMISSION=3 SIM_LIST=3)
+[Relay][AmWGKC9X:3c8d07ce] Phone disconnected (was_active=false, code=1000, reason="(none)")
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via legacy-token room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Phone joined lobby (browsers=1, active=false)
+[Relay][AmWGKC9X:3c8d07ce] Phone device name: Google sdk_gphone64_x86_64
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=41 (type=NOTIFICATION_PERMISSION count=4; room totals: NOTIFICATION_PERMISSION=4 SIM_LIST=3)
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=79 (type=SIM_LIST count=4; room totals: NOTIFICATION_PERMISSION=4 SIM_LIST=4)
+[Relay][AmWGKC9X:3c8d07ce] Phone disconnected (was_active=false, code=1006, reason="(none)")
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via legacy-token room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Phone joined lobby (browsers=1, active=false)
+[Relay][AmWGKC9X:3c8d07ce] Phone device name: Google sdk_gphone64_x86_64
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=41 (type=NOTIFICATION_PERMISSION count=5; room totals: NOTIFICATION_PERMISSION=5 SIM_LIST=4)
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=79 (type=SIM_LIST count=5; room totals: NOTIFICATION_PERMISSION=5 SIM_LIST=5)
+[Relay][AmWGKC9X:3c8d07ce] Phone disconnected (was_active=false, code=1000, reason="(none)")
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via legacy-token room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Phone joined lobby (browsers=1, active=false)
+[Relay][AmWGKC9X:3c8d07ce] Phone device name: Google sdk_gphone64_x86_64
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=41 (type=NOTIFICATION_PERMISSION count=6; room totals: NOTIFICATION_PERMISSION=6 SIM_LIST=5)
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-phone frame: bytes=79 (type=SIM_LIST count=6; room totals: NOTIFICATION_PERMISSION=6 SIM_LIST=6)
+[Relay][AmWGKC9X:3c8d07ce] Browser disconnected (was_active=false, code=1000, reason="page_unload")
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via relay-ticket room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Browser joined lobby (phones=1, active=false, listener=false, claim=none)
+[Relay][AmWGKC9X:3c8d07ce] Pairing request ee231102-d0da-4f2b-afaf-3a954c4babb9 forwarded to phone (ua=Mozilla/5.0 (Windows NT 10.0; Win64; x64 ip=127.0.0.1 label=Chrome on Windows e2e=v1/mode1/recips1)
+[Relay][AmWGKC9X:3c8d07ce] Pairing ee231102-d0da-4f2b-afaf-3a954c4babb9 ACTIVE — browser ↔ phone
+[Relay][AmWGKC9X:3c8d07ce] socket_closed: soft-hold survivor (droppedRole=browser, code=1000 reason="page_unload"), resume window armed (180000ms), panelHold=YES (renewed each tick while a listener is present; grace 600000ms)
+[Relay][AmWGKC9X:3c8d07ce] Browser disconnected (was_active=true, code=1000, reason="page_unload")
+[Relay] Connection authed user=cmubtlbr70000l228ekepy2vi via relay-ticket room=AmWGKC9X:3c8d07ce
+[Relay][AmWGKC9X:3c8d07ce] Browser joined lobby (phones=0, active=true, listener=false, claim=armed(droppedRole=browser))
+[Relay][AmWGKC9X:3c8d07ce] auto-resumed pair after socket_closed (gap=626ms, heldFor=625ms, droppedRole=browser, panelHold=true, survivorHeld=true)
+[Relay][AmWGKC9X:3c8d07ce] terminateActivePair: user_left
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-browser frame: type=GET_SYNC_ESTIMATE bytes=20
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-browser frame: type=GET_MESSAGES bytes=36
+[Relay][AmWGKC9X:3c8d07ce] Dropping lobby-browser frame: type=GET_CALL_LOGS bytes=37

@@ -1,0 +1,25 @@
+# phone -> relay, read post-TLS in the harness own TLS terminator.
+# columns: idx iso window type user sealed bytes
+1 2026-09-21T22:32:50.005Z window=pre-pairing type=DEVICE_INFO user=0 sealed=- bytes=55
+2 2026-09-21T22:32:50.012Z window=pre-pairing type=NOTIFICATION_PERMISSION user=0 sealed=- bytes=41
+3 2026-09-21T22:32:50.051Z window=pre-pairing type=SIM_LIST user=1 sealed=0 bytes=79
+4 2026-09-21T22:32:50.597Z window=pre-pairing type=DEVICE_INFO user=0 sealed=- bytes=55
+5 2026-09-21T22:32:50.611Z window=pre-pairing type=NOTIFICATION_PERMISSION user=0 sealed=- bytes=41
+6 2026-09-21T22:32:50.639Z window=pre-pairing type=SIM_LIST user=1 sealed=0 bytes=79
+7 2026-09-21T22:33:02.337Z window=S4 type=DEVICE_INFO user=0 sealed=- bytes=55
+8 2026-09-21T22:33:02.340Z window=S4 type=NOTIFICATION_PERMISSION user=0 sealed=- bytes=41
+9 2026-09-21T22:33:02.382Z window=S4 type=SIM_LIST user=1 sealed=0 bytes=79
+10 2026-09-21T22:33:02.793Z window=S4 type=DEVICE_INFO user=0 sealed=- bytes=55
+11 2026-09-21T22:33:02.827Z window=S4 type=NOTIFICATION_PERMISSION user=0 sealed=- bytes=41
+12 2026-09-21T22:33:02.870Z window=S4 type=SIM_LIST user=1 sealed=0 bytes=79
+13 2026-09-21T22:33:25.607Z window=S4 type=DEVICE_INFO user=0 sealed=- bytes=55
+14 2026-09-21T22:33:25.625Z window=S4 type=NOTIFICATION_PERMISSION user=0 sealed=- bytes=41
+15 2026-09-21T22:33:25.671Z window=S4 type=SIM_LIST user=1 sealed=0 bytes=79
+16 2026-09-21T22:33:26.402Z window=S4 type=DEVICE_INFO user=0 sealed=- bytes=55
+17 2026-09-21T22:33:26.402Z window=S4 type=NOTIFICATION_PERMISSION user=0 sealed=- bytes=41
+18 2026-09-21T22:33:26.409Z window=S4 type=SIM_LIST user=1 sealed=0 bytes=79
+19 2026-09-21T22:34:10.959Z window=S4 type=ACCEPT_PAIRING user=0 sealed=- bytes=752
+20 2026-09-21T22:34:11.924Z window=S4 type=SYNC_ESTIMATE user=1 sealed=1 bytes=257
+21 2026-09-21T22:34:13.006Z window=S4 type=CONTACTS_CHUNK user=1 sealed=1 bytes=162
+22 2026-09-21T22:34:13.327Z window=S4 type=MESSAGES_CHUNK user=1 sealed=1 bytes=162
+23 2026-09-21T22:34:13.593Z window=S4 type=CALL_LOGS_CHUNK user=1 sealed=1 bytes=163
