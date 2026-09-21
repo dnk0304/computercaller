@@ -482,6 +482,20 @@ const MIN_CHECKS_OVERRIDE = {
   // type, (d) the three-way parity cell, (e)/(f) the behaviour cells against a
   // real session, and (g) the P6.1d fixture replay).
   'relay:e2e-web-frame-classifier.test.mjs': 174,
+  // E2E-P2.8 / R-BP (b). The raw-send pin: 0 raw sends of any §13.7 sealed type
+  // across hooks/ app/ chrome-extension/. Auto-discovered by the
+  // tests/e2e-*.test.mjs sweep, so what it needs from this table is a FLOOR —
+  // and this suite needs one more than most, because what it asserts is an
+  // ABSENCE. Every one of its (a)/(d) cells passes by finding nothing, so
+  // DELETING a cell, a scan root or a type from the alphabet makes the suite
+  // "greener", not redder. The count is the only thing that notices. Measured
+  // at the commit that adds it: 38 assertions (the sliced sealed alphabet + its
+  // membership controls, (a) the aggregate zero + the four page-originated
+  // types, (b) the GET_MESSAGES positive control + both regex-shape controls,
+  // (c) the four sendCommand call sites + the chokepoint/refusal/number-log
+  // pins, (d) the app/ and chrome-extension/ surfaces + their scanned-anything
+  // controls). scripts/e2e-p28-plant-proof.mjs proves all of it can go red.
+  'relay:e2e-web-rawsend-pin.test.mjs': 38,
   // E2E-P6.1c (2b). The advert/attribution suite for A6-P61B-5. Same reasoning
   // as above: auto-discovered, so the floor is what it needs from this table.
   // Measured at the commit that adds it: 44 assertions.
