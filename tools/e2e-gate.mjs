@@ -40,6 +40,7 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
 import { harnessesFor, KNOWN_PHASES, phaseTableProblems } from './lib/harness-list.mjs';
+import { porcelainLines as porcelainOf, porcelainPath } from './lib/porcelain.mjs';
 import { resolveJavaHome } from './lib/java-home.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
 // longer encodes the phase in the worktree name.
@@ -454,6 +455,10 @@ const MIN_CHECKS_OVERRIDE = {
   // guarding it, so a deletion of twenty assertions would have printed a
   // cheerful N/N. Re-measured here rather than bumped by three.
   'unit:harness-list': 130,
+  // GATE-FOLD (a). tests/gate-porcelain.test.mjs — the ONE porcelain parser
+  // (tools/lib/porcelain.mjs), asserted directly plus a reconstructed plant of
+  // the pre-fix block-trim so the arms cannot be vacuous. Measured: 16.
+  'unit:gate-porcelain': 16,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -1040,13 +1045,14 @@ console.log(
   `${SCOPE_BASE.fellBack ? ` — FELL BACK: ${SCOPE_BASE.reason}` : ` vs ${INTEGRATION_REF}`})\n`
 );
 
-const gitOut = (a) => (spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' }).stdout || '').trim();
+const gitRaw = (a) => (spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' }).stdout || '');
+const gitOut = (a) => gitRaw(a).trim();
 const SHA = gitOut(['rev-parse', 'HEAD']);
 
 // ── 1. git identity, cleanliness, base ancestry ────────────────────────────
 {
   const t0 = Date.now();
-  const porcelain = gitOut(['status', '--porcelain']).split('\n').filter(Boolean);
+  const porcelain = porcelainOf(gitRaw(['status', '--porcelain']));
   const ALLOW = /(^|\/)(bun\.lock|\.e2e-lock|\.env\.local|\.e2e-gate-logs\/?|node_modules\/?)$/;
   /**
    * The gate's OWN evidence is not "a dirty tree". The baseline run failed its
@@ -1074,7 +1080,7 @@ const SHA = gitOut(['rev-parse', 'HEAD']);
    */
   const OWN_OUTPUT = /^(e2e-evidence\/(gate-P[^/]*\.json|BASELINE-harness\.json|LINT-BASELINE(-android)?\.json)|docs\/screenshots\/[^/]+\.png)$/;
   const dirty = porcelain.filter((l) => {
-    const p = l.slice(3).trim().replace(/^"|"$/g, '');
+    const p = porcelainPath(l);
     return !ALLOW.test(p) && !OWN_OUTPUT.test(p);
   });
   const anc = spawnSync('git', ['merge-base', '--is-ancestor', BASE_SHA, 'HEAD'], { cwd: ROOT });
@@ -1359,6 +1365,12 @@ if (WEB) {
     // matches only tests/e2e-*.test.mjs — and because a step quietly absent
     // from a phase's list is the one failure mode the gate cannot report.
     ['harness-list', 'tests/harness-list.test.mjs', true],
+    // GATE-FOLD (a). tools/lib/porcelain.mjs, the single `git status
+    // --porcelain` parser behind step 1's cleanliness filter and the
+    // ANDROID-LINT enumeration. Named explicitly (the sweep matches only
+    // tests/e2e-*.test.mjs) because its failure mode is a phantom dirtyPaths:1
+    // on a clean tree — a red gate about the parser, not about the repo.
+    ['gate-porcelain', 'tests/gate-porcelain.test.mjs', true],
     // SOAK-RIG (c). 48 checks. The R-AM soak rig: that importing soak-runner /
     // verify-soak / relay-auth starts no clock and opens no socket, and that
     // verify-soak's rule-8 guards can actually go RED — a >10 min gap, a <24 h
@@ -1955,8 +1967,8 @@ if (BASELINE) {
  * resumer decides that per lane (FT-3b committed its shots because ft-ui-proof
  * asserts on them; FT-MERGE-2 reverted its shots as pure render churn).
  */
-for (const line of gitOut(['status', '--porcelain', '--', 'docs/screenshots']).split('\n').filter(Boolean)) {
-  const p = line.slice(3).trim().replace(/^"|"$/g, '');
+for (const line of porcelainOf(gitRaw(['status', '--porcelain', '--', 'docs/screenshots']))) {
+  const p = porcelainPath(line);
   if (/^docs\/screenshots\/[^/]+\.png$/.test(p) && !produced.includes(p)) produced.push(p);
 }
 
