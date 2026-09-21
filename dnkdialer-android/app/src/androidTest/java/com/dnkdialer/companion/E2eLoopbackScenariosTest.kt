@@ -50,6 +50,21 @@ class E2eLoopbackScenariosTest {
     fun clean() {
         E2eSeqStore.clearAll(ctx)
         E2eSession.clearKidBindingsForTest()
+        seedAccountId()
+    }
+
+    /**
+     * R-BH: give this device the account id a signed-in phone would have
+     * learned from the authenticated devicekeys API, so that
+     * [E2ePairIdentity.userIdForPairContext] answers from the PRODUCTION source
+     * instead of these scenarios inventing one.
+     *
+     * TokenStore is persist-once, so a previous run's id would otherwise stick
+     * and MISMATCH. Clearing first is what makes the suite order-independent.
+     */
+    private fun seedAccountId() {
+        TokenStore.clear(ctx)
+        TokenStore.putUserId(ctx, "acct-loopback")
     }
 
     // ------------------------------------------------------------- helpers
@@ -95,7 +110,12 @@ class E2eLoopbackScenariosTest {
         val sk = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
         val pc = E2eKdf.PairContext(
             pairingId = pairingId,
-            userId = E2ePairIdentity.userIdForPairContext(ctx),
+            // R-BH: the production source. Seeded in [seedAccountId] so this
+            // loopback derives under the same channel a real Accept does,
+            // rather than under a constant the production path no longer has.
+            userId = requireNotNull(E2ePairIdentity.userIdForPairContext(ctx)) {
+                "the account id must be seeded before a pair context can be built"
+            },
             phoneDeviceId = E2eLifecycle.deviceId(ctx),
             peerDeviceId = peerDeviceId,
             pairEpoch = epoch,

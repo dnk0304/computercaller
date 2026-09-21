@@ -176,6 +176,11 @@ object TokenStore {
             )
             return UserIdWrite.MISMATCH
         }
+        // apply(), not commit(): unlike E2ePairIdentity's epoch counter this
+        // value is IDEMPOTENT. A write lost to a power cut is simply re-learned
+        // from the same API on the next start and stores the same id, so there
+        // is no persist-before-use hazard to defend against -- and it matches
+        // how the phoneToken beside it is written.
         p.edit().putString(KEY_USER_ID, offered).apply()
         return UserIdWrite.STORED
     }
