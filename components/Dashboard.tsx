@@ -80,6 +80,7 @@ import { clsx } from 'clsx';
 import { Tooltip } from '@/components/Tooltip';
 import { DtmfDialpadModal } from '@/components/DtmfDialpadModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import LoadMoreButton from '@/components/LoadMoreButton';
 import { PermissionHint } from '@/components/PermissionHint';
 import { useTemplates } from '@/hooks/useTemplates';
 import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
@@ -1779,13 +1780,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
           )}
           {/* Load more — only renders 25 more items, no full re-render */}
           {hasMoreCalls && (
-            <button
-              type="button"
+            <LoadMoreButton
+              testId="app-calls"
+              label="Load 25 more"
+              remaining={filteredCallLogs.length - callLogDisplayCount}
               onClick={() => setCallLogDisplayCount(prev => prev + 25)}
-              className="w-full py-2 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-xl transition-colors mt-1"
-            >
-              Load 25 more ({filteredCallLogs.length - callLogDisplayCount} remaining)
-            </button>
+            />
           )}
         </div>
       </section>
@@ -1984,42 +1984,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
               in. Hidden entirely when nothing is left in the store OR on the
               phone. */}
           {hasMoreThreads ? (
-            <button
-              type="button"
+            <LoadMoreButton
+              testId="app-threads-reveal"
+              label="Load 500 more"
+              remaining={filteredThreads.length - threadDisplayCount}
               onClick={() => setThreadDisplayCount(prev => prev + 500)}
-              className="w-full py-2 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-xl transition-colors mt-1"
-            >
-              Load 500 more ({filteredThreads.length - threadDisplayCount} remaining)
-            </button>
+            />
           ) : canFetchOlderThreads ? (
-            <button
-              type="button"
-              onClick={handleLoadOlderThreads}
-              disabled={!isConnected || isLoadingOlderThreads}
-              aria-busy={isLoadingOlderThreads}
+            <LoadMoreButton
+              testId="app-threads-fetch"
+              label="Load older messages from phone"
+              busy={isLoadingOlderThreads}
+              disabled={!isConnected}
               title={
                 !isConnected
                   ? 'Connect your phone to load older messages'
                   : undefined
               }
-              className={clsx(
-                'w-full py-2 inline-flex items-center justify-center gap-2 text-xs font-medium rounded-xl transition-colors mt-1',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
-                !isConnected || isLoadingOlderThreads
-                  ? 'text-slate-400 opacity-70 cursor-not-allowed'
-                  : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
-              )}
-            >
-              {isLoadingOlderThreads && (
-                <span
-                  className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin motion-reduce:animate-none"
-                  aria-hidden="true"
-                />
-              )}
-              <span>
-                {isLoadingOlderThreads ? 'Loading…' : 'Load older messages from phone'}
-              </span>
-            </button>
+              onClick={handleLoadOlderThreads}
+            />
           ) : null}
         </div>
       </section>
@@ -3747,7 +3730,6 @@ const ThreadView = React.memo(function ThreadView({
             // divider so the top of the thread reads as a deliberate beginning
             // rather than a truncation. Only after an actual load resolved short.
             const showBeginningDivider = hasMoreHistory === false;
-            const olderDisabled = !isConnected || isLoadingOlder;
             return (
               <>
                 {showBeginningDivider && (
@@ -3761,32 +3743,19 @@ const ThreadView = React.memo(function ThreadView({
                 )}
                 {showOlderButton && (
                   <div className="flex justify-center py-3">
-                    <button
-                      type="button"
-                      onClick={handleOlderClick}
-                      disabled={olderDisabled}
-                      aria-busy={isLoadingOlder}
+                    <LoadMoreButton
+                      testId="app-thread-older"
+                      variant="pill"
+                      label="Older messages"
+                      busy={isLoadingOlder}
+                      disabled={!isConnected}
                       title={
                         !isConnected
                           ? 'Connect your phone to load older messages'
                           : undefined
                       }
-                      className={clsx(
-                        'inline-flex items-center gap-2 px-4 py-1.5 text-xs font-medium rounded-full transition-colors',
-                        'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40',
-                        olderDisabled
-                          ? 'text-slate-400 bg-slate-100 opacity-70 cursor-not-allowed'
-                          : 'text-slate-500 hover:text-slate-700 bg-slate-100 hover:bg-slate-200'
-                      )}
-                    >
-                      {isLoadingOlder && (
-                        <span
-                          className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin motion-reduce:animate-none"
-                          aria-hidden="true"
-                        />
-                      )}
-                      <span>{isLoadingOlder ? 'Loading…' : 'Older messages'}</span>
-                    </button>
+                      onClick={handleOlderClick}
+                    />
                   </div>
                 )}
                 {messages.map((m, idx) => {
