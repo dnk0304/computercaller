@@ -169,7 +169,7 @@ function ExtensionHeader() {
                      the ComputerCaller text like the app logo")
             PIXEL-S2 removes it again (Dennis 09-17 13:26) — and this time the
                      reason is structural rather than a preference: Chrome's own
-                     title strip above the panel now reads "Computer Caller"
+                     title strip above the panel now reads "ComputerCaller"
                      (manifest `name`, deliverable (d)), so the in-panel wordmark
                      is the product name twice inside 20 vertical px. The name is
                      still on screen; it is just no longer OUR pixels saying it.
