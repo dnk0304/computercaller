@@ -268,12 +268,12 @@ function ExtensionHeader() {
           truncation width (extension.css AC-1, `white-space: nowrap`), so the
           new control is the smallest one in it.
 
-          Ink: `text-slate-500`, which extension.css re-points ON THE BAND to
-          #475569 in light (5.42:1 on L0 #d9dadd) and --cc-mut-hdr #9a9aa2 in
-          dark (5.21:1 on L0 #28292c). AA, not AAA: R-CH (2026-09-22) restored
-          the band to the palette Dennis asked for, and on that band AAA is not
-          reachable without an ink far darker than the band's own character.
-          See the R-CH note in extension.css's light ladder block.
+          Ink: `text-slate-500`. R-CJ (2026-09-22) removed the header band, so
+          there is no band-scoped ink any more — the glyph takes the ordinary
+          .cc-ext ink on the restored L0: #64748b on #ffffff is 4.76:1 in light,
+          --cc-mut #8a8a8a on #0b0b0d is 5.70:1 in dark. AA, not AAA, and
+          deliberately so: Dennis overrode the AAA lift along with the band.
+          See the R-CJ note in extension.css's light ladder block.
 
           It renders on every surface including the popup, and renders nothing
           at all when the file-transfer api is absent (SendFileSlot returns

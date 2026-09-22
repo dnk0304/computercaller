@@ -36,22 +36,28 @@
   --cc-page: #f1f1f2;
   --cc-card: #ffffff;
   --cc-hair: #e5e5e5;
-  /* L0 — the header band. Must equal app/extension/extension.css's --cc-l0 so
-     the signed-out shell header and the hosted header are the same band; a
-     user who signs in must not see the strip change colour.
-     R-CH (Dennis 2026-09-22 16:06Z, verbatim: "turn back the header to be the
-     same color style it was previously, i dont like this grey tone in the
-     extension") restores every value in this file to 1520063, in lockstep with
-     app/extension/extension.css. EXT-FRAME-2's goal — clearing Chrome's own
-     side-panel strip (dark #3c3c3c, light #ffffff) by >= 12 L* at L0 — is
-     closed as Dennis-OVERRIDDEN, not failed; the full note, with the measured
-     dL* both ways, lives in extension.css's light ladder block.
-     The lockstep is what matters here: --cc-page is L2, --cc-card is L3,
-     --cc-hair is the one hairline, and a shell that kept a palette the hosted
-     header no longer uses would ring the iframe in the wrong grey — which is
-     the seam this aliasing exists to prevent. */
-  --cc-l0: #d9dadd;
-  --cc-hair-hdr: #c3c5cc;
+  /* L0 — the header surface. There is NO BAND any more. Must equal
+     app/extension/extension.css's --cc-l0 so the signed-out shell header and
+     the hosted header are the same surface; a user who signs in must not see
+     the strip change colour.
+     R-CJ (Dennis 2026-09-22 18:05Z, verbatim: "i also asked to revert back the
+     header color to what it used to be, i dont want the grey tone") takes L0
+     back to its pre-9edc664 value — plain #ffffff light / #0b0b0d dark — and
+     points the header's rule at the ordinary hairline. Both the UI-HEADER
+     Variant B band (9edc664) and EXT-FRAME-2's "clear Chrome's own side-panel
+     strip by >= 12 L*" target are closed as Dennis-OVERRIDDEN, not failed; the
+     full note, with the measured dL* both ways, lives in extension.css's light
+     ladder block. R-CH's restore-to-1520063 was not enough because 1520063
+     already carried the band.
+     NOTE the one deliberate difference from the true pre-band state: back then
+     this shell painted its header --cc-card (#212125 in dark), which did NOT
+     match the hosted #0b0b0d. Ken locked LOCKSTEP WITH HOSTED, so dark is
+     #0b0b0d here. The lockstep is what matters: --cc-page is L2, --cc-card is
+     L3, --cc-hair is the one hairline, and a shell that kept a palette the
+     hosted header no longer uses would ring the iframe in the wrong grey —
+     which is the seam this aliasing exists to prevent. */
+  --cc-l0: #ffffff;
+  --cc-hair-hdr: #e5e5e5;
   --cc-ink: #171717;
   --cc-sec: #525252;
   /* Mirrors app/extension/extension.css: R-CH restored the light ground, so
@@ -68,8 +74,8 @@
   --cc-d-page: #18181b;
   --cc-d-card: #212125;
   --cc-d-hair: #27272a;
-  --cc-d-l0: #28292c;
-  --cc-d-hair-hdr: #3a3b41;
+  --cc-d-l0: #0b0b0d;
+  --cc-d-hair-hdr: #27272a;
   --cc-d-ink: #fafafa;
   --cc-d-sec: #a3a3a3;
   --cc-d-mut: #8a8a8a;
