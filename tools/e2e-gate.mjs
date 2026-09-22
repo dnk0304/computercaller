@@ -586,7 +586,10 @@ const MIN_CHECKS_OVERRIDE = {
   // than bumped by the delta, for the same reason P4.2 re-measured instead of
   // +3: a floor carried forward by arithmetic drifts below the suite and the
   // gap is deletable under a green N/N.
-  'unit:harness-list': 165,
+  // GATE-TOOLING-1 (3) re-measure 165 -> 177: ext-text-size-proof's
+  // registration, its exactly-P5A/D1/MERGE negative arms and the two CONTROLs
+  // that prove the frozen strings can still reject a wrong list.
+  'unit:harness-list': 177,
   // E2E-P4.4. The §13.10.3 userId parity proof. Post-dates the parity baseline
   // file, so the floor cannot be read from it and has to be declared here or
   // the step could be emptied to two checks and still print a cheerful N/N —
@@ -612,6 +615,17 @@ const MIN_CHECKS_OVERRIDE = {
   // defect while still printing a cheerful N/N, which is precisely what the
   // floor is here to stop.
   'unit:reap-attempt': 22,
+  // GATE-TOOLING-1 (3), T-GATE-TEXTSIZE-P5A (ruling R-CD). The 200% text-size
+  // proof, joining P5A. Not in the parity baseline — it has never run under a
+  // gate before — so the floor is declared here. Measured 110 checks at base
+  // and at EXT-FRAME-2. Its summary line is the "N/M checks passed" dialect
+  // with a trailing "(screenshots: ...)" suffix, which passLine's unanchored
+  // regex already reads.
+  //
+  // A floor matters more here than for most: the harness's own failure mode is
+  // a surface that stops being RENDERED at all, and a harness that finds no
+  // element to measure quietly measures fewer things and still prints N/N.
+  'harness:ext-text-size-proof': 110,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -1972,6 +1986,25 @@ if (WEB) {
            * hardcoded identity that dispatch removed.
            */
           CC_SHOT_EMAIL: process.env.CC_SHOT_EMAIL || '',
+          /**
+           * GATE-TOOLING-1 (3). Screenshot harnesses render into CC_SHOTS;
+           * point it at the gate's OWN log dir so nothing renders into
+           * docs/screenshots.
+           *
+           * The step-1 cleanliness check already tolerates that churn
+           * (OWN_OUTPUT), so this is not what makes the gate re-runnable — it
+           * is what makes the RESUMER's job honest. docs/screenshots churn has
+           * to be reverted by hand after every run (Ken's standing rule: revert,
+           * never commit), and a harness that never wrote there is one less
+           * thing to remember. `.e2e-gate-logs/` is already in the step-1
+           * ALLOW list, so the shots are invisible to the check either way.
+           *
+           * Only ext-text-size-proof and dialpad-toggle-proof read this name;
+           * the other shots harnesses hardcode their own paths and are
+           * deliberately left alone (they are Pixel's files, and the gate does
+           * not edit harnesses to match its own assumptions).
+           */
+          CC_SHOTS: join(LOGDIR, 'shots'),
         };
         // Assert before step 9 rather than discovering it as a Prisma error.
         // CC_SHOT_EMAIL is asserted for the same reason and in the same place:

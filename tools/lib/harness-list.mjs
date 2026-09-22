@@ -141,6 +141,29 @@ export const PHASE_HARNESSES = {
       'P3', 'P3.1', 'P4', 'P4.1', 'P4.2', 'FT1', 'FT2', 'FT3'],
   },
   /**
+   * GATE-TOOLING-1 (3), T-GATE-TEXTSIZE-P5A (ruling R-CD). The 200% text-size
+   * proof: both surfaces at 1.0x / 1.4x / 2.0x, clipping, reflow, tap targets
+   * and the cold-shell render.
+   *
+   * P5A because the surfaces it measures are the P5a Encrypted-mode UI and the
+   * extension shell, i.e. exactly the tree P5A gates — and because the failure
+   * it catches (text that overflows its container at 200%) is invisible to
+   * every other harness: they all render at 1.0x and pass.
+   *
+   * D1 and MERGE for the superset reason written above for e2e-ui-proof: an
+   * integration run that is a SUBSET of the phases it integrates cannot
+   * evidence the integration.
+   *
+   * It renders into CC_SHOTS, which the gate points at its own scratch dir so
+   * docs/screenshots stays clean.
+   */
+  'ext-text-size-proof': {
+    runs: ['P5A', 'D1', 'MERGE'],
+    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
+      'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D',
+      'BAT', 'FT1', 'FT2', 'FT3'],
+  },
+  /**
    * FT-3b (d): the file-transfer failure-copy table, both surfaces, driven
    * through the real inbound path. FT3 only — FT1 is the relay half and FT2 is
    * android, neither of which builds these surfaces.

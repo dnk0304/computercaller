@@ -222,11 +222,50 @@ check('D1 runs ext-sw-lifetime-proof (absent before the fold)',
 check('D1 runs e2e-ui-proof — the one thing D1 exists to evidence',
   d1.includes('e2e-ui-proof'), d1.join(', '));
 
+// GATE-TOOLING-1 (3) — ext-text-size-proof joins P5A (ruling R-CD).
+//
+// Named in full rather than counted, for the reason at the top of section 6: a
+// count still passes when one harness is swapped for another, and "swapped for
+// another" is the edit that matters. The NEGATIVE arms are the load-bearing
+// half — a harness that leaked into a phase whose tree does not build its
+// surfaces fails that gate on a render it was never meant to measure.
+{
+  const p5a = harnessesFor('P5A');
+  check('P5A runs ext-text-size-proof — the 200% text-size surfaces are P5a surfaces',
+    p5a.includes('ext-text-size-proof'), p5a.join(', '));
+  check('P5A runs exactly the six base harnesses plus sw-lifetime, e2e-ui and text-size',
+    p5a.slice().sort().join(',')
+      === [...BASE_EXPECTED, 'e2e-ui-proof', 'ext-sw-lifetime-proof', 'ext-text-size-proof']
+        .sort().join(','),
+    p5a.join(', '));
+
+  const runsIt = [...KNOWN_PHASES].filter((p) => harnessesFor(p).includes('ext-text-size-proof'));
+  check('ext-text-size-proof runs on EXACTLY P5A, D1 and MERGE and nowhere else',
+    runsIt.slice().sort().join(',') === 'D1,MERGE,P5A', runsIt.join(','));
+  check('it does NOT run at P0-P4, where the surfaces it asserts are not built yet',
+    !['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
+      'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2']
+      .some((p) => harnessesFor(p).includes('ext-text-size-proof')));
+  check('it does NOT run at P5B (android), BAT or the FT lanes',
+    !['P5B', 'BAT', 'FT1', 'FT2', 'FT3']
+      .some((p) => harnessesFor(p).includes('ext-text-size-proof')));
+
+  // CONTROL — the string check above must be ABLE to fire. A frozen-list
+  // assertion that passes against a deliberately wrong list is the shape this
+  // whole file exists to prevent, and it is not detectable from a green run.
+  const wrong = [...BASE_EXPECTED, 'e2e-ui-proof', 'ext-sw-lifetime-proof'].sort().join(',');
+  check('CONTROL: the P5A frozen string REJECTS the pre-R-CD eight-harness list',
+    p5a.slice().sort().join(',') !== wrong, 'the frozen string cannot tell the two apart');
+  const wrongPhases = ['D1', 'MERGE', 'P5A', 'P6'].join(',');
+  check('CONTROL: the runs-on list REJECTS a fourth phase',
+    runsIt.slice().sort().join(',') !== wrongPhases);
+}
+
 // The pinned per-phase decisions (FT-MERGE brief, letter (e)).
-const EIGHT = [...BASE_EXPECTED, 'ext-sw-lifetime-proof', 'e2e-ui-proof'].sort();
+const NINE = [...BASE_EXPECTED, 'ext-sw-lifetime-proof', 'e2e-ui-proof', 'ext-text-size-proof'].sort();
 for (const p of ['D1', 'MERGE']) {
-  check(`${p} runs exactly the eight browser harnesses`,
-    harnessesFor(p).slice().sort().join(',') === EIGHT.join(','), harnessesFor(p).join(', '));
+  check(`${p} runs exactly the nine browser harnesses (GATE-TOOLING-1 (3): +ext-text-size-proof)`,
+    harnessesFor(p).slice().sort().join(',') === NINE.join(','), harnessesFor(p).join(', '));
 }
 check('FT3 runs exactly the six base harnesses plus the two FT proofs',
   harnessesFor('FT3').slice().sort().join(',')
@@ -333,7 +372,11 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // under a green N/N. Re-measured with this lane's seven new cases.
     ['android:testDebugUnitTest', 238],
     ['android:instrumented-A5', 8],
-    ['unit:harness-list', 165],
+    // GATE-TOOLING-1 (3): 165 -> 177 with ext-text-size-proof's arms.
+    ['unit:harness-list', 177],
+    // GATE-TOOLING-1 (3). The text-size proof's own floor, declared in the gate
+    // and asserted here so the registration and the floor cannot separate.
+    ['harness:ext-text-size-proof', 110],
     // E2E-P4.4: the §13.10.3 userId parity proof, registered as a node-only
     // gate step. Declared here for the same reason as the rest of this list.
     ['unit:ctx-parity', 14],
