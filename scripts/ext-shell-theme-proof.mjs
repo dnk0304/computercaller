@@ -201,7 +201,13 @@ for (const [name, os_, choice, expected] of COMBOS) {
   check(`${name}: iframe agrees — no mismatched ring`, iframeAttr === expected, `got ${iframeAttr}`);
   check(
     `${name}: shell palette followed the attribute`,
-    expected === 'dark' ? live.token === '#18181b' : live.token === '#f1f1f2',
+    // --cc-page is the shell's alias for the ladder's L2. EXT-FRAME-2
+    // (2026-09-22) moved the whole ladder so the panel clears Chrome's own
+    // side-panel bar, and L2 went #18181b -> #222226 in dark and #f1f1f2 ->
+    // #e2e3e6 in light. Re-pinned to the new values; this assertion exists to
+    // prove the shell FOLLOWED the attribute, not to freeze a particular grey,
+    // and the count is unchanged.
+    expected === 'dark' ? live.token === '#222226' : live.token === '#e2e3e6',
     `--cc-page ${live.token}, --cc-ink ${live.ink}, color-scheme ${live.colorScheme}`,
   );
 
