@@ -87,7 +87,15 @@ export type PhoneModeView =
   // happens to be (Dennis 2026-09-15: "If I clicked new message from the dial
   // tab, then I should get sent back to dial tab"). Optional so older call
   // sites that have no meaningful origin still compile and fall back to pop().
-  | { kind: 'thread'; threadId: string; from?: PhoneModeTab }
+  // `focusMessageId` (EXT-SEARCH / FEATURE-SPEC-MSG-SEARCH §1) is the message
+  // the thread should open ON, not merely near: clicking a search hit has to
+  // land on the line the user recognised, not at the bottom of a conversation
+  // that may hold thousands of messages after it. Optional, because every
+  // other entry point into a thread — the list row, a Dial row, a notification
+  // deep-link — means "open at the newest message" and must keep meaning that.
+  // A message that is no longer in the store is NOT an error: the thread opens
+  // at the bottom, exactly as it would have without the field (spec §1).
+  | { kind: 'thread'; threadId: string; from?: PhoneModeTab; focusMessageId?: string }
   // `to` pre-addresses the composer (dispatch PIXEL-B2 / AC-4: the Dial view's
   // Send-message action lands in Texts with that recipient already filled and
   // focus in the body, rather than opening a second parallel compose UI).

@@ -66,6 +66,8 @@ import { CallLogFilterBar, CallLogEmptyState } from '@/components/CallLogFilterB
 import { useCallLogFilter } from '@/hooks/useCallLogFilter';
 import { CallHistoryEntries, useCallHistoryEntries } from '@/components/CallHistoryEntries';
 import LoadMoreButton from '@/components/LoadMoreButton';
+import MessageSearchResults from '@/components/MessageSearchResults';
+import { useMessageSearch } from '@/hooks/useMessageSearch';
 import { useExtensionTabBadges } from '@/hooks/useExtensionTabBadges';
 import {
   PhoneModeCallBanner,
@@ -1032,19 +1034,22 @@ function TextsView() {
     return out.sort((a, b) => b.lastDate - a.lastDate);
   }, [messages, contacts, readState]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return threads;
-    return threads.filter(t =>
-      // Guard each field — MMS rows without text bodies surface as
-      // t.lastBody === undefined at runtime (lastBody = last.body) even
-      // though the type says string. Same defensive pattern as the
-      // Dashboard threadBodyIndex hotfix.
-      (t.name ?? '').toLowerCase().includes(q) ||
-      (t.number ?? '').includes(q) ||
-      (t.lastBody ?? '').toLowerCase().includes(q),
-    );
-  }, [threads, search]);
+  /*
+   * EXT-SEARCH (c) — search every body, sent and received.
+   *
+   * This used to be a `.filter()` over `t.lastBody`, i.e. the NEWEST message
+   * of each thread and nothing else, which is the defect Dennis reported
+   * (2026-09-22 10:29Z). The predicate now lives in `hooks/useMessageSearch`
+   * and is shared byte-for-byte with /app's thread list, so the two surfaces
+   * cannot disagree about what "search" means. The hook owns the 150 ms
+   * debounce; `search` itself stays instant on the input below.
+   */
+  const { active: searchActive, results: searchResults, scanned } =
+    useMessageSearch(messages, contacts, search);
+
+  // Empty field only. In results mode the list is replaced wholesale by
+  // MessageSearchResults, which groups by thread and shows the hits.
+  const filtered = threads;
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -1100,6 +1105,36 @@ function TextsView() {
           it turns each <li> into the same L3 card the Alerts tab uses — same
           radius, padding, hairline and hover — out of app/extension/
           extension.css. One list implementation, two surfaces. */}
+      {/* EXT-SEARCH (c). A non-empty settled query REPLACES the thread list
+          with grouped results rather than filtering rows out of it — a
+          filtered list hides which message matched, which was half of what
+          Dennis asked for. Same component, same props shape, on /app. */}
+      {searchActive ? (
+        <MessageSearchResults
+          results={searchResults}
+          scanned={scanned}
+          exhausted={hasMoreOlderOnPhone === false}
+          onOpen={(address, messageId) =>
+            push({ kind: 'thread', threadId: address, from: 'texts', focusMessageId: messageId })
+          }
+          loadMore={
+            canFetchOlderThreads ? (
+              <div className="mt-1">
+                <LoadMoreButton
+                  testId="ext-search-fetch"
+                  label="Load older messages from phone"
+                  busy={isLoadingOlderThreads}
+                  disabled={!isConnected}
+                  title={
+                    !isConnected ? 'Connect your phone to load older messages' : undefined
+                  }
+                  onClick={handleLoadOlderThreads}
+                />
+              </div>
+            ) : null
+          }
+        />
+      ) : (
       <ul className="cc-list cc-card-list flex-1 divide-y divide-slate-100 overflow-y-auto">
         {filtered.length === 0 ? (
           <li className="cc-card-list-empty px-4 py-12 text-center text-sm text-slate-400">
@@ -1173,6 +1208,7 @@ function TextsView() {
           </li>
         )}
       </ul>
+      )}
     </div>
   );
 }
@@ -1183,6 +1219,12 @@ interface ThreadViewProps {
   threadId: string;
   /** Tab this thread was opened from — back returns there. See ComposeView. */
   from?: PhoneModeTab;
+  /**
+   * EXT-SEARCH (c). Open ON this message instead of at the bottom. Set only by
+   * a search-hit click; a missing or unknown id falls back to the bottom of
+   * the thread with no error (spec §1).
+   */
+  focusMessageId?: string;
 }
 
 /**
@@ -1193,7 +1235,7 @@ interface ThreadViewProps {
  */
 const THREAD_PAGE_SIZE = 25;
 
-function ThreadView({ threadId, from }: ThreadViewProps) {
+function ThreadView({ threadId, from, focusMessageId }: ThreadViewProps) {
   const phone = usePhone();
   const { messages, contacts, sendSms, makeCall, isConnected } = phone;
   const { pop, setTab } = usePhoneMode();
@@ -1283,6 +1325,10 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
   // them out of the passage they were reading. We snapshot the scroll metrics
   // before the fetch and restore the reader's anchor by the height the new
   // content added at the top.
+  // EXT-SEARCH (c): declared above the scroll effects because the bottom-pin
+  // pass reads it to yield the first scroll to the focus pass.
+  const focusHandledRef = useRef(false);
+  useEffect(() => { focusHandledRef.current = false; }, [threadId, focusMessageId]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const isPrependingRef = useRef(false);
@@ -1298,8 +1344,40 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
       prependScrollRef.current = null;
       return;
     }
+    // EXT-SEARCH (c): a thread opened ON a search hit must not be yanked to
+    // the bottom by the mount pass. The focus effect below owns the scroll for
+    // exactly one pass; every later arrival pins to the bottom as before.
+    if (focusMessageId && !focusHandledRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
-  }, [threadMessages.length]);
+  }, [threadMessages.length, focusMessageId]);
+
+  /*
+   * EXT-SEARCH (c) — land on the message the user clicked.
+   *
+   * Runs once per thread, after the bubbles exist. The message may legitimately
+   * be absent: the store is a window, and "load older" can be undone by a
+   * resync. That is not an error state and gets no banner — we fall through to
+   * the bottom of the thread, which is what opening a conversation has always
+   * meant (spec §1). `.cc-bubble-hit` paints a 1.2 s outline fade, and a static
+   * outline for the same duration under prefers-reduced-motion, so the row is
+   * findable by eye without motion being the only signal.
+   */
+  useEffect(() => {
+    if (!focusMessageId || focusHandledRef.current) return;
+    if (threadMessages.length === 0) return;
+    const el = scrollerRef.current?.querySelector<HTMLElement>(
+      `[data-cc-msg-id="${CSS.escape(focusMessageId)}"]`,
+    );
+    focusHandledRef.current = true;
+    if (!el) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+      return;
+    }
+    el.scrollIntoView({ behavior: 'auto', block: 'center' });
+    el.classList.add('cc-bubble-hit');
+    const timer = window.setTimeout(() => el.classList.remove('cc-bubble-hit'), 1200);
+    return () => window.clearTimeout(timer);
+  }, [focusMessageId, threadId, threadMessages.length]);
 
   const handleOlderClick = useCallback(() => {
     if (isLoadingOlder || !loadOlderMessages || threadMessages.length === 0) return;
@@ -1415,6 +1493,10 @@ function ThreadView({ threadId, from }: ThreadViewProps) {
           return (
             <div
               key={m.id}
+              // EXT-SEARCH (c). The scroll target for a search hit. On the row
+              // rather than on the bubble itself so the outline surrounds the
+              // whole message including its timestamp.
+              data-cc-msg-id={m.id}
               className={clsx('flex flex-col', isSent ? 'items-end' : 'items-start')}
             >
               <div
@@ -2280,7 +2362,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
         // key={threadId} resets the compose textarea on thread switch
         // (risk #6). This keyed wrapper is load-bearing — removing it
         // re-introduces the draft-leak bug across thread switches.
-        return <ThreadView key={v.threadId} threadId={v.threadId} from={v.from} />;
+        return <ThreadView key={v.threadId} threadId={v.threadId} from={v.from} focusMessageId={v.focusMessageId} />;
       case 'compose':
         // Keyed on the recipient for the same reason: arriving from Dial with
         // a new number must not inherit the previous draft's To field.

@@ -36,7 +36,9 @@ import React, {
   useDeferredValue,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { usePhone, useNotifications, getNotificationIcon, useDashboardTab, useDebouncedValue, useLayoutPrefs } from '@/hooks';
+import { usePhone, useNotifications, getNotificationIcon, useDashboardTab, useLayoutPrefs } from '@/hooks';
+import MessageSearchResults from '@/components/MessageSearchResults';
+import { useMessageSearch } from '@/hooks/useMessageSearch';
 import { useAudioSourceDefault } from '@/hooks/audioSourcePreference';
 import type { AudioSource } from '@/hooks/audioSourcePreference';
 import type { ModuleId } from '@/lib/layoutPrefs';
@@ -857,63 +859,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     [threads]
   );
 
-  // Filtered threads — matches contact name, phone number, OR message body content.
-  //
-  // Performance (dispatch #9, 2026-05-22 — T6 SMS perf fix):
-  //   This memo falls through to `messages.some(...)` PER THREAD on every
-  //   character of the search query. With 500+ messages cached and N
-  //   threads, that's O(threads × messages) per keystroke — half-second
-  //   freezes on Dennis's data set.
-  //   Two-part fix:
-  //     1. Debounce the search query (150ms) so the expensive filter only
-  //        runs after the user stops typing. The controlled input still
-  //        binds to `threadSearch` so typing feels instant.
-  //     2. Pre-build a per-thread "haystack" string once per (threads,
-  //        messages) change. This collapses the inner `.some()` into a
-  //        single `.includes()` on a concatenated lowercase string —
-  //        same semantics, ~10–50× faster.
-  //   The debounce alone solves the freeze. The haystack precompute brings
-  //   the actual filter speed back to sub-millisecond so live-updates as
-  //   new messages arrive don't stutter either.
-  const debouncedThreadSearch = useDebouncedValue(threadSearch, 150);
+  /*
+   * EXT-SEARCH (d) — one search implementation, two surfaces.
+   *
+   * What stood here was `threadBodyIndex` (a per-thread lowercase haystack of
+   * every body) plus a `filteredThreads` that fell through to it. It matched
+   * bodies correctly and told the user NOTHING about which message matched —
+   * no snippet, no highlight, no way to reach it. The extension's version of
+   * the same control matched only the newest message of each thread, which is
+   * the defect Dennis reported (FEATURE-SPEC-MSG-SEARCH). Rather than fix two
+   * predicates into agreement, both now call `hooks/useMessageSearch`: it owns
+   * the normalisation (diacritic folding, case, whitespace), the 150 ms
+   * debounce this block used to own, the linear scan and the snippet geometry.
+   *
+   * `filteredThreads` keeps its name and its meaning for the EMPTY-query list —
+   * the pagination, the reveal button and the "N remaining" arithmetic below
+   * are all written against it and are untouched. A non-empty query does not
+   * filter this list at all; it replaces it with MessageSearchResults.
+   */
+  const {
+    active: searchActive,
+    results: searchResults,
+    scanned: searchScanned,
+  } = useMessageSearch(messages, contacts, threadSearch);
 
-  // Per-thread body-haystack index. Keyed by digits-tail of the thread
-  // address. Built once per messages change, NOT per keystroke. The value
-  // is a lowercased concatenation of every message body for that thread,
-  // so the search filter becomes a single string.includes() per thread.
-  const threadBodyIndex = useMemo(() => {
-    const digitsTail = (n: string) => (n || '').replace(/\D/g, '').slice(-10);
-    const idx = new Map<string, string>();
-    for (const m of messages) {
-      const key = digitsTail(m.address) || (m.address ?? '').toLowerCase();
-      const prev = idx.get(key);
-      // Guard m.body — MMS rows without text bodies (and some draft/outbound rows
-      // pre-status-update) arrive with body undefined/null at runtime even though the
-      // TS type says `body: string`. Calling .toLowerCase() on undefined throws inside
-      // this useMemo, aborts the parent render, and unmounts the whole /app tree
-      // (PhoneBridge cleanup logs are the visible aftermath).
-      const body = (m.body ?? '').toLowerCase();
-      const next = prev ? prev + '  ' + body : body;
-      idx.set(key, next);
-    }
-    return idx;
-  }, [messages]);
-
-  const filteredThreads = useMemo(() => {
-    const q = debouncedThreadSearch.trim().toLowerCase();
-    if (!q) return threads;
-    const digitsTail = (n: string) => (n || '').replace(/\D/g, '').slice(-10);
-    return threads.filter(t => {
-      const name = (t.contact?.name ?? '').toLowerCase();
-      const addr = (t.address ?? '').toLowerCase();
-      // Match on name or number first (fast path — string.includes()).
-      if (name.includes(q) || addr.includes(q)) return true;
-      // Fall through: search the precomputed thread body haystack.
-      const key = digitsTail(t.address) || addr;
-      const hay = threadBodyIndex.get(key);
-      return hay ? hay.includes(q) : false;
-    });
-  }, [threads, debouncedThreadSearch, threadBodyIndex]);
+  const filteredThreads = threads;
 
   // Paginated thread list — mirrors the Recent Calls display-count cap above
   // (callLogDisplayCount). This is a purely CLIENT-SIDE slice of the already-
@@ -958,6 +928,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   //      exposes the fetcher AND we have a valid cursor to page back from.
   const canFetchOlderThreads =
     !hasMoreThreads &&
+    hasMoreOlderOnPhone &&
+    Boolean(loadOlderThreads) &&
+    oldestLoadedThreadMessageDate !== null;
+
+  /*
+   * EXT-SEARCH (d). The SEARCH scope line's version of the same control, and
+   * deliberately without the `!hasMoreThreads` term above. That term exists
+   * because the list has a two-stage button: reveal more of the store first,
+   * only then ask the phone. Search has no stage 1 — it already scanned every
+   * message in the store, revealed or not — so the only thing left to offer is
+   * the phone fetch, and gating it behind a client-side reveal the user cannot
+   * see from the results view would hide the one recovery action there is.
+   */
+  const canFetchOlderForSearch =
     hasMoreOlderOnPhone &&
     Boolean(loadOlderThreads) &&
     oldestLoadedThreadMessageDate !== null;
@@ -1022,6 +1006,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // older messages appear above it. Cleared once the restore runs.
   const isPrependingRef = useRef(false);
   const prependScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  // EXT-SEARCH (d). Set by a search-hit click, consumed once by the focus
+  // effect below.
+  const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
   useEffect(() => {
     if (!selectedThread) return;
     const el = messageListRef.current;
@@ -1038,9 +1025,39 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
       prependScrollRef.current = null;
       return;
     }
+    // EXT-SEARCH (d): a thread opened ON a search hit yields the first scroll
+    // to the focus effect below. Every later arrival pins to the bottom as
+    // before.
+    if (focusMessageId) return;
     // New (incoming/sent) message or a fresh thread open — pin to the bottom.
     el.scrollTop = el.scrollHeight;
-  }, [selectedThread, threadMessages.length]);
+  }, [selectedThread, threadMessages.length, focusMessageId]);
+
+  /*
+   * EXT-SEARCH (d) — land on the clicked message. Identical contract to the
+   * extension's (PhoneModeShell ThreadView): scroll it to the middle of the
+   * scroller, paint `.cc-bubble-hit` for 1.2 s, and fall back to the bottom of
+   * the thread with NO error when the message is no longer in the store (the
+   * store is a window; "load older" is undone by a resync).
+   */
+  useEffect(() => {
+    if (!focusMessageId) return;
+    const el = messageListRef.current;
+    if (!el) return;
+    if (threadMessages.length === 0) return;
+    const target = el.querySelector<HTMLElement>(
+      `[data-cc-msg-id="${CSS.escape(focusMessageId)}"]`
+    );
+    setFocusMessageId(null);
+    if (!target) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    target.scrollIntoView({ behavior: 'auto', block: 'center' });
+    target.classList.add('cc-bubble-hit');
+    const timer = window.setTimeout(() => target.classList.remove('cc-bubble-hit'), 1200);
+    return () => window.clearTimeout(timer);
+  }, [focusMessageId, selectedThread, threadMessages.length]);
 
   // Reset prepend state whenever the thread changes so a stale flag from one
   // conversation can never suppress the bottom-pin on opening another.
@@ -1102,9 +1119,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
     [makeCall]
   );
 
-  const handleOpenThread = useCallback((address: string) => {
+  const handleOpenThread = useCallback((address: string, messageId?: string) => {
     readState.markOpened(threadKeyFor(address));
     setSelectedThread(address);
+    // EXT-SEARCH (d). Arms the focus pass below; cleared by it. Undefined for
+    // every other entry point, which keeps "open at the newest message".
+    setFocusMessageId(messageId ?? null);
     // Selecting a thread always exits the new-message compose flow — they're
     // mutually exclusive views in column 3.
     setComposingNew(false);
@@ -1862,6 +1882,34 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
           </div>
         </header>
 
+        {/* EXT-SEARCH (d). A settled non-empty query replaces the thread list
+            with the shared grouped-results view; the empty-query list, its
+            pagination and both load-more stages below are untouched. */}
+        {searchActive ? (
+          <MessageSearchResults
+            className="min-h-0 p-2"
+            results={searchResults}
+            scanned={searchScanned}
+            exhausted={hasMoreOlderOnPhone === false}
+            onOpen={handleOpenThread}
+            loadMore={
+              canFetchOlderForSearch ? (
+                <LoadMoreButton
+                  testId="app-search-fetch"
+                  label="Load older messages from phone"
+                  busy={isLoadingOlderThreads}
+                  disabled={!isConnected}
+                  title={
+                    !isConnected
+                      ? 'Connect your phone to load older messages'
+                      : undefined
+                  }
+                  onClick={handleLoadOlderThreads}
+                />
+              ) : null
+            }
+          />
+        ) : (
         <div className="flex-1 min-h-0 overflow-y-auto p-2">
           {filteredThreads.length > 0 ? (
             <ul className="divide-y divide-slate-100">
@@ -2005,6 +2053,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
             />
           ) : null}
         </div>
+        )}
       </section>
       </ErrorBoundary>
   );
@@ -3795,6 +3844,10 @@ const ThreadView = React.memo(function ThreadView({
                   </div>
                 )}
                 <div
+                  // EXT-SEARCH (d). Scroll target for a search-hit click, the
+                  // same attribute the extension's thread view carries so one
+                  // selector reaches a message on either surface.
+                  data-cc-msg-id={m.id}
                   className={clsx(
                     'flex flex-col',
                     isSent ? 'items-end' : 'items-start'

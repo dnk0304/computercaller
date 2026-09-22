@@ -79,6 +79,23 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-bubble-out: #cfe6ff;
   --cc-bubble-out-ink: #0b1220;
 
+  /* ---- search highlight (EXT-SEARCH / FEATURE-SPEC-MSG-SEARCH 1) ----
+     `<mark>` in the search results. The UA default is a saturated yellow with
+     whatever ink it inherits, which on this surface lands somewhere between a
+     warning chip and a link. Token instead, one per theme, measured:
+
+       light  #1e293b (inherited slate-800 ink) on #fff3a3 = 12.96:1
+       dark   #ffffff on #6b5a00                           =  6.62:1
+
+     Both clear AA (4.5:1). Light also clears AAA; dark cannot, because a
+     highlight that reaches 7:1 against white ink is dark enough to stop
+     reading as a highlight at all — the mark has to be visibly WARMER than the
+     surrounding ground or it communicates nothing, and its job is to be found
+     by eye, not to carry the sentence on its own (the unmarked text around it
+     is the same ink at full body contrast). */
+  --cc-mark: #fff3a3;
+  --cc-mark-ink: inherit;
+
   /* ---- radius ladder — locked; no other values on this surface ---- */
   --r-pill: 999px;
   --r-chip: 10px;
@@ -145,6 +162,14 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      alternative is offered there rather than chosen here. */
   --cc-bubble-out: #9cc8ff;
   --cc-bubble-out-ink: #0b1220;
+
+  /* Search highlight, dark. A dark ochre with white ink rather than the light
+     theme's pale yellow: #fff3a3 against a #0b0b0d panel is a lamp, and it
+     would make the highlight the brightest thing on the surface by an order of
+     magnitude. 6.62:1 white-on-#6b5a00 — see the light block for why AAA is
+     not the target here. */
+  --cc-mark: #6b5a00;
+  --cc-mark-ink: #ffffff;
 }
 
 /* ===========================================================================
@@ -1732,4 +1757,47 @@ html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-unsupported] {
   background: #2a2113;
   border-color: #4a3a1c;
   color: #fde68a;
+}
+
+/* ---------------------------------------------------------------------------
+   SEARCH RESULTS — EXT-SEARCH / FEATURE-SPEC-MSG-SEARCH
+   ---------------------------------------------------------------------------
+   Like `.cc-bubble-out`, these rules are deliberately NOT scoped to `.cc-ext`:
+   `components/MessageSearchResults.tsx` is one component rendered on two
+   surfaces, and a `.cc-ext`-only rule would leave /app's copy with the UA's
+   own `<mark>` paint. The `var()` fallbacks are what /app uses; inside
+   `.cc-ext` the tokens above win and the dark block swaps them.
+   --------------------------------------------------------------------------- */
+.cc-search-mark {
+  background-color: var(--cc-mark, #fff3a3);
+  color: var(--cc-mark-ink, inherit);
+}
+
+/* ---------------------------------------------------------------------------
+   CLICKED-FROM-SEARCH BUBBLE
+   ---------------------------------------------------------------------------
+   Applied for 1.2 s to the message row a search hit opened, then removed by
+   the same effect that added it. An OUTLINE, not a background swap: the bubble
+   below it already carries meaning in its fill (sent / received / failed /
+   MMS), and repainting that fill would say the wrong thing about the message
+   for as long as the cue lasts. `outline` also costs no layout, so a thread
+   scrolled to the middle does not shift under the cue.
+
+   Reduced motion gets the SAME outline for the SAME 1.2 s, held steady instead
+   of faded. Reduced motion means less movement, never less information — the
+   user who cannot have the fade still has to be able to find the message.
+   --------------------------------------------------------------------------- */
+.cc-bubble-hit {
+  outline: 2px solid var(--cc-mark, #fff3a3);
+  outline-offset: 2px;
+  border-radius: 18px;
+  animation: cc-bubble-hit-fade 1200ms ease-out both;
+}
+@keyframes cc-bubble-hit-fade {
+  0%   { outline-color: var(--cc-mark, #fff3a3); }
+  70%  { outline-color: var(--cc-mark, #fff3a3); }
+  100% { outline-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-bubble-hit { animation: none; }
 }

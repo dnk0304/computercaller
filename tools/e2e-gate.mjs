@@ -559,6 +559,16 @@ const MIN_CHECKS_OVERRIDE = {
   // count is the only thing that notices. Measured at the commit that adds it:
   // 75 assertions.
   'unit:ext-load-more': 75,
+  // EXT-SEARCH. tests/message-search.test.mjs — the FEATURE-SPEC-MSG-SEARCH
+  // normalisation, snippet geometry, grouping, render cap and the spec §3 scan
+  // budget, plus source pins over both consumers. It needs a floor for the same
+  // reason ext-load-more does, and more so: seven of its pins are ABSENCES (the
+  // old `t.lastBody` predicate gone from the extension, `threadBodyIndex` and
+  // its debounce gone from the Dashboard, no emoji in the copy), and an absence
+  // passes by finding nothing. Deleting a pin, a boundary case or one of the
+  // six negative controls makes the suite GREENER — the count is the only thing
+  // that notices. Measured at the commit that adds it: 100 assertions.
+  'unit:message-search': 100,
   // BAT-2 (d) min-checks raise 149 -> 165. Registering the BAT phase adds its
   // resolved-list arms, the bat-ui-proof ownership cell, the pending-script
   // cells and the frozen phase-set string. Re-MEASURED at this commit rather
@@ -1616,6 +1626,12 @@ if (WEB) {
     // tests/e2e-*.test.mjs. Node-only — no browser, no database (rule 17).
     // ONLY e2e-gate.mjs change made by EXT-HIST; declared in the résumé.
     ['ext-load-more', 'tests/ext-load-more.test.mjs', true],
+    // EXT-SEARCH. The message-body search: normalisation, snippet geometry,
+    // grouping, the render cap and the §3 scan budget. Named explicitly because
+    // the sweep above matches only tests/e2e-*.test.mjs. Node-only — no
+    // browser, no database (rule 17). ONLY e2e-gate.mjs change made by
+    // EXT-SEARCH; declared in the résumé.
+    ['message-search', 'tests/message-search.test.mjs', true],
   ];
   // The one unit suite that needs a database, named for the same reason
   // DB_BACKED names devicekey-authz above: explicit beats widening the scrub.
