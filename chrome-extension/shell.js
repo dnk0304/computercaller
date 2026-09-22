@@ -45,6 +45,8 @@
  *   app   → shell : { source:'cc-ext', type:'size',  size:'small'|'medium'|'large' }
  *   login → shell : { source:'cc-ext', type:'login-ready' | 'signed-in' | 'google-sign-in' }
  *   shell → app   : { source:'cc-ext', type:'shell-hello', email, canPopout }
+ *   shell → app   : { source:'cc-ext', type:'battery', v:1,
+ *                     battery:{pct,charging,ts}|null }   (BAT-3)
  * Inbound is accepted ONLY from one of our OWN two iframes' contentWindow AND
  * only from the webapp origin — a message from any other frame or origin is
  * dropped before it can reach a handler. The two frames are then held to
@@ -178,6 +180,90 @@ function receiveSize(size) {
   try {
     chrome.storage.local.set({ [SIZE_KEY]: size });
   } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// PHONE BATTERY — BAT-3 (b). The shell's only job here is DELIVERY.
+//
+// Why the shell is in this path at all. Inside the extension the service worker
+// owns the socket, and MV3 evicts it routinely; a popup or side panel that has
+// just been opened therefore has no live BATTERY frame and would show nothing
+// until the phone's next send — up to ten minutes of a blank slot in a header
+// that had a value a moment ago. BAT-2 persists the last reading in
+// chrome.storage.session as `cc_battery` for exactly this. This block reads it
+// on open, subscribes to changes, and posts it to the app frame, which renders
+// it through the SAME <ConnectionStatus /> the web app uses.
+//
+// storage.SESSION, never local (BAT-A1 MUST-3): the record dies with the
+// browser session and is cleared by background.js at sign-out and unpair. This
+// file never writes it, never mints one, and never re-validates a frame — the
+// SW's isValidBatteryPayload() is the one chokepoint, and duplicating it here
+// would create a second opinion about a shape that has exactly one.
+//
+// Unknown `v` is treated as NO VALUE (RESUME-PROTOCOL rule 6): a record this
+// build cannot interpret must not be half-read into a header. background.js
+// clears such a row on its own read; the shell simply declines to show it.
+const BATTERY_KEY = 'cc_battery';
+const BATTERY_RECORD_VERSION = 1;
+
+/** Last value posted to the app frame, re-sent on every `ready`. */
+let battery = null;
+
+/**
+ * Narrow a stored record to the wire shape the app expects, or null.
+ * @param {unknown} rec
+ * @returns {{pct:number,charging:boolean,ts:number}|null}
+ */
+function readBatteryRecord(rec) {
+  if (!rec || typeof rec !== 'object') return null;
+  if (rec.v !== BATTERY_RECORD_VERSION) return null;
+  if (typeof rec.pct !== 'number' || typeof rec.charging !== 'boolean') return null;
+  if (typeof rec.ts !== 'number') return null;
+  // The `v` tag is deliberately NOT forwarded: it versions the storage record,
+  // not the message, and the message carries its own `v`.
+  return { pct: rec.pct, charging: rec.charging, ts: rec.ts };
+}
+
+/** Post the current value to the app frame. Safe to call repeatedly. */
+function sendBattery() {
+  if (!frame || !frame.contentWindow) return;
+  try {
+    frame.contentWindow.postMessage(
+      { source: NS, type: 'battery', v: 1, battery },
+      self.CC.WEBAPP_ORIGIN,
+    );
+  } catch {}
+}
+
+/**
+ * @param {unknown} rec the raw storage row, or undefined when it was cleared.
+ */
+function receiveBatteryRecord(rec) {
+  const next = readBatteryRecord(rec);
+  // An explicit null IS the message on sign-out / unpair: the header has to
+  // drop the value, not keep the last one standing.
+  if (next === null && battery === null) return;
+  if (next && battery && next.ts === battery.ts
+      && next.pct === battery.pct && next.charging === battery.charging) {
+    return;
+  }
+  battery = next;
+  sendBattery();
+}
+
+try {
+  chrome.storage.session.get(BATTERY_KEY, (got) => {
+    if (chrome.runtime.lastError) return;
+    receiveBatteryRecord(got && got[BATTERY_KEY]);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'session' || !changes[BATTERY_KEY]) return;
+    receiveBatteryRecord(changes[BATTERY_KEY].newValue);
+  });
+} catch {
+  // storage.session unavailable (an old Chrome, a restricted profile). The
+  // header simply renders no battery, which is the documented no-value state —
+  // there is no placeholder to fall back to and none should be invented.
 }
 
 // 1) Presence signal — the disconnect fires automatically when this page unloads.
@@ -724,6 +810,10 @@ window.addEventListener('message', (event) => {
     // Unsolicited on every `ready` so a reloaded app re-learns the key without
     // having to know it should ask.
     sendE2ePubKey();
+    // Same posture for the battery (BAT-3): the stored value is STATE, not an
+    // event, so a reloaded app is told what it is rather than waiting for the
+    // next storage change. No-op when nothing has been received.
+    sendBattery();
   } else if (data.type === 'e2e-pubkey-request') {
     // On demand. Reachable ONLY from the app frame — this branch sits inside
     // the `fromApp` verb set, and the login frame's set above is disjoint and
