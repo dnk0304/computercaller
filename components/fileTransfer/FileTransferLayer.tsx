@@ -10,6 +10,10 @@ import type { FileTransferApi } from '@/hooks/useFileTransfer';
 import { FileOfferDialog } from './FileOfferDialog';
 import { FileTransferProgress } from './FileTransferProgress';
 import { FileTransferError } from './FileTransferError';
+// EXT-UI-4 M8. Self-wiring, like every other slot in FileTransferSlots: it
+// reads useUpgrade() itself, so `openUpgrade` stays OUT of this file's scope
+// (see the useUpgrade note below — that omission is deliberate and load-bearing).
+import { UpgradeToUnlockRow } from './FileTransferSlots';
 import { FileReceivedToast } from './FileReceivedToast';
 
 /**
@@ -117,6 +121,10 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
         onDismiss={onDismissError}
         onRetry={onDismissError}
       />
+      {/* EXT-UI-4 M8. UNDER the banner, never inside it: the banner stays
+          CTA-free per A1.1-M10 / R-AN. Renders only for a `tier` failure on an
+          unsubscribed account on the extension surface. */}
+      {compact && <UpgradeToUnlockRow reason={error?.reason ?? null} />}
 
       <FileTransferProgress progress={progress} onCancel={onCancel} compact={compact} />
 

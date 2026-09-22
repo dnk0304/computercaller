@@ -200,10 +200,23 @@ export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: 
       "flex flex-col items-center justify-center w-full mx-auto transition-all",
       isCompact ? "p-2 max-w-full" : "max-w-sm p-6"
     )}>
-      {/* Display Area - Now an editable input */}
+      {/* Display Area - Now an editable input.
+
+          EXT-UI-4 (1) / Gemini #3. On the extension surface this input had no
+          frame at all: a bare transparent box whose only edge was the digits
+          themselves, so before you type there is nothing on screen saying
+          "this is where the number goes". The placeholder measured 1.32:1
+          (`placeholder-slate-300` on the panel ground), i.e. invisible.
+
+          The frame is added with a HOOK CLASS styled in
+          app/extension/extension.css, not with Tailwind utilities here,
+          because this component is shared with /app and //app's 4xl dialler
+          wants no box around it. `cc-dial-field` therefore paints only under
+          `.cc-ext`, and the non-compact branch is byte-identical to before.
+          Compact-only for the same reason. */}
       <div className={clsx(
         "w-full flex flex-col items-center justify-center transition-all",
-        isCompact ? "h-16 mb-2" : "h-24 mb-8"
+        isCompact ? "cc-dial-field h-16 mb-2" : "h-24 mb-8"
       )}>
         <input
           ref={inputRef}

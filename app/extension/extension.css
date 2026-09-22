@@ -47,11 +47,9 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-hair: #e5e5e5;
   --cc-ink: #171717;
   --cc-sec: #525252;
-  /* Lifted with the ladder: the light ground dropped from #f1f1f2 to #e2e3e6
-     to clear Chrome's white bar, and #737373 falls to 3.69:1 there (it was
-     already only 4.20:1 before). 4.68:1 on L2, 4.90:1 on L1, 6.01:1 on a
-     white card. */
-  --cc-mut: #636363;
+  /* R-CH restored it with the ladder it was derived from: 4.20:1 on the
+     restored L2 #f1f1f2, 4.43:1 on L1, 4.74:1 on a white card. */
+  --cc-mut: #737373;
   --cc-chip-bd: #d4d4d4;
 
   /* ---- brand (identical in both themes) ---- */
@@ -921,23 +919,32 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    cannot restyle the bar — it is browser chrome and follows Chrome's own
    scheme — so OUR shades are chosen to step away from it.
 
-   BOTH themes now run L0 DARKEST, the body lifted above it, the card furthest
-   of all.
-   Dark:  bar 25.32 → L0 #0e0e11 (4.05) → L1 #1c1c20 (10.42) → L2 #222226
-          (13.38) → L3 #2b2b30 (17.71). This is the shape of Dennis's Reflecto
-          reference, whose header is DARKER than its body, not lighter.
-   Light: bar 100.00 → L0 #cbcccf (82.05) → L2 #e2e3e6 (90.24) → L1 #e7e8eb
-          (92.00) → L3 #ffffff (100.00).
+   R-CH (2026-09-22 16:06Z) REVERSED that choice. Dennis saw the result in prod
+   and said: "turn back the header to be the same color style it was previously,
+   i dont like this grey tone in the extension." Every value is restored to
+   1520063. The paragraph above is kept because the measurement was real and the
+   defect it describes is real; what changed is the RULING, not the arithmetic.
+   Invariant 1 below (L0 vs Chrome's bar >= 12) is therefore closed as
+   Dennis-OVERRIDDEN, not met, and must not be "fixed" back by a later lane.
 
-   Four invariants, all measured, all enforced by the values above:
-     1. L0 vs Chrome's bar   ≥ 12   dark 21.27, light 17.95
-     2. L0 vs L1             ≥ 6    dark  6.38, light  9.95
-     3. L0 vs L2             ≥ 8    dark  9.33, light  8.19
-     4. body vs Chrome's bar ≥ 8    dark L1 14.90 / L2 11.94,
-                                    light L1 8.00 / L2 9.76
-   Invariant 4 is the new one and it is what moved the light body: the old
-   L1 #f7f7f8 was 2.74 L* from a white bar, i.e. the light panel had the same
-   defect as the dark one and nobody could see that one either. The card stays
+   BOTH themes run L0 LIGHTER than the body in dark and DARKER than it in light
+   — the PIXEL-Q / Variant B shape Dennis approved on 2026-09-21.
+   Dark:  bar 25.32 → L0 #28292c (16.60) → L1 #131316 (5.98) → L2 #18181b
+          (8.36) → L3 #212125 (12.89).
+   Light: bar 100.00 → L0 #d9dadd (87.05) → L2 #f1f1f2 (95.17) → L1 #f7f7f8
+          (97.26) → L3 #ffffff (100.00).
+
+   Invariants as they now stand, all measured on the restored values:
+     1. L0 vs Chrome's bar   OVERRIDDEN  dark 8.72, light 12.95
+     2. L0 vs L1             >= 6        dark 10.62, light 10.21
+     3. L0 vs L2             >= 8        dark  8.24, light  8.12
+     4. body vs Chrome's bar OVERRIDDEN  dark L1 19.34 / L2 16.96,
+                                         light L1 2.74 / L2 4.83
+   Invariants 2 and 3 — the ones about our OWN surfaces reading as separate
+   rows — still hold, and are the ones scripts/ext-sidepanel-window-shots.mjs
+   now fences (>= 8 / >= 6 / >= 2). Invariant 4's light number (2.74) is the
+   known, accepted cost: in light our body really is very nearly the colour of
+   Chrome's bar. The card stays
    the surface furthest from its ground; in light it is still pure white, which
    is also the bar's colour, but it sits four levels and a hairline away rather
    than directly beneath it.
@@ -956,28 +963,46 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
        against them inherits the ladder without being touched. --- */
 .cc-ext {
   /* L0 is the HEADER BAND and it is the DARKEST step in light, not white.
-     EXT-FRAME-2 took it one step further down (#d9dadd -> #cbcccf) and, more
-     importantly, moved the BODY. Against Chrome's white side-panel bar: L0 is
-     17.95 L* away, L1 8.00, L2 9.76. The old L1/L2 were 2.74 and 4.83 from
-     that bar — near enough to read as the same surface. */
-  --cc-l0: #cbcccf;
-  --cc-l1: #e7e8eb;
-  --cc-l2: #e2e3e6;
+
+     R-CH (Dennis, Discord 2026-09-22 16:06Z, verbatim): "turn back the header
+     to be the same color style it was previously, i dont like this grey tone in
+     the extension." Every ladder value in this file is RESTORED to 1520063 -
+     the tip immediately before EXT-FRAME-2 — which already carried the Variant
+     B header band (9edc664) that he saw and approved. He is objecting to the
+     EXT-FRAME-2 grey, not to the band, so the band stays and only its shades
+     move back. BOTH themes revert: the two ladders moved as one unit, in one
+     commit, under one rationale, and there is no evidence the objection is
+     light-only.
+
+     THE EXT-FRAME-2 TARGET IS CLOSED, NOT FAILED. That dispatch asked for
+     dL* >= 12 between our header L0 and Chrome's own side-panel bar. It is
+     Dennis-OVERRIDDEN: owner preference beats the metric. Nobody is to "fix"
+     these numbers back. The measurements that motivated it stay here, because
+     the trade-off should remain visible rather than be quietly forgotten:
+       dark  — Chrome's bar #3c3c3c (L* 25.32) vs restored L0 #28292c: 8.72 dL*
+       light — Chrome's bar #ffffff (L* 100)   vs restored L0 #d9dadd: ~13 dL*,
+               and the restored body L1 #f7f7f8 is 2.74 dL* from that bar.
+     So in dark the header and Chrome's bar read closer together than
+     EXT-FRAME-2 wanted, and in light the BODY is very nearly the bar's own
+     colour. That is the accepted cost of the palette Dennis prefers. */
+  --cc-l0: #d9dadd;
+  --cc-l1: #f7f7f8;
+  --cc-l2: #f1f1f2;
   --cc-l3: #ffffff;
   /* Card outlines and band boundaries are the same hairline in light: at these
-     lightnesses one value reads correctly against both L2 and L1. Darkened
+     lightnesses one value reads correctly against both L2 and L1. R-CH restored
+     it to the 1520063 value with the ladder it was derived from: 1.07:1 on L2,
+     1.04:1 on L1, 1.16:1 around a white card — faint, and exactly what shipped.
+     ORIGINAL EXT-FRAME-2 NOTE, kept for history: darkened
      with the ladder — #dcdcde on the new L2 is 1.07:1, i.e. gone. Now 1.34:1
      on L2, 1.41:1 on L1, 1.72:1 around a white card. */
-  --cc-hair-card: #c4c5cb;
-  /* The header's own bottom rule, re-checked on the darker L0: #c3c5cc
-     measures 1.07:1 there. 1.36:1 now — above the 1.3 floor a hairline needs
-     in order to exist at all. */
-  --cc-hair-hdr: #adafb9;
-  /* Bare-on-band ink, light. Dark has had this since PIXEL-Q; light needs it
-     now, because the band is dark enough that --cc-mut #737373 lands at
-     2.95:1 on it. The dispatch raises this row to AAA (12px band text is not
-     "large"), so: 7.81:1, and the body's muted ink is left alone. */
-  --cc-mut-hdr-light: #33333a;
+  --cc-hair-card: #dcdcde;
+  /* The header's own bottom rule. R-CH restored it to #c3c5cc, which measures
+     1.23:1 on the restored L0 #d9dadd — a shade under the 1.3 a hairline wants
+     in order to exist at all, and exactly what 1520063 shipped. Deliberately
+     NOT "improved" on the way back: this file is being put back, not re-tuned.
+     If Dennis ever wants the rule crisper, that is its own one-token change. */
+  --cc-hair-hdr: #c3c5cc;
   /* Unread chip. NOT `bg-blue-600`: that class is remapped to the brand
      gradient inside .cc-ext, and §0 trait 3 keeps the gradient on exactly
      three objects (the mark, the avatar, the one primary action). A count
@@ -990,54 +1015,51 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   /* Zebra moves onto the ladder too. It used to be the only "second surface"
      in a list; now it is a half-step inside the L3 card, so it has to sit
      between L3 and L2 rather than being an independent grey. */
-  --cc-zebra: #f2f2f4;
-  /* Body hairline follows the darkened ladder — #e5e5e5 is 1.02:1 on the new
-     L2. One value for the whole light panel, as above: 1.34:1 on L2. */
-  --cc-hair: #c4c5cb;
+  --cc-zebra: #f5f5f6;
 }
 
 :where([data-cc-theme=dark]) .cc-ext {
-  /* L0 is the header band and in dark it is now DARKER than the ground.
-     PIXEL-Q made it lighter, reasoning that Chrome's dark strip goes that way
-     — but Dennis's Reflecto reference does the opposite (header #171717,
-     body #252525) and the reference is right: a header LIGHTER than its body
-     can only get further from the body by getting CLOSER to the bar. At
-     #28292c it was 8.72 L* from the bar and the two rows read as one slab.
-     Measured now: 21.27 vs the bar, 6.38 vs L1, 9.33 vs L2. */
-  --cc-l0: #0e0e11;
-  /* The body lifts one step so it clears the bar too (invariant 4). The old
-     L1 #131316 / L2 #18181b / L3 #212125 kept their RELATIVE shape; the whole
-     group just moved up the ramp. */
-  --cc-l1: #1c1c20;
-  --cc-l2: #222226;
-  --cc-l3: #2b2b30;
-  /* One value for band boundaries and card outlines, as in light: on the
-     lifted ladder #303036 falls to 1.21:1 on L2. Now 1.58:1 on L1, 1.47:1 on
-     L2, 1.31:1 around a card. */
-  --cc-hair-card: #3d3d45;
-  /* Unchanged value, re-checked on the much darker L0: 1.73:1. */
+  /* R-CH: restored to 1520063. The header band is LIGHTER than the body again
+     (PIXEL-Q's direction), which is the shape Dennis prefers — see the R-CH
+     note in the light block above, including why the EXT-FRAME-2
+     dL*-vs-Chrome's-bar target is closed as Dennis-overridden rather than
+     failed. Measured on these restored values: Chrome's bar #3c3c3c -> L0 is
+     8.72 dL*, L0 -> L1 is 6.38, bar -> L1 is 2.34. EXT-FRAME-2's reading of
+     Dennis's Reflecto reference (header DARKER than body) was not wrong as
+     analysis; it is simply not the palette he wants on his own product. */
+  --cc-l0: #28292c;
+  --cc-l1: #131316;
+  --cc-l2: #18181b;
+  --cc-l3: #212125;
+  /* One value for band boundaries and card outlines, as in light. R-CH
+     restored it with the ladder it was derived from: 1.21:1 on the restored
+     L2, 1.30:1 on L1, 1.10:1 around a card. */
+  --cc-hair-card: #303036;
+  /* Moved by neither EXT-FRAME-2 nor R-CH: 1.30:1 on the restored L0. */
   --cc-hair-hdr: #3a3b41;
   /* Dark inverts the chip rather than darkening the fill: a blue dark enough
      to carry white digits disappears into an L3 card, so the fill goes light
      and the digits go dark. 7.36:1 digits-on-fill; fill-on-card re-measured on
-     the lifted L3 at 5.54:1 (was 6.31 on #212125) — still well above the 3:1
-     a non-text UI fill needs. */
+     the restored L3 #212125 at 6.31:1 (R-CH) — still well above the 3:1 a
+     non-text UI fill needs. */
   --cc-unread: #60a5fa;
   --cc-unread-ink: #0b1220;
-  /* Zebra follows the ladder up: it is a half-step inside the L3 card, and the
-     old #1c1c20 is now L1 itself. */
-  --cc-zebra: #26262b;
-  /* Body muted ink, lifted with the ladder. #8a8a8a measured 4.9:1 on the old
-     L1 but only 4.08:1 on the new L3 card — below AA on the surface most body
-     text actually sits on. Now 5.04:1 on L3, 5.67:1 on L2. */
-  --cc-mut: #9a9aa2;
-  /* Body hairline, same reasoning: #27272a is 1.06:1 on the new L2. */
-  --cc-hair: #3d3d45;
+  /* Zebra sits a half-step inside the L3 card. R-CH restored. */
+  --cc-zebra: #1c1c20;
+  /* Body muted ink and body hairline: EXT-FRAME-2 added an override for each
+     of these inside this block, and R-CH DELETES both, so they inherit the
+     base dark block again (--cc-mut #8a8a8a, --cc-hair #27272a) exactly as
+     1520063 shipped. #8a8a8a measures 4.08:1 on the restored L3 #212125 and
+     4.90:1 on L2. */
   /* Bare-on-band ink. The popout/dock glyphs and the plain EncryptionChip are
      the only things painted DIRECTLY on L0 (everything else in the row sits on
-     the device pill or the avatar gradient). The dispatch raises this row from
-     AA to AAA and the band is far darker now, so: 7.51:1. */
-  --cc-mut-hdr: #a1a1a9;
+     the device pill or the avatar gradient): 5.21:1 on the restored L0, i.e.
+     AA. EXT-FRAME-2 had raised this row to AAA on the strength of a far darker
+     band; with the band back where Dennis wants it, AAA is not reachable
+     without an ink much darker than the band's own character. The row returns
+     to the AA it shipped at — recorded here so it reads as a consequence of
+     R-CH and not as an oversight. */
+  --cc-mut-hdr: #9a9aa2;
 }
 
 /* --- L0: the header band ------------------------------------------------- */
@@ -1057,22 +1079,21 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    bg-slate-100 / --cc-field fill, so its ink contrasts against the PILL and is
    untouched here), the avatar (white on its gradient), and then exactly three
    bare items — the popout glyph, the dock glyph and the EncryptionChip. Those
-   EXT-FRAME-2 raises the floor on this row from AA to AAA (>= 7:1). The band's
-   type is 12px, which is not "large text" by any definition WCAG offers, and
-   the dispatch's remedy for a harder L0 is explicitly to move the INK, never
-   to lighten L0 back toward the bar (open question 2). So BOTH themes now have
-   a band-scoped muted ink — light did not have one before — and the three
-   Tailwind literals are re-tuned against the new L0 in each theme. Measured on
-   the band:
-     light L0 #cbcccf   slate 9.11:1, emerald 7.95:1, amber 7.48:1, mut 7.81:1
-     dark  L0 #0e0e11   slate 7.51:1, emerald 10.03:1, amber 11.55:1
-   The lowest number painted on either band is 7.48:1. */
-.cc-ext .cc-ext-header { --cc-mut: var(--cc-mut-hdr-light); }
+   R-CH restores the 1520063 band inks. EXT-FRAME-2 had raised this row from AA
+   to AAA against a much darker L0; with the band restored to #d9dadd that floor
+   is not reachable without inks far darker than the band's own character, so
+   the row returns to the AA it shipped at. Light no longer has a band-scoped
+   muted ink at all (EXT-FRAME-2 introduced --cc-mut-hdr-light for that; R-CH
+   deletes it) - the three literals below are what actually paints on the light
+   band. Measured on the restored bands:
+     light L0 #d9dadd   slate 5.42:1, emerald 5.50:1, amber 5.07:1
+     dark  L0 #28292c   mut-hdr 5.21:1, emerald 7.57:1, amber 8.71:1
+   The lowest number painted on either band is 5.07:1, i.e. AA. */
 :where([data-cc-theme=dark]) .cc-ext .cc-ext-header { --cc-mut: var(--cc-mut-hdr); }
 
-.cc-ext .cc-ext-header .text-slate-500 { color: #1e293b; }   /* 4.72 -> 9.11:1 */
-.cc-ext .cc-ext-header .text-emerald-700 { color: #033a2c; } /* 4.78 -> 7.95:1 */
-.cc-ext .cc-ext-header .text-amber-700 { color: #5c2705; }   /* 4.42 -> 7.48:1 */
+.cc-ext .cc-ext-header .text-slate-500 { color: #475569; }   /* 4.72 -> 5.42:1 */
+.cc-ext .cc-ext-header .text-emerald-700 { color: #065f46; } /* 4.78 -> 5.50:1 */
+.cc-ext .cc-ext-header .text-amber-700 { color: #92400e; }   /* 4.42 -> 5.07:1 */
 /* The dark remap already routes .text-slate-500 to --cc-mut, which the rule
    above re-points; these literals must not also fire in dark. */
 :where([data-cc-theme=dark]) .cc-ext .cc-ext-header .text-slate-500 { color: var(--cc-mut-hdr); }
@@ -1087,15 +1108,16 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 /* --- L0: the Send-file control (EXT-UI-8 (b)) ---------------------------- */
 /* The glyph itself is `text-slate-500`, which the two rules above re-point to
-   the band ink in each theme (9.11:1 light, 7.51:1 dark) — nothing to do here.
+   the band ink in each theme (5.42:1 light, 5.21:1 dark after R-CH restored the
+   band) — nothing to do here.
    The LOCK BADGE is the part that needs the band: it is an 8px mark sitting on
    top of a 14px one, and without separation the two silhouettes merge into an
    unreadable smudge at 100% zoom. So it is cut out of L0 the same way the
    account dot is, and painted in the panel's blue rather than the muted ink so
    it reads as "there is an offer here", not "this is switched off". Measured on
-   the band: #1d4ed8 on light L0 #cbcccf = 4.17:1; #60a5fa on dark L0 #0e0e11 =
-   7.58:1. Both past the 3:1 a non-text UI mark needs, and deliberately not the
-   3.22:1 the field blue would have given in light.
+   the band, RE-MEASURED after R-CH restored L0: #1d4ed8 on light L0 #d9dadd =
+   4.79:1; #60a5fa on dark L0 #28292c = 5.72:1. Both still past the 3:1 a
+   non-text UI mark needs, so the badge ink does not move with the band.
 
    The separation is a FILLED DISC, not an SVG stroke. `stroke` is how a lucide
    glyph paints itself, so keying it to --cc-l0 paints the entire lock in the
@@ -1838,6 +1860,260 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   border-bottom-color: #4a2026;
 }
 :where([data-cc-theme=dark]) .cc-ext .cc-ft-error p { color: #fecdd3; }
+
+/* ===========================================================================
+   EXT-UI-4 — dialler frame, back-button target, Load-more affordance,
+   call-row meta, device-pill cap, upgrade-to-unlock row.
+   ---------------------------------------------------------------------------
+   EVERY HEX BELOW WAS MEASURED ON THE GROUND IT ACTUALLY LANDS ON, AFTER R-CH
+   RESTORED THE LADDER. Gemini's mockup pass proposed colours against grounds
+   we do not have (#1A1A1A / #262626 / #404040 dark, and a #F5F5F5 light
+   container that does not exist here); six of the ten ratios in its own table
+   were misstated. Nothing from that table is used unverified. The restored
+   grounds are:
+     light  L0 #d9dadd  L1 #f7f7f8  L2 #f1f1f2  L3 #ffffff  zebra #f5f5f6
+     dark   L0 #28292c  L1 #131316  L2 #18181b  L3 #212125  zebra #1c1c20
+
+   TWO NEW TOKENS, because six controls needed the same two answers and six
+   copies of a hex is six chances to drift:
+
+   --cc-aaa   AAA body ink (>= 7:1 on EVERY body ground, both themes).
+              light #4d4d4d — 8.45:1 on L3, 7.90 on L1, 7.49 on L2, 7.76 on
+                              zebra. (--cc-sec #525252 would have been 6.92:1
+                              on L2, i.e. AA, which is why this is not just
+                              --cc-sec.)
+              dark  #bdbdbd — 8.54:1 on L3, 9.87 on L1, 9.43 on L2, 9.04 on
+                              zebra.
+   --cc-bd-strong  A border you can SEE (>= 3:1, the WCAG 1.4.11 floor for a
+              non-text UI boundary) on every body ground.
+              light #86868c — 3.62:1 on L3, 3.38 on L1, 3.21 on L2, 3.32 on
+                              zebra. (Gemini's #CCCCCC is 1.61:1 on white —
+                              a frame you cannot see is not a frame.)
+              dark  #7a7a85 — 3.78:1 on L3, 4.37 on L1, 4.18 on L2, 4.00 on
+                              zebra.
+   =========================================================================== */
+.cc-ext {
+  --cc-aaa: #4d4d4d;
+  --cc-bd-strong: #86868c;
+}
+:where([data-cc-theme=dark]) .cc-ext {
+  --cc-aaa: #bdbdbd;
+  --cc-bd-strong: #7a7a85;
+}
+
+/* --- (1) M2: the dialler input gets a frame ------------------------------- */
+/* Gemini #3. The compact dialler was a transparent box: no border, no fill,
+   and `placeholder-slate-300` measuring 1.32:1 on the panel ground. Before the
+   first keypress there was nothing on screen saying where the number goes.
+
+   The field is lifted to L3 so it reads as a FIELD on the body rather than as
+   a hole in it, and given a >= 3:1 border. Placeholder and typed ink are two
+   different jobs and get two different floors, deliberately:
+     typed digits  light #171717 on #ffffff  17.93:1   (the dispatch's >= 7:1)
+                   dark  #fafafa on #212125  15.37:1
+     placeholder   light #707070 on #ffffff   4.95:1   (~4.5, NOT 7:1 — a
+                   dark  #8a8a8a on #212125   4.65:1    placeholder that reads
+                   as strongly as real input is a bug, not an improvement; it
+                   makes an empty field look filled.)
+   The light placeholder is Gemini's own #707070, which is correct HERE because
+   the ground here is white. Its dark suggestion (#909090 on #262626) was
+   measured on a ground we do not have; #8a8a8a is this panel's own --cc-mut
+   family and lands at 4.65:1 on our real L3. */
+.cc-ext .cc-dial-field {
+  background: var(--cc-l3);
+  border: 1px solid var(--cc-bd-strong);
+  border-radius: var(--r-btn);
+  /* The wrapper was a bare 64px flex box; the frame needs its ink inset from
+     its own edge, and the height must still be driven by the type so the
+     Large step grows the field instead of clipping it. */
+  height: auto;
+  min-height: calc(56px * var(--cc-size, 1));
+  padding: 0 10px;
+}
+.cc-ext .cc-dial-field input::placeholder { color: #707070; opacity: 1; }
+:where([data-cc-theme=dark]) .cc-ext .cc-dial-field input::placeholder { color: #8a8a8a; }
+/* Focus is shown on the FRAME, not with a second ring floating outside it: the
+   input itself is `outline-none` by design (a UA outline inside a framed field
+   draws two boxes). --cc-ring-input is the token EXT-SEARCH already uses for
+   exactly this job — 5.17:1 light / 6.31:1 dark, both well past 3:1.
+
+   `:focus-within` ALONE WOULD BE A REGRESSION, and it was: the first cut of
+   this rule lit the frame blue on every panel open, because the dial field
+   autofocuses. That is precisely the cue Dennis had removed in EXT-UI-8
+   ("when i click to dial number a square marking that field comes up ... This
+   should not be visible, neither dark nor light mode") — the frame simply
+   became a new way to draw it. So the selector carries the SAME
+   `:not([data-cc-pointer-focus])` guard the input's own cue rule carries a few
+   hundred lines up, reading the flag components/ExtPointerFocus.tsx sets for
+   focus that did not come from the keyboard. Click or autofocus: frame stays
+   neutral. Tab in, or type after clicking: frame lights. One flag, one policy,
+   two rules that agree. */
+.cc-ext .cc-dial-field:has(input:focus-visible:not([data-cc-pointer-focus])) {
+  border-color: var(--cc-ring-input);
+  box-shadow: inset 0 0 0 1px var(--cc-ring-input);
+}
+
+/* --- (2) M3: the back button gets a 44px target -------------------------- */
+/* Gemini #9, adopted as drawn. The GLYPH stays 20px and the BOX stays 36px —
+   the thread header row is h-10 (40px) and growing the box would grow the row.
+   Only the TARGET grows, via an `after` pseudo-element bleeding 4px in every
+   direction: 36 + 4 + 4 = 44px, the WCAG 2.5.8 / platform floor, at zero
+   layout cost. The 8px gap to the avatar is the row's existing `gap-2` and is
+   unchanged; no outer margin is added, so nothing shifts.
+
+   Ink: `text-slate-500` is 4.76:1 on this band — below the 7:1 this dispatch
+   sets. Lifted to --cc-aaa: 8.45:1 light on the L3 band, 8.54:1 dark. */
+.cc-ext .cc-back-btn { color: var(--cc-aaa); }
+/* Focus ring, per dispatch: #004FBF measures 7.32:1 on white — Gemini's
+   #0055CC is 6.62:1 and fails. Dark cannot use a navy on a near-black card, so
+   it takes the same hue from the other end: #93b4ff is 7.80:1 on L3 #212125.
+   Painted as an outline rather than a box-shadow so it survives the pseudo-
+   element target above, and `outline-offset` keeps it off the glyph. */
+.cc-ext .cc-back-btn:focus-visible {
+  outline: 2px solid #004fbf;
+  outline-offset: 2px;
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-back-btn:focus-visible { outline-color: #93b4ff; }
+
+/* --- (3) M4: "Load 25 more" becomes a real affordance -------------------- */
+/* Gemini #13, with its own remedy refused. It proposed a #F5F5F5 container to
+   make the control look pressable — but that fill DROPS the label from 7.81:1
+   to 6.42:1, i.e. the fix causes an AAA regression. So: BORDER ONLY, on the
+   existing ground, and the ink does not move.
+
+   WHICH READING OF THE LABEL IS RIGHT (the dispatch asks): neither number in
+   the review is the shipped token. The control paints `--cc-sec`, which is
+   #525252 (not the #595959 the review assumed). Measured: 7.81:1 on L3, 7.30
+   on L1, 7.17 on zebra, 6.92 on L2. The button sits in the call/thread list on
+   L3, so Vinci run 1's 7.81:1 is the correct reading and run 2's 7.00:1 was
+   computed from the wrong hex. It clears 7:1 on every ground it can reach
+   EXCEPT L2 — so it moves to --cc-aaa anyway (8.45:1 light) and the question
+   stops being load-bearing. Dark had the real problem: --cc-sec #a3a3a3 is
+   6.36:1 on L3, i.e. BELOW the floor on the surface this control actually sits
+   on; --cc-aaa #bdbdbd is 8.54:1 there.
+
+   Hover / focus are border and ink changes only — no fill anywhere, per the
+   dispatch. The hover ZEBRA FILL this rule used to carry is deliberately gone:
+   it was the same "grey container" idea Gemini proposed, arriving one state
+   later. */
+.cc-ext .cc-load-more {
+  color: var(--cc-aaa);
+  border: 1px solid var(--cc-bd-strong);
+  background-color: transparent;
+}
+.cc-ext .cc-load-more:not(:disabled):hover {
+  color: var(--cc-ink);
+  border-color: var(--cc-aaa);
+  background-color: transparent;
+}
+.cc-ext .cc-load-more:not(:disabled):active { border-color: var(--cc-ink); }
+.cc-ext .cc-load-more:disabled {
+  color: var(--cc-mut);
+  border-color: var(--cc-hair);
+  background-color: transparent;
+}
+/* The pill variant keeps its ground: it sits ABOVE a message list where a
+   bare outline would read as a list divider rather than as a control. */
+.cc-ext .cc-load-more.rounded-full,
+.cc-ext .cc-load-more.rounded-full:disabled {
+  background-color: var(--cc-field);
+  border-color: var(--cc-bd-strong);
+}
+.cc-ext .cc-load-more.rounded-full:not(:disabled):hover {
+  background-color: var(--cc-field);
+  border-color: var(--cc-aaa);
+}
+
+/* --- (4) M5: the call row wraps instead of clipping ---------------------- */
+/* Gemini #10 + #14. The meta line was `truncate`, so at the Large step and
+   200% zoom "Outgoing - 23h" became "Outg...". It is now a wrapping block
+   under the name; the row has no fixed height and grows with it. The action
+   buttons are already `flex-shrink-0` and stay at the right edge.
+
+   NO `justify-content: space-between` IN THIS ROW, and this comment is here
+   because the review proposed it twice after being told not to: the name block
+   is the only elastic item, so space-between would push the two action icons
+   apart from each other as soon as the name got short, which is the opposite
+   of holding them at the right.
+
+   Ink, all four re-measured on the restored grounds (rows alternate L3 and
+   zebra, and the open row is a shade darker again):
+     meta, normal   light --cc-aaa #4d4d4d   8.45:1 L3 / 7.76:1 zebra
+                    dark  --cc-aaa #bdbdbd   8.54:1 L3 / 9.04:1 zebra
+     meta, missed   light #991b1b            8.31:1 L3 / 7.63:1 zebra
+                    dark  #fca5a5            8.45:1 L3 / 8.95:1 zebra
+     message icon   light #4d4d4d            8.45 / 7.76   (was slate-400,
+                    dark  #bdbdbd            8.54 / 9.04    2.55:1 — invisible)
+     call icon      light #065f46            7.68 / 7.05   (was emerald-600,
+                    dark  #6ee7b7           10.53 / 11.14   3.77:1)
+   The call icon stays emerald: it is the row's one colour object and the
+   product's action colour. Only its VALUE moved, not its hue. */
+.cc-ext .cc-row-meta {
+  color: var(--cc-aaa);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.cc-ext .cc-row-meta.text-red-600 { color: #991b1b; }
+:where([data-cc-theme=dark]) .cc-ext .cc-row-meta.text-red-600 { color: #fca5a5; }
+.cc-ext .cc-row-action { color: var(--cc-aaa); }
+.cc-ext .cc-row-call { color: #065f46; }
+:where([data-cc-theme=dark]) .cc-ext .cc-row-call { color: #6ee7b7; }
+/* The row is a flex box with `items-center`; once the meta wraps, centring the
+   avatar against a two-line block leaves it floating. Top-aligned with a hair
+   of optical offset reads as one object at every text size. */
+.cc-ext .cc-list > li > [role="button"] { align-items: flex-start; }
+.cc-ext .cc-list > li > [role="button"] > div:first-child { margin-top: 1px; }
+
+/* --- M7: the device pill stops throwing away the header's width ---------- */
+/* T-PILL-CAP-210. ConnectionStatus pins `max-w-[210px]` in the TSX because
+   that is the right ceiling on /app. In the extension header it was the wrong
+   one: measured at base, 245px @360 and 285px @400 of header width sat unused
+   after the Send-file icon, while the device name truncated below the 8-visible
+   -character floor at EVERY size/width combination. The cap is released here
+   and only here, so /app is untouched.
+
+   AC-1 still holds by construction: the row is `white-space: nowrap`, every
+   other item in it is `flex-shrink-0`, and the pill's name is the only
+   `truncate` in the row — so the pill is the sole thing that can absorb a
+   narrow panel, which is exactly what AC-1 asks for. Releasing a cap cannot
+   make a sibling overflow; it can only stop starving the one elastic item. */
+.cc-ext .cc-ext-conn .cc-conn-pill {
+  max-width: none;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* --- M8: a readable way out of the tier failure -------------------------- */
+/* The banner above this row stays CTA-free (A1.1-M10 / R-AN). This row is a
+   sibling: the client's own offer, on its own ground, routed through the same
+   openUpgrade('fileTransfer') wiring as every other lock in the feature.
+
+   It gets L3 rather than inheriting the banner's L1 for two reasons. It reads
+   as a separate object, which is the whole point — and it is what lets the
+   dispatch's mandated #004FBF work: that blue is 7.32:1 on white but only
+   6.83:1 on L1, so on the banner's own ground the required colour would have
+   failed the required floor. (Gemini's #0055CC is 6.62:1 even on white.)
+     button ink   light #004fbf on #ffffff  7.32:1
+                  dark  #93b4ff on #212125  7.80:1
+     helper ink   light #4d4d4d on #ffffff  8.45:1
+                  dark  #bdbdbd on #212125  8.54:1
+   The dispatch warned the helper grey would fail "on the pink ground" — worth
+   recording that on THIS surface there is no pink ground: `.cc-ext .cc-ft-error`
+   already repaints Tailwind's rose-50 to L1, so the review's 3.97:1 figure
+   describes /app, not the extension. Measured, not assumed. */
+.cc-ext .cc-ft-unlock {
+  background: var(--cc-l3);
+  border-bottom: 1px solid var(--cc-hair);
+}
+.cc-ext .cc-ft-unlock-help { color: var(--cc-aaa); }
+.cc-ext .cc-ft-unlock-btn {
+  color: #004fbf;
+  border: 1px solid var(--cc-bd-strong);
+  background: transparent;
+}
+.cc-ext .cc-ft-unlock-btn:hover { border-color: #004fbf; }
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-unlock-btn { color: #93b4ff; }
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-unlock-btn:hover { border-color: #93b4ff; }
 
 /* --- Portalled: the dialog and the toast --------------------------------- */
 html:has(.cc-ext) .cc-ft-panel,

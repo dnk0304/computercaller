@@ -589,9 +589,17 @@ function BatteryIndicator({
  * row (Vinci ART-DIRECTION §4.1, Dennis AC-1).
  *
  * Contract this exists to satisfy:
- *   - max-width 210px, min-width 0, `truncate` on the name, `whitespace-nowrap`
- *     everywhere. A 30-character device name shortens; it never wraps and never
- *     pushes the row wider. That is the actual AC-1 pass condition.
+ *   - min-width 0, `truncate` on the name, `whitespace-nowrap` everywhere. A
+ *     30-character device name shortens; it never wraps and never pushes the
+ *     row wider. That is the actual AC-1 pass condition.
+ *   - The 210px cap below is the /app ceiling and stays for /app. On the
+ *     EXTENSION it is RELEASED (EXT-UI-4 M7, `cc-conn-pill` in
+ *     app/extension/extension.css): the cap was costing 245px @360 / 285px
+ *     @400 of header width that nothing else wanted, and starving the device
+ *     name below the 8-visible-character floor at every size/width combo. The
+ *     pill is the only truncating item in that row either way, so releasing
+ *     the cap cannot make anything else overflow — it just stops throwing the
+ *     slack away.
  *   - The dot is the primary signal and is never the ONLY signal: every state
  *     also carries a word, and the word is in the accessible name.
  *   - Disconnect is a 16px ✕ INSIDE the pill, not a sibling button that
@@ -707,7 +715,7 @@ function CompactDevicePill({
             ? 'Phone nearby — not connected. Press Connect to pair.'
             : undefined
       }
-      className="inline-flex h-6 min-w-0 max-w-[210px] items-center gap-1.5 whitespace-nowrap rounded-full bg-slate-100 pl-2 pr-1 text-[11.5px] font-medium"
+      className="cc-conn-pill inline-flex h-6 min-w-0 max-w-[210px] items-center gap-1.5 whitespace-nowrap rounded-full bg-slate-100 pl-2 pr-1 text-[11.5px] font-medium"
     >
       <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${dotClass}`} aria-hidden="true" />
       {name && (

@@ -644,6 +644,28 @@ try {
       && await lockedHeader.isEnabled());
     check('lapse: and the banner is still on screen beside it',
       await tierBanner.isVisible());
+
+    /*
+     * EXT-UI-4 M8. The banner itself stays CTA-free (M10, asserted above) — so
+     * before this lane the ONLY way onward from a lapsed trial was the 24px
+     * header icon, which differs from its unlocked twin by an 8px lock badge.
+     * It opened the upgrade modal; nothing on screen said so. The readable row
+     * is a SIBLING under the banner. Three assertions, because each one is a
+     * different way the fix could be present but useless: it has to be THERE,
+     * it has to be VISIBLE (not merely in the DOM behind the banner), and it
+     * has to be OUTSIDE the banner element — a CTA that drifted back inside it
+     * would be an M10 regression wearing this lane's class name.
+     */
+    const unlockRow = page.locator('[data-cc-ft-action="unlock-upgrade"]').first();
+    const unlockPresent = await unlockRow.waitFor({ timeout: 5000 })
+      .then(() => true).catch(() => false);
+    check('m8: a readable upgrade affordance is offered under the tier banner',
+      unlockPresent && (await unlockRow.innerText()).trim() === 'Upgrade to unlock',
+      unlockPresent ? await unlockRow.innerText() : 'not rendered');
+    check('m8: and it is actually visible, not just in the DOM',
+      unlockPresent && await unlockRow.isVisible());
+    check('m8: it is OUTSIDE the banner — the banner stays CTA-free (M10)',
+      (await tierBanner.locator('[data-cc-ft-action="unlock-upgrade"]').count()) === 0);
     // The defect shot. Banner + a LOCKED control, one frame.
     await shot(page, 'ext-error-tier-light-360');
     await ctx.close();
