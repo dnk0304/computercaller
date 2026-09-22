@@ -567,10 +567,10 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
       around nothing, which is exactly the artefact in his screenshot. So the
       field cue is re-derived separately: a 2px underline in the panel's brand
       BLUE, sitting where the caret already is instead of boxing the whole row.
-      Measured: #2563eb is 5.17:1 on white (L3) and 4.93:1 on the .cc-field
-      slate-100 fill; #60a5fa is 5.54:1 on dark L3 and 6.49:1 on dark L1. The
-      floor for a non-text focus indicator is 3:1 — both themes clear it twice
-      over.
+      Measured on every ground a field actually sits on: #2563eb is 5.17:1 on
+      white (L3), 4.72:1 on the .cc-field slate-100 fill and 4.03:1 on L2;
+      #60a5fa is 5.54:1 on dark L3, 6.68:1 on L1 and 6.23:1 on L2. The floor
+      for a non-text focus indicator is 3:1 — the lowest of the six is 4.03.
 
    The comment at the top of this block still stands: the cue is never removed,
    only restyled, and it is withheld for exactly one gesture (the pointer that
@@ -585,6 +585,16 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 :where([data-cc-theme=dark]) .cc-ext {
   --cc-ring-input: #60a5fa;
 }
+
+/* The SAME blue does not serve both jobs in light. The field cue sits on a
+   field (white L3, the .cc-field slate-100 fill, or L2); the lock badge sits on
+   the header BAND, which is the darkest light surface in the panel. #2563eb
+   measures 5.17 / 4.72 / 4.03:1 on the three field grounds but only 3.22:1 on
+   L0 — over the 3:1 floor, and too close to it for a 7px mark. So the badge
+   gets one step darker in light and keeps the field blue in dark, where L0 is
+   nearly black and the light value would be the wrong direction entirely. */
+.cc-ext { --cc-ft-badge: #1d4ed8; }
+:where([data-cc-theme=dark]) .cc-ext { --cc-ft-badge: #60a5fa; }
 
 /* The box goes, for every editable in the panel — the number field, the Texts
    search, the call-log search, the notifications search, the composer and the
@@ -1082,9 +1092,10 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    top of a 14px one, and without separation the two silhouettes merge into an
    unreadable smudge at 100% zoom. So it is cut out of L0 the same way the
    account dot is, and painted in the panel's blue rather than the muted ink so
-   it reads as "there is an offer here", not "this is switched off". Measured:
-   #2563eb on light L0 #cbcccf = 4.48:1; #60a5fa on dark L0 #0e0e11 = 8.10:1 —
-   both well past the 3:1 a non-text UI mark needs.
+   it reads as "there is an offer here", not "this is switched off". Measured on
+   the band: #1d4ed8 on light L0 #cbcccf = 4.17:1; #60a5fa on dark L0 #0e0e11 =
+   7.58:1. Both past the 3:1 a non-text UI mark needs, and deliberately not the
+   3.22:1 the field blue would have given in light.
 
    The separation is a FILLED DISC, not an SVG stroke. `stroke` is how a lucide
    glyph paints itself, so keying it to --cc-l0 paints the entire lock in the
@@ -1092,7 +1103,7 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    and what only a 3x capture of the header made visible. */
 .cc-ext .cc-ext-header .cc-ft-header-lockbadge {
   background: var(--cc-l0);
-  color: var(--cc-ring-input);
+  color: var(--cc-ft-badge);
 }
 
 /* --- L0: the wordmark beside the mark (VARIANT B) ------------------------ */
