@@ -119,7 +119,11 @@ fs.mkdirSync(SHOTS, { recursive: true });
 // subscribed, and the Dial body being empty of send controls) and removed
 // none — the tier-lock block was RE-POINTED, not deleted. Node arm 47 +
 // browser arm 55.
-export const MIN_CHECKS = 101;
+// EXT-UI-3 added 12 net browser-arm checks and removed none: the three M10
+// tier-banner assertions MOVED onto the lapsing panel (same assertions, a
+// harder fixture), plus 6 for the extension lapse, 4 for the /app lapse and 2
+// for the `quota` negative control. Node arm 47 + browser arm 67.
+export const MIN_CHECKS = 113;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -292,7 +296,9 @@ try {
    * the CLIENT-SAFE entitlement path the components actually read, so the trial
    * lock is exercised through the same fetch the product uses.
    */
-  const openPanel = async ({ subscribed, dark = false, zoom = 1, width = 360, route = '/extension' }) => {
+  const openPanel = async ({
+    subscribed, dark = false, zoom = 1, width = 360, route = '/extension', lapse = false,
+  }) => {
     const ctx = await browser.newContext({
       viewport: { width, height: 780 },
       deviceScaleFactor: 1,
@@ -311,25 +317,44 @@ try {
       contentType: 'application/json',
       body: JSON.stringify({ ticket: 'ft-ui-proof-stub-ticket' }),
     }));
-    await ctx.route('**/api/entitlement*', (route) => route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        allowed: subscribed, state: subscribed ? 'active' : 'trial',
-        tier: subscribed ? 'pro' : 'free', trialDaysLeft: subscribed ? null : 5,
-        limits: {},
-        /*
-         * A REAL upgrade signal. The modal renders its prompt purely from this
-         * (getUpgradePrompt) and renders nothing at all when it is null — so a
-         * null here would make the lock's destination untestable while looking
-         * like a product bug. An unsubscribed user is exactly who the server
-         * sends an upgrade path to.
-         */
-        upgrade: subscribed
-          ? null
-          : { reason: 'trial-limit-hit', cta: 'upgrade', targetTier: 'pro' },
-      }),
-    }));
+    /*
+     * EXT-UI-3. `lapse` models the ONE production case this dispatch exists
+     * for: a trial that runs out MID-SESSION. The first read is answered with
+     * the entitlement the client already believes (allowed), every read after
+     * it with the server's new answer (refused) — which is exactly what a
+     * lapse looks like from the client's side. A constant stub cannot express
+     * that: with `allowed` frozen true the refetch is unobservable, and with it
+     * frozen false the control is already locked before the frame arrives, so
+     * the screen would pass while the defect was still there.
+     *
+     * The counter is the OTHER half of the assertion — it is what proves a
+     * second GET actually happened rather than the UI having been locked all
+     * along.
+     */
+    const entitlementReads = { count: 0 };
+    await ctx.route('**/api/entitlement*', (route) => {
+      entitlementReads.count += 1;
+      const allowed = lapse ? entitlementReads.count === 1 : subscribed;
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          allowed, state: allowed ? 'active' : 'trial',
+          tier: allowed ? 'pro' : 'free', trialDaysLeft: allowed ? null : 5,
+          limits: {},
+          /*
+           * A REAL upgrade signal. The modal renders its prompt purely from
+           * this (getUpgradePrompt) and renders nothing at all when it is null
+           * — so a null here would make the lock's destination untestable while
+           * looking like a product bug. An unsubscribed user is exactly who the
+           * server sends an upgrade path to.
+           */
+          upgrade: allowed
+            ? null
+            : { reason: 'trial-limit-hit', cta: 'upgrade', targetTier: 'pro' },
+        }),
+      });
+    });
     await ctx.addCookies([
       { name: 'auth_token', value: signAccessToken({ userId: dbUser.id, email: dbUser.email, ver: dbUser.sessionVersion ?? 0 }), domain: '127.0.0.1', path: '/', httpOnly: true, secure: false, sameSite: 'Lax' },
       { name: 'idle_token', value: signIdleToken(dbUser.id, process.env.JWT_SECRET), domain: '127.0.0.1', path: '/', httpOnly: true, secure: false, sameSite: 'Lax' },
@@ -377,7 +402,7 @@ try {
      */
     await page.waitForSelector(route === '/extension' ? '.cc-ext' : '.phone-mode-shell',
       { timeout: 30_000 });
-    return { ctx, page };
+    return { ctx, page, entitlementReads };
   };
 
   /**
@@ -518,7 +543,39 @@ try {
         await banner.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
       }
     }
-    // The tier banner must carry the upgrade affordance on THIS surface.
+    await ctx.close();
+  }
+
+  /*
+   * ── EXT-UI-3: a lapsed trial must be able to pay FROM the failure screen ──
+   *
+   * THE DEFECT, as shipped on 1520063: the red banner named the refusal while
+   * the send control stayed UNLOCKED, because a `tier` FILE_FAILED was surfaced
+   * as copy only and nothing re-read /api/entitlement. The screen said "no" and
+   * offered no way to fix it.
+   *
+   * This block is the only one that runs the LAPSING stub: the panel opens with
+   * a live subscription (the send control is unlocked, verified below — that is
+   * the control that makes this test able to fail), then a real FILE_FAILED
+   * `tier` frame arrives over the real inbound path, and the assertions are
+   * that the client re-read its entitlement and re-rendered the control into
+   * its locked, tappable state ON THE SAME SCREEN as the banner.
+   *
+   * M10 (R-AN) is re-asserted here rather than moved: the BANNER still carries
+   * no upgrade affordance. The route to paying is the pre-flight control, which
+   * is precisely what the refetch restores.
+   */
+  {
+    const { ctx, page, entitlementReads } = await openPanel({ subscribed: true, lapse: true });
+    const header = page.locator('.cc-ext-header [data-cc-ft-action="header-send"]').first();
+    await header.waitFor({ state: 'attached', timeout: 20_000 });
+    // THE PRE-CONDITION. Without this the block could pass on a panel that was
+    // locked from the first paint, proving nothing about the refetch.
+    check('lapse: the header control starts UNLOCKED (live subscription)',
+      (await header.getAttribute('data-cc-ft-locked')) === null);
+    const readsBefore = entitlementReads.count;
+    check('lapse: the entitlement was read before the failure', readsBefore >= 1);
+
     await sendFrame(page, 'FILE_FAILED', { id: 'd'.repeat(32), reason: 'tier' });
     const tierBanner = page.locator('[data-cc-ft-error="tier"]');
     await tierBanner.waitFor({ timeout: 5000 });
@@ -527,7 +584,77 @@ try {
     check('banner:tier renders the stopped-transfer frame',
       (await tierBanner.innerText()).includes('The transfer was stopped:'));
     check('banner: alerts are announced', (await tierBanner.getAttribute('role')) === 'alert');
+
+    // (a): the refetch. Awaited by its OBSERVABLE EFFECT, not by a sleep.
+    const relocked = await page
+      .locator('.cc-ext-header [data-cc-ft-action="header-send"][data-cc-ft-locked="true"]')
+      .first()
+      .waitFor({ timeout: 10_000 })
+      .then(() => true).catch(() => false);
+    check('lapse: the tier failure re-locked the header control on the same screen', relocked);
+    check('lapse: exactly one extra GET /api/entitlement',
+      entitlementReads.count === readsBefore + 1,
+      `before=${readsBefore} after=${entitlementReads.count}`);
+    check('lapse: the re-locked control is tappable (it is the route to paying)',
+      (await header.getAttribute('aria-label')) === 'Send file — Upgrade'
+      && await header.isEnabled());
+    check('lapse: and the banner is still on screen beside it',
+      await tierBanner.isVisible());
+    // The defect shot. Banner + a LOCKED control, one frame.
     await shot(page, 'ext-error-tier-light-360');
+    await ctx.close();
+  }
+
+  /*
+   * The same lapse on /app, where the pre-flight control is the labelled
+   * `tier-lock` row rather than the extension's 24px header icon. Named
+   * separately because the two surfaces render different controls from the same
+   * entitlement, and a fix that only re-locked one of them would be a half fix.
+   */
+  {
+    const { ctx, page, entitlementReads } = await openPanel({
+      subscribed: true, lapse: true, route: '/app',
+    });
+    // Same selector the existing /app subscribed block uses: the hidden file
+    // input only exists on the UNLOCKED control, so its presence IS the
+    // pre-condition and its disappearance is the lock.
+    const input = page.locator('[data-cc-ft-input]').first();
+    check('lapse/app: the send control starts unlocked',
+      await input.waitFor({ state: 'attached', timeout: 25_000 })
+        .then(() => true).catch(() => false));
+    const readsBefore = entitlementReads.count;
+    await sendFrame(page, 'FILE_FAILED', { id: 'e'.repeat(32), reason: 'tier' });
+    await page.locator('[data-cc-ft-error="tier"]').waitFor({ timeout: 5000 });
+    const lock = page.locator('[data-cc-ft-action="tier-lock"]').first();
+    const locked = await lock.waitFor({ timeout: 10_000 }).then(() => true).catch(() => false);
+    check('lapse/app: the locked tier-lock control is present under the banner', locked);
+    check('lapse/app: exactly one extra GET /api/entitlement',
+      entitlementReads.count === readsBefore + 1,
+      `before=${readsBefore} after=${entitlementReads.count}`);
+    check('lapse/app: the banner and the locked control are on screen together',
+      await page.locator('[data-cc-ft-error="tier"]').isVisible() && locked);
+    await ctx.close();
+  }
+
+  /*
+   * THE NEGATIVE CONTROL for (a). `quota` is a daily byte counter, not an
+   * entitlement change — the account is still subscribed and sends again
+   * tomorrow. It must NOT spend a refetch. Without this block the fix could be
+   * "refetch on every failure" and every assertion above would still be green.
+   */
+  {
+    const { ctx, page, entitlementReads } = await openPanel({ subscribed: true, lapse: true });
+    const header = page.locator('.cc-ext-header [data-cc-ft-action="header-send"]').first();
+    await header.waitFor({ state: 'attached', timeout: 20_000 });
+    const readsBefore = entitlementReads.count;
+    await sendFrame(page, 'FILE_FAILED', { id: 'f'.repeat(32), reason: 'quota' });
+    await page.locator('[data-cc-ft-error="quota"]').waitFor({ timeout: 5000 });
+    // Give a refetch, if one were wrongly wired, time to land and re-render.
+    await page.waitForTimeout(1500);
+    check('quota: no extra GET /api/entitlement', entitlementReads.count === readsBefore,
+      `before=${readsBefore} after=${entitlementReads.count}`);
+    check('quota: the send control stays unlocked',
+      (await header.getAttribute('data-cc-ft-locked')) === null);
     await ctx.close();
   }
 

@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect } from 'react';
 
 import { usePhone } from '@/hooks';
+import { useUpgrade } from '@/hooks/upgradeModalContext';
+import { entitlementStaleKey } from '@/lib/fileTransfer/tierRefetch';
 import type { FileTransferApi } from '@/hooks/useFileTransfer';
 
 import { FileOfferDialog } from './FileOfferDialog';
@@ -50,12 +52,32 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
   const phone = usePhone() as unknown as { fileTransfer?: FileTransferApi };
   const ft = phone?.fileTransfer;
   /*
-   * No useUpgrade() here any more. M10 took the Upgrade button off the failure
-   * banner, so this layer has no route into the pricing modal — the only
-   * tappable upgrade on the surface is the locked control, which wires its own.
-   * Dropping the hook keeps that structural: the layer cannot grow the button
-   * back without someone re-adding the dependency and noticing why it went.
+   * ── useUpgrade(), FOR refetchEntitlement AND NOTHING ELSE (EXT-UI-3 a) ────
+   * M10 (R-AN, binding) took the Upgrade BUTTON off the failure banner and it
+   * stays off: FileTransferError renders `retry` and gives `tier` no action at
+   * all, and the only tappable upgrade on either surface is the pre-flight
+   * control (SendFileControl), which wires its own. This layer deliberately
+   * destructures ONLY `refetchEntitlement` — `openUpgrade` is not in scope
+   * here, so the button cannot grow back without someone widening this line
+   * and having to explain why.
+   *
+   * ── WHY THIS LAYER IS THE WIRING POINT (EXT-UI-3 a) ──────────────────────
+   * The obvious home — useFileTransfer's `onFailed` funnel — CANNOT work:
+   * PhoneModeProvider (which calls usePhoneBridge → useFileTransfer) is mounted
+   * OUTSIDE UpgradeModalProvider on BOTH surfaces (app/app/layout.tsx:53-64,
+   * app/extension/ExtensionProviders.tsx:36-39), so useUpgrade() there returns
+   * the context's inert DEFAULT_VALUE and the refetch would be a silent no-op.
+   * FileTransferSlots IS inside the provider but is mounted more than once (the
+   * header control and the drop target), which would fire N refetches for one
+   * refusal. This layer is inside the provider, is mounted exactly once
+   * (PhoneModeShell:2399 — that is the whole premise of this file) and already
+   * reads `error`, so "once per failure" is a property of the mount rather than
+   * a hope.
+   *
+   * The key is null for every reason that leaves the entitlement intact —
+   * `quota` included, deliberately (see lib/fileTransfer/tierRefetch.ts).
    */
+  const { refetchEntitlement } = useUpgrade();
   // acceptOffer MUST run synchronously off the click — showSaveFilePicker needs
   // the user gesture, and a gesture does not survive an await. The promise is
   // deliberately floated: failures come back through `error`, not a throw here.
@@ -70,6 +92,17 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
     () => (completedId && ft ? ft.openReceived(completedId) : Promise.resolve('gone' as const)),
     [ft, completedId],
   );
+
+  // Keyed on (reason, transfer id), so React runs this exactly once per
+  // distinct tier failure: the refetch writes entitlement state, which
+  // re-renders this subtree, but the key is unchanged by that render and the
+  // effect cannot re-enter. `refetchEntitlement` is useCallback-stable
+  // (useEntitlement's `load` closes over nothing, deps []), so it never re-arms
+  // the effect on its own. Declared above the `!ft` guard because it is a hook.
+  const staleKey = entitlementStaleKey(ft?.error ?? null);
+  useEffect(() => {
+    if (staleKey) refetchEntitlement();
+  }, [staleKey, refetchEntitlement]);
 
   if (!ft) return null;
 
