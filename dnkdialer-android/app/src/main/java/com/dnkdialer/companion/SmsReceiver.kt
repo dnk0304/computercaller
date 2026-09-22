@@ -52,13 +52,34 @@ class SmsReceiver : BroadcastReceiver() {
             val from = parts.firstOrNull { !it.from.isNullOrBlank() }?.from ?: "Unknown"
             // MIN over parts, not first(): it is order-independent (so it cannot
             // be perturbed by an OEM handing us parts in a different order) and
-            // it is the earliest moment the message existed, which stays closest
-            // to the DATE the SMS provider stamps on the assembled row — keeping
-            // the receiver frame and the ContentObserver frame inside the web
-            // client's body+time dedupe window.
+            // it is the earliest moment the message existed per the SMSC.
+            // DIAGNOSTIC ONLY as of 2026-09-22 (SMSMP-2): this is no longer what
+            // goes on the wire — the emitted frame carries the receiving device's
+            // wall clock. See assembleForEmit().
             val time = parts.minOf { it.time }
             return SmsPart(from, body, time)
         }
+
+        /**
+         * The frame actually put on the wire by [onReceive].
+         *
+         * Identical to [assemble] except that `time` is the RECEIVING DEVICE'S
+         * WALL CLOCK at emit, not the SMSC service-centre time carried in the
+         * PDUs. The web client (`hooks/usePhoneBridge.ts`, SMS_RECEIVED) uses
+         * this value for exactly two things — newest-first display sort, and a
+         * body+conversation+10 s dedupe against the ContentObserver frame and
+         * later GET_MESSAGES rows. Both compare against the provider `DATE`
+         * column, which the default SMS app stamps from the phone's wall clock
+         * at insert. The receiver frame was the only thing on the wire on a
+         * different clock, so a late SMSC delivery — or a multipart whose parts
+         * trickle in over seconds, dragging min(parts) toward the 10 s edge —
+         * produced a second bubble. Nothing on relay/web/extension reads SMSC
+         * time as a sequence key.
+         *
+         * `now` is a parameter so the JVM unit tests can pin it.
+         */
+        fun assembleForEmit(parts: List<SmsPart>, now: Long): SmsPart? =
+            assemble(parts)?.copy(time = now)
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -84,20 +105,28 @@ class SmsReceiver : BroadcastReceiver() {
                 )
             }
 
-            // Exactly one emit per broadcast — never one per PDU part.
-            val assembled = assemble(parts) ?: run {
+            // Exactly one emit per broadcast — never one per PDU part. The
+            // emitted `time` is THIS DEVICE'S WALL CLOCK at receipt — the same
+            // clock the SMS provider stamps on the row the ContentObserver
+            // later reports. See assembleForEmit().
+            val now = System.currentTimeMillis()
+            val emit = assembleForEmit(parts, now) ?: run {
                 android.util.Log.w("SmsReceiver", "no usable PDU parts — nothing emitted")
                 return
             }
+            // How far the SMSC clock was from receipt. Length/skew only —
+            // never address or body text.
+            val smscSkewMs = parts.minOfOrNull { it.time }?.let { now - it } ?: 0L
             android.util.Log.d(
                 "SmsReceiver",
-                "assembled emit 1 of 1 from ${parts.size} part(s) len=${assembled.body?.length ?: 0}"
+                "assembled emit 1 of 1 from ${parts.size} part(s) " +
+                    "len=${emit.body?.length ?: 0} smscSkewMs=$smscSkewMs"
             )
 
             onSmsReceived?.invoke(
-                assembled.from ?: "Unknown",
-                assembled.body ?: "",
-                assembled.time,
+                emit.from ?: "Unknown",
+                emit.body ?: "",
+                emit.time,
                 simId
             )
         }
