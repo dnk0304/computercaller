@@ -590,18 +590,27 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    search, the call-log search, the notifications search, the composer and the
    new-message recipient. `:not(...)` peels off the input types that are really
    buttons or controls, which keep the brand ring. */
-.cc-ext input:not([type='button']):not([type='submit']):not([type='reset']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):focus-visible,
-.cc-ext textarea:focus-visible,
-.cc-ext [contenteditable='']:focus-visible,
-.cc-ext [contenteditable='true']:focus-visible {
+/* `:not([data-cc-pointer-focus])` is carried on the CUE rule, not left to the
+   suppressor below to outrank — the suppressor cannot outrank it. Eight
+   `:not([type=…])` clauses put this selector at specificity (0,10,1) and any
+   honest one-attribute override sits far below that, so the two rules are made
+   MUTUALLY EXCLUSIVE instead of competing. (Measured the hard way: the first
+   cut of this block left the suppressor at (0,3,1) and the ring stayed on every
+   click — the harness caught it, which is the whole reason the harness asserts
+   the computed style and not the class list.) */
+.cc-ext input:not([type='button']):not([type='submit']):not([type='reset']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([data-cc-pointer-focus]):focus-visible,
+.cc-ext textarea:not([data-cc-pointer-focus]):focus-visible,
+.cc-ext [contenteditable='']:not([data-cc-pointer-focus]):focus-visible,
+.cc-ext [contenteditable='true']:not([data-cc-pointer-focus]):focus-visible {
   outline: none;
   /* inset, so it never grows the field's box and never shifts a row. */
   box-shadow: inset 0 -2px 0 0 var(--cc-ring-input);
 }
 
-/* …and the underline is withheld when the pointer is what put the caret there.
-   `:focus`, not `:focus-visible`: by the time the flag matters the element is
-   focused, and this way the rule holds even if a browser's heuristic changes. */
+/* …and the global `.cc-ext :focus-visible` box is still cancelled for the
+   pointer-flagged field, which the rule above no longer matches. `:focus`, not
+   `:focus-visible`: by the time the flag matters the element is focused, and
+   this way the rule holds even if a browser's heuristic changes. */
 .cc-ext input[data-cc-pointer-focus='1']:focus,
 .cc-ext textarea[data-cc-pointer-focus='1']:focus,
 .cc-ext [contenteditable][data-cc-pointer-focus='1']:focus {

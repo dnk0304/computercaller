@@ -59,6 +59,7 @@ import { Reaper } from './lib/reap.mjs';
 import {
   ftFailureCopy, FT_WIRE_REASONS, FT_RELAY_OWNED_REASONS,
   FT_TIER_LOCK_COPY, FT_PICKER_HINT, FT_OFFER_TRUST, FT_OFFER_NO_SCAN,
+  FT_SEND_LABEL,
 } from '../components/fileTransfer/ftCopy.ts';
 
 /**
@@ -113,7 +114,12 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * silently stopped executing, which is the failure mode a bare "N/N passed"
  * hides. Node arm 47 + browser arm 49, measured at this commit.
  */
-export const MIN_CHECKS = 96;
+// EXT-UI-8 added 5 net browser-arm checks (6 added, 1 tier-lock text assertion
+// re-pointed rather than duplicated) (the header entry point, locked and
+// subscribed, and the Dial body being empty of send controls) and removed
+// none — the tier-lock block was RE-POINTED, not deleted. Node arm 47 +
+// browser arm 55.
+export const MIN_CHECKS = 101;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -386,14 +392,26 @@ try {
   };
 
   // ── (c) the trial lock ───────────────────────────────────────────────────
+  // EXT-UI-8: on the EXTENSION the entry point is now the header icon
+  // (`data-cc-ft-action="header-send"`), not the Dial-body button. The locked
+  // state is still a real, tappable button that opens the upgrade modal — the
+  // property this block has always been about — and its accessible name is the
+  // header's own short form, because there is no room beside a 24px control for
+  // a sentence to be read. The VERBATIM FT_TIER_LOCK_COPY sentence is unchanged
+  // and is still asserted as visible text, on /app below and in the tier banner.
   {
     const { ctx, page } = await openPanel({ subscribed: false });
-    const lock = page.locator('[data-cc-ft-action="tier-lock"]').first();
+    const lock = page.locator('[data-cc-ft-action="header-send"][data-cc-ft-locked="true"]').first();
     await lock.waitFor({ timeout: 15_000 });
     const text = ((await lock.getAttribute('aria-label')) || (await lock.innerText())).trim();
-    check('lock: verbatim web/ext tier string', text === FT_TIER_LOCK_COPY, text);
+    check('lock: the header entry point names the control and the action',
+      text === 'Send file — Upgrade', text);
+    check('lock: the Dial body no longer carries a send control',
+      (await page.locator('.cc-dial-column [data-cc-ft-action]').count()) === 0);
     check('lock: is a real button (tappable, keyboard reachable)',
       (await lock.evaluate((el) => el.tagName)) === 'BUTTON');
+    check('lock: is NOT disabled — a greyed button hides the path to paying',
+      (await lock.evaluate((el) => el.disabled)) === false);
     check('lock: is focusable', await lock.evaluate((el) => {
       el.focus(); return document.activeElement === el;
     }));
@@ -522,6 +540,20 @@ try {
     const inputThere = await input.waitFor({ state: 'attached', timeout: 20_000 })
       .then(() => true).catch(() => false);
     check('send: the control is present when subscribed', inputThere);
+    // EXT-UI-8: and it is the HEADER button that owns it. Same picker handler
+    // as before — the control moved rows, it was not reimplemented.
+    const hdrSend = page.locator('.cc-ext-header [data-cc-ft-action="header-send"]').first();
+    check('send: the entry point is the header button',
+      await hdrSend.waitFor({ state: 'attached', timeout: 15_000 })
+        .then(() => true).catch(() => false));
+    check('send: the header button is labelled',
+      (await hdrSend.getAttribute('aria-label')) === FT_SEND_LABEL,
+      String(await hdrSend.getAttribute('aria-label')));
+    check('send: the hidden file input belongs to the header button',
+      await hdrSend.evaluate((el) => {
+        const prev = el.previousElementSibling;
+        return !!prev && prev.getAttribute('data-cc-ft-input') === 'true';
+      }));
     await input.setInputFiles({
       name: 'holiday.jpg',
       mimeType: 'image/jpeg',
@@ -580,7 +612,7 @@ try {
   // ── (d) both themes, 360 px, and Large 1.4x ──────────────────────────────
   {
     const { ctx, page } = await openPanel({ subscribed: false, dark: true });
-    const lock = page.locator('[data-cc-ft-action="tier-lock"]').first();
+    const lock = page.locator('[data-cc-ft-action="header-send"]').first();
     await lock.waitFor({ timeout: 15_000 });
     check('dark: the lock survives the dark theme', await lock.isVisible());
     // The panel must not paint dark text on a dark ground.
@@ -604,7 +636,7 @@ try {
   }
   {
     const { ctx, page } = await openPanel({ subscribed: false, zoom: 1.4 });
-    await page.locator('[data-cc-ft-action="tier-lock"]').first().waitFor({ timeout: 15_000 });
+    await page.locator('[data-cc-ft-action="header-send"]').first().waitFor({ timeout: 15_000 });
     // No horizontal overflow at 360 x 1.4 — the brief's hard layout floor.
     const overflow = await page.evaluate(() =>
       document.documentElement.scrollWidth - document.documentElement.clientWidth);
