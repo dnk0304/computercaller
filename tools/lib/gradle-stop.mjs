@@ -47,5 +47,3 @@ export function gradleStopRecord({ exit, javaBefore = 0, javaAfter = 0 } = {}) {
     warn: javaAfter > 0,
   };
 }
-
-export default { countJava, gradleStopRecord };

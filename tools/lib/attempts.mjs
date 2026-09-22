@@ -140,5 +140,3 @@ export function runWithAttempts({
     attemptCounts: tracker.counts(),
   };
 }
-
-export default { createAttemptTracker, runWithAttempts };

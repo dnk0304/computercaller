@@ -659,7 +659,11 @@ const MIN_CHECKS_OVERRIDE = {
   // A floor matters more here than for most: the harness's own failure mode is
   // a surface that stops being RENDERED at all, and a harness that finds no
   // element to measure quietly measures fewer things and still prints N/N.
-  'harness:ext-text-size-proof': 110,
+  // RE-MEASURED at this tip: 202, not the 110 the brief carried. The brief
+  // number was from EXT-FRAME-2; the harness has grown since and nobody
+  // re-measured it, because until this commit no gate ran it. The floor is
+  // what the tip measures, never less.
+  'harness:ext-text-size-proof': 202,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
