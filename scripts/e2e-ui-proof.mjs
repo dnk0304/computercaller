@@ -44,6 +44,7 @@ import { runCopyCases } from './lib/e2e-ui-cases.mjs';
 import { scriptedPhoneAccept } from './lib/scripted-phone.mjs';
 import { runExtIdleProof } from './lib/ext-idle-proof.mjs';
 import { runExtLoadMoreProof, captureBubbleBefore } from './lib/ext-load-more-proof.mjs';
+import { runExtSearchProof } from './lib/ext-search-proof.mjs';
 // The idle constants come from the product, never restated as literals — see
 // the header of lib/idleClock.ts for why that rule exists.
 import { IDLE_TIMEOUT_MS, IDLE_WARN_BEFORE_MS } from '../lib/idleTimeout.ts';
@@ -104,8 +105,16 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * Every one of those runs unconditionally — the only `if`s in the arm choose
  * WHICH screenshot to write, never whether to assert — so a silently skipped
  * section shows up here as a shortfall instead of as a cheerful N/N.
+ *
+ * EXT-SEARCH (2026-09-22) raised it 216 -> 267 by exactly the 51 its arm adds:
+ * 22 per theme x 2 themes for the extension results view (absent without a
+ * query, both hit directions, grouping and ordering, the measured mark
+ * contrast, the three scope-line button states, the click-to-message landing),
+ * 5 for the 360 px x 1.4 narrow-panel pass and 11 for the /app parity pass.
+ * Same discipline: the only `if`s in that arm choose WHICH screenshot to
+ * write, never whether to assert.
  */
-export const MIN_CHECKS = 216;
+export const MIN_CHECKS = 267;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -886,6 +895,14 @@ try {
   await runExtLoadMoreProof({ open, settle, check, shot, rawShot });
   console.log('\n-- EXT-HIST: the outgoing bubble, before/after --');
   await captureBubbleBefore({ open, settle, check, rawShot });
+
+  // EXT-SEARCH. Searching message BODIES, on both surfaces. Placed next to
+  // the load-more arm because it shares its seed shape and its rule — every
+  // claim is a live DOM value, never the existence of a PNG — and because the
+  // two features meet in the results view's scope line, where EXT-HIST's
+  // button is the recovery action for a search that found nothing.
+  console.log('\n-- EXT-SEARCH: message-body search, both surfaces --');
+  await runExtSearchProof({ open, settle, check, shot, rawShot });
 
   console.log('\n-- UI-AUTOLOGOUT: the 4 h idle cutoff, end to end --');
   {
