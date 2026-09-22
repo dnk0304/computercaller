@@ -266,6 +266,128 @@ check('the refusal explains WHY silence was the danger (the 62/69 incident)',
     && /status', '--porcelain', '--', 'docs\/screenshots'/.test(code));
 }
 
+/**
+ * ── ANDROID PHASE LISTS (BAT-2b) ──────────────────────────────────────────
+ * tools/e2e-gate.mjs carries THREE phase membership tests the KNOWN_PHASES
+ * whitelist above does NOT cover. A phase absent from one of them does not
+ * fail: the step is never created, MIN_CHECKS grades nothing (a floor can only
+ * grade a step that RAN) and the gate prints PASS over a lane it never ran —
+ * the P6.1b "0 tests ran wearing a green hat" defect.
+ *
+ * These assertions read the SHIPPED source with comments stripped, so the
+ * prose in e2e-gate.mjs (which names BAT repeatedly) cannot satisfy them, and
+ * every arm carries a CONTROL proving it can go red.
+ *
+ * This is also BAT-2b's DISPATCH PROOF: tools/e2e-gate.mjs exposes no
+ * --dry-run, so dispatch is proven by extracting the real guards and the real
+ * step table out of the shipped file and evaluating them at PHASE = 'BAT'.
+ * No gradle, no emulator, no browser.
+ */
+{
+  const srcRaw = readFileSync(GATE, 'utf8');
+  const strip = (x) => x
+    .replace(/\r\n?/g, '\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"])\/\/.*$/gm, '$1');
+  const code = strip(srcRaw);
+  check('CONTROL: the comment stripper strips (CRLF-safe)',
+    strip("const a = 1; // 'BAT'\r\nconst b = 2;\r\n").includes('BAT') === false);
+
+  /** The `['P6', ...].includes(PHASE)` guard that immediately precedes `needle`. */
+  const guardBefore = (needle) => {
+    const at = code.indexOf(needle);
+    if (at < 0) return null;
+    const m = [...code.slice(0, at).matchAll(/\[([^\][]*)\]\.includes\(PHASE\)/g)].pop();
+    if (!m) return null;
+    return m[1].split(',').map((t) => t.trim().replace(/^'|'$/g, '')).filter(Boolean);
+  };
+
+  // LIST 1 — the P6 real-relay proofs. BAT is DELIBERATELY absent (Ken R-BV).
+  const list1 = guardBefore("const P6_REAL_RELAY = [");
+  check('list 1 (P6 real-relay) is found', Array.isArray(list1) && list1.includes('P6'),
+    String(list1));
+  check('list 1 EXCLUDES BAT on purpose (plaintext telemetry, own node suites)',
+    list1 !== null && list1.includes('BAT') === false, String(list1));
+
+  // LIST 2 — instrumented-results clear + android:SasVectorsTest regression.
+  const list2 = guardBefore("run('android:SasVectorsTest'");
+  check('list 2 (android:SasVectorsTest) is found',
+    Array.isArray(list2) && list2.includes('P4.2'), String(list2));
+  check('list 2 includes BAT — without it android:SasVectorsTest never dispatches',
+    list2 !== null && list2.includes('BAT'), String(list2));
+
+  // LIST 3 — now a TABLE whose key set is the phase list.
+  /** Slice a `const <name> = { ... };` object literal out by brace balance. */
+  const objLit = (name) => {
+    const at = code.indexOf(`const ${name} = {`);
+    if (at < 0) return null;
+    const i = code.indexOf('{', at);
+    let depth = 0, fin = -1;
+    for (let j = i; j < code.length; j++) {
+      if (code[j] === '{') depth++;
+      else if (code[j] === '}') { depth--; if (depth === 0) { fin = j + 1; break; } }
+    }
+    if (fin < 0) return null;
+    // eslint-disable-next-line no-new-func
+    return new Function(`return ${code.slice(i, fin)}`)();
+  };
+  const byPhase = objLit('ANDROID_INSTRUMENTED_BY_PHASE');
+  const classes = objLit('ANDROID_INSTRUMENTED_CLASSES');
+  check('list 3 is a phase->steps table, not a fourth ad-hoc array',
+    byPhase !== null && classes !== null
+    && /if \(ANDROID_INSTRUMENTED_BY_PHASE\[PHASE\]\)/.test(code),
+    JSON.stringify(byPhase));
+  check('list 3 keeps its pre-existing phases',
+    byPhase !== null && ['P4.2', 'P6.1', 'P6.1C', 'P6.1D'].every((p) => p in byPhase),
+    JSON.stringify(byPhase && Object.keys(byPhase)));
+  check('list 3 includes BAT — without it testDebugUnitTest + instrumented never dispatch',
+    byPhase !== null && 'BAT' in byPhase, JSON.stringify(byPhase && Object.keys(byPhase)));
+
+  // DISPATCH at PHASE = 'BAT', computed from the shipped table.
+  const batSteps = (byPhase && byPhase.BAT) || [];
+  check('BAT dispatches android:instrumented-A5 as a regression (floor kept)',
+    batSteps.includes('android:instrumented-A5'), batSteps.join(', '));
+  check('BAT dispatches the NEW step android:instrumented-BAT',
+    batSteps.includes('android:instrumented-BAT'), batSteps.join(', '));
+  check('android:instrumented-BAT runs BatteryLoopbackTest and nothing else',
+    JSON.stringify(classes && classes['android:instrumented-BAT'])
+      === JSON.stringify(['com.dnkdialer.companion.BatteryLoopbackTest']),
+    JSON.stringify(classes && classes['android:instrumented-BAT']));
+  check('the A5 class set is unchanged (3 classes)',
+    (classes && classes['android:instrumented-A5'] || []).length === 3);
+  check('every step named by the table has a class list',
+    byPhase !== null && Object.values(byPhase).flat().every((n) => Array.isArray(classes[n])));
+  check('the results dir is cleared INSIDE the per-step loop, not once outside',
+    /for \(const stepName of ANDROID_INSTRUMENTED_BY_PHASE\[PHASE\]\) \{\s*rmSync\(ANDROID_TEST_RESULTS/
+      .test(code));
+  check('each instrumented step goes through ${gradlew} connectedDebugAndroidTest',
+    /run\(stepName,\s*`\$\{gradlew\} :app:connectedDebugAndroidTest/.test(code));
+
+  // FLOORS — a dispatched step with no floor is the same defect one level down.
+  const floors = objLit('MIN_CHECKS_OVERRIDE');
+  check('MIN_CHECKS_OVERRIDE is readable', floors !== null && typeof floors === 'object');
+  check('android:instrumented-BAT has the measured floor 3 (BAT-1 3/0/0)',
+    floors && floors['android:instrumented-BAT'] === 3,
+    String(floors && floors['android:instrumented-BAT']));
+  check('android:instrumented-A5 floor unchanged at 8',
+    floors && floors['android:instrumented-A5'] === 8);
+  check('android:SasVectorsTest floor unchanged at 7',
+    floors && floors['android:SasVectorsTest'] === 7);
+  check('android:testDebugUnitTest floor unchanged at 238 (NOT raised)',
+    floors && floors['android:testDebugUnitTest'] === 238);
+  check('every step BAT dispatches carries a floor',
+    batSteps.every((n) => typeof (floors || {})[n] === 'number'), batSteps.join(', '));
+
+  // CONTROLS: each detector above must be able to say no.
+  check('CONTROL: the guard extractor reports an absent phase as absent',
+    list2 !== null && list2.includes('NOPE') === false);
+  check('CONTROL: the table extractor reports an absent phase as absent',
+    byPhase !== null && ('NOPE' in byPhase) === false);
+  check('CONTROL: the floor detector reports an absent floor as absent',
+    floors !== null && floors['android:instrumented-NOPE'] === undefined);
+}
+
+
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 for (const f of failed) console.log(`  FAIL ${f.name} ${f.detail}`);

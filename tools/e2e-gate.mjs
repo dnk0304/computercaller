@@ -576,6 +576,11 @@ const MIN_CHECKS_OVERRIDE = {
   // same reason unit:harness-list was re-measured at P4.2 instead of +3.
   'android:testDebugUnitTest': 238,
   'android:instrumented-A5': 8,
+  // BAT-2b. BatteryLoopbackTest, measured by BAT-1 at 3/0/0 (ledger
+  // 2026-09-22 5bb60b5). Same "0 tests ran = FAIL" rule as the two above:
+  // counts come from the JUnit XML via junitCounts(), never from gradle's
+  // exit code, which is 0 for a class filter that matched nothing.
+  'android:instrumented-BAT': 3,
   'android:SasVectorsTest': 7,
 };
 const MIN_CHECKS = (() => {
@@ -1671,6 +1676,11 @@ if (WEB) {
   // E2E-P6.1c (2c): P6.1C added. These are P6 deliverables and P6.1C is a P6.1
   // continuation over the same tree — omitting it would run none of them and
   // print PASS, which is the "0 tests ran wearing a green hat" shape below.
+  // BAT-2b: 'BAT' is DELIBERATELY absent from this list (Ken, R-BV 2026-09-22).
+  // These four drive the real relay as cross-implementation E2E proofs of the
+  // SEALED frame family; BATTERY is plaintext telemetry (BAT-A1) with its own
+  // node suites (relay:bat-relay, relay:bat-sw, unit:bat-web-hook), so running
+  // them at --phase BAT would cost a Chromium and prove nothing about BAT.
   if (['P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8', 'D1'].includes(PHASE)) {
     const P6_REAL_RELAY = [
       // (e) 10,000 frames across a resume, counters asserted on all three lanes.
@@ -2035,7 +2045,7 @@ if (ANDROID) {
     }
 
     const ANDROID_TEST_RESULTS = join(AROOT, 'app/build/outputs/androidTest-results/connected');
-    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8'].includes(PHASE)) {
+    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8', 'BAT'].includes(PHASE)) {
       // FINDING (E2E-P4.2 (e)): this is a SECOND phase table that has to agree
       // with KNOWN_PHASES and does not — the exact defect tools/lib/harness-
       // list.mjs was created to fold away. It still names 'P7' and 'P8', which
@@ -2055,6 +2065,10 @@ if (ANDROID) {
       // names this step — P4, P5B, P6, P6.1 — inherits the fix.
       // The supported mechanism is the runner-argument property below, which is
       // what the lane's own manual runs have been using throughout.
+      // BAT-2b: 'BAT' added (Ken, R-BV 2026-09-22). SasVectorsTest is not a BAT
+      // deliverable — it runs here as a cheap REGRESSION that proves the AVD and
+      // the instrumentation actually work before android:instrumented-BAT below
+      // reports a count. Its floor (7) is unchanged.
       rmSync(ANDROID_TEST_RESULTS, { recursive: true, force: true });
       run('android:SasVectorsTest',
         `${gradlew} :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.dnkdialer.companion.E2eSasVectorsTest`, {
@@ -2098,12 +2112,35 @@ if (ANDROID) {
     // steps would simply not exist at --phase P6.1C and the gate would print a
     // cheerful PASS over an android lane it never ran — the P6.1b defect
     // documented immediately above, repeated one phase later.
-    if (['P4.2', 'P6.1', 'P6.1C', 'P6.1D'].includes(PHASE)) {
-      const A5_CLASSES = [
+    //
+    // BAT-2b. This guard was a fourth ad-hoc phase list with ONE hard-coded
+    // class set, so a phase needing a DIFFERENT instrumented class had nowhere
+    // to say so. It is now a table: the key set IS the phase list, and the
+    // value names which instrumented steps that phase dispatches. 'BAT' is a
+    // key (Ken, R-BV 2026-09-22) and dispatches TWO steps — A5 keeps its name
+    // and its floor of 8 as a regression, and android:instrumented-BAT runs
+    // BatteryLoopbackTest (BAT-1's instrumented deliverable, floor 3).
+    // Adding a phase here without adding it to MIN_CHECKS_OVERRIDE would give
+    // a step with no floor, which is the "0 tests ran wearing a green hat"
+    // shape all over again; every step named below has a floor above.
+    const ANDROID_INSTRUMENTED_CLASSES = {
+      'android:instrumented-A5': [
         'com.dnkdialer.companion.E2eForwardJumpVectorsTest',
         'com.dnkdialer.companion.E2eForwardJumpObservabilityTest',
         'com.dnkdialer.companion.E2eModeVectorMBackCompatTest',
-      ].join(',');
+      ],
+      'android:instrumented-BAT': [
+        'com.dnkdialer.companion.BatteryLoopbackTest',
+      ],
+    };
+    const ANDROID_INSTRUMENTED_BY_PHASE = {
+      'P4.2': ['android:instrumented-A5'],
+      'P6.1': ['android:instrumented-A5'],
+      'P6.1C': ['android:instrumented-A5'],
+      'P6.1D': ['android:instrumented-A5'],
+      BAT: ['android:instrumented-A5', 'android:instrumented-BAT'],
+    };
+    if (ANDROID_INSTRUMENTED_BY_PHASE[PHASE]) {
 
       run('android:testDebugUnitTest', `${gradlew} :app:testDebugUnitTest`, {
         cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
@@ -2115,12 +2152,15 @@ if (ANDROID) {
       // would let a step report the PREVIOUS step's (or the previous gate
       // run's) totals — a count read from a stale artefact is worth less than
       // no count, because it looks like evidence.
-      rmSync(ANDROID_TEST_RESULTS, { recursive: true, force: true });
-      run('android:instrumented-A5',
-        `${gradlew} :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=${A5_CLASSES}`, {
-          cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
-          parse: () => junitCounts(ANDROID_TEST_RESULTS),
-        });
+      for (const stepName of ANDROID_INSTRUMENTED_BY_PHASE[PHASE]) {
+        rmSync(ANDROID_TEST_RESULTS, { recursive: true, force: true });
+        const classes = ANDROID_INSTRUMENTED_CLASSES[stepName].join(',');
+        run(stepName,
+          `${gradlew} :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=${classes}`, {
+            cwd: AROOT, timeout: 30 * 60_000, needs: ['android:java-home'], env: { JAVA_HOME: javaHome || '' },
+            parse: () => junitCounts(ANDROID_TEST_RESULTS),
+          });
+      }
     }
   }
   // Step 12 is a prohibition, not a command: the gate never signs a release
