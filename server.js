@@ -564,6 +564,106 @@ function isFileFrame(msg) {
   return FT_FRAME_TYPES.has(frameType(msg));
 }
 
+// ── BATTERY telemetry (BAT-2 (a); GATE1 Addendum BAT-A1) ────────────────────
+//
+// `BATTERY:{"pct":<int 0..100>,"charging":<bool>,"ts":<epoch ms>}` — phone ->
+// browsers only, PLAINTEXT (§13.7 presence/status family). The relay does NOT
+// own this frame: it is forwarded byte-for-byte down the existing phone data
+// plane, exactly like AUDIO_STATUS. The three things below are the only relay
+// behaviours, and each is a Security MUST, not a convenience:
+//
+//   MUST-1  origin. A BATTERY frame is accepted ONLY from the paired phone
+//           socket of this room. A browser-originated one, or one from a socket
+//           that is not this room's phone, is dropped and counted
+//           (`battery_bad_origin`). Without this the "display-only phone
+//           telemetry" claim is false: any browser tab in the room could mint
+//           a battery reading into the other browsers.
+//   MUST-2  no relay-minted BATTERY. A frame carrying a top-level `relay` key
+//           is REJECTED and counted (`battery_relay_mark`) — never stripped.
+//           This mirrors §13.7.2 M6/M7 exactly: stripping would make a FORGED
+//           mark indistinguishable from an absent one, which is the entire
+//           property the mark exists to carry. The relay never authors a
+//           BATTERY frame, so there is no legitimate marked variant.
+//   MUST-3  shape. pct is an integer 0..100, charging is a strict boolean, ts
+//           is a finite number. Anything else -> `battery_bad_shape`. Unknown
+//           EXTRA keys are tolerated and forwarded untouched (the wire form is
+//           frozen, but a forwarder that rejects on unknown fields is a
+//           forward-compatibility trap); `relay` is the one named exception.
+//
+// Plus one defensive, non-security cap: at most one BATTERY per room per
+// BATTERY_MIN_INTERVAL_MS. The phone's own policy is >=60 s between frames
+// (charging flips bypass it), so 10 s is a wide floor that only fires on a
+// misbehaving or hostile phone build. A dropped frame is COUNTED AND LOGGED
+// ONLY — the relay never sends a frame back to the phone in response, because
+// a battery reading is not worth a control-plane round trip and a back-frame
+// would be a new phone-directed message type nobody has specified.
+//
+// NOTE ON PARSING. "Add no parser" (PLAN.md) means: do not re-serialise, do not
+// rewrite, do not forward a reconstructed frame. We must still READ the payload
+// to enforce MUST-2 and MUST-3. What is forwarded is always the ORIGINAL `msg`
+// string; `batteryGate` returns a verdict and mutates nothing but the rate-cap
+// stamp and the counters.
+const BATTERY_MIN_INTERVAL_MS = 10_000;
+const batteryDropCounts = new Map(); // token -> Map(reason -> count)
+
+/** True for the BATTERY frame. Uses the validated classifier, never startsWith. */
+function isBatteryFrame(msg) {
+  return frameType(msg) === 'BATTERY';
+}
+
+/** Count a dropped BATTERY frame by reason. Returns the new per-room count. */
+function batteryCountDrop(token, reason) {
+  let perRoom = batteryDropCounts.get(token);
+  if (!perRoom) { perRoom = new Map(); batteryDropCounts.set(token, perRoom); }
+  const n = (perRoom.get(reason) ?? 0) + 1;
+  perRoom.set(reason, n);
+  return n;
+}
+
+/**
+ * Decide whether a BATTERY frame must be DROPPED by the relay.
+ *
+ * @returns {boolean} true  -> drop it here (counted + logged); the caller returns.
+ *                    false -> let the ORIGINAL msg continue down the normal
+ *                             phone data plane, forwarded verbatim.
+ */
+function batteryGate(room, ws, msg, role, token) {
+  const drop = (reason) => {
+    const n = batteryCountDrop(token, reason);
+    rlog(`[Relay][${redactToken(token)}] BATTERY dropped (${reason}, n=${n}): ${frameLabel(msg)}`);
+    return true;
+  };
+
+  // MUST-1 — origin. `role` is the branch the frame arrived on; `phoneToken`
+  // is set on a socket only when it authenticated as THIS room's phone, so the
+  // two together exclude a browser socket and a phone socket belonging to some
+  // other room that somehow reached this handler.
+  if (role !== 'phone' || ws.phoneToken !== room.token) return drop('battery_bad_origin');
+
+  let payload;
+  try { payload = JSON.parse(msg.slice(msg.indexOf(':') + 1)); } catch { return drop('battery_bad_shape'); }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return drop('battery_bad_shape');
+
+  // MUST-2 — rejected, never stripped. hasOwnProperty, not `in`: a payload that
+  // merely inherits `relay` from Object.prototype is not a marked frame, and
+  // `payload.relay !== undefined` would miss an explicit `{"relay":null}`.
+  if (Object.prototype.hasOwnProperty.call(payload, 'relay')) return drop('battery_relay_mark');
+
+  // MUST-3 — shape.
+  if (!Number.isInteger(payload.pct) || payload.pct < 0 || payload.pct > 100) return drop('battery_bad_shape');
+  if (payload.charging !== true && payload.charging !== false) return drop('battery_bad_shape');
+  if (typeof payload.ts !== 'number' || !Number.isFinite(payload.ts)) return drop('battery_bad_shape');
+
+  // Rate cap — per room, not per socket: a phone that reconnects with a fresh
+  // socket must not get a fresh budget.
+  const at = Date.now();
+  if (room.batteryLastAt != null && at - room.batteryLastAt < BATTERY_MIN_INTERVAL_MS) {
+    return drop('battery_ratelimited');
+  }
+  room.batteryLastAt = at;
+  return false;
+}
+
 /**
  * Relay state machine — Connect+Accept lobby model (dispatch #32, 2026-05-25).
  *
@@ -3225,6 +3325,13 @@ function startRelay(httpServer) {
           }
         }
 
+        // BATTERY (BAT-2 (a), BAT-A1 MUSTs 1-3). Gated ABOVE the listener
+        // mirror so one verdict covers every recipient — passive extension SWs,
+        // the active browser and the resume passthrough alike. A frame that
+        // survives the gate is forwarded VERBATIM by the code below; nothing
+        // here rewrites it.
+        if (isBatteryFrame(msg) && batteryGate(room, ws, msg, 'phone', token)) return;
+
         // forge/chrome-extension-p1: mirror EVERY phone-originated data frame to
         // passive listeners (extension SWs) BEFORE the active-pair gate, so the
         // background SW fires notifications for incoming calls/SMS even when the
@@ -3301,6 +3408,18 @@ function startRelay(httpServer) {
           if (isFileFrame(msg)) {
             ftCountDrop(token, frameType(msg), 'not_buffered');
             rlog(`[Relay][${redactToken(token)}] FILE frame NOT buffered during resume window: ${frameLabel(msg)}`);
+            return;
+          }
+          // BAT-2 (a) / BAT-A1 MUST-3: BATTERY never enters the replay buffer
+          // either — same exemption class as HB, for a different reason than
+          // FILE_*. A battery reading is a SNAPSHOT, not an event: replaying a
+          // 30-second-old one on resume paints a stale percentage over a fresh
+          // reading the phone is about to send anyway (it re-sends BATTERY
+          // immediately on every (re)connect, PLAN.md cadence (1)). Losing it
+          // here costs nothing; replaying it shows the user a wrong number.
+          if (isBatteryFrame(msg)) {
+            batteryCountDrop(token, 'battery_not_buffered');
+            rlog(`[Relay][${redactToken(token)}] BATTERY NOT buffered during resume window: ${frameLabel(msg)}`);
             return;
           }
           if (!room.frameBuffer) room.frameBuffer = [];
@@ -3519,6 +3638,11 @@ function startRelay(httpServer) {
       // Passive listeners never reach here: the `if (ws.listener) return` far
       // above short-circuits them, so a receive-only extension SW cannot open,
       // accept or feed a transfer.
+      // BATTERY is phone->browser ONLY (BAT-A1 MUST-1). A browser socket has no
+      // business originating one; there is no GET_BATTERY and the phone pushes.
+      // Dropped and counted here, never forwarded to the phone.
+      if (isBatteryFrame(msg) && batteryGate(room, ws, msg, 'browser', token)) return;
+
       if (isFileFrame(msg)) {
         try {
           if (handleFileFrame(room, ws, msg, 'browser', token)) return;

@@ -78,7 +78,29 @@ for (const p of everyPhase) {
   check(`${p}: no duplicate entries`, new Set(l).size === l.length);
 }
 const all = [...new Set(everyPhase.flatMap(harnessesFor))].sort();
+
+// BAT-2 (d). A harness slot may be REGISTERED before its script is written,
+// and exactly one is: `bat-ui-proof` is registered here so the frozen phase
+// string changes once for the BAT project, while BAT-3 writes the script.
+//
+// The exception is a NAMED LIST rather than a softened assertion, and the list
+// is asserted itself. A blanket `existsSync(...) || true` would retire the
+// check for every harness forever; a stub script that printed "0/0 passed"
+// would be worse still — that is the gate-step-that-ran-nothing failure this
+// file exists to prevent. What is allowed is: this one name, running on
+// exactly one phase, declared out loud.
+const PENDING_SCRIPTS = ['bat-ui-proof'];
+check('the pending-script list is exactly the BAT-3 slot',
+  PENDING_SCRIPTS.join(',') === 'bat-ui-proof', PENDING_SCRIPTS.join(','));
+for (const h of PENDING_SCRIPTS) {
+  const phases = everyPhase.filter((p) => harnessesFor(p).includes(h));
+  check(`pending ${h} is claimed by exactly one phase`, phases.length === 1, phases.join(','));
+  check(`pending ${h} is claimed by BAT`, phases[0] === 'BAT', String(phases[0]));
+  check(`pending ${h} really is absent — remove it from PENDING_SCRIPTS once written`,
+    !existsSync(join(ROOT, 'scripts', `${h}.mjs`)));
+}
 for (const h of all) {
+  if (PENDING_SCRIPTS.includes(h)) continue;
   check(`scripts/${h}.mjs exists`, existsSync(join(ROOT, 'scripts', `${h}.mjs`)));
 }
 
@@ -115,7 +137,7 @@ check('CONTROL: …and a present entry as present, so it is not stuck on "no"',
 // The phase set itself, as the full sorted string.
 check('KNOWN_PHASES is the frozen set, byte for byte',
   [...KNOWN_PHASES].sort().join(',')
-    === 'D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P4.2,P5A,P5B,P6,P6.1,P6.1C,P6.1D',
+    === 'BAT,D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P4.2,P5A,P5B,P6,P6.1,P6.1C,P6.1D',
   KNOWN_PHASES.join(','));
 
 // E2E-P2.2. The A5 web fix-before-flip lane. It RUNS both browser harnesses,
@@ -161,6 +183,32 @@ check('P3.2 runs ext-sw-lifetime-proof -- it is the SW lane',
   p32.includes('ext-sw-lifetime-proof'), p32.join(', '));
 check('P3.2 runs e2e-ui-proof -- the P5a surfaces exist on this base',
   p32.includes('e2e-ui-proof'), p32.join(', '));
+
+// BAT — phone battery telemetry. Registered by BAT-2 (d) for all three lanes
+// at once, so this frozen string changes ONCE for the project. The arms are
+// the same shape as P2.2/P2.3 and for the same reason: BAT-2 edits
+// usePhoneBridge.ts (what e2e-ui-proof renders from) AND background.js +
+// sw-session.js (the worker ext-sw-lifetime-proof measures), so a BAT gate that
+// skipped either would be the silent narrowing this table exists to prevent.
+{
+  const bat = harnessesFor('BAT');
+  check('BAT runs ext-sw-lifetime-proof — BAT-2 edits the worker',
+    bat.includes('ext-sw-lifetime-proof'), bat.join(', '));
+  check('BAT runs e2e-ui-proof — BAT-2 edits the hook those surfaces render from',
+    bat.includes('e2e-ui-proof'), bat.join(', '));
+  check('BAT runs bat-ui-proof — the BAT-3 slot, registered here',
+    bat.includes('bat-ui-proof'), bat.join(', '));
+  check('BAT skips the FT-only harnesses',
+    !bat.includes('ft-ui-proof') && !bat.includes('ft-web-proof'), bat.join(', '));
+  check('BAT runs exactly the eight browser harnesses plus bat-ui-proof',
+    bat.slice().sort().join(',')
+      === [...BASE_EXPECTED, 'bat-ui-proof', 'e2e-ui-proof', 'ext-sw-lifetime-proof'].sort().join(','),
+    bat.join(', '));
+  // …and bat-ui-proof is claimed by NOTHING else. A UI proof that leaked into
+  // MERGE or D1 would fail those gates on a missing file.
+  const others = [...KNOWN_PHASES].filter((p) => p !== 'BAT' && harnessesFor(p).includes('bat-ui-proof'));
+  check('bat-ui-proof runs on BAT and nowhere else', others.length === 0, others.join(','));
+}
 
 // THE REGRESSION, named. This is the arm that would have gone red at (d).
 const d1 = harnessesFor('D1');
@@ -270,7 +318,7 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // under a green N/N. Re-measured with this lane's seven new cases.
     ['android:testDebugUnitTest', 238],
     ['android:instrumented-A5', 8],
-    ['unit:harness-list', 149],
+    ['unit:harness-list', 165],
     // E2E-P4.4: the §13.10.3 userId parity proof, registered as a node-only
     // gate step. Declared here for the same reason as the rest of this list.
     ['unit:ctx-parity', 14],

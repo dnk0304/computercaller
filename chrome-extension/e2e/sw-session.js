@@ -1025,6 +1025,34 @@ export const INBOUND_ROUTE_SEALED = 'route-sealed';
 export const INBOUND_DELIVER_RELAY_ABORT = 'deliver-relay-abort';
 /** FT-A1.1 M7, receiver half — a `relay` mark on a shape that cannot be honest. */
 export const INBOUND_DROP_RELAY_MARK = 'drop-bad-relay-mark';
+/** BAT-A1 MUST-3 — a BATTERY frame whose three fields are not the frozen shape. */
+export const INBOUND_DROP_BATTERY_SHAPE = 'drop-battery-shape';
+
+/**
+ * BAT-A1 MUST-3 — the frozen BATTERY shape, validated at the chokepoint.
+ *
+ * `BATTERY:{pct,charging,ts}` is DISPLAY-ONLY telemetry: nothing downstream of
+ * here may read it into mode, pairing, tier, quota or session state. That makes
+ * validation cheap and makes skipping it tempting — which is exactly why it is
+ * done here, at the one place every inbound frame passes, rather than in the
+ * three surfaces that render it. A `pct` of `"47"` renders identically to 47
+ * and then sorts, compares and clamps differently everywhere; a `charging` of
+ * `1` is truthy today and a bug the first time someone writes `=== true`.
+ *
+ * Strict on the three named fields, TOLERANT of unknown extra keys: the wire
+ * form is frozen, but a receiver that drops on an unrecognised field freezes it
+ * against its own future. `relay` is the one named exception and is rejected
+ * above this, under MUST-2.
+ *
+ * Exported so the node suites assert the SHIPPED predicate rather than a copy.
+ */
+export function isValidBatteryPayload(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  if (!Number.isInteger(data.pct) || data.pct < 0 || data.pct > 100) return false;
+  if (data.charging !== true && data.charging !== false) return false;
+  if (typeof data.ts !== 'number' || !Number.isFinite(data.ts)) return false;
+  return true;
+}
 
 /**
  * THE INBOUND CHOKEPOINT, as a pure decision.
@@ -1083,6 +1111,32 @@ export function inboundDisposition({ mode, frameType, data }) {
       && data.relay === true
       && RELAY_OWNED_FAIL_REASONS.has(data.reason)) return INBOUND_DELIVER_RELAY_ABORT;
     return marked ? INBOUND_DROP_RELAY_MARK : INBOUND_DROP_PLAINTEXT;
+  }
+  // ── BAT-A1 MUSTs 2 and 3: BATTERY, decided before the general branches ──
+  //
+  // BATTERY is §13.7 PLAINTEXT — it is in neither sealed set, so `requiresSeal`
+  // is false for it and the general branches below would DELIVER it in every
+  // mode, including 'open'. That is the correct outcome and this branch does
+  // not change it; what it adds is the two refusals the general branches have
+  // no vocabulary for.
+  //
+  // MUST-2, the relay mark, mirrors §13.7.2 M6/M7 exactly. The relay never
+  // mints a BATTERY frame (it has nothing to mint one FROM — the reading comes
+  // from the phone's own OS), so a top-level `relay` key on this type cannot be
+  // honest from any author. REJECTED, never stripped: stripping would make a
+  // forged mark indistinguishable from an absent one, which is the entire
+  // property the mark carries. Reuses INBOUND_DROP_RELAY_MARK rather than
+  // inventing a second class — one counter for one kind of lie.
+  //
+  // It is placed ABOVE `isSealedEnvelope` deliberately. A BATTERY frame shaped
+  // like an envelope is not a frame we failed to predict: §13.7 says this type
+  // is plaintext and `sealFrame()` refuses to seal it, so an envelope here is
+  // either a mislabelled frame or a probe, and the display-only reading is to
+  // refuse it on shape rather than spend a key operation opening it.
+  if (frameType === 'BATTERY') {
+    if (carriesRelayMark(data)) return INBOUND_DROP_RELAY_MARK;
+    if (!isValidBatteryPayload(data)) return INBOUND_DROP_BATTERY_SHAPE;
+    return INBOUND_DELIVER;
   }
   if (isSealedEnvelope(data)) return INBOUND_UNSEAL;
   // 'aborted' (A4-M3) sits with 'open', not with 'counts-only'. In an aborted

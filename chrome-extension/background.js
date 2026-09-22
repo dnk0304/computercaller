@@ -56,6 +56,7 @@ import {
   INBOUND_ROUTE_SEALED,
   INBOUND_DELIVER_RELAY_ABORT,
   INBOUND_DROP_RELAY_MARK,
+  INBOUND_DROP_BATTERY_SHAPE,
   ftHintId,
   PENDING_OFFER_TTL_MS,
   CtxRefused,
@@ -145,6 +146,23 @@ const PHONE_NOTIF_PREFIX = 'cc-notif';
 // would silently reset itself several times an hour.
 const UNREAD_KEY = 'cc_unread';
 const UNREAD_ZERO = { missedCalls: 0, newSms: 0, alerts: 0 };
+// Phone battery telemetry (BAT-2 (b)). Same storage class and the same reason
+// as the counters, plus one of its own: the surfaces must be able to render a
+// battery level the INSTANT the popup opens, and the last BATTERY frame may
+// have arrived long before — under the phone's cadence, up to ten minutes. A
+// module-level variable would be gone with the next eviction and the header
+// would sit blank until the phone's next push.
+//
+// Record: `{pct, charging, ts, v:1}`. RESUME-PROTOCOL rule 6 — a stored record
+// carries a `v` tag and an unknown-version guard that FAILS LOUDLY rather than
+// "working on my machine" against an old shape: an unrecognised `v` is ignored
+// AND the row is cleared, so the next frame writes a clean record instead of
+// merging into one nobody can interpret.
+// storage.session ONLY (BAT-A1 MUST-3): never storage.local, never disk. A
+// battery reading is device telemetry scoped to who is signed in, and it is
+// cleared at the sign-out and unpair sites below alongside the counters.
+const BATTERY_KEY = 'cc_battery';
+const BATTERY_RECORD_VERSION = 1;
 // Companion row to UNREAD_KEY: the notificationKeys behind the current
 // `alerts` count, so a phone-side dismissal can decrement exactly the bumps it
 // owns. See bumpAlert/dropAlert.
@@ -718,6 +736,82 @@ function writeSession(obj) {
   return new Promise((r) => {
     try { chrome.storage.session.set(obj, r); } catch { r(); }
   });
+}
+
+// ── Phone battery (BAT-2 (b); GATE1 Addendum BAT-A1) ────────────────────────
+/**
+ * Read the stored battery record, or null.
+ *
+ * RESUME-PROTOCOL rule 6, the unknown-version guard: a record whose `v` is not
+ * BATTERY_RECORD_VERSION is not "probably close enough" — it was written by a
+ * shape this build does not know, and rendering it would be the "works on my
+ * machine against an old record" failure the rule exists to prevent. It is
+ * ignored AND the row is cleared, so the next frame starts clean.
+ *
+ * DISPLAY-ONLY (MUST-3). Nothing in this worker reads the result into mode,
+ * pairing, tier, quota or session state; the only consumers are the surfaces.
+ */
+function readBattery() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.session.get(BATTERY_KEY, (o) => {
+        const rec = o && o[BATTERY_KEY];
+        if (!rec || typeof rec !== 'object') { resolve(null); return; }
+        if (rec.v !== BATTERY_RECORD_VERSION) {
+          try { chrome.storage.session.remove(BATTERY_KEY); } catch { /* best effort */ }
+          resolve(null);
+          return;
+        }
+        resolve(rec);
+      });
+    } catch { resolve(null); }
+  });
+}
+
+/**
+ * Record one BATTERY frame.
+ *
+ * Runs inside `serialize` for the same reason every other storage.session
+ * mutation does: this is a read-modify-write across an await, and the relay
+ * delivers in bursts. Unserialised, two frames in one turn both read the
+ * pre-burst value and the older one can win.
+ *
+ * Older `ts` loses. The relay may reorder nothing today, but a resume that
+ * re-forms a pair while a frame is in flight can deliver yesterday's reading
+ * after today's, and a battery percentage that jumps backwards is a bug the
+ * user sees. Equal `ts` also loses: a duplicate is not news.
+ *
+ * The frame has already passed `inboundDisposition`'s shape gate, so the three
+ * fields are known good here; they are copied FIELD BY FIELD rather than spread
+ * so an unknown extra key on the wire cannot land in storage.
+ */
+function noteBattery(data) {
+  return serialize(async () => {
+    try {
+      const prev = await readBattery();
+      if (prev && typeof prev.ts === 'number' && data.ts <= prev.ts) return;
+      const rec = { pct: data.pct, charging: data.charging, ts: data.ts, v: BATTERY_RECORD_VERSION };
+      await writeSession({ [BATTERY_KEY]: rec });
+      broadcastBattery(rec);
+    } catch { /* telemetry must never break the worker */ }
+  });
+}
+
+/** §13.8 — sign-out and unpair drop it, alongside the unread counters. */
+function clearBattery() {
+  return serialize(async () => {
+    try {
+      await new Promise((r) => { try { chrome.storage.session.remove(BATTERY_KEY, r); } catch { r(); } });
+      broadcastBattery(null);
+    } catch { /* best effort */ }
+  });
+}
+
+/** Live push to any open surface, so an open panel does not wait for a re-open. */
+function broadcastBattery(battery) {
+  for (const port of presencePorts) {
+    try { port.postMessage({ type: 'battery', battery }); } catch { /* port closed */ }
+  }
 }
 
 /**
@@ -1834,6 +1928,10 @@ function handleFrame(msg) {
     dropSessionState().catch(() => {});
     clearOwnPairingId().catch(() => {});
     clearAborted();
+    // BAT-A1 MUST-3: unpair clears it too. The reading belongs to a pairing
+    // that no longer exists; BAT-3's "last seen" is for a phone that went
+    // OFFLINE, not for one that was unpaired.
+    clearBattery();
     notePairState({});
     return;
   }
@@ -1890,6 +1988,17 @@ function handleFrame(msg) {
   if (disposition === INBOUND_DROP_RELAY_MARK) {
     noteDrop('bad-relay-mark').catch(() => {});
     trace('ft-drop-relay-mark', { type });
+    return;
+  }
+  // BAT-A1 MUST-3. A BATTERY frame whose three fields are not the frozen shape.
+  // Counted separately from the two above because it says a third thing: not a
+  // stripper and not a forged provenance mark, but a producer — a phone build,
+  // or something impersonating one — emitting a shape nobody agreed to. It is
+  // dropped BEFORE notePhonePresence: a frame we refuse on shape is not
+  // evidence of anything, including that a phone sent it.
+  if (disposition === INBOUND_DROP_BATTERY_SHAPE) {
+    noteDrop('battery-shape').catch(() => {});
+    trace('battery-drop-shape', { type });
     return;
   }
   // P3.1 / FT-A1 MUST B-1. Routed, NOT opened — above notePhonePresence and
@@ -2121,6 +2230,19 @@ function deliverFrame(type, data) {
     case 'FILE_FAILED':
       routeFileFrame(type, data, sealed);
       return;
+    // BAT-2 (b). Persisted and pushed to any open surface — and NOTHING else.
+    // No badge bump, no notification, no sound: a battery reading is ambient
+    // status, and a toast for it would be the notification storm this file has
+    // spent three dispatches removing. It is also the reason the case sits
+    // here rather than beside the counters: `deliverFrame` is where a frame
+    // chooses its side effects, and BATTERY's are exactly one write.
+    //
+    // A sealed BATTERY never reaches this line — inboundDisposition refuses it
+    // on shape (§13.7 says the type is plaintext) — so `sealed` is always
+    // false here and `data` always holds the validated three fields.
+    case 'BATTERY':
+      noteBattery(data);
+      return;
     default:
       // Everything else (control frames, sync data) is not a notification.
       return;
@@ -2176,6 +2298,16 @@ chrome.runtime.onConnect.addListener((port) => {
   // not on the next inbound frame.
   readUnread().then((unread) => {
     try { port.postMessage({ type: 'unread', unread }); } catch (_) {}
+  });
+  // BAT-2 (b), same reason as the counts: the whole point of persisting the
+  // reading is that a surface opening at 09:40 renders the level the phone
+  // pushed at 09:31. Waiting for the next frame would blank the header for up
+  // to ten minutes. `null` is a legitimate answer (nothing received yet) and
+  // BAT-3 renders nothing for it — never a "--%" placeholder.
+  readBattery().then((battery) => {
+    // `catch {}` rather than this file's older `catch (_) {}` so this addition
+    // does not raise the no-unused-vars warning count.
+    try { port.postMessage({ type: 'battery', battery }); } catch { /* port closed */ }
   });
   // P3.1 / MUST B-2: the rescue this whole marker exists for. A sealed offer
   // held while no page was open is replayed VERBATIM to the first page that
@@ -2447,6 +2579,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     clearRelayFacts();
     refreshIndicator();
     try { chrome.storage.session.set({ [UNREAD_KEY]: { ...UNREAD_ZERO }, [ALERT_KEYS]: [] }); } catch (_) {}
+    // BAT-A1 MUST-3 / §13.8: the battery reading goes with the counters. It is
+    // another user's device telemetry the moment a different account signs in
+    // on this profile, and a stale "47%" under a new user's phone name is a
+    // small lie told confidently.
+    clearBattery();
     // Signing out clears the counts, so it must clear the number on the icon
     // too — a stale "3" on a signed-out extension is a lie about someone's
     // messages.
@@ -2522,6 +2659,13 @@ Object.assign(self, {
   notePairState,
   paintBadge,
   readUnread,
+  // BAT-2 (b). Published for the same reason as the rest of this list: the
+  // storage.session round trip is the thing under test and a harness cannot
+  // reach it otherwise. Not key material and not a source of truth for a
+  // surface — the surfaces read the port message and storage.onChanged.
+  readBattery,
+  noteBattery,
+  clearBattery,
   refreshIndicator,
   repaintBadge,
   serialize,

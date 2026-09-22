@@ -49,6 +49,12 @@ export type PhoneEventType =
   | 'STATUS'
   | 'DEVICE_INFO'
   | 'NOTIFICATION_PERMISSION'
+  // Phone battery telemetry (BAT-2). `{pct, charging, ts}` — phone -> browsers
+  // only; there is no GET_BATTERY and the browser never sends one. PLAINTEXT
+  // (§13.7 presence/status family, GATE1 Addendum BAT-A1), so it is in neither
+  // sealed set and rides an encrypted session in the clear by design: the leak
+  // is a battery level, and presence already says the phone is there.
+  | 'BATTERY'
   // Permission-ping (2026-07-09): per-permission grant map from v49+ phones
   | 'PERMISSIONS_STATUS'
   // Active SIM list pushed by the phone after HELLO — drives the dual-SIM
@@ -352,6 +358,85 @@ export interface CallLogEntry {
   // subscriptionId ("1", "2") but some OEMs use richer labels — surfaced
   // raw for the web client to map to the SIM_LIST entries.
   simId?: string;
+}
+
+/**
+ * The phone's battery, as the web app holds it (BAT-2 (c)).
+ *
+ * `ts` is the phone's epoch-ms stamp for the reading, NOT the moment the web
+ * app received it. That distinction is what lets BAT-3 render "Last seen 14:32
+ * · 47%" honestly after a disconnect, and it is why the reducer orders frames
+ * by `ts` rather than by arrival.
+ */
+export interface PhoneBattery {
+  /** Integer 0..100. */
+  pct: number;
+  charging: boolean;
+  /** Epoch ms, stamped by the phone when it read the level. */
+  ts: number;
+}
+
+/**
+ * BAT-A1 MUST-3 — the frozen BATTERY shape.
+ *
+ * The web's copy of the predicate the service worker enforces at its own
+ * chokepoint (`isValidBatteryPayload` in chrome-extension/e2e/sw-session.js).
+ * The two are separate implementations because the page cannot import the
+ * extension's module, and separate implementations drift — so
+ * tests/bat-web-hook.test.mjs runs BOTH over one shared table of inputs and
+ * requires identical verdicts. If they ever disagree, that suite fails; the
+ * alternative (one side quietly accepting what the other refuses) is a
+ * difference nobody would notice until a header rendered `"47"%`.
+ *
+ * Strict on the three named fields, tolerant of unknown extra keys. A
+ * top-level `relay` key is rejected by the CALLER, not here: on the web that
+ * refusal is counted separately, mirroring §13.7.2 M6/M7.
+ */
+export function isValidBatteryPayload(data: unknown): data is PhoneBattery {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const d = data as Record<string, unknown>;
+  if (!Number.isInteger(d.pct) || (d.pct as number) < 0 || (d.pct as number) > 100) return false;
+  if (d.charging !== true && d.charging !== false) return false;
+  if (typeof d.ts !== 'number' || !Number.isFinite(d.ts)) return false;
+  return true;
+}
+
+/** True when a frame payload carries a top-level `relay` key (BAT-A1 MUST-2). */
+export function carriesRelayMark(data: unknown): boolean {
+  return !!data && typeof data === 'object'
+    && Object.prototype.hasOwnProperty.call(data, 'relay');
+}
+
+/**
+ * The pure BATTERY reducer (BAT-2 (c)).
+ *
+ * Extracted from the hook so it can be tested in node: `usePhoneBridge` is a
+ * 5,000-line React hook that cannot be imported outside a renderer, and a rule
+ * that can only be checked by the slowest harness in the programme is a rule
+ * that stops being checked.
+ *
+ * DISPLAY-ONLY (MUST-3): it takes the previous value and a frame, and returns
+ * the next value. It cannot touch mode, pairing, tier, quota or session state
+ * because it is not given them.
+ *
+ * @returns the next battery value — `prev` itself when the frame is refused or
+ *          stale, which lets the caller skip the setState entirely.
+ */
+export function reduceBattery(
+  prev: PhoneBattery | null,
+  data: unknown,
+): { next: PhoneBattery | null; drop: null | 'relay-mark' | 'shape' | 'stale' } {
+  // MUST-2 first: a `relay` key is rejected outright, never stripped. The relay
+  // has nothing to mint a battery reading FROM, so the mark cannot be honest.
+  if (carriesRelayMark(data)) return { next: prev, drop: 'relay-mark' };
+  if (!isValidBatteryPayload(data)) return { next: prev, drop: 'shape' };
+  // Older OR equal `ts` loses. A resume that re-forms a pair while a frame is
+  // in flight can deliver yesterday's reading after today's, and a percentage
+  // that jumps backwards is a bug the user sees.
+  if (prev && data.ts <= prev.ts) return { next: prev, drop: 'stale' };
+  // Copied field by field, never spread: an unknown extra key on the wire is
+  // tolerated by the validator and must not end up in the rendered state.
+  return { next: { pct: data.pct, charging: data.charging, ts: data.ts }, drop: null };
 }
 
 export interface PhoneState {
