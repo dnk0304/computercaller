@@ -1911,46 +1911,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 }
 :where([data-cc-theme=dark]) .cc-ext .cc-back-btn:focus-visible { outline-color: #93b4ff; }
 
-/* --- (4) M5: the call row wraps instead of clipping ---------------------- */
-/* Gemini #10 + #14. The meta line was `truncate`, so at the Large step and
-   200% zoom "Outgoing - 23h" became "Outg...". It is now a wrapping block
-   under the name; the row has no fixed height and grows with it. The action
-   buttons are already `flex-shrink-0` and stay at the right edge.
-
-   NO `justify-content: space-between` IN THIS ROW, and this comment is here
-   because the review proposed it twice after being told not to: the name block
-   is the only elastic item, so space-between would push the two action icons
-   apart from each other as soon as the name got short, which is the opposite
-   of holding them at the right.
-
-   Ink, all four re-measured on the restored grounds (rows alternate L3 and
-   zebra, and the open row is a shade darker again):
-     meta, normal   light --cc-aaa #4d4d4d   8.45:1 L3 / 7.76:1 zebra
-                    dark  --cc-aaa #bdbdbd   8.54:1 L3 / 9.04:1 zebra
-     meta, missed   light #991b1b            8.31:1 L3 / 7.63:1 zebra
-                    dark  #fca5a5            8.45:1 L3 / 8.95:1 zebra
-     message icon   light #4d4d4d            8.45 / 7.76   (was slate-400,
-                    dark  #bdbdbd            8.54 / 9.04    2.55:1 — invisible)
-     call icon      light #065f46            7.68 / 7.05   (was emerald-600,
-                    dark  #6ee7b7           10.53 / 11.14   3.77:1)
-   The call icon stays emerald: it is the row's one colour object and the
-   product's action colour. Only its VALUE moved, not its hue. */
-.cc-ext .cc-row-meta {
-  color: var(--cc-aaa);
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-.cc-ext .cc-row-meta.text-red-600 { color: #991b1b; }
-:where([data-cc-theme=dark]) .cc-ext .cc-row-meta.text-red-600 { color: #fca5a5; }
-.cc-ext .cc-row-action { color: var(--cc-aaa); }
-.cc-ext .cc-row-call { color: #065f46; }
-:where([data-cc-theme=dark]) .cc-ext .cc-row-call { color: #6ee7b7; }
-/* The row is a flex box with `items-center`; once the meta wraps, centring the
-   avatar against a two-line block leaves it floating. Top-aligned with a hair
-   of optical offset reads as one object at every text size. */
-.cc-ext .cc-list > li > [role="button"] { align-items: flex-start; }
-.cc-ext .cc-list > li > [role="button"] > div:first-child { margin-top: 1px; }
-
 /* --- M7: the device pill stops throwing away the header's width ---------- */
 /* T-PILL-CAP-210. ConnectionStatus pins `max-w-[210px]` in the TSX because
    that is the right ceiling on /app. In the extension header it was the wrong
