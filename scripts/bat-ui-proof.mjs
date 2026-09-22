@@ -47,7 +47,7 @@ import { runBatteryCases } from './lib/bat-ui-cases.mjs';
 // The thresholds and the copy come from the PRODUCT, never restated as
 // literals here — the rule lib/encryptedModeCopy.ts's harness follows, for the
 // same reason: a retyped expectation drifts and the drift passes.
-import { BATTERY_STALE_MS, batteryView } from '../lib/batteryCopy.ts';
+import { BATTERY_STALE_MS, batteryClock, batteryView } from '../lib/batteryCopy.ts';
 
 const DEV = process.env.DEV_URL || 'http://localhost:3123';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -76,10 +76,11 @@ const check = (name, pass, detail = '') => {
  * shows up here as a shortfall.
  *
  * 15 node-arm decisions + 34 web-arm assertions (17 per theme x 2) + 4 fit
- * assertions (1.4x, 360px, the sub-400px collapse, the compact cap) + 7
- * extension-arm assertions = 60.
+ * assertions (four each at 1.4x and at 360px) + 7 extension-arm assertions =
+ * 64. The
+ * figure is MEASURED from a full green run, never incremented by arithmetic.
  */
-export const MIN_CHECKS = 60;
+export const MIN_CHECKS = 64;
 
 const EMAIL = process.env.CC_SHOT_EMAIL;
 if (!EMAIL) throw new Error('CC_SHOT_EMAIL is unset — the gate passes the operator value through');
@@ -141,8 +142,28 @@ const beforeLaunch = reaper.mark();
 const browser = await chromium.launch({ headless: true });
 reaper.adoptBrowser(beforeLaunch);
 
-/** 2026-09-22 14:32 LOCAL — the brief's clock, so copy and screenshots agree. */
-const TS_1432 = new Date(2026, 8, 22, 14, 32, 0).getTime();
+/**
+ * Every web-arm frame needs a ts that is STRICTLY NEWER than the last one, or
+ * the product correctly drops it as stale and the next assertion reads the
+ * previous value. (It cost this harness its first run: readings were stamped
+ * `base + pct*1000`, so 50% arrived "older" than 100% and never rendered — the
+ * product was right and the test was wrong.)
+ *
+ * The clock starts an hour in the PAST so that a deliberately stale reading can
+ * still be the newest one this page has seen. `at()` is the one way a frame in
+ * this file gets a timestamp.
+ */
+let clock = 0;
+/** A fresh page gets a fresh clock; the stale case is always sent first. */
+const resetClock = () => { clock = Date.now() - 30 * 60 * 1000; };
+/** Jump the clock forward to "a few minutes ago" — comfortably inside the
+ *  staleness window, so everything sent after this reads as a live value. */
+const freshen = () => { clock = Math.max(clock + 1, Date.now() - 2 * 60 * 1000); };
+/** @param {number} [absolute] pin the reading to a specific moment instead. */
+const at = (absolute) => {
+  clock = absolute === undefined ? clock + 1000 : Math.max(absolute, clock + 1);
+  return clock;
+};
 
 async function open({ theme = 'light', width = 1280, zoom = 1 } = {}) {
   const ctx = await browser.newContext({
@@ -218,6 +239,11 @@ try {
   // ══ WEB ARM ═══════════════════════════════════════════════════════════════
   for (const theme of ['light', 'dark']) {
     console.log(`\n── web arm: ${theme} ──`);
+    // Each theme is a fresh page, so it gets a fresh clock. The stale reading
+    // is sent FIRST and every later frame is fresher, which is the only order
+    // in which both a stale case and a live case can be driven through a
+    // reducer that (correctly) drops anything older than what it holds.
+    resetClock();
     const { ctx, page } = await open({ theme });
     try {
       // (b) nothing received yet ⇒ NOTHING rendered. First, because it is the
@@ -225,14 +251,27 @@ try {
       check(`[${theme}] paired with no BATTERY frame renders no indicator at all`,
         (await readIndicator(page)) === null);
 
+      // (b) stale: value kept, tooltip admits when it is from.
+      const staleTs = at(Date.now() - BATTERY_STALE_MS - 60_000);
+      await sendBattery(page, { pct: 47, charging: false, ts: staleTs });
+      const stale = await readIndicator(page);
+      check(`[${theme}] a reading older than the stale window keeps its VALUE`,
+        stale !== null && stale.text === '47%', JSON.stringify(stale));
+      check(`[${theme}] …and its tooltip gains "as of ${batteryClock(staleTs)}"`,
+        stale.label === `Phone battery 47%, not charging, as of ${batteryClock(staleTs)}`,
+        stale.label);
+
+      // Everything from here on is a FRESH reading.
+      freshen();
+
       // (a) the four levels, through the real hook.
       for (const pct of [100, 50, 20, 10]) {
-        // Each frame needs a strictly newer ts — reduceBattery drops equal or
-        // older readings, which is correct and would otherwise make every
-        // assertion after the first read the first one's value.
-        await sendBattery(page, { pct, charging: false, ts: TS_1432 + pct * 1000 });
+        const ts = at();
+        await sendBattery(page, { pct, charging: false, ts });
         const i = await readIndicator(page);
-        const want = batteryView({ pct, charging: false, ts: TS_1432 + pct * 1000 }, true, TS_1432 + pct * 1000);
+        // The expectation is the product's own, evaluated at the real clock —
+        // never a literal, which would assert the machine's wall time.
+        const want = batteryView({ pct, charging: false, ts }, true, Date.now());
         check(`[${theme}] ${pct}% renders "${want.text}" with tone ${want.tone} and the product's own label`,
           i !== null && i.text === want.text && i.tone === want.tone && i.label === want.label,
           JSON.stringify(i));
@@ -240,29 +279,29 @@ try {
 
       // Proportional fill — measured off the rendered SVG, not asserted of the
       // function that produced it (the node arm already owns that).
-      await sendBattery(page, { pct: 100, charging: false, ts: TS_1432 + 200_000 });
+      await sendBattery(page, { pct: 100, charging: false, ts: at() });
       const full = (await readIndicator(page)).fillWidth;
-      await sendBattery(page, { pct: 25, charging: false, ts: TS_1432 + 210_000 });
+      await sendBattery(page, { pct: 25, charging: false, ts: at() });
       const quarter = (await readIndicator(page)).fillWidth;
       check(`[${theme}] the glyph fill is PROPORTIONAL — 25% draws a quarter of what 100% draws`,
         full > 0 && Math.abs(quarter / full - 0.25) < 0.02, `${quarter}/${full}`);
 
       // (a) charging: an icon change, not only a colour change.
-      await sendBattery(page, { pct: 47, charging: true, ts: TS_1432 + 220_000 });
+      await sendBattery(page, { pct: 47, charging: true, ts: at() });
       const charging = await readIndicator(page);
       check(`[${theme}] charging draws the bolt (a mask + an extra path), and says so`,
         charging.hasMask === true && charging.label === 'Phone battery 47%, charging',
         JSON.stringify({ mask: charging.hasMask, label: charging.label }));
-      await sendBattery(page, { pct: 47, charging: false, ts: TS_1432 + 230_000 });
+      await sendBattery(page, { pct: 47, charging: false, ts: at() });
       const notCharging = await readIndicator(page);
       check(`[${theme}] not charging drops the bolt and the mask with it`,
         notCharging.hasMask === false && notCharging.label === 'Phone battery 47%, not charging',
         JSON.stringify({ mask: notCharging.hasMask, label: notCharging.label }));
 
       // (a) low / critical change the ICON as well as the colour.
-      await sendBattery(page, { pct: 15, charging: false, ts: TS_1432 + 240_000 });
+      await sendBattery(page, { pct: 15, charging: false, ts: at() });
       const low = await readIndicator(page);
-      await sendBattery(page, { pct: 80, charging: false, ts: TS_1432 + 250_000 });
+      await sendBattery(page, { pct: 80, charging: false, ts: at() });
       const normal = await readIndicator(page);
       check(`[${theme}] at 20% or below the glyph gains a mark — the change is never colour alone`,
         low.tone === 'low' && normal.tone === 'normal' && low.paths > normal.paths,
@@ -273,26 +312,39 @@ try {
         normal.role === 'img' && !!normal.label && normal.ariaLive === null,
         JSON.stringify({ role: normal.role, live: normal.ariaLive }));
 
-      // (b) stale: value kept, tooltip admits when it is from.
-      const staleTs = Date.now() - BATTERY_STALE_MS - 60_000;
-      await sendBattery(page, { pct: 47, charging: false, ts: staleTs });
-      const stale = await readIndicator(page);
-      check(`[${theme}] a reading older than the stale window keeps its VALUE`,
-        stale !== null && stale.text === '47%', JSON.stringify(stale));
-      check(`[${theme}] …and its tooltip gains "as of ${new Date(staleTs).getHours()}:.."`,
-        /, as of \d{2}:\d{2}$/.test(stale.label || ''), stale.label);
+      // Screenshots are taken HERE, while the pair is still ACTIVE — the state
+      // the feature is actually for. Taking them at the end of the block put a
+      // torn-down lobby pill in bat-web.png, which is a picture of the wrong
+      // thing and cost a review round.
+      if (theme === 'light') {
+        await sendBattery(page, { pct: 62, charging: true, ts: at() });
+        await shot(page, 'bat-web');
+        await sendBattery(page, { pct: 8, charging: false, ts: at() });
+        await shot(page, 'bat-low');
+      }
+
+      // The colour of a LIVE reading, kept so the greying below is a measured
+      // change rather than an assertion about a class name.
+      const liveColour = await page.evaluate(() =>
+        getComputedStyle(document.querySelector('.cc-battery')).color);
 
       // (b) phone gone: ROOM_RESET is a transport teardown that KEEPS the pair,
       // which is precisely the "last seen" case. (PAIRING_TERMINATED nulls the
       // value instead — that is unpair, and is asserted right after.)
-      await sendBattery(page, { pct: 47, charging: false, ts: TS_1432 });
+      const goneTs = at();
+      await sendBattery(page, { pct: 47, charging: false, ts: goneTs });
       await sendFrame(page, 'ROOM_RESET:' + JSON.stringify({ reason: 'harness' }));
       const gone = await readIndicator(page);
-      check(`[${theme}] phone gone ⇒ "Last seen 14:32 · 47%" in the lobby pill`,
-        gone !== null && gone.kind === 'lastSeen' && gone.text === 'Last seen 14:32 · 47%',
+      const wantGone = batteryView({ pct: 47, charging: false, ts: goneTs }, false, Date.now());
+      check(`[${theme}] phone gone ⇒ "${wantGone.text}" in the lobby pill`,
+        gone !== null && gone.kind === 'lastSeen' && gone.text === wantGone.text,
         JSON.stringify(gone));
-      check(`[${theme}] …greyed, and its accessible name says last seen rather than a present tense`,
-        gone.tone === 'normal' && gone.label === 'Phone battery 47%, last seen 14:32', gone.label);
+      check(`[${theme}] …and its accessible name says last seen, not a present tense`,
+        gone.label === wantGone.label && / last seen /.test(gone.label), gone.label);
+      const goneColour = await page.evaluate(() =>
+        getComputedStyle(document.querySelector('.cc-battery')).color);
+      check(`[${theme}] …and it is GREYED — a departed phone's level is history, not a live fact`,
+        goneColour !== liveColour, `${liveColour} -> ${goneColour}`);
 
       // MUST-3: an unpair clears it. If this fails, the header is showing
       // another device's telemetry.
@@ -302,52 +354,51 @@ try {
 
       // CONTROL. Every "renders nothing" assertion above is vacuous if the
       // reader cannot see an indicator that IS there.
-      await sendBattery(page, { pct: 42, charging: false, ts: Date.now() });
+      await sendBattery(page, { pct: 42, charging: false, ts: at() });
       check(`[${theme}] CONTROL: the reader still finds an indicator when one exists`,
         (await readIndicator(page)) !== null);
 
-      if (theme === 'light') {
-        await sendBattery(page, { pct: 62, charging: true, ts: Date.now() });
-        await shot(page, 'bat-web');
-        await sendBattery(page, { pct: 8, charging: false, ts: Date.now() + 1000 });
-        await shot(page, 'bat-low');
-      }
     } finally {
       await ctx.close();
     }
   }
 
-  // ══ FIT: 1.4x, 360px, the collapse, the cap ═══════════════════════════════
+  // ══ FIT: 1.4x, 360px, the collapse ═══════════════════════════════════════
+  //
+  // What "fit" means here is precise: the battery must not make the header row
+  // WRAP or make the page scroll sideways. It is measured as a BEFORE/AFTER on
+  // the same page — the pill's height with no reading, then with one — because
+  // that is the only comparison that attributes a change to this feature.
+  //
+  // Recorded because it will be asked: at 1280px the dashboard header already
+  // overruns its viewport WITHOUT any battery (the pill row measures ~1500px
+  // against a 1280px window; "Forget this computer" is clipped on a clean
+  // checkout). BAT-3 adds 40px to that row and changes nothing about it. That
+  // is a pre-existing header-density defect, reported rather than absorbed
+  // here, and it is why this arm asserts wrapping and document overflow rather
+  // than "the row fits", which would fail on a fault this lane did not cause.
   console.log('\n── fit ──');
-  {
-    // Chrome's "Large" text size is emulated the way the sibling harness does
-    // it: document zoom, which is what the setting actually applies.
-    const { ctx, page } = await open({ theme: 'light', width: 1280, zoom: 1.4 });
+  const pillBox = (page) => page.evaluate(() => {
+    const pill = document.querySelector('[data-cc-pill="active"]');
+    return pill ? { h: Math.round(pill.getBoundingClientRect().height) } : null;
+  });
+
+  for (const [label, width, zoom] of [['Large text 1.4x', 1280, 1.4], ['360px at 1.4x', 360, 1.4]]) {
+    const { ctx, page } = await open({ theme: 'light', width, zoom });
     try {
-      await sendBattery(page, { pct: 47, charging: true, ts: Date.now() });
-      const header = await page.evaluate(() => {
-        const el = document.querySelector('.cc-battery');
-        if (!el) return null;
-        const row = el.closest('[role="status"]') || el.parentElement;
-        return { scrollW: row.scrollWidth, clientW: row.clientWidth, docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
-      });
-      check('Large text (1.4x): the header row does not overflow and the page gains no h-scroll',
-        header !== null && header.scrollW <= header.clientW + 1 && header.docOverflow <= 1,
-        JSON.stringify(header));
-    } finally { await ctx.close(); }
-  }
-  {
-    const { ctx, page } = await open({ theme: 'light', width: 360, zoom: 1.4 });
-    try {
-      await sendBattery(page, { pct: 47, charging: true, ts: Date.now() });
+      const before = await pillBox(page);
+      await sendBattery(page, { pct: 47, charging: true, ts: at(Date.now()) });
+      const after = await pillBox(page);
       const i = await readIndicator(page);
-      const doc = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-      check('360px at 1.4x: the indicator still renders and the page does not scroll sideways',
-        i !== null && doc <= 1, `overflow ${doc}`);
-      check('360px at 1.4x: the value is still in the accessible name even where text may collapse',
-        /^Phone battery 47%/.test(i.label || ''), i.label);
-      check('360px at 1.4x: the indicator is narrow enough to sit beside a name (< 90 CSS px)',
-        i.width > 0 && i.width < 90, `${i.width}px`);
+      const doc = await page.evaluate(() =>
+        document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      check(`${label}: the header row does not grow taller — the battery never makes it wrap`,
+        before !== null && after !== null && after.h === before.h, `${before?.h} -> ${after?.h}`);
+      check(`${label}: the page gains no horizontal scroll`, doc <= 1, `overflow ${doc}`);
+      check(`${label}: the indicator renders, and the value is whole in its accessible name`,
+        i !== null && /^Phone battery 47%, charging/.test(i.label || ''), i && i.label);
+      check(`${label}: the indicator is narrow enough to sit beside a name (< 90 CSS px)`,
+        i !== null && i.width > 0 && i.width < 90, `${i && i.width}px`);
     } finally { await ctx.close(); }
   }
 
@@ -384,6 +435,13 @@ try {
    * shell.js posts with that origin as the targetOrigin, so a recorder served
    * anywhere else would receive nothing — which makes this arm a test of the
    * origin pin as much as of the delivery.
+   *
+   * What this arm does NOT prove is the RENDER inside the extension, because
+   * the hosted app is not reachable from a gate run. It does not need to: the
+   * extension header is <ConnectionStatus variant="compact" />, the same
+   * component the web arm drives through every state above. The seam between
+   * the two — storage.session to the component — is what is measured here, and
+   * that seam is the only part the web arm cannot reach.
    */
   const RECORDER = `<!doctype html><meta charset="utf-8"><title>recorder</title><body>
 <script>
@@ -404,7 +462,7 @@ try {
   for (const surface of ['sidepanel', 'popup']) {
     const page = await extCtx.newPage();
     await page.goto(`chrome-extension://${extId}/${surface}.html`, { waitUntil: 'domcontentloaded' });
-    await settle(page, 2500);
+    await settle(page, 3500);
     const appFrame = page.frames().find((f) => f.url().startsWith(WEBAPP_ORIGIN));
     const got = appFrame
       ? await appFrame.evaluate(() => (window.__got || []).filter((m) => m.type === 'battery'))

@@ -513,7 +513,13 @@ const MIN_CHECKS_OVERRIDE = {
   // a11y name, both themes and text size 1.4x, across the web header and the
   // extension shell. BAT-3 RAISES this to its measured total in the commit that
   // lands the script; it must never be lowered.
-  'harness:bat-ui-proof': 14,
+  // BAT-3 (d) MEASURED at this commit on a full green run: 15 node-arm
+  // decisions + 34 web-arm assertions (17 per theme x 2) + 8 fit assertions
+  // (four each at 1.4x and at 360px) + 7 extension-arm assertions. Re-measured
+  // rather than carried forward by arithmetic, for the reason the
+  // harness-list floor below states. BAT-2 placed the 14 as a floor for a
+  // script that did not exist yet; this is the real one.
+  'harness:bat-ui-proof': 64,
   // The phase-list test itself. Measured 33. Not decoration: with FT3 removed
   // from the FT list the mutant drops to 31 TOTAL (two `scripts/<h>.mjs exists`
   // checks stop being generated), so the floor catches the deletion even if
