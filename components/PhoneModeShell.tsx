@@ -772,13 +772,15 @@ function ExtDialerView() {
           onSendMessage={(number) => push({ kind: 'thread', threadId: number, from: 'dialer' })}
         />
 
-        {/* FT-3b (a)+(c). Same slot as the web dialer, compact skin. The
-            extension panel is ~400 px wide and the full sentence wraps to two
-            lines there, which is correct — truncating a policy-relevant
-            sentence to fit is not an option. */}
-        <div className="flex justify-center px-3 pb-2">
-          <SendFileSlot compact />
-        </div>
+        {/* The compact <SendFileSlot> that used to sit here moved into the
+            extension header in EXT-UI-8 (Dennis 2026-09-22 12:45Z, "Send file
+            should be a button in the extension header"). Nothing else about
+            file transfer moved: the drag-anywhere drop target still wraps this
+            whole shell, and the progress bar, the cancel control, the M10
+            failure banner and the completed-receive card all still render
+            exactly where they render today — on this tab and on Texts. Only
+            the ENTRY POINT is in the band now. */
+        }
       </div>
 
       {/* No call history yet — one muted line rather than a filter bar over an

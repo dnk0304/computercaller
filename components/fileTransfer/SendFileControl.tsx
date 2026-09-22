@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useRef } from 'react';
-import { Paperclip, Lock } from 'lucide-react';
+import { Paperclip, Lock, Upload } from 'lucide-react';
 
 /**
  * components/fileTransfer/SendFileControl.tsx — FT-3b (a) + (c). The send
@@ -65,10 +65,56 @@ export interface SendFileControlProps {
    * icon-only control with no accessible name would be the actual violation.
    */
   iconOnly?: boolean;
+  /**
+   * EXT-UI-8 (b) — the extension HEADER slot. 24 px box, 14 px glyph, no label
+   * and no border, because it stands in a 40 px band whose every spare pixel is
+   * taken out of the device pill's truncation width (extension.css AC-1).
+   *
+   * It outranks `iconOnly` and `compact` when set; they describe body controls.
+   */
+  headerIcon?: boolean;
+  /**
+   * 0-100 while THIS surface is sending, else null. Rendered as a static arc,
+   * never a spinner: the band is sticky and a thing that spins forever in the
+   * corner of a panel reads as "broken", not as "working".
+   */
+  sendPercent?: number | null;
+}
+
+/**
+ * The locked header button's accessible name. Deliberately NOT
+ * FT_TIER_LOCK_COPY — that sentence is an offer written to be READ, and at 24 px
+ * there is nothing to read it next to. The name has to say what the control is
+ * and what pressing it will do, in that order, and nothing else.
+ */
+const FT_HEADER_LOCK_LABEL = 'Send file — Upgrade';
+
+/** A static ring, filled clockwise to `percent`. No animation, by design. */
+function SendArc({ percent }: { percent: number }) {
+  const r = 5.5;
+  const c = 2 * Math.PI * r;
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      aria-hidden="true"
+      className="flex-shrink-0"
+    >
+      <circle cx="7" cy="7" r={r} fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.25" />
+      <circle
+        cx="7" cy="7" r={r} fill="none" stroke="currentColor" strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeDasharray={`${(c * percent) / 100} ${c}`}
+        transform="rotate(-90 7 7)"
+      />
+    </svg>
+  );
 }
 
 export function SendFileControl({
   subscribed, busy, onPick, onUpgrade, compact = false, iconOnly = false,
+  headerIcon = false, sendPercent = null,
 }: SendFileControlProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -79,6 +125,80 @@ export function SendFileControl({
     e.target.value = '';
     if (file) onPick(file);
   }, [onPick]);
+
+  // ── HEADER SLOT ───────────────────────────────────────────────────────────
+  // Three states, one 24 px box, one glyph size, so the row's width budget is
+  // the same whichever one is showing.
+  //
+  // The locked state is a BUTTON THAT WORKS, not a disabled one. A disabled
+  // control says "you cannot do this"; the truth is "you can, once you
+  // subscribe" — and a greyed-out button hides the path to paying for it.
+  const headerBox =
+    'cc-ft-header-send relative inline-flex h-6 w-6 flex-shrink-0 items-center justify-center '
+    + 'rounded-md text-slate-500 transition-colors hover:bg-slate-500/10 '
+    + 'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45';
+
+  if (headerIcon) {
+    if (!subscribed) {
+      return (
+        <button
+          type="button"
+          onClick={onUpgrade}
+          data-cc-ft-action="header-send"
+          data-cc-ft-locked="true"
+          aria-label={FT_HEADER_LOCK_LABEL}
+          title={FT_HEADER_LOCK_LABEL}
+          className={headerBox}
+        >
+          <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+          {/* The badge is decoration on top of an already-named control, so it
+              is aria-hidden and carries a ring cut out of the band (--cc-l0)
+              rather than a stroke, which would be invisible in one theme. */}
+          <Lock
+            className="cc-ft-header-lockbadge absolute -bottom-px -right-px h-2 w-2"
+            aria-hidden="true"
+          />
+        </button>
+      );
+    }
+    // Clamped + rounded once, so the glyph, the name and the tooltip can never
+    // disagree about the number, and TS narrows it for all three.
+    const pct = sendPercent === null
+      ? null
+      : Math.max(0, Math.min(100, Math.round(sendPercent)));
+    return (
+      <>
+        <input
+          ref={inputRef}
+          type="file"
+          className="sr-only"
+          onChange={onChange}
+          data-cc-ft-input="true"
+          tabIndex={-1}
+          aria-hidden="true"
+        />
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => inputRef.current?.click()}
+          data-cc-ft-action="header-send"
+          aria-label={
+            pct !== null
+              ? `Sending file, ${pct}%`
+              : busy
+                ? 'Send file — a transfer is already running'
+                : FT_SEND_LABEL
+          }
+          title={pct !== null ? `Sending file, ${pct}%` : FT_SEND_LABEL}
+          className={`${headerBox} disabled:cursor-not-allowed disabled:hover:bg-transparent`}
+        >
+          {pct !== null
+            ? <SendArc percent={pct} />
+            : <Upload className="h-3.5 w-3.5" aria-hidden="true" />}
+        </button>
+      </>
+    );
+  }
 
   if (!subscribed) {
     if (iconOnly) {

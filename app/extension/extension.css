@@ -542,6 +542,73 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   outline-offset: 1px;
 }
 
+/* ---------------------------------------------------------------------------
+   TEXT FIELDS ARE THE ONE EXCEPTION — EXT-UI-8 item 3.
+
+   Dennis 2026-09-22 12:49Z: "when i click to dial number a square marking that
+   field comes up, see image from extension. This should not be visible, neither
+   dark nor light mode."
+
+   TWO separate problems, and both have to be answered or the box comes back.
+
+   1. THE BOX APPEARS ON A MOUSE CLICK. `:focus:not(:focus-visible)` does not
+      help here and it is worth knowing why before anyone "simplifies" this: the
+      CSS-UI spec's heuristic says a focused EDITABLE element always matches
+      `:focus-visible`, pointer or keyboard. The usual mouse-users-get-no-ring
+      idiom is therefore a no-op on an input. The origin of the focus has to be
+      recorded by script, which is what components/ExtPointerFocus.tsx does —
+      `data-cc-pointer-focus="1"`, cleared by the next keydown or pointerdown.
+
+   2. THE CUE ITSELF IS THE WRONG SHAPE, AND THE WRONG COLOUR, FOR A FIELD.
+      --cc-ring is rgba(53,201,119,.45) — the green at the head of --cc-grad,
+      i.e. the extension's BRAND ring. It is not a mistake and it stays on
+      buttons and links, which is what Dennis has approved everywhere else. But
+      on a bare centred input with no border of its own it draws a rectangle
+      around nothing, which is exactly the artefact in his screenshot. So the
+      field cue is re-derived separately: a 2px underline in the panel's brand
+      BLUE, sitting where the caret already is instead of boxing the whole row.
+      Measured: #2563eb is 5.17:1 on white (L3) and 4.93:1 on the .cc-field
+      slate-100 fill; #60a5fa is 5.54:1 on dark L3 and 6.49:1 on dark L1. The
+      floor for a non-text focus indicator is 3:1 — both themes clear it twice
+      over.
+
+   The comment at the top of this block still stands: the cue is never removed,
+   only restyled, and it is withheld for exactly one gesture (the pointer that
+   just placed the caret) and restored the instant a key is pressed.
+
+   Scope note: every selector here is under `.cc-ext`, so /app's Dialpad — the
+   same component, non-compact branch — keeps the focus behaviour it has today.
+   --------------------------------------------------------------------------- */
+.cc-ext {
+  --cc-ring-input: #2563eb;
+}
+:where([data-cc-theme=dark]) .cc-ext {
+  --cc-ring-input: #60a5fa;
+}
+
+/* The box goes, for every editable in the panel — the number field, the Texts
+   search, the call-log search, the notifications search, the composer and the
+   new-message recipient. `:not(...)` peels off the input types that are really
+   buttons or controls, which keep the brand ring. */
+.cc-ext input:not([type='button']):not([type='submit']):not([type='reset']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):focus-visible,
+.cc-ext textarea:focus-visible,
+.cc-ext [contenteditable='']:focus-visible,
+.cc-ext [contenteditable='true']:focus-visible {
+  outline: none;
+  /* inset, so it never grows the field's box and never shifts a row. */
+  box-shadow: inset 0 -2px 0 0 var(--cc-ring-input);
+}
+
+/* …and the underline is withheld when the pointer is what put the caret there.
+   `:focus`, not `:focus-visible`: by the time the flag matters the element is
+   focused, and this way the rule holds even if a browser's heuristic changes. */
+.cc-ext input[data-cc-pointer-focus='1']:focus,
+.cc-ext textarea[data-cc-pointer-focus='1']:focus,
+.cc-ext [contenteditable][data-cc-pointer-focus='1']:focus {
+  outline: none;
+  box-shadow: none;
+}
+
 /* ===========================================================================
    EMBEDDED SIGN-IN — /extension/login, framed by the popup's #cc-login-frame.
    Dispatch PIXEL-D, Vinci ART-DIRECTION §4.8 "Signed out" (artboard 1).
@@ -998,6 +1065,23 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    draw a light ring on a dark band in dark, and a white ring on a grey band in
    light. */
 .cc-ext .cc-ext-header .cc-account-dot { box-shadow: 0 0 0 1.5px var(--cc-l0); }
+
+/* --- L0: the Send-file control (EXT-UI-8 (b)) ---------------------------- */
+/* The glyph itself is `text-slate-500`, which the two rules above re-point to
+   the band ink in each theme (9.11:1 light, 7.51:1 dark) — nothing to do here.
+   The LOCK BADGE is the part that needs the band: it is an 8px mark sitting on
+   top of a 14px one, and without separation the two silhouettes merge into an
+   unreadable smudge at 100% zoom. So it is cut out of L0 the same way the
+   account dot is, and painted in the panel's blue rather than the muted ink so
+   it reads as "there is an offer here", not "this is switched off". Measured:
+   #2563eb on light L0 #cbcccf = 4.48:1; #60a5fa on dark L0 #0e0e11 = 8.10:1 —
+   both well past the 3:1 a non-text UI mark needs. */
+.cc-ext .cc-ext-header .cc-ft-header-lockbadge {
+  color: var(--cc-ring-input);
+  stroke-width: 3;
+  paint-order: stroke;
+  stroke: var(--cc-l0);
+}
 
 /* --- L0: the wordmark beside the mark (VARIANT B) ------------------------ */
 /* Dennis, Discord 2026-09-21 12:45Z, selecting Variant B: logo + the word
