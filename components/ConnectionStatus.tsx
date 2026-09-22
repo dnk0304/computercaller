@@ -542,7 +542,20 @@ function BatteryIndicator({
 
   return (
     <span
-      className={`cc-battery inline-flex flex-shrink-0 items-center gap-1 whitespace-nowrap ${toneClass}`}
+      className={
+        // COMPACT never shrinks: that pill is capped at 210px and the
+        // truncating device name is the one elastic thing in the row.
+        //
+        // DEFAULT does shrink. The first screenshot of the lobby pill caught
+        // exactly why: a nowrap, non-shrinking indicator raised the column's
+        // minimum width and pushed "Waiting for phone…" into an ellipsis — the
+        // battery cannot be allowed to cost the header its primary line
+        // (brief (c)). Here the indicator's own text truncates instead, and the
+        // value stays whole in the accessible name either way.
+        `cc-battery inline-flex items-center gap-1 whitespace-nowrap ${
+          variant === 'compact' ? 'flex-shrink-0' : 'min-w-0'
+        } ${toneClass}`
+      }
       data-cc-battery={String(view.pct)}
       data-cc-battery-tone={view.tone}
       data-cc-battery-kind={view.kind}
@@ -560,7 +573,7 @@ function BatteryIndicator({
             ? // The 360px / sub-400px collapse (brief (c)). Hidden, not removed:
               // the value stays in aria-label and title at every width.
               'hidden min-[400px]:inline text-[11px] font-semibold tabular-nums'
-            : 'text-xs font-semibold tabular-nums'
+            : 'truncate text-xs font-semibold tabular-nums'
         }
         aria-hidden="true"
       >
@@ -949,7 +962,13 @@ function ActivePill({
   onForget?: () => void;
 }) {
   return (
-    <div className="flex items-center gap-4 px-5 py-2 bg-white/50 backdrop-blur-md rounded-2xl border border-slate-200/60 shadow-sm">
+    // data-cc-pill is a TEST HANDLE, and deliberately a stable one: the fit arm
+    // of scripts/bat-ui-proof.mjs measures this row's height with and without a
+    // battery, so it has to find the row when there is no battery to find it by.
+    <div
+      data-cc-pill="active"
+      className="flex items-center gap-4 px-5 py-2 bg-white/50 backdrop-blur-md rounded-2xl border border-slate-200/60 shadow-sm"
+    >
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center border border-emerald-100">
           <Smartphone className="w-4 h-4 text-emerald-600" aria-hidden="true" />
