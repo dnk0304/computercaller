@@ -39,6 +39,7 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // (E2E-P0.3) The moving-base decision and the authored/inherited lint split,
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
+import { createAttemptTracker, runWithAttempts } from './lib/attempts.mjs';
 import { freemem } from 'node:os';
 import { harnessesFor, KNOWN_PHASES, phaseTableProblems } from './lib/harness-list.mjs';
 import {
@@ -586,6 +587,14 @@ const MIN_CHECKS_OVERRIDE = {
   // GATE-PREFLIGHT. Post-dates the parity baseline, so the floor is declared
   // here. Measured after the dual-guard: 54 assertions.
   'unit:headroom': 54,
+  // GATE-TOOLING-1 (1), T-GATE-REAP-ATTEMPT. The per-attempt leak census.
+  // Post-dates the parity baseline, so the floor is declared here. Measured at
+  // the commit that adds it: 22 assertions, of which two are CONTROL arms that
+  // replay the OLD one-census-per-step shape and must reach the opposite
+  // verdict — delete those and the suite can no longer tell the fix from the
+  // defect while still printing a cheerful N/N, which is precisely what the
+  // floor is here to stop.
+  'unit:reap-attempt': 22,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -721,6 +730,21 @@ function finishedButHung(out, counts) {
   return Boolean(counts && Number.isFinite(counts.total) && counts.total > 0);
 }
 
+/**
+ * T-GATE-REAP-ATTEMPT. The three injections the attempt loop needs, in one
+ * place so run() and runAsyncStep() cannot drift apart.
+ *
+ * `allow` is the gate-owned dev server: it outlives every harness by design and
+ * is killed by stopDevServer() by PID. Read lazily — run() is defined above the
+ * point where devProc exists.
+ */
+const leakAllow = () => [devProc?.pid].filter(Boolean);
+const attemptFindLeaks = (before) => findLeaks(before, process.pid, { allow: leakAllow() });
+function reportAttemptReap(name, attempt, pids) {
+  console.log(`  REAP  ${name} — attempt ${attempt} left ${pids.length} orphan(s), `
+    + `reaped before attempt ${attempt + 1}: ${pids.map((p) => `${p.name}#${p.pid}`).join(' ')}`);
+}
+
 function keepFailedAttempt(name, index, exit, out, attempts) {
   if (exit === 0 || attempts <= 1 || index >= attempts - 1) return;
   try {
@@ -732,29 +756,45 @@ function keepFailedAttempt(name, index, exit, out, attempts) {
   } catch { /* evidence is best-effort; never fail a step over its own log */ }
 }
 
-function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false, attempts = 1 } = {}) {
+function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false, attempts = 1, onWinnerCensus = null } = {}) {
   const blocker = needs.find((n) => steps.some((s) => s.name === n && s.exit !== 0));
   if (blocker) return skip(name, cmd, `not run — depends on "${blocker}", which failed`);
 
   const t0 = Date.now();
-  let out = '', exit = 1, counts = null, used = 0;
-  for (let i = 0; i < Math.max(1, attempts); i++) {
-    used = i + 1;
-    const r = spawnSync(cmd, {
-      cwd, shell: true, encoding: 'utf8', timeout,
-      maxBuffer: 256 * 1024 * 1024,
-      env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
-    });
-    out = `${r.stdout || ''}${r.stderr || ''}`;
-    exit = r.status === null ? 124 : r.status;
-    try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
-    keepFailedAttempt(name, i, exit, out, attempts);
-    if (exit === 0) break;
-  }
+  let out = '', exit = 1, counts = null;
+  /**
+   * T-GATE-REAP-ATTEMPT: the census is per ATTEMPT, taken immediately before
+   * each spawn, and a failing attempt's orphans are killed BEFORE the retry.
+   * `beforeWinner` is the census of the attempt the verdict came from, which is
+   * the only census the `reap:` step may be handed.
+   */
+  const loop = runWithAttempts({
+    attempts,
+    wantCensus: Boolean(onWinnerCensus),
+    census,
+    findLeaks: attemptFindLeaks,
+    kill: killTree,
+    onReap: (attempt, pids) => reportAttemptReap(name, attempt, pids),
+    spawn: () => {
+      const r = spawnSync(cmd, {
+        cwd, shell: true, encoding: 'utf8', timeout,
+        maxBuffer: 256 * 1024 * 1024,
+        env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
+      });
+      out = `${r.stdout || ''}${r.stderr || ''}`;
+      exit = r.status === null ? 124 : r.status;
+      try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
+      return { exit };
+    },
+    afterAttempt: (i) => keepFailedAttempt(name, i, exit, out, attempts),
+  });
+  const used = loop.used;
+  if (onWinnerCensus) onWinnerCensus(loop.beforeWinner);
   const ms = Date.now() - t0;
   // `attempts` is always recorded, not only when a retry happened, so flakiness
   // is a number somebody can trend rather than something the gate hides.
   if (used > 1) counts = { ...(counts || {}), attempts: used };
+  if (Object.keys(loop.attemptCounts).length) counts = { ...(counts || {}), ...loop.attemptCounts };
 
   if (exit !== 0) {
     mkdirSync(LOGDIR, { recursive: true });
@@ -830,8 +870,30 @@ function runAsyncStep(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout =
     let exit = 1;
     let counts = null;
     let used = 0;
+    /**
+     * T-GATE-REAP-ATTEMPT, parallel arm. Same per-attempt census/reap as run().
+     *
+     * HONEST SCOPE (brief item (1), parallel clause): in --parallel-harnesses
+     * a sibling harness's browser is live while this step retries, so the
+     * per-attempt census here can SEE a sibling's process. findLeaks still only
+     * returns processes that appeared AFTER this attempt began and whose parent
+     * is dead or inside the gate's tree, so the window is narrow — but it is
+     * not zero, and a sibling that dies mid-attempt could in principle be
+     * charged here. That is documented rather than engineered around: this path
+     * is non-default, the batch-level assertNoLeaks('harness-batch') below is
+     * unchanged, and over-engineering the non-default path is explicitly out of
+     * scope.
+     */
+    const tracker = createAttemptTracker({
+      census,
+      findLeaks: attemptFindLeaks,
+      kill: killTree,
+      attempts,
+      onReap: (attempt, pids) => reportAttemptReap(name, attempt, pids),
+    });
     for (let i = 0; i < Math.max(1, attempts); i++) {
       used = i + 1;
+      tracker.begin(i);
       const r = await once();
       out = r.out;
       exit = r.exit;
@@ -856,10 +918,16 @@ function runAsyncStep(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout =
         break;
       }
       keepFailedAttempt(name, i, exit, out, attempts);
+      // Reap THIS attempt's orphans before the next spawn, never after the step.
+      tracker.end(exit);
       if (exit === 0) break;
     }
     const ms = Date.now() - t0;
     if (used > 1) counts = { ...(counts || {}), attempts: used };
+    {
+      const ac = tracker.counts();
+      if (Object.keys(ac).length) counts = { ...(counts || {}), ...ac };
+    }
     if (exit !== 0) {
       mkdirSync(LOGDIR, { recursive: true });
       const log = join(LOGDIR, `${PHASE}-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.log`);
@@ -1582,6 +1650,13 @@ if (WEB) {
     // out of memory. Includes the boundary (exactly-at-the-floor RUNS) and the
     // rule-12 property that the census can never name a pid.
     ['headroom', 'tests/gate-headroom.test.mjs', true],
+    // GATE-TOOLING-1 (1). T-GATE-REAP-ATTEMPT: the attempt loop's leak census
+    // (tools/lib/attempts.mjs), driven with fakes so the ordering claim — the
+    // attempt-1 orphan is killed BEFORE attempt 2 spawns — is a measured call
+    // order rather than a comment. Named explicitly because the sweep above
+    // matches only tests/e2e-*.test.mjs. Node-only: no browser, no database
+    // (rule 17).
+    ['reap-attempt', 'tests/gate-reap-attempt.test.mjs', true],
     // SOAK-RIG (c). 48 checks. The R-AM soak rig: that importing soak-runner /
     // verify-soak / relay-auth starts no clock and opens no socket, and that
     // verify-soak's rule-8 guards can actually go RED — a >10 min gap, a <24 h
@@ -1951,9 +2026,19 @@ if (WEB) {
           assertNoLeaks('harness-batch', beforeBatch);
         } else {
           for (const { h, rel } of harnessSpecs) {
-            const beforeStep = census();
-            run(`harness:${h}`, `node ${rel}`, harnessOpts(rel));
-            assertNoLeaks(h, beforeStep);
+            /**
+             * T-GATE-REAP-ATTEMPT. The census that feeds `reap:<harness>` is
+             * the WINNING attempt's, returned from run(); the step-level
+             * `census()` that used to sit here has been removed rather than
+             * kept, because two measurements that can disagree are worse than
+             * the one that was wrong.
+             */
+            let winner = null;
+            run(`harness:${h}`, `node ${rel}`, {
+              ...harnessOpts(rel),
+              onWinnerCensus: (c) => { winner = c; },
+            });
+            assertNoLeaks(h, winner || census());
           }
         }
         // Recorded either way so the sequential/parallel comparison is a number
