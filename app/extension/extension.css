@@ -1889,58 +1889,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-bd-strong: #7a7a85;
 }
 
-/* --- (1) M2: the dialler input gets a frame ------------------------------- */
-/* Gemini #3. The compact dialler was a transparent box: no border, no fill,
-   and `placeholder-slate-300` measuring 1.32:1 on the panel ground. Before the
-   first keypress there was nothing on screen saying where the number goes.
-
-   The field is lifted to L3 so it reads as a FIELD on the body rather than as
-   a hole in it, and given a >= 3:1 border. Placeholder and typed ink are two
-   different jobs and get two different floors, deliberately:
-     typed digits  light #171717 on #ffffff  17.93:1   (the dispatch's >= 7:1)
-                   dark  #fafafa on #212125  15.37:1
-     placeholder   light #707070 on #ffffff   4.95:1   (~4.5, NOT 7:1 — a
-                   dark  #8a8a8a on #212125   4.65:1    placeholder that reads
-                   as strongly as real input is a bug, not an improvement; it
-                   makes an empty field look filled.)
-   The light placeholder is Gemini's own #707070, which is correct HERE because
-   the ground here is white. Its dark suggestion (#909090 on #262626) was
-   measured on a ground we do not have; #8a8a8a is this panel's own --cc-mut
-   family and lands at 4.65:1 on our real L3. */
-.cc-ext .cc-dial-field {
-  background: var(--cc-l3);
-  border: 1px solid var(--cc-bd-strong);
-  border-radius: var(--r-btn);
-  /* The wrapper was a bare 64px flex box; the frame needs its ink inset from
-     its own edge, and the height must still be driven by the type so the
-     Large step grows the field instead of clipping it. */
-  height: auto;
-  min-height: calc(56px * var(--cc-size, 1));
-  padding: 0 10px;
-}
-.cc-ext .cc-dial-field input::placeholder { color: #707070; opacity: 1; }
-:where([data-cc-theme=dark]) .cc-ext .cc-dial-field input::placeholder { color: #8a8a8a; }
-/* Focus is shown on the FRAME, not with a second ring floating outside it: the
-   input itself is `outline-none` by design (a UA outline inside a framed field
-   draws two boxes). --cc-ring-input is the token EXT-SEARCH already uses for
-   exactly this job — 5.17:1 light / 6.31:1 dark, both well past 3:1.
-
-   `:focus-within` ALONE WOULD BE A REGRESSION, and it was: the first cut of
-   this rule lit the frame blue on every panel open, because the dial field
-   autofocuses. That is precisely the cue Dennis had removed in EXT-UI-8
-   ("when i click to dial number a square marking that field comes up ... This
-   should not be visible, neither dark nor light mode") — the frame simply
-   became a new way to draw it. So the selector carries the SAME
-   `:not([data-cc-pointer-focus])` guard the input's own cue rule carries a few
-   hundred lines up, reading the flag components/ExtPointerFocus.tsx sets for
-   focus that did not come from the keyboard. Click or autofocus: frame stays
-   neutral. Tab in, or type after clicking: frame lights. One flag, one policy,
-   two rules that agree. */
-.cc-ext .cc-dial-field:has(input:focus-visible:not([data-cc-pointer-focus])) {
-  border-color: var(--cc-ring-input);
-  box-shadow: inset 0 0 0 1px var(--cc-ring-input);
-}
-
 /* --- (2) M3: the back button gets a 44px target -------------------------- */
 /* Gemini #9, adopted as drawn. The GLYPH stays 20px and the BOX stays 36px —
    the thread header row is h-10 (40px) and growing the box would grow the row.
