@@ -51,6 +51,10 @@ class BatteryLoopbackTest {
 
     private var reporter: BatteryReporter? = null
 
+    /** `dumpsys battery set status <n>` / EXTRA_STATUS values. */
+    private val statusCharging = android.os.BatteryManager.BATTERY_STATUS_CHARGING
+    private val statusDischarging = android.os.BatteryManager.BATTERY_STATUS_DISCHARGING
+
     @Before
     fun setUp() {
         // The brief's gate precondition: never grade an instrumented run
@@ -119,9 +123,18 @@ class BatteryLoopbackTest {
 
         // A known starting point, set BEFORE the observer exists so the
         // sticky broadcast the registration replays is one we chose.
-        shell("dumpsys battery set level 50")
-        shell("dumpsys battery set ac 0")
+        //
+        // `set ac 0` on its own clears chargerAcOnline ONLY: it leaves the
+        // usb/wireless plugged flags and batteryStatus exactly as the device
+        // reports them, while the product reads
+        // `chargingFrom(status, plugged) = CHARGING || FULL || plugged != 0`.
+        // On a USB-powered emulator that is still charging=true, and the
+        // test would then blame the product for a state the test never
+        // produced. So drive every input chargingFrom reads, and verify the
+        // shell actually produced it before asserting anything on it.
+        unplugAndDischarge(level = 50)
         Thread.sleep(500)
+        requirePowerState(ac = false, usb = false, status = statusDischarging, level = 50)
 
         val r = BatteryReporter(ctx) { peer.receive(it.toPayload()) }
         reporter = r
@@ -140,6 +153,7 @@ class BatteryLoopbackTest {
         // 2. Charging flip bypasses the 60 s throttle entirely: this arrives
         //    ~5 s after the frame above, not 60 s after it.
         shell("dumpsys battery set ac 1")
+        shell("dumpsys battery set status $statusCharging")
         val flip = peer.await(2_000)
         assertNotNull("charging flip must bypass the throttle", flip)
         assertShape(flip!!)
@@ -149,9 +163,8 @@ class BatteryLoopbackTest {
             "the flip frame must be newer than the first",
             (flip["ts"] as Long) >= firstTs
         )
-        // Independent read-back: the device really is on AC and at 50.
-        val dump = shell("dumpsys battery")
-        assertTrue("dumpsys should report level 50, got:\n$dump", dump.contains(Regex("level: 50")))
+        // Independent read-back: the device really is on AC, charging, at 50.
+        requirePowerState(ac = true, status = statusCharging, level = 50)
 
         val flipAt = System.currentTimeMillis()
         peer.drain()
@@ -221,9 +234,12 @@ class BatteryLoopbackTest {
 
     @Test
     fun current_sample_is_always_in_shape() {
-        shell("dumpsys battery set level 7")
-        shell("dumpsys battery set ac 0")
+        // The same stated precondition as cadence_on_a_real_battery. This
+        // test asserts no charging value today, but it must not depend on
+        // AVD luck for the state it runs in either.
+        unplugAndDischarge(level = 7)
         Thread.sleep(500)
+        requirePowerState(ac = false, usb = false, status = statusDischarging, level = 7)
         val r = BatteryReporter(ctx) { }
         reporter = r
         val s = r.currentSample()
@@ -234,6 +250,51 @@ class BatteryLoopbackTest {
     }
 
     // ------------------------------------------------------------- helpers
+
+    /**
+     * Produce the "unplugged, discharging" state for real: every input
+     * `BatteryPolicy.chargingFrom(status, plugged)` reads. `unplug` clears
+     * ac, usb, wireless (and dock) together; status 3 is DISCHARGING.
+     */
+    private fun unplugAndDischarge(level: Int) {
+        shell("dumpsys battery unplug")
+        shell("dumpsys battery set status $statusDischarging")
+        shell("dumpsys battery set level $level")
+    }
+
+    /**
+     * Read the state back through the SAME shell and fail HERE, naming the
+     * `dumpsys battery` line that disagreed, when the shell did not produce
+     * what was asked for. A precondition that is merely assumed surfaces
+     * instead as a baffling failure of the assertion it invalidated
+     * (`expected:<false> but was:<true>`). A null argument is unconstrained.
+     */
+    private fun requirePowerState(
+        ac: Boolean? = null,
+        usb: Boolean? = null,
+        status: Int? = null,
+        level: Int? = null,
+    ) {
+        val dump = shell("dumpsys battery")
+        if (ac != null) requireDumpsysField(dump, "AC powered", ac.toString())
+        if (usb != null) requireDumpsysField(dump, "USB powered", usb.toString())
+        if (status != null) requireDumpsysField(dump, "status", status.toString())
+        if (level != null) requireDumpsysField(dump, "level", level.toString())
+    }
+
+    /** One `<field>: <value>` line of `dumpsys battery`, matched exactly. */
+    private fun requireDumpsysField(dump: String, field: String, want: String) {
+        val line = dump.lineSequence().map { it.trim() }
+            .firstOrNull { it.startsWith("$field:") }
+        assertEquals(
+            "precondition the shell did not produce: `dumpsys battery` line " +
+                "`$field:` should read `$want`" +
+                (if (line == null) " but there is no such line" else "") +
+                " -- full dump:\n$dump",
+            "$field: $want",
+            line,
+        )
+    }
 
     private fun assertShape(p: Map<String, Any>) {
         assertEquals("BAT-A1 MUST-3: exactly three keys, never `relay`", setOf("pct", "charging", "ts"), p.keys)
