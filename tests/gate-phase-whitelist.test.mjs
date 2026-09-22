@@ -328,7 +328,6 @@ check('the refusal explains WHY silence was the danger (the 62/69 incident)',
       else if (code[j] === '}') { depth--; if (depth === 0) { fin = j + 1; break; } }
     }
     if (fin < 0) return null;
-    // eslint-disable-next-line no-new-func
     return new Function(`return ${code.slice(i, fin)}`)();
   };
   const byPhase = objLit('ANDROID_INSTRUMENTED_BY_PHASE');
