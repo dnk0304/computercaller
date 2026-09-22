@@ -623,6 +623,18 @@ try {
       };
     });
 
+    // --- AUTOFOCUS: the dial field takes the caret on every panel open, with
+    // no gesture behind it. That is the state the panel spends most of its life
+    // in, and nothing should be lit up because of it.
+    {
+      const a = await focusPaint();
+      check(
+        `${theme}: the autofocused number field paints no cue on open`,
+        a.tag === 'input' && (a.outlineStyle === 'none' || parseFloat(a.outlineWidth) === 0) && noRing(a.boxShadow),
+        `${a.tag}#${a.id}: outline ${a.outlineStyle} ${a.outlineWidth}, shadow ${a.boxShadow}`,
+      );
+    }
+
     const fields = [
       ['number field', 'input[placeholder="Enter Number"]'],
       ['Texts search', 'input[aria-label="Search messages"]'],
@@ -684,6 +696,37 @@ try {
         path: path.join(SHOTS, `ext-ui8-focus-keyboard-${what.split(' ')[0].toLowerCase()}-${theme}-360.png`),
       });
     }
+
+    // --- TAB ARRIVAL: a keyboard user must see the cue the moment focus lands,
+    // not after they start typing. Shift+Tab back onto the number field from
+    // the control after it.
+    await page.getByRole('tab', { name: /dial/i }).click();
+    await page.waitForTimeout(400);
+    await page.locator('input[placeholder="Enter Number"]').first().click();
+    await page.waitForTimeout(200);
+    let arrived = null;
+    for (let i = 0; i < 12 && !arrived; i++) {
+      await page.keyboard.press('Shift+Tab');
+      await page.waitForTimeout(120);
+      const f = await focusPaint();
+      if (f.tag === 'input' || f.tag === 'textarea') arrived = f;
+    }
+    if (!arrived) {
+      for (let i = 0; i < 12 && !arrived; i++) {
+        await page.keyboard.press('Tab');
+        await page.waitForTimeout(120);
+        const f = await focusPaint();
+        if (f.tag === 'input' || f.tag === 'textarea') arrived = f;
+      }
+    }
+    await page.waitForTimeout(600);
+    const arrivedNow = arrived ? await focusPaint() : null;
+    check(
+      `${theme}: a field reached by Tab shows its cue ON ARRIVAL`,
+      !!arrivedNow && !noRing(arrivedNow.boxShadow) && arrivedNow.flagged !== '1',
+      arrivedNow ? `${arrivedNow.tag}#${arrivedNow.id} shadow ${arrivedNow.boxShadow}, flag ${arrivedNow.flagged}`
+        : 'no field reached by Tab',
+    );
 
     // A button, same page, same gesture: the brand ring is UNTOUCHED. This is
     // the regression guard on "fixed it by deleting the focus ring".

@@ -1084,12 +1084,15 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    account dot is, and painted in the panel's blue rather than the muted ink so
    it reads as "there is an offer here", not "this is switched off". Measured:
    #2563eb on light L0 #cbcccf = 4.48:1; #60a5fa on dark L0 #0e0e11 = 8.10:1 —
-   both well past the 3:1 a non-text UI mark needs. */
+   both well past the 3:1 a non-text UI mark needs.
+
+   The separation is a FILLED DISC, not an SVG stroke. `stroke` is how a lucide
+   glyph paints itself, so keying it to --cc-l0 paints the entire lock in the
+   band colour and the badge vanishes — which is exactly what the first cut did,
+   and what only a 3x capture of the header made visible. */
 .cc-ext .cc-ext-header .cc-ft-header-lockbadge {
+  background: var(--cc-l0);
   color: var(--cc-ring-input);
-  stroke-width: 3;
-  paint-order: stroke;
-  stroke: var(--cc-l0);
 }
 
 /* --- L0: the wordmark beside the mark (VARIANT B) ------------------------ */

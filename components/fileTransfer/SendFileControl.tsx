@@ -152,12 +152,20 @@ export function SendFileControl({
         >
           <Upload className="h-3.5 w-3.5" aria-hidden="true" />
           {/* The badge is decoration on top of an already-named control, so it
-              is aria-hidden and carries a ring cut out of the band (--cc-l0)
-              rather than a stroke, which would be invisible in one theme. */}
-          <Lock
-            className="cc-ft-header-lockbadge absolute -bottom-px -right-px h-2 w-2"
+              is aria-hidden. It sits in its own disc filled with the band
+              colour: an 8px glyph laid directly over a 14px one merges into an
+              unreadable smudge, and the disc is what separates the two
+              silhouettes. NOT an SVG `stroke` outline — `stroke` IS how a
+              lucide glyph paints itself, so setting it paints the whole lock in
+              the band colour and the badge disappears. (It did. The 3x header
+              capture is the only reason that was caught: at 1x an 8px mark
+              being absent and an 8px mark being low-contrast look identical.) */}
+          <span
+            className="cc-ft-header-lockbadge absolute -bottom-0.5 -right-0.5 flex h-2.5 w-2.5 items-center justify-center rounded-full"
             aria-hidden="true"
-          />
+          >
+            <Lock className="h-[7px] w-[7px]" aria-hidden="true" />
+          </span>
         </button>
       );
     }

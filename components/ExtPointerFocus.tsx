@@ -33,12 +33,16 @@ import { useEffect } from 'react';
  * stylesheet.
  *
  * ── WHEN THE CUE COMES BACK ─────────────────────────────────────────────────
- * The flag is cleared by ANY keydown and by any subsequent pointerdown, so a
- * user who clicks into a field and then starts typing — or tabs away and back —
- * gets the keyboard cue immediately. Accessibility is not traded away here: the
- * cue is not removed, it is restyled (an underline rather than a box) and
- * withheld for exactly the one gesture that already told the user where focus
- * went, because their finger is on it.
+ * Accessibility is not traded away here. The cue is not removed: it is restyled
+ * (an underline rather than a box) and withheld only when the user already
+ * knows where the caret is — they just clicked there, or the panel autofocused
+ * the dial field on open and nobody asked for it. Tab into a field and the cue
+ * is there on arrival, because that is the only way a keyboard user can see
+ * where focus went. Type into a field you clicked and it appears too.
+ *
+ * `data-cc-pointer-focus` keeps the name the dispatch gave it; what it really
+ * marks is "focus that did not come from the keyboard", which includes
+ * autofocus.
  */
 
 /** Everything that takes a caret. Not `:read-write` — Safari support is spotty. */
@@ -49,31 +53,64 @@ const ATTR = 'data-cc-pointer-focus';
 
 export function ExtPointerFocus() {
   useEffect(() => {
-    const clear = () => {
-      document
-        .querySelectorAll(`[${ATTR}]`)
-        .forEach((el) => el.removeAttribute(ATTR));
+    /**
+     * Was the LAST interaction a key press? This is the same heuristic the
+     * browser applies to buttons for `:focus-visible`; it is reimplemented here
+     * only because the browser refuses to apply it to editables.
+     */
+    let keyboard = false;
+
+    const flag = (el: Element | null) => {
+      if (el && el.closest('.cc-ext')) el.setAttribute(ATTR, '1');
+    };
+    const unflag = (el: Element | null) => el && el.removeAttribute(ATTR);
+
+    const onPointerDown = () => { keyboard = false; };
+
+    const onKeyDown = () => {
+      keyboard = true;
+      // Typing in a field the user CLICKED into brings the cue back: they are
+      // working in it now, and from here on the caret position matters.
+      // Runs before focusin for Tab, so the element being left is the one
+      // cleared and the element arriving is judged on `keyboard` above.
+      unflag(document.activeElement);
     };
 
-    const onPointerDown = (e: Event) => {
-      // Previous mark first: only ever one pointer-focused field at a time.
-      clear();
+    const onFocusIn = (e: Event) => {
       const target = e.target;
       if (!(target instanceof Element)) return;
       const field = target.closest(EDITABLE);
-      // `.cc-ext` scope, in CSS and in JS: /app shares these components and
-      // must keep the focus behaviour it has today.
-      if (field && field.closest('.cc-ext')) field.setAttribute(ATTR, '1');
+      if (!field) return;
+      // Three ways a field gets focus, and only one of them should paint a cue:
+      //   Tab / arrow keys  -> keyboard === true  -> CUE. The user cannot see
+      //                        where focus went any other way.
+      //   a click or tap    -> keyboard === false -> no cue. Their finger is
+      //                        on it; a box around it says nothing new. This is
+      //                        Dennis's complaint.
+      //   autofocus on open -> keyboard === false -> no cue. Nobody asked for
+      //                        the caret to be there, so nothing should be lit
+      //                        up because of it. (The dial field autofocuses on
+      //                        every panel open, so this is the state the panel
+      //                        spends most of its life in.)
+      if (keyboard) unflag(field); else flag(field);
     };
+
+    // Catch a field that was already focused when this mounted (autofocus wins
+    // the race against the effect often enough to matter).
+    if (document.activeElement && document.activeElement.matches(EDITABLE)) {
+      flag(document.activeElement);
+    }
 
     // Capture phase so a component that stops propagation (the composer's
     // Escape handler, the search fields' clear-on-Escape) cannot blind this.
     document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('keydown', clear, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('focusin', onFocusIn, true);
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', clear, true);
-      clear();
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('focusin', onFocusIn, true);
+      document.querySelectorAll(`[${ATTR}]`).forEach((el) => el.removeAttribute(ATTR));
     };
   }, []);
 
