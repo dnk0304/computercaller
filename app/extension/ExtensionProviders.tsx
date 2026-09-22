@@ -28,6 +28,7 @@ import { DashboardTabProvider, PhoneModeProvider } from '@/hooks';
 import { UpgradeModalProvider } from '@/hooks/upgradeModalContext';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
 import { IdleTimeoutGuard } from '@/components/IdleTimeoutGuard';
+import { ExtPointerFocus } from '@/components/ExtPointerFocus';
 import { requestSignOut } from '@/lib/extensionBridge';
 import { writeExtSignOutReason } from '@/lib/extensionSignOutReason';
 
@@ -54,6 +55,12 @@ export function ExtensionProviders({ children }: { children: React.ReactNode }) 
             >
               {children}
             </div>
+            {/* EXT-UI-8 item 3 — renders nothing; owns the two document
+                listeners that tell the stylesheet a pointer, not the keyboard,
+                put the caret in a field. Mounted here so it covers every
+                editable on the surface (side panel, pop-out and popup all
+                render this route) rather than the five that exist today. */}
+            <ExtPointerFocus />
             <SyncSetupPanel />
             {/* THE 4-HOUR IDLE LOGOUT, on the extension surface.
                 Dennis 2026-09-21 14:04Z: "i notice that the extension doesnt log

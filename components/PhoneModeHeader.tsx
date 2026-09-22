@@ -71,6 +71,7 @@ import {
   type CcSize,
 } from '@/lib/extensionTextSize';
 import { SyncRangeSetting } from '@/components/SyncRangeSetting';
+import { SendFileSlot } from '@/components/fileTransfer/FileTransferSlots';
 
 export interface PhoneModeHeaderProps {
   surface?: 'app' | 'extension';
@@ -247,6 +248,35 @@ function ExtensionHeader() {
       )}
 
       {shell.canDock && <DockButton refused={shell.lastDock?.ok === false} />}
+
+      {/* SEND FILE — EXT-UI-8 (b). Dennis 2026-09-22 12:45Z: "Send file should
+          be a button in the extension header."
+
+          WHY IT MOVED. The Dial body carried a labelled "Send file" button
+          under the keypad (FT-3b). It is a panel-wide capability — a file can
+          be sent from Dial, from Texts, from anywhere — and parking it on one
+          tab made it look like a property of dialling. The header is the only
+          row that is always on screen, so that is where a panel-wide verb
+          belongs. The drag-anywhere drop target (FileDropTarget) is unchanged
+          and is still the other way in.
+
+          WHY HERE IN THE ROW. Between the popout/dock slot and the avatar: the
+          two window verbs stay adjacent to each other, and the account menu
+          stays the last thing in the row, which is where every surface in this
+          product has put it. The box is 24 px against the popout button's
+          26 px — every pixel added to this row comes out of the device pill's
+          truncation width (extension.css AC-1, `white-space: nowrap`), so the
+          new control is the smallest one in it.
+
+          Ink: `text-slate-500`, which extension.css re-points ON THE BAND to
+          #1e293b in light (9.11:1 on L0 #cbcccf) and --cc-mut-hdr #a1a1a9 in
+          dark (7.51:1 on L0 #0e0e11). Both clear the AAA 7:1 floor this row
+          has carried since EXT-FRAME-2.
+
+          It renders on every surface including the popup, and renders nothing
+          at all when the file-transfer api is absent (SendFileSlot returns
+          null), which is the same condition the body control used. */}
+      <SendFileSlot headerIcon />
 
       <AccountMenu email={shell.email} canSignOut={shell.inExtension} />
     </header>

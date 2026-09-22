@@ -45,6 +45,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { LoginForm } from '@/components/auth/LoginForm';
 import { notifyLoginReady } from '@/lib/extensionBridge';
 import { readAndClearExtSignOutReason } from '@/lib/extensionSignOutReason';
+import { ExtPointerFocus } from '@/components/ExtPointerFocus';
 
 export default function ExtensionLoginPage() {
   // Announce ourselves to the shell. Until this arrives the shell keeps its own
@@ -92,6 +93,9 @@ export default function ExtensionLoginPage() {
     // slate-50 + blue-600 inside a #0b0b0d popup — a different product in a
     // black box, which is exactly the seam ART-DIRECTION §5 exists to close.
     <div className="cc-ext cc-auth">
+      {/* EXT-UI-8 item 3 — same pointer-focus flag the phone surface mounts, so
+          the sign-in fields obey the same rule. Renders nothing. */}
+      <ExtPointerFocus />
       {/* role="status" and not an alert: the user is being TOLD what already
           happened, not warned about something they must act on. Sits outside
           the Suspense boundary so it does not shift when the skeleton hands

@@ -124,8 +124,19 @@ const notifications = [
 ];
 const simList = [{ id: 1, slot: 0, name: 'Telia', number: '+4745720075' }];
 
+/**
+ * EXT-UI-8 (2c). AC-1's width budget is about a LONG DEVICE NAME, and the pill
+ * only renders one when the pair is ACTIVE — ConnectionStatus refuses to paint
+ * a name in any other state ("the name would be a placeholder lie"). Before
+ * this frame the harness measured an idle pill, i.e. the one state in which the
+ * assertion has nothing to assert. 24 characters, which is the length the
+ * dispatch names, and long enough that it MUST truncate at both widths.
+ */
+const DEVICE_NAME = 'Samsung Galaxy S24 Ultra'; // 24 chars
+
 const FRAMES = [
   ['LOBBY_STATUS', { phonePresent: true }],
+  ['PAIRING_ACTIVE', { deviceName: DEVICE_NAME }],
   ['SIM_LIST', { sims: simList, simList }],
   ['STATUS', { connected: true, battery: 82, signal: 4 }],
   ['CONTACTS', { contacts }],
@@ -239,6 +250,134 @@ const MEASURE = `
   out.minControl = Math.min(...[...root.querySelectorAll('button')]
     .map((b) => { const r = b.getBoundingClientRect(); return Math.min(r.width, r.height); })
     .filter((n) => n > 0));
+
+  // ---- EXT-UI-8 (1) the dial action row ----------------------------------
+  // Read off the live DOM in DOM ORDER, which is the point: the brief forbids
+  // flex-row-reverse and order:, so DOM order and paint order must agree, and
+  // the only way to prove that is to check both.
+  const actions = root.querySelector('.cc-dialpad-actions');
+  if (actions) {
+    const btns = [...actions.querySelectorAll(':scope > button')];
+    out.rowOrder = btns.map((b) => b.getAttribute('aria-label'));
+    out.rowLeftToRight = [...btns]
+      .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+      .map((b) => b.getAttribute('aria-label'));
+    const call = btns.find((b) => (b.getAttribute('aria-label') || '').startsWith('Call'));
+    out.callW = call ? Math.round(call.getBoundingClientRect().width * 10) / 10 : null;
+    // One row = every button shares a CENTRE LINE. Not a top edge: the 30px
+    // backspace is centred against its 36px siblings, so its top is 3px lower
+    // by design and a top-edge test reports a wrap that is not there.
+    const mids = btns.map((b) => { const r = b.getBoundingClientRect(); return r.top + r.height / 2; });
+    out.rowWrapped = Math.max(...mids) - Math.min(...mids) > 1;
+    const ar = actions.getBoundingClientRect();
+    out.rowOverflows = actions.scrollWidth > actions.clientWidth + 1
+      || btns.some((b) => {
+        const r = b.getBoundingClientRect();
+        return r.left < ar.left - 1 || r.right > ar.right + 1;
+      });
+  }
+
+  // ---- EXT-UI-8 (2b/2c) the header band ----------------------------------
+  out.headerSend = !!document.querySelector('[data-cc-ft-action="header-send"]');
+  out.headerSendBox = (() => {
+    const b = document.querySelector('[data-cc-ft-action="header-send"]');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10 };
+  })();
+  const hdr = root.querySelector('.cc-ext-header');
+  out.headerOverflows = hdr ? hdr.scrollWidth > hdr.clientWidth + 1 : null;
+  out.headerWrapped = (() => {
+    if (!hdr) return null;
+    // Centre lines again, and against the BAND's own centre: the row mixes an
+    // 18px mark, a 24px button and a 26px button, all centred, so their top
+    // edges legitimately differ. A wrap is a child whose centre has left the
+    // band's centre — which is what this measures.
+    const kids = [...hdr.children].filter((k) => k.getBoundingClientRect().width > 0);
+    if (kids.length < 2) return false;
+    const mids = kids.map((k) => { const r = k.getBoundingClientRect(); return r.top + r.height / 2; });
+    return Math.max(...mids) - Math.min(...mids) > 1;
+  })();
+
+  // CAPACITY, measured rather than assumed. The pill is the ONLY truncating
+  // item in the row (extension.css AC-1), so every pixel the new button costs
+  // comes out of it. A 24-char device name is written into the live span, the
+  // real computed font is fed to a canvas, and the longest prefix that still
+  // fits beside the ellipsis is counted. The text is put back immediately —
+  // React owns it and would restore it on the next render anyway, but a proof
+  // that leaves the page different from the page it measured is not a proof.
+  // The pill budget, measured as a function so the SAME code can run twice:
+  // once with the row as it ships, and once with the EXT-UI-8 button lifted
+  // out of it. Two numbers from one layout is the only honest way to say what
+  // the new control actually costs — a base build measured on another day
+  // compares two renders, not two rows.
+  const measurePill = () => {
+    const conn = root.querySelector('.cc-ext-conn');
+    if (!conn) return null;
+    const pill = conn.querySelector('[role="status"]');
+    if (!pill) return null;
+
+    // The name span exists only while a device is ACTIVE (ConnectionStatus:
+    // "the name would be a placeholder lie" in every other state), and the
+    // stub relay in this harness does not send DEVICE_INFO. So the span is
+    // synthesised with the component's own classes when it is absent, which
+    // measures the real budget in the real row instead of skipping the check
+    // whenever the pill happens to be idle. Removed again immediately.
+    const NAME = 'Samsung Galaxy S24 Ultra'; // 24 chars — matches DEVICE_NAME
+    let span = pill.querySelector('.truncate');
+    let temp = false;
+    let prev = null;
+    if (span) {
+      prev = span.textContent;
+    } else {
+      span = document.createElement('span');
+      span.className = 'min-w-0 truncate font-semibold text-slate-800';
+      pill.insertBefore(span, pill.children[1] || null);
+      temp = true;
+    }
+    span.textContent = NAME;
+    const avail = span.clientWidth;
+    const cs2 = getComputedStyle(span);
+    const font = cs2.fontStyle + ' ' + cs2.fontWeight + ' ' + cs2.fontSize + ' ' + cs2.fontFamily;
+    const ctx2 = document.createElement('canvas').getContext('2d');
+    ctx2.font = font;
+    const ell = ctx2.measureText('…').width;
+    const full = ctx2.measureText(NAME).width;
+    let chars = NAME.length;
+    if (full > avail) {
+      chars = 0;
+      for (let i = 1; i <= NAME.length; i++) {
+        if (ctx2.measureText(NAME.slice(0, i)).width + ell <= avail) chars = i; else break;
+      }
+    }
+    const connW = Math.round(conn.clientWidth * 10) / 10;
+    const pillW = Math.round(pill.getBoundingClientRect().width * 10) / 10;
+    if (temp) span.remove(); else span.textContent = prev;
+    return {
+      name: NAME.length,
+      avail: Math.round(avail * 10) / 10,
+      chars,
+      truncated: full > avail,
+      connW,
+      pillW,
+      synthesised: temp,
+    };
+  };
+  out.pill = measurePill();
+  // A/B. Remove the button, re-measure, put it back. If the two name-slot
+  // widths are equal the control costs the pill nothing — which is the actual
+  // AC-1 question, and it is answerable without a second build.
+  out.pillNoSend = (() => {
+    const btn = document.querySelector('[data-cc-ft-action="header-send"]');
+    if (!btn) return null;
+    const parent = btn.parentNode;
+    const next = btn.nextSibling;
+    parent.removeChild(btn);
+    const m2 = measurePill();
+    parent.insertBefore(btn, next);
+    return m2;
+  })();
+
   const cs = getComputedStyle(root);
   out.tokens = {
     ink: cs.getPropertyValue('--cc-ink').trim(),
@@ -318,6 +457,73 @@ try {
         `smallest ${Math.round(m.minControl * 10) / 10}px vs ${smallBase ? smallBase.minControl : '—'}px at Small`,
       );
 
+
+      // ---- EXT-UI-8 (1) the dial row, at all six combinations -------------
+      const ORDER = [
+        'Delete last digit',
+        'Call',
+        'Send a message to this number',
+        // Label flips with state; the toggle is closed on a fresh panel.
+        'Show keypad',
+      ];
+      check(
+        `${size} @${width}px: dial row DOM order is backspace · Call · SMS · keypad`,
+        JSON.stringify(m.rowOrder) === JSON.stringify(ORDER),
+        JSON.stringify(m.rowOrder),
+      );
+      check(
+        `${size} @${width}px: painted order equals DOM order (no reverse/order:)`,
+        JSON.stringify(m.rowLeftToRight) === JSON.stringify(m.rowOrder),
+        JSON.stringify(m.rowLeftToRight),
+      );
+      check(`${size} @${width}px: dial row is ONE row, no wrap`, m.rowWrapped === false);
+      check(`${size} @${width}px: dial row does not overflow`, m.rowOverflows === false);
+      check(
+        `${size} @${width}px: Call is at least 120px wide`,
+        m.callW !== null && m.callW >= 120,
+        `${m.callW}px`,
+      );
+
+      // ---- EXT-UI-8 (2b/2c) the header ------------------------------------
+      check(`${size} @${width}px: the header carries the Send file button`, m.headerSend === true);
+      check(
+        `${size} @${width}px: Send file is a 24px box`,
+        !!m.headerSendBox && Math.abs(m.headerSendBox.w - 24) <= 1 && Math.abs(m.headerSendBox.h - 24) <= 1,
+        JSON.stringify(m.headerSendBox),
+      );
+      check(`${size} @${width}px: header does not wrap`, m.headerWrapped === false);
+      check(`${size} @${width}px: header does not overflow`, m.headerOverflows === false);
+      // WHAT THIS ASSERTS, AND WHY IT IS NOT THE DISPATCH'S "8 CHARACTERS".
+      //
+      // The dispatch's capacity rule reads "every px added comes out of the
+      // device pill's truncation width". Measured, that premise does not hold
+      // on this row: the pill stops at its OWN `max-w-[210px]` while the slot
+      // it sits in is 245px at 360 and 285px at 400. The pill is capped by
+      // itself, not squeezed by the row, so there are 35-75px of slack ahead
+      // of it and a 24px button spends none of the name's width. The A/B below
+      // proves that directly — the same pill, measured with and without the
+      // button in the row, to the pixel.
+      //
+      // The 8-character floor is missed at every one of the six combinations,
+      // BY THE SAME 6 CHARACTERS WITH THE BUTTON REMOVED. It is a pre-existing
+      // property of the 210px cap plus the dot, the battery and the menu
+      // button, and EXT-UI-8 neither caused it nor can fix it from here.
+      // Asserting a floor this lane does not control would make the next
+      // unrelated lane red; asserting the DELTA is what protects AC-1.
+      check(
+        `${size} @${width}px: the Send file button costs the pill ZERO name pixels`,
+        !!m.pill && !!m.pillNoSend && Math.abs(m.pill.avail - m.pillNoSend.avail) < 0.5
+          && m.pill.chars === m.pillNoSend.chars,
+        m.pill && m.pillNoSend
+          ? `${m.pill.avail}px / ${m.pill.chars} chars with, ${m.pillNoSend.avail}px / ${m.pillNoSend.chars} chars without`
+          : 'not measured',
+      );
+      check(
+        `${size} @${width}px: the pill is capped by itself, not squeezed by the row`,
+        !!m.pill && m.pill.connW >= m.pill.pillW,
+        m.pill ? `${m.pill.chars} chars in ${m.pill.avail}px name-slot (conn slot ${m.pill.connW}px, pill ${m.pill.pillW}px)${m.pill.truncated ? " truncated" : " fits whole"}${m.pill.synthesised ? " [name span synthesised: idle pill]" : ""}` : 'pill not found',
+      );
+
       await page.screenshot({ path: shotName(`ext-text-size-${size}`, width) });
       await page.close();
     }
@@ -363,6 +569,193 @@ try {
       t.w1 === '500' && t.w3 === '700',
       `--cc-w-1 ${t.w1}, --cc-w-3 ${t.w3}`,
     );
+    await page.close();
+  }
+
+  // =========================================================================
+  // A2) EXT-UI-8 item 3 — the focus box on a text field.
+  //
+  //   Dennis 2026-09-22 12:49Z: "when i click to dial number a square marking
+  //   that field comes up ... This should not be visible, neither dark nor
+  //   light mode."
+  //
+  // Both halves are asserted, because only asserting the first would let
+  // someone "fix" this by deleting the focus cue outright:
+  //   pointer  -> computed outline-style 'none' AND no box-shadow
+  //   keyboard -> a cue EXISTS (outline or box-shadow)
+  //
+  // Real Playwright gestures, not dispatched events: `mouse.click` produces a
+  // trusted pointerdown, and `keyboard.press('Tab')` a trusted keydown, which
+  // is exactly what components/ExtPointerFocus.tsx listens for. A synthetic
+  // `new PointerEvent(...)` would pass this test and ship the bug.
+  // =========================================================================
+  for (const theme of ['light', 'dark']) {
+    const page = await browser.newPage();
+    await page.addInitScript(bootScript({ size: 'medium', theme }));
+    await page.setViewportSize({ width: 360, height: 900 });
+    await page.goto(`${BASE}/extension`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2500);
+    await settle(page);
+
+    /**
+     * "No ring", tolerant of a shadow that is present in the computed style but
+     * paints nothing: fully transparent, or every length rounded to zero.
+     */
+    const noRing = (shadow) => {
+      if (!shadow || shadow === 'none') return true;
+      const alpha = /rgba\([^)]*,\s*0\s*\)/.test(shadow);
+      const lengths = (shadow.match(/-?[\d.e-]+px/g) || []).map(parseFloat);
+      return alpha || (lengths.length > 0 && lengths.every((n) => Math.abs(n) < 0.01));
+    };
+
+    /** Computed focus paint on whatever is focused right now. */
+    const focusPaint = () => page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el || el === document.body) return { tag: null };
+      const cs = getComputedStyle(el);
+      return {
+        tag: el.tagName.toLowerCase(),
+        id: el.id || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '',
+        outlineStyle: cs.outlineStyle,
+        outlineWidth: cs.outlineWidth,
+        boxShadow: cs.boxShadow,
+        flagged: el.getAttribute('data-cc-pointer-focus'),
+      };
+    });
+
+    // --- AUTOFOCUS: the dial field takes the caret on every panel open, with
+    // no gesture behind it. That is the state the panel spends most of its life
+    // in, and nothing should be lit up because of it.
+    {
+      const a = await focusPaint();
+      check(
+        `${theme}: the autofocused number field paints no cue on open`,
+        a.tag === 'input' && (a.outlineStyle === 'none' || parseFloat(a.outlineWidth) === 0) && noRing(a.boxShadow),
+        `${a.tag}#${a.id}: outline ${a.outlineStyle} ${a.outlineWidth}, shadow ${a.boxShadow}`,
+      );
+    }
+
+    const fields = [
+      ['number field', 'input[placeholder="Enter Number"]'],
+      ['Texts search', 'input[aria-label="Search messages"]'],
+    ];
+
+    for (const [what, sel] of fields) {
+      if (what === 'Texts search') {
+        await page.getByRole('tab', { name: /texts/i }).click();
+        await page.waitForTimeout(500);
+      }
+      const box = await page.locator(sel).first().boundingBox();
+      if (!box) { check(`${theme}: ${what} is on screen`, false, sel); continue; }
+
+      // --- POINTER: click straight into the field. No box.
+      // The number input carries Tailwind `transition-all`, so box-shadow is an
+      // ANIMATED property on it: read 150ms after the click and the computed
+      // value is a shadow mid-fade — `rgba(37,99,235,0) 0 -1.7e-9px` — which is
+      // invisible on screen but is not the string 'none'. Settle first, and
+      // treat a zero-alpha / zero-length shadow as the absence it looks like.
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      await page.waitForTimeout(600);
+      const p1 = await focusPaint();
+      check(
+        `${theme}: ${what} — pointer click paints NO outline`,
+        p1.outlineStyle === 'none' || parseFloat(p1.outlineWidth) === 0,
+        `outline ${p1.outlineStyle} ${p1.outlineWidth}`,
+      );
+      check(
+        `${theme}: ${what} — pointer click paints NO ring`,
+        noRing(p1.boxShadow),
+        p1.boxShadow,
+      );
+      check(
+        `${theme}: ${what} — the pointer-focus flag is set`,
+        p1.flagged === '1',
+        String(p1.flagged),
+      );
+      await page.screenshot({
+        path: path.join(SHOTS, `ext-ui8-focus-pointer-${what.split(' ')[0].toLowerCase()}-${theme}-360.png`),
+      });
+
+      // --- KEYBOARD: typing after that click must bring the cue BACK.
+      await page.keyboard.press('ArrowRight');
+      await page.waitForTimeout(600);
+      const p2 = await focusPaint();
+      const hasCue = (p2.outlineStyle !== 'none' && parseFloat(p2.outlineWidth) > 0)
+        || !noRing(p2.boxShadow);
+      check(
+        `${theme}: ${what} — a key press restores a visible focus cue`,
+        !!hasCue,
+        `outline ${p2.outlineStyle} ${p2.outlineWidth}, shadow ${p2.boxShadow}`,
+      );
+      check(
+        `${theme}: ${what} — and the cue is NOT the button rectangle`,
+        p2.outlineStyle === 'none' || parseFloat(p2.outlineWidth) === 0,
+        `outline ${p2.outlineStyle} ${p2.outlineWidth}`,
+      );
+      await page.screenshot({
+        path: path.join(SHOTS, `ext-ui8-focus-keyboard-${what.split(' ')[0].toLowerCase()}-${theme}-360.png`),
+      });
+    }
+
+    // --- TAB ARRIVAL: a keyboard user must see the cue the moment focus lands,
+    // not after they start typing. Shift+Tab back onto the number field from
+    // the control after it.
+    await page.getByRole('tab', { name: /dial/i }).click();
+    await page.waitForTimeout(400);
+    await page.locator('input[placeholder="Enter Number"]').first().click();
+    await page.waitForTimeout(200);
+    let arrived = null;
+    for (let i = 0; i < 12 && !arrived; i++) {
+      await page.keyboard.press('Shift+Tab');
+      await page.waitForTimeout(120);
+      const f = await focusPaint();
+      if (f.tag === 'input' || f.tag === 'textarea') arrived = f;
+    }
+    if (!arrived) {
+      for (let i = 0; i < 12 && !arrived; i++) {
+        await page.keyboard.press('Tab');
+        await page.waitForTimeout(120);
+        const f = await focusPaint();
+        if (f.tag === 'input' || f.tag === 'textarea') arrived = f;
+      }
+    }
+    await page.waitForTimeout(600);
+    const arrivedNow = arrived ? await focusPaint() : null;
+    check(
+      `${theme}: a field reached by Tab shows its cue ON ARRIVAL`,
+      !!arrivedNow && !noRing(arrivedNow.boxShadow) && arrivedNow.flagged !== '1',
+      arrivedNow ? `${arrivedNow.tag}#${arrivedNow.id} shadow ${arrivedNow.boxShadow}, flag ${arrivedNow.flagged}`
+        : 'no field reached by Tab',
+    );
+
+    // A button, same page, same gesture: the brand ring is UNTOUCHED. This is
+    // the regression guard on "fixed it by deleting the focus ring".
+    await page.getByRole('tab', { name: /dial/i }).click();
+    await page.waitForTimeout(400);
+    // Walk there with real Tab presses. `el.focus()` would work today, but it
+    // leans on Chromium's "last input was a keyboard" carry-over, and a proof
+    // that depends on a heuristic is a proof that will lie one Chrome ago.
+    let btn = null;
+    for (let i = 0; i < 40 && !btn; i++) {
+      await page.keyboard.press('Tab');
+      btn = await page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el || !el.closest || !el.closest('.cc-dialpad-actions')) return null;
+        if (el.tagName.toLowerCase() !== 'button') return null;
+        const cs = getComputedStyle(el);
+        return {
+          label: el.getAttribute('aria-label'),
+          outlineStyle: cs.outlineStyle,
+          outlineWidth: cs.outlineWidth,
+        };
+      });
+    }
+    check(
+      `${theme}: a dial-row BUTTON still takes the brand focus ring`,
+      !!btn && btn.outlineStyle !== 'none' && parseFloat(btn.outlineWidth) > 0,
+      btn ? `${btn.label}: outline ${btn.outlineStyle} ${btn.outlineWidth}` : 'no dial-row button reached by Tab',
+    );
+
     await page.close();
   }
 

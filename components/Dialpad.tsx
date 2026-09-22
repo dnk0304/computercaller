@@ -248,10 +248,62 @@ export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: 
           means neither reads as primary. */}
       {isCompact ? (
         <div className="cc-dialpad-actions flex w-full items-center gap-2 px-1">
-          {/* Keypad toggle — FIRST in the row (Dennis 2026-09-17: "reduced
-              into a button thats next to the message button thats next to the
-              call button"). Same 36px box as Message so the two secondaries
-              read as a pair and Call stays the only primary.
+          {/* Backspace is hidden (not just disabled) on an empty display —
+              there is nothing to delete. `invisible`, not `hidden`: the slot
+              keeps its 30px so Call does not resize under the cursor the
+              moment the first digit lands. Unchanged by EXT-UI-8 except that
+              it is now FIRST in the row rather than last. */}
+          <button
+            type="button"
+            onClick={handleDelete}
+            aria-label="Delete last digit"
+            className={clsx(
+              'flex h-[30px] w-[30px] flex-shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40',
+              !number && 'invisible',
+            )}
+          >
+            <Delete className="h-4 w-4" aria-hidden="true" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => number && dial(number)}
+            disabled={!number}
+            aria-label="Call"
+            title={number ? `Call ${number}` : 'Enter a number first'}
+            className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-full text-[13px] font-semibold text-white transition-all enabled:bg-gradient-to-br enabled:from-[#35c977] enabled:via-[#22a89a] enabled:to-[#1e8fb2] enabled:hover:brightness-105 enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45 focus-visible:ring-offset-1"
+          >
+            <Phone className="h-4 w-4 fill-current" aria-hidden="true" />
+            Call
+          </button>
+
+          {/* AC-4 — Send message. Hands the display value up; the shell routes
+              into Texts compose pre-addressed. Rendered only when a handler
+              exists, so /app's (non-compact) render is unaffected either way.
+              Sits between Call and the keypad toggle (EXT-UI-8). */}
+          {onSendMessage && (
+            <button
+              type="button"
+              onClick={() => number && onSendMessage(number)}
+              disabled={!number}
+              aria-label="Send a message to this number"
+              title={number ? `Send a message to ${number}` : 'Enter a number first'}
+              className="flex h-9 w-11 flex-shrink-0 items-center justify-center rounded-full border transition-colors enabled:border-slate-300 enabled:bg-white enabled:text-slate-800 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45"
+            >
+              <MessageSquare className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+
+          {/* Keypad toggle — OUTERMOST RIGHT (Dennis 2026-09-22 12:45Z:
+              "Lets move the keypad and sms button to the right in dial tab").
+              The row is an exact mirror of what it was: backspace · Call ·
+              SMS · keypad. Call is still the only primary and still flex-1;
+              the two secondaries still read as a pair in the same 36px box.
+
+              DOM order IS visual order — no flex-row-reverse, no `order:`.
+              Tab order must walk backspace → Call → SMS → keypad, because a
+              reversed DOM would hand a keyboard user a row that moves right
+              to left while their eyes move left to right.
 
               aria-pressed, not aria-expanded: this is the same toggle idiom
               the dashboard's own dialpad button already uses
@@ -272,49 +324,6 @@ export const Dialpad = ({ isCompact = false, onSendMessage, autoFocus = true }: 
             )}
           >
             <Grid3x3 className="h-4 w-4" aria-hidden="true" />
-          </button>
-
-          {/* AC-4 — Send message. Hands the display value up; the shell routes
-              into Texts compose pre-addressed. Rendered only when a handler
-              exists, so /app's (non-compact) render is unaffected either way. */}
-          {onSendMessage && (
-            <button
-              type="button"
-              onClick={() => number && onSendMessage(number)}
-              disabled={!number}
-              aria-label="Send a message to this number"
-              title={number ? `Send a message to ${number}` : 'Enter a number first'}
-              className="flex h-9 w-11 flex-shrink-0 items-center justify-center rounded-full border transition-colors enabled:border-slate-300 enabled:bg-white enabled:text-slate-800 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45"
-            >
-              <MessageSquare className="h-4 w-4" aria-hidden="true" />
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => number && dial(number)}
-            disabled={!number}
-            aria-label="Call"
-            title={number ? `Call ${number}` : 'Enter a number first'}
-            className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-full text-[13px] font-semibold text-white transition-all enabled:bg-gradient-to-br enabled:from-[#35c977] enabled:via-[#22a89a] enabled:to-[#1e8fb2] enabled:hover:brightness-105 enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/45 focus-visible:ring-offset-1"
-          >
-            <Phone className="h-4 w-4 fill-current" aria-hidden="true" />
-            Call
-          </button>
-
-          {/* Backspace is hidden (not just disabled) on an empty display —
-              there is nothing to delete, and the slot is worth more as
-              breathing room at this width. */}
-          <button
-            type="button"
-            onClick={handleDelete}
-            aria-label="Delete last digit"
-            className={clsx(
-              'flex h-[30px] w-[30px] flex-shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40',
-              !number && 'invisible',
-            )}
-          >
-            <Delete className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       ) : (

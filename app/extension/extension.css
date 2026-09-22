@@ -542,6 +542,92 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   outline-offset: 1px;
 }
 
+/* ---------------------------------------------------------------------------
+   TEXT FIELDS ARE THE ONE EXCEPTION — EXT-UI-8 item 3.
+
+   Dennis 2026-09-22 12:49Z: "when i click to dial number a square marking that
+   field comes up, see image from extension. This should not be visible, neither
+   dark nor light mode."
+
+   TWO separate problems, and both have to be answered or the box comes back.
+
+   1. THE BOX APPEARS ON A MOUSE CLICK. `:focus:not(:focus-visible)` does not
+      help here and it is worth knowing why before anyone "simplifies" this: the
+      CSS-UI spec's heuristic says a focused EDITABLE element always matches
+      `:focus-visible`, pointer or keyboard. The usual mouse-users-get-no-ring
+      idiom is therefore a no-op on an input. The origin of the focus has to be
+      recorded by script, which is what components/ExtPointerFocus.tsx does —
+      `data-cc-pointer-focus="1"`, cleared by the next keydown or pointerdown.
+
+   2. THE CUE ITSELF IS THE WRONG SHAPE, AND THE WRONG COLOUR, FOR A FIELD.
+      --cc-ring is rgba(53,201,119,.45) — the green at the head of --cc-grad,
+      i.e. the extension's BRAND ring. It is not a mistake and it stays on
+      buttons and links, which is what Dennis has approved everywhere else. But
+      on a bare centred input with no border of its own it draws a rectangle
+      around nothing, which is exactly the artefact in his screenshot. So the
+      field cue is re-derived separately: a 2px underline in the panel's brand
+      BLUE, sitting where the caret already is instead of boxing the whole row.
+      Measured on every ground a field actually sits on: #2563eb is 5.17:1 on
+      white (L3), 4.72:1 on the .cc-field slate-100 fill and 4.03:1 on L2;
+      #60a5fa is 5.54:1 on dark L3, 6.68:1 on L1 and 6.23:1 on L2. The floor
+      for a non-text focus indicator is 3:1 — the lowest of the six is 4.03.
+
+   The comment at the top of this block still stands: the cue is never removed,
+   only restyled, and it is withheld for exactly one gesture (the pointer that
+   just placed the caret) and restored the instant a key is pressed.
+
+   Scope note: every selector here is under `.cc-ext`, so /app's Dialpad — the
+   same component, non-compact branch — keeps the focus behaviour it has today.
+   --------------------------------------------------------------------------- */
+.cc-ext {
+  --cc-ring-input: #2563eb;
+}
+:where([data-cc-theme=dark]) .cc-ext {
+  --cc-ring-input: #60a5fa;
+}
+
+/* The SAME blue does not serve both jobs in light. The field cue sits on a
+   field (white L3, the .cc-field slate-100 fill, or L2); the lock badge sits on
+   the header BAND, which is the darkest light surface in the panel. #2563eb
+   measures 5.17 / 4.72 / 4.03:1 on the three field grounds but only 3.22:1 on
+   L0 — over the 3:1 floor, and too close to it for a 7px mark. So the badge
+   gets one step darker in light and keeps the field blue in dark, where L0 is
+   nearly black and the light value would be the wrong direction entirely. */
+.cc-ext { --cc-ft-badge: #1d4ed8; }
+:where([data-cc-theme=dark]) .cc-ext { --cc-ft-badge: #60a5fa; }
+
+/* The box goes, for every editable in the panel — the number field, the Texts
+   search, the call-log search, the notifications search, the composer and the
+   new-message recipient. `:not(...)` peels off the input types that are really
+   buttons or controls, which keep the brand ring. */
+/* `:not([data-cc-pointer-focus])` is carried on the CUE rule, not left to the
+   suppressor below to outrank — the suppressor cannot outrank it. Eight
+   `:not([type=…])` clauses put this selector at specificity (0,10,1) and any
+   honest one-attribute override sits far below that, so the two rules are made
+   MUTUALLY EXCLUSIVE instead of competing. (Measured the hard way: the first
+   cut of this block left the suppressor at (0,3,1) and the ring stayed on every
+   click — the harness caught it, which is the whole reason the harness asserts
+   the computed style and not the class list.) */
+.cc-ext input:not([type='button']):not([type='submit']):not([type='reset']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([data-cc-pointer-focus]):focus-visible,
+.cc-ext textarea:not([data-cc-pointer-focus]):focus-visible,
+.cc-ext [contenteditable='']:not([data-cc-pointer-focus]):focus-visible,
+.cc-ext [contenteditable='true']:not([data-cc-pointer-focus]):focus-visible {
+  outline: none;
+  /* inset, so it never grows the field's box and never shifts a row. */
+  box-shadow: inset 0 -2px 0 0 var(--cc-ring-input);
+}
+
+/* …and the global `.cc-ext :focus-visible` box is still cancelled for the
+   pointer-flagged field, which the rule above no longer matches. `:focus`, not
+   `:focus-visible`: by the time the flag matters the element is focused, and
+   this way the rule holds even if a browser's heuristic changes. */
+.cc-ext input[data-cc-pointer-focus='1']:focus,
+.cc-ext textarea[data-cc-pointer-focus='1']:focus,
+.cc-ext [contenteditable][data-cc-pointer-focus='1']:focus {
+  outline: none;
+  box-shadow: none;
+}
+
 /* ===========================================================================
    EMBEDDED SIGN-IN — /extension/login, framed by the popup's #cc-login-frame.
    Dispatch PIXEL-D, Vinci ART-DIRECTION §4.8 "Signed out" (artboard 1).
@@ -998,6 +1084,27 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    draw a light ring on a dark band in dark, and a white ring on a grey band in
    light. */
 .cc-ext .cc-ext-header .cc-account-dot { box-shadow: 0 0 0 1.5px var(--cc-l0); }
+
+/* --- L0: the Send-file control (EXT-UI-8 (b)) ---------------------------- */
+/* The glyph itself is `text-slate-500`, which the two rules above re-point to
+   the band ink in each theme (9.11:1 light, 7.51:1 dark) — nothing to do here.
+   The LOCK BADGE is the part that needs the band: it is an 8px mark sitting on
+   top of a 14px one, and without separation the two silhouettes merge into an
+   unreadable smudge at 100% zoom. So it is cut out of L0 the same way the
+   account dot is, and painted in the panel's blue rather than the muted ink so
+   it reads as "there is an offer here", not "this is switched off". Measured on
+   the band: #1d4ed8 on light L0 #cbcccf = 4.17:1; #60a5fa on dark L0 #0e0e11 =
+   7.58:1. Both past the 3:1 a non-text UI mark needs, and deliberately not the
+   3.22:1 the field blue would have given in light.
+
+   The separation is a FILLED DISC, not an SVG stroke. `stroke` is how a lucide
+   glyph paints itself, so keying it to --cc-l0 paints the entire lock in the
+   band colour and the badge vanishes — which is exactly what the first cut did,
+   and what only a 3x capture of the header made visible. */
+.cc-ext .cc-ext-header .cc-ft-header-lockbadge {
+  background: var(--cc-l0);
+  color: var(--cc-ft-badge);
+}
 
 /* --- L0: the wordmark beside the mark (VARIANT B) ------------------------ */
 /* Dennis, Discord 2026-09-21 12:45Z, selecting Variant B: logo + the word

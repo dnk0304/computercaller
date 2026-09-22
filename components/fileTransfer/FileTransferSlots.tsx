@@ -48,10 +48,12 @@ function useFileTransferSlot() {
 
 /** The send affordance. Renders the tappable trial lock when unsubscribed. */
 export function SendFileSlot({
-  compact = false, iconOnly = false,
+  compact = false, iconOnly = false, headerIcon = false,
 }: {
   compact?: boolean;
   iconOnly?: boolean;
+  /** EXT-UI-8 (b) — the 24 px control in the extension header band. */
+  headerIcon?: boolean;
 }) {
   const { ft, subscribed, onUpgrade } = useFileTransferSlot();
   const onPick = useCallback(
@@ -59,6 +61,18 @@ export function SendFileSlot({
     [ft],
   );
   if (!ft) return null;
+
+  // OUTBOUND only, and only while it is actually moving. A receive is the other
+  // party's doing and already has its own surfaces (the accept dialog, the
+  // progress bar, the completed card); showing its percentage on the SEND
+  // button would claim this user started something they did not.
+  const p = ft.progress;
+  const sendPercent =
+    headerIcon && p && p.direction === 'send' && p.size > 0
+      && p.phase !== 'done' && p.phase !== 'failed'
+      ? (p.bytes / p.size) * 100
+      : null;
+
   return (
     <SendFileControl
       subscribed={subscribed}
@@ -67,6 +81,8 @@ export function SendFileSlot({
       onUpgrade={onUpgrade}
       compact={compact}
       iconOnly={iconOnly}
+      headerIcon={headerIcon}
+      sendPercent={sendPercent}
     />
   );
 }
