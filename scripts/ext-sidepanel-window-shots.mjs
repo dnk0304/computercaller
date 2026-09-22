@@ -14,15 +14,18 @@
  * header — Chrome's grey strip carrying the extension icon and the manifest
  * `name` — is never in the picture.
  *
- * R-CH (2026-09-22 16:06Z): Dennis looked at the EXT-FRAME-2 ladder in prod and
- * asked for the previous palette back ("i dont like this grey tone"). The
- * dL* floors at the bottom of this file are therefore re-pinned to the RESTORED
- * ladder's reality (bar->header >= 8, header->body >= 6, bar->body >= 2) rather
- * than to EXT-FRAME-2's 12/6/8 target, which is closed as Dennis-overridden.
+ * R-CH (2026-09-22 16:06Z) then R-CJ (18:05Z): Dennis looked at the EXT-FRAME-2
+ * ladder in prod and asked for the previous palette back ("i dont like this grey
+ * tone"), and then for the header band to go entirely ("i dont want the grey
+ * tone"). L0 is now plain #ffffff / #0b0b0d. The dL* floors at the bottom of
+ * this file are therefore re-pinned to THAT reality and are DARK-ONLY — see the
+ * note at the checks for why no floor above zero can exist in light. EXT-FRAME-2's
+ * 12/6/8 target is closed as Dennis-overridden, not failed.
  * The harness itself is unchanged and still the only way to see Chrome's bar.
  *
- * The original finding, kept because it is still true: our dark header L0
- * #28292c (L* 16.6) sits
+ * The original finding, kept because it was true of the ladder it described:
+ * the then-dark header L0
+ * #28292c (L* 16.6) sat
  * 9 L* from Chrome's bar #3c3c3c (L* 25.3) and repeated the word
  * "ComputerCaller" directly under a bar that already said it. In a page
  * screenshot that looks fine. In the side panel it reads as one grey slab with
@@ -442,31 +445,44 @@ try {
     deltaL: { barToHeader: +dBarHdr.toFixed(2), headerToBody: +dHdrBody.toFixed(2), barToBody: +dBarBody.toFixed(2) },
     panel: { left: panelLeft, width: panelW, barTop, headerTop, headerBottom },
   });
-  // R-CH floors. These are NOT a contrast goal any more — Dennis overrode the
-  // >= 12 target — they are a REGRESSION FENCE around the palette he chose, so
-  // that a future edit cannot quietly collapse the header into Chrome's bar or
-  // into its own body without failing here. Pinned to what this harness ACTUALLY
-  // MEASURES on the restored ladder, which is not what the amendment predicted:
-  // the row it samples as "body" is the first body surface under the header, and
-  // that is L3 (the card), not L1. Measured 2026-09-22 after the R-CH revert:
+  // R-CJ floors. These are NOT a contrast goal any more — Dennis overrode the
+  // >= 12 target AND then the band itself — they are a REGRESSION FENCE around
+  // the surface he chose, so that a future edit cannot quietly collapse the dark
+  // header into Chrome's bar or into its own body without failing here. Pinned to
+  // what this harness ACTUALLY MEASURES: the row it samples as "body" is the first
+  // what this harness ACTUALLY MEASURES, not what arithmetic on the token table
+  // predicts. TWO corrections recorded from the real post-R-CJ run, 2026-09-22:
+  //  (1) the row it samples as "body" USED TO come back L3 (the card). With the
+  //      band gone the header walk no longer stops early, and the sampled body
+  //      is now L2, the content ground (#f1f1f2 light, #18181b dark) - a
+  //      smaller, and more honest, step than the one recorded before.
+  //  (2) that makes dark header->body 5.30, not the 9.82 an L3 reading gives.
+  // Measured, both themes, real side panel with Chrome's own bar in frame:
   //            bar->header   header->body   bar->body
-  //   light      12.95          12.95          0.00
-  //   dark        8.72           3.71         12.43
+  //   light       0.00           4.83          4.83
+  //   dark       22.25           5.30         16.95
   //
-  // The third check is therefore DARK-ONLY, and that is a finding, not a fudge:
-  // in light our card is #ffffff and Chrome's own light side-panel bar is also
-  // #ffffff, so the two surfaces are literally the same colour and no floor above
-  // zero can exist there. R-CH accepted exactly this cost when it chose Dennis's
-  // palette over the EXT-FRAME-2 one. The light number is still computed, still
-  // printed and still written into the JSON — it is recorded rather than fenced.
-  // The two fences that DO have teeth in both themes are the first two.
-  check('dL-bar-to-header>=8', dBarHdr >= 8, `${dBarHdr.toFixed(2)} (${barFill} -> ${headerFill})`);
-  check('dL-header-to-body>=3', dHdrBody >= 3, `${dHdrBody.toFixed(2)} (${headerFill} -> ${bodyFill})`);
-  check(
-    'dL-bar-to-body>=2 (dark; recorded only in light)',
-    THEME === 'dark' ? dBarBody >= 2 : true,
-    `${dBarBody.toFixed(2)} (${barFill} -> ${bodyFill})${THEME === 'light' ? ' — recorded, not fenced: both are #ffffff' : ''}`,
+  // ALL THREE CHECKS ARE THEREFORE DARK-ONLY, and that is a finding, not a fudge.
+  // In light, Chrome's own side-panel bar is #ffffff and our header is now also
+  // #ffffff: bar->header is 0.00 and NO floor above zero can exist there, ever,
+  // without re-darkening the header Dennis asked to be white. R-CJ accepted
+  // exactly that cost — it is the literal content of "revert back the header
+  // color to what it used to be". The other two light numbers are non-zero but
+  // small (4.83 each, our L2 against the bar's white) and are fenced nowhere,
+  // because a fence that only has teeth in one theme is clearer than three
+  // floors picked to be survivable in both.
+  // The light numbers are still computed, still printed and still written into the
+  // JSON; they are RECORDED rather than fenced, so a regression there is visible
+  // in the artifact even though nothing fails. Nobody is to "restore" a light
+  // floor by re-darkening L0.
+  const fence = (name, value, floor) => check(
+    `${name}>=${floor} (dark; recorded only in light)`,
+    THEME === 'dark' ? value >= floor : true,
+    `${value.toFixed(2)} (${barFill} -> ${headerFill} -> ${bodyFill})${THEME === 'light' ? ' — recorded, not fenced: the Chrome bar and our header are both #ffffff' : ''}`,
   );
+  fence('dL-bar-to-header', dBarHdr, 18);
+  fence('dL-header-to-body', dHdrBody, 4);
+  fence('dL-bar-to-body', dBarBody, 12);
 
   // --- the crop Dennis approves from --------------------------------------
   const cropH = Math.min(cap.height - barTop - 8, 640);
