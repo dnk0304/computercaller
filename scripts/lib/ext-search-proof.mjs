@@ -384,7 +384,10 @@ export async function runExtSearchProof({ open, settle, check, shot, rawShot }) 
     await rawShot(page, 'web-search-results.png');
 
     await page.locator('[data-cc-search-hit="es-old-1"]').click({ timeout: 6000 }).catch(() => {});
-    await settle(page, 1200);
+    // 400, for the same reason as the extension arm above: the cue removes
+    // itself at 1.2 s, so a 1200 ms sample lands on the frame it disappears in
+    // and reports an unpainted cue on a correct one.
+    await settle(page, 400);
     const webLanded = await page.evaluate(() => {
       const el = document.querySelector('[data-cc-msg-id="es-old-1"]');
       if (!el) return { found: false };
