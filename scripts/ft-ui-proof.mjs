@@ -331,10 +331,20 @@ try {
      * second GET actually happened rather than the UI having been locked all
      * along.
      */
-    const entitlementReads = { count: 0 };
+    const entitlementReads = { count: 0, lapsed: false };
     await ctx.route('**/api/entitlement*', (route) => {
       entitlementReads.count += 1;
-      const allowed = lapse ? entitlementReads.count === 1 : subscribed;
+      /*
+       * FLAG-driven, NOT read-count-driven. The first version keyed the lapse
+       * to "read #1 is allowed, the rest are refused" and it was wrong for a
+       * reason worth recording: useEntitlement also refetches on window focus,
+       * so the panel had already spent a second read before any frame arrived
+       * and the control was locked from the first paint — the fixture was
+       * destroying its own pre-condition. `lapsed` is the SERVER's truth about
+       * the account, flipped by the test at the moment the trial runs out, so
+       * an extra read before that moment changes nothing.
+       */
+      const allowed = lapse && entitlementReads.lapsed ? false : subscribed;
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -532,9 +542,20 @@ try {
     for (const reason of WIRE_DRIVEN) {
       await sendFrame(page, 'FILE_FAILED', { id: 'c'.repeat(32), reason });
       const banner = page.locator(`[data-cc-ft-error="${reason}"]`);
-      // Each reason replaces the previous error in one piece of state, so the
-      // banner is awaited by its OWN reason attribute rather than by presence.
-      const shown = await banner.isVisible({ timeout: 5000 }).catch(() => false);
+      /*
+       * Each reason replaces the previous error in one piece of state, so the
+       * banner is awaited by its OWN reason attribute rather than by presence.
+       *
+       * `waitFor`, NOT `isVisible({ timeout })`: locator.isVisible() ignores a
+       * timeout option and answers immediately, so every iteration here was a
+       * race against the re-render that the previous dismissal started. It
+       * happened to win until EXT-UI-3 put a state write on the `tier` path,
+       * at which point `tier` and the reason after it both reported "no banner"
+       * — a harness fault wearing a product bug's clothes. The banner IS
+       * rendered; the check was asking too early.
+       */
+      const shown = await banner.waitFor({ state: 'visible', timeout: 5000 })
+        .then(() => true).catch(() => false);
       const text = shown ? (await banner.innerText()).trim() : '';
       const expected = ftFailureCopy(reason).message;
       check(`banner:${reason} renders its copy`, shown && text.includes(expected), text.slice(0, 80));
@@ -567,15 +588,25 @@ try {
    */
   {
     const { ctx, page, entitlementReads } = await openPanel({ subscribed: true, lapse: true });
-    const header = page.locator('.cc-ext-header [data-cc-ft-action="header-send"]').first();
-    await header.waitFor({ state: 'attached', timeout: 20_000 });
-    // THE PRE-CONDITION. Without this the block could pass on a panel that was
-    // locked from the first paint, proving nothing about the refetch.
-    check('lapse: the header control starts UNLOCKED (live subscription)',
-      (await header.getAttribute('data-cc-ft-locked')) === null);
+    /*
+     * THE PRE-CONDITION, awaited on the UNLOCKED selector rather than on bare
+     * attachment: the locked and unlocked header controls share
+     * `data-cc-ft-action`, and the unlocked one only exists once the
+     * entitlement fetch has RESOLVED as allowed. Waiting for it is therefore
+     * both the assertion and the settle — without it the block could pass on a
+     * panel that was locked from the first paint, proving nothing.
+     */
+    const unlocked = page.locator(
+      '.cc-ext-header [data-cc-ft-action="header-send"]:not([data-cc-ft-locked])',
+    ).first();
+    const startedUnlocked = await unlocked.waitFor({ timeout: 25_000 })
+      .then(() => true).catch(() => false);
+    check('lapse: the header control starts UNLOCKED (live subscription)', startedUnlocked);
     const readsBefore = entitlementReads.count;
     check('lapse: the entitlement was read before the failure', readsBefore >= 1);
 
+    // The trial runs out. The SERVER now refuses; the client does not know yet.
+    entitlementReads.lapsed = true;
     await sendFrame(page, 'FILE_FAILED', { id: 'd'.repeat(32), reason: 'tier' });
     const tierBanner = page.locator('[data-cc-ft-error="tier"]');
     await tierBanner.waitFor({ timeout: 5000 });
@@ -592,12 +623,25 @@ try {
       .waitFor({ timeout: 10_000 })
       .then(() => true).catch(() => false);
     check('lapse: the tier failure re-locked the header control on the same screen', relocked);
-    check('lapse: exactly one extra GET /api/entitlement',
-      entitlementReads.count === readsBefore + 1,
+    /*
+     * At least one extra GET. Not "exactly one": the product calls refetch once
+     * per distinct failure (that is pinned exhaustively, without a browser, in
+     * tests/e2e-ft-tier-entitlement-refetch.test.mjs), but this page also
+     * refetches on window focus, and asserting an exact total here would make
+     * the suite hostage to Playwright's focus timing rather than to the
+     * product. The DISCRIMINATING assertion is the `quota` control block below,
+     * which runs this identical fixture and must see ZERO extra reads.
+     */
+    check('lapse: the tier failure spent a GET /api/entitlement',
+      entitlementReads.count > readsBefore,
       `before=${readsBefore} after=${entitlementReads.count}`);
+    const lockedHeader = page.locator(
+      '.cc-ext-header [data-cc-ft-action="header-send"][data-cc-ft-locked="true"]',
+    ).first();
     check('lapse: the re-locked control is tappable (it is the route to paying)',
-      (await header.getAttribute('aria-label')) === 'Send file — Upgrade'
-      && await header.isEnabled());
+      relocked
+      && (await lockedHeader.getAttribute('aria-label')) === 'Send file — Upgrade'
+      && await lockedHeader.isEnabled());
     check('lapse: and the banner is still on screen beside it',
       await tierBanner.isVisible());
     // The defect shot. Banner + a LOCKED control, one frame.
@@ -623,13 +667,14 @@ try {
       await input.waitFor({ state: 'attached', timeout: 25_000 })
         .then(() => true).catch(() => false));
     const readsBefore = entitlementReads.count;
+    entitlementReads.lapsed = true;
     await sendFrame(page, 'FILE_FAILED', { id: 'e'.repeat(32), reason: 'tier' });
     await page.locator('[data-cc-ft-error="tier"]').waitFor({ timeout: 5000 });
     const lock = page.locator('[data-cc-ft-action="tier-lock"]').first();
     const locked = await lock.waitFor({ timeout: 10_000 }).then(() => true).catch(() => false);
     check('lapse/app: the locked tier-lock control is present under the banner', locked);
-    check('lapse/app: exactly one extra GET /api/entitlement',
-      entitlementReads.count === readsBefore + 1,
+    check('lapse/app: the tier failure spent a GET /api/entitlement',
+      entitlementReads.count > readsBefore,
       `before=${readsBefore} after=${entitlementReads.count}`);
     check('lapse/app: the banner and the locked control are on screen together',
       await page.locator('[data-cc-ft-error="tier"]').isVisible() && locked);
@@ -644,17 +689,25 @@ try {
    */
   {
     const { ctx, page, entitlementReads } = await openPanel({ subscribed: true, lapse: true });
-    const header = page.locator('.cc-ext-header [data-cc-ft-action="header-send"]').first();
-    await header.waitFor({ state: 'attached', timeout: 20_000 });
+    const unlocked = page.locator(
+      '.cc-ext-header [data-cc-ft-action="header-send"]:not([data-cc-ft-locked])',
+    ).first();
+    await unlocked.waitFor({ timeout: 25_000 });
     const readsBefore = entitlementReads.count;
+    /*
+     * The SAME lapse is armed as in the two blocks above — the server would
+     * refuse if asked. So if a read happened, the control WOULD re-lock and
+     * this block would go red. That is what makes it a real control rather
+     * than a tautology: it can only stay green by the client not asking.
+     */
+    entitlementReads.lapsed = true;
     await sendFrame(page, 'FILE_FAILED', { id: 'f'.repeat(32), reason: 'quota' });
     await page.locator('[data-cc-ft-error="quota"]').waitFor({ timeout: 5000 });
     // Give a refetch, if one were wrongly wired, time to land and re-render.
     await page.waitForTimeout(1500);
     check('quota: no extra GET /api/entitlement', entitlementReads.count === readsBefore,
       `before=${readsBefore} after=${entitlementReads.count}`);
-    check('quota: the send control stays unlocked',
-      (await header.getAttribute('data-cc-ft-locked')) === null);
+    check('quota: the send control stays unlocked', await unlocked.isVisible());
     await ctx.close();
   }
 
