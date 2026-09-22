@@ -47,7 +47,11 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-hair: #e5e5e5;
   --cc-ink: #171717;
   --cc-sec: #525252;
-  --cc-mut: #737373;
+  /* Lifted with the ladder: the light ground dropped from #f1f1f2 to #e2e3e6
+     to clear Chrome's white bar, and #737373 falls to 3.69:1 there (it was
+     already only 4.20:1 before). 4.68:1 on L2, 4.90:1 on L1, 6.01:1 on a
+     white card. */
+  --cc-mut: #636363;
   --cc-chip-bd: #d4d4d4;
 
   /* ---- brand (identical in both themes) ---- */
@@ -796,13 +800,36 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      L2  content ground               what a list scrolls on
      L3  cards and rows               the object being read
 
-   BOTH themes now step AWAY from the header and toward the card. In light the
-   ramp runs L0 #d9dadd → L2 #f1f1f2 → L1 #f7f7f8 → L3 #ffffff; in dark it runs
-   L0 #28292c → L1 #131316 → L2 #18181b → L3 #212125, i.e. dark drops to the
-   ground and climbs back. The two invariants that survive both directions:
-   the card is always the surface furthest from its ground, and L0 — the band
-   Dennis calls "the frame" — is always the step the body is measured against
-   (dL* ≥ 6 vs L1 and ≥ 8 vs L2, both themes, enforced by the values above).
+   EXT-FRAME-2 (2026-09-22) re-chose every value against a FOURTH surface that
+   was never in the picture before: Chrome's own side-panel strip, the row
+   directly above our header. Measured in the real panel by
+   scripts/ext-sidepanel-window-shots.mjs — dark #3c3c3c (L* 25.32), light
+   #ffffff (L* 100.00). The old dark L0 #28292c sat 8.72 L* from that bar and
+   carried the product name directly under a bar already spelling it, which is
+   why Dennis read the two rows as one grey slab (Discord 09-22 08:18Z). We
+   cannot restyle the bar — it is browser chrome and follows Chrome's own
+   scheme — so OUR shades are chosen to step away from it.
+
+   BOTH themes now run L0 DARKEST, the body lifted above it, the card furthest
+   of all.
+   Dark:  bar 25.32 → L0 #0e0e11 (4.05) → L1 #1c1c20 (10.42) → L2 #222226
+          (13.38) → L3 #2b2b30 (17.71). This is the shape of Dennis's Reflecto
+          reference, whose header is DARKER than its body, not lighter.
+   Light: bar 100.00 → L0 #cbcccf (82.05) → L2 #e2e3e6 (90.24) → L1 #e7e8eb
+          (92.00) → L3 #ffffff (100.00).
+
+   Four invariants, all measured, all enforced by the values above:
+     1. L0 vs Chrome's bar   ≥ 12   dark 21.27, light 17.95
+     2. L0 vs L1             ≥ 6    dark  6.38, light  9.95
+     3. L0 vs L2             ≥ 8    dark  9.33, light  8.19
+     4. body vs Chrome's bar ≥ 8    dark L1 14.90 / L2 11.94,
+                                    light L1 8.00 / L2 9.76
+   Invariant 4 is the new one and it is what moved the light body: the old
+   L1 #f7f7f8 was 2.74 L* from a white bar, i.e. the light panel had the same
+   defect as the dark one and nobody could see that one either. The card stays
+   the surface furthest from its ground; in light it is still pure white, which
+   is also the bar's colour, but it sits four levels and a hairline away rather
+   than directly beneath it.
 
    "Different dark gradients" is the stepped RAMP across the panel, not a
    gradient fill inside a band. The gradient itself stays on exactly three
@@ -818,21 +845,28 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
        against them inherits the ladder without being touched. --- */
 .cc-ext {
   /* L0 is the HEADER BAND and it is the DARKEST step in light, not white.
-     Until 2026-09-21 it was #ffffff — identical to L3 and 2.7 L* from L1, so
-     the band Dennis calls "the frame" was invisible against the body it was
-     supposed to be separated from. Measured now: dL* 10.20 vs L1, 8.12 vs L2,
-     12.95 vs L3. */
-  --cc-l0: #d9dadd;
-  --cc-l1: #f7f7f8;
-  --cc-l2: #f1f1f2;
+     EXT-FRAME-2 took it one step further down (#d9dadd -> #cbcccf) and, more
+     importantly, moved the BODY. Against Chrome's white side-panel bar: L0 is
+     17.95 L* away, L1 8.00, L2 9.76. The old L1/L2 were 2.74 and 4.83 from
+     that bar — near enough to read as the same surface. */
+  --cc-l0: #cbcccf;
+  --cc-l1: #e7e8eb;
+  --cc-l2: #e2e3e6;
   --cc-l3: #ffffff;
   /* Card outlines and band boundaries are the same hairline in light: at these
-     lightnesses one value reads correctly against both L2 and L1. */
-  --cc-hair-card: #dcdcde;
-  /* The header's own bottom rule. --cc-hair (#e5e5e5) is LIGHTER than the new
-     L0 and vanishes on it (1.11:1); this is the one boundary in the panel whose
-     two sides are far enough apart to need its own value. */
-  --cc-hair-hdr: #c3c5cc;
+     lightnesses one value reads correctly against both L2 and L1. Darkened
+     with the ladder — #dcdcde on the new L2 is 1.07:1, i.e. gone. Now 1.34:1
+     on L2, 1.41:1 on L1, 1.72:1 around a white card. */
+  --cc-hair-card: #c4c5cb;
+  /* The header's own bottom rule, re-checked on the darker L0: #c3c5cc
+     measures 1.07:1 there. 1.36:1 now — above the 1.3 floor a hairline needs
+     in order to exist at all. */
+  --cc-hair-hdr: #adafb9;
+  /* Bare-on-band ink, light. Dark has had this since PIXEL-Q; light needs it
+     now, because the band is dark enough that --cc-mut #737373 lands at
+     2.95:1 on it. The dispatch raises this row to AAA (12px band text is not
+     "large"), so: 7.81:1, and the body's muted ink is left alone. */
+  --cc-mut-hdr-light: #33333a;
   /* Unread chip. NOT `bg-blue-600`: that class is remapped to the brand
      gradient inside .cc-ext, and §0 trait 3 keeps the gradient on exactly
      three objects (the mark, the avatar, the one primary action). A count
@@ -845,37 +879,54 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   /* Zebra moves onto the ladder too. It used to be the only "second surface"
      in a list; now it is a half-step inside the L3 card, so it has to sit
      between L3 and L2 rather than being an independent grey. */
-  --cc-zebra: #f5f5f6;
+  --cc-zebra: #f2f2f4;
+  /* Body hairline follows the darkened ladder — #e5e5e5 is 1.02:1 on the new
+     L2. One value for the whole light panel, as above: 1.34:1 on L2. */
+  --cc-hair: #c4c5cb;
 }
 
 :where([data-cc-theme=dark]) .cc-ext {
-  /* L0 is the header band and in dark it is LIGHTER than the ground — the
-     direction Chrome's own dark side-panel strip and Dennis's Reflecto
-     reference both go. It was #0b0b0d (darker than everything, 2.4 L* from L1)
-     and read as one surface with the body. Measured now: dL* 10.62 vs L1,
-     8.23 vs L2, 3.71 vs L3. */
-  --cc-l0: #28292c;
-  --cc-l1: #131316;
-  --cc-l2: #18181b;
-  --cc-l3: #212125;
-  /* One step lighter than --cc-hair. #27272a is the right boundary between
-     BANDS, where the two sides differ; around an L3 card sitting on L2 the
-     two sides are close enough that the same value disappears. */
-  --cc-hair-card: #303036;
-  /* One step lighter again: #303036 is only 1.11:1 on the new L0. */
+  /* L0 is the header band and in dark it is now DARKER than the ground.
+     PIXEL-Q made it lighter, reasoning that Chrome's dark strip goes that way
+     — but Dennis's Reflecto reference does the opposite (header #171717,
+     body #252525) and the reference is right: a header LIGHTER than its body
+     can only get further from the body by getting CLOSER to the bar. At
+     #28292c it was 8.72 L* from the bar and the two rows read as one slab.
+     Measured now: 21.27 vs the bar, 6.38 vs L1, 9.33 vs L2. */
+  --cc-l0: #0e0e11;
+  /* The body lifts one step so it clears the bar too (invariant 4). The old
+     L1 #131316 / L2 #18181b / L3 #212125 kept their RELATIVE shape; the whole
+     group just moved up the ramp. */
+  --cc-l1: #1c1c20;
+  --cc-l2: #222226;
+  --cc-l3: #2b2b30;
+  /* One value for band boundaries and card outlines, as in light: on the
+     lifted ladder #303036 falls to 1.21:1 on L2. Now 1.58:1 on L1, 1.47:1 on
+     L2, 1.31:1 around a card. */
+  --cc-hair-card: #3d3d45;
+  /* Unchanged value, re-checked on the much darker L0: 1.73:1. */
   --cc-hair-hdr: #3a3b41;
   /* Dark inverts the chip rather than darkening the fill: a blue dark enough
      to carry white digits disappears into an L3 card, so the fill goes light
-     and the digits go dark. 7.36:1 digits-on-fill, 6.31:1 fill-on-card. */
+     and the digits go dark. 7.36:1 digits-on-fill; fill-on-card re-measured on
+     the lifted L3 at 5.54:1 (was 6.31 on #212125) — still well above the 3:1
+     a non-text UI fill needs. */
   --cc-unread: #60a5fa;
   --cc-unread-ink: #0b1220;
-  --cc-zebra: #1c1c20;
+  /* Zebra follows the ladder up: it is a half-step inside the L3 card, and the
+     old #1c1c20 is now L1 itself. */
+  --cc-zebra: #26262b;
+  /* Body muted ink, lifted with the ladder. #8a8a8a measured 4.9:1 on the old
+     L1 but only 4.08:1 on the new L3 card — below AA on the surface most body
+     text actually sits on. Now 5.04:1 on L3, 5.67:1 on L2. */
+  --cc-mut: #9a9aa2;
+  /* Body hairline, same reasoning: #27272a is 1.06:1 on the new L2. */
+  --cc-hair: #3d3d45;
   /* Bare-on-band ink. The popout/dock glyphs and the plain EncryptionChip are
      the only things painted DIRECTLY on L0 (everything else in the row sits on
-     the device pill or the avatar gradient), and --cc-mut #8a8a8a lands at
-     4.21:1 there. Lifted to 5.21:1 inside the band only — the body's muted ink
-     is unchanged. */
-  --cc-mut-hdr: #9a9aa2;
+     the device pill or the avatar gradient). The dispatch raises this row from
+     AA to AAA and the band is far darker now, so: 7.51:1. */
+  --cc-mut-hdr: #a1a1a9;
 }
 
 /* --- L0: the header band ------------------------------------------------- */
@@ -895,16 +946,22 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    bg-slate-100 / --cc-field fill, so its ink contrasts against the PILL and is
    untouched here), the avatar (white on its gradient), and then exactly three
    bare items — the popout glyph, the dock glyph and the EncryptionChip. Those
-   three were tuned against a white/near-black L0 and fall under 4.5:1 on the
-   new band, so they are lifted HERE, scoped to the band, rather than L0 being
-   lightened back toward invisibility (dispatch open question 2).
-   Light is literal Tailwind values; dark goes through the token remap, so one
-   redefinition of --cc-mut covers it. */
+   EXT-FRAME-2 raises the floor on this row from AA to AAA (>= 7:1). The band's
+   type is 12px, which is not "large text" by any definition WCAG offers, and
+   the dispatch's remedy for a harder L0 is explicitly to move the INK, never
+   to lighten L0 back toward the bar (open question 2). So BOTH themes now have
+   a band-scoped muted ink — light did not have one before — and the three
+   Tailwind literals are re-tuned against the new L0 in each theme. Measured on
+   the band:
+     light L0 #cbcccf   slate 9.11:1, emerald 7.95:1, amber 7.48:1, mut 7.81:1
+     dark  L0 #0e0e11   slate 7.51:1, emerald 10.03:1, amber 11.55:1
+   The lowest number painted on either band is 7.48:1. */
+.cc-ext .cc-ext-header { --cc-mut: var(--cc-mut-hdr-light); }
 :where([data-cc-theme=dark]) .cc-ext .cc-ext-header { --cc-mut: var(--cc-mut-hdr); }
 
-.cc-ext .cc-ext-header .text-slate-500 { color: #475569; }   /* 3.40 -> 5.42:1 */
-.cc-ext .cc-ext-header .text-emerald-700 { color: #065f46; } /* 3.92 -> 5.50:1 */
-.cc-ext .cc-ext-header .text-amber-700 { color: #92400e; }   /* 3.59 -> 5.07:1 */
+.cc-ext .cc-ext-header .text-slate-500 { color: #1e293b; }   /* 4.72 -> 9.11:1 */
+.cc-ext .cc-ext-header .text-emerald-700 { color: #033a2c; } /* 4.78 -> 7.95:1 */
+.cc-ext .cc-ext-header .text-amber-700 { color: #5c2705; }   /* 4.42 -> 7.48:1 */
 /* The dark remap already routes .text-slate-500 to --cc-mut, which the rule
    above re-points; these literals must not also fire in dark. */
 :where([data-cc-theme=dark]) .cc-ext .cc-ext-header .text-slate-500 { color: var(--cc-mut-hdr); }
@@ -919,11 +976,18 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 /* --- L0: the wordmark beside the mark (VARIANT B) ------------------------ */
 /* Dennis, Discord 2026-09-21 12:45Z, selecting Variant B: logo + the word
-   "ComputerCaller" in the strip, as his Reflecto reference shows. This
-   deliberately duplicates Chrome's own side-panel strip; that duplication is
-   the thing he asked for, and it is NOT the thing he objected to on 09-17 —
-   that complaint (PIXEL-S2) was about the two-tone ALL-CAPS gradient lockup.
-   So: one weight, one size, one colour, sentence case, no gradient.
+   "ComputerCaller" in the strip, as his Reflecto reference shows. Shape
+   unchanged since: one weight, one size, one colour, sentence case, no
+   gradient — the 09-17 complaint (PIXEL-S2) was about the two-tone ALL-CAPS
+   gradient lockup, and this is not that.
+
+   WHERE it renders changed on 2026-09-22 (EXT-FRAME-2). Variant B accepted the
+   duplication with Chrome's own side-panel strip as deliberate; a day in the
+   real panel settled it ("the frame thats above the header, that one should
+   stay ComputerCaller, the header should not say computercaller"). The rule
+   now lives in components/PhoneModeHeader.tsx and is one condition — the word
+   renders on the POPUP surface only, the one surface with no frame of its own
+   to name it. These rules stay because the popup still needs them.
 
    SIZE IS PINNED at 12px for the same reason <CcMark size={18}> is pinned —
    one fixed-width object means Small/Medium/Large all spend the same pixels on
@@ -941,8 +1005,14 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 /* AC-1: the row must not overflow at 360px, and the name is the one item in it
    that is pure brand rather than state or control. Below 380px it yields — the
-   mark still identifies the panel and Chrome's strip still spells the name, so
-   nothing is lost that is not said twice elsewhere. */
+   mark still identifies the panel.
+
+   Worth knowing, measured by scripts/ext-sidepanel-window-shots.mjs: Chrome's
+   DEFAULT side panel is 378 CSS px, i.e. already under this breakpoint. So
+   even before EXT-FRAME-2 the wordmark was invisible in a default-width side
+   panel and appeared only in one the user had widened — which is the panel in
+   Dennis's screenshot. That is also why this rule still matters for the popup,
+   whose width the user does not control at all. */
 @media (max-width: 379px) {
   .cc-ext .cc-ext-wordmark { display: none; }
 }
@@ -1494,13 +1564,18 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    an overflow to hide. */
 .cc-ext .cc-ext-header .cc-ext-conn { min-width: auto; }
 
-/* ...and the brand slot is no longer what resolves it. PIXEL-S2 (a) dropped
-   the wordmark from this header (Chrome's own title strip carries the name),
-   so the slot is now a bare 18px mark - ~35px wide, fixed, and never the
-   thing that has to give. The old `flex: 0 1 auto; min-width: 72px` existed
-   to let the wordmark shrink before anything wrapped; with no wordmark to
-   shrink, a shrinkable brand slot would only squash the mark. It is pinned
-   instead, and the ~37px it hands back go to the pill, which truncates. */
+/* ...and the brand slot is no longer what resolves it. This comment described
+   PIXEL-S2's "the wordmark is gone" state, which VARIANT B then reversed on
+   2026-09-21 and EXT-FRAME-2 made conditional on 2026-09-22 — so it had been
+   describing the wrong tree for a day. Current truth, stated once:
+
+   The wordmark renders on the POPUP surface only (components/PhoneModeHeader
+   .tsx), because every other surface is already named by the frame around it.
+   Either way this slot is a fixed-width block — an 18px mark, plus a pinned
+   12px word where the word exists — and it is never the thing that gives.
+   The old `flex: 0 1 auto; min-width: 72px` let the wordmark shrink before
+   anything wrapped; a shrinkable brand slot would only squash the mark, so it
+   is pinned and the ~37px it hands back go to the pill, which truncates. */
 .cc-ext .cc-ext-header .cc-ext-lockup { flex: 0 0 auto; }
 
 /* ---- hit targets ------------------------------------------------------- */

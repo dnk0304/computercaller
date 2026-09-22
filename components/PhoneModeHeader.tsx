@@ -169,16 +169,38 @@ function ExtensionHeader() {
             PIXEL-S2 removed it again (Dennis 09-17 13:26, "We now have
                      duplicate title text showing twice. In the header, remove
                      the 'computer caller' text which is white and blue.")
-            THIS     puts the NAME back, but not the LOCKUP. The 13:26
-                     complaint names what it was about — text "which is white
-                     and blue", i.e. the two-tone ALL-CAPS gradient lockup.
-                     What returns here is a single-weight, single-colour,
-                     sentence-case word at a pinned 12px. Dennis chose that
-                     shape explicitly over the mark-only alternative after
-                     being shown both, so the duplication with Chrome's own
-                     strip is intended, not overlooked.
-          Do not remove it again without an instruction newer than 12:45Z, and
-          do not "restore" <CcLockup> here — that is the artwork he rejected.
+            VARIANT B put the NAME back, but not the LOCKUP (Dennis 09-21
+                     12:45Z, choosing it over the mark-only alternative). The
+                     13:26 complaint named what it was about — text "which is
+                     white and blue", i.e. the two-tone ALL-CAPS gradient
+                     lockup — so a single-weight, single-colour, sentence-case
+                     word at a pinned 12px was not that, and the duplication
+                     with Chrome's strip was accepted as intended.
+            EXT-FRAME-2 makes it CONDITIONAL on the surface (Dennis 09-22
+                     08:18Z: "the frame thats above the header, that one should
+                     stay ComputerCaller, the header should not say
+                     computercaller"). The word is not wrong; saying it TWICE,
+                     one row apart, is. So it stays on the one surface that has
+                     no other place to say it, and goes everywhere a frame
+                     already names us.
+
+          Which surfaces already name us, and where the name comes from:
+            sidepanel — Chrome's own side-panel strip, from manifest `name`.
+            popout    — the OS title bar of a chrome.windows popup-type window,
+                        from the document <title>.
+            none      — the bare /extension route (dev and the shot harnesses).
+                        No frame names us here, but this surface exists to
+                        MIRROR the side panel, and a harness shot that differs
+                        from the surface it stands in for is worse than useless
+                        — that mismatch is how this defect survived six days.
+            popup     — the toolbar popup. No bar, no title, nothing. Dropping
+                        the word here would leave the panel nameless, so it
+                        stays. Ken's ruling; open question 1 for Dennis, who
+                        rules from the popup shot in this dispatch.
+          Do not remove it from the popup, and do not "restore" <CcLockup>
+          anywhere — that is the artwork he rejected. The 12px size and the
+          <=379px hide rule both still apply, because the popup still needs
+          them (app/extension/extension.css .cc-ext-wordmark).
 
           <CcMark> is the same artwork the lockup's mark half is cut from.
           SIZE 18 IS PINNED and does not follow the text-size picker; so is the
@@ -191,7 +213,9 @@ function ExtensionHeader() {
       {/* aria-hidden: <title> and Chrome's strip already name the product to a
           screen reader, and role="banner" is the landmark. A third utterance of
           the same two words on every panel focus is noise. */}
-      <span className="cc-ext-wordmark" aria-hidden="true">ComputerCaller</span>
+      {shell.surface === 'popup' && (
+        <span className="cc-ext-wordmark" aria-hidden="true">ComputerCaller</span>
+      )}
 
       {/* min-w-0 is what lets the pill's truncate actually engage — and the
           `cc-ext-conn` hook is what lets it engage one level DOWN as well.
