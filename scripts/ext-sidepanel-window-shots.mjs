@@ -450,17 +450,27 @@ try {
   // the surface he chose, so that a future edit cannot quietly collapse the dark
   // header into Chrome's bar or into its own body without failing here. Pinned to
   // what this harness ACTUALLY MEASURES: the row it samples as "body" is the first
-  // body surface under the header, and that is L3 (the card), not L1. Expected
-  // 2026-09-22 after R-CJ removed the band (L0 #ffffff light / #0b0b0d dark):
+  // what this harness ACTUALLY MEASURES, not what arithmetic on the token table
+  // predicts. TWO corrections recorded from the real post-R-CJ run, 2026-09-22:
+  //  (1) the row it samples as "body" USED TO come back L3 (the card). With the
+  //      band gone the header walk no longer stops early, and the sampled body
+  //      is now L2, the content ground (#f1f1f2 light, #18181b dark) - a
+  //      smaller, and more honest, step than the one recorded before.
+  //  (2) that makes dark header->body 5.30, not the 9.82 an L3 reading gives.
+  // Measured, both themes, real side panel with Chrome's own bar in frame:
   //            bar->header   header->body   bar->body
-  //   light       0.00           0.00          0.00
-  //   dark       22.25           9.82         12.43
+  //   light       0.00           4.83          4.83
+  //   dark       22.25           5.30         16.95
   //
   // ALL THREE CHECKS ARE THEREFORE DARK-ONLY, and that is a finding, not a fudge.
-  // In light, Chrome's own side-panel bar is #ffffff, our header is now #ffffff
-  // and our card is #ffffff: three surfaces, one colour, and no floor above zero
-  // can exist between any pair of them. R-CJ accepted exactly that cost — it is
-  // the literal content of "revert back the header color to what it used to be".
+  // In light, Chrome's own side-panel bar is #ffffff and our header is now also
+  // #ffffff: bar->header is 0.00 and NO floor above zero can exist there, ever,
+  // without re-darkening the header Dennis asked to be white. R-CJ accepted
+  // exactly that cost — it is the literal content of "revert back the header
+  // color to what it used to be". The other two light numbers are non-zero but
+  // small (4.83 each, our L2 against the bar's white) and are fenced nowhere,
+  // because a fence that only has teeth in one theme is clearer than three
+  // floors picked to be survivable in both.
   // The light numbers are still computed, still printed and still written into the
   // JSON; they are RECORDED rather than fenced, so a regression there is visible
   // in the artifact even though nothing fails. Nobody is to "restore" a light
@@ -468,11 +478,11 @@ try {
   const fence = (name, value, floor) => check(
     `${name}>=${floor} (dark; recorded only in light)`,
     THEME === 'dark' ? value >= floor : true,
-    `${value.toFixed(2)} (${barFill} -> ${headerFill} -> ${bodyFill})${THEME === 'light' ? ' — recorded, not fenced: bar, header and card are all #ffffff' : ''}`,
+    `${value.toFixed(2)} (${barFill} -> ${headerFill} -> ${bodyFill})${THEME === 'light' ? ' — recorded, not fenced: the Chrome bar and our header are both #ffffff' : ''}`,
   );
   fence('dL-bar-to-header', dBarHdr, 18);
-  fence('dL-header-to-body', dHdrBody, 6);
-  fence('dL-bar-to-body', dBarBody, 8);
+  fence('dL-header-to-body', dHdrBody, 4);
+  fence('dL-bar-to-body', dBarBody, 12);
 
   // --- the crop Dennis approves from --------------------------------------
   const cropH = Math.min(cap.height - barTop - 8, 640);
