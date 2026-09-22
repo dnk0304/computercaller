@@ -1,0 +1,62 @@
+{
+  "lane": "BAT-2 (relay + extension SW + web hook)",
+  "phase": "BAT",
+  "kind": "direct-floors",
+  "why_not_a_gate_json": "RESUME-PROTOCOL v2.6: e2e-gate.mjs --lane accepts web|android|all only, and this lane launches NO browser (WORKTREE_STANDARD rule 17 — the BAT browser slot belongs to BAT-3). A node-only brief therefore does not invoke the gate; it lists its floors as direct commands and is graded by the next --lane all lane on the merged tip.",
+  "base": "fae9b9109ba173983fef93f009a7a6fa576f010f",
+  "head": "dfd82a998b0b7306bde770484e5f728d4b05fcc0",
+  "branch": "bat/2-relay-sw",
+  "utc": "2026-09-22T00:24:17Z",
+  "database_url": "postgresql://pix:pix@localhost:15433/cc (relay suites only)",
+  "floors": {
+    "tsc": { "cmd": "bunx tsc --noEmit", "errors": 0 },
+    "eslint": { "cmd": "bunx eslint .", "problems": 109, "base_problems": 109, "grown": 0, "note": "measured the same way at fae9b91 after deleting dnkdialer-android/app/build/reports/" },
+    "check-no-identities": { "cmd": "tools/check-no-identities.sh", "exit": 0 }
+  },
+  "suites": [
+    { "name": "harness-list", "checks": "165/165" },
+    { "name": "gate-phase-whitelist", "checks": "38/38" },
+    { "name": "gate-java-home", "checks": "6/6" },
+    { "name": "kdf-vectors", "checks": "439/439" },
+    { "name": "kdf-vectors-schema", "checks": "30/30" },
+    { "name": "e2e-web-forward-jump", "checks": "36/36" },
+    { "name": "e2e-web-mode-byte", "checks": "33/33" },
+    { "name": "e2e-web-revocation", "checks": "51/51" },
+    { "name": "e2e-web-sas-coverage", "checks": "29/29" },
+    { "name": "e2e-web-policy", "checks": "151/151" },
+    { "name": "e2e-web-frame-classifier", "checks": "174/174", "note": "the three-way parity pin: web <-> E2eFrameGate.kt <-> 13.7. Unchanged by BAT — BATTERY is plaintext and enters none of the SEALED lists." },
+    { "name": "e2e-sw-a5-forward-jump", "checks": "22/22" },
+    { "name": "e2e-sw-a5-live-key", "checks": "12/12" },
+    { "name": "e2e-sw-session", "checks": "19/19" },
+    { "name": "e2e-sw-chokepoint", "checks": "28/28" },
+    { "name": "e2e-sw-passthrough", "checks": "112/112" },
+    { "name": "e2e-sw-vendor-drift", "checks": "3/3" },
+    { "name": "e2e-sw-a3-ctx", "checks": "31/31" },
+    { "name": "e2e-sw-a4-canonical-peer", "checks": "20/20" },
+    { "name": "e2e-sw-nonce-prefix", "checks": "17/17" },
+    { "name": "e2e-relay-abort-counter", "checks": "14/14" },
+    { "name": "e2e-ft-relay-abort", "checks": "221/221" },
+    { "name": "ft-relay", "checks": "245/245", "db": true },
+    { "name": "soak-rig", "checks": "82/82" },
+    { "name": "soak-handshake", "checks": "22/22", "db": true },
+    { "name": "e2e-key-lifecycle", "checks": "182/182" },
+    { "name": "bat-relay", "checks": "75/75", "new": true },
+    { "name": "bat-sw", "checks": "31/31", "new": true },
+    { "name": "bat-web-hook", "checks": "117/117", "new": true }
+  ],
+  "plant_proof": {
+    "planted": "server.js — the BATTERY resume-buffer exemption (the isBatteryFrame guard in the resume-window buffering branch) disabled: 'if (isBatteryFrame(msg))' -> 'if (false)'",
+    "suite_that_went_red": "tests/bat-relay.test.mjs",
+    "result": "70/75, 5 FAILED — (resume) BATTERY is NOT buffered; the exemption is counted as battery_not_buffered; 25 more BATTERY frames added nothing to the buffer; ...all counted; the FILE_* exemption still holds",
+    "reverted": true,
+    "tree_after_revert": "clean",
+    "log": "../bat-2-logs/plant-proof.txt (outside the subject tree, WORKTREE_STANDARD rule 16)"
+  },
+  "spec": {
+    "file": "e2e-evidence/E2E-SPEC-v1.0.md",
+    "section": "13.7",
+    "change": "BATTERY named in the plaintext family + the GATE1 Addendum BAT-A1 footnote carrying MUSTs 1-3, transcribed byte-identical to battery/PLAN.md (verified programmatically, including the ledger's ASCII arrows)",
+    "sealed_lists_changed": "none"
+  },
+  "flagged_for_ken": "tools/e2e-gate.mjs carries three further phase lists (P6 real-relay; android instrumented-results clear; android testDebugUnitTest + instrumented-A5). BAT is in NONE of them. BAT-1's android lane needs the last two or its steps are never dispatched, MIN_CHECKS grades nothing, and the gate prints PASS — the P6.1b defect verbatim. Not touched: the A5 list names E2E-specific test classes and which classes BAT-1 needs is BAT-1's decision."
+}
