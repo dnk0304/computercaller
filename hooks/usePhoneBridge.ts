@@ -10,8 +10,10 @@ import type {
   SmsMessage,
   CallLogEntry,
   AudioRouteStatus,
-  AudioRouteFailureReason
+  AudioRouteFailureReason,
+  PhoneBattery
 } from './phoneTypes';
+import { reduceBattery } from './phoneTypes';
 import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
 import { isPlaceholderAddress, evictHealedPlaceholders } from '@/lib/messagePlaceholders';
 import { normalizePayload } from '@/lib/normalizePayload';
@@ -411,6 +413,15 @@ export function usePhoneBridge() {
   const [isConnected, setIsConnected] = useState(false);
   const [isBridgeConnected, setIsBridgeConnected] = useState(false);
   const [phoneName, setPhoneName] = useState<string | null>(null);
+  // Phone battery (BAT-2 (c)). null = nothing has ever been received, which
+  // BAT-3 renders as NOTHING — never a "--%" placeholder.
+  //
+  // KEPT on phone disconnect, deliberately: the last known level is what the
+  // header's "Last seen 14:32 · 47%" is made of, and blanking it the moment a
+  // socket drops would delete the only thing worth showing about a phone that
+  // is not there. It is nulled on UNPAIR and on sign-out, where the reading
+  // stops being about a phone this browser is allowed to know anything about.
+  const [battery, setBattery] = useState<PhoneBattery | null>(null);
   // Multi-call QUEUE (Phase 1, 2026-06-09). `calls` is now the CANONICAL
   // source of truth for every in-flight call — an arbitrary-length array keyed
   // by callId. It REPLACES the old two fixed slots (currentCall + waitingCall),
@@ -1724,6 +1735,11 @@ export function usePhoneBridge() {
         setSyncEstimate(null);
         setNotificationPermissionGranted(null);
         setPhoneNotifications([]);
+        // BAT-A1 MUST-3: the pair ENDED, so the reading goes. "Last seen" is
+        // for a phone that went offline, not for one we are no longer paired
+        // with — holding a battery level for an ex-pair is holding another
+        // device's telemetry.
+        setBattery(null);
         estimateRequestedRef.current = false;
         quickSyncScheduledRef.current = false;
         // FORGE-U: the pair genuinely ENDED. Bump the epoch so the NEXT
@@ -1751,6 +1767,23 @@ export function usePhoneBridge() {
       case 'DEVICE_INFO':
         setPhoneName(payload.deviceName || null);
         break;
+
+      case 'BATTERY': {
+        // DISPLAY-ONLY (BAT-A1 MUST-3). The whole decision is the pure reducer
+        // in phoneTypes.ts — a `relay` key is rejected (MUST-2, never
+        // stripped), a bad shape is dropped, an older or equal `ts` loses, and
+        // nothing here may touch mode, pairing, tier, quota or session state.
+        //
+        // setBattery is called with the FUNCTIONAL form so the reducer always
+        // sees the current value: two frames delivered in one React batch would
+        // otherwise both read the pre-batch state and the older one could win.
+        setBattery((prev) => {
+          const { next, drop } = reduceBattery(prev, payload);
+          if (drop) console.warn(`[PhoneBridge] BATTERY frame dropped (${drop})`);
+          return next;
+        });
+        break;
+      }
 
       case 'NOTIFICATION_PERMISSION': {
         // Phone reports whether NotificationListenerService is enabled. Drives
@@ -3079,6 +3112,11 @@ export function usePhoneBridge() {
         setIsConnected(false);
         setPhoneName(null);
         setPhonePresentInLobby(false);
+        // NOT setBattery(null). A closed socket is a DISCONNECT, not an
+        // unpair: the phone is still ours and the last known level is exactly
+        // what BAT-3's "Last seen 14:32 · 47%" is made of. Blanking it here
+        // would delete the only thing worth showing about an absent phone —
+        // and it would flicker on every routine reconnect.
         if (pairingTimerRef.current) {
           clearTimeout(pairingTimerRef.current);
           pairingTimerRef.current = null;
@@ -3312,6 +3350,8 @@ export function usePhoneBridge() {
     setSyncEstimate(null);
     setNotificationPermissionGranted(null);
     setPhoneNotifications([]);
+    // BAT-A1 MUST-3: an explicit unpair clears it (see PAIRING_TERMINATED).
+    setBattery(null);
     estimateRequestedRef.current = false;
     quickSyncScheduledRef.current = false;
     // FORGE-U: same reasoning as the PAIRING_TERMINATED bump — the user ended
@@ -3409,6 +3449,8 @@ export function usePhoneBridge() {
     setPhoneName(null);
     setPhonePresentInLobby(false);
     setConnectionError(null);
+    // BAT-A1 MUST-3: a room reset ends the pairing on both sides.
+    setBattery(null);
     clearAllCalls();
 
     const ws = wsRef.current;
@@ -4780,6 +4822,9 @@ export function usePhoneBridge() {
     isConnected,
     isBridgeConnected,
     phoneName,
+    // BAT-2 (c) — the field BAT-3 consumes. `PhoneBattery | null`; null means
+    // nothing has ever been received and nothing should be rendered.
+    battery,
     // Multi-call QUEUE (Phase 1, 2026-06-09). CANONICAL list of all in-flight
     // calls — CallQueue renders off this. `currentCall` / `waitingCall` below
     // are DERIVED from it for backward compat (see deriveCurrentCall memo).

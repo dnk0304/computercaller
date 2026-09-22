@@ -2305,7 +2305,9 @@ chrome.runtime.onConnect.addListener((port) => {
   // to ten minutes. `null` is a legitimate answer (nothing received yet) and
   // BAT-3 renders nothing for it — never a "--%" placeholder.
   readBattery().then((battery) => {
-    try { port.postMessage({ type: 'battery', battery }); } catch (_) {}
+    // `catch {}` rather than this file's older `catch (_) {}` so this addition
+    // does not raise the no-unused-vars warning count.
+    try { port.postMessage({ type: 'battery', battery }); } catch { /* port closed */ }
   });
   // P3.1 / MUST B-2: the rescue this whole marker exists for. A sealed offer
   // held while no page was open is replayed VERBATIM to the first page that
