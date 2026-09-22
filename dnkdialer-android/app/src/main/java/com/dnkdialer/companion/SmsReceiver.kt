@@ -75,8 +75,24 @@ class SmsReceiver : BroadcastReceiver() {
             val parts = messages.orEmpty().map {
                 SmsPart(it.originatingAddress, it.messageBody, it.timestampMillis)
             }
+            // Diagnostics for the multipart regression. Length and index only —
+            // never address or body text (PII stays off logcat).
+            parts.forEachIndexed { i, p ->
+                android.util.Log.d(
+                    "SmsReceiver",
+                    "pdu part ${i + 1}/${parts.size} len=${p.body?.length ?: 0}"
+                )
+            }
+
             // Exactly one emit per broadcast — never one per PDU part.
-            val assembled = assemble(parts) ?: return
+            val assembled = assemble(parts) ?: run {
+                android.util.Log.w("SmsReceiver", "no usable PDU parts — nothing emitted")
+                return
+            }
+            android.util.Log.d(
+                "SmsReceiver",
+                "assembled emit 1 of 1 from ${parts.size} part(s) len=${assembled.body?.length ?: 0}"
+            )
 
             onSmsReceived?.invoke(
                 assembled.from ?: "Unknown",
