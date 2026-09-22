@@ -1,6 +1,7 @@
 package com.dnkdialer.companion
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -85,5 +86,47 @@ class SmsMultipartAssembleTest {
     fun `all addresses null falls back to Unknown`() {
         val out = SmsReceiver.assemble(listOf(part("a", from = null), part("b", from = null)))!!
         assertEquals("Unknown", out.from)
+    }
+
+    // --- SMSMP-2: the EMITTED frame is stamped with the receiver's wall clock ---
+
+    @Test
+    fun `emitted time is the injected now, not the part minimum`() {
+        val now = 1_700_000_000_000L
+        val out = SmsReceiver.assembleForEmit(
+            listOf(
+                part("Lorem ipsum ", time = 3_000L),
+                part("dolor sit amet.", time = 4_000L),
+            ),
+            now,
+        )!!
+        // The whole point: NOT 3_000L (min over parts), NOT 4_000L.
+        assertEquals(now, out.time)
+        assertNotEquals(3_000L, out.time)
+        // Body/from still come from assemble() unchanged.
+        assertEquals("Lorem ipsum dolor sit amet.", out.body)
+        assertEquals("+15551234567", out.from)
+    }
+
+    @Test
+    fun `single part is also stamped with now`() {
+        val now = 1_700_000_042_000L
+        val out = SmsReceiver.assembleForEmit(listOf(part("Lorem ipsum.", time = 1_000L)), now)!!
+        assertEquals(now, out.time)
+        assertEquals("Lorem ipsum.", out.body)
+    }
+
+    @Test
+    fun `assemble still reports the SMSC minimum for diagnostics`() {
+        // assembleForEmit must not mutate assemble()'s contract — the min-over-
+        // parts time stays available for the smscSkewMs diagnostic log.
+        val parts = listOf(part("a", time = 9_000L), part("b", time = 2_000L))
+        assertEquals(2_000L, SmsReceiver.assemble(parts)!!.time)
+        assertEquals(5L, SmsReceiver.assembleForEmit(parts, 5L)!!.time)
+    }
+
+    @Test
+    fun `empty part list yields null from assembleForEmit too`() {
+        assertNull(SmsReceiver.assembleForEmit(emptyList(), 1_700_000_000_000L))
     }
 }
