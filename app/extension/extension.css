@@ -1849,11 +1849,12 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 :where([data-cc-theme=dark]) .cc-ext .cc-ft-error p { color: #fecdd3; }
 
 /* ===========================================================================
-   EXT-UI-4 — dialler frame, back-button target, Load-more affordance,
-   call-row meta, device-pill cap, upgrade-to-unlock row.
+   EXT-UI-4 — back-button target (M3) and device-pill cap (M7).
+   The dialler frame (M2), Load-more affordance (M4), call-row meta (M5) and
+   upgrade-to-unlock row (M8) were reverted by R-CJ; see below.
    ---------------------------------------------------------------------------
    EVERY HEX BELOW WAS MEASURED ON THE GROUND IT ACTUALLY LANDS ON, AFTER R-CH
-   RESTORED THE LADDER. Gemini's mockup pass proposed colours against grounds
+   RESTORED THE LADDER AND R-CJ REMOVED THE HEADER BAND. Gemini's mockup pass proposed colours against grounds
    we do not have (#1A1A1A / #262626 / #404040 dark, and a #F5F5F5 light
    container that does not exist here); six of the ten ratios in its own table
    were misstated. Nothing from that table is used unverified. The restored
@@ -1862,8 +1863,16 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      dark   L0 #0b0b0d  L1 #131316  L2 #18181b  L3 #212125  zebra #1c1c20
    (L0 restated by R-CJ, 2026-09-22 — no band.)
 
-   TWO NEW TOKENS, because six controls needed the same two answers and six
-   copies of a hex is six chances to drift:
+   R-CJ (2026-09-22 18:08Z) REVERTED M2, M4, M5 and M8 on Dennis's rulings —
+   only M3 (the back button's 44px target, "bigger back button is ok") and M7
+   (Ken's own pill cap, never Gemini's) survive from this section. The ground
+   table above is kept because M3's ink is measured on it.
+
+   ONE TOKEN LEFT. --cc-bd-strong went with M2/M4/M8 — it was a border token and
+   nothing outlined survives — and is deleted rather than left behind as a value
+   with no caller; its rationale is in the R-CJ reverts if it is ever wanted
+   back. For the record it was light #86868c / dark #7a7a85, >= 3:1 on every
+   body ground.
 
    --cc-aaa   AAA body ink (>= 7:1 on EVERY body ground, both themes).
               light #4d4d4d — 8.45:1 on L3, 7.90 on L1, 7.49 on L2, 7.76 on
@@ -1872,21 +1881,12 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
                               --cc-sec.)
               dark  #bdbdbd — 8.54:1 on L3, 9.87 on L1, 9.43 on L2, 9.04 on
                               zebra.
-   --cc-bd-strong  A border you can SEE (>= 3:1, the WCAG 1.4.11 floor for a
-              non-text UI boundary) on every body ground.
-              light #86868c — 3.62:1 on L3, 3.38 on L1, 3.21 on L2, 3.32 on
-                              zebra. (Gemini's #CCCCCC is 1.61:1 on white —
-                              a frame you cannot see is not a frame.)
-              dark  #7a7a85 — 3.78:1 on L3, 4.37 on L1, 4.18 on L2, 4.00 on
-                              zebra.
    =========================================================================== */
 .cc-ext {
   --cc-aaa: #4d4d4d;
-  --cc-bd-strong: #86868c;
 }
 :where([data-cc-theme=dark]) .cc-ext {
   --cc-aaa: #bdbdbd;
-  --cc-bd-strong: #7a7a85;
 }
 
 /* --- (2) M3: the back button gets a 44px target -------------------------- */
@@ -1929,38 +1929,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   flex: 1 1 auto;
   min-width: 0;
 }
-
-/* --- M8: a readable way out of the tier failure -------------------------- */
-/* The banner above this row stays CTA-free (A1.1-M10 / R-AN). This row is a
-   sibling: the client's own offer, on its own ground, routed through the same
-   openUpgrade('fileTransfer') wiring as every other lock in the feature.
-
-   It gets L3 rather than inheriting the banner's L1 for two reasons. It reads
-   as a separate object, which is the whole point — and it is what lets the
-   dispatch's mandated #004FBF work: that blue is 7.32:1 on white but only
-   6.83:1 on L1, so on the banner's own ground the required colour would have
-   failed the required floor. (Gemini's #0055CC is 6.62:1 even on white.)
-     button ink   light #004fbf on #ffffff  7.32:1
-                  dark  #93b4ff on #212125  7.80:1
-     helper ink   light #4d4d4d on #ffffff  8.45:1
-                  dark  #bdbdbd on #212125  8.54:1
-   The dispatch warned the helper grey would fail "on the pink ground" — worth
-   recording that on THIS surface there is no pink ground: `.cc-ext .cc-ft-error`
-   already repaints Tailwind's rose-50 to L1, so the review's 3.97:1 figure
-   describes /app, not the extension. Measured, not assumed. */
-.cc-ext .cc-ft-unlock {
-  background: var(--cc-l3);
-  border-bottom: 1px solid var(--cc-hair);
-}
-.cc-ext .cc-ft-unlock-help { color: var(--cc-aaa); }
-.cc-ext .cc-ft-unlock-btn {
-  color: #004fbf;
-  border: 1px solid var(--cc-bd-strong);
-  background: transparent;
-}
-.cc-ext .cc-ft-unlock-btn:hover { border-color: #004fbf; }
-:where([data-cc-theme=dark]) .cc-ext .cc-ft-unlock-btn { color: #93b4ff; }
-:where([data-cc-theme=dark]) .cc-ext .cc-ft-unlock-btn:hover { border-color: #93b4ff; }
 
 /* --- Portalled: the dialog and the toast --------------------------------- */
 html:has(.cc-ext) .cc-ft-panel,

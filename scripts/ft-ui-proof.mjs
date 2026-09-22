@@ -450,7 +450,9 @@ try {
     check('lock: is focusable', await lock.evaluate((el) => {
       el.focus(); return document.activeElement === el;
     }));
-    // It must lead somewhere — the existing pricing/upgrade modal.
+    // It must lead somewhere — the existing pricing/upgrade modal. This is THE
+    // assertion for Dennis's R-CJ requirement (18:08Z): a locked tap during a
+    // trial prompts for a subscription. Do not delete it without replacing it.
     /*
      * Wait for the entitlement fetch to have RESOLVED before clicking.
      * `subscribed` reads `entitlement?.allowed === true`, which is false both
@@ -646,26 +648,17 @@ try {
       await tierBanner.isVisible());
 
     /*
-     * EXT-UI-4 M8. The banner itself stays CTA-free (M10, asserted above) — so
-     * before this lane the ONLY way onward from a lapsed trial was the 24px
-     * header icon, which differs from its unlocked twin by an 8px lock badge.
-     * It opened the upgrade modal; nothing on screen said so. The readable row
-     * is a SIBLING under the banner. Three assertions, because each one is a
-     * different way the fix could be present but useless: it has to be THERE,
-     * it has to be VISIBLE (not merely in the DOM behind the banner), and it
-     * has to be OUTSIDE the banner element — a CTA that drifted back inside it
-     * would be an M10 regression wearing this lane's class name.
+     * R-CJ (2026-09-22 18:08Z) removed EXT-UI-4 M8's passive "Upgrade to
+     * unlock" row and its three assertions from this block. Dennis's actual
+     * requirement — "when user tries to send file during trial, he should get
+     * prompted to activate subscription" — is about the TAP, not about a
+     * second CTA on the failure screen, and the tap is already proved in
+     * section (c) above by `lock: opens the existing upgrade modal`: with
+     * entitlement.allowed=false, clicking
+     * [data-cc-ft-action="header-send"][data-cc-ft-locked="true"] opens the
+     * upgrade dialog. The banner stays CTA-free (M10 / R-AN), which the M10
+     * assertion above still holds on its own.
      */
-    const unlockRow = page.locator('[data-cc-ft-action="unlock-upgrade"]').first();
-    const unlockPresent = await unlockRow.waitFor({ timeout: 5000 })
-      .then(() => true).catch(() => false);
-    check('m8: a readable upgrade affordance is offered under the tier banner',
-      unlockPresent && (await unlockRow.innerText()).trim() === 'Upgrade to unlock',
-      unlockPresent ? await unlockRow.innerText() : 'not rendered');
-    check('m8: and it is actually visible, not just in the DOM',
-      unlockPresent && await unlockRow.isVisible());
-    check('m8: it is OUTSIDE the banner — the banner stays CTA-free (M10)',
-      (await tierBanner.locator('[data-cc-ft-action="unlock-upgrade"]').count()) === 0);
     // The defect shot. Banner + a LOCKED control, one frame.
     await shot(page, 'ext-error-tier-light-360');
     await ctx.close();
