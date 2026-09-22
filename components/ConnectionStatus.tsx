@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import {
   Smartphone,
   XCircle,
@@ -15,6 +15,14 @@ import {
 } from 'lucide-react';
 import { usePhone } from '@/hooks';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
+import { isTrustedShellMessage } from '@/lib/extensionBridge';
+import {
+  batteryFill,
+  batteryView,
+  newerBattery,
+  type BatteryValue,
+  type BatteryView,
+} from '@/lib/batteryCopy';
 
 /**
  * Connection / lobby pill.
@@ -70,6 +78,9 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
     // Existing fields kept for the notification-permission banner
     isConnected,
     phoneName,
+    // BAT-2 (c) — `{pct,charging,ts} | null`. Kept on disconnect so the header
+    // can say "last seen"; nulled on unpair. Read-only here.
+    battery,
     notificationPermissionGranted,
     requestNotificationAccess,
   } = phone as ReturnType<typeof usePhone> & {
@@ -96,6 +107,20 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
   // Default to 'lobby' if the hook hasn't shipped the field yet — render the
   // most conservative branch (waiting / Connect-disabled) instead of crashing.
   const state: LobbyState = lobbyState ?? 'lobby';
+
+  // ---------- Phone battery (BAT-3) ----------
+  // TWO sources, ONE decision. On the web there is only the hook. Inside the
+  // extension the shell also hands over what the service worker persisted in
+  // storage.session, which is the only value a just-opened popup has before the
+  // phone's next send. newerBattery() picks by `ts` and never merges fields.
+  const shellBattery = useShellBattery();
+  const shownBattery = newerBattery(battery ?? null, shellBattery);
+  // "Present" for the battery means the phone is IN the session — the one state
+  // in which the reading describes a live device. `lobby + phone nearby` is a
+  // phone we are not paired with, and its last known level is history.
+  const batteryPresent = state === 'active';
+  const now = useStalenessClock(!!shownBattery && batteryPresent);
+  const batteryView_ = batteryView(shownBattery, batteryPresent, now ?? shownBattery?.ts ?? 0);
 
   // ---------- Reset lobby (dispatch FORGE-J, 2026-09-15) ----------
   // Confirmed because it is genuinely destructive to the CURRENT session: it
@@ -190,6 +215,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
           state={state}
           syncing={!!quietSyncing}
           phoneName={phoneName}
+          battery={batteryView_}
           phonePresent={!!phonePresentInLobby}
           reasonText={lastBrowserRequest?.reasonText}
           onDisconnect={() => leaveActive?.()}
@@ -208,6 +234,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
       {state === 'active' ? (
         <ActivePill
           phoneName={phoneName}
+          battery={batteryView_}
           syncing={!!quietSyncing}
           onDisconnect={() => leaveActive?.()}
           onReset={onReset}
@@ -232,6 +259,7 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
         // lobby — split on phonePresentInLobby
         <LobbyPill
           phonePresent={!!phonePresentInLobby}
+          battery={batteryView_}
           onConnect={() => requestPairing?.()}
           onReset={onReset}
           onForget={onForget}
@@ -246,6 +274,302 @@ export const ConnectionStatus = ({ variant = 'default' }: ConnectionStatusProps 
 // ~30 LOC and only used here; pulling them out would lose context, not gain
 // reuse.
 // ============================================================================
+
+// ============================================================================
+// BAT-3 — the phone battery indicator.
+//
+// ONE component, BOTH surfaces. The extension header is the hosted app's own
+// header rendered inside the shell's iframe (PhoneModeHeader surface="extension"
+// -> <ConnectionStatus variant="compact" />), so a second implementation for
+// the popup / side panel / pop-out would be two things that have to agree about
+// a battery level and cannot be made to. What differs between the surfaces is
+// not the component, it is where the VALUE comes from — see useShellBattery().
+//
+// Everything below is DISPLAY-ONLY (GATE1 Addendum BAT-A1 MUST-3 + the BAT-3
+// addendum): it renders what BAT-2 validated, guards null/undefined, and never
+// writes cc_battery, never re-validates a frame, never touches mode / pairing /
+// tier / quota / session.
+// ============================================================================
+
+/** The shell's own namespace tag; `NS` in lib/extensionBridge.ts is private. */
+const SHELL_NS = 'cc-ext';
+
+/**
+ * The battery value the EXTENSION shell restored from chrome.storage.session.
+ *
+ * Why this exists at all. Inside the extension, the service worker owns the
+ * socket and is evicted routinely, so a freshly opened popup or side panel has
+ * no live BATTERY frame and would render nothing until the phone's next send —
+ * up to ten minutes of a blank slot on a header that showed a value a moment
+ * ago. BAT-2 persists `cc_battery` in storage.session for exactly this;
+ * shell.js reads it on open, subscribes to storage.onChanged, and posts it in.
+ *
+ * TRUST: `isTrustedShellMessage` is the existing origin+source pin — framed by
+ * our own parent, and that parent is the extension origin. Nothing else can
+ * deliver this message. Shape handling stays at null/undefined guards plus the
+ * typeof checks needed to not render `NaN%`; the value was validated at the SW
+ * chokepoint (isValidBatteryPayload) before it was ever stored.
+ *
+ * Outside the extension `window.parent === window`, no message ever arrives,
+ * and this hook is a permanent `null` — the web app runs on the hook value
+ * alone, exactly as it did before BAT-3.
+ */
+function useShellBattery(): BatteryValue | null {
+  const [value, setValue] = useState<BatteryValue | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.parent === window) return;
+
+    const onMessage = (event: MessageEvent) => {
+      if (!isTrustedShellMessage(event)) return;
+      const data = event.data as { source?: string; type?: string; battery?: unknown };
+      if (!data || data.source !== SHELL_NS || data.type !== 'battery') return;
+
+      const b = data.battery as { pct?: unknown; charging?: unknown; ts?: unknown } | null;
+      // Cleared (sign-out / unpair) arrives as an explicit null, and must clear
+      // the UI rather than leave the last value standing.
+      if (!b || typeof b !== 'object') {
+        setValue(null);
+        return;
+      }
+      const { pct, charging, ts } = b;
+      if (typeof pct !== 'number' || typeof charging !== 'boolean' || typeof ts !== 'number') {
+        return;
+      }
+      setValue((prev) => (prev && prev.ts >= ts ? prev : { pct, charging, ts }));
+    };
+
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  return value;
+}
+
+/**
+ * A once-a-minute clock, used for ONE thing: deciding whether the reading has
+ * crossed the 15-minute staleness line.
+ *
+ * useSyncExternalStore rather than useState + useEffect, and not for style: the
+ * value is genuinely EXTERNAL state (wall-clock time), the server has no
+ * honest answer for it, and React's own rule against seeding state from an
+ * effect body is the rule this shape exists to satisfy. `getServerSnapshot`
+ * returns null, which batteryView() treats as not-stale — the conservative
+ * side, since the alternative is a header that paints "as of 14:32" during
+ * hydration and then takes it back.
+ *
+ * ONE interval for the whole page, refcounted by subscriber, cleared when the
+ * last indicator unmounts. A minute is the right granularity: the threshold is
+ * fifteen minutes, and a second-resolution timer would re-render the header
+ * sixty times for every boundary it could possibly move.
+ */
+const MINUTE_MS = 60_000;
+let minuteNow: number | null = null;
+let minuteTimer: ReturnType<typeof setInterval> | null = null;
+const minuteSubscribers = new Set<() => void>();
+
+function subscribeMinute(onChange: () => void): () => void {
+  minuteSubscribers.add(onChange);
+  if (minuteTimer === null) {
+    minuteNow = Date.now();
+    minuteTimer = setInterval(() => {
+      minuteNow = Date.now();
+      minuteSubscribers.forEach((fn) => fn());
+    }, MINUTE_MS);
+  }
+  return () => {
+    minuteSubscribers.delete(onChange);
+    if (minuteSubscribers.size === 0 && minuteTimer !== null) {
+      clearInterval(minuteTimer);
+      minuteTimer = null;
+      minuteNow = null;
+    }
+  };
+}
+
+/** The inactive store: no timer, no clock, and therefore never stale. */
+const subscribeNever = () => () => {};
+const readMinute = () => minuteNow;
+const readNull = () => null;
+
+/** @param active false when there is nothing to age — no timer is started. */
+function useStalenessClock(active: boolean): number | null {
+  return useSyncExternalStore(
+    active ? subscribeMinute : subscribeNever,
+    active ? readMinute : readNull,
+    readNull,
+  );
+}
+
+/**
+ * The glyph. An inline SVG rather than a lucide icon because the fill has to be
+ * PROPORTIONAL — lucide's Battery is a fixed outline, and swapping between its
+ * four discrete variants would make 34% and 64% the identical picture.
+ *
+ * Non-colour signals, in order, so the indicator never relies on hue alone
+ * (WCAG 1.4.1):
+ *   1. the numeric "%" is real text beside this glyph — the exact value, always;
+ *   2. the fill bar's LENGTH is the level;
+ *   3. a bolt is drawn through the cell when charging;
+ *   4. a mark appears at the empty end at 20% or below.
+ * Colour is the fourth signal, never the first.
+ *
+ * Purely presentational: aria-hidden, because the accessible name lives on the
+ * wrapper as one sentence and announcing the picture again would double it.
+ *
+ * No transition and no animation anywhere in here: the value changes at most
+ * once a minute, and a header that animates on every re-render is noise.
+ */
+function BatteryGlyph({
+  pct,
+  charging,
+  warn,
+  className,
+}: {
+  pct: number;
+  charging: boolean;
+  /** 20% or below — draws the warning mark. */
+  warn: boolean;
+  className?: string;
+}) {
+  const fill = batteryFill(pct);
+  const innerW = 12.4 * fill;
+  // A mask needs a document-unique id, and this glyph renders more than once
+  // per page (header + any surface that mounts a second ConnectionStatus).
+  // useId is the only source of one that survives SSR hydration.
+  const maskId = `cc-bat-${useId()}`;
+
+  return (
+    <svg viewBox="0 0 22 14" className={className} aria-hidden="true" focusable="false">
+      {charging && (
+        // The bolt is KNOCKED OUT of the level rather than painted over it in a
+        // background colour. A knockout drawn in #fff reads correctly in light
+        // and becomes a white scar in dark, and this component has no access to
+        // the surface it is sitting on — the mask has no such dependency, so
+        // the glyph is correct on any background in either theme.
+        <mask id={maskId}>
+          <rect x="0" y="0" width="22" height="14" fill="#fff" />
+          <path
+            d="M10.9 2.6 6.4 8.1h2.9l-1.3 3.7 4.8-5.7h-3z"
+            fill="#000"
+            stroke="#000"
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+        </mask>
+      )}
+      <rect
+        x="1"
+        y="2"
+        width="16.6"
+        height="10"
+        rx="2.6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        opacity="0.55"
+      />
+      <path d="M19.4 5.4v3.2a2 2 0 0 0 0-3.2z" fill="currentColor" opacity="0.55" />
+      <rect
+        x="2.6"
+        y="3.6"
+        width={innerW}
+        height="6.8"
+        rx="1.3"
+        fill="currentColor"
+        mask={charging ? `url(#${maskId})` : undefined}
+      />
+      {charging && (
+        <path
+          d="M10.9 2.6 6.4 8.1h2.9l-1.3 3.7 4.8-5.7h-3z"
+          fill="currentColor"
+        />
+      )}
+      {warn && !charging && (
+        <path
+          d="M14.8 4.4v4.1M14.8 10.1v0.9"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      )}
+    </svg>
+  );
+}
+
+/**
+ * The indicator itself: glyph + "%" as TEXT, beside the phone name.
+ *
+ * `variant="compact"` is the extension header's 210px pill — the same decisions,
+ * less room. The only difference is which string is VISIBLE: compact shows the
+ * percentage and puts the full "Last seen 14:32 · 47%" in the tooltip, because
+ * the pill is capped and nowrap and that sentence cannot fit beside a device
+ * name without pushing the name out (brief (c): the battery must not make the
+ * header wrap).
+ *
+ * Below 400px the "%" text is hidden and the glyph carries it alone, with the
+ * value still in the accessible name — the documented collapse, not a fallback.
+ *
+ * NO aria-live. The value re-renders whenever a frame lands; announcing each
+ * one would talk over whatever the user is actually doing. It is a label on a
+ * status surface, read when the user arrives at it.
+ */
+function BatteryIndicator({
+  view,
+  variant = 'default',
+}: {
+  view: BatteryView;
+  variant?: 'default' | 'compact';
+}) {
+  // No reading has ever arrived — render NOTHING. Not "--%", not a grey stub.
+  if (!view) return null;
+
+  const offline = view.kind === 'lastSeen';
+  const warn = view.tone !== 'normal';
+
+  // Colour is the LAST signal, and greys out entirely once the phone is gone:
+  // a red "8%" for a phone that left an hour ago is an alarm about a fact
+  // nobody can act on.
+  const toneClass = offline
+    ? 'text-slate-400'
+    : view.tone === 'critical'
+      ? 'text-red-600'
+      : view.tone === 'low'
+        ? 'text-amber-600'
+        : 'text-slate-500';
+
+  const glyphSize = variant === 'compact' ? 'h-3 w-[19px]' : 'h-3.5 w-[22px]';
+
+  return (
+    <span
+      className={`cc-battery inline-flex flex-shrink-0 items-center gap-1 whitespace-nowrap ${toneClass}`}
+      data-cc-battery={String(view.pct)}
+      data-cc-battery-tone={view.tone}
+      data-cc-battery-kind={view.kind}
+      // ONE accessible name for the pair, on the wrapper. The glyph is
+      // aria-hidden and the text is aria-hidden inside it, so a screen reader
+      // reads this sentence once instead of "battery image, 47 percent".
+      role="img"
+      aria-label={view.label}
+      title={offline ? view.text : view.label}
+    >
+      <BatteryGlyph pct={view.pct} charging={view.charging} warn={warn} className={glyphSize} />
+      <span
+        className={
+          variant === 'compact'
+            ? // The 360px / sub-400px collapse (brief (c)). Hidden, not removed:
+              // the value stays in aria-label and title at every width.
+              'hidden min-[400px]:inline text-[11px] font-semibold tabular-nums'
+            : 'text-xs font-semibold tabular-nums'
+        }
+        aria-hidden="true"
+      >
+        {variant === 'compact' ? `${view.pct}%` : view.text}
+      </span>
+    </span>
+  );
+}
+
 
 /**
  * CompactDevicePill — the extension header's whole status surface, in ONE 24px
@@ -273,6 +597,7 @@ function CompactDevicePill({
   state,
   syncing,
   phoneName,
+  battery,
   phonePresent,
   reasonText,
   onDisconnect,
@@ -284,6 +609,8 @@ function CompactDevicePill({
   /** FORGE-U auto-sync in flight. Only meaningful while `state === 'active'`. */
   syncing: boolean;
   phoneName: string | null;
+  /** BAT-3. `null` when nothing was ever received — then nothing is rendered. */
+  battery: BatteryView;
   phonePresent: boolean;
   reasonText: string | undefined;
   onDisconnect: () => void;
@@ -375,6 +702,10 @@ function CompactDevicePill({
           {name}
         </span>
       )}
+      {/* BAT-3: BESIDE the name, and flex-shrink-0 so the 210px cap is absorbed
+          by the truncating name rather than by the value. The name is the only
+          elastic thing in this row; everything else is already fixed. */}
+      <BatteryIndicator view={battery} variant="compact" />
       <span className={`flex-shrink-0 ${wordClass}`}>{word}</span>
 
       {active ? (
@@ -449,11 +780,19 @@ function PillShell({
  */
 function LobbyPill({
   phonePresent,
+  battery,
   onConnect,
   onReset,
   onForget,
 }: {
   phonePresent: boolean;
+  /**
+   * BAT-3. This is the "phone not present" face of the indicator: the hook
+   * KEEPS the last reading across a disconnect, so the pill that replaces the
+   * active one is where "Last seen 14:32 · 47%" belongs. It is the only place
+   * on the web surface that branch can be seen.
+   */
+  battery: BatteryView;
   onConnect: () => void;
   onReset?: () => void;
   onForget?: () => void;
@@ -475,10 +814,18 @@ function LobbyPill({
         {/* The instruction line is the first thing to go on a phone: the pill
             sits in a ~200px slot there and the Connect button carries the
             action. Restored at sm: so the desktop header is unchanged. */}
-        {!phonePresent && (
-          <span className="hidden truncate text-[11px] text-slate-500 sm:block">
-            Open ComputerCaller on your phone and sign in.
-          </span>
+        {battery ? (
+          // The last-seen line REPLACES the instruction line rather than
+          // stacking under it. A pill that says "open it on your phone" and
+          // "last seen 14:32 · 47%" at once is telling the user to do something
+          // they demonstrably already did.
+          <BatteryIndicator view={battery} />
+        ) : (
+          !phonePresent && (
+            <span className="hidden truncate text-[11px] text-slate-500 sm:block">
+              Open ComputerCaller on your phone and sign in.
+            </span>
+          )
         )}
       </div>
       <div className="ml-2 hidden h-6 w-px flex-shrink-0 bg-slate-200 sm:block" aria-hidden="true" />
@@ -586,12 +933,15 @@ function RequestingPill({
  */
 function ActivePill({
   phoneName,
+  battery,
   syncing,
   onDisconnect,
   onReset,
   onForget,
 }: {
   phoneName: string | null;
+  /** BAT-3. `null` when nothing was ever received — then nothing is rendered. */
+  battery: BatteryView;
   /** FORGE-U auto-sync in flight — see the note in CompactDevicePill. */
   syncing: boolean;
   onDisconnect: () => void;
@@ -604,9 +954,13 @@ function ActivePill({
         <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center border border-emerald-100">
           <Smartphone className="w-4 h-4 text-emerald-600" aria-hidden="true" />
         </div>
-        <div className="flex flex-col">
-          <span className="text-sm font-semibold text-slate-700">
-            {phoneName || 'Phone Connected'}
+        <div className="flex min-w-0 flex-col">
+          <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-700">
+            <span className="min-w-0 truncate">{phoneName || 'Phone Connected'}</span>
+            {/* BAT-3: on the SAME line as the name, which is what "beside the
+                phone name" means here — the status word below it is a second
+                fact about the session, not about the device. */}
+            <BatteryIndicator view={battery} />
           </span>
           {/* PIXEL-S2 (c): the same two-state label as the compact pill, out of
               the same flag. Both surfaces go through this component precisely so
