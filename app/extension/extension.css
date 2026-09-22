@@ -47,11 +47,9 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-hair: #e5e5e5;
   --cc-ink: #171717;
   --cc-sec: #525252;
-  /* Lifted with the ladder: the light ground dropped from #f1f1f2 to #e2e3e6
-     to clear Chrome's white bar, and #737373 falls to 3.69:1 there (it was
-     already only 4.20:1 before). 4.68:1 on L2, 4.90:1 on L1, 6.01:1 on a
-     white card. */
-  --cc-mut: #636363;
+  /* R-CH restored it with the ladder it was derived from: 4.20:1 on the
+     restored L2 #f1f1f2, 4.43:1 on L1, 4.74:1 on a white card. */
+  --cc-mut: #737373;
   --cc-chip-bd: #d4d4d4;
 
   /* ---- brand (identical in both themes) ---- */
@@ -921,23 +919,32 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    cannot restyle the bar — it is browser chrome and follows Chrome's own
    scheme — so OUR shades are chosen to step away from it.
 
-   BOTH themes now run L0 DARKEST, the body lifted above it, the card furthest
-   of all.
-   Dark:  bar 25.32 → L0 #0e0e11 (4.05) → L1 #1c1c20 (10.42) → L2 #222226
-          (13.38) → L3 #2b2b30 (17.71). This is the shape of Dennis's Reflecto
-          reference, whose header is DARKER than its body, not lighter.
-   Light: bar 100.00 → L0 #cbcccf (82.05) → L2 #e2e3e6 (90.24) → L1 #e7e8eb
-          (92.00) → L3 #ffffff (100.00).
+   R-CH (2026-09-22 16:06Z) REVERSED that choice. Dennis saw the result in prod
+   and said: "turn back the header to be the same color style it was previously,
+   i dont like this grey tone in the extension." Every value is restored to
+   1520063. The paragraph above is kept because the measurement was real and the
+   defect it describes is real; what changed is the RULING, not the arithmetic.
+   Invariant 1 below (L0 vs Chrome's bar >= 12) is therefore closed as
+   Dennis-OVERRIDDEN, not met, and must not be "fixed" back by a later lane.
 
-   Four invariants, all measured, all enforced by the values above:
-     1. L0 vs Chrome's bar   ≥ 12   dark 21.27, light 17.95
-     2. L0 vs L1             ≥ 6    dark  6.38, light  9.95
-     3. L0 vs L2             ≥ 8    dark  9.33, light  8.19
-     4. body vs Chrome's bar ≥ 8    dark L1 14.90 / L2 11.94,
-                                    light L1 8.00 / L2 9.76
-   Invariant 4 is the new one and it is what moved the light body: the old
-   L1 #f7f7f8 was 2.74 L* from a white bar, i.e. the light panel had the same
-   defect as the dark one and nobody could see that one either. The card stays
+   BOTH themes run L0 LIGHTER than the body in dark and DARKER than it in light
+   — the PIXEL-Q / Variant B shape Dennis approved on 2026-09-21.
+   Dark:  bar 25.32 → L0 #28292c (16.60) → L1 #131316 (5.98) → L2 #18181b
+          (8.36) → L3 #212125 (12.89).
+   Light: bar 100.00 → L0 #d9dadd (87.05) → L2 #f1f1f2 (95.17) → L1 #f7f7f8
+          (97.26) → L3 #ffffff (100.00).
+
+   Invariants as they now stand, all measured on the restored values:
+     1. L0 vs Chrome's bar   OVERRIDDEN  dark 8.72, light 12.95
+     2. L0 vs L1             >= 6        dark 10.62, light 10.21
+     3. L0 vs L2             >= 8        dark  8.24, light  8.12
+     4. body vs Chrome's bar OVERRIDDEN  dark L1 19.34 / L2 16.96,
+                                         light L1 2.74 / L2 4.83
+   Invariants 2 and 3 — the ones about our OWN surfaces reading as separate
+   rows — still hold, and are the ones scripts/ext-sidepanel-window-shots.mjs
+   now fences (>= 8 / >= 6 / >= 2). Invariant 4's light number (2.74) is the
+   known, accepted cost: in light our body really is very nearly the colour of
+   Chrome's bar. The card stays
    the surface furthest from its ground; in light it is still pure white, which
    is also the bar's colour, but it sits four levels and a hairline away rather
    than directly beneath it.
@@ -956,28 +963,46 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
        against them inherits the ladder without being touched. --- */
 .cc-ext {
   /* L0 is the HEADER BAND and it is the DARKEST step in light, not white.
-     EXT-FRAME-2 took it one step further down (#d9dadd -> #cbcccf) and, more
-     importantly, moved the BODY. Against Chrome's white side-panel bar: L0 is
-     17.95 L* away, L1 8.00, L2 9.76. The old L1/L2 were 2.74 and 4.83 from
-     that bar — near enough to read as the same surface. */
-  --cc-l0: #cbcccf;
-  --cc-l1: #e7e8eb;
-  --cc-l2: #e2e3e6;
+
+     R-CH (Dennis, Discord 2026-09-22 16:06Z, verbatim): "turn back the header
+     to be the same color style it was previously, i dont like this grey tone in
+     the extension." Every ladder value in this file is RESTORED to 1520063 -
+     the tip immediately before EXT-FRAME-2 — which already carried the Variant
+     B header band (9edc664) that he saw and approved. He is objecting to the
+     EXT-FRAME-2 grey, not to the band, so the band stays and only its shades
+     move back. BOTH themes revert: the two ladders moved as one unit, in one
+     commit, under one rationale, and there is no evidence the objection is
+     light-only.
+
+     THE EXT-FRAME-2 TARGET IS CLOSED, NOT FAILED. That dispatch asked for
+     dL* >= 12 between our header L0 and Chrome's own side-panel bar. It is
+     Dennis-OVERRIDDEN: owner preference beats the metric. Nobody is to "fix"
+     these numbers back. The measurements that motivated it stay here, because
+     the trade-off should remain visible rather than be quietly forgotten:
+       dark  — Chrome's bar #3c3c3c (L* 25.32) vs restored L0 #28292c: 8.72 dL*
+       light — Chrome's bar #ffffff (L* 100)   vs restored L0 #d9dadd: ~13 dL*,
+               and the restored body L1 #f7f7f8 is 2.74 dL* from that bar.
+     So in dark the header and Chrome's bar read closer together than
+     EXT-FRAME-2 wanted, and in light the BODY is very nearly the bar's own
+     colour. That is the accepted cost of the palette Dennis prefers. */
+  --cc-l0: #d9dadd;
+  --cc-l1: #f7f7f8;
+  --cc-l2: #f1f1f2;
   --cc-l3: #ffffff;
   /* Card outlines and band boundaries are the same hairline in light: at these
-     lightnesses one value reads correctly against both L2 and L1. Darkened
+     lightnesses one value reads correctly against both L2 and L1. R-CH restored
+     it to the 1520063 value with the ladder it was derived from: 1.07:1 on L2,
+     1.04:1 on L1, 1.16:1 around a white card — faint, and exactly what shipped.
+     ORIGINAL EXT-FRAME-2 NOTE, kept for history: darkened
      with the ladder — #dcdcde on the new L2 is 1.07:1, i.e. gone. Now 1.34:1
      on L2, 1.41:1 on L1, 1.72:1 around a white card. */
-  --cc-hair-card: #c4c5cb;
-  /* The header's own bottom rule, re-checked on the darker L0: #c3c5cc
-     measures 1.07:1 there. 1.36:1 now — above the 1.3 floor a hairline needs
-     in order to exist at all. */
-  --cc-hair-hdr: #adafb9;
-  /* Bare-on-band ink, light. Dark has had this since PIXEL-Q; light needs it
-     now, because the band is dark enough that --cc-mut #737373 lands at
-     2.95:1 on it. The dispatch raises this row to AAA (12px band text is not
-     "large"), so: 7.81:1, and the body's muted ink is left alone. */
-  --cc-mut-hdr-light: #33333a;
+  --cc-hair-card: #dcdcde;
+  /* The header's own bottom rule. R-CH restored it to #c3c5cc, which measures
+     1.23:1 on the restored L0 #d9dadd — a shade under the 1.3 a hairline wants
+     in order to exist at all, and exactly what 1520063 shipped. Deliberately
+     NOT "improved" on the way back: this file is being put back, not re-tuned.
+     If Dennis ever wants the rule crisper, that is its own one-token change. */
+  --cc-hair-hdr: #c3c5cc;
   /* Unread chip. NOT `bg-blue-600`: that class is remapped to the brand
      gradient inside .cc-ext, and §0 trait 3 keeps the gradient on exactly
      three objects (the mark, the avatar, the one primary action). A count
@@ -990,54 +1015,51 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   /* Zebra moves onto the ladder too. It used to be the only "second surface"
      in a list; now it is a half-step inside the L3 card, so it has to sit
      between L3 and L2 rather than being an independent grey. */
-  --cc-zebra: #f2f2f4;
-  /* Body hairline follows the darkened ladder — #e5e5e5 is 1.02:1 on the new
-     L2. One value for the whole light panel, as above: 1.34:1 on L2. */
-  --cc-hair: #c4c5cb;
+  --cc-zebra: #f5f5f6;
 }
 
 :where([data-cc-theme=dark]) .cc-ext {
-  /* L0 is the header band and in dark it is now DARKER than the ground.
-     PIXEL-Q made it lighter, reasoning that Chrome's dark strip goes that way
-     — but Dennis's Reflecto reference does the opposite (header #171717,
-     body #252525) and the reference is right: a header LIGHTER than its body
-     can only get further from the body by getting CLOSER to the bar. At
-     #28292c it was 8.72 L* from the bar and the two rows read as one slab.
-     Measured now: 21.27 vs the bar, 6.38 vs L1, 9.33 vs L2. */
-  --cc-l0: #0e0e11;
-  /* The body lifts one step so it clears the bar too (invariant 4). The old
-     L1 #131316 / L2 #18181b / L3 #212125 kept their RELATIVE shape; the whole
-     group just moved up the ramp. */
-  --cc-l1: #1c1c20;
-  --cc-l2: #222226;
-  --cc-l3: #2b2b30;
-  /* One value for band boundaries and card outlines, as in light: on the
-     lifted ladder #303036 falls to 1.21:1 on L2. Now 1.58:1 on L1, 1.47:1 on
-     L2, 1.31:1 around a card. */
-  --cc-hair-card: #3d3d45;
-  /* Unchanged value, re-checked on the much darker L0: 1.73:1. */
+  /* R-CH: restored to 1520063. The header band is LIGHTER than the body again
+     (PIXEL-Q's direction), which is the shape Dennis prefers — see the R-CH
+     note in the light block above, including why the EXT-FRAME-2
+     dL*-vs-Chrome's-bar target is closed as Dennis-overridden rather than
+     failed. Measured on these restored values: Chrome's bar #3c3c3c -> L0 is
+     8.72 dL*, L0 -> L1 is 6.38, bar -> L1 is 2.34. EXT-FRAME-2's reading of
+     Dennis's Reflecto reference (header DARKER than body) was not wrong as
+     analysis; it is simply not the palette he wants on his own product. */
+  --cc-l0: #28292c;
+  --cc-l1: #131316;
+  --cc-l2: #18181b;
+  --cc-l3: #212125;
+  /* One value for band boundaries and card outlines, as in light. R-CH
+     restored it with the ladder it was derived from: 1.21:1 on the restored
+     L2, 1.30:1 on L1, 1.10:1 around a card. */
+  --cc-hair-card: #303036;
+  /* Moved by neither EXT-FRAME-2 nor R-CH: 1.30:1 on the restored L0. */
   --cc-hair-hdr: #3a3b41;
   /* Dark inverts the chip rather than darkening the fill: a blue dark enough
      to carry white digits disappears into an L3 card, so the fill goes light
      and the digits go dark. 7.36:1 digits-on-fill; fill-on-card re-measured on
-     the lifted L3 at 5.54:1 (was 6.31 on #212125) — still well above the 3:1
-     a non-text UI fill needs. */
+     the restored L3 #212125 at 6.31:1 (R-CH) — still well above the 3:1 a
+     non-text UI fill needs. */
   --cc-unread: #60a5fa;
   --cc-unread-ink: #0b1220;
-  /* Zebra follows the ladder up: it is a half-step inside the L3 card, and the
-     old #1c1c20 is now L1 itself. */
-  --cc-zebra: #26262b;
-  /* Body muted ink, lifted with the ladder. #8a8a8a measured 4.9:1 on the old
-     L1 but only 4.08:1 on the new L3 card — below AA on the surface most body
-     text actually sits on. Now 5.04:1 on L3, 5.67:1 on L2. */
-  --cc-mut: #9a9aa2;
-  /* Body hairline, same reasoning: #27272a is 1.06:1 on the new L2. */
-  --cc-hair: #3d3d45;
+  /* Zebra sits a half-step inside the L3 card. R-CH restored. */
+  --cc-zebra: #1c1c20;
+  /* Body muted ink and body hairline: EXT-FRAME-2 added an override for each
+     of these inside this block, and R-CH DELETES both, so they inherit the
+     base dark block again (--cc-mut #8a8a8a, --cc-hair #27272a) exactly as
+     1520063 shipped. #8a8a8a measures 4.08:1 on the restored L3 #212125 and
+     4.90:1 on L2. */
   /* Bare-on-band ink. The popout/dock glyphs and the plain EncryptionChip are
      the only things painted DIRECTLY on L0 (everything else in the row sits on
-     the device pill or the avatar gradient). The dispatch raises this row from
-     AA to AAA and the band is far darker now, so: 7.51:1. */
-  --cc-mut-hdr: #a1a1a9;
+     the device pill or the avatar gradient): 5.21:1 on the restored L0, i.e.
+     AA. EXT-FRAME-2 had raised this row to AAA on the strength of a far darker
+     band; with the band back where Dennis wants it, AAA is not reachable
+     without an ink much darker than the band's own character. The row returns
+     to the AA it shipped at — recorded here so it reads as a consequence of
+     R-CH and not as an oversight. */
+  --cc-mut-hdr: #9a9aa2;
 }
 
 /* --- L0: the header band ------------------------------------------------- */
@@ -1057,22 +1079,21 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    bg-slate-100 / --cc-field fill, so its ink contrasts against the PILL and is
    untouched here), the avatar (white on its gradient), and then exactly three
    bare items — the popout glyph, the dock glyph and the EncryptionChip. Those
-   EXT-FRAME-2 raises the floor on this row from AA to AAA (>= 7:1). The band's
-   type is 12px, which is not "large text" by any definition WCAG offers, and
-   the dispatch's remedy for a harder L0 is explicitly to move the INK, never
-   to lighten L0 back toward the bar (open question 2). So BOTH themes now have
-   a band-scoped muted ink — light did not have one before — and the three
-   Tailwind literals are re-tuned against the new L0 in each theme. Measured on
-   the band:
-     light L0 #cbcccf   slate 9.11:1, emerald 7.95:1, amber 7.48:1, mut 7.81:1
-     dark  L0 #0e0e11   slate 7.51:1, emerald 10.03:1, amber 11.55:1
-   The lowest number painted on either band is 7.48:1. */
-.cc-ext .cc-ext-header { --cc-mut: var(--cc-mut-hdr-light); }
+   R-CH restores the 1520063 band inks. EXT-FRAME-2 had raised this row from AA
+   to AAA against a much darker L0; with the band restored to #d9dadd that floor
+   is not reachable without inks far darker than the band's own character, so
+   the row returns to the AA it shipped at. Light no longer has a band-scoped
+   muted ink at all (EXT-FRAME-2 introduced --cc-mut-hdr-light for that; R-CH
+   deletes it) - the three literals below are what actually paints on the light
+   band. Measured on the restored bands:
+     light L0 #d9dadd   slate 5.42:1, emerald 5.50:1, amber 5.07:1
+     dark  L0 #28292c   mut-hdr 5.21:1, emerald 7.57:1, amber 8.71:1
+   The lowest number painted on either band is 5.07:1, i.e. AA. */
 :where([data-cc-theme=dark]) .cc-ext .cc-ext-header { --cc-mut: var(--cc-mut-hdr); }
 
-.cc-ext .cc-ext-header .text-slate-500 { color: #1e293b; }   /* 4.72 -> 9.11:1 */
-.cc-ext .cc-ext-header .text-emerald-700 { color: #033a2c; } /* 4.78 -> 7.95:1 */
-.cc-ext .cc-ext-header .text-amber-700 { color: #5c2705; }   /* 4.42 -> 7.48:1 */
+.cc-ext .cc-ext-header .text-slate-500 { color: #475569; }   /* 4.72 -> 5.42:1 */
+.cc-ext .cc-ext-header .text-emerald-700 { color: #065f46; } /* 4.78 -> 5.50:1 */
+.cc-ext .cc-ext-header .text-amber-700 { color: #92400e; }   /* 4.42 -> 5.07:1 */
 /* The dark remap already routes .text-slate-500 to --cc-mut, which the rule
    above re-points; these literals must not also fire in dark. */
 :where([data-cc-theme=dark]) .cc-ext .cc-ext-header .text-slate-500 { color: var(--cc-mut-hdr); }
@@ -1087,15 +1108,16 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 /* --- L0: the Send-file control (EXT-UI-8 (b)) ---------------------------- */
 /* The glyph itself is `text-slate-500`, which the two rules above re-point to
-   the band ink in each theme (9.11:1 light, 7.51:1 dark) — nothing to do here.
+   the band ink in each theme (5.42:1 light, 5.21:1 dark after R-CH restored the
+   band) — nothing to do here.
    The LOCK BADGE is the part that needs the band: it is an 8px mark sitting on
    top of a 14px one, and without separation the two silhouettes merge into an
    unreadable smudge at 100% zoom. So it is cut out of L0 the same way the
    account dot is, and painted in the panel's blue rather than the muted ink so
    it reads as "there is an offer here", not "this is switched off". Measured on
-   the band: #1d4ed8 on light L0 #cbcccf = 4.17:1; #60a5fa on dark L0 #0e0e11 =
-   7.58:1. Both past the 3:1 a non-text UI mark needs, and deliberately not the
-   3.22:1 the field blue would have given in light.
+   the band, RE-MEASURED after R-CH restored L0: #1d4ed8 on light L0 #d9dadd =
+   4.79:1; #60a5fa on dark L0 #28292c = 5.72:1. Both still past the 3:1 a
+   non-text UI mark needs, so the badge ink does not move with the band.
 
    The separation is a FILLED DISC, not an SVG stroke. `stroke` is how a lucide
    glyph paints itself, so keying it to --cc-l0 paints the entire lock in the

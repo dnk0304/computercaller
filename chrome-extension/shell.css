@@ -33,26 +33,30 @@
      half the reason the old popup looked wrong. */
   /* PIXEL-Q: the hosted app's outermost surface is now L2 of the four-level
      ladder (ART-DIRECTION §3.1), not the old flat page colour. */
-  --cc-page: #e2e3e6;
+  --cc-page: #f1f1f2;
   --cc-card: #ffffff;
-  --cc-hair: #c4c5cb;
+  --cc-hair: #e5e5e5;
   /* L0 — the header band. Must equal app/extension/extension.css's --cc-l0 so
      the signed-out shell header and the hosted header are the same band; a
      user who signs in must not see the strip change colour.
-     EXT-FRAME-2 (2026-09-22) moved the whole ladder to clear Chrome's own
-     side-panel strip (dark #3c3c3c, light #ffffff) by >= 12 L* at L0 and >= 8
-     at the body. Every value in this file that mirrors the ladder moved with
-     it — --cc-page is L2, --cc-card is L3, --cc-hair is the one hairline —
-     because a shell that kept the old greys would ring the iframe in the
-     previous palette, which is the seam this aliasing exists to prevent. */
-  --cc-l0: #cbcccf;
-  --cc-hair-hdr: #adafb9;
+     R-CH (Dennis 2026-09-22 16:06Z, verbatim: "turn back the header to be the
+     same color style it was previously, i dont like this grey tone in the
+     extension") restores every value in this file to 1520063, in lockstep with
+     app/extension/extension.css. EXT-FRAME-2's goal — clearing Chrome's own
+     side-panel strip (dark #3c3c3c, light #ffffff) by >= 12 L* at L0 — is
+     closed as Dennis-OVERRIDDEN, not failed; the full note, with the measured
+     dL* both ways, lives in extension.css's light ladder block.
+     The lockstep is what matters here: --cc-page is L2, --cc-card is L3,
+     --cc-hair is the one hairline, and a shell that kept a palette the hosted
+     header no longer uses would ring the iframe in the wrong grey — which is
+     the seam this aliasing exists to prevent. */
+  --cc-l0: #d9dadd;
+  --cc-hair-hdr: #c3c5cc;
   --cc-ink: #171717;
   --cc-sec: #525252;
-  /* Mirrors app/extension/extension.css: the light ground darkened with the
-     EXT-FRAME-2 ladder, so the muted ink darkens with it (4.68:1 on the new
-     --cc-page, was 3.69:1 if left at #737373). */
-  --cc-mut: #636363;
+  /* Mirrors app/extension/extension.css: R-CH restored the light ground, so
+     the muted ink goes back with it — 4.20:1 on the restored --cc-page. */
+  --cc-mut: #737373;
 
   --cc-grad: linear-gradient(135deg, #35c977 0%, #22a89a 55%, #1e8fb2 100%);
   --cc-ring: rgba(53, 201, 119, 0.45);
@@ -61,14 +65,14 @@
      places below (forced-dark, and system-dark), and a palette written out
      twice is a palette that drifts — PIXEL-Q's ladder already had to be
      re-synced once for exactly that reason. Aliases, not duplicates. */
-  --cc-d-page: #222226;
-  --cc-d-card: #2b2b30;
-  --cc-d-hair: #3d3d45;
-  --cc-d-l0: #0e0e11;
+  --cc-d-page: #18181b;
+  --cc-d-card: #212125;
+  --cc-d-hair: #27272a;
+  --cc-d-l0: #28292c;
   --cc-d-hair-hdr: #3a3b41;
   --cc-d-ink: #fafafa;
   --cc-d-sec: #a3a3a3;
-  --cc-d-mut: #9a9aa2;
+  --cc-d-mut: #8a8a8a;
 }
 
 /* ---------------------------------------------------------------------------

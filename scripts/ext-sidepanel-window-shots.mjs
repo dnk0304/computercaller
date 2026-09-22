@@ -14,7 +14,15 @@
  * header — Chrome's grey strip carrying the extension icon and the manifest
  * `name` — is never in the picture.
  *
- * The consequence was a real defect: our dark header L0 #28292c (L* 16.6) sat
+ * R-CH (2026-09-22 16:06Z): Dennis looked at the EXT-FRAME-2 ladder in prod and
+ * asked for the previous palette back ("i dont like this grey tone"). The
+ * dL* floors at the bottom of this file are therefore re-pinned to the RESTORED
+ * ladder's reality (bar->header >= 8, header->body >= 6, bar->body >= 2) rather
+ * than to EXT-FRAME-2's 12/6/8 target, which is closed as Dennis-overridden.
+ * The harness itself is unchanged and still the only way to see Chrome's bar.
+ *
+ * The original finding, kept because it is still true: our dark header L0
+ * #28292c (L* 16.6) sits
  * 9 L* from Chrome's bar #3c3c3c (L* 25.3) and repeated the word
  * "ComputerCaller" directly under a bar that already said it. In a page
  * screenshot that looks fine. In the side panel it reads as one grey slab with
@@ -29,7 +37,9 @@
  *      it up on its own /api/auth/me. Same signer path as e2e-ui-proof.mjs;
  *   3. `chrome.sidePanel.open()` called from an extension page under a REAL
  *      trusted Playwright click — the gesture the API actually requires;
- *   4. PowerShell System.Drawing CopyFromScreen of the window rect, then the
+ *   4. PrintWindow(PW_RENDERFULLCONTENT) on the HWND of a process THIS script
+ *      spawned, resolved by PID (scripts/lib/win-capture.ps1, protocol rule
+ *      25) — never CopyFromScreen, which photographs the desktop; then the
  *      panel column is FOUND in the bitmap (scanrow/scancol walk in from the
  *      right edge) rather than guessed from Chrome frame metrics;
  *   5. the three shades — Chrome's bar, our header L0, our body — sampled from
@@ -432,9 +442,14 @@ try {
     deltaL: { barToHeader: +dBarHdr.toFixed(2), headerToBody: +dHdrBody.toFixed(2), barToBody: +dBarBody.toFixed(2) },
     panel: { left: panelLeft, width: panelW, barTop, headerTop, headerBottom },
   });
-  check('dL-bar-to-header>=12', dBarHdr >= 12, `${dBarHdr.toFixed(2)} (${barFill} -> ${headerFill})`);
+  // R-CH floors. These are NOT a contrast goal any more — Dennis overrode the
+  // >= 12 target — they are a REGRESSION FENCE around the palette he chose, so
+  // that a future edit cannot quietly collapse the header into Chrome's bar or
+  // into its own body without failing here. Measured on the restored ladder:
+  // dark 8.72 / 6.38 / 2.34, light ~13 / ~5 / ~2.7.
+  check('dL-bar-to-header>=8', dBarHdr >= 8, `${dBarHdr.toFixed(2)} (${barFill} -> ${headerFill})`);
   check('dL-header-to-body>=6', dHdrBody >= 6, `${dHdrBody.toFixed(2)} (${headerFill} -> ${bodyFill})`);
-  check('dL-bar-to-body>=8', dBarBody >= 8, `${dBarBody.toFixed(2)} (${barFill} -> ${bodyFill})`);
+  check('dL-bar-to-body>=2', dBarBody >= 2, `${dBarBody.toFixed(2)} (${barFill} -> ${bodyFill})`);
 
   // --- the crop Dennis approves from --------------------------------------
   const cropH = Math.min(cap.height - barTop - 8, 640);

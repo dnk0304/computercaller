@@ -269,9 +269,11 @@ function ExtensionHeader() {
           new control is the smallest one in it.
 
           Ink: `text-slate-500`, which extension.css re-points ON THE BAND to
-          #1e293b in light (9.11:1 on L0 #cbcccf) and --cc-mut-hdr #a1a1a9 in
-          dark (7.51:1 on L0 #0e0e11). Both clear the AAA 7:1 floor this row
-          has carried since EXT-FRAME-2.
+          #475569 in light (5.42:1 on L0 #d9dadd) and --cc-mut-hdr #9a9aa2 in
+          dark (5.21:1 on L0 #28292c). AA, not AAA: R-CH (2026-09-22) restored
+          the band to the palette Dennis asked for, and on that band AAA is not
+          reachable without an ink far darker than the band's own character.
+          See the R-CH note in extension.css's light ladder block.
 
           It renders on every surface including the popup, and renders nothing
           at all when the file-transfer api is absent (SendFileSlot returns
