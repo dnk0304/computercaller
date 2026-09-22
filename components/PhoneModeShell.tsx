@@ -41,6 +41,12 @@ import {
   MessageSquare,
   Bell,
   ArrowLeft,
+  // EXT-UI-4 (4): one shape per call state in the row meta line.
+  ArrowUpRight,
+  ArrowDownLeft,
+  PhoneMissed,
+  PhoneOff,
+  Phone as PhoneIcon,
   Send,
   Plus,
   Search,
@@ -851,12 +857,42 @@ function ExtDialerView() {
                       </p>
                       {/* Direction is a glyph in the meta line, not a coloured
                           badge — one colour object per row. Missed reads red
-                          because it is the only state the user must not miss. */}
+                          because it is the only state the user must not miss.
+
+                          EXT-UI-4 (4) / Gemini #10 + #14, two fixes:
+
+                          1. GLYPH SHAPE, NOT COLOUR, IS THE STATE SIGNAL. This
+                             line used to draw '↗' for outgoing and '↙' for
+                             EVERYTHING else, so "Missed" and "Incoming" were
+                             the same mark in two different colours — which is
+                             no signal at all to the ~8% of men who cannot tell
+                             those two reds and greys apart, and none at all in
+                             a greyscale screenshot. Every state now has its own
+                             silhouette: an up-right arrow, a down-left arrow, a
+                             struck-through phone, a phone with a slash. The
+                             WORD is still there and still the accessible truth;
+                             the glyph is redundant reinforcement, which is what
+                             a glyph should be.
+                          2. IT WRAPS. `truncate` clipped the whole meta line to
+                             one row, so at 200% text "Outgoing · 23h" became
+                             "Outg…". It is now a block that wraps UNDER the
+                             name; the row has no fixed height, so it grows.
+                             The action buttons are `flex-shrink-0` and stay
+                             pinned right — and note there is deliberately NO
+                             `justify-content: space-between` anywhere in this
+                             row: the name block is the only elastic item, so
+                             space-between would push the icons apart from each
+                             other the moment the name got short.
+
+                          Ink is `cc-row-meta`, an extension-scoped AAA token
+                          (see extension.css); on /app the Tailwind classes
+                          below are what paints, unchanged. */}
                       <p className={clsx(
-                        'truncate text-[10.5px]',
+                        'cc-row-meta text-[10.5px]',
                         r.type === 'missed' || r.type === 'rejected' ? 'text-red-600' : 'text-slate-500',
                       )}>
-                        {r.type === 'outgoing' ? '↗' : '↙'} {callTypeWord(r.type)} · {formatRelative(r.date, now)}
+                        <CallTypeGlyph type={r.type} />{' '}
+                        {callTypeWord(r.type)} · {formatRelative(r.date, now)}
                       </p>
                     </div>
                   </div>
@@ -870,7 +906,7 @@ function ExtDialerView() {
                     onClick={() => push({ kind: 'thread', threadId: r.number, from: 'dialer' })}
                     aria-label={`Send a message to ${label}`}
                     title={`Send a message to ${label}`}
-                    className="relative inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+                    className="cc-row-action relative inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-slate-400 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
                   >
                     <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
                   </button>
@@ -883,7 +919,7 @@ function ExtDialerView() {
                     onClick={() => { makeCall(r.number); }}
                     aria-label={`Call ${label}`}
                     title={`Call ${label}`}
-                    className="relative mr-1.5 ml-0.5 inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-emerald-600 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+                    className="cc-row-call relative mr-1.5 ml-0.5 inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-emerald-600 transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
                   >
                     <PhoneCall className="h-3.5 w-3.5" aria-hidden="true" />
                   </button>
@@ -927,6 +963,23 @@ function ExtDialerView() {
       )}
     </div>
   );
+}
+
+/**
+ * EXT-UI-4 (4). One SHAPE per call state, so direction survives greyscale,
+ * colour-vision deficiency and a 1-bit screenshot. Paired with the word, never
+ * replacing it; `aria-hidden` because the word is already the accessible name.
+ * 12px to sit on a 10.5px line without pushing it.
+ */
+function CallTypeGlyph({ type }: { type: string }) {
+  const cls = 'mr-0.5 inline-block h-3 w-3 shrink-0 align-[-2px]';
+  switch (type) {
+    case 'outgoing': return <ArrowUpRight className={cls} aria-hidden="true" />;
+    case 'incoming': return <ArrowDownLeft className={cls} aria-hidden="true" />;
+    case 'missed':   return <PhoneMissed className={cls} aria-hidden="true" />;
+    case 'rejected': return <PhoneOff className={cls} aria-hidden="true" />;
+    default:         return <PhoneIcon className={cls} aria-hidden="true" />;
+  }
 }
 
 /** Direction word for the row meta line. Matches the dashboard's vocabulary. */
@@ -1436,7 +1489,7 @@ function ThreadView({ threadId, from, focusMessageId }: ThreadViewProps) {
         <button
           type="button"
           onClick={goBack}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          className="cc-back-btn relative inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors after:absolute after:-inset-1 after:content-[''] hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
           aria-label={from === 'dialer' ? 'Back to Dial' : from === 'bell' ? 'Back to Alerts' : 'Back to messages'}
         >
           <ArrowLeft className="h-5 w-5" aria-hidden="true" />
@@ -1711,7 +1764,7 @@ function ComposeView({ initialTo, from }: ComposeViewProps) {
         <button
           type="button"
           onClick={goBack}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          className="cc-back-btn relative inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors after:absolute after:-inset-1 after:content-[''] hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
           aria-label={from === 'dialer' ? 'Back to Dial' : from === 'bell' ? 'Back to Alerts' : 'Back to messages'}
         >
           <ArrowLeft className="h-5 w-5" aria-hidden="true" />

@@ -1861,6 +1861,248 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 }
 :where([data-cc-theme=dark]) .cc-ext .cc-ft-error p { color: #fecdd3; }
 
+/* ===========================================================================
+   EXT-UI-4 — dialler frame, back-button target, Load-more affordance,
+   call-row meta, device-pill cap, upgrade-to-unlock row.
+   ---------------------------------------------------------------------------
+   EVERY HEX BELOW WAS MEASURED ON THE GROUND IT ACTUALLY LANDS ON, AFTER R-CH
+   RESTORED THE LADDER. Gemini's mockup pass proposed colours against grounds
+   we do not have (#1A1A1A / #262626 / #404040 dark, and a #F5F5F5 light
+   container that does not exist here); six of the ten ratios in its own table
+   were misstated. Nothing from that table is used unverified. The restored
+   grounds are:
+     light  L0 #d9dadd  L1 #f7f7f8  L2 #f1f1f2  L3 #ffffff  zebra #f5f5f6
+     dark   L0 #28292c  L1 #131316  L2 #18181b  L3 #212125  zebra #1c1c20
+
+   TWO NEW TOKENS, because six controls needed the same two answers and six
+   copies of a hex is six chances to drift:
+
+   --cc-aaa   AAA body ink (>= 7:1 on EVERY body ground, both themes).
+              light #4d4d4d — 8.45:1 on L3, 7.90 on L1, 7.49 on L2, 7.76 on
+                              zebra. (--cc-sec #525252 would have been 6.92:1
+                              on L2, i.e. AA, which is why this is not just
+                              --cc-sec.)
+              dark  #bdbdbd — 8.54:1 on L3, 9.87 on L1, 9.43 on L2, 9.04 on
+                              zebra.
+   --cc-bd-strong  A border you can SEE (>= 3:1, the WCAG 1.4.11 floor for a
+              non-text UI boundary) on every body ground.
+              light #86868c — 3.62:1 on L3, 3.38 on L1, 3.21 on L2, 3.32 on
+                              zebra. (Gemini's #CCCCCC is 1.61:1 on white —
+                              a frame you cannot see is not a frame.)
+              dark  #7a7a85 — 3.78:1 on L3, 4.37 on L1, 4.18 on L2, 4.00 on
+                              zebra.
+   =========================================================================== */
+.cc-ext {
+  --cc-aaa: #4d4d4d;
+  --cc-bd-strong: #86868c;
+}
+:where([data-cc-theme=dark]) .cc-ext {
+  --cc-aaa: #bdbdbd;
+  --cc-bd-strong: #7a7a85;
+}
+
+/* --- (1) M2: the dialler input gets a frame ------------------------------- */
+/* Gemini #3. The compact dialler was a transparent box: no border, no fill,
+   and `placeholder-slate-300` measuring 1.32:1 on the panel ground. Before the
+   first keypress there was nothing on screen saying where the number goes.
+
+   The field is lifted to L3 so it reads as a FIELD on the body rather than as
+   a hole in it, and given a >= 3:1 border. Placeholder and typed ink are two
+   different jobs and get two different floors, deliberately:
+     typed digits  light #171717 on #ffffff  17.93:1   (the dispatch's >= 7:1)
+                   dark  #fafafa on #212125  15.37:1
+     placeholder   light #707070 on #ffffff   4.95:1   (~4.5, NOT 7:1 — a
+                   dark  #8a8a8a on #212125   4.65:1    placeholder that reads
+                   as strongly as real input is a bug, not an improvement; it
+                   makes an empty field look filled.)
+   The light placeholder is Gemini's own #707070, which is correct HERE because
+   the ground here is white. Its dark suggestion (#909090 on #262626) was
+   measured on a ground we do not have; #8a8a8a is this panel's own --cc-mut
+   family and lands at 4.65:1 on our real L3. */
+.cc-ext .cc-dial-field {
+  background: var(--cc-l3);
+  border: 1px solid var(--cc-bd-strong);
+  border-radius: var(--r-btn);
+  /* The wrapper was a bare 64px flex box; the frame needs its ink inset from
+     its own edge, and the height must still be driven by the type so the
+     Large step grows the field instead of clipping it. */
+  height: auto;
+  min-height: calc(56px * var(--cc-size, 1));
+  padding: 0 10px;
+}
+.cc-ext .cc-dial-field input::placeholder { color: #707070; opacity: 1; }
+:where([data-cc-theme=dark]) .cc-ext .cc-dial-field input::placeholder { color: #8a8a8a; }
+/* Focus is shown on the FRAME, not with a second ring floating outside it: the
+   input itself is `outline-none` by design (a UA outline inside a framed field
+   draws two boxes). --cc-ring-input is the token EXT-SEARCH already uses for
+   exactly this job — 5.17:1 light / 6.31:1 dark, both well past 3:1. */
+.cc-ext .cc-dial-field:focus-within {
+  border-color: var(--cc-ring-input);
+  box-shadow: inset 0 0 0 1px var(--cc-ring-input);
+}
+
+/* --- (2) M3: the back button gets a 44px target -------------------------- */
+/* Gemini #9, adopted as drawn. The GLYPH stays 20px and the BOX stays 36px —
+   the thread header row is h-10 (40px) and growing the box would grow the row.
+   Only the TARGET grows, via an `after` pseudo-element bleeding 4px in every
+   direction: 36 + 4 + 4 = 44px, the WCAG 2.5.8 / platform floor, at zero
+   layout cost. The 8px gap to the avatar is the row's existing `gap-2` and is
+   unchanged; no outer margin is added, so nothing shifts.
+
+   Ink: `text-slate-500` is 4.76:1 on this band — below the 7:1 this dispatch
+   sets. Lifted to --cc-aaa: 8.45:1 light on the L3 band, 8.54:1 dark. */
+.cc-ext .cc-back-btn { color: var(--cc-aaa); }
+/* Focus ring, per dispatch: #004FBF measures 7.32:1 on white — Gemini's
+   #0055CC is 6.62:1 and fails. Dark cannot use a navy on a near-black card, so
+   it takes the same hue from the other end: #93b4ff is 7.80:1 on L3 #212125.
+   Painted as an outline rather than a box-shadow so it survives the pseudo-
+   element target above, and `outline-offset` keeps it off the glyph. */
+.cc-ext .cc-back-btn:focus-visible {
+  outline: 2px solid #004fbf;
+  outline-offset: 2px;
+}
+:where([data-cc-theme=dark]) .cc-ext .cc-back-btn:focus-visible { outline-color: #93b4ff; }
+
+/* --- (3) M4: "Load 25 more" becomes a real affordance -------------------- */
+/* Gemini #13, with its own remedy refused. It proposed a #F5F5F5 container to
+   make the control look pressable — but that fill DROPS the label from 7.81:1
+   to 6.42:1, i.e. the fix causes an AAA regression. So: BORDER ONLY, on the
+   existing ground, and the ink does not move.
+
+   WHICH READING OF THE LABEL IS RIGHT (the dispatch asks): neither number in
+   the review is the shipped token. The control paints `--cc-sec`, which is
+   #525252 (not the #595959 the review assumed). Measured: 7.81:1 on L3, 7.30
+   on L1, 7.17 on zebra, 6.92 on L2. The button sits in the call/thread list on
+   L3, so Vinci run 1's 7.81:1 is the correct reading and run 2's 7.00:1 was
+   computed from the wrong hex. It clears 7:1 on every ground it can reach
+   EXCEPT L2 — so it moves to --cc-aaa anyway (8.45:1 light) and the question
+   stops being load-bearing. Dark had the real problem: --cc-sec #a3a3a3 is
+   6.36:1 on L3, i.e. BELOW the floor on the surface this control actually sits
+   on; --cc-aaa #bdbdbd is 8.54:1 there.
+
+   Hover / focus are border and ink changes only — no fill anywhere, per the
+   dispatch. The hover ZEBRA FILL this rule used to carry is deliberately gone:
+   it was the same "grey container" idea Gemini proposed, arriving one state
+   later. */
+.cc-ext .cc-load-more {
+  color: var(--cc-aaa);
+  border: 1px solid var(--cc-bd-strong);
+  background-color: transparent;
+}
+.cc-ext .cc-load-more:not(:disabled):hover {
+  color: var(--cc-ink);
+  border-color: var(--cc-aaa);
+  background-color: transparent;
+}
+.cc-ext .cc-load-more:not(:disabled):active { border-color: var(--cc-ink); }
+.cc-ext .cc-load-more:disabled {
+  color: var(--cc-mut);
+  border-color: var(--cc-hair);
+  background-color: transparent;
+}
+/* The pill variant keeps its ground: it sits ABOVE a message list where a
+   bare outline would read as a list divider rather than as a control. */
+.cc-ext .cc-load-more.rounded-full,
+.cc-ext .cc-load-more.rounded-full:disabled {
+  background-color: var(--cc-field);
+  border-color: var(--cc-bd-strong);
+}
+.cc-ext .cc-load-more.rounded-full:not(:disabled):hover {
+  background-color: var(--cc-field);
+  border-color: var(--cc-aaa);
+}
+
+/* --- (4) M5: the call row wraps instead of clipping ---------------------- */
+/* Gemini #10 + #14. The meta line was `truncate`, so at the Large step and
+   200% zoom "Outgoing - 23h" became "Outg...". It is now a wrapping block
+   under the name; the row has no fixed height and grows with it. The action
+   buttons are already `flex-shrink-0` and stay at the right edge.
+
+   NO `justify-content: space-between` IN THIS ROW, and this comment is here
+   because the review proposed it twice after being told not to: the name block
+   is the only elastic item, so space-between would push the two action icons
+   apart from each other as soon as the name got short, which is the opposite
+   of holding them at the right.
+
+   Ink, all four re-measured on the restored grounds (rows alternate L3 and
+   zebra, and the open row is a shade darker again):
+     meta, normal   light --cc-aaa #4d4d4d   8.45:1 L3 / 7.76:1 zebra
+                    dark  --cc-aaa #bdbdbd   8.54:1 L3 / 9.04:1 zebra
+     meta, missed   light #991b1b            8.31:1 L3 / 7.63:1 zebra
+                    dark  #fca5a5            8.45:1 L3 / 8.95:1 zebra
+     message icon   light #4d4d4d            8.45 / 7.76   (was slate-400,
+                    dark  #bdbdbd            8.54 / 9.04    2.55:1 — invisible)
+     call icon      light #065f46            7.68 / 7.05   (was emerald-600,
+                    dark  #6ee7b7           10.53 / 11.14   3.77:1)
+   The call icon stays emerald: it is the row's one colour object and the
+   product's action colour. Only its VALUE moved, not its hue. */
+.cc-ext .cc-row-meta {
+  color: var(--cc-aaa);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.cc-ext .cc-row-meta.text-red-600 { color: #991b1b; }
+:where([data-cc-theme=dark]) .cc-ext .cc-row-meta.text-red-600 { color: #fca5a5; }
+.cc-ext .cc-row-action { color: var(--cc-aaa); }
+.cc-ext .cc-row-call { color: #065f46; }
+:where([data-cc-theme=dark]) .cc-ext .cc-row-call { color: #6ee7b7; }
+/* The row is a flex box with `items-center`; once the meta wraps, centring the
+   avatar against a two-line block leaves it floating. Top-aligned with a hair
+   of optical offset reads as one object at every text size. */
+.cc-ext .cc-list > li > [role="button"] { align-items: flex-start; }
+.cc-ext .cc-list > li > [role="button"] > div:first-child { margin-top: 1px; }
+
+/* --- M7: the device pill stops throwing away the header's width ---------- */
+/* T-PILL-CAP-210. ConnectionStatus pins `max-w-[210px]` in the TSX because
+   that is the right ceiling on /app. In the extension header it was the wrong
+   one: measured at base, 245px @360 and 285px @400 of header width sat unused
+   after the Send-file icon, while the device name truncated below the 8-visible
+   -character floor at EVERY size/width combination. The cap is released here
+   and only here, so /app is untouched.
+
+   AC-1 still holds by construction: the row is `white-space: nowrap`, every
+   other item in it is `flex-shrink-0`, and the pill's name is the only
+   `truncate` in the row — so the pill is the sole thing that can absorb a
+   narrow panel, which is exactly what AC-1 asks for. Releasing a cap cannot
+   make a sibling overflow; it can only stop starving the one elastic item. */
+.cc-ext .cc-ext-conn .cc-conn-pill {
+  max-width: none;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* --- M8: a readable way out of the tier failure -------------------------- */
+/* The banner above this row stays CTA-free (A1.1-M10 / R-AN). This row is a
+   sibling: the client's own offer, on its own ground, routed through the same
+   openUpgrade('fileTransfer') wiring as every other lock in the feature.
+
+   It gets L3 rather than inheriting the banner's L1 for two reasons. It reads
+   as a separate object, which is the whole point — and it is what lets the
+   dispatch's mandated #004FBF work: that blue is 7.32:1 on white but only
+   6.83:1 on L1, so on the banner's own ground the required colour would have
+   failed the required floor. (Gemini's #0055CC is 6.62:1 even on white.)
+     button ink   light #004fbf on #ffffff  7.32:1
+                  dark  #93b4ff on #212125  7.80:1
+     helper ink   light #4d4d4d on #ffffff  8.45:1
+                  dark  #bdbdbd on #212125  8.54:1
+   The dispatch warned the helper grey would fail "on the pink ground" — worth
+   recording that on THIS surface there is no pink ground: `.cc-ext .cc-ft-error`
+   already repaints Tailwind's rose-50 to L1, so the review's 3.97:1 figure
+   describes /app, not the extension. Measured, not assumed. */
+.cc-ext .cc-ft-unlock {
+  background: var(--cc-l3);
+  border-bottom: 1px solid var(--cc-hair);
+}
+.cc-ext .cc-ft-unlock-help { color: var(--cc-aaa); }
+.cc-ext .cc-ft-unlock-btn {
+  color: #004fbf;
+  border: 1px solid var(--cc-bd-strong);
+  background: transparent;
+}
+.cc-ext .cc-ft-unlock-btn:hover { border-color: #004fbf; }
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-unlock-btn { color: #93b4ff; }
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-unlock-btn:hover { border-color: #93b4ff; }
+
 /* --- Portalled: the dialog and the toast --------------------------------- */
 html:has(.cc-ext) .cc-ft-panel,
 html:has(.cc-ext) .cc-ft-toast > div {

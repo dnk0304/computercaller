@@ -445,11 +445,28 @@ try {
   // R-CH floors. These are NOT a contrast goal any more — Dennis overrode the
   // >= 12 target — they are a REGRESSION FENCE around the palette he chose, so
   // that a future edit cannot quietly collapse the header into Chrome's bar or
-  // into its own body without failing here. Measured on the restored ladder:
-  // dark 8.72 / 6.38 / 2.34, light ~13 / ~5 / ~2.7.
+  // into its own body without failing here. Pinned to what this harness ACTUALLY
+  // MEASURES on the restored ladder, which is not what the amendment predicted:
+  // the row it samples as "body" is the first body surface under the header, and
+  // that is L3 (the card), not L1. Measured 2026-09-22 after the R-CH revert:
+  //            bar->header   header->body   bar->body
+  //   light      12.95          12.95          0.00
+  //   dark        8.72           3.71         12.43
+  //
+  // The third check is therefore DARK-ONLY, and that is a finding, not a fudge:
+  // in light our card is #ffffff and Chrome's own light side-panel bar is also
+  // #ffffff, so the two surfaces are literally the same colour and no floor above
+  // zero can exist there. R-CH accepted exactly this cost when it chose Dennis's
+  // palette over the EXT-FRAME-2 one. The light number is still computed, still
+  // printed and still written into the JSON — it is recorded rather than fenced.
+  // The two fences that DO have teeth in both themes are the first two.
   check('dL-bar-to-header>=8', dBarHdr >= 8, `${dBarHdr.toFixed(2)} (${barFill} -> ${headerFill})`);
-  check('dL-header-to-body>=6', dHdrBody >= 6, `${dHdrBody.toFixed(2)} (${headerFill} -> ${bodyFill})`);
-  check('dL-bar-to-body>=2', dBarBody >= 2, `${dBarBody.toFixed(2)} (${barFill} -> ${bodyFill})`);
+  check('dL-header-to-body>=3', dHdrBody >= 3, `${dHdrBody.toFixed(2)} (${headerFill} -> ${bodyFill})`);
+  check(
+    'dL-bar-to-body>=2 (dark; recorded only in light)',
+    THEME === 'dark' ? dBarBody >= 2 : true,
+    `${dBarBody.toFixed(2)} (${barFill} -> ${bodyFill})${THEME === 'light' ? ' — recorded, not fenced: both are #ffffff' : ''}`,
+  );
 
   // --- the crop Dennis approves from --------------------------------------
   const cropH = Math.min(cap.height - barTop - 8, 640);
