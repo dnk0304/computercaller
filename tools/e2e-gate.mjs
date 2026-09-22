@@ -46,6 +46,7 @@ import {
   classifyHeadroom, parseHeadroomGib, topRssHolders, headroomReport, DEFAULT_HEADROOM_GIB,
 } from './lib/headroom.mjs';
 import { resolveJavaHome } from './lib/java-home.mjs';
+import { countJava, gradleStopRecord } from './lib/gradle-stop.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
 // longer encodes the phase in the worktree name.
 import { isGateWorktree, isGateMain } from './gate-location.mjs';
@@ -68,6 +69,15 @@ const has = (name) => argv.includes(`--${name}`);
  * OPT-IN, and deliberately not the default — see the note at the harness loop.
  */
 const PARALLEL_HARNESSES = has('parallel-harnesses');
+/**
+ * GATE-TOOLING-1 (2). Opt-in for a WEB lane: stop the Gradle daemons before the
+ * first headroom check. The android lane does it unconditionally — its own
+ * daemons are the ones at issue — but a web lane on a box that just built an
+ * APK is exactly the BAT-3 shape (RULE 23: 2-4 orphaned daemons at ~600 MiB
+ * each are the usual cause of an env:headroom ENV-NONRUN), so a web lane can
+ * ask for it.
+ */
+const GRADLE_STOP = has('gradle-stop');
 
 /**
  * (f) --phase is REQUIRED. It used to default to P0, and a P3 lane ran its
@@ -586,7 +596,14 @@ const MIN_CHECKS_OVERRIDE = {
   'unit:ctx-parity': 14,
   // GATE-PREFLIGHT. Post-dates the parity baseline, so the floor is declared
   // here. Measured after the dual-guard: 54 assertions.
-  'unit:headroom': 54,
+  // GATE-TOOLING-1 (2) re-measure 54 -> 77: T-GATE-HEADROOM-RECHECK removed the
+  // memoisation (both browser doors now measure) and added the RULE 23 gradle
+  // stop. The 23 new assertions are the recheck's distinct step name, the
+  // property that a refusal on the SECOND call takes the identical exit-3 /
+  // no-JSON path as the first, and the gradle-stop decisions with their
+  // CONTROL arms. The floor moves WITH the suite: left at 54, the whole
+  // recheck half could be deleted and the suite would still print N/N.
+  'unit:headroom': 77,
   // GATE-TOOLING-1 (1), T-GATE-REAP-ATTEMPT. The per-attempt leak census.
   // Post-dates the parity baseline, so the floor is declared here. Measured at
   // the commit that adds it: 22 assertions, of which two are CONTROL arms that
@@ -1197,25 +1214,83 @@ function rssCensus() {
 }
 
 /**
+ * Count `java.exe` in the read-only census, BY IMAGE NAME.
+ *
+ * Rule 12 in both directions: an image-name match may never reach a killer, so
+ * this returns a NUMBER and never a pid. A JVM on this box may be Dennis's IDE
+ * or another lane's daemon, which is exactly why the gradle-stop step WARNS on
+ * a non-zero count and never fails on it.
+ */
+function javaProcessCount() {
+  return countJava(rssCensus());
+}
+
+/**
+ * GATE-TOOLING-1 (2) / RULE 23. `gradlew --stop`, recorded as a step.
+ *
+ * Orphaned Gradle daemons (2-4 x ~600 MiB) are the usual cause of an
+ * `env:headroom` ENV-NONRUN, and BAT-3's refusal was pre-gate residue rather
+ * than anything the gate had started. So the gate stops them itself and RECORDS
+ * the before/after java.exe counts, which turns "the daemons were probably the
+ * problem" into two numbers in the JSON.
+ *
+ * NEVER a FAIL on `javaAfter > 0`: a surviving JVM may belong to Dennis or to
+ * another lane, and this gate does not kill what it did not start.
+ */
+function gradleStop(name) {
+  const AROOT = join(ROOT, 'dnkdialer-android');
+  const bat = join(AROOT, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
+  if (!existsSync(bat)) {
+    skip(name, `"${bat.replace(/\\/g, '/')}" --stop`, 'not run — dnkdialer-android/gradlew.bat is absent');
+    return;
+  }
+  const javaBefore = javaProcessCount();
+  const t0 = Date.now();
+  const r = spawnSync(`"${bat}" --stop`, {
+    cwd: AROOT, shell: true, encoding: 'utf8', timeout: 5 * 60_000,
+    env: { ...process.env, JAVA_HOME: resolveJavaHome() || process.env.JAVA_HOME || '' },
+  });
+  const javaAfter = javaProcessCount();
+  const v = gradleStopRecord({ exit: r.status, javaBefore, javaAfter });
+  record(name, `"${bat.replace(/\\/g, '/')}" --stop`, v.exit, Date.now() - t0, v.counts);
+  if (v.warn) {
+    console.log(`  WARN  ${name} — ${javaAfter} java.exe still running after --stop `
+      + `(was ${javaBefore}). Not a FAIL: a JVM on this box may be Dennis's IDE or `
+      + "another lane's daemon, and this gate never kills what it did not start.");
+  } else {
+    console.log(`  ok    ${name} — java.exe ${javaBefore} -> 0`);
+  }
+}
+
+/**
  * GATE-PREFLIGHT. Refuse to start browser work when the box cannot survive it.
  *
- * Memoised: it is called at EVERY point where this gate is about to launch a
- * browser, and there are two of them, but the machine is only asked once and
- * only one `env:headroom` step is ever recorded.
+ * GATE-TOOLING-1 (2): NO LONGER MEMOISED. It is called at every point where the
+ * gate is about to launch a browser, and memoising it meant only the FIRST door
+ * was guarded — the measurement that mattered for the Playwright block was
+ * taken before the P6 real-relay proofs had allocated anything. Every call now
+ * measures; the first records `env:headroom`, later calls record
+ * `env:headroom-recheck` with the door they guard. Either can refuse, with the
+ * same semantics as before: outcome ENV-NONRUN, exit 3, stopDevServer(), and NO
+ * gate JSON — a JSON is a claim about this tree and there is no honest claim
+ * to make about steps that never ran.
  *
  * @param {string} where names the browser stage being guarded, so the console
  *        says which one stopped.
  */
 let headroomChecked = false;
 function preflightHeadroom(where) {
-  if (headroomChecked) return;
+  // RULE 23, recorded BEFORE the first measurement so the numbers it reports
+  // are the numbers the check then sees.
+  if (!headroomChecked && (ANDROID || GRADLE_STOP)) gradleStop('env:gradle-stop');
+  const stepName = headroomChecked ? 'env:headroom-recheck' : 'env:headroom';
   headroomChecked = true;
   const verdict = classifyHeadroom({ freeBytes: osFreemem(), requiredGib: HEADROOM_GIB });
-  record('env:headroom', `os.freemem() >= ${HEADROOM_GIB} GiB (before ${where})`, 0, 0,
+  record(stepName, `os.freemem() >= ${HEADROOM_GIB} GiB (before ${where})`, 0, 0,
     { freeGib: verdict.freeGib, requiredGib: verdict.requiredGib },
-    verdict.ok ? {} : { outcome: 'ENV-NONRUN', before: where });
+    verdict.ok ? { before: where } : { outcome: 'ENV-NONRUN', before: where });
   if (verdict.ok) {
-    console.log(`  ok    env:headroom — ${verdict.freeGib} GiB free >= ${verdict.requiredGib} GiB (before ${where})`);
+    console.log(`  ok    ${stepName} — ${verdict.freeGib} GiB free >= ${verdict.requiredGib} GiB (before ${where})`);
     return;
   }
   console.log(headroomReport(verdict, topRssHolders(rssCensus())));
@@ -2287,6 +2362,13 @@ if (ANDROID) {
   // Step 12 is a prohibition, not a command: the gate never signs a release
   // APK. Asserted structurally — no assembleRelease/bundleRelease above.
   record('android:never-signs-release', '(assertion: no assembleRelease/bundleRelease in this tool)', 0, 0, { releaseTasks: 0 });
+  /**
+   * GATE-TOOLING-1 (2). The gate's OWN daemons, stopped at the end of the lane
+   * it started them in — the rule-14 analogue for a JVM. Without this the
+   * next lane inherits 2-4 x ~600 MiB and reads it as a box that is out of
+   * memory (RULE 23), which is how a tooling artefact becomes an ENV-NONRUN.
+   */
+  gradleStop('android:gradle-stop');
 }
 
 /**
