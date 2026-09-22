@@ -657,15 +657,27 @@ function CompactDevicePill({
   // lands on "Active" with no intermediate flash and no timer to get wrong.
   const syncingNow = active && syncing;
 
-  const dotClass = active
+  // EXT-UI-5 (M6 ADOPT). The dot used to be one 6px emerald circle for BOTH
+  // active states, told apart only by `motion-safe:animate-pulse` — so with
+  // reduced motion on, in any still frame, and in every screenshot we ship,
+  // "Syncing…" and "Active" were the same pixels. Motion is a decoration of a
+  // state channel, never the channel itself.
+  //
+  // Now SHAPE carries the state and colour reinforces it (see the
+  // `.cc-conn-dot` block in app/extension/extension.css for the geometry, the
+  // hexes and the measured ratios): circle = joined (filled settled / open
+  // ring still working), square = not joined (filled failed / open waiting),
+  // diamond = a request in the air. Shape survives colour-blindness and
+  // greyscale; nothing here animates or transitions.
+  const dotState = active
     ? syncingNow
-      ? 'bg-emerald-500 motion-safe:animate-pulse'
-      : 'bg-emerald-500'
+      ? 'syncing'
+      : 'active'
     : connecting
-      ? 'bg-amber-500 motion-safe:animate-pulse'
+      ? 'connecting'
       : failed
-        ? 'bg-red-500'
-        : 'bg-slate-400';
+        ? 'failed'
+        : 'idle';
 
   const word = active
     ? syncingNow
@@ -717,7 +729,19 @@ function CompactDevicePill({
       }
       className="cc-conn-pill inline-flex h-6 min-w-0 max-w-[210px] items-center gap-1.5 whitespace-nowrap rounded-full bg-slate-100 pl-2 pr-1 text-[11.5px] font-medium"
     >
-      <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${dotClass}`} aria-hidden="true" />
+      {/* The dot is the ONE element that carries the state to assistive tech,
+          and the visible word beside it is marked aria-hidden. Both are needed
+          visually, but exposing both would make every state change announce
+          itself twice ("Active, Active"). Labelling the dot rather than the
+          word is what satisfies the contract that Syncing and Active must not
+          resolve to the same accessible name — they never can, because the
+          label IS the word. */}
+      <span
+        className="cc-conn-dot flex-shrink-0"
+        data-dot={dotState}
+        role="img"
+        aria-label={word}
+      />
       {name && (
         <span className="min-w-0 truncate font-semibold text-slate-800" title={name}>
           {name}
@@ -727,7 +751,7 @@ function CompactDevicePill({
           by the truncating name rather than by the value. The name is the only
           elastic thing in this row; everything else is already fixed. */}
       <BatteryIndicator view={battery} variant="compact" />
-      <span className={`flex-shrink-0 ${wordClass}`}>{word}</span>
+      <span className={`flex-shrink-0 ${wordClass}`} aria-hidden="true">{word}</span>
 
       {active ? (
         <button

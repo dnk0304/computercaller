@@ -1092,6 +1092,85 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    light. */
 .cc-ext .cc-ext-header .cc-account-dot { box-shadow: 0 0 0 1.5px var(--cc-l0); }
 
+/* --- L0: the connection status dot (EXT-UI-5, from M6 ADOPT) ------------- */
+/* The problem this solves: "Syncing…" and "Active" were the SAME 6px emerald
+   dot, separated only by `motion-safe:animate-pulse`. For a user with reduced
+   motion — or for any still frame, any screenshot, any glance shorter than one
+   pulse period — the two states were pixel-identical. Motion is not a state
+   channel; it is an optional decoration of one.
+   So SHAPE carries the state and colour only reinforces it:
+     circle  = the browser and the phone are joined   (filled = settled,
+               open ring = work still in flight)
+     square  = they are not joined                    (filled = it failed,
+               open = waiting for the phone)
+     diamond = a pairing request is in the air
+   Shape survives every form of colour-blindness and survives a greyscale
+   print; colour is the fast second read for everyone else. Nothing here
+   animates or transitions — the state change is instantaneous by contract.
+
+   GEOMETRY. 8px outer, 2px stroke, in BOTH states, so the two never differ by
+   footprint. 8px is the smallest outer diameter at which a 2px ring still
+   leaves a 4px hole that reads as a hole at 1x on a 400px panel; at the old
+   6px the hole is 2px and the ring is indistinguishable from a filled dot,
+   which would have defeated the whole change. The +2px is absorbed by the
+   pill's truncating device name (the only elastic item in the row, and
+   uncapped since EXT-UI-4 M7); the pill is h-6/24px, so the row height is
+   untouched.
+
+   CONTRAST. Every hex below was re-measured by me on the R-CJ grounds — the
+   revert removed the header band, so L0 is plain white in light and the page
+   colour in dark, and `--cc-mut-hdr` and the band-scoped header-ink overrides
+   no longer exist. Both grounds the dot can sit on were measured: L0 (light
+   #ffffff / dark #0b0b0d) and the pill fill it actually paints on (light
+   bg-slate-100 #f1f5f9 / dark .bg-slate-100 -> --cc-field #1f1f23). The
+   binding ground FLIPPED in light: with L0 now lighter than the pill, the
+   pill is the worse ground in light as it already was in dark, so the pill
+   number binds in both themes.
+     light  active  #05493a  10.39:1 on L0 | 9.49:1 on pill
+            syncing #1e3a8a  10.36:1 | 9.45:1
+            connect #633208  10.55:1 | 9.63:1
+            failed  #7f1d1d  10.02:1 | 9.15:1
+            idle    #3f3f46  10.44:1 | 9.53:1
+     dark   active  #34d399  10.23:1 | 8.54:1
+            syncing #93c5fd  10.90:1 | 9.11:1
+            connect #fbbf24  11.78:1 | 9.84:1
+            failed  #fca5a5  10.36:1 | 8.65:1
+            idle    #b4b4bd   9.56:1 | 7.98:1
+   The floor is 7.98:1 on the binding ground, i.e. comfortably AAA-for-text on
+   a mark that only owes 3:1 as a non-text indicator. No hex moved: all ten
+   already cleared 7:1 on the new grounds, so the revert cost this lane
+   nothing. This block touches no token and no header ink — it only paints
+   the dot. */
+.cc-ext .cc-conn-dot {
+  position: relative;
+  display: inline-block;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+.cc-ext .cc-conn-dot[data-dot="active"]  { border-radius: 50%; background: #05493a; }
+.cc-ext .cc-conn-dot[data-dot="syncing"] { border-radius: 50%; box-shadow: inset 0 0 0 2px #1e3a8a; }
+.cc-ext .cc-conn-dot[data-dot="failed"]  { border-radius: 1px; background: #7f1d1d; }
+.cc-ext .cc-conn-dot[data-dot="idle"]    { border-radius: 1px; box-shadow: inset 0 0 0 2px #3f3f46; }
+/* The diamond is drawn on a pseudo-element inset 1px so its ROTATED bounding
+   box (6px x sqrt2 = 8.49px) stays inside the 8px slot the other four use —
+   rotating the element itself would have made this one state 8.49px wide. */
+.cc-ext .cc-conn-dot[data-dot="connecting"]::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 1px;
+  background: #633208;
+  transform: rotate(45deg);
+}
+
+:where([data-cc-theme=dark]) .cc-ext .cc-conn-dot[data-dot="active"]  { background: #34d399; }
+:where([data-cc-theme=dark]) .cc-ext .cc-conn-dot[data-dot="syncing"] { box-shadow: inset 0 0 0 2px #93c5fd; }
+:where([data-cc-theme=dark]) .cc-ext .cc-conn-dot[data-dot="failed"]  { background: #fca5a5; }
+:where([data-cc-theme=dark]) .cc-ext .cc-conn-dot[data-dot="idle"]    { box-shadow: inset 0 0 0 2px #b4b4bd; }
+:where([data-cc-theme=dark]) .cc-ext .cc-conn-dot[data-dot="connecting"]::before { background: #fbbf24; }
+
 /* --- L0: the Send-file control (EXT-UI-8 (b)) ---------------------------- */
 /* The glyph itself is `text-slate-500`, which the two rules above re-point to
    the band ink in each theme (5.42:1 light, 5.21:1 dark after R-CH restored the
