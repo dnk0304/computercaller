@@ -79,25 +79,30 @@ for (const p of everyPhase) {
 }
 const all = [...new Set(everyPhase.flatMap(harnessesFor))].sort();
 
-// BAT-2 (d). A harness slot may be REGISTERED before its script is written,
-// and exactly one is: `bat-ui-proof` is registered here so the frozen phase
-// string changes once for the BAT project, while BAT-3 writes the script.
+// BAT-2 (d) / BAT-3 (d). A harness slot may be REGISTERED before its script is
+// written, and exactly one ever was: `bat-ui-proof` was registered by BAT-2 so
+// the frozen phase string changed once for the BAT project, while BAT-3 wrote
+// the script.
 //
-// The exception is a NAMED LIST rather than a softened assertion, and the list
-// is asserted itself. A blanket `existsSync(...) || true` would retire the
-// check for every harness forever; a stub script that printed "0/0 passed"
-// would be worse still — that is the gate-step-that-ran-nothing failure this
-// file exists to prevent. What is allowed is: this one name, running on
-// exactly one phase, declared out loud.
-const PENDING_SCRIPTS = ['bat-ui-proof'];
-check('the pending-script list is exactly the BAT-3 slot',
-  PENDING_SCRIPTS.join(',') === 'bat-ui-proof', PENDING_SCRIPTS.join(','));
-for (const h of PENDING_SCRIPTS) {
-  const phases = everyPhase.filter((p) => harnessesFor(p).includes(h));
-  check(`pending ${h} is claimed by exactly one phase`, phases.length === 1, phases.join(','));
-  check(`pending ${h} is claimed by BAT`, phases[0] === 'BAT', String(phases[0]));
-  check(`pending ${h} really is absent — remove it from PENDING_SCRIPTS once written`,
-    !existsSync(join(ROOT, 'scripts', `${h}.mjs`)));
+// BAT-3 has now written it, so the list is EMPTY and the generic
+// `scripts/<h>.mjs exists` sweep below covers bat-ui-proof like every other
+// harness. The list itself is kept, asserted, and deliberately not deleted:
+// it is the declared, named exception mechanism, and the next project that
+// needs to register a slot ahead of its script should re-use it rather than
+// soften the sweep with an `existsSync(...) || true` that would retire the
+// check for every harness forever.
+//
+// The three assertions BAT-2's pending entry earned are kept as assertions
+// about the FILLED slot, so this file's own check count does not fall when a
+// slot is filled — a floor that drops on a successful delivery is a floor that
+// teaches the next lane to lower it.
+const PENDING_SCRIPTS = [];
+check('the pending-script list is empty — the BAT-3 slot is filled',
+  PENDING_SCRIPTS.join(',') === '', PENDING_SCRIPTS.join(','));
+{
+  const phases = everyPhase.filter((p) => harnessesFor(p).includes('bat-ui-proof'));
+  check('bat-ui-proof is claimed by exactly one phase', phases.length === 1, phases.join(','));
+  check('bat-ui-proof is claimed by BAT', phases[0] === 'BAT', String(phases[0]));
 }
 for (const h of all) {
   if (PENDING_SCRIPTS.includes(h)) continue;
