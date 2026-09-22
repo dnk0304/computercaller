@@ -80,6 +80,11 @@ const KNOWN = [
   'P6',
   'D1',
   'FT1', 'FT2', 'FT3',
+  // BAT-2 (d). Registering a phase in KNOWN_PHASES is necessary and not
+  // sufficient — the positive arm here is what proves the gate's own whitelist
+  // accepts it. Without this row, `--phase BAT` could be refused outright and
+  // every BAT lane would report "unrecognised phase" at the moment it mattered.
+  'BAT',
   'MERGE',
 ];
 

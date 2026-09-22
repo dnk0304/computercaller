@@ -488,8 +488,32 @@ NOTIFICATION_REPLY/DISMISS/REPLY_SENT/REPLY_FAILED/REMOVED.
 `CALL_STATUS`: `{state}` clear, number and name sealed.
 
 **Plaintext:** all pairing / lobby / presence / resume / reset / heartbeat /
-permission / audio / status frames, and — **mandatorily** — `GET_MESSAGES`,
-`GET_CALL_LOGS`, `GET_CONTACTS`.
+permission / audio / status frames — including `BATTERY` (see the footnote
+below) — and — **mandatorily** — `GET_MESSAGES`, `GET_CALL_LOGS`,
+`GET_CONTACTS`.
+
+> **Footnote — `BATTERY` (GATE1 Addendum BAT-A1: PLAINTEXT-OK).** Wire form
+> `BATTERY:{"pct":<int 0..100>,"charging":<bool>,"ts":<epoch ms>}` — phone to
+> browsers only. There is no `GET_BATTERY`; the phone pushes. It joins the
+> presence / status family beside `AUDIO_STATUS`, `BT_HEADSET_STATUS` and
+> `NOTIFICATION_PERMISSION`: it is added to **none** of
+> `SEALED_FRAME_TYPES`, `SEALED_PASSTHROUGH_FRAME_TYPES` or
+> `E2eFrameGate.SEALED_TYPES`, so `requiresSeal()` is false and the P3 (c)
+> downgrade guard passes it under mode ON. What leaks is a battery level and a
+> charging flag — no content, and no identity beyond what presence already
+> shows. Security's ruling carries three binding MUSTs, transcribed from the
+> ledger byte for byte:
+>
+> **MUST-1:** accept BATTERY only phone->browser from the PAIRED phone peer;
+> any other origin -> drop + count.
+>
+> **MUST-2:** no relay-minted BATTERY — a frame carrying a top-level `relay`
+> key is REJECTED + counted, never stripped (mirrors §13.7.2 M6/M7).
+>
+> **MUST-3:** display-only + shape-validated (pct int 0..100, charging strict
+> bool, ts numeric); never touches mode/pairing/tier/quota/session;
+> storage.session only (cleared on sign-out/unpair); excluded from the resume
+> frameBuffer.
 
 > **Note on the GET_\* frames.** These stay plaintext deliberately.
 > `gateBrowserSyncFrame()` is the only tier-enforcement chokepoint in the

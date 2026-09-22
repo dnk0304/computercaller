@@ -61,6 +61,11 @@ export const KNOWN_PHASES = [
   'P6', 'P6.1', 'P6.1C', 'P6.1D',
   'D1',
   'FT1', 'FT2', 'FT3',
+  // BAT -- phone battery telemetry (BAT-1 android / BAT-2 relay+SW+web /
+  // BAT-3 UI). Registered by BAT-2 so the frozen sorted-union string in
+  // tests/harness-list.test.mjs changes ONCE for this project rather than
+  // once per lane; BAT-3 writes scripts/bat-ui-proof.mjs into the slot below.
+  'BAT',
   'MERGE',
 ];
 
@@ -83,6 +88,30 @@ const BASE = [
  */
 export const PHASE_HARNESSES = {
   /**
+   * BAT-3 -- the battery UI proof, both surfaces (web header + extension
+   * shell): thresholds, the charging overlay, "last seen", the stale tooltip,
+   * the a11y name, both themes, text size 1.4x.
+   *
+   * REGISTERED BY BAT-2, WRITTEN BY BAT-3, AND THAT IS DELIBERATE. The frozen
+   * sorted-union string in tests/harness-list.test.mjs is the one place a new
+   * phase or harness cannot arrive by accident, and two lanes editing it in the
+   * same window conflict instead of interleaving. Registering the whole BAT
+   * slot in ONE commit means that string changes once for this project rather
+   * than once per lane. Until BAT-3 lands the script, a browser lane under
+   * --phase BAT fails on a missing file -- which is the LOUD failure and the
+   * correct one: a slot that silently resolved to nothing is the P3.1 defect
+   * this table exists to prevent.
+   *
+   * BAT only. BAT-1 is android and BAT-2 is node-only (relay + SW + hook);
+   * neither builds these surfaces, and both gate on their own lanes.
+   */
+  'bat-ui-proof': {
+    runs: ['BAT'],
+    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
+      'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D',
+      'D1', 'FT1', 'FT2', 'FT3', 'MERGE'],
+  },
+  /**
    * The MV3 service-worker lifetime proof. Its surfaces exist from P3 on.
    * MERGE and D1 run it because both are integration runs over a tree that
    * contains the SW: a merge gate that is a SUBSET of the phases it merges
@@ -93,7 +122,9 @@ export const PHASE_HARNESSES = {
     // P2.3 (revocation TRIGGER wiring) edits usePhoneBridge + ConnectionStatus,
     // i.e. the hook and the component these surfaces render from — same
     // reasoning that put P2.2 on this list.
-    runs: ['P2.2', 'P2.3', 'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'D1', 'MERGE'],
+    // BAT runs it: BAT-2 edits chrome-extension/background.js + sw-session.js,
+    // i.e. the worker whose lifetime this proof measures.
+    runs: ['P2.2', 'P2.3', 'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'BAT', 'D1', 'MERGE'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P4.2', 'FT1', 'FT2', 'FT3'],
   },
   /**
@@ -103,7 +134,9 @@ export const PHASE_HARNESSES = {
    * to evidence, and MERGE for the same superset reason as above.
    */
   'e2e-ui-proof': {
-    runs: ['P2.2', 'P2.3', 'P3.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'D1', 'MERGE'],
+    // BAT runs it for the P2.2 reason: BAT-2 edits usePhoneBridge.ts, the hook
+    // these surfaces render from.
+    runs: ['P2.2', 'P2.3', 'P3.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'BAT', 'D1', 'MERGE'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1',
       'P3', 'P3.1', 'P4', 'P4.1', 'P4.2', 'FT1', 'FT2', 'FT3'],
   },
@@ -116,14 +149,14 @@ export const PHASE_HARNESSES = {
     runs: ['FT3'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
       'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D',
-      'D1', 'FT1', 'FT2', 'MERGE'],
+      'BAT', 'D1', 'FT1', 'FT2', 'MERGE'],
   },
   /** FT-3a: the transfer wire/UI on the web app. FT3 only, same reasoning. */
   'ft-web-proof': {
     runs: ['FT3'],
     skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
       'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D',
-      'D1', 'FT1', 'FT2', 'MERGE'],
+      'BAT', 'D1', 'FT1', 'FT2', 'MERGE'],
   },
 };
 

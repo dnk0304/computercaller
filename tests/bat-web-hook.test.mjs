@@ -226,6 +226,40 @@ eq('(4) the reducer takes exactly (prev, data) — it is given no other state',
     /setBattery\(\(prev\) =>/.test(body));
 }
 
+// ── 5. BAT-2 (d): the §13.7 transcription, pinned ─────────────────────────
+{
+  // The spec is the SOURCE the three-way parity pin reads (§13.7 -> web ->
+  // E2eFrameGate.kt). BATTERY is PLAINTEXT, so it changes none of the three
+  // SEALED lists and the parity pin is untouched — which is exactly why the
+  // transcription needs its own pin: nothing else in the repo would notice if
+  // the footnote were deleted.
+  const SPEC = readFileSync(join(ROOT, 'e2e-evidence', 'E2E-SPEC-v1.0.md'), 'utf8').replace(/\r\n?/g, '\n');
+  const sec = SPEC.indexOf('### 13.7 Sealed vs plaintext frame list');
+  check('(5) §13.7 was found', sec > 0);
+  const nextSec = SPEC.indexOf('#### 13.7.1', sec);
+  const body = SPEC.slice(sec, nextSec > 0 ? nextSec : sec + 6000);
+  check('(5) §13.7 names BATTERY in the PLAINTEXT family', /\*\*Plaintext:\*\*[\s\S]{0,400}`BATTERY`/.test(body));
+  check('(5) the footnote cites the ruling by name', /GATE1 Addendum BAT-A1: PLAINTEXT-OK/.test(body));
+  // The three MUSTs, transcribed. Each is matched on its own DISCRIMINATING
+  // clause rather than on the word "MUST-n", so deleting the substance while
+  // leaving the heading fails here.
+  check('(5) MUST-1 is transcribed (origin)',
+    /MUST-1:\*\*[\s\S]{0,200}only phone->browser from the PAIRED phone peer/.test(body));
+  check('(5) MUST-2 is transcribed (rejected, never stripped)',
+    /MUST-2:\*\*[\s\S]{0,300}REJECTED \+ counted, never stripped/.test(body)
+    && /13\.7\.2 M6\/M7/.test(body));
+  check('(5) MUST-3 is transcribed (display-only, shape, session, buffer)',
+    /MUST-3:\*\*[\s\S]{0,400}display-only \+ shape-validated/.test(body)
+    && /storage\.session only \(cleared on sign-out\/unpair\)/.test(body)
+    && /excluded from the resume\s*>?\s*frameBuffer/.test(body));
+  check('(5) the footnote states BATTERY is in NONE of the three sealed lists',
+    /added to \*\*none\*\*[\s\S]{0,260}E2eFrameGate\.SEALED_TYPES/.test(body));
+  // CONTROL: the matcher can come back empty-handed, so the cells above are not
+  // asserting the truthiness of a regex that always fires.
+  check('(5) CONTROL: a clause that is NOT in §13.7 does not match',
+    !/MUST-4:/.test(body) && !/GET_BATTERY is sealed/.test(body));
+}
+
 // ── summary ────────────────────────────────────────────────────────────────
 console.log(`\nbat-web-hook: ${pass}/${pass + fail} checks passed`);
 if (fail) { console.error(`\n${fail} FAILED`); process.exit(1); }

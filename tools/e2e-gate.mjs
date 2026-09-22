@@ -505,6 +505,15 @@ const MIN_CHECKS_OVERRIDE = {
   // registers them: ft-ui-proof 96 (FT-3b (d)), ft-web-proof 26 (FT-3a).
   'harness:ft-ui-proof': 96,
   'harness:ft-web-proof': 26,
+  // BAT-3's battery UI proof. Registered by BAT-2 (d) alongside the phase, so
+  // the slot arrives with its floor rather than gaining one later — a step that
+  // runs with no floor reports whatever it feels like and still passes. The
+  // number is BAT-3's contract: the brief's checklist is thresholds (<=20 amber,
+  // <=10 red), the charging overlay, "last seen", the stale-tooltip case, the
+  // a11y name, both themes and text size 1.4x, across the web header and the
+  // extension shell. BAT-3 RAISES this to its measured total in the commit that
+  // lands the script; it must never be lowered.
+  'harness:bat-ui-proof': 14,
   // The phase-list test itself. Measured 33. Not decoration: with FT3 removed
   // from the FT list the mutant drops to 31 TOTAL (two `scripts/<h>.mjs exists`
   // checks stop being generated), so the floor catches the deletion even if
@@ -535,7 +544,13 @@ const MIN_CHECKS_OVERRIDE = {
   // literals, so removing any one of them shows up here as a missing check.
   // Measured at the commit that adds it: 108 assertions.
   'unit:no-daily-caps': 108,
-  'unit:harness-list': 149,
+  // BAT-2 (d) min-checks raise 149 -> 165. Registering the BAT phase adds its
+  // resolved-list arms, the bat-ui-proof ownership cell, the pending-script
+  // cells and the frozen phase-set string. Re-MEASURED at this commit rather
+  // than bumped by the delta, for the same reason P4.2 re-measured instead of
+  // +3: a floor carried forward by arithmetic drifts below the suite and the
+  // gap is deletable under a green N/N.
+  'unit:harness-list': 165,
   // E2E-P4.4. The §13.10.3 userId parity proof. Post-dates the parity baseline
   // file, so the floor cannot be read from it and has to be declared here or
   // the step could be emptied to two checks and still print a cheerful N/N —
