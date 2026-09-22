@@ -215,8 +215,13 @@ check('(b-ctl) a `>` sentinel would NOT match the pin',
   'setHasMoreHistory(delta > THREAD_PAGE_SIZE)'.includes('delta >= THREAD_PAGE_SIZE') === false);
 check('(b-ctl) a re-introduced dedupe cap would be caught by the scan',
   'for (const log of x) { if (out.length >= 30) break; }'.includes('if (out.length >= 30) break;'));
+// EXT-SEARCH added `focusMessageId` to this signature (a search hit opens the
+// thread ON a message). The control is retargeted to the new spelling rather
+// than loosened to a substring: its job is to prove the scan is reading the
+// file it thinks it is, and a signature that drifts is exactly what it should
+// notice.
 check('(b-ctl) the file scanned is the right one (it still renders ThreadView)',
-  SHELL.includes('function ThreadView({ threadId, from }: ThreadViewProps)'));
+  SHELL.includes('function ThreadView({ threadId, from, focusMessageId }: ThreadViewProps)'));
 
 // ─── (c) the two surfaces agree ──────────────────────────────────────────────
 console.log('\n-- (c) extension and web app page alike --');
@@ -238,9 +243,14 @@ check('(c) "Beginning of conversation" is spelled identically on both',
   SHELL.includes('Beginning of conversation') && DASH.includes('Beginning of conversation'));
 check('(c) /app no longer hand-rolls a load-more button',
   DASH.includes('Load 500 more (') === false && DASH.includes('Load 25 more (') === false);
+// 3 -> 4 and 4 -> 5: EXT-SEARCH added ONE call site per surface, the
+// "Load older messages from phone" button under the search results' scope line
+// (FEATURE-SPEC-MSG-SEARCH §1 — it is the recovery action for a search that
+// found nothing). The numbers are raised to the new truth, not removed: the
+// point of counting is that a FIFTH hand-rolled button cannot appear unnoticed.
 check('(c) every load-more on BOTH surfaces goes through the one component',
-  (SHELL.match(/<LoadMoreButton/g) || []).length === 3 &&
-  (DASH.match(/<LoadMoreButton/g) || []).length === 4);
+  (SHELL.match(/<LoadMoreButton/g) || []).length === 4 &&
+  (DASH.match(/<LoadMoreButton/g) || []).length === 5);
 
 // ─── (d) the a11y contract of the shared control ─────────────────────────────
 console.log('\n-- (d) LoadMoreButton a11y contract --');

@@ -1006,9 +1006,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
   // older messages appear above it. Cleared once the restore runs.
   const isPrependingRef = useRef(false);
   const prependScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
-  // EXT-SEARCH (d). Set by a search-hit click, consumed once by the focus
-  // effect below.
+  /*
+   * EXT-SEARCH (d). Set by a search-hit click, consumed ONCE by the focus
+   * effect below.
+   *
+   * The consumption is recorded in a REF, not by clearing the state. Clearing
+   * it re-rendered, which re-ran the bottom-pin effect below with
+   * `focusMessageId` now null — and that effect's whole job is to scroll to the
+   * bottom. The user was landed on their message and then thrown to the end of
+   * the conversation, in one frame. The P5A arm caught it as
+   * `{"found":true,"inView":false,"cued":true}`: the cue was painted on a
+   * bubble that had already been scrolled off screen. A ref carries "already
+   * handled" without re-rendering, which is the same shape PhoneModeShell's
+   * ThreadView uses for the identical problem.
+   */
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
+  const focusHandledRef = useRef(false);
+  useEffect(() => { focusHandledRef.current = false; }, [selectedThread, focusMessageId]);
   useEffect(() => {
     if (!selectedThread) return;
     const el = messageListRef.current;
@@ -1026,9 +1040,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
       return;
     }
     // EXT-SEARCH (d): a thread opened ON a search hit yields the first scroll
-    // to the focus effect below. Every later arrival pins to the bottom as
-    // before.
-    if (focusMessageId) return;
+    // to the focus effect below. Once that effect has run, later arrivals pin
+    // to the bottom as before.
+    if (focusMessageId && !focusHandledRef.current) return;
     // New (incoming/sent) message or a fresh thread open — pin to the bottom.
     el.scrollTop = el.scrollHeight;
   }, [selectedThread, threadMessages.length, focusMessageId]);
@@ -1041,14 +1055,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate: _onNavigate })
    * store is a window; "load older" is undone by a resync).
    */
   useEffect(() => {
-    if (!focusMessageId) return;
+    if (!focusMessageId || focusHandledRef.current) return;
     const el = messageListRef.current;
     if (!el) return;
     if (threadMessages.length === 0) return;
     const target = el.querySelector<HTMLElement>(
       `[data-cc-msg-id="${CSS.escape(focusMessageId)}"]`
     );
-    setFocusMessageId(null);
+    focusHandledRef.current = true;
     if (!target) {
       el.scrollTop = el.scrollHeight;
       return;

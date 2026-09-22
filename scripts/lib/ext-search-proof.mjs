@@ -268,7 +268,13 @@ export async function runExtSearchProof({ open, settle, check, shot, rawShot }) 
     // ── (s8) CLICK A HIT -> THE THREAD, AT THAT MESSAGE ────────────────────
     await type(page, search, 'parcel', settle);
     await page.locator('[data-cc-search-hit="es-old-1"]').click({ timeout: 6000 }).catch(() => {});
-    await settle(page, 1200);
+    // 400 ms, NOT 1200: the cue lasts exactly 1.2 s and then removes itself, so
+    // a settle of 1200 measures the frame the class is taken off in and reports
+    // "no cue" on a cue that was painted correctly. The first run of this arm
+    // did exactly that (outline 0px, cued false, while inView passed). The
+    // clearing is asserted separately below, on purpose — "it appears" and "it
+    // goes away again" are two claims and a single sample can only make one.
+    await settle(page, 400);
     const landed = await page.evaluate(() => {
       const scroller = document.querySelector('.cc-thread-scroll');
       const el = document.querySelector('[data-cc-msg-id="es-old-1"]');
@@ -292,6 +298,15 @@ export async function runExtSearchProof({ open, settle, check, shot, rawShot }) 
     check(`(s) [${theme}] the landed message carries the hit cue`, landed.cued === true);
     check(`(s) [${theme}] the cue is a painted outline, not a repainted bubble fill`,
       parseFloat(landed.outline || '0') >= 2, String(landed.outline));
+    // The cue is temporary by design — a permanent outline on one bubble would
+    // become a second, wrong kind of "selected" state in a conversation the
+    // user keeps scrolling. Measured after the 1.2 s window has closed.
+    await settle(page, 1400);
+    check(`(s) [${theme}] and it clears itself once the 1.2 s window has passed`,
+      await page.evaluate(() => {
+        const el = document.querySelector('[data-cc-msg-id="es-old-1"]');
+        return !!el && !el.classList.contains('cc-bubble-hit');
+      }));
 
     await ctx.close();
   }
@@ -386,6 +401,17 @@ export async function runExtSearchProof({ open, settle, check, shot, rawShot }) 
     check('(s) [web] clicking a hit opens that conversation', webLanded.found === true);
     check('(s) [web] scrolled to the clicked message, in the viewport',
       webLanded.inView === true, JSON.stringify(webLanded));
+    // The regression this pins: consuming the focus by clearing REACT STATE
+    // re-rendered, re-ran the bottom-pin effect, and scrolled the conversation
+    // to its end one frame after landing. The cue stayed on the right bubble,
+    // so every other assertion here passed while the user saw the wrong thing.
+    check('(s) [web] and the thread was NOT yanked to the bottom afterwards',
+      await page.evaluate(() => {
+        const el = document.querySelector('[data-cc-msg-id="es-old-1"]');
+        const sc = el && el.closest('.overflow-y-auto');
+        if (!sc) return false;
+        return sc.scrollTop < sc.scrollHeight - sc.clientHeight - 2;
+      }));
     check('(s) [web] and the same hit cue is painted on it', webLanded.cued === true);
     await shot(page, 's-web-search-results');
     await ctx.close();

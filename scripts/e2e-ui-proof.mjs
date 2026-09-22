@@ -106,15 +106,16 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * WHICH screenshot to write, never whether to assert — so a silently skipped
  * section shows up here as a shortfall instead of as a cheerful N/N.
  *
- * EXT-SEARCH (2026-09-22) raised it 216 -> 267 by exactly the 51 its arm adds:
- * 22 per theme x 2 themes for the extension results view (absent without a
+ * EXT-SEARCH (2026-09-22) raised it 216 -> 270 by exactly the 54 its arm adds:
+ * 23 per theme x 2 themes for the extension results view (absent without a
  * query, both hit directions, grouping and ordering, the measured mark
- * contrast, the three scope-line button states, the click-to-message landing),
- * 5 for the 360 px x 1.4 narrow-panel pass and 11 for the /app parity pass.
+ * contrast, the three scope-line button states, the click-to-message landing
+ * and the cue clearing again), 5 for the 360 px x 1.4 narrow-panel pass and 13
+ * for the /app parity pass.
  * Same discipline: the only `if`s in that arm choose WHICH screenshot to
  * write, never whether to assert.
  */
-export const MIN_CHECKS = 267;
+export const MIN_CHECKS = 270;
 
 const results = [];
 const check = (name, pass, detail = '') => {
