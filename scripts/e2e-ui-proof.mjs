@@ -114,8 +114,14 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * for the /app parity pass.
  * Same discipline: the only `if`s in that arm choose WHICH screenshot to
  * write, never whether to assert.
+ *
+ * EXT-UI-5 (2026-09-22) raised it 270 -> 286 by exactly the 16 its arm adds:
+ * 8 per theme x 2 themes for the header status dot (Syncing renders as an open
+ * ring, Active as a filled circle, neither animates, both keep the same 8px
+ * footprint, the two differ in shape and not only in colour, and the two are
+ * not exposed under the same accessible name). All 16 run unconditionally.
  */
-export const MIN_CHECKS = 270;
+export const MIN_CHECKS = 286;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -387,6 +393,92 @@ try {
       (await item.innerText()).trim().length > SETTING_LABEL.length);
     await shot(page, `a-ext-menu-${theme}-400`);
     await ctx.close();
+  }
+
+  // ═══ EXT-UI-5 — Syncing must not look like Active in a STILL frame ═══
+  //
+  // The regression this arm exists to catch: before EXT-UI-5 both states were
+  // the same 6px emerald circle and the ONLY difference was
+  // `motion-safe:animate-pulse`. Every screenshot we ship is a still frame and
+  // every reduced-motion user sees only still frames, so the two states were
+  // literally indistinguishable for them. Motion is not a state channel.
+  //
+  // FIXTURE, and why it is the real code path rather than a prop: the bridge
+  // stub pairs on socket open, which makes the hook start its own auto-sync run
+  // (usePhoneBridge setQuietSyncing(true)) and send the GET_* frames. The stub
+  // never answers them, so `quietSyncing` stays true until the hook's OWN 45s
+  // safety timeout fires endAutoSyncRun() and drops it to false. That gives us
+  // both states off one real session: shoot immediately for Syncing, wait the
+  // hook out, shoot again for Active. Nothing here is faked — the two frames
+  // are the product's own two states.
+  //
+  // The wait is paid ONCE for both themes: both contexts are opened and
+  // captured in the Syncing state first, then a single 47s wait, then both are
+  // captured again in the Active state.
+  {
+    console.log('\n-- EXT-UI-5 status dot: Syncing vs Active, statically --');
+    const AUTOSYNC_SAFETY_MS = 45_000; // usePhoneBridge autoConnectTimeoutRef
+    const opened = [];
+    for (const theme of ['light', 'dark']) {
+      const { ctx, page } = await open({ route: '/extension', width: 400, height: 640, theme });
+      opened.push({ theme, ctx, page });
+    }
+    const readDot = async (page) => page.evaluate(() => {
+      const el = document.querySelector('.cc-conn-dot');
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      const before = getComputedStyle(el, '::before');
+      const r = el.getBoundingClientRect();
+      return {
+        state: el.getAttribute('data-dot'),
+        name: el.getAttribute('aria-label'),
+        role: el.getAttribute('role'),
+        bg: cs.backgroundColor,
+        shadow: cs.boxShadow,
+        radius: cs.borderRadius,
+        anim: cs.animationName,
+        trans: cs.transitionProperty,
+        beforeAnim: before.animationName,
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+      };
+    });
+
+    const seen = {};
+    for (const o of opened) {
+      const d = await readDot(o.page);
+      seen[o.theme] = { syncing: d };
+      check(`(EXT-UI-5) [${o.theme}] the in-flight state renders data-dot="syncing"`,
+        d?.state === 'syncing', JSON.stringify(d));
+      check(`(EXT-UI-5) [${o.theme}] Syncing is an OPEN RING — no fill, a ring drawn as an inset stroke`,
+        d?.bg === 'rgba(0, 0, 0, 0)' && /inset/.test(d?.shadow || ''), `${d?.bg} / ${d?.shadow}`);
+      check(`(EXT-UI-5) [${o.theme}] the dot is static in Syncing — no animation, no transition`,
+        d?.anim === 'none' && d?.beforeAnim === 'none' && d?.trans === 'all',
+        `${d?.anim} / ${d?.beforeAnim} / ${d?.trans}`);
+      await shot(o.page, `a-ext-dot-syncing-${o.theme}-400`);
+    }
+
+    // Wait the hook's own safety timeout out, once, for both contexts.
+    await opened[0].page.waitForTimeout(AUTOSYNC_SAFETY_MS + 2000);
+
+    for (const o of opened) {
+      const d = await readDot(o.page);
+      const was = seen[o.theme].syncing;
+      check(`(EXT-UI-5) [${o.theme}] the settled state renders data-dot="active"`,
+        d?.state === 'active', JSON.stringify(d));
+      check(`(EXT-UI-5) [${o.theme}] Active is a FILLED circle — opaque fill, 50% radius`,
+        d?.bg !== 'rgba(0, 0, 0, 0)' && /50%/.test(d?.radius || ''), `${d?.bg} / ${d?.radius}`);
+      check(`(EXT-UI-5) [${o.theme}] Syncing and Active differ in SHAPE, not only in colour`,
+        was?.bg !== d?.bg && was?.shadow !== d?.shadow, `${was?.bg}|${was?.shadow} vs ${d?.bg}|${d?.shadow}`);
+      check(`(EXT-UI-5) [${o.theme}] both states keep the SAME 8px footprint`,
+        d?.w === 8 && d?.h === 8 && was?.w === 8 && was?.h === 8,
+        `${was?.w}x${was?.h} -> ${d?.w}x${d?.h}`);
+      check(`(EXT-UI-5) [${o.theme}] the two states are NOT exposed under the same accessible name`,
+        !!was?.name && !!d?.name && was.name !== d.name && d.role === 'img',
+        `${was?.name} vs ${d?.name} (role=${d?.role})`);
+      await shot(o.page, `a-ext-dot-active-${o.theme}-400`);
+      await o.ctx.close();
+    }
   }
 
   // ═══ UI-UNREAD — threads you have not opened look unopened ═════════
