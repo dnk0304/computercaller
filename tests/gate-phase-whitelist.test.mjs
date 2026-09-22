@@ -34,7 +34,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { harnessesFor, phaseTableProblems } from '../tools/lib/harness-list.mjs';
+import { harnessesFor, phaseTableProblems, PHASE_HARNESSES } from '../tools/lib/harness-list.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -53,12 +53,29 @@ const check = (name, pass, detail = '') => {
  * the only thing under test here is whether the phase name was recognised.
  */
 function whitelistVerdict(phase) {
-  const r = spawnSync(process.execPath, [GATE, '--phase', phase], {
+  /**
+   * GATE-TOOLING-1 (4) FINDING + FIX. `--lane __probe__` is not a lane, so the
+   * gate refuses at the lane check — milliseconds in, and long before any step.
+   *
+   * WHY IT IS NEEDED: stripping DATABASE_URL only stops a WEB lane. P4, P5B and
+   * now ANDROID-FIX default to `android`, which needs no database — so in a
+   * worktree holding a live, ancestry-matching `.e2e-lock` (i.e. the lane that
+   * is editing this file) those three rows got past every early refusal and
+   * started a REAL Gradle build. Three java.exe were reaped by PID after one
+   * such run while writing this commit.
+   *
+   * The refusal it hits is `--lane must be web|android|all`, NOT
+   * `unrecognised --phase`, so what this function measures is unchanged: the
+   * phase name reached the lane check, therefore the whitelist accepted it.
+   * The negative arms below assert the whitelist message explicitly, so a
+   * future edit that made every phase refuse for the WRONG reason still fails.
+   */
+  const r = spawnSync(process.execPath, [GATE, '--phase', phase, '--lane', '__probe__'], {
     cwd: ROOT,
     encoding: 'utf8',
     timeout: 60_000,
-    // Strip the one variable that would let the run proceed far enough to be
-    // slow; we want the early refusals, not a real gate.
+    // Belt and braces: strip the variable that would let a web lane proceed
+    // far enough to be slow if the lane probe above is ever removed.
     env: { ...process.env, DATABASE_URL: '' },
   });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
@@ -85,6 +102,10 @@ const KNOWN = [
   // accepts it. Without this row, `--phase BAT` could be refused outright and
   // every BAT lane would report "unrecognised phase" at the moment it mattered.
   'BAT',
+  // GATE-TOOLING-1 (4). Same reason BAT is here: registering a phase in
+  // KNOWN_PHASES is necessary and not sufficient — this row proves the gate's
+  // own whitelist accepts it.
+  'ANDROID-FIX',
   'MERGE',
 ];
 
@@ -105,6 +126,77 @@ const lower = whitelistVerdict('p3.1');
 check('a lower-case known phase is still accepted (toUpperCase is applied before the check)',
   lower.rejectedByWhitelist === false,
   lower.rejectedByWhitelist ? 'p3.1 was rejected' : 'accepted');
+
+// ── GATE-TOOLING-1 (4), T-GATE-PHASE-SMSMP: ANDROID-FIX is android-ONLY ───
+//
+// Two arms, and the negative one is the deliverable. A phase that is merely
+// registered would accept `--lane web`, skip every step it has, and print PASS
+// on a run that proved nothing — the "0 tests ran wearing a green hat" shape
+// this whole file exists to stop, reached from the lane side instead of the
+// phase side.
+//
+// SAFETY, and a real finding about this file (see the whitelistVerdict note):
+// nothing below ever spawns the gate on a runnable ANDROID lane. An android
+// lane needs no DATABASE_URL, so in a worktree holding a live, ancestry-matching
+// .e2e-lock it gets past every early refusal and starts a real Gradle build.
+// The lane-acceptance claims are therefore asserted against the gate's SOURCE,
+// which is the honest place for them anyway: what is under test is a table, not
+// a build.
+{
+  const accepted = whitelistVerdict('ANDROID-FIX');
+  check('POSITIVE: --phase ANDROID-FIX gets past the whitelist',
+    accepted.rejectedByWhitelist === false,
+    accepted.rejectedByWhitelist ? 'rejected as unrecognised' : 'accepted');
+
+  for (const lane of ['web', 'all']) {
+    const r = spawnSync(process.execPath, [GATE, '--phase', 'ANDROID-FIX', '--lane', lane], {
+      cwd: ROOT, encoding: 'utf8', timeout: 60_000,
+      env: { ...process.env, DATABASE_URL: '' },
+    });
+    const out = `${r.stdout || ''}${r.stderr || ''}`;
+    check(`NEGATIVE: --phase ANDROID-FIX --lane ${lane} REFUSES with exit 2`,
+      r.status === 2 && /ANDROID-ONLY/.test(out), `exit ${r.status}`);
+    check(`NEGATIVE: the refusal for --lane ${lane} says WHY, not just that it refused`,
+      /a web change is not an android fix/i.test(out), out.split('\n').slice(0, 3).join(' | '));
+    check(`NEGATIVE: --lane ${lane} under ANDROID-FIX writes no gate JSON`,
+      !/gate-ANDROID-FIX/.test(out));
+    check(`NEGATIVE: --lane ${lane} refuses BEFORE any step runs`,
+      !/^\s*(ok|FAIL)\s{2}/m.test(out), out.split('\n').slice(0, 2).join(' | '));
+  }
+
+  // CONTROL — the refusal must be about THIS phase, not about `--lane web` in
+  // general. Without this arm, a bug that refused every web lane everywhere
+  // would pass all four arms above.
+  const p5aWeb = spawnSync(process.execPath, [GATE, '--phase', 'P5A', '--lane', 'web'], {
+    cwd: ROOT, encoding: 'utf8', timeout: 60_000,
+    env: { ...process.env, DATABASE_URL: '' },
+  });
+  const p5aOut = `${p5aWeb.stdout || ''}${p5aWeb.stderr || ''}`;
+  check('CONTROL: --phase P5A --lane web is NOT refused for its lane',
+    !/ANDROID-ONLY/.test(p5aOut), p5aOut.split('\n')[1] || '');
+
+  // The gate's own tables, read as source. A registered phase that no table
+  // knows about dispatches nothing and prints PASS — which is the whole reason
+  // this is a registered phase rather than a --label.
+  const gate = readFileSync(GATE, 'utf8');
+  check('ANDROID-FIX defaults to the android lane',
+    /DEFAULT_LANE = \['P4', 'P5B', 'ANDROID-FIX'\]/.test(gate));
+  check('the android-only guard is keyed on the LANE, not merely on the phase name',
+    /PHASE === 'ANDROID-FIX' && LANE !== 'android'/.test(gate));
+  check('ANDROID-FIX is in the SasVectors phase list (the AVD/instrumentation regression)',
+    /'BAT', 'ANDROID-FIX'\]\.includes\(PHASE\)/.test(gate));
+  check('ANDROID-FIX dispatches the A5 instrumented set',
+    /'ANDROID-FIX': \['android:instrumented-A5'\]/.test(gate));
+  check('ANDROID-FIX is NOT in the P6 real-relay list (it drives no browser)',
+    gate.includes("if (['P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8', 'D1'].includes(PHASE))"));
+  check('ANDROID-FIX gains NO phase-gated harness (every PHASE_HARNESSES row skips it)',
+    Object.entries(PHASE_HARNESSES)
+      .every(([, { runs, skips }]) => skips.includes('ANDROID-FIX') && !runs.includes('ANDROID-FIX')),
+    Object.entries(PHASE_HARNESSES)
+      .filter(([, { skips }]) => !skips.includes('ANDROID-FIX')).map(([h]) => h).join(', '));
+  check('CONTROL: that claim is not vacuous — the table has rows',
+    Object.keys(PHASE_HARNESSES).length >= 6, String(Object.keys(PHASE_HARNESSES).length));
+}
 
 // ── NEGATIVE ARM — the defect this deliverable exists to stop. ─────────────
 for (const [phase, why] of [

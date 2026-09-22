@@ -149,7 +149,8 @@ throws('a non-finite requiredGib throws',
   const gate = readFileSync(join(ROOT, 'tools', 'e2e-gate.mjs'), 'utf8');
 
   check('the gate imports the classifier', gate.includes("from './lib/headroom.mjs'"));
-  check('the gate records an env:headroom step', gate.includes("record('env:headroom'"));
+  check('the gate records an env:headroom step',
+    gate.includes("'env:headroom-recheck' : 'env:headroom'") && gate.includes('record(stepName,'));
   check('the gate marks it ENV-NONRUN', gate.includes("outcome: 'ENV-NONRUN'"));
 
   // The refusal lives in ONE function, and everything about the contract is
@@ -164,8 +165,46 @@ throws('a non-finite requiredGib throws',
     body.indexOf('stopDevServer()') < body.indexOf('process.exit(3)'));
   check('it never writes an evidence file on the refusal path',
     !body.includes('writeFileSync') && !body.includes('OUTDIR'));
-  check('it asks the machine only once (memoised)',
-    body.includes('headroomChecked') || gate.includes('let headroomChecked'));
+  /**
+   * GATE-TOOLING-1 (2), T-GATE-HEADROOM-RECHECK. The memoisation is GONE, and
+   * this is the assertion that used to claim the opposite — rewritten rather
+   * than deleted, because "asks the machine only once" WAS the defect: the
+   * reading that guarded the Playwright block was taken before the P6
+   * real-relay proofs had allocated anything, so the second door was judged on
+   * the strength of a measurement from before the first.
+   */
+  check('the memoisation flag survives only to NAME the call, never to skip it',
+    gate.includes('let headroomChecked') && !/if \(headroomChecked\) return;/.test(body));
+  check('(a) a later call records a DISTINCT step name',
+    body.includes("'env:headroom-recheck'") && body.includes("'env:headroom'"));
+  check('(a) the step name is chosen from headroomChecked, so call 1 and call 2 differ',
+    /headroomChecked \?\s*'env:headroom-recheck'\s*:\s*'env:headroom'/.test(body));
+  check('(a) every call records WHICH door it guards', /before: where/.test(body));
+  /**
+   * (b) THE ONE THAT MATTERS. The refusal must not be reachable only on the
+   * first call. There is exactly one classify and one record in the body, both
+   * AFTER the name is chosen, so a refusal on call 2 takes the identical
+   * exit-3 / no-JSON path as a refusal on call 1.
+   */
+  check('(b) there is exactly ONE classifyHeadroom call — both doors share it',
+    (body.match(/classifyHeadroom\(/g) || []).length === 1);
+  check('(b) there is exactly ONE record() call — the recheck is not a second, weaker path',
+    (body.match(/\brecord\(/g) || []).length === 1);
+  check('(b) the exit-3 refusal is not guarded by the call index',
+    body.indexOf('process.exit(3)') > body.indexOf('headroomChecked = true'));
+  check('(b) a refusal on ANY call still writes no evidence file',
+    !body.includes('writeFileSync') && !body.includes('OUTDIR'));
+
+  // RULE 23. The gradle stop is recorded BEFORE the first measurement, or it
+  // reports numbers the check never saw.
+  check('env:gradle-stop is recorded before the first headroom measurement',
+    body.indexOf("gradleStop('env:gradle-stop')") > 0
+    && body.indexOf("gradleStop('env:gradle-stop')") < body.indexOf('classifyHeadroom('));
+  check('a web lane can opt in with --gradle-stop; the android lane is unconditional',
+    /\(ANDROID \|\| GRADLE_STOP\)/.test(body) && gate.includes("has('gradle-stop')"));
+  check('android:gradle-stop closes the android lane (the rule-14 analogue for a JVM)',
+    gate.indexOf("gradleStop('android:gradle-stop')")
+      > gate.indexOf("record('android:never-signs-release'"));
 
   // ORDER is the whole point: the check must sit above EVERY browser launch.
   // There are two, and the earlier one is not the Playwright block — at P6.1C
@@ -184,6 +223,56 @@ throws('a non-finite requiredGib throws',
 
   check('both guards are above the harness dispatch',
     iRelayGuard < iHarness && iHarnessGuard < iHarness);
+}
+
+// ── GATE-TOOLING-1 (2): the gradle-stop decisions, exercised for real ────
+{
+  const { countJava, gradleStopRecord } = await import('../tools/lib/gradle-stop.mjs');
+
+  // (c) the counts come from IMAGE NAMES, and from nothing else.
+  const census = [
+    { name: 'java.exe', rssBytes: 600e6 },
+    { name: 'JAVA.EXE', rssBytes: 610e6 },   // Windows is case-insensitive
+    { name: 'javaw.exe', rssBytes: 200e6 },  // NOT a gradle daemon
+    { name: 'java.exe.bak', rssBytes: 1 },   // the match is anchored on both ends
+    { name: 'chrome.exe', rssBytes: 9e9 },
+  ];
+  check('(c) countJava counts java.exe case-insensitively', countJava(census) === 2);
+  check('(c) javaw.exe is not counted', countJava([{ name: 'javaw.exe' }]) === 0);
+  check('(c) the match is anchored, so java.exe.bak is not counted',
+    countJava([{ name: 'java.exe.bak' }]) === 0);
+  check('(c) an unreadable census counts 0 rather than throwing',
+    countJava(undefined) === 0 && countJava([null, 'nope', { rssBytes: 1 }]) === 0);
+  // CONTROL: a census that DOES hold daemons must count them, or every claim
+  // above is satisfied by a function that can only ever return 0.
+  check('CONTROL (c): four daemons count as four',
+    countJava([{ name: 'java.exe' }, { name: 'java.exe' },
+      { name: 'java.exe' }, { name: 'java.exe' }]) === 4);
+
+  // (c) PROPERTY — the recorded object can never name a pid. Same rule-12
+  // property topRssHolders carries above, for the same reason: an image-name
+  // match that reaches a killer kills Dennis's IDE.
+  for (const after of [0, 1, 4]) {
+    const rec = gradleStopRecord({ exit: 0, javaBefore: 4, javaAfter: after });
+    check('(c) the record for javaAfter=' + after + ' carries NO pid key',
+      !('pid' in rec.counts) && !('pids' in rec.counts) && !('ProcessId' in rec.counts)
+      && Object.keys(rec.counts).join(',') === 'javaBefore,javaAfter');
+  }
+
+  // (d) a surviving JVM is a WARN, never a FAIL — it may be Dennis's or
+  // another lane's, and this gate does not kill what it did not start.
+  const survived = gradleStopRecord({ exit: 0, javaBefore: 4, javaAfter: 2 });
+  check('(d) javaAfter > 0 does NOT set exit !== 0', survived.exit === 0);
+  check('(d) javaAfter > 0 DOES raise the warn flag', survived.warn === true);
+  const clean = gradleStopRecord({ exit: 0, javaBefore: 4, javaAfter: 0 });
+  check('(d) javaAfter === 0 raises no warn', clean.warn === false && clean.exit === 0);
+  // CONTROL: the step CAN still fail — on the command, which is the only thing
+  // it is allowed to fail on. Without these two arms (d) is satisfied by a
+  // function that returns 0 unconditionally.
+  check('CONTROL (d): a failing gradlew --stop DOES fail the step',
+    gradleStopRecord({ exit: 1, javaBefore: 4, javaAfter: 0 }).exit === 1);
+  check('CONTROL (d): a killed/timed-out --stop is recorded 124, not 0',
+    gradleStopRecord({ exit: null, javaBefore: 4, javaAfter: 4 }).exit === 124);
 }
 
 console.log(`\n${passed}/${passed + failed} checks passed`);

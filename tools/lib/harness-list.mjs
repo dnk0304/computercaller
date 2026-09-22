@@ -66,6 +66,14 @@ export const KNOWN_PHASES = [
   // tests/harness-list.test.mjs changes ONCE for this project rather than
   // once per lane; BAT-3 writes scripts/bat-ui-proof.mjs into the slot below.
   'BAT',
+  // GATE-TOOLING-1 (4), T-GATE-PHASE-SMSMP. A generic android-only phase for a
+  // fix that lives entirely in dnkdialer-android/ (SMS multipart was the third
+  // lane to need one and the third to borrow a web phase instead). Registered
+  // rather than labelled: only a registered phase can pick a default lane, key
+  // this table, key the instrumented-class table, and be REFUSED under a web
+  // lane. It runs no browser harness at all -- hence a skips entry in every
+  // PHASE_HARNESSES row below, which the coverage rule forces.
+  'ANDROID-FIX',
   'MERGE',
 ];
 
@@ -107,7 +115,7 @@ export const PHASE_HARNESSES = {
    */
   'bat-ui-proof': {
     runs: ['BAT'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
+    skips: ['ANDROID-FIX', 'P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
       'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D',
       'D1', 'FT1', 'FT2', 'FT3', 'MERGE'],
   },
@@ -125,7 +133,7 @@ export const PHASE_HARNESSES = {
     // BAT runs it: BAT-2 edits chrome-extension/background.js + sw-session.js,
     // i.e. the worker whose lifetime this proof measures.
     runs: ['P2.2', 'P2.3', 'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'BAT', 'D1', 'MERGE'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P4.2', 'FT1', 'FT2', 'FT3'],
+    skips: ['ANDROID-FIX', 'P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P4.2', 'FT1', 'FT2', 'FT3'],
   },
   /**
    * P5a slice 2 — the Encrypted-mode UI proof. From P5A onwards, where the
@@ -137,8 +145,31 @@ export const PHASE_HARNESSES = {
     // BAT runs it for the P2.2 reason: BAT-2 edits usePhoneBridge.ts, the hook
     // these surfaces render from.
     runs: ['P2.2', 'P2.3', 'P3.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'BAT', 'D1', 'MERGE'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1',
+    skips: ['ANDROID-FIX', 'P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1',
       'P3', 'P3.1', 'P4', 'P4.1', 'P4.2', 'FT1', 'FT2', 'FT3'],
+  },
+  /**
+   * GATE-TOOLING-1 (3), T-GATE-TEXTSIZE-P5A (ruling R-CD). The 200% text-size
+   * proof: both surfaces at 1.0x / 1.4x / 2.0x, clipping, reflow, tap targets
+   * and the cold-shell render.
+   *
+   * P5A because the surfaces it measures are the P5a Encrypted-mode UI and the
+   * extension shell, i.e. exactly the tree P5A gates — and because the failure
+   * it catches (text that overflows its container at 200%) is invisible to
+   * every other harness: they all render at 1.0x and pass.
+   *
+   * D1 and MERGE for the superset reason written above for e2e-ui-proof: an
+   * integration run that is a SUBSET of the phases it integrates cannot
+   * evidence the integration.
+   *
+   * It renders into CC_SHOTS, which the gate points at its own scratch dir so
+   * docs/screenshots stays clean.
+   */
+  'ext-text-size-proof': {
+    runs: ['P5A', 'D1', 'MERGE'],
+    skips: ['ANDROID-FIX', 'P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
+      'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D',
+      'BAT', 'FT1', 'FT2', 'FT3'],
   },
   /**
    * FT-3b (d): the file-transfer failure-copy table, both surfaces, driven
@@ -147,14 +178,14 @@ export const PHASE_HARNESSES = {
    */
   'ft-ui-proof': {
     runs: ['FT3'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
+    skips: ['ANDROID-FIX', 'P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
       'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D',
       'BAT', 'D1', 'FT1', 'FT2', 'MERGE'],
   },
   /** FT-3a: the transfer wire/UI on the web app. FT3 only, same reasoning. */
   'ft-web-proof': {
     runs: ['FT3'],
-    skips: ['P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
+    skips: ['ANDROID-FIX', 'P0', 'P0.2', 'P0.3', 'P1', 'P1.1', 'P1.2', 'P2', 'P2.1', 'P2.2', 'P2.3',
       'P3', 'P3.1', 'P3.2', 'P4', 'P4.1', 'P4.2', 'P5A', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D',
       'BAT', 'D1', 'FT1', 'FT2', 'MERGE'],
   },

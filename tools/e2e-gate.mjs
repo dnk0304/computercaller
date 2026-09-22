@@ -39,12 +39,14 @@ import { census, findLeaks } from '../scripts/lib/reap.mjs';
 // (E2E-P0.3) The moving-base decision and the authored/inherited lint split,
 // kept pure so tests/scope-base.test.mjs can pin them without a repository.
 import { chooseScopeBase, splitGrown } from './lib/scope-base.mjs';
+import { createAttemptTracker, runWithAttempts } from './lib/attempts.mjs';
 import { freemem } from 'node:os';
 import { harnessesFor, KNOWN_PHASES, phaseTableProblems } from './lib/harness-list.mjs';
 import {
   classifyHeadroom, parseHeadroomGib, topRssHolders, headroomReport, DEFAULT_HEADROOM_GIB,
 } from './lib/headroom.mjs';
 import { resolveJavaHome } from './lib/java-home.mjs';
+import { countJava, gradleStopRecord } from './lib/gradle-stop.mjs';
 // (E2E-P5a f3) Worktree/main location predicates, extracted so the gate no
 // longer encodes the phase in the worktree name.
 import { isGateWorktree, isGateMain } from './gate-location.mjs';
@@ -67,6 +69,15 @@ const has = (name) => argv.includes(`--${name}`);
  * OPT-IN, and deliberately not the default — see the note at the harness loop.
  */
 const PARALLEL_HARNESSES = has('parallel-harnesses');
+/**
+ * GATE-TOOLING-1 (2). Opt-in for a WEB lane: stop the Gradle daemons before the
+ * first headroom check. The android lane does it unconditionally — its own
+ * daemons are the ones at issue — but a web lane on a box that just built an
+ * APK is exactly the BAT-3 shape (RULE 23: 2-4 orphaned daemons at ~600 MiB
+ * each are the usual cause of an env:headroom ENV-NONRUN), so a web lane can
+ * ask for it.
+ */
+const GRADLE_STOP = has('gradle-stop');
 
 /**
  * (f) --phase is REQUIRED. It used to default to P0, and a P3 lane ran its
@@ -165,11 +176,40 @@ const BASELINE = has('baseline');
 const OUTDIR = join(ROOT, flag('out', 'e2e-evidence'));
 const LABEL = flag('label', null);
 /** P4 and P5b are the android phases; everything else is a web phase. */
-const DEFAULT_LANE = ['P4', 'P5B'].includes(PHASE) ? 'android' : 'web';
+// GATE-TOOLING-1 (4): ANDROID-FIX joins the android phases. P4 and P5B are the
+// others; everything else is a web phase.
+const DEFAULT_LANE = ['P4', 'P5B', 'ANDROID-FIX'].includes(PHASE) ? 'android' : 'web';
 const LANE = (flag('lane', DEFAULT_LANE) || DEFAULT_LANE).toLowerCase();
 if (!['web', 'android', 'all'].includes(LANE)) refuse(`--lane must be web|android|all, got "${LANE}"`);
 const WEB = LANE === 'web' || LANE === 'all';
 const ANDROID = LANE === 'android' || LANE === 'all';
+
+/**
+ * GATE-TOOLING-1 (4), T-GATE-PHASE-SMSMP. `ANDROID-FIX` is android-only, and
+ * the gate says so instead of letting a web lane discover it.
+ *
+ * WHY A REGISTERED PHASE AND NOT A `--label`: the label is free-form text that
+ * reaches the JSON and nothing else. It cannot pick a lane, cannot key
+ * PHASE_HARNESSES, cannot key the instrumented-class table, and cannot be
+ * refused when it is wrong. SMSMP-2 ran under P6.1D with a label, which meant
+ * the gate graded an android fix against a phase table written for a
+ * cross-implementation web phase.
+ *
+ * WHY THE WEB LANE IS A REFUSAL AND NOT A SKIP: under this phase every web step
+ * would be skipped, and a gate that runs nothing prints PASS — the "0 tests ran
+ * wearing a green hat" shape this file fights everywhere else. A web change is
+ * not an android fix; if the change has a web half, it is not this phase.
+ */
+if (PHASE === 'ANDROID-FIX' && LANE !== 'android') {
+  refuse(
+    `--phase ANDROID-FIX is ANDROID-ONLY; got --lane ${LANE}.\n`
+    + '            ANDROID-FIX exists for a fix that lives entirely in dnkdialer-android/.\n'
+    + '            Under a web lane every step here is skipped and the gate prints PASS on\n'
+    + '            a run that proved nothing. A web change is not an android fix: gate it\n'
+    + '            under the phase that owns the web surface, or split the lane.\n'
+    + '                bun run e2e:gate --phase ANDROID-FIX --label <lane>   (lane defaults to android)'
+  );
+}
 
 // ── N-3: nothing that reaches the JSON may carry a canary or fixture text ──
 const redact = (s) =>
@@ -575,7 +615,15 @@ const MIN_CHECKS_OVERRIDE = {
   // than bumped by the delta, for the same reason P4.2 re-measured instead of
   // +3: a floor carried forward by arithmetic drifts below the suite and the
   // gap is deletable under a green N/N.
-  'unit:harness-list': 165,
+  // GATE-TOOLING-1 (3) re-measure 165 -> 177 -> 185: ext-text-size-proof's
+  // registration, its exactly-P5A/D1/MERGE negative arms and the two CONTROLs
+  // that prove the frozen strings can still reject a wrong list.
+  'unit:harness-list': 185,
+  // GATE-TOOLING-1 (4). The phase whitelist suite had NO floor for its whole
+  // life: a step whose entire job is to prove a phase cannot silently vanish
+  // could itself have had half its arms deleted under a cheerful N/N. Measured
+  // at the commit that adds ANDROID-FIX: 79 checks.
+  'unit:gate-phase-whitelist': 79,
   // E2E-P4.4. The §13.10.3 userId parity proof. Post-dates the parity baseline
   // file, so the floor cannot be read from it and has to be declared here or
   // the step could be emptied to two checks and still print a cheerful N/N —
@@ -585,7 +633,37 @@ const MIN_CHECKS_OVERRIDE = {
   'unit:ctx-parity': 14,
   // GATE-PREFLIGHT. Post-dates the parity baseline, so the floor is declared
   // here. Measured after the dual-guard: 54 assertions.
-  'unit:headroom': 54,
+  // GATE-TOOLING-1 (2) re-measure 54 -> 77: T-GATE-HEADROOM-RECHECK removed the
+  // memoisation (both browser doors now measure) and added the RULE 23 gradle
+  // stop. The 23 new assertions are the recheck's distinct step name, the
+  // property that a refusal on the SECOND call takes the identical exit-3 /
+  // no-JSON path as the first, and the gradle-stop decisions with their
+  // CONTROL arms. The floor moves WITH the suite: left at 54, the whole
+  // recheck half could be deleted and the suite would still print N/N.
+  'unit:headroom': 77,
+  // GATE-TOOLING-1 (1), T-GATE-REAP-ATTEMPT. The per-attempt leak census.
+  // Post-dates the parity baseline, so the floor is declared here. Measured at
+  // the commit that adds it: 22 assertions, of which two are CONTROL arms that
+  // replay the OLD one-census-per-step shape and must reach the opposite
+  // verdict — delete those and the suite can no longer tell the fix from the
+  // defect while still printing a cheerful N/N, which is precisely what the
+  // floor is here to stop.
+  'unit:reap-attempt': 22,
+  // GATE-TOOLING-1 (3), T-GATE-TEXTSIZE-P5A (ruling R-CD). The 200% text-size
+  // proof, joining P5A. Not in the parity baseline — it has never run under a
+  // gate before — so the floor is declared here. Measured 110 checks at base
+  // and at EXT-FRAME-2. Its summary line is the "N/M checks passed" dialect
+  // with a trailing "(screenshots: ...)" suffix, which passLine's unanchored
+  // regex already reads.
+  //
+  // A floor matters more here than for most: the harness's own failure mode is
+  // a surface that stops being RENDERED at all, and a harness that finds no
+  // element to measure quietly measures fewer things and still prints N/N.
+  // RE-MEASURED at this tip: 202, not the 110 the brief carried. The brief
+  // number was from EXT-FRAME-2; the harness has grown since and nobody
+  // re-measured it, because until this commit no gate ran it. The floor is
+  // what the tip measures, never less.
+  'harness:ext-text-size-proof': 202,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
@@ -721,6 +799,21 @@ function finishedButHung(out, counts) {
   return Boolean(counts && Number.isFinite(counts.total) && counts.total > 0);
 }
 
+/**
+ * T-GATE-REAP-ATTEMPT. The three injections the attempt loop needs, in one
+ * place so run() and runAsyncStep() cannot drift apart.
+ *
+ * `allow` is the gate-owned dev server: it outlives every harness by design and
+ * is killed by stopDevServer() by PID. Read lazily — run() is defined above the
+ * point where devProc exists.
+ */
+const leakAllow = () => [devProc?.pid].filter(Boolean);
+const attemptFindLeaks = (before) => findLeaks(before, process.pid, { allow: leakAllow() });
+function reportAttemptReap(name, attempt, pids) {
+  console.log(`  REAP  ${name} — attempt ${attempt} left ${pids.length} orphan(s), `
+    + `reaped before attempt ${attempt + 1}: ${pids.map((p) => `${p.name}#${p.pid}`).join(' ')}`);
+}
+
 function keepFailedAttempt(name, index, exit, out, attempts) {
   if (exit === 0 || attempts <= 1 || index >= attempts - 1) return;
   try {
@@ -732,29 +825,45 @@ function keepFailedAttempt(name, index, exit, out, attempts) {
   } catch { /* evidence is best-effort; never fail a step over its own log */ }
 }
 
-function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false, attempts = 1 } = {}) {
+function run(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout = 15 * 60_000, needs = [], scrub = false, attempts = 1, onWinnerCensus = null } = {}) {
   const blocker = needs.find((n) => steps.some((s) => s.name === n && s.exit !== 0));
   if (blocker) return skip(name, cmd, `not run — depends on "${blocker}", which failed`);
 
   const t0 = Date.now();
-  let out = '', exit = 1, counts = null, used = 0;
-  for (let i = 0; i < Math.max(1, attempts); i++) {
-    used = i + 1;
-    const r = spawnSync(cmd, {
-      cwd, shell: true, encoding: 'utf8', timeout,
-      maxBuffer: 256 * 1024 * 1024,
-      env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
-    });
-    out = `${r.stdout || ''}${r.stderr || ''}`;
-    exit = r.status === null ? 124 : r.status;
-    try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
-    keepFailedAttempt(name, i, exit, out, attempts);
-    if (exit === 0) break;
-  }
+  let out = '', exit = 1, counts = null;
+  /**
+   * T-GATE-REAP-ATTEMPT: the census is per ATTEMPT, taken immediately before
+   * each spawn, and a failing attempt's orphans are killed BEFORE the retry.
+   * `beforeWinner` is the census of the attempt the verdict came from, which is
+   * the only census the `reap:` step may be handed.
+   */
+  const loop = runWithAttempts({
+    attempts,
+    wantCensus: Boolean(onWinnerCensus),
+    census,
+    findLeaks: attemptFindLeaks,
+    kill: killTree,
+    onReap: (attempt, pids) => reportAttemptReap(name, attempt, pids),
+    spawn: () => {
+      const r = spawnSync(cmd, {
+        cwd, shell: true, encoding: 'utf8', timeout,
+        maxBuffer: 256 * 1024 * 1024,
+        env: scrub ? { ...SCRUBBED, ...env } : { ...process.env, ...env },
+      });
+      out = `${r.stdout || ''}${r.stderr || ''}`;
+      exit = r.status === null ? 124 : r.status;
+      try { counts = parse ? parse(out, exit) : null; } catch { counts = null; }
+      return { exit };
+    },
+    afterAttempt: (i) => keepFailedAttempt(name, i, exit, out, attempts),
+  });
+  const used = loop.used;
+  if (onWinnerCensus) onWinnerCensus(loop.beforeWinner);
   const ms = Date.now() - t0;
   // `attempts` is always recorded, not only when a retry happened, so flakiness
   // is a number somebody can trend rather than something the gate hides.
   if (used > 1) counts = { ...(counts || {}), attempts: used };
+  if (Object.keys(loop.attemptCounts).length) counts = { ...(counts || {}), ...loop.attemptCounts };
 
   if (exit !== 0) {
     mkdirSync(LOGDIR, { recursive: true });
@@ -830,8 +939,30 @@ function runAsyncStep(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout =
     let exit = 1;
     let counts = null;
     let used = 0;
+    /**
+     * T-GATE-REAP-ATTEMPT, parallel arm. Same per-attempt census/reap as run().
+     *
+     * HONEST SCOPE (brief item (1), parallel clause): in --parallel-harnesses
+     * a sibling harness's browser is live while this step retries, so the
+     * per-attempt census here can SEE a sibling's process. findLeaks still only
+     * returns processes that appeared AFTER this attempt began and whose parent
+     * is dead or inside the gate's tree, so the window is narrow — but it is
+     * not zero, and a sibling that dies mid-attempt could in principle be
+     * charged here. That is documented rather than engineered around: this path
+     * is non-default, the batch-level assertNoLeaks('harness-batch') below is
+     * unchanged, and over-engineering the non-default path is explicitly out of
+     * scope.
+     */
+    const tracker = createAttemptTracker({
+      census,
+      findLeaks: attemptFindLeaks,
+      kill: killTree,
+      attempts,
+      onReap: (attempt, pids) => reportAttemptReap(name, attempt, pids),
+    });
     for (let i = 0; i < Math.max(1, attempts); i++) {
       used = i + 1;
+      tracker.begin(i);
       const r = await once();
       out = r.out;
       exit = r.exit;
@@ -856,10 +987,16 @@ function runAsyncStep(name, cmd, { cwd = ROOT, parse = null, env = {}, timeout =
         break;
       }
       keepFailedAttempt(name, i, exit, out, attempts);
+      // Reap THIS attempt's orphans before the next spawn, never after the step.
+      tracker.end(exit);
       if (exit === 0) break;
     }
     const ms = Date.now() - t0;
     if (used > 1) counts = { ...(counts || {}), attempts: used };
+    {
+      const ac = tracker.counts();
+      if (Object.keys(ac).length) counts = { ...(counts || {}), ...ac };
+    }
     if (exit !== 0) {
       mkdirSync(LOGDIR, { recursive: true });
       const log = join(LOGDIR, `${PHASE}-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.log`);
@@ -1129,25 +1266,83 @@ function rssCensus() {
 }
 
 /**
+ * Count `java.exe` in the read-only census, BY IMAGE NAME.
+ *
+ * Rule 12 in both directions: an image-name match may never reach a killer, so
+ * this returns a NUMBER and never a pid. A JVM on this box may be Dennis's IDE
+ * or another lane's daemon, which is exactly why the gradle-stop step WARNS on
+ * a non-zero count and never fails on it.
+ */
+function javaProcessCount() {
+  return countJava(rssCensus());
+}
+
+/**
+ * GATE-TOOLING-1 (2) / RULE 23. `gradlew --stop`, recorded as a step.
+ *
+ * Orphaned Gradle daemons (2-4 x ~600 MiB) are the usual cause of an
+ * `env:headroom` ENV-NONRUN, and BAT-3's refusal was pre-gate residue rather
+ * than anything the gate had started. So the gate stops them itself and RECORDS
+ * the before/after java.exe counts, which turns "the daemons were probably the
+ * problem" into two numbers in the JSON.
+ *
+ * NEVER a FAIL on `javaAfter > 0`: a surviving JVM may belong to Dennis or to
+ * another lane, and this gate does not kill what it did not start.
+ */
+function gradleStop(name) {
+  const AROOT = join(ROOT, 'dnkdialer-android');
+  const bat = join(AROOT, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
+  if (!existsSync(bat)) {
+    skip(name, `"${bat.replace(/\\/g, '/')}" --stop`, 'not run — dnkdialer-android/gradlew.bat is absent');
+    return;
+  }
+  const javaBefore = javaProcessCount();
+  const t0 = Date.now();
+  const r = spawnSync(`"${bat}" --stop`, {
+    cwd: AROOT, shell: true, encoding: 'utf8', timeout: 5 * 60_000,
+    env: { ...process.env, JAVA_HOME: resolveJavaHome() || process.env.JAVA_HOME || '' },
+  });
+  const javaAfter = javaProcessCount();
+  const v = gradleStopRecord({ exit: r.status, javaBefore, javaAfter });
+  record(name, `"${bat.replace(/\\/g, '/')}" --stop`, v.exit, Date.now() - t0, v.counts);
+  if (v.warn) {
+    console.log(`  WARN  ${name} — ${javaAfter} java.exe still running after --stop `
+      + `(was ${javaBefore}). Not a FAIL: a JVM on this box may be Dennis's IDE or `
+      + "another lane's daemon, and this gate never kills what it did not start.");
+  } else {
+    console.log(`  ok    ${name} — java.exe ${javaBefore} -> 0`);
+  }
+}
+
+/**
  * GATE-PREFLIGHT. Refuse to start browser work when the box cannot survive it.
  *
- * Memoised: it is called at EVERY point where this gate is about to launch a
- * browser, and there are two of them, but the machine is only asked once and
- * only one `env:headroom` step is ever recorded.
+ * GATE-TOOLING-1 (2): NO LONGER MEMOISED. It is called at every point where the
+ * gate is about to launch a browser, and memoising it meant only the FIRST door
+ * was guarded — the measurement that mattered for the Playwright block was
+ * taken before the P6 real-relay proofs had allocated anything. Every call now
+ * measures; the first records `env:headroom`, later calls record
+ * `env:headroom-recheck` with the door they guard. Either can refuse, with the
+ * same semantics as before: outcome ENV-NONRUN, exit 3, stopDevServer(), and NO
+ * gate JSON — a JSON is a claim about this tree and there is no honest claim
+ * to make about steps that never ran.
  *
  * @param {string} where names the browser stage being guarded, so the console
  *        says which one stopped.
  */
 let headroomChecked = false;
 function preflightHeadroom(where) {
-  if (headroomChecked) return;
+  // RULE 23, recorded BEFORE the first measurement so the numbers it reports
+  // are the numbers the check then sees.
+  if (!headroomChecked && (ANDROID || GRADLE_STOP)) gradleStop('env:gradle-stop');
+  const stepName = headroomChecked ? 'env:headroom-recheck' : 'env:headroom';
   headroomChecked = true;
   const verdict = classifyHeadroom({ freeBytes: osFreemem(), requiredGib: HEADROOM_GIB });
-  record('env:headroom', `os.freemem() >= ${HEADROOM_GIB} GiB (before ${where})`, 0, 0,
+  record(stepName, `os.freemem() >= ${HEADROOM_GIB} GiB (before ${where})`, 0, 0,
     { freeGib: verdict.freeGib, requiredGib: verdict.requiredGib },
-    verdict.ok ? {} : { outcome: 'ENV-NONRUN', before: where });
+    verdict.ok ? { before: where } : { outcome: 'ENV-NONRUN', before: where });
   if (verdict.ok) {
-    console.log(`  ok    env:headroom — ${verdict.freeGib} GiB free >= ${verdict.requiredGib} GiB (before ${where})`);
+    console.log(`  ok    ${stepName} — ${verdict.freeGib} GiB free >= ${verdict.requiredGib} GiB (before ${where})`);
     return;
   }
   console.log(headroomReport(verdict, topRssHolders(rssCensus())));
@@ -1582,6 +1777,13 @@ if (WEB) {
     // out of memory. Includes the boundary (exactly-at-the-floor RUNS) and the
     // rule-12 property that the census can never name a pid.
     ['headroom', 'tests/gate-headroom.test.mjs', true],
+    // GATE-TOOLING-1 (1). T-GATE-REAP-ATTEMPT: the attempt loop's leak census
+    // (tools/lib/attempts.mjs), driven with fakes so the ordering claim — the
+    // attempt-1 orphan is killed BEFORE attempt 2 spawns — is a measured call
+    // order rather than a comment. Named explicitly because the sweep above
+    // matches only tests/e2e-*.test.mjs. Node-only: no browser, no database
+    // (rule 17).
+    ['reap-attempt', 'tests/gate-reap-attempt.test.mjs', true],
     // SOAK-RIG (c). 48 checks. The R-AM soak rig: that importing soak-runner /
     // verify-soak / relay-auth starts no clock and opens no socket, and that
     // verify-soak's rule-8 guards can actually go RED — a >10 min gap, a <24 h
@@ -1822,6 +2024,25 @@ if (WEB) {
            * hardcoded identity that dispatch removed.
            */
           CC_SHOT_EMAIL: process.env.CC_SHOT_EMAIL || '',
+          /**
+           * GATE-TOOLING-1 (3). Screenshot harnesses render into CC_SHOTS;
+           * point it at the gate's OWN log dir so nothing renders into
+           * docs/screenshots.
+           *
+           * The step-1 cleanliness check already tolerates that churn
+           * (OWN_OUTPUT), so this is not what makes the gate re-runnable — it
+           * is what makes the RESUMER's job honest. docs/screenshots churn has
+           * to be reverted by hand after every run (Ken's standing rule: revert,
+           * never commit), and a harness that never wrote there is one less
+           * thing to remember. `.e2e-gate-logs/` is already in the step-1
+           * ALLOW list, so the shots are invisible to the check either way.
+           *
+           * Only ext-text-size-proof and dialpad-toggle-proof read this name;
+           * the other shots harnesses hardcode their own paths and are
+           * deliberately left alone (they are Pixel's files, and the gate does
+           * not edit harnesses to match its own assumptions).
+           */
+          CC_SHOTS: join(LOGDIR, 'shots'),
         };
         // Assert before step 9 rather than discovering it as a Prisma error.
         // CC_SHOT_EMAIL is asserted for the same reason and in the same place:
@@ -1951,9 +2172,19 @@ if (WEB) {
           assertNoLeaks('harness-batch', beforeBatch);
         } else {
           for (const { h, rel } of harnessSpecs) {
-            const beforeStep = census();
-            run(`harness:${h}`, `node ${rel}`, harnessOpts(rel));
-            assertNoLeaks(h, beforeStep);
+            /**
+             * T-GATE-REAP-ATTEMPT. The census that feeds `reap:<harness>` is
+             * the WINNING attempt's, returned from run(); the step-level
+             * `census()` that used to sit here has been removed rather than
+             * kept, because two measurements that can disagree are worse than
+             * the one that was wrong.
+             */
+            let winner = null;
+            run(`harness:${h}`, `node ${rel}`, {
+              ...harnessOpts(rel),
+              onWinnerCensus: (c) => { winner = c; },
+            });
+            assertNoLeaks(h, winner || census());
           }
         }
         // Recorded either way so the sequential/parallel comparison is a number
@@ -2081,7 +2312,10 @@ if (ANDROID) {
     }
 
     const ANDROID_TEST_RESULTS = join(AROOT, 'app/build/outputs/androidTest-results/connected');
-    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8', 'BAT'].includes(PHASE)) {
+    // GATE-TOOLING-1 (4): 'ANDROID-FIX' added. It is an android-only phase, so
+    // the AVD/instrumentation regression this step provides is exactly what it
+    // needs before its own instrumented step reports a count.
+    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8', 'BAT', 'ANDROID-FIX'].includes(PHASE)) {
       // FINDING (E2E-P4.2 (e)): this is a SECOND phase table that has to agree
       // with KNOWN_PHASES and does not — the exact defect tools/lib/harness-
       // list.mjs was created to fold away. It still names 'P7' and 'P8', which
@@ -2175,6 +2409,10 @@ if (ANDROID) {
       'P6.1C': ['android:instrumented-A5'],
       'P6.1D': ['android:instrumented-A5'],
       BAT: ['android:instrumented-A5', 'android:instrumented-BAT'],
+      // GATE-TOOLING-1 (4). ANDROID-FIX dispatches the A5 set: its floor of 8
+      // already exists above, which is the condition this table's own comment
+      // sets for adding a key.
+      'ANDROID-FIX': ['android:instrumented-A5'],
     };
     if (ANDROID_INSTRUMENTED_BY_PHASE[PHASE]) {
 
@@ -2202,6 +2440,13 @@ if (ANDROID) {
   // Step 12 is a prohibition, not a command: the gate never signs a release
   // APK. Asserted structurally — no assembleRelease/bundleRelease above.
   record('android:never-signs-release', '(assertion: no assembleRelease/bundleRelease in this tool)', 0, 0, { releaseTasks: 0 });
+  /**
+   * GATE-TOOLING-1 (2). The gate's OWN daemons, stopped at the end of the lane
+   * it started them in — the rule-14 analogue for a JVM. Without this the
+   * next lane inherits 2-4 x ~600 MiB and reads it as a box that is out of
+   * memory (RULE 23), which is how a tooling artefact becomes an ENV-NONRUN.
+   */
+  gradleStop('android:gradle-stop');
 }
 
 /**
