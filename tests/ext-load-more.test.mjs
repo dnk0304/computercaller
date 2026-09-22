@@ -185,8 +185,29 @@ check('(b) the global cursor is a linear scan, not Math.min(...spread) (call-sta
   /const oldestLoadedDate = useMemo<number \| null>\(\(\) => \{[\s\S]{0,400}?Math\.min/.test(SHELL) === false);
 check('(b) scroll anchoring restores by the height added at the top',
   SHELL.includes('snapshot.scrollTop + (el.scrollHeight - snapshot.scrollHeight)'));
+// Structural, not distance-based. The first version of this pin allowed 200
+// characters between the two anchors and passed on LF and failed on CRLF — the
+// block is ~199 characters long, so six extra  CR bytes decided it. A pin whose
+// verdict depends on how the file was checked out is not a pin. Normalise the
+// line endings, then assert that the disarm and its 4 s window live in the same
+// timeout callback by slicing the callback out and looking inside it.
+const SHELL_LF = SHELL.split('\r\n').join('\n');
+const DISARM_HEAD = [
+  'isPrependingRef.current = false;',
+  '      prependScrollRef.current = null;',
+  '      if (pendingPrevLenRef.current < 0) return;',
+].join('\n');
+const disarmBlock = (() => {
+  const i = SHELL_LF.indexOf(DISARM_HEAD);
+  if (i < 0) return '';
+  const j = SHELL_LF.indexOf('}, 4000);', i);
+  return j < 0 ? '' : SHELL_LF.slice(i, j + '}, 4000);'.length);
+})();
 check('(b) the prepend flag self-disarms if no chunk ever merges',
-  /isPrependingRef\.current = false;[\s\S]{0,200}?\}, 4000\);/.test(SHELL));
+  disarmBlock.includes('isPrependingRef.current = false;') &&
+  disarmBlock.includes('setHasMoreHistory(false);') &&
+  disarmBlock.trimEnd().endsWith('}, 4000);'),
+  disarmBlock ? `${disarmBlock.length} chars` : 'block not found');
 
 console.log('\n-- (b-ctl) the pins are detectors, not decoration --');
 check('(b-ctl) a `>` sentinel would NOT match the pin',
