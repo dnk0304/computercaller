@@ -43,6 +43,7 @@ import { settle } from './lib/settle.mjs';
 import { runCopyCases } from './lib/e2e-ui-cases.mjs';
 import { scriptedPhoneAccept } from './lib/scripted-phone.mjs';
 import { runExtIdleProof } from './lib/ext-idle-proof.mjs';
+import { runExtLoadMoreProof, captureBubbleBefore } from './lib/ext-load-more-proof.mjs';
 // The idle constants come from the product, never restated as literals — see
 // the header of lib/idleClock.ts for why that rule exists.
 import { IDLE_TIMEOUT_MS, IDLE_WARN_BEFORE_MS } from '../lib/idleTimeout.ts';
@@ -96,8 +97,15 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * adds: 4 byte-for-byte extension-file checks plus 22 per theme, both themes.
  * Every one of those 21 runs unconditionally — none is nested inside an `if` —
  * precisely so this floor keeps meaning what it says.
+ *
+ * EXT-HIST (2026-09-22) raised it 136 -> 216 by exactly the 80 its two arms add:
+ * 34 per theme x 2 themes for the load-more + bubble arm, 6 for the 360 px x 1.4
+ * narrow-panel pass, and 3 per theme x 2 for the before/after bubble capture.
+ * Every one of those runs unconditionally — the only `if`s in the arm choose
+ * WHICH screenshot to write, never whether to assert — so a silently skipped
+ * section shows up here as a shortfall instead of as a cheerful N/N.
  */
-export const MIN_CHECKS = 136;
+export const MIN_CHECKS = 216;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -257,6 +265,18 @@ async function shot(page, name) {
   const size = fs.statSync(file).size;
   console.log(`  shot p5a-${name}  ${size} B`);
   return size;
+}
+
+/**
+ * A screenshot under its OWN name, not the `p5a-` evidence prefix. The
+ * before/after bubble pair Dennis asked for is a comparison for a human and is
+ * referenced by name in the résumé; prefixing it would file it with the gate's
+ * own baselined shots, which are a different thing with different rules.
+ */
+async function rawShot(page, file) {
+  const dest = path.join(SHOTS, file);
+  await page.screenshot({ path: dest, fullPage: false });
+  console.log(`  shot ${file}  ${fs.statSync(dest).size} B`);
 }
 
 /** The lobby pill's rendered identity, used for the independence assertion. */
@@ -856,6 +876,17 @@ try {
   // real unpacked extension, and a failure there should not cost the twelve
   // sections above their run. Everything about the method, the stubs and the
   // reasoning lives in scripts/lib/ext-idle-proof.mjs's header.
+  // ═══ EXT-HIST — load-more in the extension + the outgoing bubble ═════
+  //
+  // Placed before the idle arm because it is cheap and deterministic, and the
+  // idle arm is the one that launches persistent contexts with a real unpacked
+  // extension. Everything about the method lives in the module's header; the
+  // rule it obeys is the chip lesson — DOM values, never PNG existence.
+  console.log('\n-- EXT-HIST: load-more, both themes --');
+  await runExtLoadMoreProof({ open, settle, check, shot, rawShot });
+  console.log('\n-- EXT-HIST: the outgoing bubble, before/after --');
+  await captureBubbleBefore({ open, settle, check, rawShot });
+
   console.log('\n-- UI-AUTOLOGOUT: the 4 h idle cutoff, end to end --');
   {
     const repo = process.cwd();

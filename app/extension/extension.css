@@ -1292,11 +1292,14 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 .cc-ext .cc-load-more.rounded-full:not(:disabled):hover {
   background-color: var(--cc-chip-bd);
 }
-.cc-ext .cc-load-more:focus-visible {
-  outline: 2px solid var(--cc-ring);
-  outline-offset: 2px;
-  box-shadow: none;
-}
+/* NO focus rule here, deliberately. This surface already gives every focusable
+   element the brand ring via `.cc-ext :focus-visible` (2px solid var(--cc-ring))
+   further up, and an element-specific copy would be a second source of truth
+   that drifts from the token the moment the ring colour changes. The Tailwind
+   `focus-visible:ring-*` the component carries is the /app indicator and is
+   harmless underneath it — exactly the arrangement every other control in this
+   panel is already in. Verified from the paint, not assumed: the P5A arm asserts
+   the ring is >= 2 px AND a different colour from the label it surrounds. */
 
 /* The thread-list button lives in an <li> of `cc-card-list`, which turns every
    child <li> into a card. A control is not an object in that list, so it opts
