@@ -369,8 +369,12 @@ android {
         // PhoneService wire-up create/HELLO/onDestroy; 37348db/4d0ed8f/7bc96ef)
         // + BAT-1b (BatteryLoopbackTest unplugged precondition, test only).
         // Signed after web deploy #2 (relay BAT-2 passthrough live first).
-        versionCode = 61
-        versionName = "1.0.37"
+        // vc62 (2026-09-22): v61 + SMSMP (a76e26b: multipart SMS assembled
+        // once per PDU set, PII-free diagnostics) + SMSMP-2 (bb20569: receiver
+        // frame stamps wall-clock time at emit, not SMSC time — removes the
+        // late-SMSC double-bubble class on web). Supersedes v61 (never installed).
+        versionCode = 62
+        versionName = "1.0.38"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
