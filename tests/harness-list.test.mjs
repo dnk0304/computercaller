@@ -297,7 +297,17 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
   };
   const REAL_RELAY = listAfter("if (['P6', 'P6.1'");
   const ANDROID_RESULTS = listAfter("if (['P4', 'P4.2', 'P5B'");
-  const ANDROID_A5 = listAfter("if (['P4.2', 'P6.1'");
+  // BAT-2b: list 3 stopped being an inline array. It is now the KEY SET of
+  // `const ANDROID_INSTRUMENTED_BY_PHASE = {...}` (a phase -> instrumented-step
+  // table), so the marker moved with it. The assertion below is unchanged in
+  // meaning: a phase absent from this list dispatches neither
+  // android:testDebugUnitTest nor any instrumented step, and the gate prints
+  // PASS over an android lane it never ran.
+  const ANDROID_A5 = (() => {
+    const i = gate.indexOf('const ANDROID_INSTRUMENTED_BY_PHASE = {');
+    if (i < 0) return null;
+    return gate.slice(i, gate.indexOf('};', i) + 2);
+  })();
   // E2E-P6.1d-A: P6.1D is registered in the SAME three lists, and each is
   // asserted for BOTH phases. A new phase added to KNOWN_PHASES only would
   // reproduce the P6.1b defect one phase later, which is the whole point of
