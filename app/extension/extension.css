@@ -1935,8 +1935,20 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 /* Focus is shown on the FRAME, not with a second ring floating outside it: the
    input itself is `outline-none` by design (a UA outline inside a framed field
    draws two boxes). --cc-ring-input is the token EXT-SEARCH already uses for
-   exactly this job — 5.17:1 light / 6.31:1 dark, both well past 3:1. */
-.cc-ext .cc-dial-field:focus-within {
+   exactly this job — 5.17:1 light / 6.31:1 dark, both well past 3:1.
+
+   `:focus-within` ALONE WOULD BE A REGRESSION, and it was: the first cut of
+   this rule lit the frame blue on every panel open, because the dial field
+   autofocuses. That is precisely the cue Dennis had removed in EXT-UI-8
+   ("when i click to dial number a square marking that field comes up ... This
+   should not be visible, neither dark nor light mode") — the frame simply
+   became a new way to draw it. So the selector carries the SAME
+   `:not([data-cc-pointer-focus])` guard the input's own cue rule carries a few
+   hundred lines up, reading the flag components/ExtPointerFocus.tsx sets for
+   focus that did not come from the keyboard. Click or autofocus: frame stays
+   neutral. Tab in, or type after clicking: frame lights. One flag, one policy,
+   two rules that agree. */
+.cc-ext .cc-dial-field:has(input:focus-visible:not([data-cc-pointer-focus])) {
   border-color: var(--cc-ring-input);
   box-shadow: inset 0 0 0 1px var(--cc-ring-input);
 }
