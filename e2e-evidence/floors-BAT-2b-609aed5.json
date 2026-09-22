@@ -1,0 +1,45 @@
+{
+  "lane": "BAT-2b",
+  "base": "00244f5",
+  "head": "609aed5",
+  "utc": "2026-09-22",
+  "note": "NODE-ONLY lane (RESUME-PROTOCOL v2.6, WORKTREE_STANDARD rule 17): no browser, no emulator, no gradle. tools/e2e-gate.mjs exposes no --dry-run, so android dispatch at --phase BAT is proven by extracting the shipped guards and step table out of the source and evaluating them at PHASE='BAT'. Graded by the next --lane android|all gate on the merged tip.",
+  "suites": {
+    "tests/gate-phase-whitelist.test.mjs": { "passed": 62, "total": 62, "base": 38 },
+    "tests/harness-list.test.mjs": { "passed": 165, "total": 165, "base": 165 }
+  },
+  "floors": {
+    "tsc": { "errors": 0 },
+    "eslint": { "problems": 109, "baseFloor": 109, "grown": 0 },
+    "check-no-identities": { "exit": 0 }
+  },
+  "gateChanges": {
+    "list1_P6_real_relay": "BAT deliberately EXCLUDED (Ken R-BV 2026-09-22), reason stated at the guard",
+    "list2_android_results_clear_SasVectorsTest": "'BAT' added; android:SasVectorsTest floor 7 unchanged",
+    "list3_now_a_table": {
+      "ANDROID_INSTRUMENTED_BY_PHASE": {
+        "P4.2": ["android:instrumented-A5"],
+        "P6.1": ["android:instrumented-A5"],
+        "P6.1C": ["android:instrumented-A5"],
+        "P6.1D": ["android:instrumented-A5"],
+        "BAT": ["android:instrumented-A5", "android:instrumented-BAT"]
+      },
+      "ANDROID_INSTRUMENTED_CLASSES": {
+        "android:instrumented-BAT": ["com.dnkdialer.companion.BatteryLoopbackTest"]
+      }
+    },
+    "MIN_CHECKS_OVERRIDE": {
+      "android:instrumented-BAT": 3,
+      "android:instrumented-A5": 8,
+      "android:SasVectorsTest": 7,
+      "android:testDebugUnitTest": 238
+    }
+  },
+  "plants": [
+    { "plant": "drop 'BAT' from list 2", "result": "61/62 RED", "failed": ["list 2 includes BAT"], "afterRevert": "62/62" },
+    { "plant": "drop BAT key from ANDROID_INSTRUMENTED_BY_PHASE", "result": "59/62 RED", "failed": ["list 3 includes BAT", "BAT dispatches android:instrumented-A5", "BAT dispatches android:instrumented-BAT"], "afterRevert": "62/62" },
+    { "plant": "add 'BAT' to list 1 (P6 real-relay)", "result": "61/62 RED", "failed": ["list 1 EXCLUDES BAT on purpose"], "afterRevert": "62/62" },
+    { "plant": "android:instrumented-BAT floor 3 -> 0", "result": "61/62 RED", "failed": ["android:instrumented-BAT has the measured floor 3"], "afterRevert": "62/62" }
+  ],
+  "processes": { "browsers": 0, "emulators": 0, "spawnedPidsReaped": 0 }
+}
