@@ -688,6 +688,12 @@ class PhoneService : Service() {
      *  onDestroy can unregister cleanly. */
     private var bluetoothHeadsetReceiver: android.content.BroadcastReceiver? = null
 
+    /** BAT-1 (b) — phone battery telemetry. Lives exactly as long as this
+     *  service: created in onCreate's observer block, unregistered in
+     *  onDestroy. Emits the plaintext BATTERY frame through the same
+     *  sendResponse() chokepoint AUDIO_STATUS uses. */
+    private var batteryReporter: BatteryReporter? = null
+
     /** Cached current state — pushed to the browser whenever it changes
      *  AND whenever a new browser pairing becomes active so the UI lights
      *  up correctly on its initial render. */
@@ -2269,6 +2275,18 @@ class PhoneService : Service() {
         // CP2 (2026-09-08): SCO link-state receiver. This is what turns the
         // fire-and-forget "PC audio" toggle into a confirmed route.
         registerScoStateObserver()
+
+        // BAT-1 (b, 2026-09-22): battery telemetry. The sticky
+        // ACTION_BATTERY_CHANGED needs no permission and no manifest entry;
+        // BatteryPolicy decides whether an observed sample is worth a frame
+        // (>= 1 pct AND >= 60 s, charging flip immediately, 10 min resend).
+        batteryReporter = BatteryReporter(this) { sample ->
+            sendResponse("BATTERY", sample.toPayload(), client?.isOpen == true)
+            android.util.Log.d(
+                "PhoneService",
+                "BATTERY: pct=${sample.pct} charging=${sample.charging} ts=${sample.ts}"
+            )
+        }.also { it.register() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -4890,6 +4908,11 @@ class PhoneService : Service() {
                         mapOf("granted" to granted),
                         viaClient
                     )
+                    // BAT-1 (b) — on EVERY (re)connect, push the current
+                    // battery unconditionally and reset the throttle clock.
+                    // There is no browser -> phone request for this (no
+                    // GET_BATTERY): the phone pushes, here and on change.
+                    batteryReporter?.sendNow()
                     // Push the active-SIM list so the web client can render a
                     // SIM picker for dual-SIM users. Empty list on single-SIM /
                     // permission denied — the UI handles both cases.
@@ -5383,6 +5406,11 @@ class PhoneService : Service() {
             android.util.Log.w("PhoneService", "scoStateReceiver was not registered: ${e.message}")
         }
         scoStateReceiver = null
+
+        // BAT-1 (b) — battery observer dies with the service. No wakelock and
+        // no AlarmManager were taken, so there is nothing else to release.
+        batteryReporter?.unregister()
+        batteryReporter = null
 
         try {
             bluetoothHeadsetReceiver?.let { unregisterReceiver(it) }
