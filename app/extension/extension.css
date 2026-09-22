@@ -1911,55 +1911,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 }
 :where([data-cc-theme=dark]) .cc-ext .cc-back-btn:focus-visible { outline-color: #93b4ff; }
 
-/* --- (3) M4: "Load 25 more" becomes a real affordance -------------------- */
-/* Gemini #13, with its own remedy refused. It proposed a #F5F5F5 container to
-   make the control look pressable — but that fill DROPS the label from 7.81:1
-   to 6.42:1, i.e. the fix causes an AAA regression. So: BORDER ONLY, on the
-   existing ground, and the ink does not move.
-
-   WHICH READING OF THE LABEL IS RIGHT (the dispatch asks): neither number in
-   the review is the shipped token. The control paints `--cc-sec`, which is
-   #525252 (not the #595959 the review assumed). Measured: 7.81:1 on L3, 7.30
-   on L1, 7.17 on zebra, 6.92 on L2. The button sits in the call/thread list on
-   L3, so Vinci run 1's 7.81:1 is the correct reading and run 2's 7.00:1 was
-   computed from the wrong hex. It clears 7:1 on every ground it can reach
-   EXCEPT L2 — so it moves to --cc-aaa anyway (8.45:1 light) and the question
-   stops being load-bearing. Dark had the real problem: --cc-sec #a3a3a3 is
-   6.36:1 on L3, i.e. BELOW the floor on the surface this control actually sits
-   on; --cc-aaa #bdbdbd is 8.54:1 there.
-
-   Hover / focus are border and ink changes only — no fill anywhere, per the
-   dispatch. The hover ZEBRA FILL this rule used to carry is deliberately gone:
-   it was the same "grey container" idea Gemini proposed, arriving one state
-   later. */
-.cc-ext .cc-load-more {
-  color: var(--cc-aaa);
-  border: 1px solid var(--cc-bd-strong);
-  background-color: transparent;
-}
-.cc-ext .cc-load-more:not(:disabled):hover {
-  color: var(--cc-ink);
-  border-color: var(--cc-aaa);
-  background-color: transparent;
-}
-.cc-ext .cc-load-more:not(:disabled):active { border-color: var(--cc-ink); }
-.cc-ext .cc-load-more:disabled {
-  color: var(--cc-mut);
-  border-color: var(--cc-hair);
-  background-color: transparent;
-}
-/* The pill variant keeps its ground: it sits ABOVE a message list where a
-   bare outline would read as a list divider rather than as a control. */
-.cc-ext .cc-load-more.rounded-full,
-.cc-ext .cc-load-more.rounded-full:disabled {
-  background-color: var(--cc-field);
-  border-color: var(--cc-bd-strong);
-}
-.cc-ext .cc-load-more.rounded-full:not(:disabled):hover {
-  background-color: var(--cc-field);
-  border-color: var(--cc-aaa);
-}
-
 /* --- (4) M5: the call row wraps instead of clipping ---------------------- */
 /* Gemini #10 + #14. The meta line was `truncate`, so at the Large step and
    200% zoom "Outgoing - 23h" became "Outg...". It is now a wrapping block
