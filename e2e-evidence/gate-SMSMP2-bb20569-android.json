@@ -1,0 +1,149 @@
+{
+  "phase": "P6.1D",
+  "label": null,
+  "harnessMode": "sequential",
+  "note": null,
+  "sha": "bb205696e33dc3f5b88a66fc24bc6c8807b6cd5a",
+  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "scopeBase": {
+    "sha": "a76e26b5985d3c949845b7c737af95d82fa5caef",
+    "kind": "merge-base",
+    "ref": "origin/e2e/integration",
+    "integrationTip": "43a29bce9b80604d089addfcc1d6c749f48c9da4",
+    "fellBackToBaseSha": false,
+    "reason": null
+  },
+  "utc": "2026-09-22T18:13:12.717Z",
+  "lane": "android",
+  "mode": "full",
+  "env": {
+    "node": "v24.12.0",
+    "bun": "1.3.11",
+    "chrome": null
+  },
+  "steps": [
+    {
+      "name": "git-identity-clean-base-ancestry",
+      "cmd": "git rev-parse HEAD && git status --porcelain && git merge-base --is-ancestor BASE_SHA HEAD",
+      "exit": 0,
+      "ms": 271,
+      "counts": {
+        "dirtyPaths": 0,
+        "baseIsAncestor": true
+      }
+    },
+    {
+      "name": "scope-diff-vs-base",
+      "cmd": "git diff --name-only a76e26b..HEAD",
+      "exit": 0,
+      "ms": 64,
+      "counts": {
+        "changed": 2,
+        "android": 2,
+        "nonAndroid": 0,
+        "offLane": 0,
+        "scopeBase": "a76e26b5985d3c949845b7c737af95d82fa5caef",
+        "scopeBaseKind": "merge-base"
+      }
+    },
+    {
+      "name": "android:java-home",
+      "cmd": "resolveJavaHome()",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "missing": 0
+      },
+      "javaHome": "C:/PROGRA~1/Android/ANDROI~1/jbr"
+    },
+    {
+      "name": "android:assembleDebug",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\sms-multipart-2\\dnkdialer-android\\gradlew.bat\" :app:assembleDebug",
+      "exit": 0,
+      "ms": 56091,
+      "counts": null
+    },
+    {
+      "name": "android:lint",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\sms-multipart-2\\dnkdialer-android\\gradlew.bat\" :app:lintDebug --continue && node tools/lint-manifest.mjs --check  (cwd dnkdialer-android)",
+      "exit": 0,
+      "ms": 19822,
+      "counts": {
+        "issues": 0,
+        "reportFresh": 1,
+        "gradleExit": 0
+      }
+    },
+    {
+      "name": "android:SasVectorsTest",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\sms-multipart-2\\dnkdialer-android\\gradlew.bat\" :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.dnkdialer.companion.E2eSasVectorsTest",
+      "exit": 0,
+      "ms": 54596,
+      "counts": {
+        "passed": 7,
+        "total": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "files": 1
+      }
+    },
+    {
+      "name": "android:testDebugUnitTest",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\sms-multipart-2\\dnkdialer-android\\gradlew.bat\" :app:testDebugUnitTest",
+      "exit": 0,
+      "ms": 6895,
+      "counts": {
+        "passed": 269,
+        "total": 269,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "files": 21
+      }
+    },
+    {
+      "name": "android:instrumented-A5",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\sms-multipart-2\\dnkdialer-android\\gradlew.bat\" :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.dnkdialer.companion.E2eForwardJumpVectorsTest,com.dnkdialer.companion.E2eForwardJumpObservabilityTest,com.dnkdialer.companion.E2eModeVectorMBackCompatTest",
+      "exit": 0,
+      "ms": 35494,
+      "counts": {
+        "passed": 8,
+        "total": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "files": 1
+      }
+    },
+    {
+      "name": "android:never-signs-release",
+      "cmd": "(assertion: no assembleRelease/bundleRelease in this tool)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "releaseTasks": 0
+      }
+    },
+    {
+      "name": "baseline-parity",
+      "cmd": "diff vs C:/Users/D/worktrees/computercaller/sms-multipart-2/e2e-evidence/BASELINE-harness.json",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "reference": 16,
+        "comparable": 0,
+        "regressed": 0,
+        "why": "lane=android runs no web-lane steps; nothing in the reference is comparable"
+      }
+    }
+  ],
+  "harnessPass": [],
+  "baselineDiff": [],
+  "ms": 177812,
+  "failedStep": null,
+  "produced": [
+    "e2e-evidence/gate-P6.1D-bb20569.json"
+  ],
+  "result": "PASS"
+}
