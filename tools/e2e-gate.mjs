@@ -176,11 +176,40 @@ const BASELINE = has('baseline');
 const OUTDIR = join(ROOT, flag('out', 'e2e-evidence'));
 const LABEL = flag('label', null);
 /** P4 and P5b are the android phases; everything else is a web phase. */
-const DEFAULT_LANE = ['P4', 'P5B'].includes(PHASE) ? 'android' : 'web';
+// GATE-TOOLING-1 (4): ANDROID-FIX joins the android phases. P4 and P5B are the
+// others; everything else is a web phase.
+const DEFAULT_LANE = ['P4', 'P5B', 'ANDROID-FIX'].includes(PHASE) ? 'android' : 'web';
 const LANE = (flag('lane', DEFAULT_LANE) || DEFAULT_LANE).toLowerCase();
 if (!['web', 'android', 'all'].includes(LANE)) refuse(`--lane must be web|android|all, got "${LANE}"`);
 const WEB = LANE === 'web' || LANE === 'all';
 const ANDROID = LANE === 'android' || LANE === 'all';
+
+/**
+ * GATE-TOOLING-1 (4), T-GATE-PHASE-SMSMP. `ANDROID-FIX` is android-only, and
+ * the gate says so instead of letting a web lane discover it.
+ *
+ * WHY A REGISTERED PHASE AND NOT A `--label`: the label is free-form text that
+ * reaches the JSON and nothing else. It cannot pick a lane, cannot key
+ * PHASE_HARNESSES, cannot key the instrumented-class table, and cannot be
+ * refused when it is wrong. SMSMP-2 ran under P6.1D with a label, which meant
+ * the gate graded an android fix against a phase table written for a
+ * cross-implementation web phase.
+ *
+ * WHY THE WEB LANE IS A REFUSAL AND NOT A SKIP: under this phase every web step
+ * would be skipped, and a gate that runs nothing prints PASS — the "0 tests ran
+ * wearing a green hat" shape this file fights everywhere else. A web change is
+ * not an android fix; if the change has a web half, it is not this phase.
+ */
+if (PHASE === 'ANDROID-FIX' && LANE !== 'android') {
+  refuse(
+    `--phase ANDROID-FIX is ANDROID-ONLY; got --lane ${LANE}.\n`
+    + '            ANDROID-FIX exists for a fix that lives entirely in dnkdialer-android/.\n'
+    + '            Under a web lane every step here is skipped and the gate prints PASS on\n'
+    + '            a run that proved nothing. A web change is not an android fix: gate it\n'
+    + '            under the phase that owns the web surface, or split the lane.\n'
+    + '                bun run e2e:gate --phase ANDROID-FIX --label <lane>   (lane defaults to android)'
+  );
+}
 
 // ── N-3: nothing that reaches the JSON may carry a canary or fixture text ──
 const redact = (s) =>
@@ -586,10 +615,15 @@ const MIN_CHECKS_OVERRIDE = {
   // than bumped by the delta, for the same reason P4.2 re-measured instead of
   // +3: a floor carried forward by arithmetic drifts below the suite and the
   // gap is deletable under a green N/N.
-  // GATE-TOOLING-1 (3) re-measure 165 -> 177: ext-text-size-proof's
+  // GATE-TOOLING-1 (3) re-measure 165 -> 177 -> 185: ext-text-size-proof's
   // registration, its exactly-P5A/D1/MERGE negative arms and the two CONTROLs
   // that prove the frozen strings can still reject a wrong list.
-  'unit:harness-list': 177,
+  'unit:harness-list': 185,
+  // GATE-TOOLING-1 (4). The phase whitelist suite had NO floor for its whole
+  // life: a step whose entire job is to prove a phase cannot silently vanish
+  // could itself have had half its arms deleted under a cheerful N/N. Measured
+  // at the commit that adds ANDROID-FIX: 79 checks.
+  'unit:gate-phase-whitelist': 79,
   // E2E-P4.4. The §13.10.3 userId parity proof. Post-dates the parity baseline
   // file, so the floor cannot be read from it and has to be declared here or
   // the step could be emptied to two checks and still print a cheerful N/N —
@@ -2274,7 +2308,10 @@ if (ANDROID) {
     }
 
     const ANDROID_TEST_RESULTS = join(AROOT, 'app/build/outputs/androidTest-results/connected');
-    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8', 'BAT'].includes(PHASE)) {
+    // GATE-TOOLING-1 (4): 'ANDROID-FIX' added. It is an android-only phase, so
+    // the AVD/instrumentation regression this step provides is exactly what it
+    // needs before its own instrumented step reports a count.
+    if (['P4', 'P4.2', 'P5B', 'P6', 'P6.1', 'P6.1C', 'P6.1D', 'P7', 'P8', 'BAT', 'ANDROID-FIX'].includes(PHASE)) {
       // FINDING (E2E-P4.2 (e)): this is a SECOND phase table that has to agree
       // with KNOWN_PHASES and does not — the exact defect tools/lib/harness-
       // list.mjs was created to fold away. It still names 'P7' and 'P8', which
@@ -2368,6 +2405,10 @@ if (ANDROID) {
       'P6.1C': ['android:instrumented-A5'],
       'P6.1D': ['android:instrumented-A5'],
       BAT: ['android:instrumented-A5', 'android:instrumented-BAT'],
+      // GATE-TOOLING-1 (4). ANDROID-FIX dispatches the A5 set: its floor of 8
+      // already exists above, which is the condition this table's own comment
+      // sets for adding a key.
+      'ANDROID-FIX': ['android:instrumented-A5'],
     };
     if (ANDROID_INSTRUMENTED_BY_PHASE[PHASE]) {
 

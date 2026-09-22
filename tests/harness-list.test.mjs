@@ -142,7 +142,7 @@ check('CONTROL: …and a present entry as present, so it is not stuck on "no"',
 // The phase set itself, as the full sorted string.
 check('KNOWN_PHASES is the frozen set, byte for byte',
   [...KNOWN_PHASES].sort().join(',')
-    === 'BAT,D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P4.2,P5A,P5B,P6,P6.1,P6.1C,P6.1D',
+    === 'ANDROID-FIX,BAT,D1,FT1,FT2,FT3,MERGE,P0,P0.2,P0.3,P1,P1.1,P1.2,P2,P2.1,P2.2,P2.3,P3,P3.1,P3.2,P4,P4.1,P4.2,P5A,P5B,P6,P6.1,P6.1C,P6.1D',
   KNOWN_PHASES.join(','));
 
 // E2E-P2.2. The A5 web fix-before-flip lane. It RUNS both browser harnesses,
@@ -261,6 +261,30 @@ check('D1 runs e2e-ui-proof — the one thing D1 exists to evidence',
     runsIt.slice().sort().join(',') !== wrongPhases);
 }
 
+// GATE-TOOLING-1 (4) — ANDROID-FIX, the generic android-only phase.
+//
+// It is registered here so that the coverage rule FORCES a yes/no on it for
+// every phase-gated harness. The answer is no for all of them — it builds no
+// web surface — and "no, decided" is a different fact from "absent", which is
+// the distinction this whole file is made of.
+{
+  check('ANDROID-FIX is a known phase', KNOWN_PHASES.includes('ANDROID-FIX'));
+  check('ANDROID-FIX gains NO phase-gated harness',
+    harnessesFor('ANDROID-FIX').slice().sort().join(',') === [...BASE_EXPECTED].sort().join(','),
+    harnessesFor('ANDROID-FIX').join(', '));
+  check('every phase-gated harness SKIPS ANDROID-FIX explicitly (decided, not absent)',
+    Object.values(PHASE_HARNESSES).every(({ skips }) => skips.includes('ANDROID-FIX')),
+    Object.entries(PHASE_HARNESSES)
+      .filter(([, { skips }]) => !skips.includes('ANDROID-FIX')).map(([h]) => h).join(', '));
+  // CONTROL — the claim above must be able to fail. Feed the coverage rule a
+  // phase nobody has decided and it must report every harness as undecided.
+  const problems = phaseTableProblems([...KNOWN_PHASES, 'NOT-A-PHASE']);
+  check('CONTROL: the coverage rule reports an UNDECIDED phase for every harness',
+    problems.length === Object.keys(PHASE_HARNESSES).length
+    && problems.every((p) => p.undecided.includes('NOT-A-PHASE')),
+    JSON.stringify(problems.map((p) => p.harness)));
+}
+
 // The pinned per-phase decisions (FT-MERGE brief, letter (e)).
 const NINE = [...BASE_EXPECTED, 'ext-sw-lifetime-proof', 'e2e-ui-proof', 'ext-text-size-proof'].sort();
 for (const p of ['D1', 'MERGE']) {
@@ -372,8 +396,10 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // under a green N/N. Re-measured with this lane's seven new cases.
     ['android:testDebugUnitTest', 238],
     ['android:instrumented-A5', 8],
-    // GATE-TOOLING-1 (3): 165 -> 177 with ext-text-size-proof's arms.
-    ['unit:harness-list', 177],
+    // GATE-TOOLING-1 (3): 165 -> 177 -> 185 (GATE-TOOLING-1 (4): ANDROID-FIX) with ext-text-size-proof's arms.
+    ['unit:harness-list', 185],
+    // GATE-TOOLING-1 (4). The phase whitelist suite's first floor.
+    ['unit:gate-phase-whitelist', 79],
     // GATE-TOOLING-1 (3). The text-size proof's own floor, declared in the gate
     // and asserted here so the registration and the floor cannot separate.
     ['harness:ext-text-size-proof', 110],
