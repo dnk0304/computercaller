@@ -3029,6 +3029,7 @@ class PhoneService : Service() {
                     " verified=$e2eVerified recipients=${decision.recipients.size}" +
                     " sas=${prepared.sasDigits ?: "-"}"
             )
+            broadcastE2eState()
             sendPairingDecision("ACCEPT_PAIRING", pairingId, block)
         } catch (e: RuntimeException) {
             // E2eAccept.AcceptException (oversized block, no recipients),
@@ -3047,6 +3048,7 @@ class PhoneService : Service() {
                 broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
             } else {
                 android.util.Log.w("PhoneService", "E2E unavailable, continuing plaintext — $why")
+                broadcastE2eState()
                 sendPairingDecision("ACCEPT_PAIRING", pairingId, null)
             }
         }
@@ -3059,6 +3061,48 @@ class PhoneService : Service() {
                 setPackage(packageName)
                 putExtra(EXTRA_PAIRING_ID, pairingId)
                 putExtra(EXTRA_E2E_MESSAGE, message)
+            }
+        )
+    }
+
+    /**
+     * T-PHONE-STATUS-MODE0 — the pair's encryption state, in the vocabulary
+     * of [E2eStatusCopy].
+     *
+     * THE BUG THIS EXISTS TO FIX: ACTION_E2E_STATE was registered
+     * (MainActivity:2349) and consumed (MainActivity:418) but NOBODY EVER
+     * SENT IT. The Activity's e2eState therefore only ever moved on
+     * dispatchSasVerdict — the SAS answer. On a row-4 (0/0, sealed,
+     * modeByte 0x00) pair NO SAS IS ASKED, so the field stayed at its
+     * PLAINTEXT initialiser and the status line said "Connected · Not
+     * encrypted" over a pair that was demonstrably sealed (live 7b:
+     * ACCEPT_PAIRING 752/1001 bytes, sealed SMS_RECEIVED 256 bytes), while
+     * the extension said "Encrypted, but nobody confirmed the code".
+     * RULE 30 row-4-M1 in tests/e2e-sas-blocking-vectors.json is the truth
+     * both surfaces owe: statusLineKey = status_connected_encrypted_unverified.
+     *
+     * Exposed through the binder as well as broadcast, so a MainActivity
+     * that bound AFTER the Accept (or was recreated) reads the live state on
+     * its next tick instead of inheriting a missed edge.
+     */
+    fun currentE2eState(): E2eStatusCopy.State =
+        E2eStatusCopy.stateOf(encrypted = e2eSession != null, verified = e2eVerified)
+
+    /** Push [currentE2eState] to the foreground UI. Idempotent. */
+    private fun broadcastE2eState() {
+        val state = currentE2eState()
+        DiagLog.d("PhoneService", "E2E state -> $state")
+        sendBroadcast(
+            Intent(E2eTofuContract.ACTION_E2E_STATE).apply {
+                setPackage(packageName)
+                putExtra(
+                    E2eTofuContract.EXTRA_ENCRYPTED,
+                    state != E2eStatusCopy.State.PLAINTEXT,
+                )
+                putExtra(
+                    E2eTofuContract.EXTRA_VERIFIED,
+                    state == E2eStatusCopy.State.ENCRYPTED_VERIFIED,
+                )
             }
         )
     }
@@ -3119,6 +3163,11 @@ class PhoneService : Service() {
         if (outcome.sessionClosed) {
             android.util.Log.i("PhoneService", "E2E torn down ($reason): ${outcome.notes}")
         }
+        // The pair is gone: say PLAINTEXT rather than leave a stale
+        // "Encrypted" on screen. Skipped once the service is being destroyed
+        // (the Activity is gone too and a broadcast from onDestroy races the
+        // context teardown).
+        if (reason != "service destroyed") broadcastE2eState()
     }
 
     /**

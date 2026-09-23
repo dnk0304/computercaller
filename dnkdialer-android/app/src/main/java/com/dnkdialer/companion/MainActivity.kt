@@ -1176,8 +1176,20 @@ class MainActivity : AppCompatActivity() {
                 // left as a bare "Connected", because the absence of a word is
                 // not a signal — a plain "Connected" is exactly what a user
                 // reads as safe.
-                status.contains("Connected to relay") && pairActive ->
+                status.contains("Connected to relay") && pairActive -> {
+                    // T-PHONE-STATUS-MODE0: read the state from the bound
+                    // service on this same tick — the SAME channel as
+                    // getIsCallInProgress above — rather than trusting that
+                    // an ACTION_E2E_STATE edge was received. An Activity that
+                    // bound after the Accept, or was recreated, never saw
+                    // that edge; a row-4 (0/0) pair asks no SAS, so nothing
+                    // else ever moved the field off its PLAINTEXT
+                    // initialiser and the line said "Not encrypted" over a
+                    // sealed pair. The broadcast is still sent (it makes the
+                    // line right immediately); this makes it right REGARDLESS.
+                    phoneService?.currentE2eState()?.let { e2eState = it }
                     getString(E2eStatusCopy.statusLine(e2eState)) to ConnState.LIVE
+                }
                 // Relay open + no active pair → LOBBY. Phone is sitting
                 // waiting for a browser to send a pairing request that
                 // the user must Accept.
