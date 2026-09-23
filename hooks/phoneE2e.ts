@@ -57,7 +57,17 @@ export type E2eError =
    * something is offering it to us again". One is a bug report, the other is
    * the only signal a user gets that a replay was refused.
    */
-  | 'e2e-epoch-replayed';
+  | 'e2e-epoch-replayed'
+  /**
+   * T-RESUME-SW-KEY-RACE. The pair was RESUMED, its transcript carries an
+   * extension recipient, and after a bounded re-query the service worker still
+   * reports no key of its own. Distinct from `re-pair-needed` because the story
+   * is different and the user-facing copy must not say "this browser's keys
+   * were cleared": nothing was cleared, the browser came back before the
+   * extension did. `re-pair-needed` keeps the case where the SW answers with a
+   * DIFFERENT key — that one really is a swapped key, not a slow start.
+   */
+  | 'e2e-sw-key-unavailable';
 
 /** Why the SW has no key. `absent` and `unknown` are DIFFERENT and the badge says so. */
 export type SwKeyStatus = 'present' | 'absent' | 'unknown';
@@ -1086,6 +1096,20 @@ export interface SasCoverage {
    * transcript then contains a key the SW does not hold, so the digits are
    * meaningless as a verification of the SW leg. This is a REFUSAL condition,
    * not a badge.
+   *
+   * T-RESUME-SW-KEY-RACE. It requires an UNATTRIBUTED key in the transcript —
+   * i.e. the transcript really does carry an extension recipient that the live
+   * answer cannot back. The first implementation asked only "is the live SW key
+   * missing from the set", which is TRUE of a transcript that never carried an
+   * extension key at all (the `swBridge=none` pairing of INC-0923: the pair is
+   * formed before registration lands). Reconnecting to such a pair after the SW
+   * had registered then tore the room down on prod (live-acceptance 9ca5ba7,
+   * 20:15:16Z) for the one shape that is NOT a false assurance: a transcript
+   * with no extension key, rendered `coversSw:false`, claiming nothing.
+   *
+   * The security meaning is unchanged and slightly STRONGER: an advertised key
+   * the SW cannot back is still a refusal, and now an `absent` answer against a
+   * 3-key transcript is a refusal too (it was silently tolerated before).
    */
   staleSwKey: boolean;
 }
@@ -1110,11 +1134,128 @@ export function sasCoverage(
     unattributed += 1;
   }
 
-  // An `absent` SW is honest: it told us it has no key, so a 2-key set is the
-  // correct set and there is nothing stale about it. `unknown` is the
-  // dangerous one — we never heard, so a third key we cannot attribute may or
-  // may not be the SW's, and we must not guess either way.
-  const staleSwKey = sw.status === 'present' && livePub !== null && !keys.includes(livePub);
+  // `unknown` is never a refusal: we never heard, so a key we cannot attribute
+  // may or may not be the SW's and we must not guess either way. The caller
+  // (useE2e's resume path) turns `unknown` into a definitive answer by
+  // re-querying the bridge and waiting, rather than by guessing here.
+  const swAnswered = sw.status === 'present' || sw.status === 'absent';
+  // Two halves, BOTH required:
+  //   (1) the transcript carries a key we cannot attribute to us or the phone
+  //       — i.e. an extension recipient really was advertised; and
+  //   (2) the live answer does not back it (a DIFFERENT key, or no key at all).
+  // Without (1) there is no advertised extension key to be stale, and refusing
+  // would abandon a perfectly honest 2-key pair.
+  const staleSwKey = swAnswered && !coversSw && unattributed > 0;
 
   return { keyCount: keys.length, coversSw, swStatus: sw.status, unattributed, staleSwKey };
+}
+
+/**
+ * M-A5-3's VERDICT, separated from its inputs — T-RESUME-SW-KEY-RACE.
+ *
+ * `sasCoverage` says what the digits cover. This says what to DO about it, and
+ * it is a separate, pure function for one reason: the defect it fixes was a
+ * TIMING bug, and timing bugs are only testable when the decision can be fed a
+ * sequence of states without a browser. hooks/useE2e.ts owns the waiting;
+ * everything that is a judgement lives here and in `sasCoverage`.
+ *
+ * The three leaving shapes, and nothing else leaves:
+ *   1. the SW reports a DIFFERENT key than the transcript's extension recipient
+ *      -> `re-pair-needed` (an advertised key the SW cannot back: M-A5-3 as
+ *      written, unchanged, and the copy about a swapped/cleared key is right);
+ *   2. the SW definitively reports NO key against a transcript that carries an
+ *      extension recipient -> `e2e-sw-key-unavailable`;
+ *   3. a RESUMED pair whose transcript carries an extension recipient, where
+ *      the SW never answered within the grace -> `e2e-sw-key-unavailable`.
+ *
+ * `unknown` BEFORE the grace is not a verdict at all — that is the whole fix.
+ */
+export interface SwKeyGuardVerdict {
+  leave: boolean;
+  error?: E2eError;
+  detail?: string;
+}
+
+/** The exact words prod logged, kept so traces and log greps stay comparable. */
+export const M_A5_3_STALE_DETAIL =
+  'the SAS transcript carries an extension key the service worker no longer '
+  + 'reports (M-A5-3): the code would claim coverage it does not have';
+
+export const M_A5_3_NO_KEY_DETAIL =
+  'the SAS transcript carries an extension recipient and the service worker '
+  + 'reports no key of its own (M-A5-3): the code would claim coverage it does not have';
+
+export const M_A5_3_GRACE_DETAIL =
+  'the resumed SAS transcript carries an extension recipient and the service '
+  + 'worker did not answer the key bridge within the grace (M-A5-3): the code '
+  + 'would claim coverage it does not have';
+
+export function swKeyGuardVerdict(
+  coverage: SasCoverage,
+  { resumed, graceExpired }: { resumed: boolean; graceExpired: boolean },
+): SwKeyGuardVerdict {
+  if (coverage.staleSwKey) {
+    return coverage.swStatus === 'present'
+      ? { leave: true, error: 're-pair-needed', detail: M_A5_3_STALE_DETAIL }
+      : { leave: true, error: 'e2e-sw-key-unavailable', detail: M_A5_3_NO_KEY_DETAIL };
+  }
+  // The resumed branch. `graceExpired` is the caller's statement that it asked
+  // the bridge again and waited — without it an `unknown` is simply "not yet",
+  // and a pair is never abandoned for a question nobody has finished asking.
+  if (resumed && graceExpired && coverage.swStatus === 'unknown' && coverage.unattributed > 0) {
+    return { leave: true, error: 'e2e-sw-key-unavailable', detail: M_A5_3_GRACE_DETAIL };
+  }
+  return { leave: false };
+}
+
+/**
+ * The bounded wait a RESUMED pair spends on the SW key bridge before
+ * {@link swKeyGuardVerdict} is allowed to decide — T-RESUME-SW-KEY-RACE.
+ *
+ * It lives here, with the other decisions, and takes its clock and its bridge
+ * as arguments for one reason: the defect was a RACE, and a race is only
+ * testable when the test owns the clock. The React hook supplies
+ * `readStatus` (a live `swRef.current.status` read — never a snapshot, or the
+ * answer that arrives during the wait is the one we would ignore), `request`
+ * (the `e2e-pubkey` re-query, rid included) and a real `sleep`;
+ * tests/e2e-resume-sw-key-race.test.mjs supplies a virtual clock and lands the
+ * answer at 0 ms, 1 s and after the grace.
+ *
+ * Returns `answered:false` ONLY when the grace ran out with the bridge still
+ * silent. That is a verdict — "we asked and waited and heard nothing" — and is
+ * what `graceExpired` means to the guard. Anything else is a definitive
+ * `present`/`absent` the guard can judge on its merits.
+ */
+export async function awaitSwKeyAnswer({
+  readStatus,
+  request,
+  graceMs,
+  pollMs = 25,
+  sleep,
+}: {
+  readStatus: () => SwKeyStatus;
+  request: () => void;
+  graceMs: number;
+  pollMs?: number;
+  sleep: (ms: number) => Promise<void>;
+}): Promise<{ answered: boolean; waitedMs: number }> {
+  // Already heard: never re-ask, never pay the grace. The SW answering once is
+  // the whole point of the bridge, and a second request would only race it.
+  if (readStatus() !== 'unknown') return { answered: true, waitedMs: 0 };
+  try {
+    request();
+  } catch {
+    // A framer that refuses postMessage cannot answer a question it never got.
+    // We still serve the grace: the SW's own `ready` broadcast can arrive on a
+    // channel we did not have to ask on, and a thrown request is not evidence
+    // that nobody will ever speak.
+  }
+  let waitedMs = 0;
+  while (waitedMs < graceMs) {
+    const step = Math.min(pollMs, graceMs - waitedMs);
+    await sleep(step);
+    waitedMs += step;
+    if (readStatus() !== 'unknown') return { answered: true, waitedMs };
+  }
+  return { answered: readStatus() !== 'unknown', waitedMs };
 }

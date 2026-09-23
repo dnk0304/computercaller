@@ -44,6 +44,7 @@ export const E2E_ERRORS = [
   're-pair-needed',
   'e2e-seq-fail-closed',
   'e2e-epoch-replayed',
+  'e2e-sw-key-unavailable',
 ] as const;
 export type E2eErrorName = (typeof E2E_ERRORS)[number];
 
@@ -296,6 +297,14 @@ function errorIndicator(error: E2eErrorName | undefined): EncryptionIndicator {
       return { ...base, label: 'Pair again', detail: "This browser's keys were cleared, so the encrypted session ended. Pair again to start a new one." };
     case 'e2e-seq-fail-closed':
       return { ...base, label: 'Encryption stopped', detail: 'The encrypted session stopped to avoid reusing a counter. Pair again to start a new one.' };
+    // T-RESUME-SW-KEY-RACE. Its own branch, and never the `re-pair-needed`
+    // wording: "This browser's keys were cleared" is FALSE here — nothing was
+    // cleared and no revoke ran. The browser (or the extension) restarted and
+    // came back before the service worker could report its key, so the resumed
+    // transcript's extension recipient could not be backed. The next action is
+    // the same — pair again — but the reason the user is told is the true one.
+    case 'e2e-sw-key-unavailable':
+      return { ...base, label: 'Pair again', detail: 'This browser restarted before the extension was ready. Pair again.' };
     case 'e2e-epoch-replayed':
       return { ...base, label: 'Pairing refused', detail: 'A repeated pairing request was refused. Start a new pairing from your phone.' };
     case 'e2e-setup-failed':
