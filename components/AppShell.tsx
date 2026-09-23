@@ -196,14 +196,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             down; the app underneath stays fully interactive. Replaces the
             old full-screen blocking sync modal. See SyncProgressBar.tsx. */}
         <SyncProgressBar />
-        {/* Header — sticky, and now an OPAQUE BAND rather than a frosted one.
-            Same composition as before; lifted out of /app/page.tsx so
-            /app/settings inherits it. The surface is .cc-app-header
-            (app/globals.css) — see that rule for why the frosting went.
-            Subtitle ink moved slate-500 -> slate-600: on the new band
-            slate-500 measures 3.63:1 and slate-600 measures 5.77:1. The band
-            is the fixed thing and the ink moves to meet it (dispatch open
-            question 2), not the reverse. */}
+        {/* Header — sticky and PLAIN WHITE per Dennis 2026-09-23 ("Webapp
+            topbar plain"): the darker band is gone, the web twin of the
+            extension's plain ground. Opaque, not frosted. Same composition as
+            before; lifted out of /app/page.tsx so /app/settings inherits it.
+            The surface is .cc-app-header (app/globals.css).
+            Subtitle ink stays slate-600 (7.56:1 on white vs slate-500's
+            4.60:1): the band went away, but the ink that was lifted to meet it
+            is simply better ink, and dropping back would buy nothing. */}
         <header className="cc-app-header h-20 px-8 flex items-center justify-between z-10 sticky top-0">
           <div className="flex flex-col">
             <h2 className="text-xl font-bold text-slate-800">{HEADER_TITLE}</h2>
