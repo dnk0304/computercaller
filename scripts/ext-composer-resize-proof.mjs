@@ -538,7 +538,7 @@ if (SHOTS_MODE) {
 
       console.log('  app frame diag: ' + JSON.stringify(await app.evaluate(() => ({
         stubbed: window.WebSocket && window.WebSocket.name === 'FakeWS',
-        theme: (() => { try { return localStorage.getItem('cc:theme:last'); } catch (e) { return 'x'; } })(),
+        theme: (() => { try { return localStorage.getItem('cc:theme:last'); } catch { return 'x'; } })(),
         tabs: [...document.querySelectorAll('[role=tab]')].map((e) => e.textContent.trim()),
         text: document.body.innerText.replace(/\s+/g, ' ').slice(0, 300),
       })).catch((e) => String(e))));
