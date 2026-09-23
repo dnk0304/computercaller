@@ -2114,7 +2114,15 @@ class PhoneService : Service() {
     override fun onCreate() {
         super.onCreate()
         android.util.Log.d("PhoneService", "onCreate called")
-        
+
+        // INC-0923. The downgrade latch is per-service-instance and therefore
+        // already fresh here; the explicit clear states the guarantee the
+        // DowngradeLatch kdoc makes ("a fresh Accept after a genuine Reset is a
+        // new pair") at the one lifecycle event that really is a restart, so a
+        // future refactor that hoists the field to a singleton cannot silently
+        // make a latch survive the app.
+        clearDowngradeLatch(E2eNegotiation.DowngradeLatch.Event.SERVICE_RESTART)
+
         // Initialize handlers
         callHandler = CallHandler(this)
         smsHandler = SmsHandler(this)
@@ -2828,7 +2836,11 @@ class PhoneService : Service() {
                     "E2E refused: E2E_USERID_MISMATCH - the stored account id is not the one " +
                         "the registry served; refusing rather than re-keying"
                 )
-                e2eDowngradeLatch.latch()
+                // INC-0923: NO latch. The latch means "this peer offered less
+                // than it did before" (a downgrade). An account-id disagreement
+                // is a local/registry fault, and latching on it made every
+                // subsequent offer abort instantly for the life of the process
+                // — a permanent un-pairable phone from one transient fault.
                 sendPairingDecision("DECLINE_PAIRING", pairingId, null)
                 broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
                 return
@@ -2852,7 +2864,18 @@ class PhoneService : Service() {
                 else -> E2eNegotiation.ABORT_MESSAGE to "pin refused: $verdict"
             }
             android.util.Log.w("PhoneService", "E2E pin refused: $reason")
-            e2eDowngradeLatch.latch()
+            // INC-0923 / lane C. Latch ONLY on a Mismatch — a key the registry
+            // actively contradicts (substituted, wrong kind, REVOKED row). That
+            // is an attack signature and a later weaker offer from the same
+            // peer is its second step.
+            //
+            // A FailClosed is NOT latched: it means the registry gave us no
+            // answer at all (unreachable, or the recipient is unregistered), so
+            // the next attempt may well succeed. Latching it turned one missing
+            // service-worker row into "Couldn't set up encrypted pairing" on
+            // EVERY subsequent attempt until the app was force-stopped, because
+            // the latch is process-lifetime.
+            if (E2eNegotiation.DowngradeLatch.latchesOn(verdict)) e2eDowngradeLatch.latch()
             sendPairingDecision("DECLINE_PAIRING", pairingId, null)
             broadcastE2eRefusal(pairingId, message)
             return
@@ -2972,6 +2995,27 @@ class PhoneService : Service() {
      * the pair terminate could otherwise reset the latch at will, which is the
      * whole attack it exists to stop.
      */
+    /**
+     * INC-0923. The single place the downgrade latch is cleared.
+     *
+     * Every caller names the EVENT rather than deciding for itself, so the
+     * "only locally-originated events may clear it" rule is one testable
+     * predicate ([E2eNegotiation.DowngradeLatch.clearsLatch]) instead of a
+     * convention spread across call sites. Passing a relay-delivered event
+     * here is a no-op by design — deliberately not an exception, because a
+     * peer must never be able to crash the service by sending a frame.
+     */
+    private fun clearDowngradeLatch(event: E2eNegotiation.DowngradeLatch.Event) {
+        if (!E2eNegotiation.DowngradeLatch.clearsLatch(event)) {
+            android.util.Log.d("PhoneService", "downgrade latch kept across $event")
+            return
+        }
+        if (e2eDowngradeLatch.isLatched) {
+            android.util.Log.i("PhoneService", "downgrade latch cleared by $event")
+        }
+        e2eDowngradeLatch.clear()
+    }
+
     private fun tearDownE2e(reason: String) {
         // P6.1c 1b — release an in-flight SAS wait. Cancelling is a REFUSAL
         // (E2eSasGate.mayProceed says so), so a pair that vanished mid-prompt
@@ -4119,6 +4163,16 @@ class PhoneService : Service() {
         clearAllPendingPairings("user disconnect from lobby")
         // P4.1: the user left the lobby, so there is no pending computer.
         E2eSettings.clearPeerAdvertisement(this, "user disconnect from lobby")
+        // INC-0923. E2eNegotiation.DowngradeLatch promises "a fresh Accept
+        // after a genuine Reset is a new pair"; nothing used to make that true,
+        // so a latched phone stayed latched until the process died.
+        //
+        // This is the one clear that is safe: it is reached ONLY from the user
+        // tapping Disconnect on this device. A relay-delivered RESET_ROOM or a
+        // socket flap must NOT clear the latch (lane C, binding) — otherwise
+        // the peer that set it could also reset it at will, which is the attack
+        // the latch exists to stop.
+        clearDowngradeLatch(E2eNegotiation.DowngradeLatch.Event.LOCAL_USER_DISCONNECT)
         acceptedE2eOffer = null
         lastConnectionError = null
         client?.close(1000, "user_disconnect_from_lobby")
@@ -4571,6 +4625,15 @@ class PhoneService : Service() {
                     android.util.Log.d("PhoneService", "RESET_ROOM")
                     isPairActive = false
                     tearDownE2e("RESET_ROOM")
+                    // INC-0923 / lane C (binding): the latch is deliberately
+                    // NOT cleared here. RESET_ROOM is relay-delivered, so a
+                    // peer able to reset the room could clear the latch at
+                    // will — the second half of the downgrade attack. Only a
+                    // LOCALLY initiated reset (userDisconnectFromLobby) or an
+                    // app restart clears it. Routed through the policy anyway,
+                    // so the refusal is logged and a future edit that "fixes"
+                    // this by deleting the comment still cannot clear it.
+                    clearDowngradeLatch(E2eNegotiation.DowngradeLatch.Event.RELAY_RESET_ROOM)
                     E2eSettings.clearPeerAdvertisement(this, "RESET_ROOM")
                     acceptedE2eOffer = null
                     clearAllPendingPairings("room reset")

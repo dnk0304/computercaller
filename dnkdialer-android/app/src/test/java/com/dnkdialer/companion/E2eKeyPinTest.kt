@@ -117,14 +117,118 @@ class E2eKeyPinTest {
         )
     }
 
+    // -------------------------------------------- INC-0923: absent vs revoked
+    //
+    // The four conditions lane C made binding. Absent means the registry told
+    // us NOTHING about the device, which is the same epistemic state as
+    // unreachable; revoked means it told us the key is retired.
+
+    /**
+     * (1) Unregistered recipient + mode OFF ⇒ proceed, UNVERIFIED, no
+     * Mismatch. This is INC-0923 itself: the extension's service worker
+     * registers best-effort and gives up silently with no token, so an
+     * advertised-but-unregistered SW is a routine client fault. v62 called it
+     * Mismatch and hard-failed every pairing with "Unexpected device key".
+     */
     @Test
-    fun `an unknown deviceId is a mismatch`() {
+    fun `an unregistered recipient fails OPEN and UNVERIFIED with the mode off`() {
+        val web = pub()
+        val sw = pub()
+        val v = E2eKeyPin.verify(
+            listOf(recipient("web", "w", web), recipient("extension", "sw", sw)),
+            ok(listOf(row("w", "web", web))),
+            modeOn = false,
+        )
+        assertTrue("absent row + mode OFF must NOT be a Mismatch", v is E2eKeyPin.Verdict.FailOpenUnverified)
+        assertTrue(
+            "the reason must name the recipient AND its kind",
+            (v as E2eKeyPin.Verdict.FailOpenUnverified).logReason.contains("sw (extension) unregistered")
+        )
+        assertTrue("the pair proceeds", E2eKeyPin.mayProceed(v))
+        assertTrue("and is NEVER badged verified", !E2eKeyPin.isVerified(v))
+    }
+
+    /**
+     * (2) Unregistered recipient + mode ON ⇒ FailClosed, with the
+     * try-again copy, not the substitution copy.
+     */
+    @Test
+    fun `an unregistered recipient fails CLOSED with the mode on`() {
+        val web = pub()
+        val sw = pub()
+        val v = E2eKeyPin.verify(
+            listOf(recipient("web", "w", web), recipient("extension", "sw", sw)),
+            ok(listOf(row("w", "web", web))),
+            modeOn = true,
+        )
+        assertTrue(v is E2eKeyPin.Verdict.FailClosed)
+        assertEquals(E2eKeyPin.FAIL_CLOSED_MESSAGE, (v as E2eKeyPin.Verdict.FailClosed).userMessage)
+        assertTrue(v.logReason.contains("sw (extension) unregistered"))
+        assertTrue("it must not proceed", !E2eKeyPin.mayProceed(v))
+        // CONTROL: the same set with the SW row present verifies in mode ON,
+        // so the failure above is the missing row and nothing else.
+        assertTrue(
+            E2eKeyPin.verify(
+                listOf(recipient("web", "w", web), recipient("extension", "sw", sw)),
+                ok(listOf(row("w", "web", web), row("sw", "extension", sw))),
+                modeOn = true,
+            ) is E2eKeyPin.Verdict.Verified
+        )
+    }
+
+    /**
+     * (3) A REVOKED row + mode OFF stays a Mismatch. The softening covers
+     * "no answer", never "the answer is: retired". If revocation fell back to
+     * fail-open whenever the user had the toggle off, a revoked key would be
+     * unrevocable for exactly the users least protected.
+     */
+    @Test
+    fun `a revoked row is still a Mismatch with the mode OFF`() {
+        val k = pub()
+        val v = E2eKeyPin.verify(
+            listOf(recipient("web", "w", k)),
+            ok(listOf(row("w", "web", k, revoked = "2026-09-23T00:00:00.000Z"))),
+            modeOn = false,
+        )
+        assertTrue("revoked must never fail open", v is E2eKeyPin.Verdict.Mismatch)
+        assertEquals(E2eKeyPin.MISMATCH_MESSAGE, (v as E2eKeyPin.Verdict.Mismatch).userMessage)
+        assertTrue(v.logReason.contains("REVOKED"))
+        assertTrue(!E2eKeyPin.mayProceed(v))
+    }
+
+    /**
+     * An unregistered leg must not SHORT-CIRCUIT the rest of the set. If
+     * `verify` returned FailOpenUnverified the moment it saw the missing SW
+     * row, a substituted `web` key later in the same list would never be
+     * examined — the softening would become the hole §13.6 warns about.
+     */
+    @Test
+    fun `an unregistered leg does not mask a substituted one`() {
+        val real = pub()
+        val attacker = pub()
+        val sw = pub()
+        val v = E2eKeyPin.verify(
+            // unregistered FIRST, substituted SECOND — the ordering that fails
+            // if the implementation returns early.
+            listOf(recipient("extension", "sw", sw), recipient("web", "w", attacker)),
+            ok(listOf(row("w", "web", real))),
+            modeOn = false,
+        )
+        assertTrue("the substitution must win over the soft verdict", v is E2eKeyPin.Verdict.Mismatch)
+        assertTrue(
+            (v as E2eKeyPin.Verdict.Mismatch).logReason.contains("NOT the one")
+        )
+    }
+
+    @Test
+    fun `an unknown deviceId with the mode on is refused`() {
         val k = pub()
         val v = E2eKeyPin.verify(
             listOf(recipient("web", "stranger", k)), ok(listOf(row("w", "web", k))), true
         )
-        assertTrue(v is E2eKeyPin.Verdict.Mismatch)
-        assertTrue((v as E2eKeyPin.Verdict.Mismatch).logReason.contains("no live registry row"))
+        assertTrue(v is E2eKeyPin.Verdict.FailClosed)
+        assertTrue((v as E2eKeyPin.Verdict.FailClosed).logReason.contains("unregistered"))
+        assertTrue(!E2eKeyPin.mayProceed(v))
     }
 
     /**
@@ -196,10 +300,14 @@ class E2eKeyPinTest {
     }
 
     /**
-     * The reason [E2eKeyPin.verify] takes a `Result` and not a `List`. An
-     * unreachable registry collapsed into an empty list would read as "every
-     * key is unknown" — a MISMATCH — and would abort a mode-OFF pairing that
-     * §13.6 says must proceed. The two must not be confusable.
+     * The reason [E2eKeyPin.verify] takes a `Result` and not a `List`.
+     *
+     * Post-INC-0923 the two cases reach the SAME verdict class — both mean
+     * "the registry said nothing about this device" — so the property that has
+     * to hold is that they stay DISTINGUISHABLE in the log reason. An operator
+     * reading logcat must be able to tell "the phone could not reach the
+     * registry" from "the registry answered and the device is not in it": the
+     * first is a network fault, the second is brief B's missing SW row.
      */
     @Test
     fun `an unreachable registry is not the same as an empty one`() {
@@ -210,10 +318,25 @@ class E2eKeyPinTest {
         val empty = E2eKeyPin.verify(recips, ok(emptyList()), modeOn = false)
 
         assertTrue(unreachable is E2eKeyPin.Verdict.FailOpenUnverified)
-        assertTrue("an EMPTY registry is a real answer: the key is unknown",
-            empty is E2eKeyPin.Verdict.Mismatch)
+        assertTrue(empty is E2eKeyPin.Verdict.FailOpenUnverified)
+        assertTrue(
+            "an unreachable registry must say so",
+            (unreachable as E2eKeyPin.Verdict.FailOpenUnverified)
+                .logReason.contains("registry unreachable")
+        )
+        assertTrue(
+            "an EMPTY registry is a real answer: this device is not registered",
+            (empty as E2eKeyPin.Verdict.FailOpenUnverified)
+                .logReason.contains("w (web) unregistered")
+        )
+        assertTrue(unreachable.logReason != empty.logReason)
         assertTrue(E2eKeyPin.mayProceed(unreachable))
-        assertTrue(!E2eKeyPin.mayProceed(empty))
+        assertTrue(E2eKeyPin.mayProceed(empty))
+        // CONTROL: with the mode ON neither proceeds — the softening is the
+        // mode's doing, not the verdict's.
+        assertTrue(
+            !E2eKeyPin.mayProceed(E2eKeyPin.verify(recips, ok(emptyList()), modeOn = true))
+        )
     }
 
     /**

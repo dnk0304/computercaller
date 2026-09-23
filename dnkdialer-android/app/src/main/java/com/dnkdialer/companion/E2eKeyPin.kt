@@ -30,14 +30,31 @@ package com.dnkdialer.companion
  * | | mode ON | mode OFF |
  * |---|---|---|
  * | every key matches a live row | [Verdict.Verified] | [Verdict.Verified] |
- * | a key is absent, revoked, or belongs to another device | [Verdict.Mismatch] | [Verdict.Mismatch] |
+ * | a key belongs to another device (substitution) | [Verdict.Mismatch] | [Verdict.Mismatch] |
+ * | a key's row exists but is REVOKED | [Verdict.Mismatch] | [Verdict.Mismatch] |
+ * | a key has NO registry row at all (unregistered) | [Verdict.FailClosed] | [Verdict.FailOpenUnverified] |
  * | the registry is unreachable | [Verdict.FailClosed] | [Verdict.FailOpenUnverified] |
  *
- * A **mismatch always refuses, in both modes.** §13.6 only softens the
- * *unreachable* case — a key that actively disagrees with the registry is the
- * substitution the pin exists to catch, and "the user had encryption switched
- * off" is not a reason to accept a device key that is demonstrably not the
- * one on record.
+ * A **mismatch always refuses, in both modes.** §13.6 softens only the cases
+ * where the registry gave us *no answer about this device*: unreachable, and
+ * (INC-0923) a recipient with no row at all. A key that actively disagrees
+ * with the registry — substituted, or belonging to a row that has been
+ * REVOKED — is the attack the pin exists to catch, and "the user had
+ * encryption switched off" is not a reason to accept it.
+ *
+ * ## INC-0923 — why "absent" is not "wrong"
+ *
+ * The extension's service worker registers its key best-effort and gives up
+ * silently when it has no token (chrome-extension/background.js:392), so an
+ * advertised-but-unregistered SW is a routine client-side failure, not
+ * evidence of substitution. Treating it as [Verdict.Mismatch] made every
+ * pairing hard-fail with "Unexpected device key" for a user whose SW row was
+ * merely missing. Absent ⇒ we learned nothing ⇒ mode OFF proceeds
+ * **UNVERIFIED** (never badged verified); mode ON still refuses.
+ *
+ * A row that exists and disagrees, or exists and is revoked, is a real answer
+ * and stays a refusal in both modes. That split is the whole safety property:
+ * revocation must remain unforgeable by deletion of knowledge.
  */
 object E2eKeyPin {
 
@@ -51,16 +68,19 @@ object E2eKeyPin {
         /** Every advertised recipient key matches a live registry row. */
         data class Verified(val checked: Int) : Verdict
 
-        /** A key disagrees with the registry. Refuse, in BOTH modes. */
+        /**
+         * A key disagrees with the registry — substituted, wrong kind, or its
+         * row is REVOKED. Refuse, in BOTH modes.
+         */
         data class Mismatch(val userMessage: String, val logReason: String) : Verdict
 
-        /** Registry unreachable, mode ON. Refuse. */
+        /** No answer about this device (unreachable, or unregistered), mode ON. Refuse. */
         data class FailClosed(val userMessage: String, val logReason: String) : Verdict
 
         /**
-         * Registry unreachable, mode OFF. Proceed, log a warning, and the badge
-         * stays UNVERIFIED — the pair must not present itself as verified when
-         * nothing was verified.
+         * No answer about this device (unreachable, or unregistered), mode OFF.
+         * Proceed, log a warning, and the badge stays UNVERIFIED — the pair
+         * must not present itself as verified when nothing was verified.
          */
         data class FailOpenUnverified(val logReason: String) : Verdict
     }
@@ -103,13 +123,35 @@ object E2eKeyPin {
         // is the exact hole revocation exists to close.
         val live = rows.filter { !it.isRevoked }.associateBy { it.deviceId }
 
+        // INC-0923. An UNREGISTERED recipient in mode OFF does not return here:
+        // it is remembered and the loop keeps going. Returning early would let
+        // one unregistered leg mask a SUBSTITUTED one later in the same set,
+        // which would turn the softening into exactly the hole §13.6 warns
+        // about. The soft verdict is only used if every other leg is clean.
+        var unregistered: String? = null
+
         for (r in recipients) {
             val row = live[r.deviceId]
-                ?: return Verdict.Mismatch(
-                    MISMATCH_MESSAGE,
-                    "recipient ${r.deviceId} (${r.kind}) has no live registry row" +
-                        (if (rows.any { it.deviceId == r.deviceId }) " — its row is REVOKED" else "")
-                )
+            if (row == null) {
+                // A row that EXISTS but is revoked is a real answer from the
+                // registry: this key was retired. That stays a refusal in both
+                // modes — revocation must not be defeatable.
+                if (rows.any { it.deviceId == r.deviceId }) {
+                    return Verdict.Mismatch(
+                        MISMATCH_MESSAGE,
+                        "recipient ${r.deviceId} (${r.kind}) has no live registry row" +
+                            " — its row is REVOKED"
+                    )
+                }
+                val reason = "recipient ${r.deviceId} (${r.kind}) unregistered" +
+                    " — no registry row at all"
+                // Absent means the registry told us nothing about this device,
+                // which is the same epistemic state as unreachable; §13.6's
+                // split applies.
+                if (modeOn) return Verdict.FailClosed(FAIL_CLOSED_MESSAGE, reason)
+                if (unregistered == null) unregistered = reason
+                continue
+            }
 
             val registered = row.publicKeyBytes()
                 ?: return Verdict.Mismatch(
@@ -137,7 +179,9 @@ object E2eKeyPin {
                 )
             }
         }
-        return Verdict.Verified(recipients.size)
+        return unregistered?.let {
+            Verdict.FailOpenUnverified("$it; proceeding UNVERIFIED (encrypted mode off)")
+        } ?: Verdict.Verified(recipients.size)
     }
 
     private fun unreachable(modeOn: Boolean, reason: String): Verdict =
