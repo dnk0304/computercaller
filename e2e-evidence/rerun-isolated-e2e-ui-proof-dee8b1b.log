@@ -1,0 +1,466 @@
+(node:21672) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///C:/Users/D/worktrees/computercaller/sas-mode0/lib/encryptedModeCopy.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to C:\Users\D\worktrees\computercaller\sas-mode0\package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS  LoginForm: a real <form> with an onSubmit handler (not a bare click handler)
+PASS  LoginForm: no autocomplete="off" anywhere — on the form root or on a field
+PASS  LoginForm: the email input carries autoComplete="email"
+PASS  LoginForm: the password input carries autoComplete="current-password"
+PASS  LoginForm: both fields carry name + id, which is what a password manager keys on
+
+-- node arm: decisions over the full state product --
+PASS  frozen: setup-failed string is verbatim  — Couldn't set up encrypted pairing — try again
+PASS  frozen: key-mismatch string is verbatim  — Couldn't verify this device — try again
+PASS  frozen: SAS is FIVE digits (Sec 13.3 mod 100000), not the brief's six  — 5
+PASS  copy: peer-too-old reason is verbatim
+PASS  copy: no-phone reason is verbatim
+PASS  copy: TOFU reason names the benign cause (reinstall) first  — Your phone's key changed. If you reinstalled the app, pair again to confirm it's your phone.
+PASS  copy: the SAS question is verbatim
+PASS  copy: the confirm button is verbatim
+PASS  copy: the reject button is verbatim
+PASS  copy: the setting is called "Encrypted mode"
+PASS  P8-CLAIM-REVIEW: no user-facing string says "end-to-end"
+PASS  availability: phone present + capable -> switch is operable
+PASS  availability: no phone -> blocked, "Connect your phone first"
+PASS  availability: phone present but incapable -> blocked, needs v58
+PASS  availability: no phone AND incapable -> no-phone wins (never GUESS a version)
+PASS  availability: key mismatch outranks a capable, present phone
+PASS  availability: key mismatch outranks no-phone too
+PASS  availability: a blocked switch ALWAYS carries a reason (never greyed in silence)
+PASS  availability: an operable switch carries NO reason text
+PASS  availability: no error code other than key-mismatch disables the switch  — e2e-setup-failed,e2e-unavailable,re-pair-needed,e2e-seq-fail-closed,e2e-epoch-replayed
+PASS  indicator: all 56 state combinations carry WORDS, not colour alone
+PASS  indicator: all 56 combinations carry an actionable detail sentence
+PASS  indicator: NO combination describes an encryption outcome as signed-out/disconnected  — 0 offending combinations
+PASS  indicator: the padlock is drawn ONLY when the pairing is actually encrypted
+PASS  indicator: verified -> "Encrypted", lock, no banner
+PASS  indicator: unverified -> says so in words, still locked, still no banner
+PASS  indicator: unencrypted -> no lock, no banner, not an error
+PASS  indicator: EVERY error state raises the non-dismissable banner
+PASS  indicator: a bare error with no code still raises the banner (never silent)
+PASS  m-G: unencrypted + incapable phone -> names the phone as the thing to update
+PASS  m-G: unencrypted + CAPABLE phone -> does NOT tell anyone to update
+PASS  N-1: the kill-switch banner carries the frozen label verbatim
+PASS  N-1: the kill-switch banner detail is the frozen sentence verbatim
+PASS  N-1: the refusal copy does NOT vary with peer capability
+PASS  N-1: the refusal never tells the user to update either end
+PASS  N-1: the refusal says the condition is temporary, not permanent
+PASS  indicator: the setup-failed banner carries the frozen sentence verbatim
+PASS  indicator: the key-mismatch banner carries its frozen sentence verbatim
+PASS  SAS: effective ON + unanswered digits -> BLOCKING
+PASS  SAS: once confirmed, it stops blocking
+PASS  SAS: no digits -> nothing to block on
+PASS  SAS: effective mode OFF -> never blocking
+PASS  SAS: an errored pair does not also block on a code (the banner owns it)
+PASS  SAS row 8/9: either side ON -> effective ON -> a locally-OFF computer still blocks
+PASS  SAS row 4 (M1): sealed + effective OFF + digits present -> NOT blocking
+PASS  SAS row 4 (M1): still not blocking even once digits are answered elsewhere
+PASS  digits: a 5-digit code is rendered ungrouped and verbatim
+PASS  digits: no separator of any kind survives the render
+PASS  digits: a wrong-length code is returned UNTOUCHED, never tidied to look right
+PASS  digits: the spoken label spells the code out digit by digit
+PASS  digits: a zero-padded code keeps its leading zeros in both forms
+
+-- (a) web Settings --
+PASS  (a) /app Settings renders the Encrypted mode row
+PASS  (a) the row is labelled "Encrypted mode"
+PASS  (a) the control is a real role="switch"
+PASS  (a) DEFAULT IS OFF (Sec 12 opt-in)
+PASS  (a) with no phone connected the switch is DISABLED
+PASS  (a) the reason is bound to the control for screen readers (aria-describedby)
+PASS  (a) a greyed switch always names WHICH reason blocked it  — peerTooOld
+PASS  (a) the words on the surface are byte-identical to the module's string for that reason  — Your phone app needs v58 or newer
+  shot p5a-a-app-settings-off-nophone-1280  125526 B
+PASS  (a) a stored ON setting is read back and rendered ON
+PASS  (a) ANOTHER account's ON setting does not leak into this account
+
+-- (a) extension Settings (account menu) --
+PASS  (a) [light] the extension account menu carries the Encrypted mode switch
+PASS  (a) [light] it uses role="menuitemcheckbox" (correct ARIA inside a menu)
+PASS  (a) [light] default OFF on the extension surface too
+PASS  (a) [light] a blocked switch states its reason on this surface too
+  shot p5a-a-ext-menu-light-400  37281 B
+PASS  (a) [dark] the extension account menu carries the Encrypted mode switch
+PASS  (a) [dark] it uses role="menuitemcheckbox" (correct ARIA inside a menu)
+PASS  (a) [dark] default OFF on the extension surface too
+PASS  (a) [dark] a blocked switch states its reason on this surface too
+  shot p5a-a-ext-menu-dark-400  33991 B
+
+-- EXT-UI-5 status dot: Syncing vs Active, statically --
+PASS  (EXT-UI-5) [light] the in-flight state renders data-dot="syncing"  — {"state":"syncing","name":"Syncing…","role":"img","bg":"rgba(0, 0, 0, 0)","shadow":"rgb(30, 58, 138) 0px 0px 0px 2px inset","radius":"50%","anim":"none","trans":"all","beforeAnim":"none","w":8,"h":8}
+PASS  (EXT-UI-5) [light] Syncing is an OPEN RING — no fill, a ring drawn as an inset stroke  — rgba(0, 0, 0, 0) / rgb(30, 58, 138) 0px 0px 0px 2px inset
+PASS  (EXT-UI-5) [light] the dot is static in Syncing — no animation, no transition  — none / none / all
+  shot p5a-a-ext-dot-syncing-light-400  16679 B
+PASS  (EXT-UI-5) [dark] the in-flight state renders data-dot="syncing"  — {"state":"syncing","name":"Syncing…","role":"img","bg":"rgba(0, 0, 0, 0)","shadow":"rgb(147, 197, 253) 0px 0px 0px 2px inset","radius":"50%","anim":"none","trans":"all","beforeAnim":"none","w":8,"h":8}
+PASS  (EXT-UI-5) [dark] Syncing is an OPEN RING — no fill, a ring drawn as an inset stroke  — rgba(0, 0, 0, 0) / rgb(147, 197, 253) 0px 0px 0px 2px inset
+PASS  (EXT-UI-5) [dark] the dot is static in Syncing — no animation, no transition  — none / none / all
+  shot p5a-a-ext-dot-syncing-dark-400  16733 B
+PASS  (EXT-UI-5) [light] the settled state renders data-dot="active"  — {"state":"active","name":"Active","role":"img","bg":"rgb(5, 73, 58)","shadow":"none","radius":"50%","anim":"none","trans":"all","beforeAnim":"none","w":8,"h":8}
+PASS  (EXT-UI-5) [light] Active is a FILLED circle — opaque fill, 50% radius  — rgb(5, 73, 58) / 50%
+PASS  (EXT-UI-5) [light] Syncing and Active differ in SHAPE, not only in colour  — rgba(0, 0, 0, 0)|rgb(30, 58, 138) 0px 0px 0px 2px inset vs rgb(5, 73, 58)|none
+PASS  (EXT-UI-5) [light] both states keep the SAME 8px footprint  — 8x8 -> 8x8
+PASS  (EXT-UI-5) [light] the two states are NOT exposed under the same accessible name  — Syncing… vs Active (role=img)
+  shot p5a-a-ext-dot-active-light-400  16453 B
+PASS  (EXT-UI-5) [dark] the settled state renders data-dot="active"  — {"state":"active","name":"Active","role":"img","bg":"rgb(52, 211, 153)","shadow":"none","radius":"50%","anim":"none","trans":"all","beforeAnim":"none","w":8,"h":8}
+PASS  (EXT-UI-5) [dark] Active is a FILLED circle — opaque fill, 50% radius  — rgb(52, 211, 153) / 50%
+PASS  (EXT-UI-5) [dark] Syncing and Active differ in SHAPE, not only in colour  — rgba(0, 0, 0, 0)|rgb(147, 197, 253) 0px 0px 0px 2px inset vs rgb(52, 211, 153)|none
+PASS  (EXT-UI-5) [dark] both states keep the SAME 8px footprint  — 8x8 -> 8x8
+PASS  (EXT-UI-5) [dark] the two states are NOT exposed under the same accessible name  — Syncing… vs Active (role=img)
+  shot p5a-a-ext-dot-active-dark-400  16520 B
+
+-- UI-UNREAD: /app Texts --
+PASS  (unread) the /app Messages tab is reachable
+PASS  (unread) the Texts tab actually opened (SMSInterface is on screen)  — 3 rows
+PASS  (unread) /app Texts shows a count chip on threads never opened here  — 3 unread rows
+PASS  (unread) the chip renders inside those rows
+PASS  (unread) a thread with three arrivals reads "3", not "1"  — 1 chips showing 3
+PASS  (unread) the /app row accepted the click
+PASS  (unread) opening a conversation clears ONLY that row  — 3 -> 2
+PASS  (unread) the other threads stay unread after one is opened  — 2 unread rows remain
+  shot p5a-a-app-texts-unread-1280  98270 B
+
+-- UI-UNREAD: extension Texts, both themes --
+PASS  (unread) [light] the extension Texts list marks unopened threads  — 3 chips
+PASS  (unread) [light] a thread with three arrivals reads "3", not "1"  — 1 chips showing 3
+PASS  (unread) [light] the opened thread is read, the others are not  — 3 -> 2
+  shot p5a-a-ext-texts-unread-light-400  28761 B
+PASS  (unread) [dark] the extension Texts list marks unopened threads  — 3 chips
+PASS  (unread) [dark] a thread with three arrivals reads "3", not "1"  — 1 chips showing 3
+PASS  (unread) [dark] the opened thread is read, the others are not  — 3 -> 2
+  shot p5a-a-ext-texts-unread-dark-400  29241 B
+
+-- (c) indicator + independence --
+PASS  (c) /app header renders the encryption chip
+PASS  (c) an unpaired/plaintext bridge reads "Not encrypted", in words  — Not encrypted
+PASS  (c) the chip carries a full sentence for screen readers, not just a glyph
+PASS  (c) no padlock is drawn on an unencrypted pairing
+PASS  (c) baseline: the lobby pill rendered something to compare against  — grid w-full flex-shrink-0 transition-[grid-template-rows] du
+  shot p5a-c-app-header-unencrypted-1280  102496 B
+
+-- (b) SAS confirm on a real encrypted pair --
+PASS  (b) the page sent a real pairing request advertising mode ON  — mode=1
+PASS  (b) the request carries this browser as a recipient with its own static key
+PASS  (b) a mode-ON pair raises the BLOCKING code confirm
+PASS  (b) the code shown is the one the phone computed (real derivation, both sides)  — page=28397 phone=28397
+PASS  (b) it is FIVE digits, per the frozen Sec 13.3 transcript  — 28397
+PASS  (b) the digits are UNGROUPED on screen (SPEC 13.3 R-BK, M-A6-5) so the page and the phone hero face are one exact-string compare
+PASS  (b) a screen reader hears the code spelled out, not read as a number
+PASS  (b) the question and both answers are on screen, verbatim
+PASS  (b) it is an alertdialog and it is modal
+PASS  (b) initial focus is the REJECT button, so Enter cannot approve by accident
+  shot p5a-b-app-sas-confirm-1280  109050 B
+PASS  (b) Escape does NOT dismiss it — dismissal would look exactly like approval
+PASS  (b) a backdrop click does NOT dismiss it either
+PASS  (b) the only two controls are the two answers — no close affordance
+PASS  (b) focus is trapped inside the dialog
+PASS  (b) "Doesn't match" refuses the pairing and says so
+  shot p5a-b-app-sas-refused-1280  104135 B
+PASS  (b) the extension surface raises the SAME blocking confirm
+PASS  (b) and shows the same code the phone computed
+  shot p5a-b-ext-sas-confirm-400  39701 B
+
+-- (b0) SAS-MODE0: a 0/0 pair must not raise the confirm --
+PASS  (b0) a capable-but-OFF computer STILL advertises a block, at mode byte 0  — mode=0
+PASS  (b0) the 0/0 pair actually sealed (the phone accepted and digits exist)  — 73515
+PASS  (b0) NO blocking SAS dialog opens on a 0/0 pair  — 0 open
+PASS  (b0) and no SAS digits are rendered anywhere on the page  — 0 digit elements
+PASS  (b0) the pair did NOT error — no banner, so the absence above means something  — chip=present banner=- | [e2e] our own web deviceId 01e604b1f6283a9e59796bf5ac426ef9 has NO live DeviceKey row. Sending anyway — a block without the web recipient is unsendable — but the phone may refuse this pairing. ;; [e2e] advert recipients=1 swBridge=no-extension-frame — the extension key is NOT in this transcript
+PASS  (b0) the /app header renders the encryption chip for this pair  — chip=present banner=- | [e2e] our own web deviceId 01e604b1f6283a9e59796bf5ac426ef9 has NO live DeviceKey row. Sending anyway — a block without the web recipient is unsendable — but the phone may refuse this pairing. ;; [e2e] advert recipients=1 swBridge=no-extension-frame — the extension key is NOT in this transcript
+PASS  (b0) the header says "Encrypted, unverified" — sealed, and honest about it  — Encrypted, unverified | chip=present banner=- | [e2e] our own web deviceId 01e604b1f6283a9e59796bf5ac426ef9 has NO live DeviceKey row. Sending anyway — a block without the web recipient is unsendable — but the phone may refuse this pairing. ;; [e2e] advert recipients=1 swBridge=no-extension-frame — the extension key is NOT in this transcript
+PASS  (b0) the padlock is drawn: this pair IS encrypted  — encrypted | chip=present banner=- | [e2e] our own web deviceId 01e604b1f6283a9e59796bf5ac426ef9 has NO live DeviceKey row. Sending anyway — a block without the web recipient is unsendable — but the phone may refuse this pairing. ;; [e2e] advert recipients=1 swBridge=no-extension-frame — the extension key is NOT in this transcript
+PASS  (b0) the Messages tab is reachable — nothing is covering the panel
+PASS  (b0) the Texts surface took the navigation (no modal ate the click)
+PASS  (b0) the page still accepts input — nothing is intercepting pointer events
+PASS  (b0) no modal backdrop is mounted over the panel
+PASS  (b0) still no dialog after navigating — it cannot arrive late either
+  shot p5a-b0-app-sas-mode0-unverified-1280  98014 B
+
+-- (c) the refusal banner on a real error state --
+PASS  (c) a terminal encryption error raises the banner  — Encrypted pairing temporarily unavailable
+PASS  (c) the banner text is the module's string for that error, byte-identical  — Encrypted pairing temporarily unavailable. Encrypted pairing is turned off on the server r
+PASS  (c) the banner never calls an encryption refusal a lost connection  — Encrypted pairing temporarily unavailable. Encrypted pairing is turned off on the server r
+PASS  (c) the banner has NO dismiss control — all six errors stay true after a click
+PASS  (c) it is announced to screen readers as a status region
+PASS  (c) the chip stands down in an error state and lets the banner speak
+  shot p5a-c-app-banner-error-1280  107047 B
+PASS  (c) INDEPENDENCE: the connection pill is byte-identical across e2e states  — baseline=grid w-full flex-shrink-0 transition-[gr after=grid w-full flex-shrink-0 transition-[gr
+
+-- 360px x 1.4 zoom --
+PASS  360px/1.4x [/app/settings] no horizontal overflow  — overflow 0px
+  shot p5a-zoom-app-settings-360-1_4x  23609 B
+PASS  360px/1.4x [/extension] no horizontal overflow  — overflow 0px
+  shot p5a-zoom-extension-360-1_4x  16878 B
+
+-- keyboard-only --
+PASS  keyboard: a disabled switch is correctly OUT of the tab order  — disabled=true reached=false
+PASS  keyboard: every focusable control on the row shows a visible focus ring
+PASS  keyboard: the account menu opens from the keyboard
+PASS  keyboard: focus moves INTO the menu on open
+PASS  keyboard: Escape closes the menu and returns focus to its trigger
+
+-- reduced motion --
+PASS  reduced motion: the feature's entrance animation swaps to the opacity-only variant  — animation-name=cc-e2e-enter-reduced
+
+-- EXT-HIST: load-more, both themes --
+PASS  (h) [light] the extension Texts list rendered (positive control for every absence below)  — 3 rows
+PASS  (h) [light] the thread list offers "Load older messages from phone"  — 1 found
+PASS  (h) [light] its label is the web app's copy, verbatim  — "Load older messages from phone"
+PASS  (h) [light] with no phone connected it is DISABLED
+PASS  (h) [light] and it says WHY, in the title, rather than failing silently  — Connect your phone to load older messages
+PASS  (h) [light] a disabled control is out of the tab order
+PASS  (h) [light] it is not busy while it is merely offline
+PASS  (h) [light] once the phone is connected the button is ENABLED
+PASS  (h) [light] an enabled control carries no stale "connect your phone" tooltip
+PASS  (h) [light] Tab reaches it — it is the focused element
+PASS  (h) [light] the focus ring is a real painted outline, not a removed one  — solid 2px
+PASS  (h) [light] and it is the BRAND ring, not currentColor on currentColor  — rgba(53, 201, 119, 0.45) vs ink rgb(82, 82, 82)
+PASS  (h) [light] Enter fires the fetch: aria-busy flips to true
+PASS  (h) [light] the busy label replaces the idle one  — "Loading…"
+PASS  (h) [light] a busy control refuses a second press (no double-paging)
+PASS  (h) [light] the spinner is hidden from assistive tech — aria-busy already said it
+  shot p5a-h-ext-threads-loadmore-400  25974 B
+PASS  (h) [light] the thread opened (positive control: sent bubbles are on screen)  — 15 sent bubbles
+PASS  (h) [light] a thread holding a full page offers "Older messages"  — 1 found
+PASS  (h) [light] with the phone connected it is enabled
+PASS  (h) [light] it sits ABOVE the bubbles, where older history would arrive
+PASS  (h) [light] a thread that has not been paged claims no beginning
+PASS  (e) [light] the sent bubble's painted contrast clears WCAG AA 4.5:1  — 14.64:1  rgb(11, 18, 32) on rgb(207, 230, 255)
+PASS  (e) [light] and clears AAA 7:1 — this panel runs at 0.8x density  — 14.64:1
+PASS  (e) [light] the brand GRADIENT is gone from the bubble  — none
+PASS  (e) [light] the ink is near-black, not white (Dennis's actual request)  — rgb(11, 18, 32)
+PASS  (e) [light] the fill is a LIGHT blue (blue channel highest, and light)  — rgb(207, 230, 255)
+PASS  (e-keep) [light] the gradient still paints the primary action in the panel
+  shot ext-bubble-after-light.png  57963 B
+  shot p5a-h-ext-thread-older-400  57963 B
+PASS  (h) [light] the short thread opened (positive control for the absence below)  — 4 rows
+PASS  (h) [light] a thread shorter than a page offers NO "Older messages"
+PASS  (h) [light] the call list rendered  — 31 rows
+PASS  (h) [light] it offers "Load 25 more"
+PASS  (h) [light] the remaining count is right: 40 deduped - 30 shown = 10  — "Load 25 more (10 remaining)"
+PASS  (h) [light] the call list is not capped at 30 — the 31st number EXISTS
+PASS  (h) [light] one press reveals the rest and the button then disappears
+  shot p5a-h-ext-calls-loadmore-400  57986 B
+PASS  (h) [dark] the extension Texts list rendered (positive control for every absence below)  — 3 rows
+PASS  (h) [dark] the thread list offers "Load older messages from phone"  — 1 found
+PASS  (h) [dark] its label is the web app's copy, verbatim  — "Load older messages from phone"
+PASS  (h) [dark] with no phone connected it is DISABLED
+PASS  (h) [dark] and it says WHY, in the title, rather than failing silently  — Connect your phone to load older messages
+PASS  (h) [dark] a disabled control is out of the tab order
+PASS  (h) [dark] it is not busy while it is merely offline
+PASS  (h) [dark] once the phone is connected the button is ENABLED
+PASS  (h) [dark] an enabled control carries no stale "connect your phone" tooltip
+PASS  (h) [dark] Tab reaches it — it is the focused element
+PASS  (h) [dark] the focus ring is a real painted outline, not a removed one  — solid 2px
+PASS  (h) [dark] and it is the BRAND ring, not currentColor on currentColor  — rgba(53, 201, 119, 0.45) vs ink rgb(163, 163, 163)
+PASS  (h) [dark] Enter fires the fetch: aria-busy flips to true
+PASS  (h) [dark] the busy label replaces the idle one  — "Loading…"
+PASS  (h) [dark] a busy control refuses a second press (no double-paging)
+PASS  (h) [dark] the spinner is hidden from assistive tech — aria-busy already said it
+PASS  (h) [dark] the thread opened (positive control: sent bubbles are on screen)  — 15 sent bubbles
+PASS  (h) [dark] a thread holding a full page offers "Older messages"  — 1 found
+PASS  (h) [dark] with the phone connected it is enabled
+PASS  (h) [dark] it sits ABOVE the bubbles, where older history would arrive
+PASS  (h) [dark] a thread that has not been paged claims no beginning
+PASS  (e) [dark] the sent bubble's painted contrast clears WCAG AA 4.5:1  — 10.81:1  rgb(11, 18, 32) on rgb(156, 200, 255)
+PASS  (e) [dark] and clears AAA 7:1 — this panel runs at 0.8x density  — 10.81:1
+PASS  (e) [dark] the brand GRADIENT is gone from the bubble  — none
+PASS  (e) [dark] the ink is near-black, not white (Dennis's actual request)  — rgb(11, 18, 32)
+PASS  (e) [dark] the fill is a LIGHT blue (blue channel highest, and light)  — rgb(156, 200, 255)
+PASS  (e-keep) [dark] the gradient still paints the primary action in the panel
+  shot ext-bubble-after-dark.png  57779 B
+PASS  (h) [dark] the short thread opened (positive control for the absence below)  — 4 rows
+PASS  (h) [dark] a thread shorter than a page offers NO "Older messages"
+PASS  (h) [dark] the call list rendered  — 31 rows
+PASS  (h) [dark] it offers "Load 25 more"
+PASS  (h) [dark] the remaining count is right: 40 deduped - 30 shown = 10  — "Load 25 more (10 remaining)"
+PASS  (h) [dark] the call list is not capped at 30 — the 31st number EXISTS
+PASS  (h) [dark] one press reveals the rest and the button then disappears
+PASS  (h) [360x1.4] the thread-list button still renders at the narrowest real panel
+PASS  (h) [360x1.4] its tap target clears the 32 px floor  — 38.0 px
+PASS  (h) [360x1.4] the list does not scroll sideways
+PASS  (h) [360x1.4] the document does not scroll sideways either
+PASS  (h) [360x1.4] the in-thread pill renders and clears the tap floor
+PASS  (h) [360x1.4] a long unbroken bubble does not push the thread sideways
+
+-- EXT-HIST: the outgoing bubble, before/after --
+PASS  (e-before) [light] the BEFORE state was reconstructed on 15 bubbles  — 15
+PASS  (e-before) [light] and it really is the old look: the brand gradient  — linear-gradient(135deg, rgb(53, 201, 119) 0%, rgb(34, 168, 1
+PASS  (e-before) [light] with white ink, which is what Dennis asked us to change  — rgb(255, 255, 255)
+  shot ext-bubble-before-light.png  75592 B
+PASS  (e-before) [dark] the BEFORE state was reconstructed on 15 bubbles  — 15
+PASS  (e-before) [dark] and it really is the old look: the brand gradient  — linear-gradient(135deg, rgb(53, 201, 119) 0%, rgb(34, 168, 1
+PASS  (e-before) [dark] with white ink, which is what Dennis asked us to change  — rgb(255, 255, 255)
+  shot ext-bubble-before-dark.png  75710 B
+
+-- EXT-SEARCH: message-body search, both surfaces --
+PASS  (s) [light] the Texts list rendered (positive control for every absence below)  — 5 rows
+PASS  (s) [light] with no query there is NO results view — today's list, unchanged  — 0 found
+PASS  (s) [light] a query replaces the list with the results view  — 1 found
+PASS  (s) [light] the plain thread list is gone while results are shown  — 0 rows still there
+PASS  (s) [light] a SENT message matches — half of Dennis's ask  — es-new-1,es-old-1
+PASS  (s) [light] and it is the OLDEST message in its thread, which the old predicate could never see
+PASS  (s) [light] a RECEIVED message matches — the other half  — es-new-1,es-old-1
+PASS  (s) [light] a non-matching conversation is absent from the results  — es-new-1,es-old-1
+PASS  (s) [light] hits are GROUPED by conversation, not listed flat  — 2 groups
+PASS  (s) [light] threads are ordered by their newest MATCHING message  — +4791000002
+PASS  (s) [light] each group states its own match count  — "1 match"
+PASS  (s) [light] the count is announced to screen readers, politely  — "2 matches in 2 conversations"
+PASS  (s) [light] the match is wrapped in a real <mark>
+PASS  (s) [light] and the marked text is the query, in the message's own casing  — "parcel"
+PASS  (s) [light] the highlight's painted contrast clears WCAG AA 4.5:1  — 17.56:1  lab(35.5623 -1.74978 -15.4316) on rgb(255, 243, 163)
+PASS  (s) [light] the highlight is a token, not the UA's default yellow  — rgb(255, 243, 163)
+PASS  (s) [light] the highlight really is painted — it differs from the unmarked ground
+PASS  (s) [light] the scope line names the scope, in the spec's words  — "Searching 46 messages loaded on this computer."
+PASS  (s) [light] the recovery action sits under it — the EXT-HIST button, same copy  — "Load older messages from phone"
+PASS  (s) [light] with no phone connected it is DISABLED
+PASS  (s) [light] and it says WHY rather than failing silently  — Connect your phone to load older messages
+PASS  (s) [light] it is not busy while it is merely offline
+PASS  (s) [light] once the phone is connected the button is ENABLED
+PASS  (s) [light] an enabled control carries no stale "connect your phone" tooltip
+  shot ext-search-results-light-360.png  31154 B
+PASS  (s) [light] no match is a statement, not an empty box  — "No messages match"
+PASS  (s) [light] the scope line survives the empty state
+PASS  (s) [light] and so does the one control that can widen the search
+  shot ext-search-empty-light-360.png  23377 B
+PASS  (s) [light] once the phone reports start-of-history the button is gone
+PASS  (s) [light] and the terminal sentence replaces it, verbatim  — "That is everything on the phone."
+PASS  (s) [light] an unaccented query finds an accented message ("ola" finds "Olá")
+PASS  (s) [light] the click opened the conversation (positive control)
+PASS  (s) [light] the clicked message is IN the viewport, not merely on the page  — {"found":true,"inView":true,"cued":true,"outline":"2px","atBottom":false}
+PASS  (s) [light] and the thread did NOT simply open at the bottom, which is the old behaviour  — {"found":true,"inView":true,"cued":true,"outline":"2px","atBottom":false}
+PASS  (s) [light] the landed message carries the hit cue
+PASS  (s) [light] the cue is a painted outline, not a repainted bubble fill  — 2px
+PASS  (s) [light] and it clears itself once the 1.2 s window has passed
+PASS  (s) [dark] the Texts list rendered (positive control for every absence below)  — 5 rows
+PASS  (s) [dark] with no query there is NO results view — today's list, unchanged  — 0 found
+PASS  (s) [dark] a query replaces the list with the results view  — 1 found
+PASS  (s) [dark] the plain thread list is gone while results are shown  — 0 rows still there
+PASS  (s) [dark] a SENT message matches — half of Dennis's ask  — es-new-1,es-old-1
+PASS  (s) [dark] and it is the OLDEST message in its thread, which the old predicate could never see
+PASS  (s) [dark] a RECEIVED message matches — the other half  — es-new-1,es-old-1
+PASS  (s) [dark] a non-matching conversation is absent from the results  — es-new-1,es-old-1
+PASS  (s) [dark] hits are GROUPED by conversation, not listed flat  — 2 groups
+PASS  (s) [dark] threads are ordered by their newest MATCHING message  — +4791000002
+PASS  (s) [dark] each group states its own match count  — "1 match"
+PASS  (s) [dark] the count is announced to screen readers, politely  — "2 matches in 2 conversations"
+PASS  (s) [dark] the match is wrapped in a real <mark>
+PASS  (s) [dark] and the marked text is the query, in the message's own casing  — "parcel"
+PASS  (s) [dark] the highlight's painted contrast clears WCAG AA 4.5:1  — 6.80:1  rgb(255, 255, 255) on rgb(107, 90, 0)
+PASS  (s) [dark] the highlight is a token, not the UA's default yellow  — rgb(107, 90, 0)
+PASS  (s) [dark] the highlight really is painted — it differs from the unmarked ground
+PASS  (s) [dark] the scope line names the scope, in the spec's words  — "Searching 46 messages loaded on this computer."
+PASS  (s) [dark] the recovery action sits under it — the EXT-HIST button, same copy  — "Load older messages from phone"
+PASS  (s) [dark] with no phone connected it is DISABLED
+PASS  (s) [dark] and it says WHY rather than failing silently  — Connect your phone to load older messages
+PASS  (s) [dark] it is not busy while it is merely offline
+PASS  (s) [dark] once the phone is connected the button is ENABLED
+PASS  (s) [dark] an enabled control carries no stale "connect your phone" tooltip
+  shot ext-search-results-dark-360.png  31156 B
+PASS  (s) [dark] no match is a statement, not an empty box  — "No messages match"
+PASS  (s) [dark] the scope line survives the empty state
+PASS  (s) [dark] and so does the one control that can widen the search
+PASS  (s) [dark] once the phone reports start-of-history the button is gone
+PASS  (s) [dark] and the terminal sentence replaces it, verbatim  — "That is everything on the phone."
+PASS  (s) [dark] an unaccented query finds an accented message ("ola" finds "Olá")
+PASS  (s) [dark] the click opened the conversation (positive control)
+PASS  (s) [dark] the clicked message is IN the viewport, not merely on the page  — {"found":true,"inView":true,"cued":true,"outline":"2px","atBottom":false}
+PASS  (s) [dark] and the thread did NOT simply open at the bottom, which is the old behaviour  — {"found":true,"inView":true,"cued":true,"outline":"2px","atBottom":false}
+PASS  (s) [dark] the landed message carries the hit cue
+PASS  (s) [dark] the cue is a painted outline, not a repainted bubble fill  — 2px
+PASS  (s) [dark] and it clears itself once the 1.2 s window has passed
+PASS  (s) [360x1.4] the results view renders at the narrowest real panel
+PASS  (s) [360x1.4] the results do not scroll sideways
+PASS  (s) [360x1.4] the document does not scroll sideways either
+PASS  (s) [360x1.4] a hit line clears the 32 px tap floor
+PASS  (s) [360x1.4] a long unbroken snippet does not push the panel sideways
+PASS  (s) [web] the /app thread search is reachable
+PASS  (s) [web] with no query there is NO results view
+PASS  (s) [web] a query renders the SAME results view the extension uses
+PASS  (s) [web] the sent, oldest-in-thread message matches here too  — es-new-1,es-old-1
+PASS  (s) [web] and the received one  — es-new-1,es-old-1
+PASS  (s) [web] the highlight is painted on /app too — the rule is not .cc-ext-scoped  — rgb(255, 243, 163)
+PASS  (s) [web] and it clears WCAG AA 4.5:1 there  — 17.56:1  lab(35.5623 -1.74978 -15.4316) on rgb(255, 243, 163)
+PASS  (s) [web] the scope line is the same sentence  — "Searching 46 messages loaded on this computer."
+  shot web-search-results.png  113213 B
+PASS  (s) [web] clicking a hit opens that conversation
+PASS  (s) [web] scrolled to the clicked message, in the viewport  — {"found":true,"inView":true,"cued":true}
+PASS  (s) [web] and the thread was NOT yanked to the bottom afterwards
+PASS  (s) [web] and the same hit cue is painted on it
+  shot p5a-s-web-search-results  145144 B
+
+-- UI-AUTOLOGOUT: the 4 h idle cutoff, end to end --
+PASS  (idle) shell.js is the shipped file, byte for byte
+PASS  (idle) shell.css is the shipped file, byte for byte
+PASS  (idle) background.js is the shipped file, byte for byte
+PASS  (idle) sidepanel.html is the shipped file, byte for byte
+    ..[423.0s] light: context up
+    ..[424.7s] light: waiting for the service worker
+    ..[426.0s] light: worker up chrome-extension://helkcjjlidcceiifjccolmppanfmcjjg/backgrou
+    ..[439.6s] light: console teed + session seeded
+PASS  (idle) [light] NEGATIVE CONTROL: the worker's session state is non-empty BEFORE the cutoff  — if this is false the "dropped" assertion below proves nothing
+    ..[439.8s] light: opening sidepanel.html
+    ..[440.1s] light: waiting for the app frame
+PASS  (idle) [light] the panel is signed in: the shell framed /extension, not the gate  — /extension
+PASS  (idle) [light] the sign-in overlay is HIDDEN while signed in
+PASS  (idle) [light] NEGATIVE CONTROL: the worker is SIGNED IN before the cutoff  — without this every post-cutoff SW assertion below would pass on the boot state
+PASS  (idle) [light] NEGATIVE CONTROL: a real ext-session token exists before the cutoff  — minted from the cookie by the worker itself
+    ..[440.8s] light: waiting for the guard's mount heartbeat
+PASS  (idle) [light] the extension surface SENDS THE IDLE HEARTBEAT — the guard is mounted and live  — 1 POST /api/auth/heartbeat; before the ui-batch fix this surface sent none, which is why idle_token lapsed silently
+PASS  (idle) [light] the clock shim is installed in the app frame and starts at 0  — offset=0
+    ..[441.0s] light: resetting the idle clock via a real activity event
+    ..[441.3s] light: advancing the clock into the warn band
+PASS  (idle) [light] the "Still there?" modal opens when the window enters the warn band  — warn band = last 60s
+PASS  (idle) [light] the modal is titled "Still there?"  — Still there?
+PASS  (idle) [light] the countdown shows a real remaining VALUE, inside the 60 s warn band  — 45s of 60s
+PASS  (idle) [light] the countdown DECREMENTS in real time (not a static render)  — 45s -> 41s over 4 s
+PASS  (idle) [light] the modal fits inside the 400 px panel (no horizontal overflow)
+    ..[446.2s] light: past the cutoff; waiting for the sign-in gate
+PASS  (idle) [light] at the cutoff the shell swapped the app surface for the sign-in gate  — /extension/login
+PASS  (idle) [light] the gate states WHY, in the exact sentence the product ships  — "You were signed out after 4 hours of inactivity. Sign in again."
+PASS  (idle) [light] the reason line is role="status" (told, not alarmed)  — role="status"
+PASS  (idle) [light] the reason was read AND CLEARED (the next sign-in is not mislabelled)  — leftover=null
+PASS  (idle) [light] the sign-in overlay is VISIBLE after the cutoff
+    ..[447.9s] light: reading the worker's teardown state
+PASS  (idle) [light] SW: the 'signed-out' message arrived — signedIn is false  — signedIn=false
+PASS  (idle) [light] SW: dropSessionState ran — every storage.session key it clears is empty  — cc_e2e_wrap/cc_e2e_seq/cc_e2e_dedupe sizes = [0,0,0] (seeded non-empty above)
+PASS  (idle) [light] SW: the action icon reverted to the plain mark (indicator 'signed-out' => colour null)  — lastIndicator=signed-out
+PASS  (idle) [light] SW: the action title is the plain wordmark, with no connection state  — "ComputerCaller"
+PASS  (idle) [light] SW: the durable ext-session token was dropped by the shell  — ext_token=absent
+    ..[452.3s] dark: context up
+    ..[453.5s] dark: waiting for the service worker
+    ..[454.7s] dark: worker up chrome-extension://helkcjjlidcceiifjccolmppanfmcjjg/backgrou
+    ..[454.8s] dark: console teed + session seeded
+PASS  (idle) [dark] NEGATIVE CONTROL: the worker's session state is non-empty BEFORE the cutoff  — if this is false the "dropped" assertion below proves nothing
+    ..[454.8s] dark: opening sidepanel.html
+    ..[454.9s] dark: waiting for the app frame
+PASS  (idle) [dark] the panel is signed in: the shell framed /extension, not the gate  — /extension
+PASS  (idle) [dark] the sign-in overlay is HIDDEN while signed in
+PASS  (idle) [dark] NEGATIVE CONTROL: the worker is SIGNED IN before the cutoff  — without this every post-cutoff SW assertion below would pass on the boot state
+PASS  (idle) [dark] NEGATIVE CONTROL: a real ext-session token exists before the cutoff  — minted from the cookie by the worker itself
+    ..[455.4s] dark: waiting for the guard's mount heartbeat
+PASS  (idle) [dark] the extension surface SENDS THE IDLE HEARTBEAT — the guard is mounted and live  — 1 POST /api/auth/heartbeat; before the ui-batch fix this surface sent none, which is why idle_token lapsed silently
+PASS  (idle) [dark] the clock shim is installed in the app frame and starts at 0  — offset=0
+    ..[456.0s] dark: resetting the idle clock via a real activity event
+    ..[456.3s] dark: advancing the clock into the warn band
+PASS  (idle) [dark] the "Still there?" modal opens when the window enters the warn band  — warn band = last 60s
+PASS  (idle) [dark] the modal is titled "Still there?"  — Still there?
+PASS  (idle) [dark] the countdown shows a real remaining VALUE, inside the 60 s warn band  — 45s of 60s
+PASS  (idle) [dark] the countdown DECREMENTS in real time (not a static render)  — 45s -> 41s over 4 s
+PASS  (idle) [dark] the modal fits inside the 400 px panel (no horizontal overflow)
+    ..[461.0s] dark: past the cutoff; waiting for the sign-in gate
+PASS  (idle) [dark] at the cutoff the shell swapped the app surface for the sign-in gate  — /extension/login
+PASS  (idle) [dark] the gate states WHY, in the exact sentence the product ships  — "You were signed out after 4 hours of inactivity. Sign in again."
+PASS  (idle) [dark] the reason line is role="status" (told, not alarmed)  — role="status"
+PASS  (idle) [dark] the reason was read AND CLEARED (the next sign-in is not mislabelled)  — leftover=null
+PASS  (idle) [dark] the sign-in overlay is VISIBLE after the cutoff
+    ..[462.6s] dark: reading the worker's teardown state
+PASS  (idle) [dark] SW: the 'signed-out' message arrived — signedIn is false  — signedIn=false
+PASS  (idle) [dark] SW: dropSessionState ran — every storage.session key it clears is empty  — cc_e2e_wrap/cc_e2e_seq/cc_e2e_dedupe sizes = [0,0,0] (seeded non-empty above)
+PASS  (idle) [dark] SW: the action icon reverted to the plain mark (indicator 'signed-out' => colour null)  — lastIndicator=signed-out
+PASS  (idle) [dark] SW: the action title is the plain wordmark, with no connection state  — "ComputerCaller"
+PASS  (idle) [dark] SW: the durable ext-session token was dropped by the shell  — ext_token=absent
+  evidence README -> docs/evidence/ext-auto-logout/README.md (2 trace lines)
+[reap] e2e-ui-proof: spawned PIDs reaped: yes 0
+
+371/371 checks passed
+UIPROOF EXIT=0
