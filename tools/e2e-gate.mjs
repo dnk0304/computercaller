@@ -550,7 +550,12 @@ const MIN_CHECKS_OVERRIDE = {
   // E2E-P6.1c (2b). The advert/attribution suite for A6-P61B-5. Same reasoning
   // as above: auto-discovered, so the floor is what it needs from this table.
   // Measured at the commit that adds it: 44 assertions.
-  'relay:e2e-web-sw-advert.test.mjs': 47,
+  // SW-KEY-STALE raises it to 72: the T-SW-KEY-STALE-AFTER-REGISTER contract
+  // (RULE 30) — the real readSwKey over the mount/after-registration reply
+  // shapes, plus shell.js's registration-EDGE push and the page's bounded
+  // re-query at pairing start. The floor moves WITH the suite deliberately: a
+  // floor left at 47 would let all 25 of those be deleted and still print N/N.
+  'relay:e2e-web-sw-advert.test.mjs': 72,
   // FT-3b (g). The file-transfer harnesses post-date BASELINE-harness.json, so
   // the floor cannot be read from it. Measured totals at the commit that
   // registers them: ft-ui-proof 96 (FT-3b (d)), ft-web-proof 26 (FT-3a).

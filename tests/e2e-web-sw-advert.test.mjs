@@ -232,6 +232,117 @@ const bridge = stripComments(readFileSync(join(ROOT, 'hooks', 'usePhoneBridge.ts
     (bridge.match(/BROWSER_REQUEST_PAIRING:/g) || []).length === 1);
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// T-SW-KEY-STALE-AFTER-REGISTER — the SW key that arrives AFTER the page asked
+// (RESUME-PROTOCOL RULE 30 contract; live 7b finding 1 on 3e466fd)
+//
+// THE DEFECT. The page posts `e2e-pubkey-request` ONCE on mount
+// (hooks/useE2e.ts). background.js withholds `pub` until `swRegistered`
+// (INC-0923 B-1, correct and KEPT), and registration lands seconds after the
+// mount — 11:25:07 mount, 11:25:10 registered. So the one answer the page ever
+// got was the honest `{deviceId:null, pub:null}` = `absent`, the first
+// BROWSER_REQUEST_PAIRING went out `swBridge=none`, and only closing and
+// reopening the panel produced `swBridge=key`. Pairing worked either way; the
+// extension was simply absent from that pair's transcript, so a notification
+// body with the panel closed was not decryptable until a re-pair.
+//
+// TWO halves, and this section asserts BOTH: a PUSH on the extension side
+// (shell.js turns the registration edge into an unsolicited `e2e-pubkey`) and
+// a PULL on the page side (buildRequestE2e re-asks at pairing start when it
+// does not hold a key).
+// ────────────────────────────────────────────────────────────────────────────
+
+const shell = stripComments(readFileSync(join(ROOT, 'chrome-extension', 'shell.js'), 'utf8'));
+
+// ── behaviour: the REAL reducer, over the two real reply shapes ─────────────
+{
+  // Mount. The worker is up but unregistered, so B-1 withholds the key.
+  const onMount = readSwKey({ v: 1, deviceId: null, pub: null, pairingId: null });
+  eq('mount: the withheld-key reply reads as `absent`, not `unknown`', onMount.status, 'absent');
+  eq('mount: and the advert would have said `none`', swBridgeAnswer(onMount, true), 'none');
+  check('mount: nothing is guessed onto the wire', onMount.recipient === null);
+
+  // The push after registration. Unsolicited: NO `rid`, because nothing asked.
+  const afterRegister = readSwKey({
+    v: 1, deviceId: 'ext-bbbbbbbbbbbb', pub: PUB_SW, pairingId: null,
+  });
+  eq('after registration: the same page state becomes `present`', afterRegister.status, 'present');
+  eq('after registration: the advert now says `key`', swBridgeAnswer(afterRegister, true), 'key');
+  eq('after registration: it is the SW key, not the web one', afterRegister.recipient.pub, PUB_SW);
+  check('after registration: the recipient is the extension',
+    afterRegister.recipient.kind === 'extension');
+  // The whole point: the second reading came from a MESSAGE, not from a new
+  // mount. `readSwKey` holds no state, so a reply is sufficient on its own —
+  // which is what makes an unsolicited push a complete fix.
+  check('the transition needs no second mount: the reducer is pure',
+    readSwKey({ v: 1, deviceId: null, pub: null, pairingId: null }).status === 'absent'
+    && readSwKey({ v: 1, deviceId: 'ext-bbbbbbbbbbbb', pub: PUB_SW, pairingId: null }).status === 'present');
+  // The control. If the page ever started REQUIRING a `rid` to accept a reply,
+  // the unsolicited push would be dropped and this section would be measuring
+  // nothing — so the page-side gate is asserted by source below.
+  eq('an unsolicited emission carries no rid and is still a valid key',
+    readSwKey({ v: 1, deviceId: 'ext-bbbbbbbbbbbb', pub: PUB_SW, pairingId: null }).status,
+    'present');
+}
+
+// ── push half: shell.js turns the registration EDGE into a key ──────────────
+{
+  const i = shell.indexOf('presencePort.onMessage.addListener');
+  check('the presence-port listener exists', i > 0);
+  const body = shell.slice(i, shell.indexOf('presencePort.onDisconnect'));
+  check('the presence listener handles e2e-status at all',
+    /msg\.type === 'e2e-status'/.test(body), body);
+  check('the push is on the false->true EDGE, not on every broadcast',
+    /const was = swRegisteredSeen;/.test(body) && /was !== true/.test(body), body);
+  check('the edge pushes a FRESH key, unsolicited (no rid argument)',
+    /if \(swRegisteredSeen && was !== true\) sendE2ePubKey\(\);/.test(body), body);
+  check('the seen-flag is a THIRD state, so "never heard" cannot push',
+    /^let swRegisteredSeen;$/m.test(shell));
+  // Scope: the push must reach the APP frame only. `sendE2ePubKey` posts to
+  // `frame`, never to `loginFrame` — the login verb set stays disjoint.
+  const send = shell.slice(shell.indexOf('async function sendE2ePubKey'));
+  check('sendE2ePubKey posts to the app frame only',
+    /frame\.contentWindow\.postMessage\(/.test(send)
+    && !/loginFrame\.contentWindow\.postMessage/.test(shell));
+  check('and still pins the target origin', /self\.CC\.WEBAPP_ORIGIN,/.test(send));
+}
+
+// ── pull half: the page re-asks at pairing start when it holds no key ───────
+{
+  const i = useE2e.indexOf('const buildRequestE2e = useCallback');
+  const body = useE2e.slice(i, useE2e.indexOf('const onPairingActive = useCallback'));
+  check('pairing start re-requests the key when we do not hold one',
+    /if \(framed && swRef\.current\.status !== 'present'\) \{/.test(body), body);
+  check('the re-request is a real e2e-pubkey-request on the bridge',
+    /type: 'e2e-pubkey-request'/.test(body));
+  check('it carries a rid, so the reply can be told from an unsolicited push',
+    /rid: `sw-requery-/.test(body));
+  check('it is pinned to the extension origin', /CC_EXTENSION_ORIGIN,/.test(body));
+  check('the re-query wait is BOUNDED by its own constant', body.includes('SW_KEY_REQUERY_MS'));
+  check('and that constant is short — a pairing must not stall on it',
+    /export const SW_KEY_REQUERY_MS = 300;/.test(useE2e));
+  /**
+   * ORDER, the same rule the section above pins for the 1 s wait: the answer is
+   * computed AFTER the re-query, or a key that arrived in 40 ms is still
+   * recorded as `none` and the transcript still goes out without it.
+   */
+  check('the re-query happens BEFORE the answer is computed',
+    body.indexOf("status !== 'present'") < body.indexOf('const answer ='));
+  // The guard, stated as a NEGATIVE that was proven capable of firing: dropping
+  // the `status !== 'present'` half makes every pairing re-ask even when the
+  // key is already in hand. The `try {` is in the pattern because comment
+  // stripping leaves it directly under the `if` — a pattern written without it
+  // matches nothing and passes for free.
+  check('a key we ALREADY hold is not re-requested',
+    !/if \(framed\) \{\s*try \{\s*window\.parent\.postMessage/.test(body));
+  // INC-0923 B-1 must survive: the fix is a re-ASK, never a relaxation of the
+  // rule that an unregistered key is withheld at the source.
+  const bg = stripComments(readFileSync(join(ROOT, 'chrome-extension', 'background.js'), 'utf8'));
+  const getArm = bg.slice(bg.indexOf("'e2e-pubkey-get'"), bg.indexOf("'e2e-pubkey-get'") + 4000);
+  check('B-1 still holds: the worker withholds `pub` until it is registered',
+    /swRegistered/.test(getArm), getArm.slice(0, 200));
+}
+
 console.log(`\ne2e-web-sw-advert: ${passed}/${total} checks passed`);
 if (failures.length) {
   console.log(`\n${failures.length} failure(s):`);

@@ -104,6 +104,14 @@ import { FILE_FRAME_TYPES } from '@/lib/fileTransfer/frames.ts';
 export const SW_KEY_WAIT_MS = 1000;
 
 /**
+ * T-SW-KEY-STALE-AFTER-REGISTER. The bounded re-query at pairing start, for the
+ * case the 1 s wait above cannot see: the SW ANSWERED, and answered `absent`,
+ * because its key was not registered yet. Short by design — see the note at
+ * the call site in `buildRequestE2e`.
+ */
+export const SW_KEY_REQUERY_MS = 300;
+
+/**
  * §13.7's FROZEN sealed list, by INCLUSION.
  *
  * ── WHY INCLUSION, AND WHY THIS WAS A LIVE DEFECT (P2.7 / R-BM) ────────────
@@ -559,6 +567,47 @@ export function useE2e(emailProp?: string | null): E2eApi {
         const poll = setInterval(() => { if (swRef.current.status !== 'unknown') stop(); }, 25);
         setTimeout(() => clearInterval(poll), SW_KEY_WAIT_MS + 50);
       });
+    }
+    /**
+     * T-SW-KEY-STALE-AFTER-REGISTER (pull half). Re-ask at PAIRING START when
+     * we do not hold a usable key.
+     *
+     * The wait above fires only on `unknown` — "nobody has answered the bridge
+     * yet". The defect is the OTHER arm: the SW answers immediately on mount
+     * with `{deviceId:null, pub:null}` because background.js withholds `pub`
+     * until `swRegistered` (INC-0923 B-1, correct and kept). That answer is
+     * `absent`, which is a HEARD answer, so nothing ever re-asked and the
+     * first pairing after a sign-in went out `swBridge=none` — leaving the
+     * extension out of the transcript until the user re-paired, so a
+     * notification body with the panel closed was not decryptable for that
+     * pair. Live 7b, 3e466fd: mount 11:25:07, registration 11:25:10, recips1
+     * none / recips2 key.
+     *
+     * A key we already hold is NOT re-requested (the `present` guard) — the
+     * comment above still holds for the case it was written about. The wait is
+     * short and separate from SW_KEY_WAIT_MS on purpose: this one is not
+     * "has the extension woken up", it is "has registration landed in the last
+     * few seconds", and a pairing must not stall a second on a question whose
+     * honest answer is usually already no.
+     */
+    if (framed && swRef.current.status !== 'present') {
+      try {
+        window.parent.postMessage(
+          { source: 'cc-ext', type: 'e2e-pubkey-request', v: 1, rid: `sw-requery-${Date.now()}` },
+          CC_EXTENSION_ORIGIN,
+        );
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, SW_KEY_REQUERY_MS);
+          const poll = setInterval(() => {
+            if (swRef.current.status === 'present') { clearTimeout(t); clearInterval(poll); resolve(); }
+          }, 25);
+          setTimeout(() => clearInterval(poll), SW_KEY_REQUERY_MS + 50);
+        });
+      } catch {
+        // A framer that refuses postMessage leaves whatever we already had.
+        // Never fatal: pairing without the SW key is a supported outcome
+        // (13.2 row 2, counts-only badges), just a worse one.
+      }
     }
     const answer = swBridgeAnswer(swRef.current, framed);
     setView((v) => ({ ...v, peer: { ...v.peer, kind: swRef.current.status } }));
