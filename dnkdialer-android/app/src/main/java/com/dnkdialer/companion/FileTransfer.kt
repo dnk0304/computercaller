@@ -508,4 +508,41 @@ object FileTransfer {
         if (bytesPerMs <= 0.0) return null
         return ((totalBytes - sentBytes) / bytesPerMs / 1000.0).toLong()
     }
+
+    // -------------------------------------------------- accept destination
+
+    /**
+     * What the Accept path asks SAF's CREATE_DOCUMENT for.
+     *
+     * The Activity only turns this into an [android.content.Intent]; every
+     * decision that can be wrong -- the sanitised name, the `.part` suffix,
+     * the deliberately generic mime, the Downloads starting folder -- is made
+     * here so it can be proved on the unit lane with no emulator.
+     *
+     * `mime` is octet-stream on purpose: handing SAF the real mime would let a
+     * gallery or media scanner index a half-written `.part` as if it were the
+     * finished file.
+     */
+    data class DestinationSpec(
+        val title: String,
+        val mime: String,
+        val initialUri: String,
+    )
+
+    const val DEST_MIME = "application/octet-stream"
+
+    /** SAF tree URI for the primary volume's Download folder. */
+    const val DEST_INITIAL_URI =
+        "content://com.android.externalstorage.documents/document/primary%3ADownload"
+
+    /**
+     * The offer name arrives over the wire from the peer, so it is sanitised
+     * HERE rather than trusted -- the destination picker is the last place a
+     * hostile name could become a path.
+     */
+    fun destinationSpec(offerName: String?): DestinationSpec = DestinationSpec(
+        title = partNameFor(sanitizeName(offerName)),
+        mime = DEST_MIME,
+        initialUri = DEST_INITIAL_URI,
+    )
 }

@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
@@ -36,6 +38,26 @@ import androidx.core.net.toUri
  * does FILE_ACCEPT go out. A FILE_ACCEPT sent before we hold a writable
  * descriptor is a promise we might not be able to keep, and the sender would
  * already be pushing chunks by the time we found out.
+ *
+ * ## Why this Activity must NOT be `noHistory`
+ *
+ * It was, until vc64. `android:noHistory="true"` destroys an Activity the
+ * moment it stops being visible - and opening a SAF picker is exactly that:
+ * the picker runs in another task on top. The OS therefore tore this Activity
+ * down while the user was still choosing a file, `onActivityResult` never ran,
+ * and BOTH halves of the feature died: phone->computer send never started, and
+ * an incoming offer could never be given a destination. Proven on PROD by
+ * ACCEPT-9 (2026-09-23).
+ *
+ * The original intent behind the flag - "no zombie dialog left behind" - is
+ * carried by `excludeFromRecents` (it never appears in recents) plus the
+ * `finish()` on every exit path of every dialog below. Neither of those needs
+ * the Activity to be destroyed mid-picker.
+ *
+ * Results are taken through [ActivityResultContracts] rather than the
+ * deprecated `startActivityForResult`, so the launchers are registered before
+ * `onCreate` returns and a result survives a legitimate recreation (rotation,
+ * process death under memory pressure) instead of being dropped.
  */
 class FileTransferActivity : AppCompatActivity() {
 
@@ -49,18 +71,41 @@ class FileTransferActivity : AppCompatActivity() {
 
         /** A [FileTransfer.Reason] value to render via [failureCopy]. */
         const val EXTRA_REASON = "reason"
-
-        private const val RQ_PICK_SOURCE = 41
-        private const val RQ_CREATE_DEST = 42
     }
 
-    /** Set when the create-document picker is open, so its result knows the name. */
-    private var pendingOfferName: String? = null
+    // Registered at construction time, which is what the contract API
+    // requires: a launcher created after onCreate() has returned throws, and
+    // one registered here is re-attached for free when the Activity is
+    // recreated - which is the whole point of dropping noHistory.
+    private val pickSource = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { r -> onSourcePicked(r) }
+
+    private val createDestination = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { r -> onDestinationPicked(r) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setFinishOnTouchOutside(true)
+        // Act on the launching intent ONCE. A recreation must not fire a
+        // second picker on top of a result that is already on its way.
+        if (savedInstanceState == null) dispatch(intent)
+    }
 
+    /**
+     * Without `noHistory` this Activity survives, and `launchMode="singleTop"`
+     * means a second offer notification is delivered here rather than to a
+     * fresh instance. Re-pointing [getIntent] and re-dispatching is what keeps
+     * that second offer from being silently swallowed.
+     */
+    override fun onNewIntent(newIntent: Intent) {
+        super.onNewIntent(newIntent)
+        setIntent(newIntent)
+        dispatch(newIntent)
+    }
+
+    private fun dispatch(intent: Intent?) {
         when (intent?.action) {
             Intent.ACTION_SEND -> handleShare(
                 intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
@@ -103,7 +148,7 @@ class FileTransferActivity : AppCompatActivity() {
             )
         }
         try {
-            startActivityForResult(i, RQ_PICK_SOURCE)
+            pickSource.launch(i)
         } catch (e: Exception) {
             toast(getString(R.string.ft_no_picker)); finish()
         }
@@ -159,7 +204,6 @@ class FileTransferActivity : AppCompatActivity() {
         }
         val (_, name, size) = info
         if (autoAccept) {
-            pendingOfferName = name
             openDestinationPicker(name)
             return
         }
@@ -170,7 +214,6 @@ class FileTransferActivity : AppCompatActivity() {
             // and it is informed consent, not protection.
             .setMessage(R.string.ft_offer_trust)
             .setPositiveButton(R.string.ft_accept) { _, _ ->
-                pendingOfferName = name
                 openDestinationPicker(name)
             }
             .setNegativeButton(R.string.ft_reject) { _, _ ->
@@ -182,22 +225,25 @@ class FileTransferActivity : AppCompatActivity() {
     }
 
     private fun openDestinationPicker(name: String) {
+        // Every value below is decided by the pure spec (unit-proved); this
+        // method only turns that spec into an Intent. The .part document is
+        // created as octet-stream on purpose: giving it the real mime would
+        // let a gallery or media scanner index a half-written file as if it
+        // were the finished one.
+        val spec = FileTransfer.destinationSpec(name)
         val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            // The .part document is created as octet-stream on purpose: giving
-            // it the real mime would let a gallery or media scanner index a
-            // half-written file as if it were the finished one.
-            type = "application/octet-stream"
-            putExtra(Intent.EXTRA_TITLE, FileTransfer.partNameFor(name))
+            type = spec.mime
+            putExtra(Intent.EXTRA_TITLE, spec.title)
             // Downloads by default; the user can still pick anywhere. No SDK
             // guard: EXTRA_INITIAL_URI is API 26 and minSdk is 26.
             putExtra(
                 android.provider.DocumentsContract.EXTRA_INITIAL_URI,
-                "content://com.android.externalstorage.documents/document/primary%3ADownload".toUri()
+                spec.initialUri.toUri()
             )
         }
         try {
-            startActivityForResult(i, RQ_CREATE_DEST)
+            createDestination.launch(i)
         } catch (e: Exception) {
             PhoneService.fileTransferHandler?.rejectOffer()
             toast(getString(R.string.ft_no_picker)); finish()
@@ -215,32 +261,27 @@ class FileTransferActivity : AppCompatActivity() {
             .show()
     }
 
-    @Deprecated("startActivityForResult is the API the SAF pickers document")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        val uri = data?.data
+    private fun onSourcePicked(r: ActivityResult) {
+        val uri = r.data?.data
+        if (r.resultCode != Activity.RESULT_OK || uri == null) { finish(); return }
+        persist(uri, write = false)
+        confirmAndSend(uri)
+    }
+
+    private fun onDestinationPicked(r: ActivityResult) {
         val mgr = PhoneService.fileTransferHandler
-        when (requestCode) {
-            RQ_PICK_SOURCE -> {
-                if (resultCode != Activity.RESULT_OK || uri == null) { finish(); return }
-                persist(uri, write = false)
-                confirmAndSend(uri)
-            }
-            RQ_CREATE_DEST -> {
-                if (resultCode != Activity.RESULT_OK || uri == null) {
-                    // Backing out of the destination picker is a rejection —
-                    // NOT a silent dismissal. The sender is sitting on a 60 s
-                    // expiry and deserves to be told now.
-                    mgr?.rejectOffer()
-                    finish(); return
-                }
-                persist(uri, write = true)
-                mgr?.acceptOffer(uri)
-                toast(getString(R.string.ft_receive_started))
-                finish()
-            }
-            else -> finish()
+        val uri = r.data?.data
+        if (r.resultCode != Activity.RESULT_OK || uri == null) {
+            // Backing out of the destination picker is a rejection -
+            // NOT a silent dismissal. The sender is sitting on a 60 s
+            // expiry and deserves to be told now.
+            mgr?.rejectOffer()
+            finish(); return
         }
+        persist(uri, write = true)
+        mgr?.acceptOffer(uri)
+        toast(getString(R.string.ft_receive_started))
+        finish()
     }
 
     /** Hold the grant across process death so a resume can re-open the document. */
