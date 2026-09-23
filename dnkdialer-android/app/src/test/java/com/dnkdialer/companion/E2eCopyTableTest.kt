@@ -57,6 +57,8 @@ class E2eCopyTableTest {
         "status_connected_unencrypted",
         "notif_ongoing_connected_encrypted",
         "notif_ongoing_connected_encrypted_unverified",
+        // vc63 Amendment 2 — the 4401 banner Dennis read on a screenshot.
+        "status_failed_invalid_token",
         // vc63 — the Home "Computer" card (T-VC63-MAIN-SCREEN).
         "section_computer",
         "row_send_file_title",
@@ -257,6 +259,55 @@ class E2eCopyTableTest {
         assertTrue(
             "home_e2e_next_only must say 'next': '$caveat'",
             caveat.contains("next")
+        )
+    }
+
+    /**
+     * vc63 Amendment 2 — the 4401 banner names the remedy the user actually
+     * has.
+     *
+     * Close 4401 means the STORED phoneToken was rejected. The phone has no
+     * QR flow and no "account settings" screen: the token comes from signing
+     * in inside the APK, so the only thing the user can do is sign out (the
+     * overflow action) and sign in again. The old copy — "Re-scan the QR
+     * from your account settings" — sent them hunting for a scanner that has
+     * not existed since dispatch #29.
+     *
+     * Pinned as EXACT text, not as a keyword, because the failure mode here
+     * is a well-meaning rewrite that reintroduces a step the product does
+     * not have.
+     */
+    @Test
+    fun the_invalid_token_banner_says_sign_out_and_back_in() {
+        assertEquals(
+            "Sign-in expired — sign out and sign in again to reconnect.",
+            strings["status_failed_invalid_token"]
+        )
+    }
+
+    /**
+     * Dennis, 2026-09-23 12:42Z, verbatim: "it says scan QR, we should never
+     * mention QR anywhere. We dont use QR."
+     *
+     * So this is the same shape of rule as the end-to-end ban above, and it
+     * exists for the same reason: the product does not do the thing the word
+     * describes, and a string that says otherwise sends the user looking for
+     * a feature. It runs over EVERY string value in the file, not a curated
+     * key list, because the two offenders this lane removed (cd_qr,
+     * label_scan) were both orphans nobody was looking at.
+     *
+     * Values only — comments still record the history, and that history is
+     * worth keeping: it is why the strings are gone.
+     */
+    @Test
+    fun noStringMentionsQrOrScanning() {
+        val pattern = Regex("""(?i)\bqr\b|qr[-_ ]?code|\bscan""")
+        val offenders = strings.filterValues { pattern.containsMatchIn(it) }.keys
+        assertTrue(
+            "these strings mention QR or scanning at the user: $offenders — " +
+                "this product has no QR flow and no scanner (Dennis, " +
+                "2026-09-23: \"we should never mention QR anywhere\")",
+            offenders.isEmpty()
         )
     }
 }

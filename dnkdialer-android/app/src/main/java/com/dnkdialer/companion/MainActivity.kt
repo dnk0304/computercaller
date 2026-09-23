@@ -1642,7 +1642,8 @@ class MainActivity : AppCompatActivity() {
      * copy. The exception class names come from
      * java_websocket → PhoneClient.onError's reason format
      * ("${javaClass.simpleName}: ${message}"). Covered cases:
-     *   - 4401: relay's invalid-token close. Tell the user to re-scan.
+     *   - 4401: relay's invalid-token close. Tell the user to sign out
+     *     and back in — there is no QR and nothing to re-scan.
      *   - ConnectException: server not listening / refused.
      *   - SocketTimeoutException: TCP / handshake timeout.
      *   - UnknownHostException: DNS failed.

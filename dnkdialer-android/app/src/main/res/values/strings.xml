@@ -13,7 +13,10 @@
     <!-- Section eyebrows — kept minimal. Round 3 cut "Current state"
          entirely (the giant dot + word IS the state). -->
     <string name="label_address">Listening at</string>
-    <string name="label_scan">Scan to pair</string>
+    <!-- label_scan ("Scan to pair") is GONE. Not in Ken's enumeration, but
+         the same orphan class as cd_qr: it labelled the QR plate stripped in
+         dispatch #29 and nothing in app/src referenced it. Dennis
+         2026-09-23: "we should never mention QR anywhere. We dont use QR." -->
 
     <!-- Status copy — the dot is the PRIMARY signal. Labels are 1–2
          words, scannable in 200ms. Verbose copy lives in toasts and
@@ -65,7 +68,7 @@
          labelled "Disconnect and refresh". Underlying handler:
          polite close → stopService → 800ms postDelayed → startPhoneService.
          User-visible effect = phone briefly drops the LAN socket then
-         comes back live with a fresh QR + IP. -->
+         comes back live on a fresh relay session. -->
     <string name="action_disconnect">Disconnect and refresh</string>
     <string name="action_enable_notifications">Enable notifications</string>
     <string name="action_open_app_settings">Open app settings</string>
@@ -90,12 +93,18 @@
          ~75s+ before the OS finally surfaces the TCP failure. -->
     <string name="error_connect_timeout">Connection timed out — check WiFi / firewall.</string>
     <string name="status_failed_unknown_host">Couldn\'t resolve %1$s. Check the relay host address.</string>
-    <string name="status_failed_invalid_token">Invalid pairing token. Re-scan the QR from your account settings.</string>
+    <!-- Relay close 4401 = the STORED phoneToken was rejected. There is no
+         QR and no "account settings" step on the phone: the token comes from
+         signing in inside the APK, so the only remedy is to sign out (the
+         overflow action) and sign in again. The old copy sent the user to
+         look for a scanner that does not exist. -->
+    <string name="status_failed_invalid_token">Sign-in expired — sign out and sign in again to reconnect.</string>
     <string name="status_failed_generic">Connect failed: %1$s</string>
     <string name="status_target_prefix">Target: %1$s</string>
 
     <!-- Content descriptions -->
-    <string name="cd_qr">QR code — scan it with the web app to pair.</string>
+    <!-- cd_qr is GONE: the QR plate was stripped in dispatch #29 and the
+         string had no referent anywhere in main/java or main/res. -->
     <string name="cd_status_dot">Connection state indicator</string>
 
     <!-- Format strings — collapsed to a single short label.
@@ -179,8 +188,9 @@
     <string name="perm_name_receive_sms">Receive SMS</string>
     <string name="perm_why_receive_sms">Forward incoming SMS to the web app.</string>
 
-    <string name="perm_name_camera">Camera</string>
-    <string name="perm_why_camera">Scan QR codes for pairing.</string>
+    <!-- perm_name_camera / perm_why_camera are GONE: the app has had no
+         camera feature since dispatch #29 replaced LAN-QR pairing with
+         cookie-token auth, and CAMERA is no longer audited. -->
 
     <string name="perm_name_battery">Battery — don\'t optimize</string>
     <string name="perm_why_battery">Samsung-specific. Keeps the connection alive when the screen is off.</string>

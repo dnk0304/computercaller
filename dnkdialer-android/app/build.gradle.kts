@@ -525,4 +525,19 @@ dependencies {
 // LEARNINGS: "silently ignored CLI flag".
 tasks.withType<Test>().configureEach {
     System.getProperty("e2e.writeVectors")?.let { systemProperty("e2e.writeVectors", it) }
+
+    // vc63 Amendment 2 — declare the resource tree as a test INPUT.
+    //
+    // E2eCopyTableTest (and the vectors tests) read files with plain
+    // File("src/main/res/..."), which Gradle cannot see. Without this
+    // declaration an edit to strings.xml alone leaves testDebugUnitTest
+    // UP-TO-DATE, so the copy rules DO NOT RUN against the copy that
+    // changed — and the gate reports a green copy table over text nobody
+    // checked. Found by planting a QR string and watching the suite skip:
+    // "BUILD SUCCESSFUL ... testDebugUnitTest UP-TO-DATE".
+    //
+    // RELATIVE sensitivity so the cache still hits when the worktree moves.
+    inputs.dir(layout.projectDirectory.dir("src/main/res"))
+        .withPropertyName("resourcesReadByCopyTests")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }

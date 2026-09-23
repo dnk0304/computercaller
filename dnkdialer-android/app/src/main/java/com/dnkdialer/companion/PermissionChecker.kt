@@ -100,8 +100,9 @@ object PermissionChecker {
      * "REQUIRED" here means "Continue can't proceed without it". The
      * triage matches the v18 spec: Phone, Contacts, SMS triplet are the
      * real blockers; everything else (battery exemption, notification
-     * listener, notification post permission, auto-revoke whitelist,
-     * camera) is SOFT.
+     * listener, notification post permission, auto-revoke whitelist) is
+     * SOFT. Camera was on this list and is gone entirely as of vc63
+     * Amendment 2 — the app has no camera feature to audit.
      */
     enum class Status { GRANTED, MISSING_REQUIRED, MISSING_SOFT }
 
@@ -246,18 +247,14 @@ object PermissionChecker {
             missingIntent = appDetailsIntent(context),
         )
 
-        // 9. Camera — SOFT. Used to be required for the LAN-QR pairing
-        //    flow but the app no longer scans QRs (post-dispatch #29
-        //    cookie-token auth). Kept as informational.
-        items += statusItem(
-            context,
-            id = "camera",
-            granted = isGranted(context, Manifest.permission.CAMERA),
-            requiredWhenMissing = false,
-            displayNameRes = R.string.perm_name_camera,
-            whyRes = R.string.perm_why_camera,
-            missingIntent = appDetailsIntent(context),
-        )
+        // 9. Camera — REMOVED (vc63 Amendment 2). It was a SOFT row left
+        //    over from the LAN-QR pairing flow that dispatch #29 replaced
+        //    with cookie-token auth. The app has had no camera feature
+        //    since, so auditing the grant told the user nothing and asked
+        //    them for access we never use — a Play data-safety liability,
+        //    not merely stale copy. The manifest entry stays for now: that
+        //    is a Play permission re-declaration and belongs to Pilot
+        //    (vc64), not to a copy fix.
 
         // 9b. Bluetooth Connect — SOFT (API 31+ runtime grant only).
         //     Gates the "Speak through PC" call-audio mode. Without it we
@@ -480,17 +477,12 @@ object PermissionChecker {
             )
         }
 
-        // 9. CAMERA.
-        if (!isGranted(context, Manifest.permission.CAMERA)) {
-            missing += MissingPermission(
-                id = "camera",
-                kind = Kind.RUNTIME,
-                manifestPermission = Manifest.permission.CAMERA,
-                displayName = context.getString(R.string.perm_name_camera),
-                why = context.getString(R.string.perm_why_camera),
-                intent = appDetailsIntent(context),
-            )
-        }
+        // 9. CAMERA — REMOVED (vc63 Amendment 2). This one was not merely
+        //    informational: it was Kind.RUNTIME, i.e. on the BLOCKING list,
+        //    so MainActivity.onCreate held every user behind the
+        //    permissions-required pane until they granted camera access for
+        //    a feature this app has not had since dispatch #29. Removing it
+        //    is the fix; the manifest declaration is Pilot's (vc64).
 
         // 9b. BLUETOOTH_CONNECT — API 31+ runtime, soft. Surfaced when the
         //     user hasn't granted Nearby devices and "Speak through PC"
