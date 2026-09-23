@@ -46,6 +46,7 @@
     android:layout_height="match_parent"
     android:fillViewport="true"
     android:scrollbars="none"
+    tools:ignore="TooManyViews"
     android:overScrollMode="never"
     android:background="?android:attr/windowBackground">
 
@@ -373,8 +374,65 @@
 
                     <ImageView style="@style/CcRowChevron" />
                 </LinearLayout>
+
+                <View style="@style/CcRowHairline" />
+
+                <!--
+                  T-VC63-EXPORT-DIAGNOSTICS (vc63). Last row of ON THIS PHONE,
+                  below the two viewers and the two permission deep-links: it
+                  belongs with the other "look at what this phone is doing"
+                  rows, and it is the one a user only reaches when asked to.
+
+                  No chevron. Chevron means "opens a screen"; this row starts
+                  work and then raises the system share sheet, so it gets the
+                  clock tile and no affordance that promises navigation.
+                -->
+                <LinearLayout
+                    android:id="@+id/settingsExportDiagnosticsButton"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/row_export_diag_title">
+
+                    <!-- Decorative: the ROW carries the contentDescription, so
+                         announcing the tile as well would read the label twice. -->
+                    <ImageView
+                        style="@style/CcRowTile"
+                        android:src="@drawable/ic_cc_clock"
+                        android:importantForAccessibility="no" />
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/row_export_diag_title" />
+                        <TextView
+                            android:id="@+id/settingsExportDiagnosticsSub"
+                            style="@style/CcRowSub"
+                            android:text="@string/row_export_diag_sub" />
+                    </LinearLayout>
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
+
+        <!--
+          The escape hatch for when the zip cannot be attached (Discord on a
+          phone with no file access, a mail client that strips archives). The
+          user reads eight letters aloud and Ken matches them to the relay
+          logs. Secondary by construction: a text button under the group, not
+          a row inside it, because it is a fallback and not a thing to do.
+        -->
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/settingsCopyDiagIdButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:layout_marginTop="@dimen/space_4"
+            android:minWidth="0dp"
+            android:paddingStart="@dimen/space_10"
+            android:paddingEnd="@dimen/space_10"
+            android:text="@string/action_copy_diag_id"
+            android:textSize="@dimen/cc_text_sub"
+            android:textAllCaps="false"
+            android:textColor="@color/accent_blue"
+            android:fontFamily="sans-serif-medium"
+            android:background="?attr/selectableItemBackground"
+            android:stateListAnimator="@null" />
 
         <!-- Kept resolvable: SettingsActivity still binds this id, and the
              permissions label is part of the id contract from step 1 even

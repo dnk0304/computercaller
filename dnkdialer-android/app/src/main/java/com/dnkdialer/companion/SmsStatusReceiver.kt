@@ -29,9 +29,15 @@ class SmsStatusReceiver : BroadcastReceiver() {
                         else -> "Unknown error (code $resultCode)"
                     }
                 } else null
+                // vc63 — the error strings above are a fixed enum from
+                // SmsManager result codes, never free text or a number.
+                DiagLog.counter(if (success) "sms.sent.ok" else "sms.sent.fail")
+                DiagLog.d("SmsStatusReceiver", "SMS_SENT ok=$success err=${error ?: "-"}")
                 onSmsSent?.invoke(clientMsgId, success, error)
             }
             "SMS_DELIVERED" -> {
+                DiagLog.counter("sms.delivered")
+                DiagLog.d("SmsStatusReceiver", "SMS_DELIVERED")
                 onSmsDelivered?.invoke(clientMsgId)
             }
         }

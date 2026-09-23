@@ -373,8 +373,13 @@ android {
         // once per PDU set, PII-free diagnostics) + SMSMP-2 (bb20569: receiver
         // frame stamps wall-clock time at emit, not SMSC time — removes the
         // late-SMSC double-bubble class on web). Supersedes v61 (never installed).
-        versionCode = 62
-        versionName = "1.0.38"
+        // vc63 (2026-09-23): v62 + INC-0923-A (8e6219f: E2eKeyPin fail-open for
+        // an absent SW registry row; DowngradeLatch clears on local disconnect /
+        // service restart only) + export diagnostics (Settings > "Export
+        // diagnostics": DiagLog ring buffer, flap-storm counters, redacted zip
+        // via the share sheet). Lane A (8e6219f) left this bump to this lane.
+        versionCode = 63
+        versionName = "1.0.39"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
@@ -494,6 +499,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+
 
     // E2E P4 (s3) — the androidTest source set was empty until E2eKeyStoreTest.
     // androidx.test:runner (AndroidJUnitRunner / InstrumentationRegistry) is NOT

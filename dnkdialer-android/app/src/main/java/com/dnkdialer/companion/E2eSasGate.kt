@@ -224,6 +224,11 @@ object E2eSasGate {
                 val matched = intent.getBooleanExtra(E2eSasContract.EXTRA_SAS_MATCHED, false)
                 if (pending.answer(id, matched)) {
                     Log.i(TAG, "SAS answered for $id matched=$matched")
+                    // vc63 — the SAS gate opening/closing. `matched` is a
+                    // boolean verdict; the DIGITS themselves are never logged
+                    // anywhere, by DiagLog contract.
+                    DiagLog.counter(if (matched) "sas.matched" else "sas.rejected")
+                    DiagLog.d("E2eSasGate", "SAS gate closed matched=$matched")
                 }
             }
         }

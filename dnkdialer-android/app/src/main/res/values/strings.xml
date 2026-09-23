@@ -529,6 +529,20 @@
     <string name="settings_permissions_sub">Review what this app can reach</string>
     <string name="settings_notifications_sub">Alert style, sounds and channels</string>
     <string name="settings_hard_reset_sub">Wipes app data and re-runs setup</string>
+
+    <!--
+      T-VC63-EXPORT-DIAGNOSTICS (vc63). The sub-line is a PROMISE, not a
+      description: it is the only place the user is told what they are about
+      to hand over, and it is what makes tapping Share an informed act. It is
+      kept true by Redact + the leak-guard instrumented test, not by hope.
+    -->
+    <string name="row_export_diag_title">Export diagnostics</string>
+    <string name="row_export_diag_sub">Last 24 h of app logs. No message text or phone numbers.</string>
+    <string name="action_copy_diag_id">Copy diagnostics ID</string>
+    <string name="diag_export_preparing">Preparing…</string>
+    <string name="diag_export_failed">Couldn\'t build diagnostics</string>
+    <string name="diag_export_chooser">Send diagnostics</string>
+    <string name="diag_id_copied">Diagnostics ID copied</string>
     <string name="settings_footer">ComputerCaller %1$s · Calls run on this device</string>
 
     <!-- Sign-in -->

@@ -72,6 +72,15 @@ class MmsHandler(private val context: Context) {
 
                     // Get body and attachment type
                     val (body, mmsType) = getMmsParts(id)
+                    // vc63 — same shape as SmsReceiver: hashed address, body
+                    // LENGTH only, plus the attachment type (a fixed MIME-class
+                    // string from getMmsParts, not a filename).
+                    DiagLog.counter("mms.read")
+                    DiagLog.d(
+                        "MmsHandler",
+                        "MMS row id=$id from=${Redact.hash6(address)} " +
+                            "len=${body.length} type=${mmsType ?: "none"}",
+                    )
 
                     messages.add(MmsMessage(
                         id = "mms_$id",

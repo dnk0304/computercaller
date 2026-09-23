@@ -66,6 +66,22 @@ class SettingsActivity : AppCompatActivity() {
     /** Guards [lobbyToggle] so a repaint from the flag can't be read as a tap. */
     private var suppressLobbyToggleCallback = false
 
+    /** vc63 — the Export diagnostics row and its sub-line. */
+    private lateinit var exportDiagnosticsRow: View
+    private lateinit var exportDiagnosticsSub: TextView
+
+    /**
+     * One export at a time.
+     *
+     * The build runs on a worker and the row is disabled for its duration, but
+     * the flag is what actually enforces the rule: `setEnabled(false)` loses a
+     * tap that was already dispatched, and two concurrent builds would race on
+     * the same cache directory while [DiagExport.pruneExports] deletes under
+     * them. Volatile because it is written on the worker and read on main.
+     */
+    @Volatile
+    private var exportInFlight = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -176,6 +192,23 @@ class SettingsActivity : AppCompatActivity() {
             AccountActions.openNotificationSettings(this)
         }
 
+        // ---- EXPORT DIAGNOSTICS (vc63, T-VC63-EXPORT-DIAGNOSTICS) --------
+        exportDiagnosticsRow = findViewById(R.id.settingsExportDiagnosticsButton)
+        exportDiagnosticsSub = findViewById(R.id.settingsExportDiagnosticsSub)
+        exportDiagnosticsRow.setOnClickListener { startDiagnosticsExport() }
+
+        findViewById<View>(R.id.settingsCopyDiagIdButton).setOnClickListener {
+            val id = DiagLog.diagId(this)
+            val clip = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clip.setPrimaryClip(android.content.ClipData.newPlainText("ComputerCaller diagnostics ID", id))
+            // API 33+ shows its own clipboard confirmation; a toast on top of
+            // it is a double notice, so the toast is suppressed there.
+            if (android.os.Build.VERSION.SDK_INT < 33) {
+                android.widget.Toast.makeText(this, R.string.diag_id_copied, android.widget.Toast.LENGTH_SHORT).show()
+            }
+            DiagLog.d("SettingsActivity", "diagId copied to clipboard")
+        }
+
         // ---- TROUBLESHOOTING --------------------------------------------
         findViewById<View>(R.id.settingsHardResetButton).setOnClickListener {
             AccountActions.confirmHardReset(this)
@@ -190,6 +223,63 @@ class SettingsActivity : AppCompatActivity() {
         refreshLobbyToggleLabel()
         refreshNotificationRow()
         refreshEncryptedModeRow()
+    }
+
+    /**
+     * vc63 — build the diagnostics archive and raise the share sheet.
+     *
+     * Runs on a one-shot thread rather than a pool or a coroutine: the module
+     * has no coroutine dependency, the work happens at most once per user tap,
+     * and the thread is gone before the chooser is dismissed. It reads logcat
+     * and zips up to ~3 MiB, so it is categorically not main-thread work.
+     *
+     * The failure path is the interesting one. This feature exists because a
+     * user was already having a bad day; a crash here would be the second
+     * thing that went wrong today and would take the evidence with it. So the
+     * whole build is wrapped, the failure is a toast plus a DiagLog.e line
+     * (which lands in the NEXT export), and the row is always re-enabled —
+     * including when the Activity is finishing, where posting to the view
+     * would otherwise silently drop the re-enable and leave a dead row behind
+     * for the next onResume.
+     */
+    private fun startDiagnosticsExport() {
+        if (exportInFlight) return
+        exportInFlight = true
+        exportDiagnosticsRow.isEnabled = false
+        exportDiagnosticsSub.setText(R.string.diag_export_preparing)
+        DiagLog.d("SettingsActivity", "diag export started")
+        Thread({
+            var zip: java.io.File? = null
+            var failure: Throwable? = null
+            try {
+                zip = DiagExport.build(this)
+            } catch (t: Throwable) {
+                failure = t
+            }
+            val built = zip
+            val err = failure
+            runOnUiThread {
+                exportInFlight = false
+                exportDiagnosticsRow.isEnabled = true
+                exportDiagnosticsSub.setText(R.string.row_export_diag_sub)
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (built == null) {
+                    // Class name only: an IOException's message can carry a
+                    // path, and a path can carry a user name.
+                    DiagLog.e("SettingsActivity", "diag export failed cls=" + (err?.javaClass?.simpleName ?: "null"))
+                    android.util.Log.e("SettingsActivity", "diagnostics export failed", err)
+                    android.widget.Toast.makeText(this, R.string.diag_export_failed, android.widget.Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                try {
+                    DiagLog.d("SettingsActivity", "diag export ready bytes=" + built.length())
+                    startActivity(DiagExport.shareIntent(this, built, DiagLog.diagId(this)))
+                } catch (t: Throwable) {
+                    DiagLog.e("SettingsActivity", "diag share failed cls=" + t.javaClass.simpleName)
+                    android.widget.Toast.makeText(this, R.string.diag_export_failed, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }, "diag-export").start()
     }
 
     /**
