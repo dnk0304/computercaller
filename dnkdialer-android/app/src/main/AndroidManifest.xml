@@ -244,6 +244,37 @@
                 android:value="Phone call and messaging bridge service" />
         </service>
 
+        <!--
+          T-VC63-EXPORT-DIAGNOSTICS (vc63) — the app's FIRST FileProvider.
+
+          It exists for exactly one thing: handing a diagnostics zip to the
+          share sheet the user just chose a target in. Everything about the
+          declaration is the minimum that allows that:
+
+            exported="false"        — no other app can address the provider.
+            grantUriPermissions     — a grant is the ONLY way in, and every
+                                      grant is made by DiagExport.shareIntent
+                                      with FLAG_GRANT_READ_URI_PERMISSION on a
+                                      single file uri.
+            authority .diagnostics  — namespaced under applicationId so debug
+                                      and release installs can coexist.
+            @xml/diag_paths         — cacheDir/diag-export/ and nothing else.
+
+          The scope matters more here than in most apps: this process can read
+          SMS, the call log, contacts and the E2E device key. A provider rooted
+          at cacheDir (let alone filesDir) would make a share-sheet tap the
+          weakest link in all of that. See res/xml/diag_paths.xml.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.diagnostics"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/diag_paths" />
+        </provider>
+
         <service
             android:name=".DnkNotificationListenerService"
             android:label="ComputerCaller Notifications"

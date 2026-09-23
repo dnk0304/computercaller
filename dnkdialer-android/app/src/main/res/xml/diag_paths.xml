@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  T-VC63-EXPORT-DIAGNOSTICS — FileProvider scope.
+
+  ONE path, and it is the export directory inside cacheDir. Not <cache-path
+  path="." />, not <files-path>, not external storage.
+
+  This is the app's first FileProvider. Every grant it can ever hand out is
+  bounded by this file, and the app holds SMS, call log, contacts and a
+  device key — so the scope is the security control, and a wildcard here
+  would quietly make all of that reachable by any app that talks an
+  attacker into a share. cacheDir/diag-export/ contains exactly the archives
+  DiagExport.build() writes and nothing else.
+-->
+<paths>
+    <cache-path name="diag-export" path="diag-export/" />
+</paths>

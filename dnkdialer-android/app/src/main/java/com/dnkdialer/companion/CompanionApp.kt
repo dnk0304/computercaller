@@ -44,6 +44,16 @@ class CompanionApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+
+        // vc63 (T-VC63-EXPORT-DIAGNOSTICS) — first thing in the process, so
+        // that every Activity, Service and Receiver below can log without
+        // checking whether the log exists. init() also applies the 24 h
+        // retention rule to filesDir/diag and to the cached exports: doing it
+        // at start (not only at export time) means an app that is never
+        // exported from still cannot accumulate logs past a day.
+        DiagLog.init(this)
+        DiagExport.pruneExports(this)
+
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
 
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
