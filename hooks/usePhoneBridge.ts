@@ -396,6 +396,13 @@ export function usePhoneBridge() {
   const e2eApi = useE2e();
   const e2eRef = useRef(e2eApi);
   e2eRef.current = e2eApi;
+  /**
+   * T-FT-WEB-CHUNK-SEQ-RACE. Outbound frames are sealed and written to the
+   * socket in the order `sendCommand` was called, by chaining each one onto
+   * this tail. A ref, not state: it must survive every re-render and it must
+   * never cause one. See the long note at the chokepoint itself.
+   */
+  const sealSendTailRef = useRef<Promise<void>>(Promise.resolve());
   // FT-3a. The transfer state machines live in lib/fileTransfer and reach the
   // socket only through this bridge, which is filled in below once sendCommand
   // exists. Same ref dance as e2eRef, and for the same reason: the inbound
@@ -3219,23 +3226,43 @@ export function usePhoneBridge() {
     // are untouched. With no session it resolves to the same object it was
     // given, so the plaintext path is byte-identical to before.
     //
-    // The seal is async (WebCrypto is), so this became fire-and-forget. That is
-    // safe because nothing here inspected the result before, and the ordering
-    // that matters — the seq counter — is serialised inside the session, not by
-    // this call site. A seal that FAILS (fail-closed counter) refuses to send
-    // rather than falling back to plaintext: a frame the user believes is
-    // encrypted must never leave in the clear.
-    void e2eRef.current.sealOutbound(type, payload).then(
-      (body) => {
-        if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-        const message = `${type}:${JSON.stringify(body)}`;
-        console.log('[PhoneBridge] Sending command:', type);
-        wsRef.current.send(message);
-      },
-      (err) => {
-        console.error(`[PhoneBridge] REFUSING to send ${type} — seal failed:`, err?.message ?? err);
-      },
-    );
+    // The seal is async (WebCrypto is), so this is fire-and-forget. A seal that
+    // FAILS (fail-closed counter) refuses to send rather than falling back to
+    // plaintext: a frame the user believes is encrypted must never leave in
+    // the clear.
+    //
+    // ── T-FT-WEB-CHUNK-SEQ-RACE: THE WIRE ORDER IS THIS CALL SITE'S JOB ─────
+    // This used to say the ordering that matters is "serialised inside the
+    // session". It was not, twice over. The send counter handed the same `s`
+    // to every seal that was in flight together (fixed in
+    // lib/e2e/session.mjs `createFailClosedSender`), and even with distinct
+    // sequence numbers N independent `.then(send)` callbacks reach
+    // `ws.send()` in whatever order WebCrypto happens to resolve them. The
+    // file sender pumps its chunks back-to-back (lib/fileTransfer/sender.ts
+    // `pump`), so "in flight together" is the normal case, not a corner: the
+    // phone saw chunk 0, then a duplicate `s`, then chunk 2 out of order, and
+    // the transfer died with no FILE_COMPLETE.
+    //
+    // Frames are therefore sealed AND written in the order they were handed
+    // to this function, by chaining each one onto the previous. Per-frame
+    // failures are contained — the chain is kept alive with `.catch` so one
+    // refused seal cannot silence every later frame — and the queue holds
+    // only the promises, never the plaintext.
+    const previous = sealSendTailRef.current;
+    sealSendTailRef.current = previous.then(async () => {
+      let body: object;
+      try {
+        body = await e2eRef.current.sealOutbound(type, payload);
+      } catch (err) {
+        const e = err as { message?: string } | undefined;
+        console.error(`[PhoneBridge] REFUSING to send ${type} — seal failed:`, e?.message ?? err);
+        return;
+      }
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+      const message = `${type}:${JSON.stringify(body)}`;
+      console.log('[PhoneBridge] Sending command:', type);
+      wsRef.current.send(message);
+    }).catch(() => {});
   }, []);
 
   // FT-3a. `sendFrame` is sendCommand itself, so file frames go through the ONE

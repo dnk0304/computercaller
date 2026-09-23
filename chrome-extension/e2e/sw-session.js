@@ -854,21 +854,42 @@ export function readDrops() {
  * criterion to BLOCKING and removed the nonce prefix's "defence in depth" fig
  * leaf from beside it — this is now the only thing standing there.
  */
+/**
+ * T-FT-WEB-CHUNK-SEQ-RACE (the SW twin). `nextSendSeq` is a read-modify-write
+ * over an ASYNC store: two overlapping calls both read the same floor before
+ * either writes, and both hand out the same seq. That is exactly the defect
+ * the browser's `createFailClosedSender` shipped -- three FILE_CHUNKs sealed
+ * back-to-back under one `s`, two of them dropped by the phone as duplicates,
+ * and under mode ON a GCM nonce reuse. The SW sends no sealed frames today
+ * (`assertSwSendsNothing()` pins it), so this is the latent half; it is fixed
+ * here so the day a send path is added it cannot inherit the race.
+ *
+ * Every handout goes through ONE chain, so the read and the write of a single
+ * call can never be split by another call's read.
+ */
+let seqHandoutTail = Promise.resolve();
+
 export async function nextSendSeq({ kid, direction }) {
   const mapKey = `${kid}|${direction}`;
-  const all = (await sessionGet(SEQ_KEY)) || {};
-  const floor = all[mapKey];
-  if (typeof floor !== 'number' || !Number.isSafeInteger(floor) || floor < 0) {
-    throw new Error(
-      `no proven counter floor for ${mapKey} — refusing to encrypt, force a rekey. ` +
-      'Never resume at a guess and never restart at 0 (§13.10.5 rule 3).',
-    );
-  }
-  // COMMIT THE NEXT VALUE FIRST, then hand out the current one. A crash between
-  // the two costs one skipped seq, which is free; the other order costs a reuse.
-  all[mapKey] = floor + 1;
-  await sessionSet(SEQ_KEY, all);
-  return floor;
+  // The chain must survive a rejection, or one failed call would poison every
+  // later one with an error that was never theirs.
+  const mine = seqHandoutTail.then(async () => {
+    const all = (await sessionGet(SEQ_KEY)) || {};
+    const floor = all[mapKey];
+    if (typeof floor !== 'number' || !Number.isSafeInteger(floor) || floor < 0) {
+      throw new Error(
+        `no proven counter floor for ${mapKey} — refusing to encrypt, force a rekey. ` +
+        'Never resume at a guess and never restart at 0 (§13.10.5 rule 3).',
+      );
+    }
+    // COMMIT THE NEXT VALUE FIRST, then hand out the current one. A crash between
+    // the two costs one skipped seq, which is free; the other order costs a reuse.
+    all[mapKey] = floor + 1;
+    await sessionSet(SEQ_KEY, all);
+    return floor;
+  });
+  seqHandoutTail = mine.catch(() => {});
+  return mine;
 }
 
 /**
