@@ -44,7 +44,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { FILE_FRAME_TYPES } from '../lib/fileTransfer/frames.ts';
+import { FILE_FRAME_TYPES, ftHintFor, FT_HINT_KEY } from '../lib/fileTransfer/frames.ts';
 import { isRelayMintedAbort, isMalformedRelayMark } from '../lib/fileTransfer/relayAbort.ts';
 import { createComputerSession, memorySeqStore } from '../lib/e2e/session.mjs';
 
@@ -340,6 +340,11 @@ function buildChokepoint(refs) {
     }),
     isRelayMintedAbort,
     isMalformedRelayMark,
+    // T-FT-WEB-SEAL-NO-HINT: the sliced sealOutbound now calls the ONE hint
+    // producer. Injecting the REAL one rather than a stub is the point — a
+    // local stand-in would let the slice pass while the shipped path emitted a
+    // different shape, which is the class of defect this suite exists for.
+    ftHintFor,
     withRelayAbortAccepted: (v) => v,
     setView: (f) => { if (typeof f === 'function') f({ debug: {} }); },
     ...refs,
@@ -422,6 +427,37 @@ function buildChokepoint(refs) {
   eq('(f) CALL_STATUS keeps {state} clear', cs.state, 'ringing');
   check('(f) ...and seals the number', !JSON.stringify(cs).includes('34600'));
   check('(f) ...alongside an envelope', cs.e === 1 && typeof cs.c === 'string');
+
+  // (f2) T-FT-WEB-SEAL-NO-HINT. A sealed FILE_OFFER leaves with the plaintext
+  // `ft` hint the relay's gate requires (server.js:2361-2392 fails CLOSED
+  // without it), and with NOTHING else outside the ciphertext. Asserted here,
+  // on the SHIPPED chokepoint slice, and not only in the contract suite: this
+  // is the file that runs the real callback text.
+  const offerId = '3f2a91c0d4e84b6798aa10ff5c3b7d20';
+  const offer = await CP.sealOutbound('FILE_OFFER', {
+    id: offerId, name: 'secret-plan.pdf', size: 4404019,
+    mime: 'application/pdf', sha256: 'e3'.repeat(32), from: 'browser',
+  });
+  check('(f2) a sealed FILE_OFFER carries the plaintext hint',
+    offer[FT_HINT_KEY] && offer[FT_HINT_KEY].id === offerId, JSON.stringify(offer[FT_HINT_KEY]));
+  eq('(f2) ...with the size the relay reserves quota against',
+    offer[FT_HINT_KEY]?.size, 4404019);
+  check('(f2) ...as a SIBLING of the four authenticated fields',
+    offer.e === 1 && typeof offer.c === 'string' && typeof offer.kid === 'string');
+  check('(f2) ...and the filename stays sealed',
+    !JSON.stringify(offer).includes('secret-plan'));
+  check('(f2) ...and nothing but {e,kid,s,c,ft} leaves in the clear',
+    Object.keys(offer).every((k) => ['e', 'kid', 's', 'c', FT_HINT_KEY].includes(k)),
+    Object.keys(offer).join(','));
+  // A sealed NON-offer FILE_* frame gets no hint: the relay matches it to the
+  // room's transfer by TYPE, so an id on the wire would be a leak for nothing.
+  const accept = await CP.sealOutbound('FILE_ACCEPT', { id: offerId });
+  check('(f2) a sealed FILE_ACCEPT carries NO hint',
+    accept[FT_HINT_KEY] === undefined, JSON.stringify(accept));
+  // CONTROL: the producer really is what decides this — the same body under a
+  // non-offer type yields nothing, so the arm above is not passing for free.
+  eq('(f2) CONTROL: the injected producer is the shipped one',
+    ftHintFor('FILE_OFFER', { id: offerId, size: 1 })?.id, offerId);
 
   // SPEC 12.2 still keys off the same predicate: a pending SAS refuses the
   // sealed frame and drops the sealed inbound, but a heartbeat is untouched.

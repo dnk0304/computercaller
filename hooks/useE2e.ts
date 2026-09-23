@@ -98,7 +98,7 @@ import {
 import {
   isMalformedRelayMark, isRelayMintedAbort,
 } from '@/lib/fileTransfer/relayAbort.ts';
-import { FILE_FRAME_TYPES } from '@/lib/fileTransfer/frames.ts';
+import { FILE_FRAME_TYPES, ftHintFor } from '@/lib/fileTransfer/frames.ts';
 
 /** How long Connect waits for the SW's key before pairing without it (brief (b)). */
 export const SW_KEY_WAIT_MS = 1000;
@@ -1046,7 +1046,12 @@ export function useE2e(emailProp?: string | null): E2eApi {
       const env = await session.seal(type, new TextEncoder().encode(JSON.stringify(sealed)));
       return { ...clear, ...env };
     }
-    return session.seal(type, new TextEncoder().encode(JSON.stringify(payload)));
+    const env = await session.seal(type, new TextEncoder().encode(JSON.stringify(payload)));
+    // FT-A1 MUST A-1: a sealed FILE_OFFER leaves with the plaintext `{ft:{id,size}}`
+    // sibling the relay's gate requires. Nothing else leaves the ciphertext —
+    // name, mime and sha256 stay inside `c`. See {@link ftHintFor}.
+    const ft = ftHintFor(type, payload as Record<string, unknown>);
+    return ft ? { ...env, ft } : env;
   }, []);
 
   const openInbound = useCallback(async (type: string, payload: unknown) => {

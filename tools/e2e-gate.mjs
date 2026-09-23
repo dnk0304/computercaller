@@ -509,6 +509,18 @@ const MIN_CHECKS_OVERRIDE = {
   // adds it: 79 assertions (8 rows x per-row checks + the named row-4 block
   // with its keyed-on-the-sealing-flag control).
   'relay:e2e-sas-blocking-contract.test.mjs': 79,
+  // T-FT-WEB-SEAL-NO-HINT (RULE 30). tests/e2e-ft-hint-contract.test.mjs drives
+  // the REAL web hint producer (lib/fileTransfer/frames.ts ftHintFor, called on
+  // useE2e's seal path) into the REAL relay gate (ftOfferMetadata, sliced out of
+  // server.js) over tests/e2e-ft-hint-vectors.json - the SAME file the Android
+  // lane's E2eFtHintContractTest asserts. Auto-discovered by the
+  // tests/e2e-*.test.mjs sweep, so what it needs here is the FLOOR, and it needs
+  // one more than most: the suite's whole reason for existing is the
+  // web-offer-hint row and the pre-fix bare-envelope CONTROL beside it. Delete
+  // either from the vector file and the count drops while the suite still prints
+  // a cheerful N/N - with the browser->phone file path broken again and nothing
+  // red. Measured at the commit that adds it: 156 assertions.
+  'relay:e2e-ft-hint-contract.test.mjs': 156,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job
@@ -532,7 +544,14 @@ const MIN_CHECKS_OVERRIDE = {
   // control, (c) 22 plaintext control frames + the old nine + an undeclared
   // type, (d) the three-way parity cell, (e)/(f) the behaviour cells against a
   // real session, and (g) the P6.1d fixture replay).
-  'relay:e2e-web-frame-classifier.test.mjs': 174,
+  // T-FT-WEB-SEAL-NO-HINT 174 -> 181: this suite runs the SHIPPED sealOutbound
+  // callback text, so it is where the FILE_OFFER hint is proved on the real
+  // chokepoint rather than on a helper - the offer's hint, its size, the
+  // sibling placement, the filename staying sealed, the clear-key set, a
+  // non-offer carrying NO hint, and the CONTROL that the injected producer is
+  // the shipped one. The floor moves WITH the suite: left at 174, all seven
+  // could be deleted under a cheerful N/N.
+  'relay:e2e-web-frame-classifier.test.mjs': 181,
   // E2E-P2.8 / R-BP (b). The raw-send pin: 0 raw sends of any §13.7 sealed type
   // across hooks/ app/ chrome-extension/. Auto-discovered by the
   // tests/e2e-*.test.mjs sweep, so what it needs from this table is a FLOOR —
@@ -639,7 +658,9 @@ const MIN_CHECKS_OVERRIDE = {
   // relay:e2e-web-sw-advert.test.mjs up 47 -> 72. The pin and the floor are
   // asserted against each other here so a floor raised in one place and not
   // the other cannot pass.
-  'unit:harness-list': 186,
+  // T-FT-WEB-SEAL-NO-HINT re-measure 186 -> 187: the frozen MIN_CHECKS pin list
+  // gains relay:e2e-ft-hint-contract.test.mjs (156).
+  'unit:harness-list': 187,
   // GATE-TOOLING-1 (4). The phase whitelist suite had NO floor for its whole
   // life: a step whose entire job is to prove a phase cannot silently vanish
   // could itself have had half its arms deleted under a cheerful N/N. Measured
