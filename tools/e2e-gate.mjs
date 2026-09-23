@@ -634,7 +634,12 @@ const MIN_CHECKS_OVERRIDE = {
   // GATE-TOOLING-1 (3) re-measure 165 -> 177 -> 185: ext-text-size-proof's
   // registration, its exactly-P5A/D1/MERGE negative arms and the two CONTROLs
   // that prove the frozen strings can still reject a wrong list.
-  'unit:harness-list': 185,
+  // SAS-MODE0 + SW-KEY-STALE re-measure 185 -> 186: the frozen MIN_CHECKS pin
+  // list gains relay:e2e-sas-blocking-contract.test.mjs (79) and carries
+  // relay:e2e-web-sw-advert.test.mjs up 47 -> 72. The pin and the floor are
+  // asserted against each other here so a floor raised in one place and not
+  // the other cannot pass.
+  'unit:harness-list': 186,
   // GATE-TOOLING-1 (4). The phase whitelist suite had NO floor for its whole
   // life: a step whose entire job is to prove a phase cannot silently vanish
   // could itself have had half its arms deleted under a cheerful N/N. Measured

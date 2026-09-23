@@ -921,15 +921,38 @@ try {
     check('(b0) and no SAS digits are rendered anywhere on the page',
       digitCount === 0, `${digitCount} digit elements`);
 
-    // The copy the user SHOULD get instead, from the one table that owns it.
+    /*
+     * THE STATE, BEFORE THE ABSENCE MEANS ANYTHING.
+     *
+     * "No dialog" is satisfied by an ERRORED pair just as well as by a correct
+     * one — sasIsBlocking returns false on state 'error' too. So the absence
+     * above is only evidence once this pair is positively shown to be SEALED
+     * AND UNVERIFIED. Read from the page's own DOM, not from our expectations:
+     * the chip carries the indicator's label, and EncryptionChip renders NOTHING
+     * when the state is one the banner owns (i.e. an error), so chip-absent is
+     * itself the error signal and is reported as one.
+     */
     const unverified = encryptionIndicator({ state: 'encrypted-unverified', peer: { supports: true } });
     const chip = page.locator('[data-cc-e2e-chip]').first();
+    // appears(), never a bare getAttribute: on an absent element that TIMES OUT
+    // for 30 s and aborts the whole harness mid-file, which is how an earlier
+    // run printed "125/125 checks passed" against a floor of 286 — a truncated
+    // run wearing a green count.
+    const chipThere = await appears(chip, 15_000);
+    const banner = page.locator('[data-cc-e2e-banner]');
+    const bannerState = (await banner.count()) > 0
+      ? await banner.first().getAttribute('data-cc-e2e-banner') : null;
+    const why = `chip=${chipThere ? 'present' : 'ABSENT'} banner=${bannerState ?? '-'}`
+      + ` | ${(page.__e2eLog || []).join(' ;; ') || 'no e2e log'}`;
+    check('(b0) the pair did NOT error — no banner, so the absence above means something',
+      bannerState === null, why);
+    check('(b0) the /app header renders the encryption chip for this pair', chipThere, why);
+    const chipLabel = chipThere ? await chip.getAttribute('data-cc-e2e-label') : null;
+    const chipTone = chipThere ? await chip.getAttribute('data-cc-e2e-chip') : null;
     check('(b0) the header says "Encrypted, unverified" — sealed, and honest about it',
-      (await chip.getAttribute('data-cc-e2e-label')) === unverified.label,
-      await chip.getAttribute('data-cc-e2e-label'));
+      chipLabel === unverified.label, `${String(chipLabel)} | ${why}`);
     check('(b0) the padlock is drawn: this pair IS encrypted',
-      (await chip.getAttribute('data-cc-e2e-chip')) !== 'plain',
-      await chip.getAttribute('data-cc-e2e-chip'));
+      chipThere && chipTone !== 'plain', `${String(chipTone)} | ${why}`);
 
     // THE PANEL IS USABLE. The defect's real cost was not the wrong copy, it
     // was a modal covering everything — so this asserts the user can reach and
