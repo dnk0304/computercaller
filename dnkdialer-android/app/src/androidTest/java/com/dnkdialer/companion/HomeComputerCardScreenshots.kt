@@ -91,6 +91,7 @@ class HomeComputerCardScreenshots {
                     assertOnScreen(activity, R.string.row_encrypted_mode_title)
                     CopyRules.assertNoEndToEndClaim(activity.window.decorView)
                 }
+                bringCardIntoFrame(scenario)
                 settle()
                 capture("home-a-$suffix.png")
             }
@@ -113,6 +114,7 @@ class HomeComputerCardScreenshots {
                     )
                     CopyRules.assertNoEndToEndClaim(activity.window.decorView)
                 }
+                bringCardIntoFrame(scenario)
                 settle()
                 capture("home-b-$suffix.png")
             }
@@ -131,6 +133,7 @@ class HomeComputerCardScreenshots {
                     assertTrue("(c) the switch must render ON", toggle.isChecked)
                     CopyRules.assertNoEndToEndClaim(activity.window.decorView)
                 }
+                bringCardIntoFrame(scenario)
                 settle()
                 capture("home-c-$suffix.png")
             }
@@ -146,27 +149,74 @@ class HomeComputerCardScreenshots {
             // Photographing it would have meant stubbing the send path — a
             // picture of a dialog the shipped app cannot show from this
             // state. So (d) is the first screen the row really produces: the
-            // system document picker, opened by the row's own intent.
-            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-                settle()
-                scenario.onActivity {
-                    it.findViewById<android.view.View>(R.id.homeSendFileRow).performClick()
-                }
-                // The picker is a separate process; give it longer than the
-                // in-app settle to inflate before the shutter.
-                instr.waitForIdleSync()
-                Thread.sleep(2500)
-                capture("home-d-$suffix.png")
-                instr.uiAutomation.performGlobalAction(
-                    android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK
-                )
-                Thread.sleep(800)
-            }
+            // system document picker.
+            //
+            // Fired as a bare intent rather than through ActivityScenario:
+            // the picker is another process, and a scenario whose Activity
+            // has been covered by one cannot be closed (it reports "Current
+            // state was null"). That the HOME ROW fires exactly this intent
+            // is proved in HomeComputerCardUiTest with Intents.intended();
+            // this capture is about what the user then sees.
+            ctx.startActivity(
+                android.content.Intent(ctx, FileTransferActivity::class.java)
+                    .setAction(FileTransferActivity.ACTION_PICK_FILE)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            // The picker is a separate process; give it longer than the
+            // in-app settle to inflate before the shutter.
+            instr.waitForIdleSync()
+            Thread.sleep(3000)
+            capture("home-d-$suffix.png")
+            instr.uiAutomation.performGlobalAction(
+                android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK
+            )
+            Thread.sleep(1200)
         }
 
         val dir = File(ctx.getExternalFilesDir(null), "screenshots")
         val shots = dir.listFiles { f -> f.name.startsWith("home-") }?.size ?: 0
         assertEquals("expected 8 captures (4 faces x 2 themes)", 8, shots)
+    }
+
+
+    /**
+     * Scroll the "Computer" card into the VIEWPORT before the shutter.
+     *
+     * This is not cosmetic. The card sits below the fold on a 411 dp phone
+     * (deliberately — the hero and the lobby button keep the top of the
+     * screen), and the first run of this fixture produced byte-identical
+     * PNGs for faces (a) and (c) because the only thing that differed
+     * between them was a switch that was not in frame. CopyRules.visibleText
+     * walks the view TREE, so it said "on screen" about a card the camera
+     * could not see. The rect check below is what closes that gap: it asks
+     * the platform whether the row is actually drawn inside the window, and
+     * the fixture fails rather than shipping Dennis a picture of the wrong
+     * half of the screen.
+     */
+    private fun bringCardIntoFrame(scenario: ActivityScenario<MainActivity>) {
+        scenario.onActivity { activity ->
+            val reason = activity.findViewById<android.view.View>(R.id.homeEncryptedModeReason)
+            val scroller = activity.findViewById<android.view.View>(R.id.mainContentContainer)
+                .parent as android.widget.ScrollView
+            // Put the reason line just above the bottom edge, which leaves
+            // the section label, both rows and the switch above it in frame.
+            val pad = (24 * activity.resources.displayMetrics.density).toInt()
+            scroller.scrollTo(0, maxOf(0, reason.bottom - scroller.height + pad))
+        }
+        instr.waitForIdleSync()
+        Thread.sleep(300)
+        scenario.onActivity { activity ->
+            for (id in listOf(
+                R.id.homeSendFileRow, R.id.homeEncryptedModeToggle, R.id.homeEncryptedModeReason
+            )) {
+                val v = activity.findViewById<android.view.View>(id)
+                val r = android.graphics.Rect()
+                assertTrue(
+                    "view $id is not inside the window — the capture would not show it",
+                    v.getGlobalVisibleRect(r) && r.height() > 0
+                )
+            }
+        }
     }
 
     // ------------------------------------------------------------- helpers
