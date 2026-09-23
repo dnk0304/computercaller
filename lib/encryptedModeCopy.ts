@@ -305,18 +305,34 @@ function errorIndicator(error: E2eErrorName | undefined): EncryptionIndicator {
 }
 
 /**
- * The SAS step is BLOCKING when the effective mode is ON and digits exist that
+ * The SAS step is BLOCKING when the EFFECTIVE mode is ON and digits exist that
  * nobody has answered yet. §13.1/§13.2 rows 8-10: a mode-OFF computer still
- * shows and blocks on the code when the PEER asked for verification, so this
- * deliberately keys on `view.mode` — the hook's EFFECTIVE mode — and not on the
- * local setting.
+ * shows and blocks on the code when the PEER asked for verification — which is
+ * exactly why the key is `view.effective` (`OR(localMode, peerByte)`, latched)
+ * and not the local setting.
+ *
+ * SAS-MODE0: it is ALSO not `view.mode`. `mode` is the SEALING flag and is
+ * `'on'` for EVERY sealed pair (hooks/useE2e.ts publishes `mode:'on'` the
+ * moment a usable block exists), so keying on it made row 4 — phone OFF,
+ * computer OFF, block present, vector M1, `encrypted-unverified` — blocking:
+ * the modal demanded a code the phone was never showing and covered the whole
+ * panel. `decideAccept` already names that pair "sealed at modeByte 0x00
+ * (vector M1), SAS not blocking" (hooks/phoneE2e.ts). Digits still EXIST for
+ * an M1 pair by design (they are part of the frozen transcript and the
+ * coverage check) — they are simply nobody's question to answer.
+ *
+ * Pinned by tests/e2e-sas-blocking-vectors.json, read by both this surface and
+ * the Android E2eStatusCopy/E2eSettings side.
  */
 export function sasIsBlocking(view: {
-  mode: 'off' | 'on';
+  /** The SEALING flag. Deliberately unused here — see the note above. */
+  mode?: 'off' | 'on';
+  /** `OR(localMode, peerByte)`, latched. The only thing that gates the modal. */
+  effective: 'off' | 'on';
   state: E2eStateName;
   sas: { digits: string | null; confirmed: boolean };
 }): boolean {
-  if (view.mode !== 'on') return false;
+  if (view.effective !== 'on') return false;
   if (view.state === 'error') return false;
   return Boolean(view.sas.digits) && !view.sas.confirmed;
 }

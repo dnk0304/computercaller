@@ -498,6 +498,17 @@ const MIN_CHECKS_OVERRIDE = {
   // moves WITH the suite deliberately - a floor left at 47 would let all
   // eleven rendering checks be deleted and still print a cheerful N/N.
   'relay:e2e-web-sas-confirm.test.mjs': 58,
+  // SAS-MODE0 (RULE 30). tests/e2e-sas-blocking-contract.test.mjs drives the
+  // REAL web path (decideAccept -> the view useE2e publishes -> sasIsBlocking)
+  // over tests/e2e-sas-blocking-vectors.json, the SAME file the Android lane's
+  // E2eSasBlockingContractTest asserts. Auto-discovered by the
+  // tests/e2e-*.test.mjs sweep, so what it needs here is the floor: the suite's
+  // whole reason for existing is row 4 (sealed, effective OFF, SAS NOT
+  // blocking), and deleting that row from the vector file would take the count
+  // down with it and still print a cheerful N/N. Measured at the commit that
+  // adds it: 79 assertions (8 rows x per-row checks + the named row-4 block
+  // with its keyed-on-the-sealing-flag control).
+  'relay:e2e-sas-blocking-contract.test.mjs': 79,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job

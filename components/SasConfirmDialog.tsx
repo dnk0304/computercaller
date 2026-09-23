@@ -69,7 +69,13 @@ const subscribeNever = () => () => {};
 export function SasConfirmDialog() {
   const phone = usePhone() as {
     e2e?: {
+      /** The SEALING flag ('on' for every sealed pair) — NOT the SAS gate. */
       mode: 'off' | 'on';
+      /**
+       * SAS-MODE0: the EFFECTIVE mode is what decides whether this modal opens.
+       * The whole view is handed to `sasIsBlocking` so the two can never drift.
+       */
+      effective: 'off' | 'on';
       state: E2eStateName;
       sas: { digits: string | null; confirmed: boolean };
     };

@@ -1,0 +1,98 @@
+{
+  "$comment": [
+    "E2E SAS-MODE0 cross-surface contract vectors (RESUME-PROTOCOL RULE 30).",
+    "One file, two consumers: tests/e2e-sas-blocking-contract.test.mjs (web: hooks/phoneE2e.ts decideAccept ->",
+    "the view hooks/useE2e.ts publishes -> lib/encryptedModeCopy.ts sasIsBlocking + encryptionIndicator) and",
+    "dnkdialer-android/app/src/test/.../E2eSasBlockingContractTest.kt (phone: E2eSettings.effectiveMode /",
+    "isSealed / requiresSas -> E2eStatusCopy.stateOf / statusLine).",
+    "",
+    "Rows are the SPEC 13.2 cells: {phone encrypted mode OFF|ON} x {computer encrypted mode OFF|ON} x",
+    "{a usable e2e block present|absent}. `blockPresent:false` is the pre-feature peer (E2eSettings",
+    "PeerAdvertisement.ABSENT): a side whose OWN setting is ON refuses rather than downgrades.",
+    "",
+    "THE ROW THIS FILE EXISTS FOR IS row-4-M1: both sides OFF, block present. The pair SEALS (web view",
+    "mode:'on'), the EFFECTIVE mode stays OFF, digits are computed (frozen transcript + coverage) and NOBODY",
+    "IS ASKED TO CONFIRM THEM. Both surfaces must say 'Encrypted, unverified' and NEITHER may block on a SAS.",
+    "Web regression 2026-09-23 (live acceptance 3e466fd finding 2): sasIsBlocking keyed on view.mode (the",
+    "SEALING flag, 'on' for every sealed pair) and opened the modal over the whole panel.",
+    "",
+    "`effective` on the web abort rows is what decideAccept actually returns on the no-block abort path",
+    "(mode 'on' / effective 'on' / state 'error'); it is recorded verbatim so the test pins the real path."
+  ],
+  "version": 1,
+  "digitsForSealedPairs": "76386",
+  "rows": [
+    {
+      "id": "row-1-both-off-no-block",
+      "label": "phone OFF, computer OFF, no e2e block (pre-feature peer)",
+      "phoneEncryptedMode": "off",
+      "computerEncryptedMode": "off",
+      "blockPresent": false,
+      "web": { "action": "proceed", "sealed": false, "mode": "off", "effective": "off", "state": "unencrypted", "digits": null, "sasBlocking": false },
+      "phone": { "effectiveMode": "PLAINTEXT", "sealed": false, "requiresSas": false, "sasBlocking": false, "state": "PLAINTEXT", "statusLineKey": "status_connected_unencrypted" }
+    },
+    {
+      "id": "row-2-computer-on-no-block",
+      "label": "phone OFF, computer ON, no e2e block — the computer refuses rather than downgrades",
+      "phoneEncryptedMode": "off",
+      "computerEncryptedMode": "on",
+      "blockPresent": false,
+      "web": { "action": "abort", "sealed": false, "mode": "on", "effective": "on", "state": "error", "error": "e2e-setup-failed", "digits": null, "sasBlocking": false },
+      "phone": { "effectiveMode": "PLAINTEXT", "sealed": false, "requiresSas": false, "sasBlocking": false, "state": "PLAINTEXT", "statusLineKey": "status_connected_unencrypted" }
+    },
+    {
+      "id": "row-3-phone-on-no-block",
+      "label": "phone ON, computer OFF, no e2e block — the phone refuses rather than downgrades",
+      "phoneEncryptedMode": "on",
+      "computerEncryptedMode": "off",
+      "blockPresent": false,
+      "web": { "action": "proceed", "sealed": false, "mode": "off", "effective": "off", "state": "unencrypted", "digits": null, "sasBlocking": false },
+      "phone": { "effectiveMode": "ABORT", "sealed": false, "requiresSas": false, "sasBlocking": false, "state": null, "statusLineKey": null }
+    },
+    {
+      "id": "row-4-M1-both-off-block-present",
+      "label": "phone OFF, computer OFF, block present — SEALED at modeByte 0x00, effective OFF, SAS NOT blocking on either side",
+      "phoneEncryptedMode": "off",
+      "computerEncryptedMode": "off",
+      "blockPresent": true,
+      "web": { "action": "proceed", "sealed": true, "mode": "on", "effective": "off", "state": "encrypted-unverified", "digits": "76386", "sasBlocking": false },
+      "phone": { "effectiveMode": "ENCRYPTED_UNVERIFIED", "sealed": true, "requiresSas": false, "sasBlocking": false, "state": "ENCRYPTED_UNVERIFIED", "statusLineKey": "status_connected_encrypted_unverified" }
+    },
+    {
+      "id": "row-8-computer-on-block-present",
+      "label": "phone OFF, computer ON, block present — the OR makes it verified; the locally-OFF phone still confirms",
+      "phoneEncryptedMode": "off",
+      "computerEncryptedMode": "on",
+      "blockPresent": true,
+      "web": { "action": "proceed", "sealed": true, "mode": "on", "effective": "on", "state": "encrypted-verified", "digits": "76386", "sasBlocking": true },
+      "phone": { "effectiveMode": "ENCRYPTED_VERIFIED", "sealed": true, "requiresSas": true, "sasBlocking": true, "state": "ENCRYPTED_VERIFIED", "statusLineKey": "status_connected_encrypted" }
+    },
+    {
+      "id": "row-9-phone-on-block-present",
+      "label": "phone ON, computer OFF, block present — the OR makes it verified; the locally-OFF computer still confirms",
+      "phoneEncryptedMode": "on",
+      "computerEncryptedMode": "off",
+      "blockPresent": true,
+      "web": { "action": "proceed", "sealed": true, "mode": "on", "effective": "on", "state": "encrypted-verified", "digits": "76386", "sasBlocking": true },
+      "phone": { "effectiveMode": "ENCRYPTED_VERIFIED", "sealed": true, "requiresSas": true, "sasBlocking": true, "state": "ENCRYPTED_VERIFIED", "statusLineKey": "status_connected_encrypted" }
+    },
+    {
+      "id": "row-10-both-on-block-present",
+      "label": "phone ON, computer ON, block present — verified on both ends, SAS blocking on both ends",
+      "phoneEncryptedMode": "on",
+      "computerEncryptedMode": "on",
+      "blockPresent": true,
+      "web": { "action": "proceed", "sealed": true, "mode": "on", "effective": "on", "state": "encrypted-verified", "digits": "76386", "sasBlocking": true },
+      "phone": { "effectiveMode": "ENCRYPTED_VERIFIED", "sealed": true, "requiresSas": true, "sasBlocking": true, "state": "ENCRYPTED_VERIFIED", "statusLineKey": "status_connected_encrypted" }
+    },
+    {
+      "id": "row-11-both-on-no-block",
+      "label": "phone ON, computer ON, no e2e block — both sides refuse",
+      "phoneEncryptedMode": "on",
+      "computerEncryptedMode": "on",
+      "blockPresent": false,
+      "web": { "action": "abort", "sealed": false, "mode": "on", "effective": "on", "state": "error", "error": "e2e-setup-failed", "digits": null, "sasBlocking": false },
+      "phone": { "effectiveMode": "ABORT", "sealed": false, "requiresSas": false, "sasBlocking": false, "state": null, "statusLineKey": null }
+    }
+  ]
+}
