@@ -188,8 +188,7 @@ export async function POST(req: NextRequest) {
     // bearer for the Android APK and MUST NOT travel to the browser. The
     // browser now obtains a short-lived ticket via POST /api/auth/relay-ticket
     // for its own WS connection; the APK gets phoneToken via POST
-    // /api/auth/apk-login (unchanged). Anything that needs to render the QR
-    // pairing code calls GET /api/auth/qr-token explicitly.
+    // /api/auth/apk-login (unchanged). No other endpoint discloses it.
     const response = NextResponse.json({
       user: { id: user.id, email: user.email },
       subscription: user.subscription,

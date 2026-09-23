@@ -1,0 +1,28 @@
+{
+  "_comment": "ONE banned-copy word list, TWO consumers (RESUME-PROTOCOL RULE 30): (1) web+extension — tests/copy-no-banned-words.test.mjs (node, gate step unit:copy-banned-words); (2) android — dnkdialer-android/app/src/test/.../E2eCopyTableTest.kt (ticket T-QR-COPY-PURGE, lane vc63, which replaces its inline list with this file). Edit the patterns HERE only; both surfaces must keep reading this file or the two copies drift. Patterns are JS/Kotlin-compatible regex source; `flags` applies to every pattern in the rule.",
+  "rules": [
+    {
+      "id": "no-qr",
+      "why": "Dennis 2026-09-23 12:42Z/12:53Z: QR is never mentioned in ComputerCaller's own product copy. The phone pairs via /api/auth/apk-login; the QR pairing surface was deleted in forge/qr-purge. Competitor descriptions under content/guides/** are OUT OF SCOPE and are not scanned.",
+      "flags": "i",
+      "patterns": [
+        "\\bQR\\b",
+        "qr-code",
+        "qr code",
+        "scan a code",
+        "scan this code",
+        "scan the code"
+      ]
+    },
+    {
+      "id": "no-e2e-claim",
+      "why": "Mirrors the existing android E2eCopyTableTest rule: user-facing copy must not make an end-to-end claim.",
+      "flags": "i",
+      "patterns": [
+        "end-to-end",
+        "end to end",
+        "\\bE2E\\b"
+      ]
+    }
+  ]
+}

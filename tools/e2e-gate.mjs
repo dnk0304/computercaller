@@ -670,6 +670,22 @@ const MIN_CHECKS_OVERRIDE = {
   // defect while still printing a cheerful N/N, which is precisely what the
   // floor is here to stop.
   'unit:reap-attempt': 22,
+  // QR-PURGE. tests/copy-no-banned-words.test.mjs — the banned-copy scan over
+  // app/ components/ hooks/ lib/ chrome-extension/. Not in the parity baseline
+  // (it has never run under a gate before), so the floor is declared here.
+  //
+  // It needs one more than most: essentially EVERYTHING it asserts is an
+  // ABSENCE. One check per scanned file passes by finding no banned span, so
+  // dropping a pattern from the json, a root from ROOTS, an extension from
+  // EXTS, or breaking the literal extraction outright all make the suite
+  // GREENER, not redder — the count is the only thing that notices. The 14
+  // CONTROL arms (7 strings that MUST match, 7 that must NOT — the quick-reply
+  // `qr.id` identifier, a historical `// QR` comment, a jsdoc, a url) are the
+  // arms that prove the detector can still go red; delete those and the suite
+  // can no longer tell a clean tree from a blind scanner while still printing a
+  // cheerful N/N. Measured at the commit that adds it: 333 checks over 280
+  // files (app=72 components=82 hooks=23 lib=93 chrome-extension=10).
+  'unit:copy-banned-words': 333,
   // GATE-TOOLING-1 (3), T-GATE-TEXTSIZE-P5A (ruling R-CD). The 200% text-size
   // proof, joining P5A. Not in the parity baseline — it has never run under a
   // gate before — so the floor is declared here. Measured 110 checks at base
@@ -1861,6 +1877,15 @@ if (WEB) {
     // browser, no database (rule 17). ONLY e2e-gate.mjs change made by
     // EXT-SEARCH; declared in the résumé.
     ['message-search', 'tests/message-search.test.mjs', true],
+    // QR-PURGE. The web+ext consumer of tests/copy-banned-words.json (RULE 30:
+    // one word list, two surfaces — the android half is E2eCopyTableTest, lane
+    // vc63). Dennis's "no QR anywhere in the product" is a copy promise with no
+    // runtime that can break loudly: re-adding the component, the route or the
+    // strings would just work, quietly. Named explicitly because the sweep above
+    // matches only tests/e2e-*.test.mjs. Node-only — no browser, no database
+    // (rule 17). ONLY e2e-gate.mjs change made by QR-PURGE; declared in the
+    // résumé.
+    ['copy-banned-words', 'tests/copy-no-banned-words.test.mjs', true],
   ];
   // The one unit suite that needs a database, named for the same reason
   // DB_BACKED names devicekey-authz above: explicit beats widening the scrub.

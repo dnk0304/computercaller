@@ -6,7 +6,7 @@
  *
  * It exercises the EXACT shared functions the production code paths call:
  *   • server.js relay admission → evaluateUserEntitlement(db, userId)
- *   • /api/auth/qr-token + /api/auth/relay-ticket → evaluateEntitlement(input)
+ *   • /api/auth/relay-ticket + /api/entitlement → evaluateEntitlement(input)
  *   • /api/webhooks/whop card honesty → resolveWhopCardState(action, data)
  * against a MOCK Prisma client (no real DB, no real charges — per brief).
  *
@@ -116,14 +116,19 @@ function adminGate(userId) {
     : { status: 403 };
 }
 
-// /api/auth/qr-token GET: 403 subscription_required unless entitled, else 200 + token
-async function qrTokenResponse(userId) {
+// The BROWSER DOOR: a route that gates on the pure-input evaluateEntitlement
+// and answers 403 subscription_required unless entitled (/api/auth/relay-ticket
+// :157, /api/entitlement, /api/templates, /api/quick-replies). Previously also
+// /api/auth/qr-token — that route was deleted 2026-09-23 (forge/qr-purge) with
+// the dead QR pairing surface; these cases were RETARGETED, not dropped, so the
+// browser half of the revenue gate keeps its coverage.
+async function browserGateResponse(userId) {
   const u = USERS[userId];
   if (!u) return { status: 401 };
   const ent = evaluateEntitlement(
     { isAdmin: u.isAdmin, email: u.email, subscription: u.subscription }, NOW,
   );
-  return ent.allowed ? { status: 200, discloseToken: true } : { status: 403, error: 'subscription_required' };
+  return ent.allowed ? { status: 200, entitled: true } : { status: 403, error: 'subscription_required' };
 }
 
 // ── Assertion harness ───────────────────────────────────────────────────────
@@ -137,23 +142,23 @@ function check(label, actual, expected) {
 
 (async () => {
   console.log('\n=== TEST 1 — THE LEAK: unentitled user CANNOT get token or bridge ===');
-  check('1a qr-token(none) → 403 no disclosure', await qrTokenResponse('u_none'), { status: 403, error: 'subscription_required' });
+  check('1a browser gate(none) → 403 no disclosure', await browserGateResponse('u_none'), { status: 403, error: 'subscription_required' });
   check('1b relay(none) via ?token=/Bearer → REJECT', await relayAdmits('u_none'), { admitted: false, reason: 'no_subscription' });
 
   console.log('=== TEST 2 — Active paid user CAN drive the phone (no regression) ===');
-  check('2a qr-token(active) → 200 discloses token', await qrTokenResponse('u_active'), { status: 200, discloseToken: true });
+  check('2a browser gate(active) → 200 entitled', await browserGateResponse('u_active'), { status: 200, entitled: true });
   check('2b relay(active) → ADMIT', await relayAdmits('u_active'), { admitted: true, reason: 'active_subscription' });
   check('2c relay(trial live) → ADMIT', await relayAdmits('u_trial'), { admitted: true, reason: 'trial_active' });
 
   console.log('=== TEST 3 — Expiry lock: access DIES at expiry ===');
   check('3a relay(trial_expired) → REJECT', await relayAdmits('u_trial_expired'), { admitted: false, reason: 'trial_expired' });
   check('3b relay(expired/past-period) → REJECT', await relayAdmits('u_expired'), { admitted: false, reason: 'not_entitled_status_active' });
-  check('3c qr-token(trial_expired) → 403', await qrTokenResponse('u_trial_expired'), { status: 403, error: 'subscription_required' });
+  check('3c browser gate(trial_expired) → 403', await browserGateResponse('u_trial_expired'), { status: 403, error: 'subscription_required' });
 
   console.log('=== TEST 4 — NO LOCKOUT: admin + allowlist admitted despite NO sub ===');
   check('4a relay(admin,no sub) → ADMIT', await relayAdmits('u_admin'), { admitted: true, reason: 'admin' });
   check('4b relay(reviewer allowlist,no sub) → ADMIT', await relayAdmits('u_reviewer'), { admitted: true, reason: 'entitlement_allowlist' });
-  check('4c qr-token(admin) → 200', await qrTokenResponse('u_admin'), { status: 200, discloseToken: true });
+  check('4c browser gate(admin) → 200', await browserGateResponse('u_admin'), { status: 200, entitled: true });
   console.log('    [fail-CLOSED on error] DB outage + missing row must REJECT:');
   check('4d relay(DB outage) → REJECT (fail-closed)', await relayAdmits('u_dbdown'), { admitted: false, reason: 'entitlement_lookup_error' });
   check('4e relay(user not found) → REJECT', await relayAdmits('u_ghost'), { admitted: false, reason: 'user_not_found' });
