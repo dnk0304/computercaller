@@ -653,8 +653,20 @@ const BYSTANDER = 'user-bystander';   // the second account; see the B8 note abo
     /const DEVICE_ID_RE = \/\^\[A-Za-z0-9_-\]\{1,128\}\$\//.test(SW_KEY_SRC));
   c('sw-key.js: the private key is generated NON-extractable',
     /generateKey\([\s\S]{0,40}?\{ name: 'ECDH', namedCurve: 'P-256' \},[\s\S]{0,600}?false,[\s\S]{0,20}?'deriveBits'/.test(SW_KEY_SRC));
+  // RE-PINNED at INC-0923: the property is unchanged, its SPELLING moved. The
+  // non-2xx return grew a `status` field (so background.js can tell a 409
+  // pairing_in_flight — a correct, self-clearing refusal — from a real failure)
+  // and wrapped onto several lines, which the old single-line literal could not
+  // match. Pinned to the PROPERTY now: a non-2xx produces an `ok:false` RESULT
+  // carrying the http status, and the function body contains no `throw`.
   c('sw-key.js: a failed registration DEGRADES, it never throws',
-    /return \{ ok: false, reason: `http-\$\{res\.status\}`/.test(SW_KEY_SRC));
+    /ok: false,\s*\n?\s*reason: `http-\$\{res\.status\}`/.test(SW_KEY_SRC)
+    && /status:\s*res\.status/.test(SW_KEY_SRC)
+    // The negative half, so the loosened match above cannot pass a version
+    // that returns a result on ONE path and throws on another.
+    && !/^\s*throw /m.test(
+      SW_KEY_SRC.slice(SW_KEY_SRC.indexOf('export async function registerDeviceKey')),
+    ));
   c('sw-key.js: the file states that the web pair is untouched by an SW wipe',
     /THE WEB PAIR IS UNTOUCHED/.test(SW_KEY_SRC));
   c('background.js: sign-out drops SK and storage.session explicitly',
