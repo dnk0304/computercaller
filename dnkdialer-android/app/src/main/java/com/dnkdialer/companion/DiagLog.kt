@@ -1,6 +1,7 @@
 package com.dnkdialer.companion
 
 import android.content.Context
+import androidx.core.content.edit
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -193,6 +194,15 @@ object DiagLog {
      * redacts its own correlation key; it is cheaper to make the key unmatchable
      * than to special-case the redactor.
      */
+    // HardwareIds: ANDROID_ID is read ONCE and never stored, transmitted or
+    // printed in raw form — only SHA-256(ANDROID_ID + packageName) truncated to
+    // 32 bits leaves this function. Since API 26 the value is already scoped
+    // per app-signing-key, so it is not a cross-app identifier to begin with,
+    // and the hash makes the published handle unusable as one even in
+    // principle. The alternative, a random UUID, would not survive a reinstall
+    // and would therefore break the one thing the handle exists for: matching a
+    // user's support thread to relay logs across a reinstall.
+    @android.annotation.SuppressLint("HardwareIds")
     fun diagId(context: Context): String {
         diagIdCache?.let { return it }
         val app = context.applicationContext
@@ -210,7 +220,7 @@ object DiagLog {
             java.security.MessageDigest.getInstance("SHA-256")
                 .digest((androidId + app.packageName).toByteArray(Charsets.UTF_8)),
         )
-        prefs.edit().putString(KEY_DIAG_ID, id).apply()
+        prefs.edit { putString(KEY_DIAG_ID, id) }
         diagIdCache = id
         return id
     }
