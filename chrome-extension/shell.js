@@ -275,12 +275,48 @@ try {
 // second runtime.onMessage channel for counts would have duplicated that
 // bookkeeping and let the two disagree.
 let presencePort = null;
+/**
+ * Last `registered` value seen on the presence port, so the push above can act
+ * on the EDGE rather than on every status broadcast. `undefined` until the SW
+ * says anything at all — a third state, deliberately, because "not registered"
+ * and "never heard" must not both push.
+ */
+let swRegisteredSeen;
 try {
   presencePort = chrome.runtime.connect({ name: 'cc-presence' });
   presencePort.onMessage.addListener((msg) => {
     if (msg && msg.type === 'unread' && msg.unread) {
       unread = msg.unread;
       sendHello();
+      return;
+    }
+    // T-SW-KEY-STALE-AFTER-REGISTER (push half). background.js withholds `pub`
+    // until `swRegistered` (INC-0923 B-1, correct and kept), and registration
+    // lands a few SECONDS after the page mounts. The page asks once on mount,
+    // gets the honest `{deviceId:null, pub:null}`, and until now nothing ever
+    // told it the answer had changed: the first pairing after a sign-in went
+    // out `swBridge=none` and the extension was absent from that pair's
+    // transcript until the user re-paired.
+    //
+    // `broadcastE2eStatus()` already fires on the registration success path
+    // (background.js:461/:537) over this very port. It reached the header and
+    // stopped. So the false->true EDGE — and only that edge — now also pushes
+    // a fresh key, unsolicited and with no `rid`: the page's `e2e-pubkey`
+    // listener (hooks/useE2e.ts) already accepts unsolicited emissions and
+    // updates `swRef` with no reload.
+    //
+    // The edge, not the level: `e2e-status` is re-broadcast on other occasions
+    // and a push on every one of them would be a postMessage storm on a
+    // channel whose consumer re-renders. `undefined -> true` counts (a surface
+    // that opened after registration already gets the key on `ready`; this arm
+    // is the cheap, idempotent belt).
+    //
+    // This goes to the APP frame only: `sendE2ePubKey` posts to `frame`, and
+    // the login frame's verb set stays disjoint (see the inbound handler).
+    if (msg && msg.type === 'e2e-status') {
+      const was = swRegisteredSeen;
+      swRegisteredSeen = msg.registered === true;
+      if (swRegisteredSeen && was !== true) sendE2ePubKey();
     }
   });
   presencePort.onDisconnect.addListener(() => { presencePort = null; });

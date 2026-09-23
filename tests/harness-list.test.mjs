@@ -397,7 +397,7 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     ['android:testDebugUnitTest', 238],
     ['android:instrumented-A5', 8],
     // GATE-TOOLING-1 (3): 165 -> 177 -> 185 (GATE-TOOLING-1 (4): ANDROID-FIX) with ext-text-size-proof's arms.
-    ['unit:harness-list', 185],
+    ['unit:harness-list', 186],
     // GATE-TOOLING-1 (4). The phase whitelist suite's first floor.
     ['unit:gate-phase-whitelist', 79],
     // GATE-TOOLING-1 (3). The text-size proof's own floor, declared in the gate
@@ -408,7 +408,14 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // gate step. Declared here for the same reason as the rest of this list.
     ['unit:ctx-parity', 14],
     ['relay:e2e-web-sas-confirm.test.mjs', 58],
-    ['relay:e2e-web-sw-advert.test.mjs', 47],
+    // SW-KEY-STALE: 47 -> 72, the T-SW-KEY-STALE-AFTER-REGISTER contract
+    // (RULE 30) — the real readSwKey over the mount/after-registration reply
+    // shapes plus both halves of the fix (shell.js's registration-EDGE push,
+    // the page's bounded re-query at pairing start).
+    ['relay:e2e-web-sw-advert.test.mjs', 72],
+    // SAS-MODE0: the cross-surface SAS-blocking contract, sweep-discovered by
+    // the tests/e2e-*.test.mjs rule and therefore carrying only a floor.
+    ['relay:e2e-sas-blocking-contract.test.mjs', 79],
   ]) {
     check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,
       gate.includes(`'${name}': ${floor},`));

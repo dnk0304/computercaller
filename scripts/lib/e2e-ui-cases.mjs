@@ -204,8 +204,12 @@ export function runCopyCases(check) {
       .detail.includes(ABORT_KEY_MISMATCH));
 
   // ── sasIsBlocking: the Sec 13.2 rows 8-10 rule ───────────────────────────
-  const blk = (mode, state, digits, confirmed) => sasIsBlocking({ mode, state, sas: { digits, confirmed } });
-  check('SAS: mode ON + unanswered digits -> BLOCKING',
+  // SAS-MODE0: `mode` is the SEALING flag and is 'on' for EVERY sealed pair,
+  // so it is passed here (the real view carries it) but is NOT what gates the
+  // modal. `effective` is.
+  const blk = (effective, state, digits, confirmed, mode = 'on') =>
+    sasIsBlocking({ mode, effective, state, sas: { digits, confirmed } });
+  check('SAS: effective ON + unanswered digits -> BLOCKING',
     blk('on', 'encrypted-verified', '12345', false) === true);
   check('SAS: once confirmed, it stops blocking',
     blk('on', 'encrypted-verified', '12345', true) === false);
@@ -215,13 +219,22 @@ export function runCopyCases(check) {
     blk('off', 'encrypted-verified', '12345', false) === false);
   check('SAS: an errored pair does not also block on a code (the banner owns it)',
     blk('on', 'error', '12345', false) === false);
-  // Sec 13.1/13.2 rows 8-10: effective mode is the OR of both sides, so a
+  // Sec 13.1/13.2 rows 8-9: effective mode is the OR of both sides, so a
   // computer whose OWN setting is off still blocks when the PEER asked to
-  // verify. This is why sasIsBlocking reads `mode` (effective) and never the
-  // local preference -- asserted here because getting it wrong silently skips
-  // a verification the peer demanded.
-  check('SAS rows 8-10: blocking keys on the EFFECTIVE mode, so a locally-OFF computer still blocks',
-    blk('on', 'encrypted-unverified', '54321', false) === true);
+  // verify. The view for that pair is mode 'on' (sealed) AND effective 'on'.
+  check('SAS row 8/9: either side ON -> effective ON -> a locally-OFF computer still blocks',
+    blk('on', 'encrypted-verified', '54321', false, 'on') === true);
+  // Sec 13.2 ROW 4 / vector M1, the SAS-MODE0 defect. Phone OFF, computer OFF,
+  // a usable block on both sides: the pair SEALS (mode 'on') with effective
+  // OFF and state 'encrypted-unverified', and digits EXIST (frozen transcript
+  // + coverage). Nobody asked to verify, and the phone shows no code -- so the
+  // modal must NOT open. This case previously asserted `=== true` under a
+  // comment claiming `mode` was the effective mode; it is the sealing flag
+  // (hooks/useE2e.ts publishes mode:'on' unconditionally at :939).
+  check('SAS row 4 (M1): sealed + effective OFF + digits present -> NOT blocking',
+    blk('off', 'encrypted-unverified', '76386', false, 'on') === false);
+  check('SAS row 4 (M1): still not blocking even once digits are answered elsewhere',
+    blk('off', 'encrypted-unverified', '76386', true, 'on') === false);
 
   // ── digit presentation ───────────────────────────────────────────────────
   // M-A6-5 / SPEC 13.3 R-BK: UNGROUPED on every surface. This used to assert

@@ -498,6 +498,17 @@ const MIN_CHECKS_OVERRIDE = {
   // moves WITH the suite deliberately - a floor left at 47 would let all
   // eleven rendering checks be deleted and still print a cheerful N/N.
   'relay:e2e-web-sas-confirm.test.mjs': 58,
+  // SAS-MODE0 (RULE 30). tests/e2e-sas-blocking-contract.test.mjs drives the
+  // REAL web path (decideAccept -> the view useE2e publishes -> sasIsBlocking)
+  // over tests/e2e-sas-blocking-vectors.json, the SAME file the Android lane's
+  // E2eSasBlockingContractTest asserts. Auto-discovered by the
+  // tests/e2e-*.test.mjs sweep, so what it needs here is the floor: the suite's
+  // whole reason for existing is row 4 (sealed, effective OFF, SAS NOT
+  // blocking), and deleting that row from the vector file would take the count
+  // down with it and still print a cheerful N/N. Measured at the commit that
+  // adds it: 79 assertions (8 rows x per-row checks + the named row-4 block
+  // with its keyed-on-the-sealing-flag control).
+  'relay:e2e-sas-blocking-contract.test.mjs': 79,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job
@@ -539,7 +550,12 @@ const MIN_CHECKS_OVERRIDE = {
   // E2E-P6.1c (2b). The advert/attribution suite for A6-P61B-5. Same reasoning
   // as above: auto-discovered, so the floor is what it needs from this table.
   // Measured at the commit that adds it: 44 assertions.
-  'relay:e2e-web-sw-advert.test.mjs': 47,
+  // SW-KEY-STALE raises it to 72: the T-SW-KEY-STALE-AFTER-REGISTER contract
+  // (RULE 30) — the real readSwKey over the mount/after-registration reply
+  // shapes, plus shell.js's registration-EDGE push and the page's bounded
+  // re-query at pairing start. The floor moves WITH the suite deliberately: a
+  // floor left at 47 would let all 25 of those be deleted and still print N/N.
+  'relay:e2e-web-sw-advert.test.mjs': 72,
   // FT-3b (g). The file-transfer harnesses post-date BASELINE-harness.json, so
   // the floor cannot be read from it. Measured totals at the commit that
   // registers them: ft-ui-proof 96 (FT-3b (d)), ft-web-proof 26 (FT-3a).
@@ -618,7 +634,12 @@ const MIN_CHECKS_OVERRIDE = {
   // GATE-TOOLING-1 (3) re-measure 165 -> 177 -> 185: ext-text-size-proof's
   // registration, its exactly-P5A/D1/MERGE negative arms and the two CONTROLs
   // that prove the frozen strings can still reject a wrong list.
-  'unit:harness-list': 185,
+  // SAS-MODE0 + SW-KEY-STALE re-measure 185 -> 186: the frozen MIN_CHECKS pin
+  // list gains relay:e2e-sas-blocking-contract.test.mjs (79) and carries
+  // relay:e2e-web-sw-advert.test.mjs up 47 -> 72. The pin and the floor are
+  // asserted against each other here so a floor raised in one place and not
+  // the other cannot pass.
+  'unit:harness-list': 186,
   // GATE-TOOLING-1 (4). The phase whitelist suite had NO floor for its whole
   // life: a step whose entire job is to prove a phase cannot silently vanish
   // could itself have had half its arms deleted under a cheerful N/N. Measured

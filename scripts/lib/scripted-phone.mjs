@@ -104,18 +104,37 @@ export async function scriptedPhoneAccept({ recipients, pairingId, pairEpoch, mo
     epk: b64(epk),
     recipKeys,
     wraps,
-    // A3's ratified wire form: pairEpoch is a DECIMAL STRING, userId is
-    // deliberately ABSENT. Emitted only when mode is ON (A3-M4: a mode=1
-    // block with no ctx must be refused, not derived from local guesses —
-    // so a mode=0 block correctly carries none).
-    ...(modeOn ? {
-      ctx: {
-        pairingId,
-        phoneDeviceId,
-        peerDeviceId,
-        pairEpoch: String(pairEpoch),
-      },
-    } : {}),
+    /*
+     * A3's ratified wire form: pairEpoch is a DECIMAL STRING, userId is
+     * deliberately ABSENT.
+     *
+     * EMITTED UNCONDITIONALLY, and the `modeOn ?` gate that used to stand here
+     * was a HARNESS BUG of exactly the kind SAS-MODE0 fixes in the product: it
+     * read the MODE BYTE as "is this pair sealing". It is not. Under A5 /
+     * M-A5-5(2) a usable block on both sides SEALS whatever the byte says — the
+     * byte governs VERIFICATION — so a mode-0 pair derives keys and therefore
+     * needs the context to derive them from. With the gate in place a 0/0 pair
+     * could not seal at all: hooks/useE2e.ts refused it with
+     * `e2e-setup-failed — ctx refused: kdf: ctx is absent`, the pair errored,
+     * and a harness case asserting "no SAS dialog" passed for the WRONG REASON
+     * (an aborted pair shows no dialog either).
+     *
+     * The SHIPPED phone is the authority and it does not gate: PhoneService.kt
+     * calls `E2ePairIdentity.withCtx(prepared.block, pairContext)` on every
+     * accept, with no mode test ("without it ... nothing the phone seals is
+     * openable off-device"). A scripted phone that behaves differently is not
+     * modelling the phone.
+     *
+     * A3-M4 ("a mode=1 block with no ctx MUST be refused") is a rule about what
+     * a RECEIVER must reject. It was misread here as licence for a sender to
+     * omit it.
+     */
+    ctx: {
+      pairingId,
+      phoneDeviceId,
+      peerDeviceId,
+      pairEpoch: String(pairEpoch),
+    },
   };
 
   // The PAIRING_ACTIVE payload as the relay forwards it: the accept block

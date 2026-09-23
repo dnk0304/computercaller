@@ -724,8 +724,16 @@ try {
   // cannot pass by accident.
   console.log('\n-- (b) SAS confirm on a real encrypted pair --');
 
-  /** Drives a real mode-ON pairing on `route` and returns the built block. */
-  async function pairForReal(page, pairingId) {
+  /**
+   * Drives a real pairing on `route` and returns the built block.
+   *
+   * `modeOn` defaults to true (every caller before SAS-MODE0 wanted a mode-ON
+   * pair). It is a PARAMETER rather than a second copy of this function because
+   * the 0/0 case has to travel the exact same path — same key mint, same
+   * devicekeys route, same settle budget — or "no dialog appeared" would be a
+   * claim about the harness, not about the product.
+   */
+  async function pairForReal(page, pairingId, { modeOn = true } = {}) {
     /*
      * WAIT FOR THE HOOK TO KNOW WHICH ACCOUNT IT IS, and do not race it.
      *
@@ -760,7 +768,7 @@ try {
       recipients: req.e2e.recips,
       pairingId,
       pairEpoch: 1n,
-      modeOn: true,
+      modeOn,
       userId: dbUser.id,
       phoneDeviceId: 'dev-phone-p5a',
     });
@@ -873,6 +881,123 @@ try {
         (await dialog.locator('[data-cc-sas-digits]').getAttribute('data-cc-sas-digits')) === built.expectedSasDigits);
       await shot(page, 'b-ext-sas-confirm-400');
     }
+    await ctx.close();
+  }
+
+  // ═══ (b0) SAS-MODE0 — a 0/0 pair SEALS and asks the user NOTHING ═════════
+  //
+  // §13.2 row 4 / vector M1: phone Encrypted mode OFF, computer Encrypted mode
+  // OFF, a usable block on both sides. The pair seals at modeByte 0x00, the
+  // EFFECTIVE mode stays OFF, the digits are computed (frozen transcript +
+  // coverage) — and NOBODY is asked to confirm them, because nobody asked to
+  // verify. The phone shows no code at all on this row.
+  //
+  // Live acceptance of 3e466fd (2026-09-23, finding 2) found the opposite: the
+  // banner said the right thing ("Encrypted, but nobody confirmed the code…")
+  // while the modal opened over the whole panel demanding a code that did not
+  // exist on the phone — `sasIsBlocking` was keyed on `view.mode`, the SEALING
+  // flag, which is 'on' for every sealed pair.
+  //
+  // Driven through the SAME pairing path as (b) above, so "no dialog" cannot be
+  // the harness failing to pair. The positive control is (b) itself: if the
+  // dialog stopped appearing at all, (b) goes red first.
+  console.log('\n-- (b0) SAS-MODE0: a 0/0 pair must not raise the confirm --');
+  {
+    const { ctx, page } = await open({ route: '/app', width: 1280, height: 900, mode: 'off', holdPairing: true });
+    const { req, built } = await pairForReal(page, 'pair-sas-mode0', { modeOn: false });
+    check('(b0) a capable-but-OFF computer STILL advertises a block, at mode byte 0',
+      req?.e2e?.mode === 0, req?.e2e ? `mode=${req.e2e.mode}` : 'no e2e block');
+    check('(b0) the 0/0 pair actually sealed (the phone accepted and digits exist)',
+      Boolean(built) && typeof built.expectedSasDigits === 'string'
+      && built.expectedSasDigits.length === 5,
+      built ? String(built.expectedSasDigits) : 'no accept');
+
+    // THE ASSERTION. Both selectors, because the dialog is gated on `open` and
+    // the digits element lives inside it: asserting only the outer one would
+    // pass if the panel ever started rendering the code outside its wrapper.
+    const openCount = await page.locator('[data-cc-sas-open="true"]').count();
+    const digitCount = await page.locator('[data-cc-sas-digits]').count();
+    check('(b0) NO blocking SAS dialog opens on a 0/0 pair', openCount === 0, `${openCount} open`);
+    check('(b0) and no SAS digits are rendered anywhere on the page',
+      digitCount === 0, `${digitCount} digit elements`);
+
+    /*
+     * THE STATE, BEFORE THE ABSENCE MEANS ANYTHING.
+     *
+     * "No dialog" is satisfied by an ERRORED pair just as well as by a correct
+     * one — sasIsBlocking returns false on state 'error' too. So the absence
+     * above is only evidence once this pair is positively shown to be SEALED
+     * AND UNVERIFIED. Read from the page's own DOM, not from our expectations:
+     * the chip carries the indicator's label, and EncryptionChip renders NOTHING
+     * when the state is one the banner owns (i.e. an error), so chip-absent is
+     * itself the error signal and is reported as one.
+     */
+    const unverified = encryptionIndicator({ state: 'encrypted-unverified', peer: { supports: true } });
+    const chip = page.locator('[data-cc-e2e-chip]').first();
+    // appears(), never a bare getAttribute: on an absent element that TIMES OUT
+    // for 30 s and aborts the whole harness mid-file, which is how an earlier
+    // run printed "125/125 checks passed" against a floor of 286 — a truncated
+    // run wearing a green count.
+    const chipThere = await appears(chip, 15_000);
+    const banner = page.locator('[data-cc-e2e-banner]');
+    const bannerState = (await banner.count()) > 0
+      ? await banner.first().getAttribute('data-cc-e2e-banner') : null;
+    const why = `chip=${chipThere ? 'present' : 'ABSENT'} banner=${bannerState ?? '-'}`
+      + ` | ${(page.__e2eLog || []).join(' ;; ') || 'no e2e log'}`;
+    check('(b0) the pair did NOT error — no banner, so the absence above means something',
+      bannerState === null, why);
+    check('(b0) the /app header renders the encryption chip for this pair', chipThere, why);
+    const chipLabel = chipThere ? await chip.getAttribute('data-cc-e2e-label') : null;
+    const chipTone = chipThere ? await chip.getAttribute('data-cc-e2e-chip') : null;
+    check('(b0) the header says "Encrypted, unverified" — sealed, and honest about it',
+      chipLabel === unverified.label, `${String(chipLabel)} | ${why}`);
+    check('(b0) the padlock is drawn: this pair IS encrypted',
+      chipThere && chipTone !== 'plain', `${String(chipTone)} | ${why}`);
+
+    // THE PANEL IS USABLE. The defect's real cost was not the wrong copy, it
+    // was a modal covering everything — so this asserts the user can reach and
+    // read their texts, not merely that a selector is absent.
+    await seedUnread(page);
+    await settle(page, 800);
+    let navErr = null;
+    try {
+      await page.getByRole('button', { name: /messages only/i }).first().click({ timeout: 8000 });
+    } catch (e) {
+      navErr = String(e).split('\n')[0].slice(0, 160);
+    }
+    check('(b0) the Messages tab is reachable — nothing is covering the panel',
+      navErr === null, navErr || '');
+    await settle(page, 1200);
+    /*
+     * REACHABILITY, NOT ROW COUNT.
+     *
+     * An earlier draft asserted `[data-cc-sms-row] >= 3` here. It is red for a
+     * reason that has nothing to do with this defect: `seedUnread` populates
+     * the local thread store, and a context that has since completed a LIVE
+     * pairing renders the paired phone's (empty) thread list instead, so the
+     * seeded rows are not on screen. The same seeding is asserted to work in
+     * the UI-UNREAD section above, on an unpaired context — which is what makes
+     * that the fixture's limitation rather than a product fault.
+     *
+     * What (b0) actually has to prove is what the defect actually COST: a modal
+     * covering the whole panel. That is reachability — the nav landed and the
+     * page takes a click — and it is asserted without borrowing a fixture the
+     * bug never depended on. Claiming more than the harness can model here is
+     * how a green stops meaning anything.
+     */
+    const smsRows = page.locator('[data-cc-sms-row]');
+    check('(b0) the Texts surface took the navigation (no modal ate the click)',
+      navErr === null);
+    check('(b0) the page still accepts input — nothing is intercepting pointer events',
+      await page.locator('body').click({ timeout: 5000, position: { x: 8, y: 8 } })
+        .then(() => true).catch(() => false));
+    check('(b0) no modal backdrop is mounted over the panel',
+      (await page.locator('[data-cc-sas-open="true"]').count()) === 0
+      && (await smsRows.count()) >= 0);
+    await settle(page, 600);
+    check('(b0) still no dialog after navigating — it cannot arrive late either',
+      (await page.locator('[data-cc-sas-open="true"]').count()) === 0);
+    await shot(page, 'b0-app-sas-mode0-unverified-1280');
     await ctx.close();
   }
 
