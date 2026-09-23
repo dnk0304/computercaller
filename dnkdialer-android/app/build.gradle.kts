@@ -499,12 +499,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    // vc63 (T-VC63-EXPORT-DIAGNOSTICS). Intents.intended() is how the export
-    // test asserts the CHOOSER contract — mime type application/zip and a
-    // content:// uri under our own diagnostics authority — without actually
-    // letting a share sheet open on the device. Test-only: espresso-intents is
-    // not on any implementation configuration and cannot reach the APK.
-    androidTestImplementation("androidx.test.espresso:espresso-intents:3.5.1")
+
 
     // E2E P4 (s3) — the androidTest source set was empty until E2eKeyStoreTest.
     // androidx.test:runner (AndroidJUnitRunner / InstrumentationRegistry) is NOT

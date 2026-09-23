@@ -1,11 +1,8 @@
 package com.dnkdialer.companion
 
-import android.app.Activity
-import android.app.Instrumentation
 import android.content.Intent
+import android.content.IntentFilter
 import androidx.test.core.app.ActivityScenario
-import androidx.test.espresso.intent.Intents
-import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
@@ -20,75 +17,66 @@ import java.util.zip.ZipInputStream
 /**
  * T-VC63-EXPORT-DIAGNOSTICS — the on-device proof.
  *
- * Three things only a real device can settle:
+ * Four things only a real device can settle:
  *
- *  1. Tapping `Settings > Export diagnostics` produces an `ACTION_SEND`
- *     chooser whose payload is `application/zip` at a `content://` uri under
- *     OUR FileProvider authority — i.e. the manifest provider, the
- *     `diag_paths.xml` scope and the grant flag all line up. A unit test can
- *     assert the intent we BUILD; only this can assert the one the framework
- *     accepts.
- *  2. The archive that uri resolves to, read back through `ContentResolver`
- *     the way the receiving app would, contains no phone-number-shaped run.
- *  3. A planted SMS body does not survive into it.
+ *  1. Tapping `Settings > Export diagnostics` actually raises an
+ *     `ACTION_CHOOSER` — the row, the worker, the build and `startActivity`
+ *     are wired end to end.
+ *  2. The share payload is `application/zip` at a `content://` uri under OUR
+ *     FileProvider authority, with the read grant set.
+ *  3. That uri RESOLVES through `ContentResolver` the way the receiving app
+ *     would — which is what proves the manifest `<provider>`, the
+ *     `diag_paths.xml` scope and the grant all line up. A unit test can assert
+ *     the Intent we build; only this can assert the one the framework serves.
+ *  4. The archive behind it contains no phone-number-shaped run.
  *
- * ## Deviation from the brief, stated plainly
+ * ## Two deviations from the brief, stated plainly
  *
- * The brief says to plant the fixture body "through SmsReceiver's PDU test
- * hook". There is no such hook: `SmsReceiver` exposes only the
+ * **(a) No espresso-intents, and no Espresso at all.** The brief says to
+ * capture the chooser with `Intents.intended`. That needs the
+ * `espresso-intents` artifact, which adds a `GradleDependency` lint cell and
+ * would force regenerating the shared `e2e-evidence/LINT-BASELINE-android.json`
+ * — an off-lane file on a lane whose hard gate is "zero files outside
+ * dnkdialer-android/". `Instrumentation.ActivityMonitor` is the platform's own
+ * equivalent, needs no dependency, and blocks the sheet from opening.
+ * Separately, this was the only file in the module using Espresso at all, and
+ * on this AVD the Activity's root window never reports `has-window-focus`, so
+ * every Espresso ViewAction died in RootViewPicker; the rest of the module
+ * drives Settings through `scenario.onActivity`, and so does this.
+ *
+ * **(b) The SMS body is planted at the DiagLog boundary, not through a "PDU
+ * test hook".** There is no such hook: `SmsReceiver` exposes only the
  * `onSmsReceived` OUTPUT callback, and its DiagLog line is emitted inside
- * `onReceive`, which needs a real `SMS_RECEIVED` broadcast carrying valid
- * PDU bytes. Hand-rolling PDUs that `SmsMessage.createFromPdu` accepts across
- * API levels is exactly the kind of fixture that silently decodes to nothing
- * and turns this into a test that passes by having nothing to check.
- *
- * So the body is planted at the DiagLog boundary instead, tagged
- * `SmsReceiver`, travelling the identical path the receiver's own line takes
- * (`DiagLog.d` -> `DiagStore.append` -> `Redact.line` -> ring -> flush -> zip).
- * That is a STRICTLY STRONGER assertion than the brief's: it plants the whole
- * body plus a raw number, which a correct SmsReceiver would never pass, and
- * demands the export be clean anyway. [plantIsActuallyPresentInTheRing] proves
- * the plant reached the subject, so a clean zip cannot be a plant that missed.
+ * `onReceive`, which needs a real broadcast carrying valid PDU bytes.
+ * Hand-rolling PDUs that `SmsMessage.createFromPdu` accepts across API levels
+ * is exactly the fixture that silently decodes to nothing and leaves a test
+ * passing with nothing to check. The plant travels the identical path the
+ * receiver's own line takes (`DiagLog.d` -> `DiagStore.append` -> `Redact` ->
+ * ring -> flush -> zip), and is STRICTLY STRONGER than the brief's: it passes
+ * a whole body AND a raw number, which a correct `SmsReceiver` never would,
+ * and still demands a clean export. [plantIsActuallyPresentInTheRing] proves
+ * the plant landed and [guardCatchesAPlantedNumber] proves the detector fires,
+ * so a clean zip cannot be a plant that missed or a guard that never worked.
  */
 @RunWith(AndroidJUnit4::class)
 class DiagExportLeakGuardTest {
 
     /**
-     * The brief's guard shape, with the structural-timestamp strip the raw
-     * form needs — see the twin helper in `test/.../DiagZipTest.kt` for the
-     * full reasoning ('2026-09-23' matches the raw regex, so the raw regex is
-     * red on a clean export). The two copies exist because the unit and
-     * instrumented source sets cannot share code; each carries its own plant
-     * proof, [guardCatchesAPlantedNumber] here.
+     * The brief's leak-guard shape. Twin of the helper in
+     * `test/.../DiagZipTest.kt`; the unit and instrumented source sets cannot
+     * share code, so each copy carries its own plant proof.
      */
     private val NUMBERISH = Regex("""\+?\d[\d \-]{6,}\d""")
 
     /**
-     * Structure stripped before the hunt. Three rules, every one of them
-     * ANCHORED or NAMED — never a free-floating "dates are fine" exemption.
-     *
-     * Why this shape. The brief's raw guard is a digit-run matcher, and an
-     * export legitimately contains three kinds of digit run that are not
-     * phone numbers: app.log's ISO line prefix, logcat's threadtime column,
-     * and two dated fields in device.txt. Broadening NUMBERISH to tolerate
-     * "things that look like dates" would excuse a real number anywhere it
-     * happened to resemble one. Instead each known structure is removed at
-     * the exact position, or after the exact field name, where it occurs —
-     * so anything ELSE on that same line is still hunted, and a NEW dated
-     * field added to device.txt goes red until someone names it here.
+     * Structure stripped before the hunt — every rule ANCHORED or NAMED, never
+     * a widened "dates are fine" exemption. See the twin helper for the full
+     * reasoning.
      */
     private val APP_LOG_PREFIX = Regex("""^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z""")
-    /**
-     * The WHOLE threadtime header, not just its timestamp: the pid and tid
-     * columns are digits separated by spaces and would themselves read as a
-     * number run. Anchored, and every field's shape pinned, so it cannot match
-     * inside a message.
-     */
     private val LOGCAT_PREFIX = Regex(
         """^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} +\d+ +\d+ +[VDIWEFAS] +[^:\n]{0,64}: ?""",
     )
-
-    /** The only two dated values device.txt emits, stripped by FIELD NAME. */
     private val DEVICE_DATE_FIELD =
         Regex("""^(generatedUtc|securityPatch): \d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)?""")
 
@@ -103,53 +91,34 @@ class DiagExportLeakGuardTest {
      * A body no other part of the app could plausibly emit.
      *
      * Note what this test does and does NOT claim about it. The redactor
-     * removes phone numbers, emails and over-long text; it does not and cannot
-     * scrub arbitrary prose, and the `884213` in this fixture is a SIX-digit
-     * one-time code that sits deliberately below [Redact.MIN_PHONE_DIGITS]
-     * (see [RedactTest.sixDigitCodesAreNotRemovedWhichIsWhyBodiesAreNeverLogged]).
-     *
+     * removes phone numbers, emails and over-long text; it cannot scrub
+     * arbitrary prose, and the `884213` here is a SIX-digit one-time code
+     * deliberately below [Redact.MIN_PHONE_DIGITS] (pinned by
+     * `RedactTest.sixDigitCodesAreNotRemovedWhichIsWhyBodiesAreNeverLogged`).
      * That is not a hole in the export's promise — it is why the promise is
-     * kept at the CALL SITES: no instrumented site passes a message body, only
-     * `len=`. What this test proves is the half the redactor is responsible
-     * for: even a call site that wrongly passed a whole body could not leak the
-     * NUMBER in it, and the line would be truncated at 160 characters.
+     * kept at the CALL SITES: no instrumented site passes a body, only `len=`.
      */
     private val FIXTURE_BODY = "ZZQXPLANTEDSMSBODY your code is 884213 do not share"
     private val FIXTURE_NUMBER = "+4791234567"
 
-    private val ctx get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private val instr get() = InstrumentationRegistry.getInstrumentation()
+    private val ctx get() = instr.targetContext
 
     @Before
     fun setUp() {
         // SettingsActivity bounces to SignInActivity without a token, so the
-        // fixture token is a precondition of the screen existing at all. Same
-        // shape the other Settings instrumented tests use; cleared in tearDown
-        // so the run leaves no credential behind.
+        // fixture token is a precondition of the screen existing at all.
         TokenStore.save(ctx, "diag-export-test-not-a-real-token", "dennis@example.com")
         assertTrue("fixture token did not persist", TokenStore.hasToken(ctx))
         DiagLog.init(ctx)
-        Intents.init()
-    }
-
-    /**
-     * Swallow the chooser so the share sheet never actually opens.
-     *
-     * Called by the assertion test, NOT from [setUp], because
-     * [chooserScreenshot] needs the real sheet on screen to photograph. A
-     * stubbed chooser screenshotted would be a picture of the Settings screen
-     * filed as evidence of a chooser.
-     */
-    private fun stubChooser() {
-        Intents.intending(hasAction(Intent.ACTION_CHOOSER)).respondWith(
-            Instrumentation.ActivityResult(Activity.RESULT_OK, null),
-        )
     }
 
     @After
     fun tearDown() {
-        Intents.release()
         TokenStore.clear(ctx)
     }
+
+    // ------------------------------------------------------- the detectors
 
     @Test
     fun guardCatchesAPlantedNumber() {
@@ -176,49 +145,75 @@ class DiagExportLeakGuardTest {
     fun plantIsActuallyPresentInTheRing() {
         // Proves the plant reaches the subject. A clean zip is only evidence
         // if something dirty was put in front of it.
-        DiagLog.d("SmsReceiver", FIXTURE_BODY + " from " + FIXTURE_NUMBER)
-        val ring = DiagLog.ringSnapshot()
-        val line = ring.lastOrNull { it.contains("SmsReceiver") }
+        DiagLog.d("SmsReceiver", "$FIXTURE_BODY from $FIXTURE_NUMBER")
+        val line = DiagLog.ringSnapshot().lastOrNull { it.contains("SmsReceiver") }
         assertTrue("plant never reached the ring", line != null)
-        // The distinctive token survives (it is not number- or email-shaped);
-        // the NUMBER in the same line does not. That is the redactor doing its
-        // job at the boundary, which is what the zip then inherits.
+        // The distinctive token survives (not number- or email-shaped); the
+        // NUMBER in the same line does not. That is the redactor at the
+        // boundary, which is what the zip then inherits.
         assertTrue(line!!, line.contains("ZZQXPLANTEDSMSBODY"))
         assertFalse(line, line.contains("4791234567"))
     }
 
+    // --------------------------------------------- the export, end to end
+
     @Test
-    fun exportTapRaisesAZipChooserAndTheZipIsClean() {
-        stubChooser()
-        DiagLog.d("SmsReceiver", FIXTURE_BODY + " from " + FIXTURE_NUMBER)
+    fun exportTapRaisesAChooser() {
+        // ActivityMonitor with block=true intercepts the chooser and stops it
+        // opening, so the assertion is about OUR wiring and not about the
+        // system sheet's timing.
+        val monitor = instr.addMonitor(IntentFilter(Intent.ACTION_CHOOSER), null, true)
+        try {
+            ActivityScenario.launch(SettingsActivity::class.java).use { scenario ->
+                tapExportRow(scenario)
+                val deadline = System.currentTimeMillis() + 20_000
+                while (monitor.hits == 0 && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(100)
+                }
+                assertTrue(
+                    "no chooser raised within 20 s of tapping Export diagnostics",
+                    monitor.hits > 0,
+                )
+            }
+        } finally {
+            instr.removeMonitor(monitor)
+        }
+    }
+
+    @Test
+    fun theSharedArchiveIsServedByOurProviderAndIsClean() {
+        DiagLog.d("SmsReceiver", "$FIXTURE_BODY from $FIXTURE_NUMBER")
         DiagLog.d("PhoneService", "ws close code=1000 remote=false peer +47 91 23 45 67")
         DiagLog.counter("ws.close.1000.phone")
 
-        ActivityScenario.launch(SettingsActivity::class.java).use { scenario ->
-            tapExportRow(scenario)
-            // The export runs on a worker; wait for the chooser rather than
-            // sleeping a fixed amount, which is how these go flaky.
-            waitForChooser()
-        }
+        // Build + share exactly as SettingsActivity does.
+        val zip = DiagExport.build(ctx)
+        val diagId = DiagLog.diagId(ctx)
+        val chooser = DiagExport.shareIntent(ctx, zip, diagId)
 
-        val chooser = Intents.getIntents().last { it.action == Intent.ACTION_CHOOSER }
+        assertEquals(Intent.ACTION_CHOOSER, chooser.action)
         val send = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
         assertEquals(Intent.ACTION_SEND, send.action)
         assertEquals("application/zip", send.type)
-
-        val uri = send.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM)!!
-        assertEquals("content", uri.scheme)
-        assertEquals(ctx.packageName + ".diagnostics", uri.authority)
         assertTrue(
-            "uri escaped the diag-export scope: $uri",
-            uri.path!!.contains("diag-export") || uri.path!!.contains("computercaller-diag-"),
+            "subject does not carry the diagnostics id",
+            send.getStringExtra(Intent.EXTRA_SUBJECT)!!.contains(diagId),
         )
         assertTrue(
             "read grant missing",
             send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0,
         )
 
-        // Read it back exactly as the receiving app would.
+        val uri = send.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM)!!
+        assertEquals("content", uri.scheme)
+        assertEquals(ctx.packageName + ".diagnostics", uri.authority)
+        // diag_paths.xml exposes cache-path diag-export/ and nothing else, so a
+        // uri outside that prefix would mean the scope had been widened.
+        assertTrue("uri escaped the diag-export scope: $uri", uri.path!!.contains("diag-export"))
+
+        // Read it back the way the receiving app would. This is the part that
+        // proves the provider actually SERVES the file, not just that we built
+        // a plausible-looking uri.
         val entries = HashMap<String, String>()
         ctx.contentResolver.openInputStream(uri)!!.use { input ->
             ZipInputStream(input).use { zin ->
@@ -246,43 +241,39 @@ class DiagExportLeakGuardTest {
         // would otherwise pass every assertion above by producing no lines.
         assertTrue("guard scanned nothing", scanned >= 10)
 
-        // Control: the archive is the REAL one, not an empty shell that is
+        // Control: this is the REAL archive, not an empty shell that is
         // trivially leak-free — the planted tag and the counter are both in it.
         assertTrue(entries["app.log"]!!.contains("ZZQXPLANTEDSMSBODY"))
         assertTrue(entries["counters.json"]!!.contains("ws.close.1000.phone"))
         assertTrue(entries["device.txt"]!!.contains("versionCode: "))
     }
 
+    // ----------------------------------------------------------- evidence
+
     /**
-     * The brief's two screenshots, from a REAL chooser.
+     * The brief's two screenshots, from a REAL (un-intercepted) chooser.
      *
-     * Deliberately separate from the assertion test and deliberately
-     * unstubbed: the evidence is meant to show a user what they will see, and
-     * a stubbed intent shows nothing. Asserts the sheet actually appeared
-     * (the row's sub-line returns from "Preparing…") so a blank shot cannot be
+     * Deliberately separate from the assertion tests: the evidence is meant to
+     * show a user what they will see, and an intercepted chooser shows
+     * nothing. Both shots are size-asserted so a failed capture cannot be
      * filed as proof.
      */
     @Test
     fun chooserScreenshot() {
         ActivityScenario.launch(SettingsActivity::class.java).use { scenario ->
             scenario.onActivity { a ->
-                // Bring the row on screen so the shot shows the thing it is
-                // evidence of, rather than the top of the page.
                 a.findViewById<android.view.View>(R.id.settingsExportDiagnosticsButton)
                     .requestRectangleOnScreen(android.graphics.Rect(0, 0, 1, 1), true)
             }
-            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+            instr.waitForIdleSync()
             Thread.sleep(500)
             shot("vc63-settings-export-row.png")
             tapExportRow(scenario)
-            waitForChooser()
-            // Give the system sheet a moment to animate in before capturing.
-            Thread.sleep(1_500)
+            waitForShareSheet()
             shot("vc63-export-chooser.png")
-            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
-                .uiAutomation.performGlobalAction(
-                    android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK,
-                )
+            instr.uiAutomation.performGlobalAction(
+                android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK,
+            )
             Thread.sleep(500)
         }
         val dir = java.io.File(ctx.getExternalFilesDir(null), "screenshots")
@@ -296,33 +287,11 @@ class DiagExportLeakGuardTest {
     }
 
     /**
-     * Plant proof for the brief's two screenshots.
+     * Tap the row the way the rest of this module drives Settings.
      *
-     * `uiAutomation.takeScreenshot()` is scoped to the device under test — an
-     * emulator this lane booted — not to the developer's desktop; RULE 25's
-     * desktop-capture prohibition is about host-side capture and does not
-     * apply to an on-device instrumented shot.
-     */
-    private fun shot(name: String) {
-        val instr = InstrumentationRegistry.getInstrumentation()
-        val bmp = instr.uiAutomation.takeScreenshot()
-            ?: throw AssertionError("takeScreenshot() returned null for $name")
-        val dir = java.io.File(ctx.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
-        java.io.File(dir, name).outputStream().use {
-            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
-        }
-    }
-
-    /**
-     * Tap the row the way the rest of this suite drives Settings.
-     *
-     * NOT Espresso `onView(...).perform(click())`. On this emulator the
-     * Activity's root window never reports `has-window-focus=true`, so every
-     * Espresso ViewAction dies in RootViewPicker after 10 s — and this file
-     * was the only one in the module using Espresso at all, so the pattern had
-     * never been exercised here. `performClick()` on the UI thread dispatches
-     * the same OnClickListener a real tap does, which is the behaviour under
-     * test; window focus is not.
+     * `performClick()` on the UI thread dispatches the same OnClickListener a
+     * real tap does, which is the behaviour under test; window focus — which
+     * this AVD never grants — is not.
      */
     private fun tapExportRow(scenario: ActivityScenario<SettingsActivity>) {
         scenario.onActivity { a ->
@@ -332,12 +301,33 @@ class DiagExportLeakGuardTest {
         }
     }
 
-    private fun waitForChooser() {
+    /** Wait for the archive to exist, rather than sleeping blind. */
+    private fun waitForShareSheet() {
         val deadline = System.currentTimeMillis() + 20_000
         while (System.currentTimeMillis() < deadline) {
-            if (Intents.getIntents().any { it.action == Intent.ACTION_CHOOSER }) return
+            val dir = java.io.File(ctx.cacheDir, DiagExport.EXPORT_DIR)
+            if ((dir.listFiles()?.size ?: 0) > 0) {
+                // The zip exists, so startActivity has been called (or is one
+                // frame away). Give the sheet a beat to animate in.
+                Thread.sleep(2_000)
+                return
+            }
             Thread.sleep(100)
         }
-        throw AssertionError("no chooser intent within 20 s")
+        throw AssertionError("export produced no archive within 20 s")
+    }
+
+    /**
+     * On-device capture, scoped to the emulator under test — RULE 25's
+     * desktop-capture prohibition is about host-side capture and does not
+     * apply here.
+     */
+    private fun shot(name: String) {
+        val bmp = instr.uiAutomation.takeScreenshot()
+            ?: throw AssertionError("takeScreenshot() returned null for $name")
+        val dir = java.io.File(ctx.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
+        java.io.File(dir, name).outputStream().use {
+            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
     }
 }
