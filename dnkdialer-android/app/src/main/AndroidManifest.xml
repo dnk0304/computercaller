@@ -188,8 +188,15 @@
           cannot cancel a transfer (that is FileTransferActionReceiver, which
           is registered at runtime with RECEIVER_NOT_EXPORTED).
 
-          excludeFromRecents + noHistory: a dialog that survives in the recents
-          list can be resumed long after its transfer is gone.
+          excludeFromRecents (and NOT noHistory): a dialog that survives in
+          the recents list can be resumed long after its transfer is gone, and
+          excludeFromRecents alone is what keeps it out of recents. noHistory
+          was here until vc64 and was the bug: it destroys the activity the
+          moment it stops being visible, which is exactly what opening a SAF
+          picker does - so onActivityResult never ran, send never started and
+          an incoming offer could never be given a destination (proven on PROD
+          by ACCEPT-9, 2026-09-23). "No zombie dialog" is carried instead by
+          the finish() on every exit path of every dialog in the activity.
 
           NO new permission and NO new foreground-service type: transfers run
           inside the existing specialUse FGS's lifetime (spec §3), which is
@@ -200,7 +207,6 @@
             android:name=".FileTransferActivity"
             android:theme="@style/Theme.AppCompat.DayNight.Dialog.Alert"
             android:excludeFromRecents="true"
-            android:noHistory="true"
             android:launchMode="singleTop"
             android:exported="true">
             <intent-filter android:label="@string/ft_share_label">
