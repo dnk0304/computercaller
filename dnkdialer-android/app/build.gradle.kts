@@ -503,6 +503,11 @@ dependencies {
     // entire contract is the intent it fires into FileTransferActivity, so
     // the intent is the only thing worth asserting on. Same 3.5.1 line as
     // espresso-core, so no new transitive versions enter the tree.
+    // Pinned to espresso-core's 3.5.1 on purpose: a newer intents against an
+    // older core is exactly the kind of split-version androidTest classpath
+    // that fails at runtime, not at build time. Bumping is a deliberate
+    // pair-bump of both lines, not a lint nudge.
+    //noinspection GradleDependency
     androidTestImplementation("androidx.test.espresso:espresso-intents:3.5.1")
 
 

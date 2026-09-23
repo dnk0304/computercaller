@@ -866,7 +866,12 @@
                         <TextView style="@style/CcRowSub" android:text="@string/row_send_file_sub" />
                     </LinearLayout>
 
-                    <ImageView style="@style/CcRowChevron" />
+                    <!-- Decorative: the row itself carries the
+                         contentDescription, so a second announcement for the
+                         chevron would make TalkBack read the row twice. -->
+                    <ImageView
+                        style="@style/CcRowChevron"
+                        android:importantForAccessibility="no" />
                 </LinearLayout>
 
                 <View style="@style/CcRowHairline" />
