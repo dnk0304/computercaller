@@ -72,7 +72,14 @@ class DiagStore(
     /** Lines appended since the last successful [flush]. */
     private val pending = ArrayList<String>(FLUSH_LINES)
 
-    private var lastFlushMs = 0L
+    /**
+     * Seeded from the clock, NOT 0. At 0 the very first `now - lastFlushMs`
+     * is the whole Unix epoch, so [shouldFlush] returns true on the first
+     * append and the 5 s batching window never applies to the first line of
+     * the process — which is exactly the burst (app start, socket open) the
+     * batching exists to absorb.
+     */
+    private var lastFlushMs = nowMs()
 
     private val counters = LinkedHashMap<String, Long>()
     private var countersDirty = false
