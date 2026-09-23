@@ -24,6 +24,27 @@ import android.annotation.SuppressLint
 class PhoneService : Service() {
 
     companion object {
+        /**
+         * T-PHONE-FIRST-SIGNIN-NO-AUTODIAL: true between onStartCommand and
+         * onDestroy. This is the ONLY authoritative "the service has been
+         * started" signal — a BIND_AUTO_CREATE bind instantiates the service
+         * (onCreate runs) WITHOUT ever delivering onStartCommand, so neither
+         * "the object exists" nor "an Activity is bound" can stand in for it.
+         * Read by PhoneServiceStartPolicy via MainActivity. Same process as
+         * the Activity (no :remote), so a @Volatile field is sufficient.
+         */
+        @Volatile
+        @JvmStatic
+        var isStarted: Boolean = false
+            private set
+
+        /** Visible for the Activity-side callers only. */
+        @JvmStatic
+        internal fun markStarted() { isStarted = true }
+
+        @JvmStatic
+        internal fun markStopped() { isStarted = false }
+
         const val ACTION_START = "com.dnkdialer.companion.START_SERVICE"
         const val ACTION_STOP = "com.dnkdialer.companion.STOP_SERVICE"
         /**
@@ -2304,6 +2325,10 @@ class PhoneService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         android.util.Log.d("PhoneService", "onStartCommand called with action: ${intent?.action}")
+        // Set before the when-branches: every branch except ACTION_STOP ends
+        // up in startBridge(), and ACTION_STOP's stopSelf() runs onDestroy
+        // (which clears the flag) after this method returns.
+        markStarted()
         // Action NAME only — an intent's extras are caller-supplied.
         DiagLog.d(
             "PhoneService",
@@ -5408,6 +5433,11 @@ class PhoneService : Service() {
     // Sign Out flow this same dispatch.
 
     override fun onDestroy() {
+        // T-PHONE-FIRST-SIGNIN-NO-AUTODIAL: first statement, so a racing
+        // Activity onResume sees "not started" and re-starts us rather than
+        // binding to a dying instance.
+        markStopped()
+
         // FT-2: first, so a broadcast or an Activity that arrives during the
         // rest of the teardown finds a null handler rather than a half-torn
         // service. Nothing here cancels an in-flight transfer on purpose — a
