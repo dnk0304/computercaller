@@ -24,7 +24,9 @@ import { createFileSender } from '@/lib/fileTransfer/sender.ts';
 import type { FileSender } from '@/lib/fileTransfer/sender.ts';
 import { createFileReceiver } from '@/lib/fileTransfer/receiver.ts';
 import type { FileReceiver } from '@/lib/fileTransfer/receiver.ts';
-import { isFileSystemAccessSupported } from '@/lib/fileTransfer/fsAccess.ts';
+import { getSaveFilePicker } from '@/lib/fileTransfer/fsAccess.ts';
+import { browserDelivery, canReceiveFiles } from '@/lib/fileTransfer/fallbackSink.ts';
+import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
 import type { SaveFileHandle } from '@/lib/fileTransfer/fsAccess.ts';
 import { decideRelayAbort } from '@/lib/fileTransfer/relayAbort.ts';
 import {
@@ -128,6 +130,14 @@ export interface FileTransferApi {
 
 /** File System Access support cannot change over a page's life. */
 const SUBSCRIBE_NEVER = () => () => {};
+/**
+ * T-FT-EXT-NO-SAVE-PICKER. The snapshot must be a STABLE function reference —
+ * useSyncExternalStore re-reads it on every render and a new closure each time
+ * would loop — and it must be cheap, which it is: two capability reads, no
+ * allocation beyond the delivery object.
+ */
+const canReceiveHere = (): boolean =>
+  canReceiveFiles(getSaveFilePicker(), browserDelivery(CC_EXTENSION_ORIGIN));
 const RETURN_FALSE = () => false;
 
 export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
@@ -177,7 +187,7 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
   // thing the client hydrates with. useSyncExternalStore is the tool for exactly
   // that: a constant server snapshot of `false`, the real capability on the
   // client, and no state write from an effect to bridge the two.
-  const supported = useSyncExternalStore(SUBSCRIBE_NEVER, isFileSystemAccessSupported, RETURN_FALSE);
+  const supported = useSyncExternalStore(SUBSCRIBE_NEVER, canReceiveHere, RETURN_FALSE);
 
   const transport = useMemo<FileTransport>(() => ({
     send: (type, payload) => slot.bridge?.sendFrame(type, payload),
