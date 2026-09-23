@@ -993,6 +993,11 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      with the ladder — #dcdcde on the new L2 is 1.07:1, i.e. gone. Now 1.34:1
      on L2, 1.41:1 on L1, 1.72:1 around a white card. */
   --cc-hair-card: #dcdcde;
+  /* The composer resize grip. A non-text control, so it is held at the 3:1
+     WCAG 1.4.11 floor against the band it sits on rather than at a hairline's
+     1.3:1 — a grab handle you cannot see is not an affordance. Measured
+     3.45:1 on L1 #f7f7f8. */
+  --cc-grip: #86868c;
   /* The header's own bottom rule. With no band there is no band boundary to
      draw, so R-CJ points this token at the ordinary hairline — #e5e5e5, 1.26:1
      on white — which is literally the pre-9edc664 rule
@@ -1030,6 +1035,8 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      restored it with the ladder it was derived from: 1.21:1 on the restored
      L2, 1.30:1 on L1, 1.10:1 around a card. */
   --cc-hair-card: #303036;
+  /* Same 3:1 floor from the other side: 3.83:1 on dark L1 #131316. */
+  --cc-grip: #72727a;
   /* No band, no band boundary: R-CJ points this at the ordinary dark hairline
      #27272a, 1.32:1 on L0 #0b0b0d — the pre-9edc664 rule. */
   --cc-hair-hdr: var(--cc-hair);
@@ -2111,4 +2118,58 @@ html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-unsupported] {
 }
 @media (prefers-reduced-motion: reduce) {
   .cc-bubble-hit { animation: none; }
+}
+
+/* --- the composer resize handle ------------------------------------------ */
+/* Dennis 2026-09-23: "is it possible to make it so user can drag to expand it
+   and it gets saved in his settings". The handle IS that setting, so it lives
+   on the rule it moves — the top edge of the composer island — rather than in
+   a menu three clicks away from the thing being sized.
+
+   It sits ON the existing `.cc-band-head` hairline rather than adding a second
+   one: 10px of grab area, absolutely positioned so it costs the layout nothing
+   and so the DOM order can put it AFTER the textarea (tab order) while the eye
+   sees it above. `touch-action: none` is required, not decorative — without it
+   the first vertical move on a touch screen is claimed by the panel's scroller
+   and the drag never starts. */
+.cc-ext .cc-composer-grip {
+  position: absolute;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 10px;
+  z-index: 2;
+  cursor: row-resize;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The affordance itself: a short pill, centred, invisible until the pointer or
+   the keyboard arrives. A permanently drawn grip on a 360px panel is a piece
+   of furniture in a surface whose whole design is one hairline per boundary
+   (§0); on hover it is unambiguous, which is when it needs to be. */
+.cc-ext .cc-composer-grip-pill {
+  width: 32px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--cc-grip);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-ext .cc-composer-grip-pill { transition: none; }
+}
+.cc-ext .cc-composer-grip:hover .cc-composer-grip-pill,
+.cc-ext .cc-composer-grip:focus-visible .cc-composer-grip-pill,
+.cc-ext .cc-composer-grip:active .cc-composer-grip-pill { opacity: 1; }
+/* A user-set height is a state worth seeing: the pill stays drawn, faintly, so
+   "why is my box this size" has an answer on screen. */
+.cc-ext .cc-composer-grip[data-cc-composer-mode="user"] .cc-composer-grip-pill { opacity: .55; }
+/* The focus ring is drawn on the strip, not the pill — a 3px pill cannot hold
+   a visible ring, and the strip is the thing that has focus. */
+.cc-ext .cc-composer-grip:focus-visible {
+  outline: 2px solid var(--cc-ring);
+  outline-offset: -2px;
+  border-radius: 2px;
 }
