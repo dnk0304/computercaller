@@ -220,8 +220,15 @@ check('(b-ctl) a re-introduced dedupe cap would be caught by the scan',
 // than loosened to a substring: its job is to prove the scan is reading the
 // file it thinks it is, and a signature that drifts is exactly what it should
 // notice.
+//
+// EXT-UI-COMPOSER (2026-09-23) added `surface`, for the same kind of reason:
+// the composer's drag-to-resize handle and its persisted height are
+// extension-only, and drilling the flag from <PhoneModeShell> is what makes
+// /app unable to render them. Retargeted again, deliberately NOT loosened —
+// this control caught that change on the first gate run, which is the
+// behaviour worth keeping.
 check('(b-ctl) the file scanned is the right one (it still renders ThreadView)',
-  SHELL.includes('function ThreadView({ threadId, from, focusMessageId }: ThreadViewProps)'));
+  SHELL.includes("function ThreadView({ threadId, from, focusMessageId, surface = 'app' }: ThreadViewProps)"));
 
 // ─── (c) the two surfaces agree ──────────────────────────────────────────────
 console.log('\n-- (c) extension and web app page alike --');

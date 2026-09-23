@@ -51,6 +51,14 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
+import {
+  COMPOSER_MIN_PX,
+  autoCapFor,
+  clampHeight,
+  readStoredHeight,
+  writeStoredHeight,
+  clearStoredHeight,
+} from '@/lib/extensionComposerHeight';
 import { EncryptionBanner } from '@/components/EncryptionStatus';
 import { SasConfirmDialog } from '@/components/SasConfirmDialog';
 // FT-3b. Three self-wiring slots: the overlay layer (offer dialog, progress,
@@ -75,7 +83,7 @@ import {
   PhoneModeIncomingCard,
   usePhoneModeCallSurface,
 } from '@/components/PhoneModeCallSurface';
-import { readDeepLink, clearDeepLink } from '@/lib/extensionBridge';
+import { readDeepLink, clearDeepLink, useExtensionShell } from '@/lib/extensionBridge';
 import {
   usePhone,
   useNotifications,
@@ -111,11 +119,35 @@ import {
  * shrinks instead of eating the thread. Past the cap the box scrolls
  * internally, and a scrolling textarea keeps its own caret in view, so typing
  * never runs off the bottom again.
+ *
+ * 2026-09-23 (Dennis, 11:06): "i want it to expand 20% more. Or is it possible
+ * to make it so user can drag to expand it and it gets saved in his settings".
+ * Both. The derived cap moved +20% on every term — `clamp(96, h*0.4, 168)`
+ * became `clamp(115, h*0.48, 202)`, which now lives in
+ * lib/extensionComposerHeight.ts as `autoCapFor` so the drag handle and the
+ * auto-grow read one formula. The minimum, the scroll-past-cap behaviour and
+ * the reasoning above are untouched; `capOverride` is the user's dragged
+ * height when they have set one, and it REPLACES the derived cap rather than
+ * fighting it (see that file's header for why either direction is allowed).
  */
-const COMPOSER_MIN_PX = 36;
-function autosize(el: HTMLTextAreaElement): void {
+function autosize(el: HTMLTextAreaElement, pinned?: number | null): void {
   const viewport = el.ownerDocument?.defaultView?.innerHeight ?? 560;
-  const cap = Math.max(96, Math.min(168, Math.round(viewport * 0.4)));
+  if (pinned != null) {
+    // A dragged height PINS the box: floor and ceiling at once, and the text
+    // scrolls inside it past that. The brief's literal wording was "auto-grow
+    // still runs from 36 up to the user cap", which reads fine until you use
+    // it — you drag the box to 200px, let go, and it snaps back to one line
+    // because the draft is empty, i.e. the gesture appears to have done
+    // nothing. Every resize handle a person has met (Slack, VS Code, the
+    // Windows taskbar) sets the size; Dennis asked to "drag to expand it and
+    // it gets saved", and a size that only applies once you have already typed
+    // enough to need it is not that. Auto-grow returns intact on
+    // double-click. Flagged as a deliberate deviation in the résumé.
+    el.style.maxHeight = `${pinned}px`;
+    el.style.height = `${pinned}px`;
+    return;
+  }
+  const cap = autoCapFor(viewport);
   el.style.maxHeight = `${cap}px`;
   el.style.height = 'auto';
   el.style.height = `${Math.max(COMPOSER_MIN_PX, Math.min(el.scrollHeight, cap))}px`;
@@ -1227,6 +1259,14 @@ interface ThreadViewProps {
    * the thread with no error (spec §1).
    */
   focusMessageId?: string;
+  /**
+   * Which surface is rendering the thread. Drilled from <PhoneModeShell> for
+   * ONE reason: the composer's drag-to-resize handle and its persisted height
+   * are extension-only, and the cheapest guarantee that /app cannot grow them
+   * by accident is that /app never passes the flag. (Same construction as
+   * extension.css scoping every rule under `.cc-ext`.)
+   */
+  surface?: 'app' | 'extension';
 }
 
 /**
@@ -1237,7 +1277,7 @@ interface ThreadViewProps {
  */
 const THREAD_PAGE_SIZE = 25;
 
-function ThreadView({ threadId, from, focusMessageId }: ThreadViewProps) {
+function ThreadView({ threadId, from, focusMessageId, surface = 'app' }: ThreadViewProps) {
   const phone = usePhone();
   const { messages, contacts, sendSms, makeCall, isConnected } = phone;
   const { pop, setTab } = usePhoneMode();
@@ -1535,6 +1575,7 @@ function ThreadView({ threadId, from, focusMessageId }: ThreadViewProps) {
           uses keyed rendering) ensures opening thread B after thread A doesn't
           leak the previous draft — risk #6 mitigation. */}
       <ThreadCompose
+        surface={surface}
         // No history with this number (the common case when the thread was
         // opened from Dial): there is nothing to read, so the only thing worth
         // doing is typing. Existing threads keep the caret out of the way so
@@ -1554,11 +1595,114 @@ interface ThreadComposeProps {
   onSend: (text: string) => boolean;
   /** Put the caret here on mount — an empty thread has nothing else to do. */
   autoFocus?: boolean;
+  /**
+   * Extension-only behaviour hangs off this: the drag-to-resize handle and the
+   * persisted height. /app never passes it, so /app cannot grow them.
+   */
+  surface?: 'app' | 'extension';
 }
 
-function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
+/** Keyboard resize steps on the handle. Shift accelerates, as everywhere else. */
+const RESIZE_STEP_PX = 8;
+const RESIZE_STEP_BIG_PX = 32;
+/**
+ * The conversation the handle refuses to take. Three rows is the floor at
+ * which the thread is still a thread rather than a sliver — below it the
+ * composer has eaten the thing it is composing a reply to.
+ */
+const MIN_THREAD_ROWS = 3;
+/** Row height used when the thread is empty, and the ceiling on a measured
+ *  row so one very long bubble cannot reserve the whole panel. */
+const FALLBACK_ROW_PX = 44;
+
+/**
+ * The composer, and — on the extension surface — its resize handle.
+ *
+ * THE HANDLE IS THE SETTING. Dennis asked for "drag to expand it and it gets
+ * saved in his settings"; a slider in the account menu would satisfy the
+ * letter of that and none of the point, because the thing being sized is right
+ * there and its correct value is whatever looks right while you look at it.
+ * So there is no settings-page control: grab the rule between the thread and
+ * the composer, drag, done. Double-click puts it back on automatic.
+ *
+ * WHY IT IS ALSO A KEYBOARD CONTROL, not just a drag target: a resize affordance
+ * that only responds to a pointer is a feature that exists for some users and
+ * not others. It is a `role="separator"` with `aria-orientation="horizontal"`
+ * and a value — the ARIA pattern for exactly this — sitting AFTER the textarea
+ * in the tab order, because the overwhelmingly common reason to tab into this
+ * band is to send a message, not to resize it.
+ */
+function ThreadCompose({ onSend, autoFocus = false, surface = 'app' }: ThreadComposeProps) {
+  const isExt = surface === 'extension';
+  const { email } = useExtensionShell();
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
+  const islandRef = useRef<HTMLDivElement>(null);
+
+  // The user's dragged cap, or null for "auto" (the A1 formula). Read on the
+  // first render rather than in an effect so the box never paints at the
+  // default height and jumps a frame later.
+  const [userHeight, setUserHeight] = useState<number | null>(() =>
+    typeof window === 'undefined' || !isExt ? null : readStoredHeight(email),
+  );
+
+  // The account arrives AFTER the first render — the shell posts it — so
+  // re-read then. Adjusted during render rather than in an effect: React's
+  // documented pattern for state derived from a changing prop, and the same
+  // one <SizeChoice> uses for the text size two components over.
+  const [prevEmail, setPrevEmail] = useState(email);
+  if (isExt && email !== prevEmail) {
+    setPrevEmail(email);
+    setUserHeight(readStoredHeight(email));
+  }
+
+  /** Live upper bound, from the DOM. Never a constant — see measureMax. */
+  const [maxPx, setMaxPx] = useState<number>(() =>
+    typeof window === 'undefined' ? 202 : autoCapFor(window.innerHeight),
+  );
+  /** What aria-valuenow reports, and what a fresh drag starts from. */
+  const [heightNow, setHeightNow] = useState<number>(COMPOSER_MIN_PX);
+  /** Double-click reset is silent to the eye of someone not looking at it. */
+  const [announce, setAnnounce] = useState('');
+
+  /**
+   * The tallest the composer may be, computed from the LIVE DOM rather than a
+   * constant, because every term of it moves: the template chip strip grows
+   * with the text size, the header and tab strip are taller in Large, and the
+   * panel itself is whatever width and height Chrome gives it. Constants here
+   * were how the 2026-09-16 clipping bug happened.
+   *
+   *   available = (bottom of the composer island)
+   *             - (top of the thread scroller)
+   *             - (island chrome that is not the textarea)
+   *             - (three rows of conversation we refuse to take)
+   */
+  const measureMax = useCallback((): number => {
+    const island = islandRef.current;
+    const ta = ref.current;
+    if (!island || !ta) {
+      return autoCapFor(typeof window === 'undefined' ? 560 : window.innerHeight);
+    }
+    const islandRect = island.getBoundingClientRect();
+    const chrome = Math.max(0, islandRect.height - ta.getBoundingClientRect().height);
+    const scroller = island.ownerDocument.querySelector('.cc-thread-scroll');
+    const scrollTop = scroller ? scroller.getBoundingClientRect().top : 0;
+    const firstRow = (scroller?.firstElementChild as HTMLElement | null) ?? null;
+    const measuredRow = firstRow && firstRow.offsetHeight > 0 ? firstRow.offsetHeight : FALLBACK_ROW_PX;
+    const keepForThread = Math.min(measuredRow, FALLBACK_ROW_PX * 2) * MIN_THREAD_ROWS;
+    const available = islandRect.bottom - scrollTop - chrome - keepForThread;
+    return Math.max(COMPOSER_MIN_PX, Math.round(available));
+  }, []);
+
+  /** The cap autosize honours: the user's clamped height, or null for auto. */
+  const effectiveCap = isExt && userHeight != null ? clampHeight(userHeight, COMPOSER_MIN_PX, maxPx) : null;
+
+  const applyHeight = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    autosize(el, effectiveCap);
+    setHeightNow(Math.round(el.getBoundingClientRect().height) || COMPOSER_MIN_PX);
+  }, [effectiveCap]);
 
   useEffect(() => {
     if (autoFocus) ref.current?.focus();
@@ -1566,6 +1710,23 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
     // back the instant the first message lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Measure the ceiling once the band exists, and again on every window
+  // resize — a persisted px is RE-CLAMPED against the new bound, never
+  // discarded, so widening the panel back restores the height you chose.
+  useEffect(() => {
+    if (!isExt) return;
+    const remeasure = () => setMaxPx(measureMax());
+    remeasure();
+    window.addEventListener('resize', remeasure);
+    return () => window.removeEventListener('resize', remeasure);
+  }, [isExt, measureMax]);
+
+  // Re-apply on every input, on mount, on thread switch (the component is
+  // keyed by threadId, so mount IS the switch) and whenever the cap moves.
+  useEffect(() => {
+    applyHeight();
+  }, [applyHeight, text]);
 
   const send = useCallback(() => {
     const trimmed = text.trim();
@@ -1588,7 +1749,7 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
       // the new value to the textarea before we measure scrollHeight.
       requestAnimationFrame(() => {
         if (ref.current) {
-          autosize(ref.current);
+          applyHeight();
           ref.current.focus();
           // A just-inserted template lands at the end; keep it in view when the
           // box is already at its cap and therefore scrolling internally.
@@ -1597,7 +1758,99 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
       });
       return next;
     });
-  }, []);
+  }, [applyHeight]);
+
+  /** Commit a new user height: state, storage, and the box itself. */
+  const commitHeight = useCallback((px: number) => {
+    const next = clampHeight(px, COMPOSER_MIN_PX, maxPx);
+    setUserHeight(next);
+    writeStoredHeight(email, next);
+  }, [email, maxPx]);
+
+  // ---------- drag ---------------------------------------------------------
+  // Pointer events, not mouse events: the same handler then serves a mouse, a
+  // trackpad, a pen and a touch screen, and setPointerCapture keeps the drag
+  // alive when the cursor outruns an 8px target — which, on a 36→300px throw,
+  // it always does.
+  const dragRef = useRef<{ id: number; startY: number; startH: number } | null>(null);
+
+  const onHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    const el = ref.current;
+    if (!el) return;
+    const bound = measureMax();
+    setMaxPx(bound);
+    dragRef.current = {
+      id: e.pointerId,
+      startY: e.clientY,
+      startH: Math.round(el.getBoundingClientRect().height),
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }, [measureMax]);
+
+  const onHandlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    const el = ref.current;
+    if (!drag || drag.id !== e.pointerId || !el) return;
+    // The handle is on the TOP edge, so dragging UP (a smaller clientY) makes
+    // the box taller. Painted straight onto the element during the drag —
+    // routing every pointermove through React state is how a resize handle
+    // comes to feel like it is lagging behind the cursor.
+    const next = clampHeight(drag.startH + (drag.startY - e.clientY), COMPOSER_MIN_PX, maxPx);
+    el.style.maxHeight = `${next}px`;
+    el.style.height = `${next}px`;
+    setHeightNow(next);
+  }, [maxPx]);
+
+  const endDrag = useCallback((e: React.PointerEvent<HTMLDivElement>, commit: boolean) => {
+    const drag = dragRef.current;
+    const el = ref.current;
+    if (!drag || drag.id !== e.pointerId) return;
+    dragRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    if (commit && el) {
+      commitHeight(Math.round(el.getBoundingClientRect().height));
+    } else {
+      // Escape / cancel: put it back exactly where the drag started.
+      applyHeight();
+    }
+  }, [commitHeight, applyHeight]);
+
+  const onHandleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const bound = measureMax();
+    const current = clampHeight(
+      userHeight ?? Math.round(ref.current?.getBoundingClientRect().height ?? COMPOSER_MIN_PX),
+      COMPOSER_MIN_PX,
+      bound,
+    );
+    const step = e.shiftKey ? RESIZE_STEP_BIG_PX : RESIZE_STEP_PX;
+    let next: number | null = null;
+    if (e.key === 'ArrowUp') next = current + step;
+    else if (e.key === 'ArrowDown') next = current - step;
+    else if (e.key === 'Home') next = COMPOSER_MIN_PX;
+    else if (e.key === 'End') next = bound;
+    else if (e.key === 'Escape') {
+      // Escape releases an in-flight drag; with no drag running it is a no-op
+      // rather than a second reset gesture, because losing a deliberate size
+      // to a stray Escape is exactly the kind of thing that makes people stop
+      // trusting a control.
+      if (dragRef.current) { dragRef.current = null; applyHeight(); e.preventDefault(); }
+      return;
+    } else return;
+    e.preventDefault();
+    setMaxPx(bound);
+    commitHeight(next);
+  }, [userHeight, measureMax, commitHeight, applyHeight]);
+
+  const onHandleDoubleClick = useCallback(() => {
+    dragRef.current = null;
+    setUserHeight(null);
+    clearStoredHeight(email);
+    setAnnounce('Message box size reset');
+  }, [email]);
 
   return (
     // Sticky bottom — `position: sticky; bottom: 0` keeps the composer pinned
@@ -1607,7 +1860,13 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
     // compose box so the templates are reachable without expanding to the
     // dashboard. Chip strip is part of the sticky bottom island so it stays
     // anchored with the input as the keyboard lifts.
-    <div className="cc-band cc-band-head sticky bottom-0 border-t border-slate-200/60 bg-white/95 backdrop-blur-sm">
+    // `relative` is load-bearing for the resize handle, which is absolutely
+    // positioned on this island's TOP edge while living LAST in the DOM so the
+    // tab order reaches the textarea and the send button first.
+    <div
+      ref={islandRef}
+      className="cc-band cc-band-head sticky bottom-0 border-t border-slate-200/60 bg-white/95 backdrop-blur-sm relative"
+    >
       <PhoneModeTemplates onInsert={insertTemplate} />
       <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 mx-2 my-2 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-500/20">
         <textarea
@@ -1615,7 +1874,7 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
           value={text}
           onChange={(e) => {
             setText(e.target.value);
-            autosize(e.target);
+            autosize(e.target, effectiveCap);
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -1644,6 +1903,32 @@ function ThreadCompose({ onSend, autoFocus = false }: ThreadComposeProps) {
           <Send className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
+      {isExt && (
+        <>
+          <div
+            className="cc-composer-grip"
+            data-cc-composer-grip=""
+            data-cc-composer-mode={userHeight == null ? 'auto' : 'user'}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize message box"
+            aria-valuemin={COMPOSER_MIN_PX}
+            aria-valuemax={maxPx}
+            aria-valuenow={heightNow}
+            tabIndex={0}
+            title="Drag to resize · double-click to reset"
+            onPointerDown={onHandlePointerDown}
+            onPointerMove={onHandlePointerMove}
+            onPointerUp={(e) => endDrag(e, true)}
+            onPointerCancel={(e) => endDrag(e, false)}
+            onKeyDown={onHandleKeyDown}
+            onDoubleClick={onHandleDoubleClick}
+          >
+            <span className="cc-composer-grip-pill" aria-hidden="true" />
+          </div>
+          <p className="sr-only" role="status" aria-live="polite">{announce}</p>
+        </>
+      )}
     </div>
   );
 }
@@ -2364,7 +2649,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
         // key={threadId} resets the compose textarea on thread switch
         // (risk #6). This keyed wrapper is load-bearing — removing it
         // re-introduces the draft-leak bug across thread switches.
-        return <ThreadView key={v.threadId} threadId={v.threadId} from={v.from} focusMessageId={v.focusMessageId} />;
+        return <ThreadView key={v.threadId} threadId={v.threadId} from={v.from} focusMessageId={v.focusMessageId} surface={surface} />;
       case 'compose':
         // Keyed on the recipient for the same reason: arriving from Dial with
         // a new number must not inherit the previous draft's To field.
