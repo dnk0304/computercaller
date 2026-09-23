@@ -1,0 +1,132 @@
+{
+  "$comment": [
+    "FT-A1 sealed-FILE_OFFER hint cross-surface contract vectors (RESUME-PROTOCOL v3.0 RULE 30).",
+    "",
+    "One file, two consumers:",
+    "  - tests/e2e-ft-hint-contract.test.mjs   (web: hooks/useE2e.ts ftHintFor + the envelope sealOutbound",
+    "    emits -> the REAL relay accessor ftOfferMetadata extracted from server.js)",
+    "  - dnkdialer-android/app/src/test/java/com/dnkdialer/companion/E2eFtHintContractTest.kt",
+    "    (phone: FileTransfer.hintFor + E2eFrameGate.attachHint -> the same relay rules)",
+    "",
+    "THE ROW THIS FILE EXISTS FOR IS web-offer-hint. server.js:2361-2392 fails CLOSED when a sealed",
+    "FILE_OFFER carries no plaintext `ft` hint (drop reason `bad_hint`, server.js:2483). The phone",
+    "attaches one at its sealing chokepoint (E2eFrameGate.kt:182 attachHint / FileTransfer.kt:202",
+    "HINT_KEY); the browser sealed FILE_OFFER as a BARE envelope, so EVERY browser->phone file on a",
+    "sealed pair was refused - Dennis's '0 bytes, no progress bar', proven on PROD 6d0aa98 by ACCEPT-9.",
+    "",
+    "`envelope` rows are what goes ON THE WIRE after sealing: the four authenticated fields {e,kid,s,c}",
+    "plus, when the producer is correct, the plaintext sibling `ft`. `c` is opaque here on purpose -",
+    "the contract is about the CLEAR fields, and neither surface's hint producer reads the ciphertext.",
+    "",
+    "FILE_OFFER is the ONLY frame that carries a hint. Every other sealed FILE_* frame is matched to the",
+    "room's single in-flight transfer by TYPE (server.js:2607-2652), which is why the non-offer rows",
+    "expect hint:null on BOTH surfaces rather than an id nobody needs on the wire."
+  ],
+  "version": 1,
+  "hintKey": "ft",
+  "idPattern": "^[0-9a-f]{32}$",
+  "rows": [
+    {
+      "id": "web-offer-hint",
+      "label": "THE DEFECT: a sealed FILE_OFFER from the BROWSER must carry {ft:{id,size}} and the relay must accept it",
+      "producer": "web",
+      "type": "FILE_OFFER",
+      "body": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "name": "quarterly.pdf", "size": 4404019, "mime": "application/pdf", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "from": "browser" },
+      "expectHint": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "size": 4404019 },
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 42, "c": "c3ViamVjdC1jaXBoZXJ0ZXh0", "ft": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "size": 4404019 } },
+      "relay": { "ok": true, "sealed": true, "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "size": 4404019, "drop": null }
+    },
+    {
+      "id": "phone-offer-hint",
+      "label": "a sealed FILE_OFFER from the PHONE - the shape E2eFrameGate.attachHint already emits, accepted identically",
+      "producer": "phone",
+      "type": "FILE_OFFER",
+      "body": { "id": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "name": "voicenote.m4a", "size": 65536, "mime": "audio/mp4", "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "from": "phone" },
+      "expectHint": { "id": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "size": 65536 },
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 7, "c": "cGhvbmUtY2lwaGVydGV4dA", "ft": { "id": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "size": 65536 } },
+      "relay": { "ok": true, "sealed": true, "id": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "size": 65536, "drop": null }
+    },
+    {
+      "id": "web-offer-zero-byte-hint",
+      "label": "a 0-byte file is a legal offer - size 0 must NOT be read as absent (integer check, never truthiness)",
+      "producer": "web",
+      "type": "FILE_OFFER",
+      "body": { "id": "00112233445566778899aabbccddeeff", "name": "empty.txt", "size": 0, "mime": "text/plain", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "from": "browser" },
+      "expectHint": { "id": "00112233445566778899aabbccddeeff", "size": 0 },
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 3, "c": "ZW1wdHk", "ft": { "id": "00112233445566778899aabbccddeeff", "size": 0 } },
+      "relay": { "ok": true, "sealed": true, "id": "00112233445566778899aabbccddeeff", "size": 0, "drop": null }
+    },
+    {
+      "id": "no-hint-bare-envelope",
+      "label": "THE PRE-FIX WIRE SHAPE: a PERFECTLY VALID offer body, sealed as a bare {e,kid,s,c} -> relay refuses, bad_hint. wireOmitsHint marks the regression this lane fixes: the producer must emit a hint for this body, and the fixed wire shape must therefore never look like this envelope.",
+      "producer": "web",
+      "type": "FILE_OFFER",
+      "wireOmitsHint": true,
+      "body": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "name": "quarterly.pdf", "size": 4404019, "mime": "application/pdf", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "from": "browser" },
+      "expectHint": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "size": 4404019 },
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 42, "c": "c3ViamVjdC1jaXBoZXJ0ZXh0" },
+      "relay": { "ok": false, "sealed": true, "id": null, "size": null, "drop": "bad_hint" }
+    },
+    {
+      "id": "hint-id-uppercase",
+      "label": "a hint id outside ^[0-9a-f]{32}$ (uppercase) is MALFORMED, not merely unusual -> bad_hint. A MEASURED CROSS-SURFACE DIVERGENCE, recorded rather than smoothed over: the web producer validates the id against the relay's own pattern and emits NO hint (expectHint), while FileTransfer.hintFor on the phone passes any non-null String through (expectHintPhone). Both end at the same relay verdict - bad_hint - so neither is a live defect; the phone mints lowercase ids and never reaches this row in production. It is stated here so a future reader finds the difference in the contract instead of in an outage. Tightening the Kotlin side is android product code and belongs to the vc64 lane, not to this web hotfix (Ken's ACCEPT-9 ruling).",
+      "producer": "web",
+      "type": "FILE_OFFER",
+      "expectHintPhone": { "id": "3F2A91C0D4E84B6798AA10FF5C3B7D20", "size": 4404019 },
+      "body": { "id": "3F2A91C0D4E84B6798AA10FF5C3B7D20", "name": "quarterly.pdf", "size": 4404019, "mime": "application/pdf", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "from": "browser" },
+      "expectHint": null,
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 42, "c": "c3ViamVjdC1jaXBoZXJ0ZXh0", "ft": { "id": "3F2A91C0D4E84B6798AA10FF5C3B7D20", "size": 4404019 } },
+      "relay": { "ok": false, "sealed": true, "id": null, "size": null, "drop": "bad_hint" }
+    },
+    {
+      "id": "hint-size-missing",
+      "label": "ft present but sizeless - the quota gate has nothing to reserve against -> bad_hint",
+      "producer": "web",
+      "type": "FILE_OFFER",
+      "body": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "name": "quarterly.pdf", "mime": "application/pdf", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "from": "browser" },
+      "expectHint": null,
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 42, "c": "c3ViamVjdC1jaXBoZXJ0ZXh0", "ft": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20" } },
+      "relay": { "ok": false, "sealed": true, "id": null, "size": null, "drop": "bad_hint" }
+    },
+    {
+      "id": "hint-size-string",
+      "label": "a stringified size is not a size - the gate may not coerce it -> bad_hint",
+      "producer": "web",
+      "type": "FILE_OFFER",
+      "body": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "name": "quarterly.pdf", "size": "4404019", "mime": "application/pdf", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "from": "browser" },
+      "expectHint": null,
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 42, "c": "c3ViamVjdC1jaXBoZXJ0ZXh0", "ft": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "size": "4404019" } },
+      "relay": { "ok": false, "sealed": true, "id": null, "size": null, "drop": "bad_hint" }
+    },
+    {
+      "id": "non-offer-file-accept",
+      "label": "FILE_ACCEPT carries NO hint on either surface - the relay matches it to the room's transfer by TYPE",
+      "producer": "both",
+      "type": "FILE_ACCEPT",
+      "body": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20" },
+      "expectHint": null,
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 43, "c": "YWNjZXB0" },
+      "relay": null
+    },
+    {
+      "id": "non-offer-file-resume",
+      "label": "FILE_RESUME carries NO hint either - same TYPE routing, deliberately id-less on the wire",
+      "producer": "both",
+      "type": "FILE_RESUME",
+      "body": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20", "upTo": 12 },
+      "expectHint": null,
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 44, "c": "cmVzdW1l" },
+      "relay": null
+    },
+    {
+      "id": "non-offer-file-complete",
+      "label": "FILE_COMPLETE carries NO hint either",
+      "producer": "both",
+      "type": "FILE_COMPLETE",
+      "body": { "id": "3f2a91c0d4e84b6798aa10ff5c3b7d20" },
+      "expectHint": null,
+      "envelope": { "e": 1, "kid": "kid-ftA1", "s": 45, "c": "Y29tcGxldGU" },
+      "relay": null
+    }
+  ]
+}

@@ -397,7 +397,8 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     ['android:testDebugUnitTest', 238],
     ['android:instrumented-A5', 8],
     // GATE-TOOLING-1 (3): 165 -> 177 -> 185 (GATE-TOOLING-1 (4): ANDROID-FIX) with ext-text-size-proof's arms.
-    ['unit:harness-list', 186],
+    // T-FT-WEB-SEAL-NO-HINT: 186 -> 187 with the FT hint contract's pin.
+    ['unit:harness-list', 187],
     // GATE-TOOLING-1 (4). The phase whitelist suite's first floor.
     ['unit:gate-phase-whitelist', 79],
     // GATE-TOOLING-1 (3). The text-size proof's own floor, declared in the gate
@@ -416,6 +417,10 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // SAS-MODE0: the cross-surface SAS-blocking contract, sweep-discovered by
     // the tests/e2e-*.test.mjs rule and therefore carrying only a floor.
     ['relay:e2e-sas-blocking-contract.test.mjs', 79],
+    // T-FT-WEB-SEAL-NO-HINT: the FT sealed-offer hint contract (RULE 30),
+    // sweep-discovered by the tests/e2e-*.test.mjs rule and therefore carrying
+    // only a floor.
+    ['relay:e2e-ft-hint-contract.test.mjs', 156],
   ]) {
     check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,
       gate.includes(`'${name}': ${floor},`));
