@@ -38,19 +38,19 @@ import java.io.File
  * fixed in the web lane. The decision table on THIS side was already right,
  * and this test pins it so it stays right.
  *
- * ## What this test deliberately does NOT cover
+ * ## What this test does not cover — see [E2eStatusCopyContractTest]
  *
  * The phone's live status line read "Connected · Not encrypted" on row 4. That
- * is NOT this table: it is the WIRING above it. `E2eTofuContract.ACTION_E2E_STATE`
- * — the broadcast MainActivity listens for at MainActivity.kt:396 to move
- * `e2eState` off its PLAINTEXT default — has no sender anywhere in
- * `app/src/main`; the only thing that fires it is an instrumented test. So the
- * line can only leave PLAINTEXT via the optimistic set on a CONFIRMED SAS
- * (MainActivity.kt:2415), which by definition never happens on row 4.
+ * was NOT this table: it was the WIRING above it. `E2eTofuContract.ACTION_E2E_STATE`
+ * — the broadcast MainActivity listens for to move `e2eState` off its PLAINTEXT
+ * default — had no sender anywhere in `app/src/main`, so the line could only
+ * leave PLAINTEXT via the optimistic set on a CONFIRMED SAS, which by
+ * definition never happens on row 4.
  *
- * That is ticket T-PHONE-STATUS-MODE0 and belongs to the vc63 android lane.
- * This lane changes no Kotlin product code (Ken's ruling), so the finding is
- * recorded here and in the résumé rather than fixed.
+ * That was ticket T-PHONE-STATUS-MODE0, FIXED in the vc64 android lane
+ * (PhoneService.currentE2eState / broadcastE2eState + MainActivity reading it
+ * on the status tick). [E2eStatusCopyContractTest] reads these same vectors
+ * and pins the wiring, because this table cannot.
  *
  * Run: `gradlew.bat testDebugUnitTest --tests '*SasBlockingContract*'`
  */
@@ -166,30 +166,32 @@ class E2eSasBlockingContractTest {
     }
 
     /**
-     * T-PHONE-STATUS-MODE0, pinned as an OBSERVATION so the android lane can
-     * find it and so nobody re-derives it from a live run.
+     * T-PHONE-STATUS-MODE0 — FIXED in the vc64 android lane. This replaces the
+     * earlier OBSERVATION test, which asserted that NO production sender for
+     * ACTION_E2E_STATE existed and instructed its own deletion the moment one
+     * did. It went red on the fix, exactly as designed.
      *
-     * Asserted as "no production sender" rather than fixed: this lane ships no
-     * Kotlin product code. When the android lane wires the broadcast, this test
-     * goes red and is deleted in the same commit — which is the point.
+     * Kept as the inverse: the sender must exist and must stay. Deeper wiring
+     * (the binder read on the status tick, the per-row production mapping)
+     * lives in [E2eStatusCopyContractTest].
      */
     @Test
-    fun observation_nothing_in_production_broadcasts_the_e2e_state() {
+    fun production_broadcasts_the_e2e_state() {
         val main = File("src/main/java/com/dnkdialer/companion")
         assertTrue("main sources not found at " + main.absolutePath, main.isDirectory)
         val senders = main.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             // The only shape that can SEND it: an Intent built on the action.
             // Matching the bare constant would count MainActivity's RECEIVER
-            // (MainActivity.kt:396 / the IntentFilter at :2224) as a sender.
+            // (the IntentFilter) as a sender.
             .filter { f -> f.readText().contains("Intent(E2eTofuContract.ACTION_E2E_STATE)") }
             .map { it.name }
             .toList()
         assertEquals(
-            "T-PHONE-STATUS-MODE0: a production sender for ACTION_E2E_STATE appeared (" +
-                senders + "). The status line can now leave PLAINTEXT on its own — " +
-                "delete this observation test and assert the real wiring instead.",
-            emptyList<String>(), senders
+            "T-PHONE-STATUS-MODE0: PhoneService must be the (single) production " +
+                "sender of ACTION_E2E_STATE. Without it the status line can never " +
+                "leave PLAINTEXT on a row-4 (0/0) pair, which asks no SAS.",
+            listOf("PhoneService.kt"), senders
         )
     }
 }

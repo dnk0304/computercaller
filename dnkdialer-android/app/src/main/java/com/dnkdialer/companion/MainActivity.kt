@@ -1176,8 +1176,20 @@ class MainActivity : AppCompatActivity() {
                 // left as a bare "Connected", because the absence of a word is
                 // not a signal — a plain "Connected" is exactly what a user
                 // reads as safe.
-                status.contains("Connected to relay") && pairActive ->
+                status.contains("Connected to relay") && pairActive -> {
+                    // T-PHONE-STATUS-MODE0: read the state from the bound
+                    // service on this same tick — the SAME channel as
+                    // getIsCallInProgress above — rather than trusting that
+                    // an ACTION_E2E_STATE edge was received. An Activity that
+                    // bound after the Accept, or was recreated, never saw
+                    // that edge; a row-4 (0/0) pair asks no SAS, so nothing
+                    // else ever moved the field off its PLAINTEXT
+                    // initialiser and the line said "Not encrypted" over a
+                    // sealed pair. The broadcast is still sent (it makes the
+                    // line right immediately); this makes it right REGARDLESS.
+                    phoneService?.currentE2eState()?.let { e2eState = it }
                     getString(E2eStatusCopy.statusLine(e2eState)) to ConnState.LIVE
+                }
                 // Relay open + no active pair → LOBBY. Phone is sitting
                 // waiting for a browser to send a pairing request that
                 // the user must Accept.
@@ -1822,21 +1834,37 @@ class MainActivity : AppCompatActivity() {
         // Check notification status on resume (user might have changed it in settings)
         checkNotificationStatus()
 
-        // Check if user granted battery optimization exemption.
-        // Dispatch #9: userStopped gating removed (see field-site tombstone).
-        // The single-button "Disconnect and refresh" UX never leaves the
-        // service intentionally down, so onResume can always auto-restart.
-        if (hasPermissions() && isBatteryOptimizationDisabled() && !serviceBound) {
-            android.util.Log.d("MainActivity", "Battery exemption granted, starting service")
-            statusText.text = getString(R.string.status_starting)
-            startPhoneService()
-        }
-
-        // Try to rebind to service if it's running. Dispatch #9: no
-        // userStopped gate — see above.
-        if (!serviceBound) {
-            val intent = Intent(this, PhoneService::class.java)
-            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        // Start-vs-bind. Dispatch #9: userStopped gating removed (see
+        // field-site tombstone) — the single-button "Disconnect and refresh"
+        // UX never leaves the service intentionally down, so onResume can
+        // always auto-restart.
+        //
+        // T-PHONE-FIRST-SIGNIN-NO-AUTODIAL: this used to be two independent
+        // `if`s, the second of which bind-auto-created an UNSTARTED service
+        // while the battery-exemption dialog was still up, permanently
+        // disabling the first one via its `!serviceBound` guard. The
+        // decision now lives in one pure function keyed on
+        // PhoneService.isStarted. Do not reintroduce a bare BIND_AUTO_CREATE
+        // here.
+        val startDecision = PhoneServiceStartPolicy.decide(
+            PhoneServiceStartPolicy.Inputs(
+                hasPermissions = hasPermissions(),
+                batteryExempt = isBatteryOptimizationDisabled(),
+                serviceStarted = PhoneService.isStarted,
+                serviceBound = serviceBound,
+            )
+        )
+        android.util.Log.d("MainActivity", "onResume start decision: $startDecision")
+        when (startDecision) {
+            PhoneServiceStartPolicy.Action.START_AND_BIND -> {
+                statusText.text = getString(R.string.status_starting)
+                startPhoneService()
+            }
+            PhoneServiceStartPolicy.Action.BIND_ONLY -> {
+                val intent = Intent(this, PhoneService::class.java)
+                bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            }
+            PhoneServiceStartPolicy.Action.NONE -> Unit
         }
 
         // Always update status when resuming

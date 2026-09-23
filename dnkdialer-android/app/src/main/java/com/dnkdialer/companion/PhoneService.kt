@@ -24,6 +24,27 @@ import android.annotation.SuppressLint
 class PhoneService : Service() {
 
     companion object {
+        /**
+         * T-PHONE-FIRST-SIGNIN-NO-AUTODIAL: true between onStartCommand and
+         * onDestroy. This is the ONLY authoritative "the service has been
+         * started" signal — a BIND_AUTO_CREATE bind instantiates the service
+         * (onCreate runs) WITHOUT ever delivering onStartCommand, so neither
+         * "the object exists" nor "an Activity is bound" can stand in for it.
+         * Read by PhoneServiceStartPolicy via MainActivity. Same process as
+         * the Activity (no :remote), so a @Volatile field is sufficient.
+         */
+        @Volatile
+        @JvmStatic
+        var isStarted: Boolean = false
+            private set
+
+        /** Visible for the Activity-side callers only. */
+        @JvmStatic
+        internal fun markStarted() { isStarted = true }
+
+        @JvmStatic
+        internal fun markStopped() { isStarted = false }
+
         const val ACTION_START = "com.dnkdialer.companion.START_SERVICE"
         const val ACTION_STOP = "com.dnkdialer.companion.STOP_SERVICE"
         /**
@@ -2304,6 +2325,10 @@ class PhoneService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         android.util.Log.d("PhoneService", "onStartCommand called with action: ${intent?.action}")
+        // Set before the when-branches: every branch except ACTION_STOP ends
+        // up in startBridge(), and ACTION_STOP's stopSelf() runs onDestroy
+        // (which clears the flag) after this method returns.
+        markStarted()
         // Action NAME only — an intent's extras are caller-supplied.
         DiagLog.d(
             "PhoneService",
@@ -3004,6 +3029,7 @@ class PhoneService : Service() {
                     " verified=$e2eVerified recipients=${decision.recipients.size}" +
                     " sas=${prepared.sasDigits ?: "-"}"
             )
+            broadcastE2eState()
             sendPairingDecision("ACCEPT_PAIRING", pairingId, block)
         } catch (e: RuntimeException) {
             // E2eAccept.AcceptException (oversized block, no recipients),
@@ -3022,6 +3048,7 @@ class PhoneService : Service() {
                 broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
             } else {
                 android.util.Log.w("PhoneService", "E2E unavailable, continuing plaintext — $why")
+                broadcastE2eState()
                 sendPairingDecision("ACCEPT_PAIRING", pairingId, null)
             }
         }
@@ -3034,6 +3061,48 @@ class PhoneService : Service() {
                 setPackage(packageName)
                 putExtra(EXTRA_PAIRING_ID, pairingId)
                 putExtra(EXTRA_E2E_MESSAGE, message)
+            }
+        )
+    }
+
+    /**
+     * T-PHONE-STATUS-MODE0 — the pair's encryption state, in the vocabulary
+     * of [E2eStatusCopy].
+     *
+     * THE BUG THIS EXISTS TO FIX: ACTION_E2E_STATE was registered
+     * (MainActivity:2349) and consumed (MainActivity:418) but NOBODY EVER
+     * SENT IT. The Activity's e2eState therefore only ever moved on
+     * dispatchSasVerdict — the SAS answer. On a row-4 (0/0, sealed,
+     * modeByte 0x00) pair NO SAS IS ASKED, so the field stayed at its
+     * PLAINTEXT initialiser and the status line said "Connected · Not
+     * encrypted" over a pair that was demonstrably sealed (live 7b:
+     * ACCEPT_PAIRING 752/1001 bytes, sealed SMS_RECEIVED 256 bytes), while
+     * the extension said "Encrypted, but nobody confirmed the code".
+     * RULE 30 row-4-M1 in tests/e2e-sas-blocking-vectors.json is the truth
+     * both surfaces owe: statusLineKey = status_connected_encrypted_unverified.
+     *
+     * Exposed through the binder as well as broadcast, so a MainActivity
+     * that bound AFTER the Accept (or was recreated) reads the live state on
+     * its next tick instead of inheriting a missed edge.
+     */
+    fun currentE2eState(): E2eStatusCopy.State =
+        E2eStatusCopy.stateOf(encrypted = e2eSession != null, verified = e2eVerified)
+
+    /** Push [currentE2eState] to the foreground UI. Idempotent. */
+    private fun broadcastE2eState() {
+        val state = currentE2eState()
+        DiagLog.d("PhoneService", "E2E state -> $state")
+        sendBroadcast(
+            Intent(E2eTofuContract.ACTION_E2E_STATE).apply {
+                setPackage(packageName)
+                putExtra(
+                    E2eTofuContract.EXTRA_ENCRYPTED,
+                    state != E2eStatusCopy.State.PLAINTEXT,
+                )
+                putExtra(
+                    E2eTofuContract.EXTRA_VERIFIED,
+                    state == E2eStatusCopy.State.ENCRYPTED_VERIFIED,
+                )
             }
         )
     }
@@ -3094,6 +3163,11 @@ class PhoneService : Service() {
         if (outcome.sessionClosed) {
             android.util.Log.i("PhoneService", "E2E torn down ($reason): ${outcome.notes}")
         }
+        // The pair is gone: say PLAINTEXT rather than leave a stale
+        // "Encrypted" on screen. Skipped once the service is being destroyed
+        // (the Activity is gone too and a broadcast from onDestroy races the
+        // context teardown).
+        if (reason != "service destroyed") broadcastE2eState()
     }
 
     /**
@@ -5408,6 +5482,11 @@ class PhoneService : Service() {
     // Sign Out flow this same dispatch.
 
     override fun onDestroy() {
+        // T-PHONE-FIRST-SIGNIN-NO-AUTODIAL: first statement, so a racing
+        // Activity onResume sees "not started" and re-starts us rather than
+        // binding to a dying instance.
+        markStopped()
+
         // FT-2: first, so a broadcast or an Activity that arrives during the
         // rest of the teardown finds a null handler rather than a half-torn
         // service. Nothing here cancels an in-flight transfer on purpose — a
