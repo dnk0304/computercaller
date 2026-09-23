@@ -103,5 +103,5 @@
     <!-- Adaptive launcher background: the official icon's own ground colour,
          sampled at the artwork's edge (PIXEL-O, 2026-09-16). Flat, not a
          gradient — the launcher masks and parallaxes this layer. -->
-    <color name="ic_launcher_background">#C6E9FB</color>
+    <color name="ic_launcher_background">#ffffff</color>
 </resources>
