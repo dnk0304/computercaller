@@ -120,8 +120,19 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * ring, Active as a filled circle, neither animates, both keep the same 8px
  * footprint, the two differ in shape and not only in colour, and the two are
  * not exposed under the same accessible name). All 16 run unconditionally.
+ *
+ * EXT-UI-COMPOSER (2026-09-23) raised it 286 -> 291 by exactly the 5 the B3
+ * sign-in markup arm adds. They are SOURCE assertions, not page assertions,
+ * and that is the point: INC-0923 B2 established that Chrome can never offer
+ * a saved password inline to the /extension/login iframe (the password
+ * manager excludes chrome-extension:// primary main frames), so the shipped
+ * fix is a service-worker-owned site window. The markup here is already
+ * correct and is NOT the bug — which is exactly the kind of thing that gets
+ * "cleaned up" a year later by someone who reads `autoComplete` on a field
+ * nothing autofills as dead code. These five pin it so the regression cannot
+ * happen silently, and they cost no browser.
  */
-export const MIN_CHECKS = 286;
+export const MIN_CHECKS = 291;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -130,6 +141,35 @@ const check = (name, pass, detail = '') => {
 };
 
 const EMAIL = process.env.CC_SHOT_EMAIL || 'dennis.kotlenko@gmail.com';
+
+// ---------------------------------------------------------------------------
+// B3 (INC-0923) — the sign-in markup cannot regress silently.
+// ---------------------------------------------------------------------------
+{
+  const login = fs.readFileSync(path.join(process.cwd(), 'components/auth/LoginForm.tsx'), 'utf8');
+  const form = login.slice(login.indexOf('<form'), login.indexOf('</form>'));
+  check(
+    'LoginForm: a real <form> with an onSubmit handler (not a bare click handler)',
+    /<form[^>]*onSubmit=\{/.test(login),
+  );
+  check(
+    'LoginForm: no autocomplete="off" anywhere — on the form root or on a field',
+    !/autoComplete=["\{]?\s*['"]?off/i.test(login) && !/autocomplete=["']off/i.test(login),
+  );
+  check(
+    'LoginForm: the email input carries autoComplete="email"',
+    /autoComplete="email"/.test(form),
+  );
+  check(
+    'LoginForm: the password input carries autoComplete="current-password"',
+    /autoComplete="current-password"/.test(form),
+  );
+  check(
+    'LoginForm: both fields carry name + id, which is what a password manager keys on',
+    /id="login-email"/.test(form) && /name="email"/.test(form) &&
+      /id="login-password"/.test(form) && /name="password"/.test(form),
+  );
+}
 
 /**
  * The relay socket stand-in. Same shape as the one in ext-in-call-shots.mjs —
