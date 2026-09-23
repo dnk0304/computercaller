@@ -67,11 +67,23 @@ const check = (name, pass, detail = '') => {
 const expectedCap = (h) => Math.max(115, Math.min(202, Math.round(h * 0.48)));
 const MIN_PX = 36;
 
+/**
+ * OPT-IN EVIDENCE ARM (deliverable A4). Unset — which is how the gate runs
+ * this file — SHOTS_MODE is false and the harness behaves EXACTLY as before:
+ * same arms, same checks, same floor. Set to '1' it runs ONE thing instead:
+ * the real-Chrome-side-panel photographs, and exits. Nothing is shared with
+ * the gate path except the page-driving helpers below.
+ */
+const SHOTS_MODE = process.env.CC_SIDEPANEL_SHOTS === '1';
+
 // ===========================================================================
 // A) THE MODULE — transpiled from the real .ts at run time and imported.
 // ===========================================================================
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-composer-proof-'));
-{
+// Skipped in SHOTS_MODE on purpose: the BEFORE pass photographs a tree where
+// lib/extensionComposerHeight.ts DOES NOT EXIST yet, so transpiling it would
+// throw before a single pixel was taken.
+if (!SHOTS_MODE) {
   const src = path.join(REPO, 'lib', 'extensionComposerHeight.ts');
   // `node <tsc's JS entry>`, not the .bin shim: spawning a .cmd without a
   // shell is EINVAL on Node >= 20 on Windows, and spawning it WITH a shell is
@@ -252,6 +264,366 @@ const taHeight = (page) =>
 const grip = (page) => page.locator('[data-cc-composer-grip]');
 
 const LONG = Array.from({ length: 40 }, (_, i) => `line ${i + 1} of a long message that has to wrap`).join('\n');
+
+// ===========================================================================
+// A4) THE OPT-IN SIDE-PANEL EVIDENCE ARM  (CC_SIDEPANEL_SHOTS=1)
+// ===========================================================================
+// WHY THE LAUNCH RECIPE IS DUPLICATED FROM ext-sidepanel-window-shots.mjs
+// RATHER THAN IMPORTED — deliberate, do not "fix" it:
+// this lane's gate runs a scope-diff that only permits the files the dispatch
+// already touched. ext-sidepanel-window-shots.mjs is NOT one of them, so
+// refactoring its recipe into a shared lib (or importing from it, which would
+// run its top-level side effects — it mints cookies and launches Chrome at
+// import time) is out of scope for this deliverable. The copy below is the
+// same recipe, line for line, kept inside a permitted file. If that harness's
+// recipe changes, this copy must be re-synced by hand; that cost is accepted
+// in exchange for touching nothing outside the lane.
+//
+// RULE 25 is preserved verbatim: capture is PrintWindow via
+// scripts/lib/win-capture.ps1 on the HWND of a process THIS script spawned,
+// resolved by PID, with the strict-parentage guard that throws unless
+// Win32_Process ParentProcessId === process.pid. No CopyFromScreen, ever —
+// the operator's own chrome.exe must never be photographed or reaped.
+if (SHOTS_MODE) {
+  const { Reaper } = await import('./lib/reap.mjs');
+  const PS1 = path.join(REPO, 'scripts', 'lib', 'win-capture.ps1');
+  const OUT_DIR = path.resolve(process.env.CC_SIDEPANEL_OUT || SHOTS);
+  // 'after' = branch code, 'before' = the base-code pass (see the dispatch).
+  const PHASE = process.env.CC_SIDEPANEL_PHASE === 'before' ? 'before' : 'after';
+  const MARKER = '#ff00ff';
+  const PANEL_W = 400;
+  const CDP_PORT = Number(process.env.CC_CDP_PORT || 9333);
+  fs.mkdirSync(OUT_DIR, { recursive: true });
+
+  // .env.local, loaded the way ft-ui-proof.mjs / ext-sidepanel-window-shots.mjs
+  // load it: JWT_SECRET from the file, DATABASE_URL only from the real env.
+  {
+    const envPath = path.join(REPO, '.env.local');
+    if (fs.existsSync(envPath)) {
+      for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+        const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
+        if (!m) continue;
+        if (m[1] !== 'DATABASE_URL' && !(m[1] in process.env)) {
+          process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
+        }
+      }
+    }
+  }
+  const EMAIL = process.env.CC_SHOT_EMAIL;
+  if (!EMAIL) throw new Error('CC_SHOT_EMAIL must be set (screenshot account email)');
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL must be set');
+
+  const ps = (...a) => execFileSync('powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', PS1, ...a],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).trim();
+  const psJson = (...a) => JSON.parse(ps(...a));
+  const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const near = (a, b, tol = 24) => {
+    const [ar, ag, ab] = rgb(a); const [br, bg, bb] = rgb(b);
+    return Math.abs(ar - br) <= tol && Math.abs(ag - bg) <= tol && Math.abs(ab - bb) <= tol;
+  };
+  const scan = (line) => line.split(/\s+/).filter(Boolean).map((h) => `#${h}`);
+
+  // --- the tmp extension copy, repointed at the local server ---------------
+  const EXT = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-a4-ext-'));
+  fs.cpSync(path.join(REPO, 'chrome-extension'), EXT, { recursive: true });
+  fs.writeFileSync(path.join(EXT, 'config.js'),
+    fs.readFileSync(path.join(EXT, 'config.js'), 'utf8')
+      .replaceAll('https://computercaller.com', BASE).replace('wss://', 'ws://'));
+  {
+    const mfPath = path.join(EXT, 'manifest.json');
+    const mf = JSON.parse(fs.readFileSync(mfPath, 'utf8'));
+    mf.host_permissions = [`${BASE}/*`];
+    fs.writeFileSync(mfPath, JSON.stringify(mf, null, 2));
+  }
+
+  // --- a REAL session cookie, SameSite=None + Secure ----------------------
+  // The panel's iframe issues /api/auth/me from a chrome-extension:// origin,
+  // which is cross-site by definition; a Lax cookie is simply not sent and the
+  // shell paints SIGNED-OUT. localhost counts as trustworthy, so Secure is
+  // honoured without TLS.
+  const jwt = (await import('jsonwebtoken')).default;
+  const { PrismaClient } = await import('@prisma/client');
+  const db = new PrismaClient();
+  const dbUser = await db.user.findFirst({
+    where: { email: EMAIL }, select: { id: true, email: true, sessionVersion: true },
+  });
+  await db.$disconnect();
+  if (!dbUser) throw new Error(`no user ${EMAIL} to mint a session for`);
+  const COOKIE_HOST = new URL(BASE).hostname;
+  const SESSION_COOKIES = [
+    {
+      name: 'auth_token',
+      value: jwt.sign({ userId: dbUser.id, email: dbUser.email, ver: dbUser.sessionVersion ?? 0, purpose: 'access' },
+        process.env.JWT_SECRET, { expiresIn: '30d' }),
+      domain: COOKIE_HOST, path: '/', httpOnly: true, secure: true, sameSite: 'None',
+    },
+    {
+      name: 'idle_token',
+      value: jwt.sign({ userId: dbUser.id, purpose: 'idle' }, process.env.JWT_SECRET,
+        { algorithm: 'HS256', expiresIn: 4 * 60 * 60 }),
+      domain: COOKIE_HOST, path: '/', httpOnly: true, secure: true, sameSite: 'None',
+    },
+  ];
+
+  const written = [];
+
+  for (const THEME of ['light', 'dark']) {
+    // browser.theme.color_scheme themes Chrome's OWN UI (GM3 "Appearance");
+    // --force-dark-mode is the Windows flag that flips the native strip. Both,
+    // because they are two different settings. side_panel.width is pinned so a
+    // fresh profile does not open a 130px panel.
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-a4-profile-'));
+    fs.mkdirSync(path.join(userDataDir, 'Default'), { recursive: true });
+    fs.writeFileSync(path.join(userDataDir, 'Default', 'Preferences'), JSON.stringify({
+      browser: { theme: { color_scheme: THEME === 'dark' ? 2 : 1 } },
+      side_panel: { width: PANEL_W + 140 },
+    }));
+
+    let cdpBrowser = null;
+    let cdpBrowser2 = null;
+    const reaper = new Reaper().installExitHook('ext-composer-resize-proof:a4');
+    const beforeLaunch = reaper.mark();
+    const ctx = await chromium.launchPersistentContext(userDataDir, {
+      headless: false,
+      args: [
+        `--disable-extensions-except=${EXT}`,
+        `--load-extension=${EXT}`,
+        '--window-size=1900,1150',
+        '--force-device-scale-factor=1',
+        '--window-position=40,40',
+        // Playwright does NOT surface the side panel in ctx.pages() (measured:
+        // pages=about:blank only, backgroundPages empty) because it never
+        // attaches to that target. A second client over CDP does see it — it is
+        // an ordinary type:"page" target — so the panel is driven through a
+        // connectOverCDP handle to the SAME browser this script spawned. No
+        // extra process, and the capture PID is still the spawned one.
+        `--remote-debugging-port=${CDP_PORT}`,
+        ...(THEME === 'dark' ? ['--force-dark-mode'] : []),
+      ],
+      ignoreDefaultArgs: ['--disable-extensions'],
+      viewport: null,
+    });
+    const browserPids = reaper.adoptBrowser(beforeLaunch);
+    if (!browserPids.length) throw new Error('could not identify the Chromium browser PID to photograph');
+    {
+      const ppidOf = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${browserPids[0]}").ParentProcessId`],
+      { encoding: 'utf8' }).trim();
+      if (Number(ppidOf) !== process.pid) {
+        throw new Error(`refusing to photograph PID ${browserPids[0]}: its parent is ${ppidOf}, not this harness (${process.pid})`);
+      }
+    }
+
+    try {
+      await ctx.addCookies(SESSION_COOKIES);
+      // The SAME network stub the gate arms use, installed context-wide so the
+      // panel's /extension iframe gets it too. The cookie above proves the real
+      // signed-in shell renders; the stub supplies the CONVERSATION, which
+      // otherwise requires a physically paired handset on the relay. The pixels
+      // under test are the composer's, and those are ours either way.
+      await ctx.addInitScript(bootScript({ theme: THEME }));
+      // The side panel is NOT a page of `ctx` (Playwright never attaches to
+      // that target), so ctx.addInitScript does not reach the panel's iframe.
+      // Connect the second CDP client HERE — before the panel is opened — and
+      // install the same stub on its context, which does cover the panel.
+      cdpBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${CDP_PORT}`);
+      for (const c of cdpBrowser.contexts()) await c.addInitScript(bootScript({ theme: THEME }));
+
+      let sw = ctx.serviceWorkers()[0];
+      for (let i = 0; i < 60 && !sw; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        sw = ctx.serviceWorkers()[0];
+      }
+      if (!sw) throw new Error('extension service worker never appeared');
+      const EXT_ID = new URL(sw.url()).host;
+      const waker = await ctx.newPage();
+      await waker.goto(`chrome-extension://${EXT_ID}/sidepanel.html`).catch(() => {});
+      await waker.waitForTimeout(1500);
+      await waker.close().catch(() => {});
+      await sw.evaluate(async (t) => { await chrome.storage.local.set({ cc_theme: t }); }, THEME);
+
+      const tab = ctx.pages()[0] || await ctx.newPage();
+      for (const p of ctx.pages()) if (p !== tab) await p.close().catch(() => {});
+
+      // localStorage['cc:theme:last'] on the APP origin, before the panel
+      // opens — the hosted app reads it before first paint. (bootScript also
+      // writes it, but only once a page on that origin has loaded, so visit it.)
+      await tab.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+      await tab.evaluate((t) => { try { localStorage.setItem('cc:theme:last', t); } catch {} }, THEME);
+
+      // The trusted-click open: chrome.sidePanel.open() needs a real user
+      // gesture, and Playwright's click is genuine OS-level input.
+      await tab.goto(`chrome-extension://${EXT_ID}/popup.html`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+      await tab.waitForTimeout(800);
+      await tab.evaluate(() => {
+        const b = document.createElement('button');
+        b.id = '__cc_open_panel';
+        b.style.cssText = 'position:fixed;inset:0 auto auto 0;z-index:2147483647;width:240px;height:64px';
+        b.addEventListener('click', async () => {
+          try {
+            const w = await chrome.windows.getLastFocused();
+            await chrome.sidePanel.setOptions({ path: 'sidepanel.html', enabled: true });
+            await chrome.sidePanel.open({ windowId: w.id });
+            b.dataset.ccResult = 'ok';
+          } catch (e) { b.dataset.ccResult = 'err:' + (e && e.message ? e.message : String(e)); }
+        });
+        document.body.appendChild(b);
+      });
+      await tab.click('#__cc_open_panel');
+      let openDetail = '';
+      for (let i = 0; i < 40 && !openDetail; i++) {
+        openDetail = await tab.evaluate(() => document.getElementById('__cc_open_panel')?.dataset.ccResult || '');
+        if (!openDetail) await tab.waitForTimeout(250);
+      }
+      if (openDetail !== 'ok') throw new Error(`side panel did not open: ${openDetail || 'no result'}`);
+
+      // The opener tab MUST stay alive — closing the last tab closes the window
+      // and takes the panel with it. It is painted one impossible colour so the
+      // panel's left edge can be READ OFF THE BITMAP instead of guessed from
+      // Chrome frame metrics.
+      await tab.goto('about:blank', { waitUntil: 'domcontentloaded' }).catch(() => {});
+      await tab.evaluate((c) => {
+        document.documentElement.style.cssText = `background:${c};height:100%;color-scheme:light`;
+        document.body.style.cssText = `background:${c};margin:0;height:100%`;
+      }, MARKER);
+      await tab.waitForTimeout(5000);
+
+      // --- the panel page and its inner app frame --------------------------
+      // A SECOND, later CDP client purely for discovery: the first one was
+      // connected before the panel existed and does not surface the target
+      // that appeared after it. A fresh connect enumerates what is there now.
+      cdpBrowser2 = await chromium.connectOverCDP(`http://127.0.0.1:${CDP_PORT}`);
+      const allPages = () => cdpBrowser2.contexts().flatMap((c) => c.pages());
+      let panel = null;
+      for (let i = 0; i < 40 && !panel; i++) {
+        panel = allPages().find((p) => p.url().includes(`${EXT_ID}/sidepanel.html`)) || null;
+        if (!panel) await tab.waitForTimeout(250);
+      }
+      if (!panel) {
+        throw new Error('side-panel page target never appeared in ctx.pages(); pages=' +
+          allPages().map((p) => p.url()).join(' | '));
+      }
+      // The panel's /extension iframe is an OOPIF whose url Playwright can
+      // report as '' over a CDP handle, so frames are identified by ASKING
+      // each one where it is.
+      const findApp = async () => {
+        for (let i = 0; i < 80; i++) {
+          for (const f of panel.frames()) {
+            const here = await f.evaluate(() => location.href).catch(() => '');
+            if (here.startsWith(BASE) && here.includes('/extension')) return f;
+          }
+          await panel.waitForTimeout(500);
+        }
+        return null;
+      };
+      let app = await findApp();
+      if (!app) throw new Error(`panel app frame never appeared (frames: ${panel.frames().map((f) => f.url()).join(' | ')})`);
+
+      // ctx.addInitScript never reaches this iframe (ctx does not own the panel
+      // target), and the second CDP client attached after it had already
+      // loaded. So install the stub on the PANEL page and re-navigate the
+      // iframe, which is the only moment a document-start script can land.
+      // The real session cookie above is what makes the SHELL sign in; the stub
+      // is what supplies a conversation without a physically paired handset.
+      await panel.addInitScript(bootScript({ theme: THEME }));
+      await panel.evaluate(() => {
+        const f = document.querySelector('iframe');
+        if (f) f.src = f.src;
+      });
+      await panel.waitForTimeout(1500);
+      app = await findApp();
+      if (!app) throw new Error('panel app frame did not come back after the stub reload');
+      await panel.waitForTimeout(3000);
+
+      console.log('  app frame diag: ' + JSON.stringify(await app.evaluate(() => ({
+        stubbed: window.WebSocket && window.WebSocket.name === 'FakeWS',
+        theme: (() => { try { return localStorage.getItem('cc:theme:last'); } catch (e) { return 'x'; } })(),
+        tabs: [...document.querySelectorAll('[role=tab]')].map((e) => e.textContent.trim()),
+        text: document.body.innerText.replace(/\s+/g, ' ').slice(0, 300),
+      })).catch((e) => String(e))));
+      await app.getByRole('tab', { name: /texts/i }).click({ timeout: 15_000 }).catch(() => {});
+      await panel.waitForTimeout(1200);
+      await app.getByRole('button', { name: /Marta Ruiz|Takk!|\+4745720075/ }).first()
+        .click({ timeout: 15_000 }).catch(() => {});
+      await panel.waitForTimeout(1200);
+      const ta = app.locator('textarea[aria-label="Message body"]');
+      await ta.waitFor({ timeout: 20_000 });
+
+      // --- locate the panel column ONCE, then crop every state to it -------
+      const pid = browserPids[0];
+      const probe = path.join(OUT_DIR, `_full-${PHASE}-${THEME}.png`);
+      const cap = psJson('-Action', 'capture', '-ProcessId', String(pid), '-Out', probe);
+      const markRow = scan(ps('-Action', 'scanrow', '-In', probe, '-Y', String(Math.round(cap.height * 0.6))));
+      let lastMark = -1;
+      for (let i = 0; i < markRow.length; i++) if (near(markRow[i], MARKER)) lastMark = i;
+      if (lastMark < 0) throw new Error('marker colour not found in the capture');
+      const panelLeft = lastMark + 4;
+      const panelW = cap.width - 6 - panelLeft;
+      const markCol = scan(ps('-Action', 'scancol', '-In', probe, '-X', String(Math.round(lastMark / 2))));
+      let panelTop = markCol.findIndex((c) => near(c, MARKER));
+      if (panelTop < 0) panelTop = 0;
+      // The FULL panel column, not a 640/720px slice: the composer lives at the
+      // panel's BOTTOM edge, and a short crop photographs the conversation and
+      // cuts off the only thing this evidence is about (measured: the first run
+      // produced six handsome screenshots with no composer in any of them).
+      const cropH = cap.height - panelTop - 8;
+
+      const shoot = async (state) => {
+        const full = path.join(OUT_DIR, `_full-${PHASE}-${THEME}-${state}.png`);
+        psJson('-Action', 'capture', '-ProcessId', String(pid), '-Out', full);
+        const dest = path.join(OUT_DIR, `composer-${PHASE}-${THEME}-${state}.png`);
+        const c = psJson('-Action', 'crop', '-In', full, '-Out', dest,
+          '-X', String(panelLeft), '-Y', String(panelTop), '-W', String(panelW), '-H', String(cropH));
+        fs.rmSync(full, { force: true });
+        const bytes = fs.statSync(dest).size;
+        written.push({ file: dest, bytes, px: `${c.width}x${c.height}` });
+        console.log(`WROTE ${dest}  ${c.width}x${c.height}  ${bytes} B`);
+      };
+
+      // single — empty composer, one line
+      await ta.fill('');
+      await panel.waitForTimeout(700);
+      await shoot('single');
+
+      // grown — a long draft, auto-grown to the cap
+      await ta.fill(LONG);
+      await panel.waitForTimeout(1200);
+      await shoot('grown');
+
+      // max — the grip dragged (keyboard End) to the LIVE maximum.
+      // On the BEFORE code there is no [data-cc-composer-grip] at all, so this
+      // state cannot be produced: its absence IS the before-state. The same
+      // thread view is photographed under the before name so the ladder has
+      // twelve comparable frames; the report says plainly that the before
+      // "max" is the old auto-grown cap, not a dragged maximum.
+      await ta.fill('');
+      await panel.waitForTimeout(500);
+      const gripCount = await app.locator('[data-cc-composer-grip]').count();
+      if (gripCount > 0) {
+        await app.locator('[data-cc-composer-grip]').focus();
+        await panel.keyboard.press('End');
+        await panel.waitForTimeout(900);
+      } else {
+        console.log('NOTE  no [data-cc-composer-grip] in this tree — BEFORE has no max state; capturing the auto-grown cap instead');
+        await ta.fill(LONG);
+        await panel.waitForTimeout(1200);
+      }
+      await shoot('max');
+    } finally {
+      if (cdpBrowser2) await cdpBrowser2.close().catch(() => {});
+      if (cdpBrowser) await cdpBrowser.close().catch(() => {});
+      await ctx.close().catch(() => {});
+      reaper.reapAndReport('ext-composer-resize-proof:a4');
+      fs.rmSync(path.join(OUT_DIR, `_full-${PHASE}-${THEME}.png`), { force: true });
+    }
+  }
+
+  console.log(`\nA4 side-panel evidence (${PHASE}): ${written.length} PNG(s)`);
+  for (const w of written) console.log(`  ${w.file}  ${w.px}  ${w.bytes} B`);
+  fs.rmSync(TMP, { recursive: true, force: true });
+  process.exit(written.length === 6 ? 0 : 1);
+}
 
 const browser = await chromium.launch({ headless: true });
 try {
