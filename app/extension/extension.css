@@ -1773,16 +1773,50 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    the one shrinkable object in the row (mark pinned, wordmark on an
    aspect-ratio, see CcLockup), so a longer device name than any tested here
    takes pixels off the wordmark rather than off the panel. */
-/* THE DEFICIT HAS TO REACH THE FLEX ROW, which is the non-obvious half.
-   ConnectionStatus's lobby pill ("Phone nearby · Connect · reset") is made of
-   flex-shrink-0 words: its min-content is ~194px at Large, and NOTHING in it
-   can truncate. The slot it sits in carries Tailwind's `min-w-0`, which caps
-   the slot at whatever is left over and lets the pill spill silently past the
-   panel edge — 5px at 360 x Large, and the user's only clue is a horizontal
-   scrollbar. Restoring `min-width: auto` on the slot propagates that real
-   floor up to the header row, so flexbox has a deficit to resolve instead of
-   an overflow to hide. */
-.cc-ext .cc-ext-header .cc-ext-conn { min-width: auto; }
+/* T-EXT-TEXTS-OVERFLOW — this rule USED to read `min-width: auto`, and that
+   is what shipped the 21px overflow to WEB PROD. Both halves of the story
+   matter, because the rule was right when it was written and wrong by the
+   time EXT-UI-4 landed.
+
+   WHY IT WAS WRITTEN. ConnectionStatus's LOBBY pill ("Phone nearby · Connect
+   · reset") is made of flex-shrink-0 words and nothing in it can truncate.
+   With Tailwind's `min-w-0` on the slot, that pill spilled 5px past the panel
+   edge at 360 x Large — silently, because the slot absorbed the deficit
+   instead of propagating it. `min-width: auto` re-published the pill's real
+   min-content floor to the header row so flexbox had a deficit to resolve.
+   At the time the brand slot was a 151px lockup, so those 5px were real.
+
+   WHY IT IS WRONG NOW, MEASURED at 8e923dc on the gate's own dev server
+   (docs/screenshots parity aside, numbers identical at both widths):
+     .cc-ext-conn  width 314px at 400 AND at 360   <- frozen at min-content
+     .cc-conn-pill width 296px, scrollWidth 296px  <- max-content, no truncation
+     name span     142px, scrollWidth 142px, text "Samsung Galaxy S24 Ultra"
+     header        scrollWidth 421 / clientWidth 400 and 421 / 360
+   A floor that does not move with the viewport is the signature: the row was
+   content-sized, not space-sized. EXT-UI-4 M7 released the pill's
+   `max-w-[210px]` inside this panel (see the M7 block below), which was the
+   right call — but it also removed the only thing that was bounding the
+   min-content floor this rule re-published. Before M7 the floor was ~210+18
+   and fit inside the slot; after M7 it is the pill's full nowrap content
+   width, and a 24-character device name pushes it 21px past the panel.
+   So M7 did not cause the overflow on its own and neither did this line: the
+   two are only lethal together, which is why the revert of M7's siblings did
+   not clear it.
+
+   WHY `min-width: 0` IS SAFE AGAIN, rather than a re-introduction of the 5px
+   lobby spill: EXT-FRAME-2 made the wordmark popup-only, so the brand slot on
+   this surface is a 35px mark, not the 151px lockup the old note measured
+   against. The lobby pill's ~194px min-content now sits inside the ~265px the
+   slot is handed at the narrowest supported width (360 x Large), with room to
+   spare — re-measured, not assumed, and asserted by ext-text-size-proof's
+   `header does not overflow` at all six combinations.
+
+   With the floor released, the deficit finally reaches the ONE elastic thing
+   in the row: the pill's `min-w-0 truncate` device name. Every other item in
+   the pill is flex-shrink-0 by construction (dot, battery glyph, state word,
+   X/Connect, the spacer), so the name is the only thing that can give —
+   which is exactly what AC-1 asks for and what M7's intent was. */
+.cc-ext .cc-ext-header .cc-ext-conn { min-width: 0; }
 
 /* ...and the brand slot is no longer what resolves it. This comment described
    PIXEL-S2's "the wordmark is gone" state, which VARIANT B then reversed on

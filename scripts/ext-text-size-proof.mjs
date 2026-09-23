@@ -493,33 +493,52 @@ try {
       );
       check(`${size} @${width}px: header does not wrap`, m.headerWrapped === false);
       check(`${size} @${width}px: header does not overflow`, m.headerOverflows === false);
-      // WHAT THIS ASSERTS, AND WHY IT IS NOT THE DISPATCH'S "8 CHARACTERS".
+      // WHAT THIS ASSERTS — REWRITTEN BY T-EXT-TEXTS-OVERFLOW.
       //
-      // The dispatch's capacity rule reads "every px added comes out of the
-      // device pill's truncation width". Measured, that premise does not hold
-      // on this row: the pill stops at its OWN `max-w-[210px]` while the slot
-      // it sits in is 245px at 360 and 285px at 400. The pill is capped by
-      // itself, not squeezed by the row, so there are 35-75px of slack ahead
-      // of it and a 24px button spends none of the name's width. The A/B below
-      // proves that directly — the same pill, measured with and without the
-      // button in the row, to the pixel.
+      // The block that stood here asserted that the Send file button costs the
+      // device name ZERO pixels, and its stated reason was that "the pill stops
+      // at its OWN max-w-[210px] ... there are 35-75px of slack ahead of it".
+      // That premise died twice over:
+      //   1. EXT-UI-4 M7 released the 210px cap inside this panel on purpose.
+      //   2. What actually made the delta zero at the time this ran was the
+      //      DEFECT: `.cc-ext-header .cc-ext-conn { min-width: auto }` froze the
+      //      slot at the pill's max-content (314px at 360 AND at 400), so the
+      //      pill was not sharing the row's width with anything and removing a
+      //      24px button changed nothing. The assertion passed BECAUSE the
+      //      header overflowed by 21px. A green arm sitting on top of a red one
+      //      is worse than no arm.
       //
-      // The 8-character floor is missed at every one of the six combinations,
-      // BY THE SAME 6 CHARACTERS WITH THE BUTTON REMOVED. It is a pre-existing
-      // property of the 210px cap plus the dot, the battery and the menu
-      // button, and EXT-UI-8 neither caused it nor can fix it from here.
-      // Asserting a floor this lane does not control would make the next
-      // unrelated lane red; asserting the DELTA is what protects AC-1.
+      // The honest rule, now that the name is genuinely the row's elastic item,
+      // is the dispatch's original capacity rule: a control in this row costs
+      // the name EXACTLY its own box plus one gap, and never more. Measured at
+      // the fix: 142 -> 113px at 400 and 103 -> 73px at 360, i.e. 29-30px for a
+      // 24px button in a 6px-gap row, identical at every size. The ceiling is
+      // stated as the button box + one gap + 2px of rounding, so a control that
+      // quietly starts costing the name a second control's worth goes red.
+      const sendCost = (m.pill && m.pillNoSend) ? m.pillNoSend.avail - m.pill.avail : null;
       check(
-        `${size} @${width}px: the Send file button costs the pill ZERO name pixels`,
-        !!m.pill && !!m.pillNoSend && Math.abs(m.pill.avail - m.pillNoSend.avail) < 0.5
-          && m.pill.chars === m.pillNoSend.chars,
+        `${size} @${width}px: the Send file button costs the name its own box and no more`,
+        sendCost !== null && sendCost > 0 && sendCost <= 24 + 6 + 2,
         m.pill && m.pillNoSend
-          ? `${m.pill.avail}px / ${m.pill.chars} chars with, ${m.pillNoSend.avail}px / ${m.pillNoSend.chars} chars without`
+          ? `${m.pill.avail}px / ${m.pill.chars} chars with, ${m.pillNoSend.avail}px / ${m.pillNoSend.chars} chars without = ${Math.round(sendCost * 10) / 10}px`
           : 'not measured',
       );
+      // T-EXT-TEXTS-OVERFLOW (3). The 8-visible-character floor, asserted for
+      // the first time. It was missed at EVERY combination before the fix —
+      // not because 8 characters do not fit, but because the name never
+      // truncated at all and the panel overflowed instead. With the deficit
+      // reaching the name it truncates properly and keeps 16 chars at 400 and
+      // 9 at 360, at all three sizes (the pill's type is pinned at 11.5px, so
+      // the picker does not move this number). Never lower this floor: a lane
+      // that cannot keep 8 characters of a device name has taken the row's
+      // width for something else.
       check(
-        `${size} @${width}px: the pill is capped by itself, not squeezed by the row`,
+        `${size} @${width}px: the device name keeps at least 8 visible characters`,
+        !!m.pill && m.pill.chars >= 8,
+        m.pill ? `${m.pill.chars} chars in ${m.pill.avail}px${m.pill.truncated ? ' (truncated)' : ' (fits whole)'}` : 'pill not found',
+      );
+      check(
+        `${size} @${width}px: the pill fits inside its slot, never past it`,
         !!m.pill && m.pill.connW >= m.pill.pillW,
         m.pill ? `${m.pill.chars} chars in ${m.pill.avail}px name-slot (conn slot ${m.pill.connW}px, pill ${m.pill.pillW}px)${m.pill.truncated ? " truncated" : " fits whole"}${m.pill.synthesised ? " [name span synthesised: idle pill]" : ""}` : 'pill not found',
       );

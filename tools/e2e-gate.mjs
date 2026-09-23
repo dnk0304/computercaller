@@ -663,7 +663,13 @@ const MIN_CHECKS_OVERRIDE = {
   // number was from EXT-FRAME-2; the harness has grown since and nobody
   // re-measured it, because until this commit no gate ran it. The floor is
   // what the tip measures, never less.
-  'harness:ext-text-size-proof': 202,
+  // T-EXT-TEXTS-OVERFLOW re-measure 202 -> 208. The fix does not add arms by
+  // itself; the SIX new arms are the 8-visible-character floor, asserted for
+  // the first time (deliverable (3)). The "Send file costs ZERO name pixels"
+  // arm was REPLACED, not removed — same six combinations, a bounded-cost rule
+  // instead of a zero-cost one, because the zero it measured was produced by
+  // the 21px overflow this lane closes. Never lower.
+  'harness:ext-text-size-proof': 208,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit
