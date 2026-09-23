@@ -112,6 +112,8 @@ class SmsReceiver : BroadcastReceiver() {
             val now = System.currentTimeMillis()
             val emit = assembleForEmit(parts, now) ?: run {
                 android.util.Log.w("SmsReceiver", "no usable PDU parts — nothing emitted")
+                DiagLog.counter("sms.dropped.no_parts")
+                DiagLog.w("SmsReceiver", "SMS dropped: no usable PDU parts (n=${parts.size})")
                 return
             }
             // How far the SMSC clock was from receipt. Length/skew only —
@@ -121,6 +123,23 @@ class SmsReceiver : BroadcastReceiver() {
                 "SmsReceiver",
                 "assembled emit 1 of 1 from ${parts.size} part(s) " +
                     "len=${emit.body?.length ?: 0} smscSkewMs=$smscSkewMs"
+            )
+            // vc63 — metadata only. The sender is hashed HERE, at the call
+            // site, rather than handed to Redact raw: Redact normalises
+            // "+4712345678" and "4712345678" to different tokens by design, so
+            // hashing the address the SMS stack gave us keeps one sender to one
+            // handle across SmsReceiver, MmsHandler and the call log. The BODY
+            // is never passed in any form — only its length.
+            //
+            // `forwarded` is whether a listener was attached at all: a received
+            // SMS that never reached the relay because the bridge was down is
+            // the exact complaint this line answers.
+            DiagLog.counter("sms.received")
+            DiagLog.d(
+                "SmsReceiver",
+                "SMS in parts=${parts.size} multipart=${parts.size > 1} " +
+                    "from=${Redact.hash6(emit.from ?: "Unknown")} len=${emit.body?.length ?: 0} " +
+                    "smscSkewMs=$smscSkewMs forwarded=${onSmsReceived != null}",
             )
 
             onSmsReceived?.invoke(

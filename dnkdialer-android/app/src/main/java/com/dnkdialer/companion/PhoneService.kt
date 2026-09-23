@@ -2114,6 +2114,11 @@ class PhoneService : Service() {
     override fun onCreate() {
         super.onCreate()
         android.util.Log.d("PhoneService", "onCreate called")
+        // vc63 — service lifecycle. A flap storm and a service that the OS is
+        // repeatedly killing and restarting produce very similar relay logs;
+        // these lines are what tells them apart.
+        DiagLog.counter("svc.onCreate")
+        DiagLog.d("PhoneService", "onCreate")
 
         // INC-0923. The downgrade latch is per-service-instance and therefore
         // already fresh here; the explicit clear states the guarantee the
@@ -2299,6 +2304,11 @@ class PhoneService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         android.util.Log.d("PhoneService", "onStartCommand called with action: ${intent?.action}")
+        // Action NAME only — an intent's extras are caller-supplied.
+        DiagLog.d(
+            "PhoneService",
+            "onStartCommand action=${intent?.action ?: "null"} flags=$flags startId=$startId",
+        )
 
         when (intent?.action) {
             ACTION_START -> {
@@ -2713,6 +2723,14 @@ class PhoneService : Service() {
         try {
             client?.sendResponse(type, body)
             android.util.Log.d("PhoneService", "$type sent for pairingId=$pairingId")
+            // vc63 — ACCEPT vs DECLINE and whether an e2e block rode along.
+            // The pairingId is HASHED, not logged: it is the HKDF salt
+            // (E2ePairIdentity) and a room address on the relay.
+            DiagLog.counter("pairing." + type.lowercase())
+            DiagLog.d(
+                "PhoneService",
+                "$type sent pair=${Redact.hash6(pairingId)} e2eBlock=${block != null}",
+            )
         } catch (e: Exception) {
             android.util.Log.e("PhoneService", "Failed to send $type: ${e.message}", e)
         }
@@ -2743,6 +2761,17 @@ class PhoneService : Service() {
         }
         val offer = E2eNegotiation.parsePeerOffer(block)
         pendingE2eOffers[pairingId] = offer
+        // vc63 — BROWSER_REQUEST_PAIRING as received. The recipient COUNT and
+        // the kinds are the INC-0923 signal: the browser advertised recips=2
+        // (web + service worker) while only the web row existed in the
+        // registry, and that asymmetry is invisible from the phone today.
+        // Kinds are a fixed enum from E2eNegotiation, never free text.
+        DiagLog.counter("pairing.request")
+        DiagLog.d(
+            "PhoneService",
+            "BROWSER_REQUEST_PAIRING pair=${Redact.hash6(pairingId)} adv=${offer.advertisement} " +
+                "recips=${offer.recipients.size} kinds=${offer.recipients.joinToString("/") { it.kind }}",
+        )
         // P4.1 — persist it. `pendingE2eOffers` is in-memory and dies with the
         // process; the Settings screen is normally opened minutes later from a
         // cold start, and answering "waiting" there is the P4 Part 1 bug.
@@ -2784,9 +2813,20 @@ class PhoneService : Service() {
             ?: E2eNegotiation.parsePeerOffer(null).also {
                 android.util.Log.w("PhoneService", "no stashed e2e offer for $pairingId")
             }
-        return E2eNegotiation.decide(
+        val decision = E2eNegotiation.decide(
             E2eSettings.isEncryptedModeEnabled(this), offer, e2eDowngradeLatch
         )
+        // vc63 — the line that would have named INC-0923 in one read. The
+        // Abort reason is E2eNegotiation's own constant string, not anything a
+        // peer supplied, so it is safe verbatim and is the discriminator
+        // between "the latch refused this" and "the peer cannot encrypt".
+        DiagLog.d(
+            "PhoneService",
+            "e2e decide offerAdv=${offer.advertisement} latched=${e2eDowngradeLatch.isLatched} " +
+                "-> ${decision.javaClass.simpleName}" +
+                (if (decision is E2eNegotiation.Decision.Abort) " reason=${decision.logReason}" else ""),
+        )
+        return decision
     }
 
     /**
@@ -2864,6 +2904,17 @@ class PhoneService : Service() {
                 else -> E2eNegotiation.ABORT_MESSAGE to "pin refused: $verdict"
             }
             android.util.Log.w("PhoneService", "E2E pin refused: $reason")
+            // vc63 — verdict class + whether it LATCHED. The two together are
+            // the whole INC-0923 mechanism: a FailClosed that latched was the
+            // bug; a FailClosed that does not latch is the fix. logReason is
+            // E2eKeyPin's own text (recipient kind + key fingerprint prefix),
+            // and Redact runs over it regardless.
+            DiagLog.counter("e2e.pin.refused")
+            DiagLog.w(
+                "PhoneService",
+                "e2e pin ${verdict.javaClass.simpleName} " +
+                    "latches=${E2eNegotiation.DowngradeLatch.latchesOn(verdict)} reason=$reason",
+            )
             // INC-0923 / lane C. Latch ONLY on a Mismatch — a key the registry
             // actively contradicts (substituted, wrong kind, REVOKED row). That
             // is an attack signature and a later weaker offer from the same
@@ -2884,6 +2935,8 @@ class PhoneService : Service() {
             // §13.6 fail-open: the pairing proceeds, but it is NOT verified and
             // must not be badged as if it were.
             android.util.Log.w("PhoneService", "E2E unverified: ${verdict.logReason}")
+            DiagLog.counter("e2e.pin.failopen")
+            DiagLog.w("PhoneService", "e2e pin FailOpenUnverified reason=${verdict.logReason}")
         }
 
         // ------------------------------------------------- the handshake
@@ -3008,11 +3061,24 @@ class PhoneService : Service() {
     private fun clearDowngradeLatch(event: E2eNegotiation.DowngradeLatch.Event) {
         if (!E2eNegotiation.DowngradeLatch.clearsLatch(event)) {
             android.util.Log.d("PhoneService", "downgrade latch kept across $event")
+            // vc63 — the 'latch kept across <event>' lines are the INC-0923
+            // evidence the brief names. They are what distinguishes "the user
+            // must force-stop the app" (lane C's deliberate cost) from a bug,
+            // and without them the two are indistinguishable in a support
+            // thread.
+            DiagLog.d(
+                "PhoneService",
+                "latch kept across $event clearsLatch=false latched=${e2eDowngradeLatch.isLatched}",
+            )
             return
         }
         if (e2eDowngradeLatch.isLatched) {
             android.util.Log.i("PhoneService", "downgrade latch cleared by $event")
         }
+        DiagLog.d(
+            "PhoneService",
+            "latch clear event=$event clearsLatch=true was=${e2eDowngradeLatch.isLatched}",
+        )
         e2eDowngradeLatch.clear()
     }
 
@@ -3879,6 +3945,8 @@ class PhoneService : Service() {
                 // again. Bail without scheduling.
                 if (code == 4401) {
                     android.util.Log.w("PhoneService", "Relay rejected token (4401) — not auto-reconnecting")
+                    DiagLog.counter("ws.close.4401")
+                    DiagLog.w("PhoneService", "relay rejected token 4401 — reconnect suppressed")
                     cancelLobbyReconnect()
                     return@PhoneClient
                 }
@@ -3977,12 +4045,19 @@ class PhoneService : Service() {
                 "PhoneService",
                 "Skip lobby reconnect — user stayed-disconnected flag set (reason=$reason)"
             )
+            // vc63 — scheduled vs skipped is the pair that separates a flap
+            // storm (many scheduled) from a phone that has simply been told to
+            // stay off (many skipped). `reason` is our own call-site string.
+            DiagLog.counter("reconnect.skipped")
+            DiagLog.d("PhoneService", "reconnect skipped cause=stayed-disconnected trigger=$reason")
             return
         }
         android.util.Log.d(
             "PhoneService",
             "Lobby auto-reconnect scheduled in ${lobbyReconnectDelayMs}ms (reason=$reason)"
         )
+        DiagLog.counter("reconnect.scheduled")
+        DiagLog.d("PhoneService", "reconnect scheduled inMs=$lobbyReconnectDelayMs trigger=$reason")
         val task = Runnable {
             reconnectRunnable = null
             val url = clientRelayUrl
@@ -4623,6 +4698,8 @@ class PhoneService : Service() {
                  */
                 "RESET_ROOM" -> {
                     android.util.Log.d("PhoneService", "RESET_ROOM")
+                    DiagLog.counter("relay.reset_room")
+                    DiagLog.d("PhoneService", "RESET_ROOM received")
                     isPairActive = false
                     tearDownE2e("RESET_ROOM")
                     // INC-0923 / lane C (binding): the latch is deliberately

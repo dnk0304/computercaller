@@ -217,6 +217,17 @@ class FileTransferManager(
                     "from" to FileTransfer.FROM_PHONE,
                 )
             )
+            // vc63 — NO FILENAME. A file name is user content (and routinely a
+            // person's name); only its length and extension are logged, which
+            // is what a "why did my .heic fail" report actually needs. The
+            // sha256 prefix is 8 hex: enough to pair this offer with the relay
+            // and the browser side, not enough to confirm a guessed file.
+            DiagLog.counter("ft.offer.out")
+            DiagLog.d(
+                "FileTransfer",
+                "FILE_OFFER out id=$id size=$size sha8=${sha.take(8)} " +
+                    "name.len=${name.length} ext=${name.substringAfterLast('.', "none")}",
+            )
 
             // Wait for FILE_ACCEPT. A FILE_FAILED (quota / tier / too_large)
             // from the relay lands in onFrame and clears `active`, which is
@@ -316,6 +327,17 @@ class FileTransferManager(
             if (seq % 16 == 0 || seq == n - 1) {
                 listener.onProgress(s.id, s.name, s.sentBytes, s.size, true)
             }
+            // vc63 — every 50 chunks and at the last one. Sampled rather than
+            // per-chunk: a 200 MB transfer is ~3 200 chunks, and a line each
+            // would evict the whole 2 000-line ring and take the socket events
+            // around the transfer with it — which is precisely the context an
+            // INC-0923-style report needs.
+            if (seq % 50 == 0 || seq == n - 1) {
+                DiagLog.d(
+                    "FileTransfer",
+                    "FILE_CHUNK out id=${s.id} seq=$seq of=$n bytes=${s.sentBytes}",
+                )
+            }
             seq++
         }
 
@@ -334,6 +356,12 @@ class FileTransferManager(
         }
 
         send(FileTransfer.DONE, mapOf("id" to s.id, "sha256" to s.sha256))
+        DiagLog.counter("ft.done.out")
+        DiagLog.d(
+            "FileTransfer",
+            "FILE_DONE out id=${s.id} chunks=$n bytes=${s.size} " +
+                "ms=${System.currentTimeMillis() - startedMs}",
+        )
         android.util.Log.i(
             "FileTransfer",
             "sent ${s.size} B in $n chunks in ${System.currentTimeMillis() - startedMs} ms"
@@ -399,6 +427,16 @@ class FileTransferManager(
                 }
                 touch()
                 send(FileTransfer.ACCEPT, mapOf("id" to offer.id))
+                // vc63 — latency from offer. INC-0923 item 2 was a FILE_ACCEPT
+                // that never reached the relay because the socket flapped in
+                // between; "accept sent at +Nms" next to a ws.close at the same
+                // second is what makes that readable instead of inferred.
+                DiagLog.counter("ft.accept.sent")
+                DiagLog.d(
+                    "FileTransfer",
+                    "FILE_ACCEPT sent id=${offer.id} " +
+                        "offerLatencyMs=${System.currentTimeMillis() - offer.offeredAtMs}",
+                )
                 listener.onProgress(r.id, r.name, 0, r.size, false)
                 persistResume(r)
                 // A zero-byte file has no chunks; FILE_DONE will arrive next.
@@ -426,6 +464,9 @@ class FileTransferManager(
         val offer = pendingOffer ?: return
         pendingOffer = null
         send(FileTransfer.REJECT, mapOf("id" to offer.id, "reason" to reason))
+        // Reason is constrained to FileTransfer.Reason.ALL by the callers.
+        DiagLog.counter("ft.reject.sent")
+        DiagLog.d("FileTransfer", "FILE_REJECT sent id=${offer.id} reason=$reason")
         listener.onIdle()
     }
 
@@ -547,6 +588,10 @@ class FileTransferManager(
                 // sender otherwise, and only one of them is worth retrying.
                 val reason = (p["reason"] as? String)?.takeIf { it in FileTransfer.Reason.ALL }
                     ?: FileTransfer.Reason.CANCELLED
+                // Logged AFTER the allowlist filter, so the value is one of the
+                // known enum strings and never peer-supplied free text.
+                DiagLog.counter("ft.reject.in")
+                DiagLog.d("FileTransfer", "FILE_REJECT in id=${s.id} reason=$reason")
                 fail(s, reason, true)
             }
             FileTransfer.CHUNK -> onChunk(p)
@@ -646,6 +691,16 @@ class FileTransferManager(
         )
         pendingOffer = offer
         touch()
+        // vc63. `ft-hint present` is the INC-0923-adjacent field: under mode ON
+        // a FILE_OFFER with no `ft` hint is a stripped-hint attack, and the
+        // refusal is otherwise indistinguishable from an ordinary decline.
+        DiagLog.counter("ft.offer.in")
+        DiagLog.d(
+            "FileTransfer",
+            "FILE_OFFER in id=$id size=$size sha8=${offer.sha256.take(8)} " +
+                "name.len=${name.length} ext=${name.substringAfterLast('.', "none")} " +
+                "ftHint=${p["ft"] != null}",
+        )
         listener.onOfferReceived(id, name, size, offer.mime)
     }
 
@@ -782,6 +837,14 @@ class FileTransferManager(
 
     private fun fail(a: Active, reason: String, outgoing: Boolean) {
         if (active !== a) return
+        // vc63 — the single terminal-failure chokepoint, so one line covers
+        // every reason enum (TIMEOUT / CANCELLED / TOO_LARGE / hash mismatch).
+        DiagLog.counter("ft.failed." + reason)
+        DiagLog.w(
+            "FileTransfer",
+            "FILE_FAILED id=${a.id} reason=$reason outgoing=$outgoing " +
+                "kind=${if (a is Active.Receive) "receive" else "send"}",
+        )
         send(FileTransfer.FAILED, mapOf("id" to a.id, "reason" to reason))
         if (a is Active.Receive) {
             closeReceive(a)

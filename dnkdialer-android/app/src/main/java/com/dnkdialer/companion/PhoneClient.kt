@@ -59,6 +59,10 @@ class PhoneClient(
 
     override fun onOpen(handshake: ServerHandshake?) {
         android.util.Log.d("PhoneClient", "Connected to relay: $uri")
+        // vc63 — host only. The full relay URL carries the phone token in the
+        // query string on the legacy path, so the URL itself is a credential.
+        DiagLog.counter("ws.open")
+        DiagLog.d("PhoneService", "ws open host=${uri.host} resume=${handshake != null}")
         onConnectionChange(true)
         // Send device name to relay so browsers can display it
         val deviceName = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
@@ -104,6 +108,27 @@ class PhoneClient(
 
     override fun onClose(code: Int, reason: String?, remote: Boolean) {
         android.util.Log.d("PhoneClient", "Disconnected from relay (code: $code, reason: $reason, remote: $remote)")
+        // vc63 / T-INC-0923-PHONE-FLAP. `remote` is the field that made this
+        // incident un-diagnosable from the phone: the relay saw THREE PAIRS of
+        // clean 1000 closes in 71 s and could not tell which half of each pair
+        // the phone originated. Splitting the 1000 bucket on `remote` answers
+        // that from the user's own zip.
+        //
+        // The reason string is logged as present/absent, never verbatim: it is
+        // peer-supplied text and the one field here an attacker controls.
+        DiagLog.counter(
+            when {
+                code == 1000 && !remote -> "ws.close.1000.phone"
+                code == 1000 -> "ws.close.1000.peer"
+                code == 1006 -> "ws.close.1006"
+                else -> "ws.close.other"
+            },
+        )
+        DiagLog.noteSocketClose()
+        DiagLog.d(
+            "PhoneService",
+            "ws close code=$code remote=$remote reason=" + (!reason.isNullOrBlank()),
+        )
         onConnectionChange(false)
         // Code 1000 is the normal-closure code. Anything else - including
         // 1006 (abnormal closure, common when the server is unreachable),
@@ -123,6 +148,11 @@ class PhoneClient(
         // to concrete user-facing copy.
         val reason = ex?.let { "${it.javaClass.simpleName}: ${it.message ?: "no detail"}" }
         android.util.Log.e("PhoneClient", "Connection error: $reason")
+        // Exception CLASS only. The message of a network exception routinely
+        // contains the resolved host and, on the legacy query-string path, the
+        // token that was in the URL.
+        DiagLog.counter("ws.failure")
+        DiagLog.w("PhoneService", "ws failure cls=" + (ex?.javaClass?.simpleName ?: "null"))
         onConnectionError?.invoke(-1, reason)
     }
 
