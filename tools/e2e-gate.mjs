@@ -541,6 +541,20 @@ const MIN_CHECKS_OVERRIDE = {
   // failure mode this file exists to prevent. Measured at the commit that adds
   // it: 38 assertions.
   'relay:e2e-ft-ext-receive.test.mjs': 38,
+  // T-RESUME-SW-KEY-RACE (RULE 30). tests/e2e-resume-sw-key-race.test.mjs drives
+  // the REAL sasCoverage + swKeyGuardVerdict + awaitSwKeyAnswer (hooks/phoneE2e.ts)
+  // in the order hooks/useE2e.ts onPairingActive calls them, on a VIRTUAL clock,
+  // over tests/e2e-resume-sw-key-race-vectors.json. There is no Kotlin twin and
+  // the vector file says why (the phone has no mirror of the page-side coverage
+  // guard). Auto-discovered by the tests/e2e-*.test.mjs sweep, so what it needs
+  // here is the FLOOR - and this suite needs one badly: most of its value is in
+  // the bug row (prod-swbridge-none-pair-resumed) and in three controls that must
+  // go red (the pre-fix predicate, `graceExpired` forced false, the cleared-keys
+  // copy). Delete any of them from the vector file or the suite and the count
+  // drops while it still prints a cheerful N/N - with a resumed room torn down
+  // again on the next live acceptance. Measured at the commit that adds it: 101
+  // assertions.
+  'relay:e2e-resume-sw-key-race.test.mjs': 101,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job

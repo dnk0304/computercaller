@@ -77,6 +77,8 @@ import {
   readEncryptedMode,
   readSwKey,
   sasCoverage,
+  swKeyGuardVerdict,
+  awaitSwKeyAnswer,
   outcomeForRevocationVerdict,
   readRevocationVerdict,
   liveRegisteredDeviceIds,
@@ -110,6 +112,27 @@ export const SW_KEY_WAIT_MS = 1000;
  * the call site in `buildRequestE2e`.
  */
 export const SW_KEY_REQUERY_MS = 300;
+
+/**
+ * T-RESUME-SW-KEY-RACE. How long a RESUMED pair whose transcript carries an
+ * extension recipient waits for the service worker to answer the bridge before
+ * the M-A5-3 coverage guard is allowed to decide.
+ *
+ * A whole-browser restart on the same profile inside the relay's 180 s soft
+ * hold re-forms the SAME pair in ~5 s, and the page is handed a finished
+ * transcript milliseconds later — long before the restarted MV3 worker has
+ * registered and answered `e2e-pubkey`. Evaluating M-A5-3 against `unknown`
+ * and calling it a verdict is how prod tore a resumed room down 220 ms after
+ * resuming it (live-acceptance 9ca5ba7).
+ *
+ * Longer than SW_KEY_REQUERY_MS because the question is different: that one is
+ * "did registration land in the last few seconds" on a pairing the user is
+ * actively driving, this one is "has a cold-started worker come up at all" on a
+ * pair that already exists and is only waiting on us. 5 s is the grace, and it
+ * is spent ONLY on the resumed-with-extension-recipient branch — every other
+ * path reaches the guard exactly as before.
+ */
+export const SW_KEY_RESUME_GRACE_MS = 5000;
 
 /**
  * §13.7's FROZEN sealed list, by INCLUSION.
@@ -958,21 +981,71 @@ export function useE2e(emailProp?: string | null): E2eApi {
       // `swRef.current` is re-read at THIS moment, not the value Connect used
       // a second ago — and what the digits cover is COMPUTED rather than
       // inferred from a key count.
-      const coverage = sasCoverage(block, {
+      const covFor = (sw: SwKeyResult) => sasCoverage(block, {
         ourPub: key.pubB64Url,
         phonePub: phoneRowPublicKey,
-        sw: swRef.current,
+        sw,
       });
-      if (coverage.staleSwKey) {
-        // The page advertised an SW key the bridge no longer reports, so the
-        // transcript contains a key the SW does not hold and the digits say
-        // nothing about the SW leg. Refusing is the only honest option: a code
-        // presented as covering a key it did not include is a false assurance
-        // about exactly the recipient that decrypts notification bodies with
-        // the panel closed.
-        fail('re-pair-needed',
-          'the SAS transcript carries an extension key the service worker no longer '
-          + 'reports (M-A5-3): the code would claim coverage it does not have');
+      /**
+       * T-RESUME-SW-KEY-RACE. WHEN the guard is allowed to decide, not what it
+       * means.
+       *
+       * A resume hands us a FINISHED transcript for a pair that already exists,
+       * milliseconds after the socket comes back. If this page is also freshly
+       * loaded (whole-browser restart inside the relay's soft hold) the MV3
+       * worker is cold-starting alongside us and has not answered `e2e-pubkey`
+       * yet — `unknown`. Deciding M-A5-3 against `unknown` is deciding against
+       * a question nobody has finished asking, and on prod it left a room that
+       * had just been resumed 220 ms earlier (live-acceptance 9ca5ba7).
+       *
+       * So: only on a RESUMED pair, only when the transcript actually carries
+       * an extension recipient (`unattributed > 0` — nothing to be stale about
+       * otherwise), and only while we have not heard, re-ask with a fresh rid
+       * and wait up to SW_KEY_RESUME_GRACE_MS. The guard then decides on a
+       * DEFINITIVE answer, or on the grace having run out, which is a verdict
+       * of its own and a different leave reason.
+       */
+      const isResumed = payload.resumed === true || admitted.resume === true;
+      const framedForGrace = typeof window !== 'undefined' && window.parent !== window;
+      let graceExpired = false;
+      if (isResumed
+        && swRef.current.status === 'unknown'
+        && covFor(swRef.current).unattributed > 0) {
+        if (framedForGrace) {
+          const { answered } = await awaitSwKeyAnswer({
+            // A LIVE read, not a captured value: the answer we are waiting for
+            // arrives on the message listener during this wait.
+            readStatus: () => swRef.current.status,
+            request: () => window.parent.postMessage(
+              { source: 'cc-ext', type: 'e2e-pubkey-request', v: 1, rid: `sw-resume-${Date.now()}` },
+              CC_EXTENSION_ORIGIN,
+            ),
+            graceMs: SW_KEY_RESUME_GRACE_MS,
+            sleep: (ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }),
+          });
+          graceExpired = !answered;
+        }
+        // An UNFRAMED page has no bridge to ask, so it never heard and never
+        // could — `graceExpired` stays false and the verdict stays `unknown`,
+        // which is exactly the pre-existing behaviour (coverage is rendered
+        // false, nothing is claimed, the pair is not abandoned). This branch
+        // changes WHEN the guard decides for a page that HAS a bridge; it does
+        // not invent a refusal for a page that never had one.
+      }
+      const coverage = covFor(swRef.current);
+      const verdict = swKeyGuardVerdict(coverage, { resumed: isResumed, graceExpired });
+      if (verdict.leave) {
+        // The transcript contains an extension recipient the SW does not back,
+        // so the digits say nothing about the SW leg. Refusing is the only
+        // honest option: a code presented as covering a key it did not include
+        // is a false assurance about exactly the recipient that decrypts
+        // notification bodies with the panel closed.
+        //
+        // WHICH reason matters to the user: a DIFFERENT live key is a swapped
+        // key (`re-pair-needed`), and no key at all after a resume is a browser
+        // that came back before its extension did — never "your keys were
+        // cleared", because nothing was cleared.
+        fail(verdict.error ?? 're-pair-needed', verdict.detail);
         return true;
       }
       // SPEC 12.2. The block is armed HERE, before the view is published, so
