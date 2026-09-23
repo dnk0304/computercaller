@@ -378,8 +378,11 @@ android {
         // service restart only) + export diagnostics (Settings > "Export
         // diagnostics": DiagLog ring buffer, flap-storm counters, redacted zip
         // via the share sheet). Lane A (8e6219f) left this bump to this lane.
-        versionCode = 63
-        versionName = "1.0.39"
+        // vc64 (2026-09-24, Ken cut, R-DE): FT picker fix (noHistory dropped), first-sign-in
+        // auto-dial (PhoneServiceStartPolicy), mode-0 status broadcast. Icon unchanged (Dennis:
+        // "forget the logo"). Pilot CAMERA/ZXing cleanup deferred to vc65.
+        versionCode = 64
+        versionName = "1.0.40"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
