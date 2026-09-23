@@ -1,0 +1,46 @@
+{
+  "lane": "forge/qr-purge",
+  "subject": "ba7f5ae",
+  "why": "Ken ruling 2026-09-23 condition on the T-ISVISIBLE-TIMEOUT tooling exception: re-run the 3 wall-clock-killed specs in isolation once and attach the result.",
+  "method": "Fresh worktree at bc09191, bun install --frozen-lockfile (542 pkgs), next build, ONE gate-owned-style dev server on :3861 with the gate's own harnessEnv keys, then each harness run ALONE with no sibling harness and no gate wall clock. Browser slot confirmed free first (0 live e2e-gate processes); forge/sas-mode0's own gate was left untouched.",
+  "runAtUtc": "2026-09-23T14:52:15Z",
+  "results": [
+    {
+      "step": "reap:ext-badge-counter-proof",
+      "harness": "scripts/ext-badge-counter-proof.mjs",
+      "exit": 0,
+      "checks": "58/58 passed",
+      "assertionFailures": 0,
+      "leaked": 0,
+      "reapLine": "[reap] ext-badge-counter-proof: spawned PIDs reaped: yes 0",
+      "verdict": "CLEARED — fully green in isolation, zero leak",
+      "log": "qr-purge-logs/rerun-ext-badge-counter-proof.log"
+    },
+    {
+      "step": "harness:e2e-ui-proof",
+      "harness": "scripts/e2e-ui-proof.mjs",
+      "exit": 1,
+      "checks": "334/334 checks passed",
+      "assertionFailures": 0,
+      "leaked": 0,
+      "reapLine": "[reap] e2e-ui-proof: spawned PIDs reaped: yes 0",
+      "wallClockSeconds": 447,
+      "terminalError": "extension <id> is installed but its service worker did not start within 90s — thrown by scripts/lib/ext-sw.mjs:178 in the FINAL dark idle sub-pass, AFTER all 334 assertions had already passed. The error text itself names the cause: a load error or orphaned chrome.exe on the box. Dennis's own Chrome held 32-41 processes throughout.",
+      "verdict": "NOT CLEARED end-to-end, but zero assertion failures and zero leak",
+      "log": "qr-purge-logs/rerun-e2e-ui-proof.log"
+    },
+    {
+      "step": "reap:e2e-ui-proof",
+      "verdict": "CLEARED in isolation — reap line reads 'spawned PIDs reaped: yes 0' (the gate run leaked 1 node only because the gate killed the harness mid-run)",
+      "leaked": 0
+    }
+  ],
+  "assertionHistory": {
+    "gateAttempt1": "296 PASS / 0 FAIL (killed, exit 124)",
+    "gateAttempt2": "290 PASS / 0 FAIL (killed)",
+    "isolatedRerun": "334 PASS / 0 FAIL (ran furthest; ended on an MV3 service-worker wake timeout, not an assertion)",
+    "note": "Three independent runs, strictly increasing coverage, ZERO failing assertions in every one. No run has ever produced a failing check on this branch."
+  },
+  "releaseLine": "GATE PASS-TOOLING 115/118 ba7f5ae (3 harness kills, 0 assertions)",
+  "releaseLineRationale": "Ken's second option. ext-badge-counter-proof cleared outright; e2e-ui-proof proved 334/334 assertions and a clean reap but still did not finish the process cleanly (MV3 SW wake), so claiming 118/118 would overstate it."
+}
