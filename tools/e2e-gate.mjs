@@ -544,7 +544,14 @@ const MIN_CHECKS_OVERRIDE = {
   // control, (c) 22 plaintext control frames + the old nine + an undeclared
   // type, (d) the three-way parity cell, (e)/(f) the behaviour cells against a
   // real session, and (g) the P6.1d fixture replay).
-  'relay:e2e-web-frame-classifier.test.mjs': 174,
+  // T-FT-WEB-SEAL-NO-HINT 174 -> 181: this suite runs the SHIPPED sealOutbound
+  // callback text, so it is where the FILE_OFFER hint is proved on the real
+  // chokepoint rather than on a helper - the offer's hint, its size, the
+  // sibling placement, the filename staying sealed, the clear-key set, a
+  // non-offer carrying NO hint, and the CONTROL that the injected producer is
+  // the shipped one. The floor moves WITH the suite: left at 174, all seven
+  // could be deleted under a cheerful N/N.
+  'relay:e2e-web-frame-classifier.test.mjs': 181,
   // E2E-P2.8 / R-BP (b). The raw-send pin: 0 raw sends of any §13.7 sealed type
   // across hooks/ app/ chrome-extension/. Auto-discovered by the
   // tests/e2e-*.test.mjs sweep, so what it needs from this table is a FLOOR —
