@@ -827,6 +827,100 @@
             </LinearLayout>
         </LinearLayout>
 
+        <!-- ==================== COMPUTER ====================
+             vc63 (T-VC63-MAIN-SCREEN). Dennis 2026-09-23: "there should be a
+             send file button in the android app on the main screen as well as
+             a encrypted mode toggle, shouldnt have to go into settings".
+
+             Placed AFTER the notice bands and BEFORE "On this phone" on
+             purpose: the hero, the lobby button and the two notice bands are
+             the things that change under the user, and pushing them down the
+             screen to make room for a card would cost more than the card
+             gains. Nothing above this point moved.
+
+             Neither row is a new capability. Row A fires the SAME intent the
+             share sheet already fires into FileTransferActivity; row B paints
+             the SAME row, over the SAME preference, as Settings, through the
+             one shared E2eModeRowBinder. Two surfaces, one source of truth —
+             which is the only reason it is safe for this control to exist
+             twice. -->
+        <TextView
+            style="@style/CcSectionLabel"
+            android:text="@string/section_computer"
+            tools:text="COMPUTER" />
+
+        <com.google.android.material.card.MaterialCardView style="@style/CcRowGroup">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/homeSendFileRow"
+                    style="@style/CcRow"
+                    android:contentDescription="@string/row_send_file_title">
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView style="@style/CcRowTitle" android:text="@string/row_send_file_title" />
+                        <TextView style="@style/CcRowSub" android:text="@string/row_send_file_sub" />
+                    </LinearLayout>
+
+                    <ImageView style="@style/CcRowChevron" />
+                </LinearLayout>
+
+                <View style="@style/CcRowHairline" />
+
+                <!-- Same row shape as homeStayRow: the row itself is inert and
+                     the switch is the control, so a tap on the text cannot
+                     half-toggle anything. -->
+                <LinearLayout
+                    android:id="@+id/homeEncryptedModeRow"
+                    style="@style/CcRow"
+                    android:background="@null"
+                    android:clickable="false"
+                    android:focusable="false">
+
+                    <LinearLayout style="@style/CcRowText">
+                        <TextView
+                            android:id="@+id/homeEncryptedModeTitle"
+                            style="@style/CcRowTitle"
+                            android:text="@string/row_encrypted_mode_title" />
+                        <TextView
+                            android:id="@+id/homeEncryptedModeSub"
+                            style="@style/CcRowSub"
+                            android:text="@string/row_encrypted_mode_sub" />
+                    </LinearLayout>
+
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/homeEncryptedModeToggle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="@dimen/cc_touch_min"
+                        android:layout_marginStart="@dimen/space_12"
+                        android:minWidth="0dp"
+                        android:minHeight="@dimen/cc_touch_min"
+                        android:contentDescription="@string/row_encrypted_mode_title"
+                        android:showText="false"
+                        app:thumbTint="@color/cc_switch_thumb"
+                        app:trackTint="@color/cc_switch_track" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Why the switch is greyed out, and — while a pair is live — what
+             that pair ACTUALLY is. A disabled control always carries its
+             reason; a live pair always carries its real mode. -->
+        <TextView
+            android:id="@+id/homeEncryptedModeReason"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_8"
+            android:layout_marginStart="2dp"
+            android:text="@string/settings_encrypted_mode_waiting"
+            android:textSize="@dimen/cc_text_meta"
+            android:textColor="@color/text_tertiary"
+            android:lineSpacingMultiplier="1.45" />
+
         <!-- ==================== ON THIS PHONE ====================
              Trait 4. These three were three of v55's five identical buttons;
              as a row-group they are scannable and they say what they hold. -->

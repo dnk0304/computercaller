@@ -466,6 +466,28 @@
          underneath it. %1$s = row title, %2$s = the reason/state line. -->
     <string name="settings_encrypted_mode_a11y">%1$s. %2$s</string>
 
+    <!-- ==================== vc63 — the Home "Computer" card ====================
+         Dennis 2026-09-23: sending a file and turning encryption on must not
+         require a trip into Settings. Two rows, on Home, over the SAME intent
+         and the SAME preference as the existing surfaces. -->
+    <string name="section_computer">COMPUTER</string>
+    <string name="row_send_file_title">Send a file</string>
+    <string name="row_send_file_sub">Pick a file to send to your computer</string>
+
+    <!-- The LIVE pair's mode, shown next to the switch while a pair is active.
+         The switch is an intent about the NEXT connection; this is a fact
+         about the current one, and INC-0923 was the two being confused. Never
+         "end-to-end" for an unverified pair (SPEC 12.6): "unverified" means
+         nobody confirmed a code, and claiming otherwise is the one thing the
+         SAS exists to make honest. -->
+    <string name="home_e2e_now_verified">This connection: Encrypted, verified</string>
+    <string name="home_e2e_now_unverified">This connection: Encrypted, unverified</string>
+    <string name="home_e2e_now_plaintext">This connection: Not encrypted</string>
+    <!-- Appended only when the switch and the live pair disagree. A user who
+         flips the switch mid-call must not read the flip as having changed
+         the session they are in — the mode is latched at Accept (13.1). -->
+    <string name="home_e2e_next_only">The switch applies to your next connection.</string>
+
     <!-- ==================== P5b (c) — the SAS confirm ====================
          Shown on the Home hero card after Accept, when the pair is Encrypted
          (verified). Copy parity with the web/extension surface, which asks

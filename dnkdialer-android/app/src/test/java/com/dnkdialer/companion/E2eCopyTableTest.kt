@@ -57,6 +57,14 @@ class E2eCopyTableTest {
         "status_connected_unencrypted",
         "notif_ongoing_connected_encrypted",
         "notif_ongoing_connected_encrypted_unverified",
+        // vc63 — the Home "Computer" card (T-VC63-MAIN-SCREEN).
+        "section_computer",
+        "row_send_file_title",
+        "row_send_file_sub",
+        "home_e2e_now_verified",
+        "home_e2e_now_unverified",
+        "home_e2e_now_plaintext",
+        "home_e2e_next_only",
     )
 
     @Test
@@ -205,4 +213,51 @@ class E2eCopyTableTest {
      */
     private fun unescape(raw: String): String =
         raw.replace(Regex("""\\(['"])"""), "$1")
+
+    /**
+     * vc63 — the live-pair line must never upgrade an unverified pair into a
+     * verified-sounding claim.
+     *
+     * The generic end-to-end ban above already covers the phrase; this pins
+     * the narrower rule the row exists to respect. "Encrypted, unverified"
+     * means NOBODY CONFIRMED A CODE, and the only honest way to say that is
+     * to keep the word "unverified" attached to it — a line that said
+     * "Encrypted" flat there would read as safe next to a switch the user
+     * just turned on.
+     */
+    @Test
+    fun the_live_unverified_line_keeps_saying_unverified() {
+        val unverified = strings["home_e2e_now_unverified"].orEmpty()
+        assertTrue(
+            "home_e2e_now_unverified must name the unverified state: '$unverified'",
+            unverified.lowercase().contains("unverified")
+        )
+        val plaintext = strings["home_e2e_now_plaintext"].orEmpty()
+        assertTrue(
+            "home_e2e_now_plaintext must spell out that it is NOT encrypted — " +
+                "the absence of a word is not a signal: '$plaintext'",
+            plaintext.lowercase().contains("not encrypted")
+        )
+        // Three distinct sentences, so the row can never render two modes the
+        // same way.
+        val lines = listOf(
+            "home_e2e_now_verified", "home_e2e_now_unverified", "home_e2e_now_plaintext"
+        ).map { strings[it].orEmpty() }
+        assertEquals("three live modes, three lines", 3, lines.toSet().size)
+    }
+
+    /**
+     * The caveat must be about the NEXT connection, not this one. A caveat
+     * that merely said "saved" would leave the user believing the flip
+     * changed the session they are looking at — SPEC §13.1 latches the mode
+     * at Accept, so it cannot have.
+     */
+    @Test
+    fun the_switch_caveat_points_at_the_next_connection() {
+        val caveat = strings["home_e2e_next_only"].orEmpty().lowercase()
+        assertTrue(
+            "home_e2e_next_only must say 'next': '$caveat'",
+            caveat.contains("next")
+        )
+    }
 }

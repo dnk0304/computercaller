@@ -499,6 +499,11 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    // vc63 — Intents.intended() for the Home "Send a file" row. The row's
+    // entire contract is the intent it fires into FileTransferActivity, so
+    // the intent is the only thing worth asserting on. Same 3.5.1 line as
+    // espresso-core, so no new transitive versions enter the tree.
+    androidTestImplementation("androidx.test.espresso:espresso-intents:3.5.1")
 
 
     // E2E P4 (s3) — the androidTest source set was empty until E2eKeyStoreTest.

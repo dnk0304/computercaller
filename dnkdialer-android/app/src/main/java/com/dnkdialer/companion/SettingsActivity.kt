@@ -57,11 +57,19 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var encryptedModeReason: TextView
 
     /**
-     * Guards [encryptedModeToggle] so a repaint from the stored preference
-     * can't be read as a tap. Same hazard, same fix, as
-     * [suppressLobbyToggleCallback].
+     * vc63 — the row's painter, shared with Home's copy of the same row.
+     *
+     * The repaint guard, the copy table and the a11y description all moved
+     * into [E2eModeRowBinder] when this row gained a second home. They were
+     * correct here; they were just no longer in the only place that needed
+     * them, and a second painter is a second set of rules to keep in step.
+     *
+     * [E2eModeRowBinder.livePairMode] is left null on this screen: Settings
+     * has no bound PhoneService and therefore no honest answer to "what is
+     * this connection", and inventing one here would be INC-0923's mistake
+     * pointed the other way. Home, which does have the answer, supplies it.
      */
-    private var suppressEncryptedModeCallback = false
+    private var encryptedModeBinder: E2eModeRowBinder? = null
 
     /** Guards [lobbyToggle] so a repaint from the flag can't be read as a tap. */
     private var suppressLobbyToggleCallback = false
@@ -144,30 +152,26 @@ class SettingsActivity : AppCompatActivity() {
 
         encryptedModeToggle = findViewById(R.id.settingsEncryptedModeToggle)
         encryptedModeReason = findViewById(R.id.settingsEncryptedModeReason)
-        // P5b (b) — the switch is OPERABLE now, but only ever in the one state
+        // P5b (b) — the switch is OPERABLE, but only ever in the one state
         // where operating it is honest: PEER_SUPPORTED. In every other state
-        // refreshEncryptedModeRow() disables it, and a disabled SwitchMaterial
-        // does not deliver onCheckedChanged, so the Part 1 guarantee ("an inert
-        // switch never stores a preference") is preserved by the platform
-        // rather than by the absence of a listener.
+        // the binder disables it, and a disabled SwitchMaterial does not
+        // deliver onCheckedChanged, so the Part 1 guarantee ("an inert switch
+        // never stores a preference") is preserved by the platform rather
+        // than by the absence of a listener.
         //
-        // suppressEncryptedModeCallback exists for the same reason
-        // suppressLobbyToggleCallback does: refreshEncryptedModeRow() assigns
-        // isChecked on every onResume, and an assignment fires the listener.
-        // Without the guard, merely opening Settings would rewrite the
-        // preference — a no-op today and a real bug the moment the write has a
-        // side effect.
-        encryptedModeToggle.setOnCheckedChangeListener { _, isChecked ->
-            if (suppressEncryptedModeCallback) return@setOnCheckedChangeListener
-            E2eSettings.setEncryptedModeEnabled(this, isChecked)
-            // The mode of a LIVE pair is latched at Accept (B6), so this switch
-            // changes the next pairing, not the current one. Saying so beats
-            // letting the user believe an active session just changed shape.
-            encryptedModeReason.text = getString(
-                if (isChecked) R.string.settings_encrypted_mode_on_next_pair
-                else R.string.settings_encrypted_mode_off_next_pair
-            )
-            announceEncryptedModeState(isChecked)
+        // vc63 — everything this block used to do inline (write the
+        // preference, swap in the on/off-next-pair copy, re-announce for
+        // TalkBack, suppress the repaint-as-tap) now lives in the shared
+        // binder, so Home does the identical thing without a second copy of
+        // the rules.
+        encryptedModeBinder = E2eModeRowBinder(
+            this,
+            encryptedModeToggle,
+            findViewById(R.id.settingsEncryptedModeTitle),
+            findViewById(R.id.settingsEncryptedModeSub),
+            encryptedModeReason,
+        ).apply {
+            bind { checked -> DiagLog.d("SettingsActivity", "e2e.toggle.settings ${if (checked) "on" else "off"}") }
         }
 
         // ---- ON THIS PHONE ----------------------------------------------
@@ -285,61 +289,16 @@ class SettingsActivity : AppCompatActivity() {
     /**
      * Paint the "Encrypted mode" row from [E2ePeerCapability].
      *
-     * P4.1: the provider now tells the truth. It reads the last `e2e`
-     * advertisement persisted for the paired or pending computer, so
-     * [E2ePeerCapability.State.PEER_SUPPORTED] — and therefore an operable
-     * switch — is reachable on a real device. Until P4.1 it was not, and this
-     * row shipped a control no user could ever turn on.
-     *
-     * The switch's checked state is read from [E2eSettings] (this device's
-     * local preference, C-1) and NEVER from the server. It is set with the
-     * listener absent — there is no listener in Part 1 — so a repaint can
-     * never be mistaken for a tap, the same hazard [suppressLobbyToggleCallback]
-     * exists to guard above.
-     *
-     * A disabled control always carries its reason. A greyed switch with no
-     * explanation is the thing users file bugs about.
+     * vc63: one line, because the rules moved into [E2eModeRowBinder] when
+     * Home grew the same row. What the binder does is what this function used
+     * to do — read the real capability provider and this device's local
+     * preference (C-1: never the server), assign isChecked behind the
+     * repaint guard, dim a disabled row, and fold the reason into the
+     * switch's own contentDescription so a greyed control explains itself
+     * wherever TalkBack focus lands.
      */
     private fun refreshEncryptedModeRow() {
-        if (!::encryptedModeToggle.isInitialized) return
-        val state = E2ePeerCapability.current(this)
-        val enabled = E2ePeerCapability.isToggleEnabled(state)
-
-        encryptedModeToggle.isEnabled = enabled
-        // Assigning isChecked fires the listener; the guard makes this a
-        // repaint rather than a user action. See suppressEncryptedModeCallback.
-        suppressEncryptedModeCallback = true
-        encryptedModeToggle.isChecked = enabled && E2eSettings.isEncryptedModeEnabled(this)
-        suppressEncryptedModeCallback = false
-
-        // The switch tints are a custom colour selector without a disabled
-        // state, so a disabled switch is pixel-identical to an enabled one
-        // that is merely off. Dim the row's text instead — otherwise the only
-        // signal that the control is inert is that tapping it does nothing.
-        val rowAlpha = if (enabled) 1f else 0.45f
-        findViewById<TextView>(R.id.settingsEncryptedModeTitle).alpha = rowAlpha
-        findViewById<TextView>(R.id.settingsEncryptedModeSub).alpha = rowAlpha
-        encryptedModeToggle.alpha = rowAlpha
-        encryptedModeReason.text = getString(
-            when (state) {
-                E2ePeerCapability.State.UNKNOWN -> R.string.settings_encrypted_mode_waiting
-                E2ePeerCapability.State.PEER_UNSUPPORTED -> R.string.settings_encrypted_mode_peer_old
-                E2ePeerCapability.State.DEVICE_UNSUPPORTED -> R.string.settings_encrypted_mode_device_old
-                E2ePeerCapability.State.PEER_SUPPORTED -> R.string.settings_encrypted_mode_ready
-            }
-        )
-
-        // TalkBack reads a switch as "Encrypted mode, off. Switch." and stops.
-        // On a DISABLED switch that is actively misleading: the user is told
-        // what it is and not that it cannot be operated or why, and the reason
-        // line is a separate node they may never reach. Fold the reason into
-        // the switch's own description so the control explains itself wherever
-        // focus lands.
-        encryptedModeToggle.contentDescription = getString(
-            R.string.settings_encrypted_mode_a11y,
-            getString(R.string.row_encrypted_mode_title),
-            encryptedModeReason.text.toString()
-        )
+        encryptedModeBinder?.refresh()
     }
 
     /**
@@ -358,25 +317,6 @@ class SettingsActivity : AppCompatActivity() {
     @androidx.annotation.VisibleForTesting
     internal fun refreshEncryptedModeRowForTest() = refreshEncryptedModeRow()
 
-    /**
-     * Speak the outcome of a toggle. The visible reason line changes under the
-     * switch, but a change to a node that is not focused is not announced, so
-     * a TalkBack user would otherwise hear "on" and never learn that "on"
-     * applies to the next pairing rather than this one.
-     */
-    private fun announceEncryptedModeState(isChecked: Boolean) {
-        encryptedModeToggle.contentDescription = getString(
-            R.string.settings_encrypted_mode_a11y,
-            getString(R.string.row_encrypted_mode_title),
-            encryptedModeReason.text.toString()
-        )
-        encryptedModeToggle.announceForAccessibility(
-            getString(
-                if (isChecked) R.string.settings_encrypted_mode_on_next_pair
-                else R.string.settings_encrypted_mode_off_next_pair
-            )
-        )
-    }
 
     /**
      * Label the lobby toggle off the persistent flag, exactly like
