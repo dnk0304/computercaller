@@ -15,7 +15,7 @@
  * check that property by reading one file, and tests/devicekey-authz.test.js
  * asserts that a body-supplied userId is ignored.
  *
- * TWO CALLERS, TWO MECHANISMS:
+ * THREE CALLERS, THREE MECHANISMS:
  *
  *   - The web page and the extension hold a session cookie. That is the
  *     ordinary path, and it reuses validateSessionWithIdle exactly as every
@@ -31,14 +31,20 @@
  *     the device whose key matters most — so some path had to exist; giving it
  *     a new long-lived credential would have been worse than reusing the one it
  *     already has.
+ *
+ *   - The EXTENSION SERVICE WORKER holds the `ext-session` JWT minted by
+ *     /api/auth/extension/token. It has a cookie too, but presenting it is
+ *     what breaks it: a cookie-resolved caller is CSRF-gated on the webapp's
+ *     own Origin, and a service worker's Origin is `chrome-extension://<id>`.
+ *     See the long note in resolveCaller — this arm is INC-0923's fix.
  */
 
 import type { NextRequest } from 'next/server';
-import { validateSessionWithIdle } from '@/lib/auth';
+import { validateSessionWithIdle, verifyExtensionSessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
 
 export type CallerIdentity =
-  | { ok: true; userId: string; via: 'session' | 'phone-token' }
+  | { ok: true; userId: string; via: 'session' | 'phone-token' | 'ext-token' }
   | { ok: false; status: 401; error: string };
 
 /** `Authorization: Bearer <token>` → the token, or null. */
@@ -60,12 +66,77 @@ function extractBearer(req: NextRequest): string | null {
  * body.
  */
 export async function resolveCaller(req: NextRequest): Promise<CallerIdentity> {
+  /*
+   * INC-0923 B-2, THE CAUSE. Before this arm existed, the extension service
+   * worker could not register its device key by ANY path, and the DeviceKey
+   * table therefore never held a `kind:'extension'` row for anybody. The phone
+   * reads an advertised-but-unregistered key as a substitution attack
+   * (E2eKeyPin.verify -> Verdict.Mismatch), latches, and declines every later
+   * pairing — the whole of INC-0923.
+   *
+   * Both arms below failed, deterministically:
+   *
+   *   SESSION. The SW POSTs with `credentials:'include'` and holds
+   *   host_permissions, so in production the `auth_token` cookie (SameSite=None
+   *   since lib/auth.ts:370's iframe change) DOES ride along. The session
+   *   resolves, `via` is 'session', and register/route.ts then runs
+   *   requireSameOrigin — which sees `Origin: chrome-extension://<id>` and
+   *   refuses. That Chrome sends that Origin is not an inference: it is the
+   *   exact header /api/auth/extension/token requires by equality, and that
+   *   route mints the token Dennis signs in with every day.
+   *
+   *   BEARER. The SW's only bearer is the ext-session JWT. The phone-token arm
+   *   below looks it up as `User.phoneToken` — a JWT has dots, so it does not
+   *   even pass the charset guard. It could never have matched.
+   *
+   * So the fix is to teach this module the credential the extension actually
+   * holds, exactly as /api/auth/relay-ticket/extension already does: verify the
+   * signature and purpose, then re-check `ver` against User.sessionVersion so
+   * the same "signed-in-elsewhere" kill switch revokes it. Fails CLOSED on a DB
+   * error, mirroring that route.
+   *
+   * ORDERED FIRST, and only on a token that VERIFIES. The doc-comment above
+   * puts the session first so a *stray* Authorization header cannot decide the
+   * identity; a token bearing our own HS256 signature is not stray, and it is
+   * the narrower, more specific proof of the two. Nothing else changes
+   * ordering: the web page sends no Authorization header at all, and the
+   * phone's opaque phoneToken fails verifyExtensionSessionToken and falls
+   * through to its own arm untouched.
+   *
+   * `via:'ext-token'` is deliberately NOT 'session', which is what makes
+   * register/route.ts skip CSRF for it — correct, because a bearer is not an
+   * ambient credential and cannot be ridden by a third party.
+   */
+  const bearerToken = extractBearer(req);
+  if (bearerToken) {
+    const claims = verifyExtensionSessionToken(bearerToken);
+    if (claims && typeof claims.userId === 'string' && claims.userId) {
+      try {
+        const user = await db.user.findUnique({
+          where: { id: claims.userId },
+          select: { sessionVersion: true },
+        });
+        if (user) {
+          const tokenVer = typeof claims.ver === 'number' ? claims.ver : 0;
+          if (tokenVer === user.sessionVersion) {
+            return { ok: true, userId: claims.userId, via: 'ext-token' };
+          }
+        }
+        // Superseded or deleted: fall through to the other arms rather than
+        // 401 outright — a stale ext token must not lock out a caller who also
+        // holds a perfectly good session cookie.
+      } catch {
+        // Fail CLOSED for THIS arm only, same as relay-ticket/extension.
+      }
+    }
+  }
+
   const session = await validateSessionWithIdle(req);
   if (session.ok && session.payload?.userId) {
     return { ok: true, userId: session.payload.userId, via: 'session' };
   }
 
-  const bearer = extractBearer(req);
+  const bearer = bearerToken;
   if (bearer) {
     // Bounded before it reaches the database: phoneToken is ~43 base64url
     // chars, and an unbounded string here would be an unbounded indexed lookup

@@ -1651,6 +1651,55 @@ function startRelay(httpServer) {
     if (e2eBlock) forwardPayload.e2e = e2eBlock;
     safeSend(phoneWs, `PAIRING_REQUEST:${JSON.stringify(forwardPayload)}`);
     console.log(`[Relay][${redactToken(room.token)}] Pairing request ${pairingId} forwarded to phone (ua=${ua.slice(0, 40)} ip=${ip} label=${deviceLabel ?? '-'} e2e=${e2eBlock ? `v${e2eBlock.v}/mode${e2eBlock.mode}/recips${e2eBlock.recips.length}` : 'none'})`);
+    // INC-0923 B-1 (relay), OBSERVATIONAL ONLY. The relay does not decide
+    // anything about keys — the phone's pin does — so this never refuses, never
+    // edits the block and never delays the forward: it runs after the frame is
+    // already on the wire. What it buys is the thing this incident cost a
+    // morning to establish by hand: whether an advertised recipient had a live
+    // registry row, visible in the relay log beside the pairing it belongs to,
+    // instead of reconstructible only by querying prod afterwards.
+    logUnregisteredRecipients(room, pairingId, e2eBlock);
+  }
+
+  /**
+   * INC-0923 B-1 (relay). Say, in the log, which advertised recipients the
+   * DeviceKey registry has no live row for.
+   *
+   * NO REFUSAL, by design and by brief. The phone's `E2eKeyPin.verify` is the
+   * authority on whether an advertised key is acceptable, and a second opinion
+   * on the relay is how two components end up disagreeing about the same fact.
+   * This only names what the phone is about to see.
+   *
+   * Fire-and-forget: the caller does not await it, and every failure path is a
+   * silent return. A DeviceKey query must never be able to delay, fail or
+   * change a pairing.
+   */
+  function logUnregisteredRecipients(room, pairingId, e2eBlock) {
+    try {
+      const recips = e2eBlock && Array.isArray(e2eBlock.recips) ? e2eBlock.recips : null;
+      if (!recips || recips.length === 0) return;
+      // validateE2eBlock already caps the list at 8; re-derived here so this
+      // function is safe to call from anywhere, not just behind that check.
+      const ids = recips
+        .map((r) => (r && typeof r.deviceId === 'string' ? r.deviceId : null))
+        .filter((id) => id !== null)
+        .slice(0, 8);
+      if (ids.length === 0) return;
+      db.deviceKey
+        .findMany({ where: { deviceId: { in: ids }, revokedAt: null }, select: { deviceId: true } })
+        .then((rows) => {
+          const live = new Set(rows.map((r) => r.deviceId));
+          const missing = recips.filter((r) => r && !live.has(r.deviceId));
+          if (missing.length === 0) return;
+          console.log(
+            `[Relay][${redactToken(room.token)}] Pairing ${pairingId} e2e=UNREGISTERED-RECIPIENT`
+            + ` ${missing.map((r) => `${r.kind || '?'}:${r.deviceId}`).join(' ')}`
+            + ' — no live DeviceKey row; the phone reads this as a substituted key'
+            + ' and is expected to DECLINE (INC-0923). Relay does not refuse.',
+          );
+        })
+        .catch(() => { /* observability must never be a failure mode */ });
+    } catch { /* ditto */ }
   }
 
   /**

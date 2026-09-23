@@ -79,6 +79,8 @@ import {
   sasCoverage,
   outcomeForRevocationVerdict,
   readRevocationVerdict,
+  liveRegisteredDeviceIds,
+  filterRecipsToLiveRows,
   sasKeySet,
   swBridgeAnswer,
   viewAfterErrorDismissed,
@@ -449,6 +451,24 @@ export function useE2e(emailProp?: string | null): E2eApi {
    * A thrown fetch and a non-2xx both land on `fetch-failed`, which is a
    * REFUSAL. See readRevocationVerdict's own note: a failed fetch is not a pass.
    */
+  /**
+   * INC-0923 B-1. The RAW list payload, for the recipient cross-check.
+   *
+   * Separate from fetchRevocationVerdict on purpose: that one answers "is the
+   * phone key we pinned still live" and throws the rows away, and widening it
+   * to also carry the raw payload would put two questions behind one verdict —
+   * which is how F1 happened. `null` means "could not read", never "empty".
+   */
+  const fetchDeviceKeyList = useCallback(async (): Promise<unknown> => {
+    try {
+      const res = await fetch('/api/devicekeys/list', { credentials: 'same-origin' });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }, []);
+
   const fetchRevocationVerdict = useCallback(async (): Promise<RevocationVerdict> => {
     try {
       const res = await fetch('/api/devicekeys/list', { credentials: 'same-origin' });
@@ -545,6 +565,44 @@ export function useE2e(emailProp?: string | null): E2eApi {
     try {
       const block = buildRequestBlock({ localMode, webKey: key, sw: swRef.current });
       /**
+       * INC-0923 B-1 (web). The LAST thing before the advert leaves: no
+       * recipient goes out without a live row in the §13.6 pin registry.
+       *
+       * The phone reads an advertised-but-unregistered key as a SUBSTITUTION,
+       * not as an unverified recipient — E2eKeyPin.verify returns Mismatch in
+       * both modes and the phone then latches for the life of its process, so
+       * every later pairing is declined too. One missing row therefore costs
+       * the user pairing entirely until they force-stop the app. That is worth
+       * one extra GET on a path the user already waited for.
+       *
+       * This is a BACKSTOP, not the fix: the extension now withholds its own
+       * unregistered key at the source. It exists because an extension is
+       * updated on Chrome's schedule and the web app on ours, so this page will
+       * meet older SW builds that still advertise one.
+       */
+      const live = liveRegisteredDeviceIds(await fetchDeviceKeyList());
+      const filtered = filterRecipsToLiveRows(block.recips, live, key.deviceId);
+      if (filtered.dropped.length > 0) {
+        block.recips = filtered.recips;
+        for (const d of filtered.dropped) {
+          console.warn(
+            `[e2e] recipient DROPPED from the advert: kind=${d.kind} deviceId=${d.deviceId}`
+            + ` — ${live ? 'no live DeviceKey row' : 'the registry could not be read'}.`
+            + ' Advertising it would make the phone read a substituted key and decline.',
+          );
+        }
+      }
+      if (filtered.webRowMissing) {
+        // Never dropped (see filterRecipsToLiveRows) — but this is the one
+        // state that predicts a decline the filter cannot prevent, so it is
+        // said out loud rather than swallowed.
+        console.warn(
+          `[e2e] our own web deviceId ${key.deviceId} has NO live DeviceKey row.`
+          + ' Sending anyway — a block without the web recipient is unsendable —'
+          + ' but the phone may refuse this pairing.',
+        );
+      }
+      /**
        * A6-P61B-5. The page now KNOWS what it advertised and why, before the
        * frame leaves: every P6.1b pairing went out as `recips1` with the
        * extension SW live on the relay, and the page held no record that could
@@ -568,7 +626,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
       if (localMode === 'on') { fail('e2e-setup-failed', (e as Error).message); return null; }
       return null;
     }
-  }, [fail, localMode]);
+  }, [fail, localMode, fetchDeviceKeyList]);
 
   // ── (c) + (d) ───────────────────────────────────────────────────────────
   const onPairingActive = useCallback(async (payload: Record<string, unknown>): Promise<boolean> => {

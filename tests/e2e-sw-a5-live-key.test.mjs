@@ -157,23 +157,47 @@ await check('every publicIdentity() is a real store read, not a memo', async () 
 
 const bg = readFileSync(join(ROOT, 'chrome-extension', 'background.js'), 'utf8').replace(/\r\n?/g, '\n');
 
+/**
+ * INC-0923 widened this: `nullKeyReason()` reads a THIRD free variable,
+ * `swRegistered`. Injected here rather than defaulted, deliberately — a default
+ * would let the function grow a fourth input silently, which is the failure
+ * this lift exists to catch. (It caught this one: the suite went red with
+ * "swRegistered is not defined" the moment the product gained the input.)
+ */
 function liftNullKeyReason() {
   const start = bg.indexOf('function nullKeyReason() {');
   assert(start > 0, 'nullKeyReason() not found in background.js');
   const end = bg.indexOf('\n}', start);
   const body = bg.slice(start, end + 2);
-  return new Function('swPubKey', 'deviceKeyError', `${body}\nreturn nullKeyReason();`);
+  return new Function('swPubKey', 'swRegistered', 'deviceKeyError',
+    `${body}\nreturn nullKeyReason();`);
 }
 const nullKeyReason = liftNullKeyReason();
 
-await check('reason is null exactly when a key is present', () => {
-  eq(nullKeyReason('BPub...', null), null, 'key present');
-  eq(nullKeyReason('BPub...', 'some idb error'), null, 'key present even with a stale error');
+await check('reason is null exactly when a key is present AND registered', () => {
+  eq(nullKeyReason('BPub...', true, null), null, 'key present and registered');
+  eq(nullKeyReason('BPub...', true, 'some idb error'), null, 'registered even with a stale error');
+});
+
+/**
+ * INC-0923. Holding a key and WITHHOLDING it on purpose is a third state, and
+ * it must not collapse into either of the other two. Reporting 'not-hydrated'
+ * would tell the page to wait for something that is never coming; reporting
+ * 'key-unavailable' would call a healthy worker broken. The page's correct
+ * response — pair without an extension recipient — is only reachable from a
+ * token of its own.
+ */
+await check('reason says not-registered when the key is held but unregistered', () => {
+  eq(nullKeyReason('BPub...', false, null), 'not-registered', 'held, not registered');
+  eq(nullKeyReason('BPub...', false, 'stale'), 'not-registered',
+    'a stale load error does not outrank the registration state of a key we HAVE');
 });
 
 await check('reason distinguishes an unhydrated worker from a broken one', () => {
-  eq(nullKeyReason(null, null), 'not-hydrated', 'no key yet');
-  eq(nullKeyReason(null, 'InvalidStateError: idb'), 'key-unavailable', 'load threw');
+  eq(nullKeyReason(null, false, null), 'not-hydrated', 'no key yet');
+  eq(nullKeyReason(null, false, 'InvalidStateError: idb'), 'key-unavailable', 'load threw');
+  eq(nullKeyReason(null, true, null), 'not-hydrated',
+    'no key means no key, whatever a leftover registered flag says');
 });
 
 // ── 3. STRUCTURAL: the bridge arm reads LIVE ────────────────────────────────
@@ -216,6 +240,38 @@ await check('refreshDeviceKey() really does drop the memo (not a rename)', () =>
 
 // ── 4. The reply shape: A4.1, plus `reason`, and nothing else ───────────────
 
+/**
+ * INC-0923. The two reply arms now share a helper, `bridgeIdentityFields()`,
+ * spread into both — because the arms had to agree about WITHHOLDING an
+ * unregistered key and two hand-maintained literals would be one refactor away
+ * from disagreeing about exactly that.
+ *
+ * So the freeze below has to resolve the spread instead of reading literal keys
+ * only. NOT loosened: the helper's own keys are lifted from its source and
+ * unioned in, so the assertion still fails if a key is added to, or lost from,
+ * the reply — it now just follows the value through one more hop. Treating
+ * `...spread()` as contributing nothing would have turned the strongest
+ * assertion in this file into one that passes on an empty object.
+ */
+function helperKeySet(name) {
+  const start = bg.indexOf(`function ${name}() {`);
+  assert(start > 0, `${name}() not found in background.js — the reply spread is unresolvable`);
+  const retAt = bg.indexOf('return {', start);
+  assert(retAt > start, `${name}() has no object return`);
+  let depth = 0;
+  let j = bg.indexOf('{', retAt);
+  const from = j;
+  for (; j < bg.length; j += 1) {
+    if (bg[j] === '{') depth += 1;
+    else if (bg[j] === '}') { depth -= 1; if (depth === 0) break; }
+  }
+  const lit = bg.slice(from, j + 1)
+    .split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  const keys = new Set([...lit.matchAll(/(?:^|[,{]|\n)\s*([A-Za-z_$][\w$]*)\s*:/g)].map((m) => m[1]));
+  assert(keys.size > 0, `${name}() contributed no keys — the extractor is broken, not the product`);
+  return keys;
+}
+
 /** Every key literal in every sendResponse object literal inside the arm. */
 function replyKeySets() {
   const sets = [];
@@ -231,7 +287,13 @@ function replyKeySets() {
       else if (ARM_CODE[j] === '}') { depth -= 1; if (depth === 0) break; }
     }
     const lit = ARM_CODE.slice(from, j + 1);
-    sets.push(new Set([...lit.matchAll(/(?:^|[,{]|\n)\s*([A-Za-z_$][\w$]*)\s*:/g)].map((m) => m[1])));
+    const keys = new Set([...lit.matchAll(/(?:^|[,{]|\n)\s*([A-Za-z_$][\w$]*)\s*:/g)].map((m) => m[1]));
+    // Resolve every `...helper()` spread to the keys that helper returns, so
+    // the freeze follows the value instead of stopping at the spread.
+    for (const m of lit.matchAll(/\.\.\.\s*([A-Za-z_$][\w$]*)\s*\(\s*\)/g)) {
+      for (const k of helperKeySet(m[1])) keys.add(k);
+    }
+    sets.push(keys);
     i = j;
   }
   return sets;

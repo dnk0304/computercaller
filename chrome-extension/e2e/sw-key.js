@@ -256,10 +256,62 @@ export function loadOrCreateDeviceKey() {
   return inflight;
 }
 
-/** `{deviceId, pub}` — everything the page bridge and the relay need, and no more. */
+/**
+ * `{deviceId, pub, registered}` — everything the page bridge and the relay
+ * need, and no more.
+ *
+ * INC-0923 B-1. `registered` is the answer to "has THIS deviceId been accepted
+ * by the §13.6 pin registry?", and it is the gate on advertising the key at
+ * all. A recipient the registry does not know is not an unverified recipient
+ * to the phone — it is a SUBSTITUTED one (E2eKeyPin.verify returns Mismatch for
+ * a key with no live row, in BOTH modes), and the phone declines the pairing
+ * and latches. So "advertise and let it be unverified" was never available;
+ * the only safe advert is a registered key.
+ *
+ * NO `v` BUMP, deliberately (RESUME-PROTOCOL v2 rule 6 is about readers that
+ * would MISREAD an old record). `registeredAt` is additive and its absence has
+ * exactly the meaning an old record should carry: not registered yet. Bumping
+ * `v` would make assertUsable throw "Re-pair needed" on every existing install
+ * on first boot after the deploy — a loud failure where the correct behaviour
+ * is one silent POST.
+ */
 export async function publicIdentity() {
   const rec = await loadOrCreateDeviceKey();
-  return { deviceId: rec.deviceId, pub: rec.pub };
+  return { deviceId: rec.deviceId, pub: rec.pub, registered: isRegistered(rec) };
+}
+
+/** An old record has no `registeredAt`; absent means "not registered". */
+function isRegistered(rec) {
+  return typeof rec?.registeredAt === 'number' && rec.registeredAt > 0;
+}
+
+/**
+ * Record that `deviceId` is live in the pin registry.
+ *
+ * Guarded on the deviceId: `registerDeviceKey` awaits a network round trip, and
+ * a wipe/regeneration during it would otherwise stamp the NEW key as registered
+ * on the strength of the OLD key's 200. That is precisely the state this whole
+ * change exists to make impossible, so it is checked rather than assumed.
+ */
+export async function markDeviceKeyRegistered(deviceId) {
+  const rec = await readRecord();
+  if (!rec || rec.deviceId !== deviceId) return false;
+  if (isRegistered(rec)) return true;
+  await writeRecord({ ...rec, registeredAt: Date.now() });
+  return true;
+}
+
+/**
+ * Drop the flag. Called on sign-out: the row is scoped to the account that
+ * registered it, so a different account signing in on the same profile must
+ * re-register before this key may be advertised again.
+ */
+export async function clearDeviceKeyRegistered() {
+  const rec = await readRecord();
+  if (!rec || !isRegistered(rec)) return;
+  const next = { ...rec };
+  delete next.registeredAt;
+  await writeRecord(next);
 }
 
 // ── Registration (the §13.6 pin registry — a check, never a source of truth) ─
@@ -270,15 +322,20 @@ export async function publicIdentity() {
  * Returns a RESULT, never throws: see the file header. `{ok:false, reason}` is
  * a normal outcome that leaves the pair usable and unverified.
  *
- * KNOWN CROSS-LANE ISSUE (reported to Ken, not worked around here). The route
- * resolves an extension caller through the SESSION COOKIE, and the cookie path
- * is CSRF-gated by `requireSameOrigin`, which accepts only the webapp's own
- * origin. A service-worker fetch presents `chrome-extension://<id>` as its
- * Origin (or none at all), so this POST is expected to come back 403 until the
- * route learns about the extension. P3 owns neither `app/**` nor `lib/**`, so
- * the fix is not taken here. The honest behaviour in the meantime is the one
- * §13.6 already specifies for a failed pin — degrade to unverified — and that
- * is what this returns.
+ * FIXED 2026-09-23 (INC-0923 B-2). P3's note here was right and was the cause:
+ * the route resolved an extension caller through the SESSION COOKIE, and the
+ * cookie path is CSRF-gated by `requireSameOrigin`, which accepts only the
+ * webapp's own origin, so this POST came back 403 on every attempt since the
+ * feature shipped — no `kind:'extension'` row has ever existed for any user.
+ * The fix landed in lib/deviceKeyAuth.ts: the `ext-session` bearer this call
+ * already sends is now a first-class caller identity, and a bearer caller is
+ * not CSRF-gated. The `token` argument therefore stopped being decorative.
+ *
+ * What did NOT change: the §13.6 contract that a failed pin degrades rather
+ * than throws. What DID change is what "degrade" means — see publicIdentity's
+ * `registered`. A key the registry refused is now withheld from the advert
+ * instead of advertised as unverified, because the phone treats an
+ * unregistered advertised key as a substitution, not as an unverified one.
  */
 export async function registerDeviceKey({ webappOrigin, token, fetchImpl }) {
   const doFetch = fetchImpl || ((...a) => fetch(...a));
@@ -303,9 +360,20 @@ export async function registerDeviceKey({ webappOrigin, token, fetchImpl }) {
         label: 'Browser extension',
       }),
     });
-    if (!res.ok) return { ok: false, reason: `http-${res.status}`, deviceId: identity.deviceId };
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: `http-${res.status}`,
+        status: res.status,
+        deviceId: identity.deviceId,
+      };
+    }
     let body = null;
     try { body = await res.json(); } catch { body = null; }
+    // The flag is written from the 200, before the caller is told ok — so a
+    // worker that dies between the two still comes back registered, and a
+    // caller that sees ok:true can rely on the advert being armed.
+    await markDeviceKeyRegistered(identity.deviceId);
     return { ok: true, deviceId: identity.deviceId, rotated: body?.rotated === true };
   } catch (e) {
     return { ok: false, reason: 'network', detail: String(e && e.message ? e.message : e) };
