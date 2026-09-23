@@ -54,7 +54,8 @@ class HomeComputerCardScreenshots {
 
     @After
     fun tearDown() {
-        setNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+        // vc63 Amendment 1: reset to the app's REAL default (dark).
+        setNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         E2eSettings.setEncryptedModeEnabled(ctx, false)
         E2eSettings.clearPeerAdvertisement(ctx, "vc63 screenshot teardown")
         TokenStore.clear(ctx)
@@ -62,9 +63,12 @@ class HomeComputerCardScreenshots {
 
     @Test
     fun captureHomeComputerCardInBothThemes() {
+        // Dark FIRST: as of Amendment 1 it is the app's only runtime theme
+        // and the set Dennis reviews. Light is the secondary, fixture-only
+        // capture and is forced with MODE_NIGHT_NO.
         for ((suffix, mode) in listOf(
-            "light" to AppCompatDelegate.MODE_NIGHT_NO,
             "dark" to AppCompatDelegate.MODE_NIGHT_YES,
+            "light" to AppCompatDelegate.MODE_NIGHT_NO,
         )) {
             setNightMode(mode)
 
@@ -207,7 +211,7 @@ class HomeComputerCardScreenshots {
         Thread.sleep(300)
         scenario.onActivity { activity ->
             for (id in listOf(
-                R.id.homeSendFileRow, R.id.homeEncryptedModeToggle, R.id.homeEncryptedModeReason
+                R.id.homeSendFileButton, R.id.homeEncryptedModeToggle, R.id.homeEncryptedModeReason
             )) {
                 val v = activity.findViewById<android.view.View>(id)
                 val r = android.graphics.Rect()

@@ -3,15 +3,20 @@
     <!--
       ComputerCaller companion theme — v56.
 
-      Parent is now the DayNight variant of MaterialComponents NoActionBar.
-      Pre-v56 it was the Dark variant and the app was dark-only; decision 3
-      of DIRECTION-android-v56.md (approved) ships light AND dark following
-      the system theme. AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM is set
-      in the Application/Activity entry points so the mode is explicit and
-      does not depend on an OEM default.
+      Parent is the DayNight variant of MaterialComponents NoActionBar.
+      Pre-v56 it was the Dark variant and the app was dark-only; v56
+      (decision 3 of DIRECTION-android-v56.md) shipped light AND dark.
 
-      This file is the LIGHT configuration; values-night/themes.xml carries
-      the dark overrides. Every colour here is a token from
+      vc63 Amendment 1 (Dennis, 2026-09-23): the app is DARK again at
+      runtime — CompanionApp pins AppCompatDelegate.MODE_NIGHT_YES, and
+      there is no theme preference or selector for a user to override it
+      with. The DayNight parent stays so this light configuration remains
+      buildable and the screenshot fixtures can still force MODE_NIGHT_NO;
+      it is no longer what the user sees.
+
+      This file is the LIGHT configuration (fixture-only as of vc63);
+      values-night/themes.xml carries the dark overrides the app actually
+      runs in. Every colour here is a token from
       values/colors.xml, whose dark twin lives in values-night/colors.xml —
       so most of the theme needs no night override at all.
 

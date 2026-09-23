@@ -41,7 +41,11 @@ class E2eP5bScreenshots {
 
     @After
     fun tearDown() {
-        setNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+        // vc63 Amendment 1: reset to the app's REAL default (dark), not to
+        // follow-system. A fixture that restored follow-system would leave
+        // the process in a mode the shipped app never uses, and the next
+        // test in the run would inherit it.
+        setNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         E2eSettings.setEncryptedModeEnabled(ctx, false)
         E2eSettings.clearPeerAdvertisement(ctx, "screenshot teardown")
         TokenStore.clear(ctx)
