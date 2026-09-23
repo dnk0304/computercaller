@@ -27,6 +27,21 @@ export const STALL_TIMEOUT_MS = 30_000;
 /** Addendum A: 1 GB hard per file. Mirrored so the picker refuses early. */
 export const MAX_FILE_BYTES = 1_073_741_824;
 
+/**
+ * T-FT-EXT-NO-SAVE-PICKER. The cap for the MEMORY fallback sink
+ * (lib/fileTransfer/fallbackSink.ts), used on surfaces with no usable File
+ * System Access API: the extension's side-panel iframe, and /app on any browser
+ * without `showSaveFilePicker`.
+ *
+ * It is deliberately far below MAX_FILE_BYTES. The disk path streams with one
+ * 48 KiB chunk of peak heap; this one holds the whole file in the tab, so the
+ * product's 1 GB would be the bug the disk path was written to avoid. 256 MiB
+ * is the largest buffer we are willing to hold in a side panel that is also
+ * rendering the user's messages. The receiver refuses an offer above it BEFORE
+ * admitting a chunk, and the refusal copy states THIS number, not 1 GB.
+ */
+export const FALLBACK_MAX_FILE_BYTES = 256 * 1024 * 1024;
+
 /** Addendum A: 2 GB per account per UTC calendar day, charged to the sender. */
 export const DAILY_QUOTA_BYTES = 2 * 1_073_741_824;
 

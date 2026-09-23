@@ -24,6 +24,11 @@ export {
   getSaveFilePicker, isFileSystemAccessSupported, ensureWritePermission,
   ensureReadPermission,
 } from './fsAccess.ts';
+export {
+  browserDelivery, canDeliverFallback, canReceiveFiles, createFallbackPicker,
+  createMemorySaveHandle, fallbackAccepts, FALLBACK_URL_TTL_MS, FT_DOWNLOAD_MESSAGE,
+} from './fallbackSink.ts';
+export type { FallbackDelivery } from './fallbackSink.ts';
 export { isRelayMintedAbort, isMalformedRelayMark, decideRelayAbort } from './relayAbort.ts';
 export type { RelayMintedAbort, RelayAbortDecision } from './relayAbort.ts';
 export {

@@ -796,6 +796,56 @@ async function sendE2ePubKey(rid, pairingId) {
   } catch {}
 }
 
+/** How long the object URL survives the click. See ft-download below. */
+const FT_DOWNLOAD_URL_TTL_MS = 60000;
+
+/**
+ * T-FT-EXT-NO-SAVE-PICKER — deliver a received file.
+ *
+ * The app frame cannot finish a file transfer on its own: it is a cross-origin
+ * iframe, so `showSaveFilePicker` throws there and a download it starts itself
+ * is blocked. Until this landed, every phone -> extension transfer was
+ * FILE_REJECTed about 20 ms after the user pressed Accept (PROD 8e0c035).
+ *
+ * THIS document is a top-level extension page, so an ordinary `<a download>` on
+ * an object URL is all that is needed — which is why the `downloads` permission
+ * is deliberately NOT requested. A new permission would force every existing
+ * user through a re-consent prompt to fix a bug, and would buy nothing: the
+ * anchor already lands the file in the browser's download flow.
+ *
+ * The Blob arrives by structured clone, so it is a handle to the app frame's
+ * bytes, not a second copy of the file. The name is the app's already
+ * sanitised filename; it is bounded and stripped of path separators again here
+ * anyway, because a shell that trusts a frame to have sanitised its input is a
+ * shell that will be wrong once.
+ */
+function receiveFileDownload(data) {
+  const blob = data && data.blob;
+  if (!(blob instanceof Blob)) return;
+  var name = typeof data.name === 'string' ? data.name : '';
+  name = name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100);
+  if (!name) name = 'download';
+  var url;
+  try {
+    url = URL.createObjectURL(blob);
+  } catch {
+    return;
+  }
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch {}
+  // Revoked on a timer, never in the same tick: the download has not read the
+  // blob yet when the click handler returns.
+  setTimeout(function () { try { URL.revokeObjectURL(url); } catch {} }, FT_DOWNLOAD_URL_TTL_MS);
+}
+
 /**
  * The app says which tab is on screen; the SW zeroes that counter. Sent over
  * the presence port (not runtime.sendMessage) so it shares the exact lifetime
@@ -882,6 +932,8 @@ window.addEventListener('message', (event) => {
     // Guarded by surface, not by trust: a docked surface asking to dock would
     // close the user's only window to reopen the same thing.
     if (CAN_DOCK) requestDock();
+  } else if (data.type === 'ft-download') {
+    receiveFileDownload(data);
   } else if (data.type === 'tab-viewed') {
     reportTabViewed(data.tab);
   } else if (data.type === 'sign-out') {

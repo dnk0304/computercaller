@@ -521,6 +521,26 @@ const MIN_CHECKS_OVERRIDE = {
   // a cheerful N/N - with the browser->phone file path broken again and nothing
   // red. Measured at the commit that adds it: 156 assertions.
   'relay:e2e-ft-hint-contract.test.mjs': 156,
+  // T-FT-WEB-CHUNK-SEQ-RACE (RULE 30). tests/e2e-ft-chunk-seq-contract.test.mjs
+  // drives the REAL createFailClosedSender (lib/e2e/session.mjs) with N seals IN
+  // FLIGHT TOGETHER - the way lib/fileTransfer/sender.ts pump() drives it - over
+  // tests/e2e-ft-chunk-seq-vectors.json, the SAME file E2eFtChunkSeqContractTest
+  // reads. Auto-discovered by the tests/e2e-*.test.mjs sweep, so what it needs
+  // here is the FLOOR, and it needs one for a specific reason: the suite's value
+  // is the BUG rows (one `s` three times) and the burst rows beside them. Drop a
+  // row from the vector file and the count falls while the suite still prints a
+  // cheerful N/N - with the browser->phone file path broken again, exactly as it
+  // shipped on 8e0c035. Measured at the commit that adds it: 41 assertions.
+  'relay:e2e-ft-chunk-seq-contract.test.mjs': 41,
+  // T-FT-EXT-NO-SAVE-PICKER. tests/e2e-ft-ext-receive.test.mjs drives the REAL
+  // sender and receiver against each other with picker=null (the extension
+  // surface) and asserts the DELIVERED BYTES hash to the source file, plus the
+  // /app disk path unchanged, the fallback's own cap, and the two different
+  // answers to a picker that throws. Same reason for a floor: most of these
+  // assertions are controls, and a control that quietly stops running is the
+  // failure mode this file exists to prevent. Measured at the commit that adds
+  // it: 38 assertions.
+  'relay:e2e-ft-ext-receive.test.mjs': 38,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job

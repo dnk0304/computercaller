@@ -7,10 +7,20 @@
  *  1. It ACKs only AFTER the write to disk resolves. The ACK window is therefore
  *     real backpressure — if the disk is slow the sender is throttled, instead
  *     of chunks piling up in a queue we would have to hold in memory.
- *  2. If there is no disk handle, it REFUSES. Buffering 1 GB in a tab is not a
- *     fallback, it is the bug the spec exists to avoid.
+ *  2. If there is no disk handle, it does NOT buffer 1 GB in a tab — that is the
+ *     bug this module exists to avoid. T-FT-EXT-NO-SAVE-PICKER replaced the
+ *     flat refusal with a SECOND, capped sink (./fallbackSink.ts): the whole
+ *     file is held in memory and handed to a download, and only up to
+ *     FALLBACK_MAX_FILE_BYTES, which is a fraction of the product cap. An offer
+ *     above that is refused BEFORE a chunk is admitted. The refusal that used
+ *     to fire here made the extension side panel unable to receive any file at
+ *     all (PROD 8e0c035), which is not the same thing as declining to buffer a
+ *     gigabyte.
  */
+import { CC_EXTENSION_ORIGIN } from '../extension.ts';
 import { CHUNK_RAW_BYTES, RECEIVER_ACK_EVERY, STALL_TIMEOUT_MS } from './constants.ts';
+import { browserDelivery, createFallbackPicker, fallbackAccepts } from './fallbackSink.ts';
+import type { FallbackDelivery } from './fallbackSink.ts';
 import { base64ToBytes } from './base64.ts';
 import { Sha256 } from './sha256.ts';
 import { chunkCount } from './frames.ts';
@@ -52,6 +62,12 @@ export interface FileReceiver extends FrameSink {
 export interface ReceiverOptions {
   /** Injected in tests and the proof script; defaults to the real picker. */
   picker?: SaveFilePicker | null;
+  /**
+   * T-FT-EXT-NO-SAVE-PICKER. The sink used when there is no usable picker.
+   * `undefined` resolves the real one for this document; `null` states that
+   * this surface has NO fallback, which is how a test pins the refusal path.
+   */
+  delivery?: FallbackDelivery | null;
 }
 
 export function createFileReceiver(
@@ -63,6 +79,13 @@ export function createFileReceiver(
   let offer: FileOffer | null = null;
   let pending: FileOffer | null = null;
   let handle: SaveFileHandle | null = null;
+  /**
+   * True while the live transfer is going to the MEMORY fallback sink. It
+   * gates the resume record: that record stores a file HANDLE for a later
+   * page to reopen, and a memory handle is neither persistable nor meaningful
+   * after a reload.
+   */
+  let sinkIsMemory = false;
   let writable: FileSystemWritableFileStream | null = null;
   let digest = new Sha256();
   let bytesWritten = 0;
@@ -206,11 +229,13 @@ export function createFileReceiver(
     upTo = seq;
     if (seq % RECEIVER_ACK_EVERY === RECEIVER_ACK_EVERY - 1 || seq === chunks() - 1) {
       sendAck();
-      await putResume({
-        id: offer!.id, sha256: offer!.sha256, size: offer!.size,
-        name: offer!.name, mime: offer!.mime,
-        bytesWritten, upTo, handle: handle!, updatedAt: Date.now(),
-      });
+      if (!sinkIsMemory) {
+        await putResume({
+          id: offer!.id, sha256: offer!.sha256, size: offer!.size,
+          name: offer!.name, mime: offer!.mime,
+          bytesWritten, upTo, handle: handle!, updatedAt: Date.now(),
+        });
+      }
     }
     events.onProgress?.(progress('transferring'));
   }
@@ -254,25 +279,78 @@ export function createFileReceiver(
 
     async receiveToDisk(incoming: FileOffer) {
       if (state === 'receiving' || state === 'verifying') throw new Error('a transfer is already running');
-      const pick = options.picker ?? getSaveFilePicker();
-      if (!pick) {
-        // No File System Access API: refuse honestly rather than buffer.
-        transport.send('FILE_REJECT', { id: incoming.id });
-        pending = null;
-        events.onFailed?.(incoming.id, 'oom');
-        return;
-      }
+      const diskPicker = options.picker !== undefined ? options.picker : getSaveFilePicker();
+      const delivery = options.delivery !== undefined
+        ? options.delivery
+        : browserDelivery(CC_EXTENSION_ORIGIN);
 
-      const suggestedName = sanitizeFilename(incoming.name, incoming.mime);
-      try {
-        handle = await pick({ suggestedName });
-      } catch {
-        // The user dismissed the picker, or permission was denied. Treat both as
-        // a decline: the sender must not be left waiting.
+      /**
+       * The memory sink, or null when this surface truly cannot receive.
+       * Resolved before the picker is attempted, because the picker's THROW is
+       * one of the two ways we end up here (see below) and deciding what to do
+       * about it must not depend on work we have not done yet.
+       */
+      const fallbackFor = (): SaveFilePicker | null => {
+        if (!delivery) return null;
+        return createFallbackPicker(incoming.mime, incoming.size, delivery);
+      };
+
+      /** No picker AND no fallback: refuse honestly, as this always has. */
+      const refuseNoSink = () => {
         transport.send('FILE_REJECT', { id: incoming.id });
         pending = null;
         handle = null;
-        return;
+        events.onFailed?.(incoming.id, 'oom');
+      };
+
+      /**
+       * The fallback holds the file in the tab, so its cap is its own
+       * (FALLBACK_MAX_FILE_BYTES), NOT the product's 1 GB. Refused before a
+       * chunk is admitted, and reported as `too_large` — which is what it is —
+       * so the user gets a sentence instead of a dialog that closed itself.
+       */
+      const refuseTooLargeForFallback = () => {
+        transport.send('FILE_REJECT', { id: incoming.id });
+        pending = null;
+        handle = null;
+        events.onFailed?.(incoming.id, 'too_large');
+      };
+
+      const suggestedName = sanitizeFilename(incoming.name, incoming.mime);
+      let usingFallback = false;
+
+      if (!diskPicker) {
+        const fallback = fallbackFor();
+        if (!fallback) { refuseNoSink(); return; }
+        if (!fallbackAccepts(incoming.size)) { refuseTooLargeForFallback(); return; }
+        usingFallback = true;
+        handle = await fallback({ suggestedName });
+      } else {
+        try {
+          handle = await diskPicker({ suggestedName });
+        } catch (err) {
+          // TWO DIFFERENT THINGS THROW HERE AND THEY ARE NOT THE SAME ANSWER.
+          //
+          // `AbortError` is the user closing the picker: a decline, and the
+          // sender must not be left waiting. Anything else means the SURFACE
+          // refused to open a picker at all — inside the extension's
+          // side-panel iframe Chrome throws `SecurityError` ("cross origin sub
+          // frames aren't allowed to show a file picker"), and a picker that
+          // needed a gesture it no longer has throws `NotAllowedError`. Those
+          // are not the user's answer, and treating them as one is what sent a
+          // silent FILE_REJECT 20 ms after every Accept in the side panel.
+          const name = (err as { name?: string } | undefined)?.name;
+          const fallback = name === 'AbortError' ? null : fallbackFor();
+          if (!fallback) {
+            transport.send('FILE_REJECT', { id: incoming.id });
+            pending = null;
+            handle = null;
+            return;
+          }
+          if (!fallbackAccepts(incoming.size)) { refuseTooLargeForFallback(); return; }
+          usingFallback = true;
+          handle = await fallback({ suggestedName });
+        }
       }
       if (!(await ensureWritePermission(handle))) {
         transport.send('FILE_REJECT', { id: incoming.id });
@@ -282,13 +360,17 @@ export function createFileReceiver(
 
       offer = incoming;
       pending = null;
+      sinkIsMemory = usingFallback;
       bytesWritten = 0; upTo = -1; acceptedSeq = -1; lastAcked = -1;
       digest = new Sha256();
       writeQueue.length = 0;
       startedAt = Date.now();
 
       // Resume path: a record for this id whose partial file is still on disk.
-      const prior = await getResume(incoming.id);
+      // NOT on the fallback sink — its buffer dies with the page, so there is
+      // never a partial to resume from, and a memory handle is not something
+      // the resume store could persist even if there were.
+      const prior = usingFallback ? null : await getResume(incoming.id);
       let keepExisting = false;
       if (prior && isResumable(prior, incoming)) {
         try {
