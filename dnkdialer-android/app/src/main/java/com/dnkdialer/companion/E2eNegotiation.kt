@@ -222,6 +222,23 @@ object E2eNegotiation {
      * Remembers that a pair was refused for a downgrade, for the life of the
      * pair. In-memory by design: the latch protects one pairing attempt series,
      * and a fresh Accept after a genuine Reset is a new pair.
+     *
+     * ## What may set it, and what may clear it (INC-0923)
+     *
+     * SET by a genuine downgrade only: [Decision.Abort] from
+     * [E2eSettings.EffectiveMode.ABORT] (local mode ON, peer offered nothing),
+     * a SAS the user refused, and a pin [E2eKeyPin.Verdict.Mismatch] — a key
+     * the registry actively contradicts. It is NOT set by a pin
+     * [E2eKeyPin.Verdict.FailClosed] (registry unreachable, or the recipient
+     * simply unregistered) or by an account-id mismatch: those are faults, not
+     * offers, and latching on them made one missing service-worker row abort
+     * every later pairing attempt for the life of the process.
+     *
+     * CLEARED only by events this device originates: the user disconnecting
+     * from the lobby, and a service restart. Never by a relay-delivered frame
+     * (RESET_ROOM, PAIRING_TERMINATED) or a socket flap — a peer that can make
+     * the pair end could otherwise clear the latch at will, which is the whole
+     * attack the latch exists to stop.
      */
     class DowngradeLatch {
         var isLatched: Boolean = false
@@ -229,8 +246,63 @@ object E2eNegotiation {
 
         fun latch() { isLatched = true }
 
-        /** Called when the pair genuinely ends (Reset / sign-out / LEAVE_ACTIVE). */
+        /**
+         * Clear the latch. Callers MUST gate this on [clearsLatch] so the
+         * "only locally-originated events" rule lives in one testable place
+         * rather than in the reader's memory of which frame came from where.
+         */
         fun clear() { isLatched = false }
+
+        /** The events that may end a latched pair. */
+        enum class Event {
+            /** The user tapped Disconnect on THIS device. */
+            LOCAL_USER_DISCONNECT,
+
+            /** The service was (re)created — a genuine app restart. */
+            SERVICE_RESTART,
+
+            /** `RESET_ROOM`, delivered by the relay. */
+            RELAY_RESET_ROOM,
+
+            /** `PAIRING_TERMINATED`, delivered by the relay. */
+            RELAY_PAIRING_TERMINATED,
+
+            /** The relay socket dropped and reconnected. */
+            SOCKET_FLAP,
+        }
+
+        companion object {
+            /**
+             * True only for events this device originated.
+             *
+             * A relay-delivered frame must never clear the latch: the peer that
+             * set it could then clear it at will, which is the second half of
+             * the downgrade attack the latch exists to stop. A socket flap is
+             * weaker still — it is not even an intentional act.
+             */
+            @JvmStatic
+            fun clearsLatch(event: Event): Boolean = when (event) {
+                Event.LOCAL_USER_DISCONNECT, Event.SERVICE_RESTART -> true
+                Event.RELAY_RESET_ROOM,
+                Event.RELAY_PAIRING_TERMINATED,
+                Event.SOCKET_FLAP -> false
+            }
+
+            /**
+             * True only for a pin verdict that is EVIDENCE, not a fault.
+             *
+             * [E2eKeyPin.Verdict.Mismatch] means the registry actively
+             * contradicts the advertised key (substituted, wrong kind, or a
+             * REVOKED row) — an attack signature. [E2eKeyPin.Verdict.FailClosed]
+             * means the registry said nothing (unreachable, or the recipient is
+             * unregistered): INC-0923 showed that latching on it turned one
+             * missing service-worker row into a permanently un-pairable phone,
+             * because the latch lives for the whole process.
+             */
+            @JvmStatic
+            fun latchesOn(verdict: E2eKeyPin.Verdict): Boolean =
+                verdict is E2eKeyPin.Verdict.Mismatch
+        }
     }
 
     // ------------------------------------------------------- accept block

@@ -317,4 +317,75 @@ class E2eNegotiationTest {
         assertEquals(0, block.get("mode").asInt)
         assertEquals(1, block.get("v").asInt)
     }
+    // ------------------------------------------- INC-0923: latch lifecycle
+    //
+    // E2eNegotiation.kt promised "a fresh Accept after a genuine Reset is a
+    // new pair" and nothing implemented it, so a latched phone stayed latched
+    // until the process died — the reason INC-0923 needed a force-stop.
+    // These four assertions are the contract lane C made binding.
+
+    @Test
+    fun `only locally originated events clear the downgrade latch`() {
+        // Locally originated: the user acted on THIS device.
+        assertTrue(E2eNegotiation.DowngradeLatch.clearsLatch(E2eNegotiation.DowngradeLatch.Event.LOCAL_USER_DISCONNECT))
+        assertTrue(E2eNegotiation.DowngradeLatch.clearsLatch(E2eNegotiation.DowngradeLatch.Event.SERVICE_RESTART))
+        // Relay-delivered: a peer that can set the latch could otherwise clear
+        // it at will, which is the second step of the downgrade attack.
+        assertTrue(
+            "a relay RESET_ROOM must NOT clear the latch",
+            !E2eNegotiation.DowngradeLatch.clearsLatch(E2eNegotiation.DowngradeLatch.Event.RELAY_RESET_ROOM)
+        )
+        assertTrue(!E2eNegotiation.DowngradeLatch.clearsLatch(E2eNegotiation.DowngradeLatch.Event.RELAY_PAIRING_TERMINATED))
+        assertTrue(
+            "a socket flap is not even an intentional act",
+            !E2eNegotiation.DowngradeLatch.clearsLatch(E2eNegotiation.DowngradeLatch.Event.SOCKET_FLAP)
+        )
+        // CONTROL: the enum is fully covered, so a new event added without a
+        // decision cannot slip through as a silent `true`.
+        assertEquals(5, E2eNegotiation.DowngradeLatch.Event.values().size)
+    }
+
+    /**
+     * A latch set by a genuine downgrade must survive a relay-delivered reset
+     * and still be clearable by the user. Stated as behaviour over a real
+     * latch, not just the predicate, so the two cannot drift apart.
+     */
+    @Test
+    fun `a relay reset does not release a latched pair but a local disconnect does`() {
+        val latch = E2eNegotiation.DowngradeLatch()
+        E2eNegotiation.decide(true, E2eNegotiation.parsePeerOffer(null), latch)
+        assertTrue(latch.isLatched)
+
+        if (E2eNegotiation.DowngradeLatch.clearsLatch(E2eNegotiation.DowngradeLatch.Event.RELAY_RESET_ROOM)) latch.clear()
+        assertTrue("RESET_ROOM came from the relay — still latched", latch.isLatched)
+
+        if (E2eNegotiation.DowngradeLatch.clearsLatch(E2eNegotiation.DowngradeLatch.Event.LOCAL_USER_DISCONNECT)) latch.clear()
+        assertTrue("the user disconnected on this device — released", !latch.isLatched)
+    }
+
+    /**
+     * Which pin verdicts are evidence of an attack (latch) and which are merely
+     * faults (do not latch). INC-0923: an unregistered service worker produced
+     * a refusal that latched, so every later offer aborted instantly for the
+     * life of the process — "Couldn't set up encrypted pairing — try again".
+     */
+    @Test
+    fun `only a pin Mismatch latches`() {
+        assertTrue(
+            "a substituted or REVOKED key is an attack signature",
+            E2eNegotiation.DowngradeLatch.latchesOn(
+                E2eKeyPin.Verdict.Mismatch(E2eKeyPin.MISMATCH_MESSAGE, "substituted")
+            )
+        )
+        assertTrue(
+            "an unregistered recipient or an unreachable registry is a fault, not an offer",
+            !E2eNegotiation.DowngradeLatch.latchesOn(
+                E2eKeyPin.Verdict.FailClosed(E2eKeyPin.FAIL_CLOSED_MESSAGE, "sw (extension) unregistered")
+            )
+        )
+        assertTrue(
+            !E2eNegotiation.DowngradeLatch.latchesOn(E2eKeyPin.Verdict.FailOpenUnverified("unregistered"))
+        )
+        assertTrue(!E2eNegotiation.DowngradeLatch.latchesOn(E2eKeyPin.Verdict.Verified(2)))
+    }
 }
