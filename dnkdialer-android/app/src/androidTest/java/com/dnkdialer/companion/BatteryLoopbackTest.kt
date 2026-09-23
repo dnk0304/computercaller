@@ -59,9 +59,14 @@ class BatteryLoopbackTest {
     fun setUp() {
         // The brief's gate precondition: never grade an instrumented run
         // against an APK other than the one this lane built.
+        // T-BAT-VERSIONCODE-PIN (vc63): the literal was 60L, so this went red
+        // the moment the app was bumped — and would again on every future
+        // bump. The assert's INTENT was never "60": it is "the APK installed
+        // on this device is the one this build produced", which BuildConfig
+        // states without pinning a number that ages out.
         assertEquals(
-            "installed versionCode must be the vc60 line this lane targets",
-            60L,
+            "installed versionCode must be the APK this lane built",
+            BuildConfig.VERSION_CODE.toLong(),
             installedVersionCode()
         )
         shell("dumpsys battery reset")

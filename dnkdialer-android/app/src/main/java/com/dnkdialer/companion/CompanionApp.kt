@@ -10,12 +10,26 @@ import androidx.appcompat.app.AppCompatDelegate
  * startup, before any Activity inflates a layout.
  *
  * Pre-v56 the app was dark-only (a Theme.MaterialComponents Dark parent).
- * Decision 3 of DIRECTION-android-v56.md ships light AND dark following
- * the system setting. Setting MODE_NIGHT_FOLLOW_SYSTEM explicitly rather
- * than relying on the DayNight default matters because several OEM skins
- * (and any earlier build that had persisted a local night-mode override)
- * can otherwise leave the delegate on a stale mode for the life of the
- * install.
+ * v56 (decision 3 of DIRECTION-android-v56.md) moved it to DayNight
+ * following the system setting.
+ *
+ * vc63 Amendment 1 — Dennis, 2026-09-23 12:21Z: "default mode in android
+ * app should be dark mode." So the mode is PINNED to dark, not merely
+ * defaulted to it: there is no theme preference and no theme selector
+ * anywhere in this app (no theme key in any getSharedPreferences call),
+ * so there is nothing for a user choice to override and nothing to
+ * migrate. Dark is the only runtime path.
+ *
+ * The DayNight parent and the values-night resources STAY. Light is no
+ * longer reachable at runtime, but it must stay buildable: the screenshot
+ * fixtures force MODE_NIGHT_NO to capture the light set, and deleting the
+ * light resources would turn that into a silent fallback rather than a
+ * failure.
+ *
+ * Setting the mode explicitly rather than relying on the theme parent
+ * matters because several OEM skins (and any earlier build that had
+ * persisted a local night-mode override) can otherwise leave the delegate
+ * on a stale mode for the life of the install.
  *
  * Setting it here — not in an Activity — avoids the recreate() storm you
  * get when the mode is applied after a window already exists.
@@ -23,6 +37,16 @@ import androidx.appcompat.app.AppCompatDelegate
 class CompanionApp : Application() {
 
     companion object {
+        /**
+         * The night mode this app runs in, named so a test can assert it
+         * without re-running [onCreate] (which would re-register the
+         * lifecycle callbacks below).
+         *
+         * vc63 Amendment 1 — pinned to dark. A `const` so the JVM unit test
+         * can read it without loading an Android class.
+         */
+        const val NIGHT_MODE: Int = AppCompatDelegate.MODE_NIGHT_YES
+
         /**
          * FT-2 — is any Activity of ours resumed right now?
          *
@@ -54,7 +78,7 @@ class CompanionApp : Application() {
         DiagLog.init(this)
         DiagExport.pruneExports(this)
 
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+        AppCompatDelegate.setDefaultNightMode(NIGHT_MODE)
 
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             private var resumed = 0

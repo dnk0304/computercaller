@@ -499,6 +499,16 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    // vc63 — Intents.intended() for the Home "Send a file" row. The row's
+    // entire contract is the intent it fires into FileTransferActivity, so
+    // the intent is the only thing worth asserting on. Same 3.5.1 line as
+    // espresso-core, so no new transitive versions enter the tree.
+    // Pinned to espresso-core's 3.5.1 on purpose: a newer intents against an
+    // older core is exactly the kind of split-version androidTest classpath
+    // that fails at runtime, not at build time. Bumping is a deliberate
+    // pair-bump of both lines, not a lint nudge.
+    //noinspection GradleDependency
+    androidTestImplementation("androidx.test.espresso:espresso-intents:3.5.1")
 
 
     // E2E P4 (s3) — the androidTest source set was empty until E2eKeyStoreTest.
@@ -515,4 +525,19 @@ dependencies {
 // LEARNINGS: "silently ignored CLI flag".
 tasks.withType<Test>().configureEach {
     System.getProperty("e2e.writeVectors")?.let { systemProperty("e2e.writeVectors", it) }
+
+    // vc63 Amendment 2 — declare the resource tree as a test INPUT.
+    //
+    // E2eCopyTableTest (and the vectors tests) read files with plain
+    // File("src/main/res/..."), which Gradle cannot see. Without this
+    // declaration an edit to strings.xml alone leaves testDebugUnitTest
+    // UP-TO-DATE, so the copy rules DO NOT RUN against the copy that
+    // changed — and the gate reports a green copy table over text nobody
+    // checked. Found by planting a QR string and watching the suite skip:
+    // "BUILD SUCCESSFUL ... testDebugUnitTest UP-TO-DATE".
+    //
+    // RELATIVE sensitivity so the cache still hits when the worktree moves.
+    inputs.dir(layout.projectDirectory.dir("src/main/res"))
+        .withPropertyName("resourcesReadByCopyTests")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }

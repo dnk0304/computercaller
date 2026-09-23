@@ -4,8 +4,11 @@
 
   Same names as values/colors.xml; only the values differ, so nothing in a
   layout or drawable needs a qualifier. Pre-v56 these values lived in
-  values/ and the app was dark-only; as of v56 the theme is DayNight and
-  follows the system (decision 3, approved).
+  values/ and the app was dark-only; v56 made the theme DayNight.
+
+  vc63 Amendment 1 (Dennis, 2026-09-23): dark is the default again —
+  CompanionApp pins MODE_NIGHT_YES — so THIS file is the token set every
+  user sees. values/colors.xml is now the fixture-only light path.
 
   Only the tokens that CHANGE between modes are listed. The brand ramp
   (cc_brand_*), the QR plate and the Google sign-in branding are fixed in

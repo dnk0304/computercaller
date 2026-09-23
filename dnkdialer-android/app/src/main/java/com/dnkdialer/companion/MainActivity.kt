@@ -181,6 +181,28 @@ class MainActivity : AppCompatActivity() {
     private lateinit var staySwitch: com.google.android.material.switchmaterial.SwitchMaterial
     private var suppressStaySwitchCallback = false
 
+    /**
+     * vc63 — the Home "Encrypted mode" row. The SAME painter Settings uses
+     * ([E2eModeRowBinder]), over the SAME preference, so the two screens
+     * cannot disagree about a fact that is stored in one place.
+     */
+    private var encryptedModeBinder: E2eModeRowBinder? = null
+
+    /**
+     * The (pairActive -> live mode) the row was last painted for.
+     *
+     * updateStatus() runs on a 2 s tick and [E2eModeRowBinder.refresh] does a
+     * Keystore capability probe plus a preferences read; repainting every
+     * tick would be wasteful, and worse, it would wipe the "applies to your
+     * next connection" line two seconds after the user read it. So the row is
+     * repainted only when the fact it displays actually changed.
+     *
+     * Null is a MEANINGFUL value here ("no active pair"), so "never painted"
+     * needs its own flag rather than being folded into it.
+     */
+    private var lastPaintedLiveMode: E2eStatusCopy.State? = null
+    private var hasPaintedModeRow = false
+
     // Dispatch #34 (v20) — Disconnect button (terminates the active
     // pair without signing out). Hoisted to a field so updateStatus()
     // and handleRelayPhaseChanged() can flip visibility based on the
@@ -650,6 +672,40 @@ class MainActivity : AppCompatActivity() {
             android.util.Log.d("MainActivity", "stay-disconnected switch -> $action")
             sendBroadcast(Intent(action).apply { setPackage(packageName) })
             staySwitch.postDelayed({ refreshLobbyToggleLabel() }, 250)
+        }
+
+        // ---- vc63 COMPUTER card -------------------------------------------
+        // Row A: the in-app file picker. FileTransferActivity has carried
+        // ACTION_PICK_FILE since the feature shipped and nothing in the app
+        // ever fired it — the share sheet was the only way in. This is that
+        // intent's first caller, and it is ALL this row does.
+        //
+        // Deliberately unguarded: no "are we connected?" check here. Every
+        // refusal (not connected, a transfer already running, tier, quota)
+        // already lives inside FileTransferActivity and the share-sheet path
+        // goes through it. A second copy of those checks on Home is a second
+        // copy that drifts, and the day it drifts the two entry points
+        // disagree about whether a send is possible.
+        findViewById<View>(R.id.homeSendFileButton).setOnClickListener {
+            startActivity(
+                Intent(this, FileTransferActivity::class.java)
+                    .setAction(FileTransferActivity.ACTION_PICK_FILE)
+            )
+        }
+
+        // Row B: the same Encrypted-mode row as Settings, same binder, same
+        // preference. Flipping it here changes the NEXT connection only —
+        // the live pair's mode is latched at Accept (SPEC §13.1) — and the
+        // reason line under the row says so whenever the two disagree.
+        encryptedModeBinder = E2eModeRowBinder(
+            this,
+            findViewById(R.id.homeEncryptedModeToggle),
+            findViewById(R.id.homeEncryptedModeTitle),
+            findViewById(R.id.homeEncryptedModeSub),
+            findViewById(R.id.homeEncryptedModeReason),
+        ).apply {
+            bind { checked -> DiagLog.d("MainActivity", "e2e.toggle.home ${if (checked) "on" else "off"}") }
+            refresh()
         }
 
         // Initial visual: idle. Real state arrives once the service binds.
@@ -1140,6 +1196,12 @@ class MainActivity : AppCompatActivity() {
             setStatusVisual(conn)
             if (!pairActive) pairedComputerName = null
             paintHero(conn, pairActive, phoneService?.getIsCallInProgress() == true)
+            // vc63 — the Encrypted-mode row's honest-state line, fed from the
+            // SAME e2eState and the SAME pairActive this status line was just
+            // painted from, on the same tick. Reading it from anywhere else
+            // is how the row and the status line end up contradicting each
+            // other about the connection the user is looking at.
+            paintEncryptedModeRow(if (pairActive) e2eState else null)
 
             reconnectButton.visibility = View.GONE
             // Dispatch #34 — Disconnect button is visible iff there's an
@@ -1161,8 +1223,47 @@ class MainActivity : AppCompatActivity() {
             setStatusVisual(ConnState.IDLE)
             pairedComputerName = null
             paintHero(ConnState.IDLE, pairActive = false, callInProgress = false)
+            // No bound service means no pair, so there is no "this connection"
+            // to describe — the row falls back to the capability copy.
+            paintEncryptedModeRow(null)
             android.util.Log.d("MainActivity", "Status updated: Service not running")
         }
+    }
+
+    /**
+     * vc63 — repaint the Encrypted-mode row for the live pair's mode ([live]
+     * null = nothing paired).
+     *
+     * Guarded on change because updateStatus() ticks every 2 s: an
+     * unconditional repaint would re-read the Keystore twenty times a minute
+     * and, worse, would overwrite the "applies to your next connection" line
+     * the user is in the middle of reading two seconds after they flipped the
+     * switch.
+     */
+    private fun paintEncryptedModeRow(live: E2eStatusCopy.State?) {
+        val binder = encryptedModeBinder ?: return
+        if (hasPaintedModeRow && lastPaintedLiveMode == live) return
+        hasPaintedModeRow = true
+        lastPaintedLiveMode = live
+        binder.livePairMode = live
+        binder.refresh()
+    }
+
+    /**
+     * Force a repaint of the Encrypted-mode row, with [live] as the pair's
+     * mode.
+     *
+     * Instrumented tests can only seed the capability store AFTER the
+     * Activity has painted, and an active pair needs a bound PhoneService and
+     * a real computer — neither of which a fixture has. This hook paints the
+     * PRODUCTION row through the PRODUCTION binder with one input supplied;
+     * it does not fake a pair and nothing in the app calls it. Same shape,
+     * and same reason, as SettingsActivity.refreshEncryptedModeRowForTest().
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun refreshEncryptedModeRowForTest(live: E2eStatusCopy.State? = null) {
+        hasPaintedModeRow = false
+        paintEncryptedModeRow(live)
     }
 
     /**
@@ -1541,7 +1642,8 @@ class MainActivity : AppCompatActivity() {
      * copy. The exception class names come from
      * java_websocket → PhoneClient.onError's reason format
      * ("${javaClass.simpleName}: ${message}"). Covered cases:
-     *   - 4401: relay's invalid-token close. Tell the user to re-scan.
+     *   - 4401: relay's invalid-token close. Tell the user to sign out
+     *     and back in — there is no QR and nothing to re-scan.
      *   - ConnectException: server not listening / refused.
      *   - SocketTimeoutException: TCP / handshake timeout.
      *   - UnknownHostException: DNS failed.
@@ -1624,6 +1726,13 @@ class MainActivity : AppCompatActivity() {
         // permissions-pane path too.
         checkNotificationStatus()
         refreshPermissionSummary()
+
+        // vc63 — the user may have flipped Encrypted mode in Settings while
+        // they were away, or paired a computer that changed the capability.
+        // Both screens refresh() in onResume, so whichever one you come back
+        // to shows the stored truth rather than what it painted last time.
+        hasPaintedModeRow = false
+        paintEncryptedModeRow(lastPaintedLiveMode)
 
         // v56 notification-tap fix - belt and braces. Whatever brought us
         // to the foreground (launcher icon, notification body tap, recents),
