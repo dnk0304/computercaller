@@ -26,7 +26,14 @@
  * exported functions directly is the only way to test two emails that is not
  * really testing the harness.
  *
- *   PREREQ:  a server on CC_BASE_URL (default http://localhost:3123)
+ *   PREREQ:  a PRODUCTION server on CC_BASE_URL (default http://localhost:3123):
+ *              bun run build && NODE_ENV=production PORT=3123 node server.js
+ *            NODE_ENV=production is not a nicety. In dev, Next's bundles eval
+ *            their source maps, the app's own CSP (script-src 'self'
+ *            'unsafe-inline') refuses it, React never hydrates, and the page
+ *            serves as inert HTML — every click succeeds and does nothing, so
+ *            a harness pointed at a dev server fails with a selector timeout
+ *            and lies to you about which selector is wrong.
  *   RUN:     node scripts/ext-composer-resize-proof.mjs
  */
 
@@ -46,7 +53,7 @@ const SHOTS = process.env.CC_SHOTS || path.join(REPO, 'docs', 'screenshots');
 fs.mkdirSync(SHOTS, { recursive: true });
 
 /** A FLOOR, not a target: a run that skipped arms must fail, not pass quietly. */
-export const MIN_CHECKS = 30;
+export const MIN_CHECKS = 58;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -66,9 +73,16 @@ const MIN_PX = 36;
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-composer-proof-'));
 {
   const src = path.join(REPO, 'lib', 'extensionComposerHeight.ts');
+  // `node <tsc's JS entry>`, not the .bin shim: spawning a .cmd without a
+  // shell is EINVAL on Node >= 20 on Windows, and spawning it WITH a shell is
+  // a quoting hazard for no benefit.
   execFileSync(
-    path.join(REPO, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc'),
-    [src, '--outDir', TMP, '--target', 'es2020', '--module', 'es2020', '--moduleResolution', 'bundler', '--skipLibCheck'],
+    process.execPath,
+    [
+      path.join(REPO, 'node_modules', 'typescript', 'bin', 'tsc'),
+      src, '--outDir', TMP,
+      '--target', 'es2020', '--module', 'es2020', '--moduleResolution', 'bundler', '--skipLibCheck',
+    ],
     { stdio: 'pipe' },
   );
   const mod = await import(pathToFileURL(path.join(TMP, 'extensionComposerHeight.js')).href);
@@ -291,15 +305,33 @@ try {
         aria.tab === '0' && aria.touch === 'none' && aria.cursor === 'row-resize',
       JSON.stringify(aria),
     );
-    check('aria-valuemin is the 36px floor and aria-valuemax is a live DOM bound, not a constant',
-      Number(aria.min) === MIN_PX && Number(aria.max) > 202, `${aria.min}..${aria.max}`);
+    // NOT "> 202". The live ceiling in a 560px panel is 173 — smaller than the
+    // A1 auto cap, because it is what is actually LEFT after the header, the
+    // tab strip, the chip strip and three rows of conversation. That it is
+    // below the auto cap is the point of measuring it. The 360px arm below
+    // proves it is genuinely live by making it move with the text size.
+    check('aria-valuemin is the 36px floor and aria-valuemax is a live DOM bound',
+      Number(aria.min) === MIN_PX && Number(aria.max) > MIN_PX && Number(aria.max) < 560 &&
+        Number(aria.max) !== 202 && Number(aria.max) !== 168,
+      `${aria.min}..${aria.max}`);
 
-    // Tab order: the message comes first.
+    // Tab order: the message comes first. Send is DISABLED on an empty draft
+    // and is therefore not a tab stop, so walk forward rather than counting
+    // presses — counting was the first version and it asserted the state of
+    // the Send button, which is not what this check is about.
     await page.locator('textarea[aria-label="Message body"]').focus();
-    await page.keyboard.press('Tab'); // -> Send
-    await page.keyboard.press('Tab'); // -> handle
-    check('the handle is in the tab order AFTER the textarea and Send',
-      await g.evaluate((el) => el === document.activeElement));
+    let reached = false;
+    for (let i = 0; i < 4 && !reached; i += 1) {
+      await page.keyboard.press('Tab');
+      reached = await g.evaluate((el) => el === document.activeElement);
+    }
+    const afterInDom = await page.evaluate(() => {
+      const ta = document.querySelector('textarea[aria-label="Message body"]');
+      const h = document.querySelector('[data-cc-composer-grip]');
+      // DOCUMENT_POSITION_FOLLOWING
+      return !!(ta && h) && (ta.compareDocumentPosition(h) & 4) !== 0;
+    });
+    check('the handle is reachable by Tab and comes AFTER the textarea in the DOM', reached && afterInDom, `tab ${reached}, dom-after ${afterInDom}`);
 
     // Pointer drag: the handle is on the TOP edge, so up = taller.
     const box = await g.boundingBox();
@@ -334,13 +366,22 @@ try {
     // Keyboard.
     const g2 = grip(page);
     await g2.focus();
+    // From the FLOOR, not from wherever the drag left it: the restored 156px is
+    // within 40px of the live 173px ceiling, so "+8 x 5" measured the clamp
+    // instead of the step. Home first makes the step the only variable.
+    await page.keyboard.press('Home');
+    await page.waitForTimeout(250);
     const before = await taHeight(page);
+    check('Home puts the box on its 36px floor before the step is measured', before === MIN_PX, `${before}px`);
     for (let i = 0; i < 5; i += 1) await page.keyboard.press('ArrowUp');
     await page.waitForTimeout(300);
     check('ArrowUp x5 is +40px (8px a step)', (await taHeight(page)) - before === 40, `${before} -> ${await taHeight(page)}`);
+    await page.keyboard.press('Shift+ArrowUp');
+    await page.waitForTimeout(250);
+    check('Shift+Arrow is the 32px step', (await taHeight(page)) - before === 72, `${await taHeight(page)}`);
     await page.keyboard.press('Shift+ArrowDown');
     await page.waitForTimeout(250);
-    check('Shift+Arrow is the 32px step', (await taHeight(page)) - before === 8, `${await taHeight(page)}`);
+    check('Shift+Arrow is symmetric downward', (await taHeight(page)) - before === 40, `${await taHeight(page)}`);
     await page.keyboard.press('Home');
     await page.waitForTimeout(250);
     check('Home is the 36px minimum', (await taHeight(page)) === MIN_PX, `${await taHeight(page)}px`);
@@ -377,7 +418,8 @@ try {
   }
 
   // ---- B3. bounds hold at 360px and at every text size --------------------
-  for (const size of ['small', 'medium', 'large']) {
+  const boundsBySize = {};
+for (const size of ['small', 'medium', 'large']) {
     const page = await browser.newPage();
     // 480px is deliberately ABOVE the live max at this panel height — a stored
     // value out of bounds must be re-clamped, never discarded.
@@ -397,9 +439,15 @@ try {
     });
     check(`${size} @360px: an out-of-bounds stored height is re-clamped, not discarded`, h > MIN_PX && h <= bound + 2, `${h}px, bound ${bound}`);
     check(`${size} @360px: still >=3 thread rows and no horizontal overflow`, rows >= 3 && ov <= 0, `${rows} rows, ${ov}px`);
+    boundsBySize[size] = bound;
     await page.screenshot({ path: path.join(SHOTS, `ext-composer-360-${size}.png`) });
     await page.close();
   }
+  check(
+    'the maximum is genuinely computed, not a constant: it shrinks as the type grows',
+    boundsBySize.small > boundsBySize.medium && boundsBySize.medium > boundsBySize.large,
+    JSON.stringify(boundsBySize),
+  );
 
   // ---- B4. dark theme contrast of the affordance --------------------------
   {
@@ -448,7 +496,10 @@ try {
     check(
       "/app composer height is IDENTICAL with and without a stored extension height — the pref cannot reach it",
       JSON.stringify(clean.heights) === JSON.stringify(seeded.heights),
-      `${JSON.stringify(clean.heights)} vs ${JSON.stringify(seeded.heights)}`,
+      `${JSON.stringify(clean.heights)} vs ${JSON.stringify(seeded.heights)}` +
+        (clean.heights.length === 0
+          ? '  [VACUOUS: /app rendered no composer for an unauthenticated harness. The /app non-regression here rests on the two checks above — Dashboard.tsx byte-identical to base, and every grip selector scoped under .cc-ext.]'
+          : ''),
     );
   }
 } finally {
