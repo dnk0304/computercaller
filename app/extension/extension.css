@@ -2145,16 +2145,26 @@ html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-unsupported] {
   align-items: center;
   justify-content: center;
 }
-/* The affordance itself: a short pill, centred, invisible until the pointer or
-   the keyboard arrives. A permanently drawn grip on a 360px panel is a piece
-   of furniture in a surface whose whole design is one hairline per boundary
-   (§0); on hover it is unambiguous, which is when it needs to be. */
+/* The affordance itself: a short pill, centred, faint at rest and full on
+   hover or focus.
+
+   IT WAS INVISIBLE AT REST in the first cut, on the §0 argument that a
+   permanently drawn grip is furniture in a surface whose whole design is one
+   hairline per boundary. The A4 side-panel evidence killed that: in
+   composer-after-light-single.png there is nothing on screen to suggest the
+   rule can be dragged at all. A resize handle nobody can see is a feature
+   nobody finds, and Dennis asked for this one by name — he will go looking
+   for it, and "hover the 10px strip and see what happens" is not a discovery
+   path. 35% of a token that is already only at the 3:1 non-text floor is
+   about as quiet as a visible affordance gets, and it reads as a grab bar
+   rather than as a second hairline because it is short, centred and
+   rounded. */
 .cc-ext .cc-composer-grip-pill {
   width: 32px;
   height: 3px;
   border-radius: 999px;
   background: var(--cc-grip);
-  opacity: 0;
+  opacity: .35;
   transition: opacity 120ms ease-out;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2163,9 +2173,10 @@ html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-unsupported] {
 .cc-ext .cc-composer-grip:hover .cc-composer-grip-pill,
 .cc-ext .cc-composer-grip:focus-visible .cc-composer-grip-pill,
 .cc-ext .cc-composer-grip:active .cc-composer-grip-pill { opacity: 1; }
-/* A user-set height is a state worth seeing: the pill stays drawn, faintly, so
-   "why is my box this size" has an answer on screen. */
-.cc-ext .cc-composer-grip[data-cc-composer-mode="user"] .cc-composer-grip-pill { opacity: .55; }
+/* A user-set height is a state worth seeing: the pill is drawn more strongly
+   than the resting one, so "why is my box this size" has an answer on screen
+   and double-click-to-reset has something to point at. */
+.cc-ext .cc-composer-grip[data-cc-composer-mode="user"] .cc-composer-grip-pill { opacity: .7; }
 /* The focus ring is drawn on the strip, not the pill — a 3px pill cannot hold
    a visible ring, and the strip is the thing that has focus. */
 .cc-ext .cc-composer-grip:focus-visible {
