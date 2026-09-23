@@ -32,6 +32,7 @@ import {
   publicIdentity,
   wipeDeviceKeyRecord,
   registerDeviceKey as registerSwDeviceKey,
+  clearDeviceKeyRegistered,
 } from './e2e/sw-key.js';
 import {
   cacheWrap,
@@ -278,6 +279,20 @@ let swDeviceId = null;
 let swPubKey = null;
 let deviceKeyError = null;
 let deviceKeyPrimed = null;
+/**
+ * INC-0923 B-1. Whether swPubKey is LIVE IN THE §13.6 PIN REGISTRY, which is a
+ * different question from whether we hold it, and the one that decides whether
+ * it may be advertised as a pairing recipient. See publicIdentity() in
+ * e2e/sw-key.js for why an unregistered advert is worse than no advert.
+ *
+ * Read off the persisted record on every prime, so it survives an MV3 eviction
+ * the way the key itself does — this must NOT be worker-lifetime state that a
+ * respawn silently resets to false (a respawn would then withhold a key that
+ * IS registered and downgrade the user for no reason).
+ */
+let swRegistered = false;
+/** The last registration refusal, for the panel header. Null = nothing wrong. */
+let deviceKeyRegisterError = null;
 
 /**
  * Re-read the key rather than trusting the last answer. Deliverable (e) / M-C:
@@ -344,9 +359,33 @@ async function localUserId() {
  * Tokens are stable and short by design; `error` keeps the diagnostic text.
  */
 function nullKeyReason() {
-  if (swPubKey) return null;
+  if (swPubKey && swRegistered) return null;
+  // INC-0923 B-1. A THIRD situation, and it has to be its own token: we hold a
+  // perfectly good key and are withholding it on purpose, because the pin
+  // registry has no live row for it and the phone would read the advert as a
+  // substituted key rather than an unverified one. "Broken worker, wait" is the
+  // wrong response to this and "no extension in this pairing" is the right one,
+  // so the page must be able to tell it from both of the others.
+  if (swPubKey && !swRegistered) return 'not-registered';
   if (deviceKeyError) return 'key-unavailable';
   return 'not-hydrated';
+}
+
+/**
+ * The identity fields for the page bridge: the key, or nulls.
+ *
+ * ONE place, because this reply has two arms (the happy path and the catch)
+ * that must agree — a withheld key on one and an advertised one on the other
+ * is exactly the bug class this whole change removes.
+ */
+function bridgeIdentityFields() {
+  const advertise = !!swPubKey && swRegistered;
+  return {
+    deviceId: advertise ? swDeviceId : null,
+    pub: advertise ? swPubKey : null,
+    error: deviceKeyError,
+    reason: nullKeyReason(),
+  };
 }
 
 function primeDeviceKey() {
@@ -364,8 +403,9 @@ function primeDeviceKey() {
         }
         swDeviceId = id.deviceId;
         swPubKey = id.pub;
+        swRegistered = id.registered === true;
         deviceKeyError = null;
-        trace('e2e-key', { deviceId: id.deviceId });
+        trace('e2e-key', { deviceId: id.deviceId, registered: swRegistered });
         return id;
       })
       .catch((e) => {
@@ -373,6 +413,7 @@ function primeDeviceKey() {
         // and an unknown-version record must keep saying so on every boot.
         swDeviceId = null;
         swPubKey = null;
+        swRegistered = false;
         deviceKeyError = String((e && e.message) || e);
         console.warn('[CC-SW] e2e device key unavailable — counts-only:', deviceKeyError);
         trace('e2e-key-fail', { why: deviceKeyError.slice(0, 120) });
@@ -390,17 +431,114 @@ function primeDeviceKey() {
  */
 async function registerDeviceKeyBestEffort() {
   const token = await getToken();
-  if (!token) return;           // signed out — nothing to register against
-  const r = await registerSwDeviceKey({
-    webappOrigin: self.CC.WEBAPP_ORIGIN,
-    token,
-  });
-  if (!r.ok) {
-    console.warn('[CC-SW] device key registration failed (pair will be UNVERIFIED):', r.reason);
-    trace('e2e-register-fail', { reason: String(r.reason).slice(0, 40) });
-    return;
+  if (!token) {
+    // INC-0923 B-2 (a). Signed out is a REASON, not a silent return. It is also
+    // usually temporary: at SW boot chrome.storage.local may simply not have
+    // been read yet, or the ext-session token is being re-minted after an idle
+    // logout. The old code returned here and left registration to two other
+    // call sites that a reload does not reach.
+    deviceKeyRegisterError = 'signed-out';
+    trace('e2e-register-skip', { why: 'no-token' });
+    broadcastE2eStatus();
+    return { ok: false, reason: 'signed-out', retryable: true };
   }
+  const r = await registerSwDeviceKey({ webappOrigin: self.CC.WEBAPP_ORIGIN, token });
+  if (!r.ok) {
+    // 409 pairing_in_flight (B-2 b) is the one refusal that is CORRECT and
+    // self-clearing: the route refuses for the ~30 s a handshake is open so the
+    // key set cannot change under a SAS the user is reading. Retrying past it
+    // is the whole remedy — it is not an error state to show anybody.
+    const inFlight = r.status === 409;
+    deviceKeyRegisterError = inFlight ? null : String(r.reason);
+    console.warn('[CC-SW] device key registration failed (SW key withheld from pairing):', r.reason);
+    trace('e2e-register-fail', { reason: String(r.reason).slice(0, 40) });
+    broadcastE2eStatus();
+    return { ok: false, reason: String(r.reason), retryable: true };
+  }
+  swRegistered = true;
+  deviceKeyRegisterError = null;
   trace('e2e-register', { rotated: !!r.rotated });
+  broadcastE2eStatus();
+  return { ok: true };
+}
+
+/**
+ * INC-0923 B-2 (c). Registration with backoff, single-flight.
+ *
+ * WHY A RETRY AT ALL. Every reason the row can be missing is transient —
+ * no token yet at SW boot, a 409 while a handshake is open, a network blip —
+ * and the old code had exactly one attempt per trigger with three triggers, one
+ * of which (SW boot) is the least likely moment for a token to be readable. A
+ * user whose single attempt lost the race stayed unregistered until they
+ * happened to sign in again, which is why the workaround in ROOT-CAUSE.md is
+ * "sign out and back in".
+ *
+ * BOUNDED, because an unbounded retry in an MV3 worker is a wakelock. Five
+ * attempts, 2 s doubling to 32 s, then it stops and says so in the header; the
+ * next trigger (sign-in, panel open, pairing start) starts a fresh ladder.
+ */
+const REGISTER_BACKOFF_MS = [2000, 4000, 8000, 16000, 32000];
+let registerInFlight = null;
+
+function registerDeviceKeyWithRetry(why) {
+  if (registerInFlight) return registerInFlight;
+  registerInFlight = (async () => {
+    for (let attempt = 0; attempt <= REGISTER_BACKOFF_MS.length; attempt += 1) {
+      // Already live (another trigger won, or a previous worker registered and
+      // the flag is on the persisted record): nothing to do, and re-POSTing
+      // would be a pointless write on the pairing's critical path.
+      if (swRegistered) return true;
+      const r = await registerDeviceKeyBestEffort();
+      if (r.ok) {
+        trace('e2e-register-ok', { why, attempt });
+        return true;
+      }
+      if (attempt === REGISTER_BACKOFF_MS.length) break;
+      await new Promise((resolve) => setTimeout(resolve, REGISTER_BACKOFF_MS[attempt]));
+    }
+    trace('e2e-register-gave-up', { why, attempts: REGISTER_BACKOFF_MS.length + 1 });
+    return false;
+  })();
+  const settle = () => { registerInFlight = null; };
+  registerInFlight.then(settle, settle);
+  return registerInFlight;
+}
+
+/**
+ * The header's copy for the current registration state, or null when there is
+ * nothing a USER can act on.
+ *
+ * Null for 'signed-out' and for a 409: the first resolves itself the moment the
+ * token lands and the second is the route CORRECTLY refusing for the ~30 s a
+ * handshake is open. Telling a user to sign out and back in over either would
+ * be telling them to fix a thing that is not broken.
+ */
+function e2eRegisterWarning() {
+  if (swRegistered) return null;
+  if (!deviceKeyRegisterError || deviceKeyRegisterError === 'signed-out') return null;
+  return 'extension not verified — sign out and back in';
+}
+
+/**
+ * Push the e2e registration state to every open surface, over the SAME
+ * `cc-presence` port the unread counts and the battery use.
+ *
+ * The port, and NOT chrome.runtime.sendMessage: the header this ends up in is
+ * React inside the app iframe (components/PhoneModeHeader.tsx), so the value
+ * has to travel SW -> shell.js -> frame postMessage -> extensionBridge, and the
+ * port is the only one of the two channels with surface lifetime. A one-shot
+ * sendMessage with no listening surface rejects, which would make "nobody is
+ * looking" indistinguishable from a real failure.
+ */
+function e2eStatusMessage() {
+  return { type: 'e2e-status', registered: swRegistered, warning: e2eRegisterWarning() };
+}
+
+function broadcastE2eStatus() {
+  const msg = e2eStatusMessage();
+  for (const port of presencePorts) {
+    try { port.postMessage(msg); } catch { /* port closed */ }
+  }
 }
 
 // ── Connection indicator on the toolbar icon ────────────────────────────────
@@ -2315,6 +2453,12 @@ chrome.runtime.onConnect.addListener((port) => {
   // TTL there is nothing to replay — `pendingOfferIfLive` has already expired
   // it and told the page so.
   replayPendingOfferTo(port);
+  // INC-0923 B-2 (c). Same reason as the counts and the battery: a panel that
+  // opens into an unregistered state must render it on its first paint, not on
+  // whatever later event happens to trigger a broadcast. Opening a surface is
+  // also one of the retry triggers, so the ladder starts here too.
+  try { port.postMessage(e2eStatusMessage()); } catch { /* port closed */ }
+  registerDeviceKeyWithRetry('surface-open').catch(() => {});
   port.onMessage.addListener((msg) => {
     // The surface reports which tab the user is looking at. This is the ONLY
     // thing that zeroes a counter — the SW never guesses that a message was
@@ -2442,7 +2586,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'auth-updated') {
     reconnectAttempts = 0;
     // Registration needs a session, so a fresh sign-in is the moment to try.
-    registerDeviceKeyBestEffort().catch(() => {});
+    registerDeviceKeyWithRetry('auth-updated').catch(() => {});
     connect();
     sendResponse?.({ ok: true });
   } else if (message?.type === 'dock') {
@@ -2492,15 +2636,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const own = await readOwnPairingId();
         sendResponse?.({
-          ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
+          ok: true, v: 1, ...bridgeIdentityFields(),
           // M-A5-3's null arm, MACHINE-READABLE. `error` already carried the
           // IndexedDB exception text, but that is a diagnostic string and the
           // page must not branch on it. `reason` is null whenever `pub` is a
           // key and a short stable token otherwise, so the page can hold the
           // pairing (or badge the SW absent) WITHOUT claiming a 2-key SAS
           // covered a worker whose key it never learned. Every other field on
-          // this reply is byte-identical to A4.1.
-          reason: nullKeyReason(),
+          // this reply is byte-identical to A4.1. INC-0923 moved `reason` (and
+          // deviceId/pub/error with it) into bridgeIdentityFields() above so
+          // the two arms of this reply cannot drift apart; it gained one token,
+          // 'not-registered'.
           pairingId: (own && own.pairingId) || null,
           // A4.1-M1: WHERE that pairingId came from. 'bridge' is this
           // hand-over having landed; 'tofu' is the worker echoing a pin it
@@ -2510,8 +2656,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
       })
       .catch(() => sendResponse?.({
-        ok: true, v: 1, deviceId: swDeviceId, pub: swPubKey, error: deviceKeyError,
-        reason: nullKeyReason(),
+        ok: true, v: 1, ...bridgeIdentityFields(),
         pairingId: null,
         pairingIdSource: 'none',
       }));
@@ -2529,6 +2674,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       kid: e2eKid,
       deviceId: swDeviceId,
       hasKey: !!swPubKey,
+      // INC-0923 B-1. `hasKey` and `registered` are different facts and the
+      // gap between them is the whole incident: a worker that HAS a key the
+      // registry does not know must not advertise it. Exported so a harness can
+      // assert the withholding directly instead of inferring it from a recips
+      // count — the same reason §13.5 requires the drop counter.
+      registered: swRegistered,
+      registerError: deviceKeyRegisterError,
       bootId: BOOT_ID,        // changes iff the worker died and respawned
       drops,
       // A4.1-M1. Read-only, beside mode/why/kid and under the same m-G rule.
@@ -2566,6 +2718,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // there the pin is the one thing that was right — but a sign-out ends the
     // pairing, and a pin outliving it would refuse the next one.
     clearOwnPairingId().catch(() => {});
+    // INC-0923 B-1: the registry row is scoped to the ACCOUNT that registered
+    // it, so a sign-out ends this key's claim to be registered. The flag goes,
+    // not the key — the key is this install's, the claim is the account's — so
+    // a different user signing in on the same profile re-registers before the
+    // key may be advertised, instead of inheriting a "verified" state granted
+    // to somebody else.
+    clearDeviceKeyRegistered().catch(() => {});
+    swRegistered = false;
+    deviceKeyRegisterError = 'signed-out';
+    broadcastE2eStatus();
     clearAborted();
     // A3-M2: the epoch floor is cleared ONLY by an explicit user action, and
     // signing out is one. Nothing arriving on the wire may ever reach this.
@@ -2727,7 +2889,7 @@ installPanelBehavior();
 // primeDeviceKey() swallows its own failure into the counts-only state, and
 // connect() awaits the same promise rather than racing it.
 primeDeviceKey();
-registerDeviceKeyBestEffort().catch(() => {});
+registerDeviceKeyWithRetry('sw-boot').catch(() => {});
 refreshAuthAndIndicator();
 // Re-assert the count from storage on every worker boot. chrome.action state
 // does outlive the worker, so this is usually a no-op — but it is the only

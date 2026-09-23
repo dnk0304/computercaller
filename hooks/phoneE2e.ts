@@ -267,6 +267,86 @@ export function buildRequestBlock({ localMode, webKey, sw }: RequestBlockInput):
   return block;
 }
 
+/**
+ * INC-0923 B-1 (web). The deviceIds with a LIVE row in the §13.6 pin registry.
+ *
+ * Reads the same `/api/devicekeys/list` payload readRevocationVerdict reads,
+ * but answers a different question — that one asks "is the PHONE key we pinned
+ * still live", this one asks "which of the keys WE are about to advertise does
+ * the registry actually know". Separate function, deliberately: F1 happened
+ * because two readings of the same rows disagreed, and widening the verdict to
+ * carry both would put them back in one place with two meanings.
+ *
+ * Returns null — not an empty set — when the payload is unusable. An empty set
+ * means "we read the registry and it knows nobody"; null means "we do not
+ * know", and the caller must treat those differently or a failed fetch would
+ * silently strip every recipient.
+ */
+export function liveRegisteredDeviceIds(raw: unknown): Set<string> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const keys = (raw as { keys?: unknown }).keys;
+  if (!Array.isArray(keys)) return null;
+  const live = new Set<string>();
+  for (const k of keys as DeviceKeyRow[]) {
+    if (!k || typeof k.deviceId !== 'string' || !k.deviceId) continue;
+    // Same fail-closed reading of `revokedAt` as readRevocationVerdict: only an
+    // explicit null/undefined is live.
+    if (k.revokedAt !== null && k.revokedAt !== undefined) continue;
+    live.add(k.deviceId);
+  }
+  return live;
+}
+
+export interface RecipFilterResult {
+  recips: E2eRecipient[];
+  /** Dropped for having no live registry row. Diagnostics; may be empty. */
+  dropped: E2eRecipient[];
+  /**
+   * True when our OWN web row is missing from a registry we successfully read.
+   * Not actionable here — the web recipient is never dropped — but it is the
+   * one state that predicts a decline this filter cannot prevent, so it is
+   * reported rather than swallowed.
+   */
+  webRowMissing: boolean;
+}
+
+/**
+ * Drop every recipient the registry has no live row for, EXCEPT our own.
+ *
+ * WHY THIS EXISTS. The phone's pin (E2eKeyPin.verify) returns Mismatch — not
+ * "unverified" — for an advertised key with no live row, in BOTH modes, and
+ * then latches for the life of its process. So an advert containing one
+ * unregistered recipient does not degrade the pairing, it KILLS it, and keeps
+ * killing every later one until the app is force-stopped. The computer must
+ * therefore never advertise a key it has not registered. This is the web-side
+ * half of that rule; the extension enforces its own half at the source
+ * (chrome-extension/e2e/sw-key.js `registered`), and this is the backstop for
+ * an older extension build that does not yet.
+ *
+ * THE WEB RECIPIENT IS NEVER DROPPED. A block without it is unsendable
+ * (buildRequestBlock requires it first) and a pairing the page itself cannot
+ * read is strictly worse than one the phone might refuse. If our own row is
+ * missing we say so and send anyway.
+ *
+ * `live === null` (the list could not be read) drops every NON-web recipient:
+ * we cannot prove the extension key is registered, and advertising it on a
+ * guess is the exact bet that produced INC-0923.
+ */
+export function filterRecipsToLiveRows(
+  recips: E2eRecipient[],
+  live: Set<string> | null,
+  ourWebDeviceId: string,
+): RecipFilterResult {
+  const kept: E2eRecipient[] = [];
+  const dropped: E2eRecipient[] = [];
+  for (const r of recips) {
+    if (r.deviceId === ourWebDeviceId) { kept.push(r); continue; }
+    if (live && live.has(r.deviceId)) { kept.push(r); continue; }
+    dropped.push(r);
+  }
+  return { recips: kept, dropped, webRowMissing: !!live && !live.has(ourWebDeviceId) };
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // (c) accept handling
 // ───────────────────────────────────────────────────────────────────────────
