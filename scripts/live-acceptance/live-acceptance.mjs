@@ -12,8 +12,9 @@
 //  - sendfile sets the hidden <input type=file> directly ([data-cc-ft-input])
 //    instead of racing a filechooser event, and normalises the path to forward
 //    slashes so a Windows path survives JSON.
-//  - the Send-file control is the real header selector [data-cc-ft-action=
-//    "send-file"] (SendFileControl.tsx, mounted in PhoneModeHeader EXT-UI-8 b).
+//  - the Send-file control is the real header control (SendFileControl.tsx
+//    mounted in PhoneModeHeader EXT-UI-8 (b)): button[aria-label="Send file"],
+//    whose data-cc-ft-action is "header-send" in that instance.
 //  - threads/openthread use the extension's own list (`li` rows), not
 //    [aria-label="Conversations"] which only exists in /app's Dashboard.
 //  - composer is [aria-label="Message body"], send is [aria-label="Send message"].
@@ -45,6 +46,7 @@ const PROF = path.join(OUT, 'profile');
 const CMD = path.join(OUT, 'cmd.jsonl');
 const RES = path.join(OUT, 'res.log');
 const SWLOG = path.join(OUT, 'sw-console.log');
+const EXT_ID_FILE = path.join(OUT, 'ext-id.txt');
 fs.mkdirSync(OUT, { recursive: true });
 if (!fs.existsSync(CMD)) fs.writeFileSync(CMD, '');
 
@@ -94,9 +96,27 @@ async function launch(label) {
     ignoreDefaultArgs: ['--disable-extensions'],
   });
   let sw = ctx.serviceWorkers()[0];
-  for (let i = 0; i < 40 && !sw; i++) { await sleep(500); sw = ctx.serviceWorkers()[0]; }
+  for (let i = 0; i < 60 && !sw; i++) { await sleep(500); sw = ctx.serviceWorkers()[0]; }
+  // After chrome.runtime.reload() the MV3 worker is not running when the next
+  // context attaches, so waiting for it first deadlocks the reattach. The id is
+  // stable for a given unpacked path + profile, so once we know it, OPENING the
+  // side panel is what wakes the worker.
+  // A reloaded MV3 worker is idle at the next launch, so the id may not be
+  // discoverable from a running worker. It is stable for a given unpacked path
+  // + profile, so remember it on disk (and accept --ext-id) and use it to open
+  // the panel, which is what starts the worker.
+  if (!sw && !extId) {
+    extId = argOf('--ext-id', process.env.LA_EXT_ID)
+      || (fs.existsSync(EXT_ID_FILE) ? fs.readFileSync(EXT_ID_FILE, 'utf8').trim() : null);
+  }
+  if (!sw && extId) {
+    log('no SW yet — opening the panel to wake it');
+    await openPanel();
+    for (let i = 0; i < 40 && !sw; i++) { await sleep(500); sw = ctx.serviceWorkers()[0]; }
+  }
   if (!sw) throw new Error('no service worker after launch');
   extId = new URL(sw.url()).host;
+  fs.writeFileSync(EXT_ID_FILE, extId);
   hookSw(sw);
   ctx.on('serviceworker', (w) => { log('SW (re)started ' + w.url()); hookSw(w); });
   ctx.on('page', async (p) => {
@@ -106,7 +126,7 @@ async function launch(label) {
     hookPage(p);
   });
   log(`${label}: ext id ${extId}`);
-  await openPanel();
+  if (!page || page.isClosed()) await openPanel();
 }
 
 async function openPanel() {
@@ -115,6 +135,11 @@ async function openPanel() {
   await page.goto(`chrome-extension://${extId}/sidepanel.html`);
   log('sidepanel opened');
 }
+
+// evaluate() takes an EXPRESSION string. A bare "()=>{...}" evaluates to a
+// function object, which serialises as undefined — every eval in the 1512Z
+// driver silently returned undefined. Invoke it.
+const callable = (js) => (/^\s*(async\s*)?(\(|function)/.test(js) ? `(${js})()` : js);
 
 const app = () => page.frameLocator('#cc-frame');
 const login = () => page.frameLocator('#cc-login-frame');
@@ -203,7 +228,12 @@ const ops = {
   async sendfile({ file }) {
     const f = fwd(file);
     if (!fs.existsSync(f)) throw new Error('file does not exist: ' + f);
-    const btn = app().locator('[data-cc-ft-action="send-file"]').first();
+    // The header instance of SendFileControl carries data-cc-ft-action
+    // "header-send" (not the "send-file" spelling in the component's other
+    // branch), so key on the stable aria-label and keep both tokens.
+    const btn = app().locator(
+      'button[aria-label="Send file"], [data-cc-ft-action="header-send"], [data-cc-ft-action="send-file"]'
+    ).first();
     await btn.waitFor({ timeout: 30000 });
     const disabled = await btn.isDisabled();
     log('Send-file control present, disabled=' + disabled);
@@ -250,6 +280,17 @@ const ops = {
   // A persistent profile dir takes one lock at a time, so "a NEW context on the
   // SAME profile" means close-then-relaunch. Keeps the rejoin inside the
   // relay's 180 s soft-hold window instead of waiting the driver out.
+  // The repair a real user performs: chrome.runtime.reload() closes the panel,
+  // and reopening it in the SAME browser is what rejoins. Use this inside the
+  // relay's soft-hold window; `reattach` (whole-browser) is the heavier probe.
+  async reopen() {
+    for (let i = 0; i < 20; i++) {
+      try { await openPanel(); return; }
+      catch (e) { log('reopen retry ' + (i + 1) + ': ' + String(e.message).slice(0, 120)); await sleep(1500); }
+    }
+    throw new Error('panel never reopened');
+  },
+
   async reattach() {
     const t0 = Date.now();
     try { await ctx.close(); } catch (e) { log('ctx close: ' + e.message); }
@@ -273,13 +314,13 @@ const ops = {
   async evalapp({ js }) {
     const fr = appFrame();
     if (!fr) throw new Error('no app frame');
-    const r = await fr.evaluate(js);
+    const r = await fr.evaluate(callable(js));
     log('eval: ' + red(JSON.stringify(r)).slice(0, 900));
     return r;
   },
 
   async evalpage({ js }) {
-    const r = await page.evaluate(js);
+    const r = await page.evaluate(callable(js));
     log('evalpage: ' + red(JSON.stringify(r)).slice(0, 900));
     return r;
   },
