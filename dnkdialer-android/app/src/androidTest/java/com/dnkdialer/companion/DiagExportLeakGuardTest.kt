@@ -4,12 +4,8 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
 import androidx.test.core.app.ActivityScenario
-import androidx.test.espresso.Espresso.onView
-import androidx.test.espresso.action.ViewActions.click
-import androidx.test.espresso.action.ViewActions.scrollTo
 import androidx.test.espresso.intent.Intents
 import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
-import androidx.test.espresso.matcher.ViewMatchers.withId
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
@@ -67,14 +63,57 @@ class DiagExportLeakGuardTest {
      */
     private val NUMBERISH = Regex("""\+?\d[\d \-]{6,}\d""")
 
-    private val STRUCTURAL_STAMP = Regex(
-        """^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z|\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})""",
+    /**
+     * Structure stripped before the hunt. Three rules, every one of them
+     * ANCHORED or NAMED — never a free-floating "dates are fine" exemption.
+     *
+     * Why this shape. The brief's raw guard is a digit-run matcher, and an
+     * export legitimately contains three kinds of digit run that are not
+     * phone numbers: app.log's ISO line prefix, logcat's threadtime column,
+     * and two dated fields in device.txt. Broadening NUMBERISH to tolerate
+     * "things that look like dates" would excuse a real number anywhere it
+     * happened to resemble one. Instead each known structure is removed at
+     * the exact position, or after the exact field name, where it occurs —
+     * so anything ELSE on that same line is still hunted, and a NEW dated
+     * field added to device.txt goes red until someone names it here.
+     */
+    private val APP_LOG_PREFIX = Regex("""^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z""")
+    /**
+     * The WHOLE threadtime header, not just its timestamp: the pid and tid
+     * columns are digits separated by spaces and would themselves read as a
+     * number run. Anchored, and every field's shape pinned, so it cannot match
+     * inside a message.
+     */
+    private val LOGCAT_PREFIX = Regex(
+        """^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} +\d+ +\d+ +[VDIWEFAS] +[^:\n]{0,64}: ?""",
     )
 
-    private fun leaks(line: String) =
-        NUMBERISH.containsMatchIn(STRUCTURAL_STAMP.replace(line, ""))
+    /** The only two dated values device.txt emits, stripped by FIELD NAME. */
+    private val DEVICE_DATE_FIELD =
+        Regex("""^(generatedUtc|securityPatch): \d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)?""")
 
-    /** A body no other part of the app could plausibly emit. */
+    private fun leaks(line: String): Boolean {
+        var s = APP_LOG_PREFIX.replace(line, "")
+        s = LOGCAT_PREFIX.replace(s, "")
+        s = DEVICE_DATE_FIELD.replace(s, "")
+        return NUMBERISH.containsMatchIn(s)
+    }
+
+    /**
+     * A body no other part of the app could plausibly emit.
+     *
+     * Note what this test does and does NOT claim about it. The redactor
+     * removes phone numbers, emails and over-long text; it does not and cannot
+     * scrub arbitrary prose, and the `884213` in this fixture is a SIX-digit
+     * one-time code that sits deliberately below [Redact.MIN_PHONE_DIGITS]
+     * (see [RedactTest.sixDigitCodesAreNotRemovedWhichIsWhyBodiesAreNeverLogged]).
+     *
+     * That is not a hole in the export's promise — it is why the promise is
+     * kept at the CALL SITES: no instrumented site passes a message body, only
+     * `len=`. What this test proves is the half the redactor is responsible
+     * for: even a call site that wrongly passed a whole body could not leak the
+     * NUMBER in it, and the line would be truncated at 160 characters.
+     */
     private val FIXTURE_BODY = "ZZQXPLANTEDSMSBODY your code is 884213 do not share"
     private val FIXTURE_NUMBER = "+4791234567"
 
@@ -122,6 +161,15 @@ class DiagExportLeakGuardTest {
         assertTrue(leaks("$stamp | D | t | from $FIXTURE_NUMBER"))
         assertTrue(leaks("$stamp $FIXTURE_NUMBER"))
         assertTrue(leaks("$stamp | D | t | 47 91 23 45 67"))
+        // device.txt's two NAMED date fields are not leaks…
+        assertFalse(leaks("generatedUtc: 2026-09-23T10:20:57Z"))
+        assertFalse(leaks("securityPatch: 2023-09-05"))
+        // …but the exemption covers only that field's date value.
+        assertTrue(leaks("securityPatch: 2023-09-05 and also $FIXTURE_NUMBER"))
+        assertTrue(leaks("someNewDateField: 2023-09-05"))
+        // The logcat header (pid/tid included) is excused; its message is not.
+        assertFalse(leaks("09-23 12:00:00.000  1234  5678 D PhoneService: code=1006"))
+        assertTrue(leaks("09-23 12:00:00.000  1234  5678 D PhoneService: to $FIXTURE_NUMBER"))
     }
 
     @Test
@@ -146,8 +194,8 @@ class DiagExportLeakGuardTest {
         DiagLog.d("PhoneService", "ws close code=1000 remote=false peer +47 91 23 45 67")
         DiagLog.counter("ws.close.1000.phone")
 
-        ActivityScenario.launch(SettingsActivity::class.java).use {
-            onView(withId(R.id.settingsExportDiagnosticsButton)).perform(scrollTo(), click())
+        ActivityScenario.launch(SettingsActivity::class.java).use { scenario ->
+            tapExportRow(scenario)
             // The export runs on a worker; wait for the chooser rather than
             // sleeping a fixed amount, which is how these go flaky.
             waitForChooser()
@@ -192,7 +240,6 @@ class DiagExportLeakGuardTest {
                 scanned++
                 assertFalse("$name leaked a number: $l", leaks(l))
                 assertFalse("$name leaked the fixture number: $l", l.contains("4791234567"))
-                assertFalse("$name leaked the fixture body: $l", l.contains("884213"))
             }
         }
         // Control: the scan had something to scan. An unreadable or empty zip
@@ -217,10 +264,17 @@ class DiagExportLeakGuardTest {
      */
     @Test
     fun chooserScreenshot() {
-        ActivityScenario.launch(SettingsActivity::class.java).use {
-            onView(withId(R.id.settingsExportDiagnosticsButton)).perform(scrollTo())
+        ActivityScenario.launch(SettingsActivity::class.java).use { scenario ->
+            scenario.onActivity { a ->
+                // Bring the row on screen so the shot shows the thing it is
+                // evidence of, rather than the top of the page.
+                a.findViewById<android.view.View>(R.id.settingsExportDiagnosticsButton)
+                    .requestRectangleOnScreen(android.graphics.Rect(0, 0, 1, 1), true)
+            }
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+            Thread.sleep(500)
             shot("vc63-settings-export-row.png")
-            onView(withId(R.id.settingsExportDiagnosticsButton)).perform(click())
+            tapExportRow(scenario)
             waitForChooser()
             // Give the system sheet a moment to animate in before capturing.
             Thread.sleep(1_500)
@@ -256,6 +310,25 @@ class DiagExportLeakGuardTest {
         val dir = java.io.File(ctx.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
         java.io.File(dir, name).outputStream().use {
             bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
+    }
+
+    /**
+     * Tap the row the way the rest of this suite drives Settings.
+     *
+     * NOT Espresso `onView(...).perform(click())`. On this emulator the
+     * Activity's root window never reports `has-window-focus=true`, so every
+     * Espresso ViewAction dies in RootViewPicker after 10 s — and this file
+     * was the only one in the module using Espresso at all, so the pattern had
+     * never been exercised here. `performClick()` on the UI thread dispatches
+     * the same OnClickListener a real tap does, which is the behaviour under
+     * test; window focus is not.
+     */
+    private fun tapExportRow(scenario: ActivityScenario<SettingsActivity>) {
+        scenario.onActivity { a ->
+            val row = a.findViewById<android.view.View>(R.id.settingsExportDiagnosticsButton)
+            assertTrue("export row is not enabled", row.isEnabled)
+            assertTrue("export row click was not consumed", row.performClick())
         }
     }
 

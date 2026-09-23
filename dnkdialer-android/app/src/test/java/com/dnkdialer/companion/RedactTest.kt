@@ -144,6 +144,24 @@ class RedactTest {
     }
 
     @Test
+    fun sixDigitCodesAreNotRemovedWhichIsWhyBodiesAreNeverLogged() {
+        // FINDING, pinned so it cannot be discovered again by surprise: an SMS
+        // one-time code is SIX digits, which is below MIN_PHONE_DIGITS, so the
+        // redactor leaves it alone. Lowering the floor is not the fix — six
+        // digits is also a byte count, a chunk index and a millisecond skew,
+        // and eating those would make the log useless for the incident class
+        // it exists for.
+        //
+        // The export's promise ("No message text or phone numbers") is
+        // therefore kept by the CALL-SITE contract for the first half and by
+        // this redactor for the second: no instrumented site passes a message
+        // body, only its length. This assertion exists so that anyone who
+        // later considers logging a body meets the reason not to.
+        val out = Redact.line("your code is 884213 do not share")
+        assertTrue(out, out.contains("884213"))
+    }
+
+    @Test
     fun sixDigitRunIsKeptAndSevenIsNot() {
         // The exact boundary, both sides, so MIN_PHONE_DIGITS cannot drift.
         assertTrue(Redact.line("n=123456").contains("123456"))

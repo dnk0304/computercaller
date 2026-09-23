@@ -114,7 +114,7 @@ object DiagZip {
         for (l in raw.lineSequence()) {
             if (l.isEmpty()) continue
             if (!TAG_FILTER.containsMatchIn(l)) continue
-            val red = Redact.line(l)
+            val red = redactThreadtimeLine(l)
             if (sb.length + red.length + 1 > LOGCAT_CAP_BYTES) {
                 sb.append("--- truncated at ").append(LOGCAT_CAP_BYTES).append(" bytes ---\n")
                 break
@@ -123,6 +123,41 @@ object DiagZip {
         }
         return if (sb.isEmpty()) "(no matching logcat lines)\n" else sb.toString()
     }
+
+    /**
+     * Redact a threadtime line's MESSAGE, leaving its header intact.
+     *
+     * ## Why this is not just `Redact.line(wholeLine)`
+     *
+     * A threadtime line opens `MM-DD HH:MM:SS.mmm  PID  TID L Tag:`. The
+     * millis, pid and tid are digits separated by spaces, so the redactor's
+     * "7+ digits with separators" rule sees `123  1234  5678` as ONE phone
+     * number and rewrites the three columns into a single `num:` token —
+     * producing `09-23 12:25:46.num:946d9a D Tag: ...`.
+     *
+     * That is worse than cosmetic. The pid/tid columns are how you tell the
+     * socket reader thread's close from the main thread's, which is exactly
+     * the attribution INC-0923 needed and did not have. The redactor was
+     * silently destroying the most useful column in the file.
+     *
+     * So the header is parsed off as STRUCTURE and passed through verbatim,
+     * and only the message — the part that carries interpolated content, and
+     * the only part an exception message or a stray log call can put a number
+     * into — goes through [Redact]. A line that does not match the threadtime
+     * shape is redacted whole, which is the safe default.
+     */
+    fun redactThreadtimeLine(line: String): String {
+        val m = THREADTIME_HEADER.find(line) ?: return Redact.line(line)
+        return m.value + Redact.line(line.substring(m.value.length))
+    }
+
+    /**
+     * `MM-DD HH:MM:SS.mmm  PID  TID L Tag: ` — anchored at position 0, with
+     * every field's shape pinned, so it cannot match anything inside a message.
+     */
+    private val THREADTIME_HEADER = Regex(
+        """^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} +\d+ +\d+ +[VDIWEFAS] +[^:\n]{0,64}: ?""",
+    )
 
     /**
      * Tag allowlist from the brief. Matched anywhere in the threadtime line

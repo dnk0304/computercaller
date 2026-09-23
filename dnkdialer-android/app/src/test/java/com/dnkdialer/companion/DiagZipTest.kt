@@ -48,13 +48,41 @@ class DiagZipTest {
      */
     private val NUMBERISH = Regex("""\+?\d[\d \-]{6,}\d""")
 
-    /** ISO-8601 (app.log) and logcat threadtime stamps, anchored at line start. */
-    private val STRUCTURAL_STAMP = Regex(
-        """^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z|\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})""",
+    /**
+     * Structure stripped before the hunt. Three rules, every one of them
+     * ANCHORED or NAMED — never a free-floating "dates are fine" exemption.
+     *
+     * Why this shape. The brief's raw guard is a digit-run matcher, and an
+     * export legitimately contains three kinds of digit run that are not
+     * phone numbers: app.log's ISO line prefix, logcat's threadtime column,
+     * and two dated fields in device.txt. Broadening NUMBERISH to tolerate
+     * "things that look like dates" would excuse a real number anywhere it
+     * happened to resemble one. Instead each known structure is removed at
+     * the exact position, or after the exact field name, where it occurs —
+     * so anything ELSE on that same line is still hunted, and a NEW dated
+     * field added to device.txt goes red until someone names it here.
+     */
+    private val APP_LOG_PREFIX = Regex("""^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z""")
+    /**
+     * The WHOLE threadtime header, not just its timestamp: the pid and tid
+     * columns are digits separated by spaces and would themselves read as a
+     * number run. Anchored, and every field's shape pinned, so it cannot match
+     * inside a message.
+     */
+    private val LOGCAT_PREFIX = Regex(
+        """^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} +\d+ +\d+ +[VDIWEFAS] +[^:\n]{0,64}: ?""",
     )
 
-    private fun leaks(line: String): Boolean =
-        NUMBERISH.containsMatchIn(STRUCTURAL_STAMP.replace(line, ""))
+    /** The only two dated values device.txt emits, stripped by FIELD NAME. */
+    private val DEVICE_DATE_FIELD =
+        Regex("""^(generatedUtc|securityPatch): \d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)?""")
+
+    private fun leaks(line: String): Boolean {
+        var s = APP_LOG_PREFIX.replace(line, "")
+        s = LOGCAT_PREFIX.replace(s, "")
+        s = DEVICE_DATE_FIELD.replace(s, "")
+        return NUMBERISH.containsMatchIn(s)
+    }
 
     @Test
     fun guardCatchesAPlantedNumberEverywhereExceptTheStamp() {
@@ -68,9 +96,45 @@ class DiagZipTest {
         assertTrue(leaks("$stamp | D | SmsReceiver | from +4712345678 parts=2"))
         // Planted with separators.
         assertTrue(leaks("$stamp | D | t | 47 12 34 56 78"))
-        // A second timestamp mid-line is NOT stripped, and that is correct:
-        // only position 0 is structure.
+        // A second ISO instant mid-line is NOT excused — only position 0 is
+        // structure in app.log. This is the anchoring working as intended.
         assertTrue(leaks("$stamp | D | t | seen 2026-09-23T12:00:00.000Z"))
+
+        // --- the two NAMED device.txt date fields ---
+        assertFalse(leaks("generatedUtc: 2026-09-23T10:20:57Z"))
+        assertFalse(leaks("securityPatch: 2023-09-05"))
+        // The exemption is the FIELD's date, not the whole line: a number
+        // appended to that same line is still caught.
+        assertTrue(leaks("securityPatch: 2023-09-05 and also +4712345678"))
+        // An UNNAMED field carrying the same date shape is NOT excused — a new
+        // dated field in device.txt must be declared here before it passes.
+        assertTrue(leaks("someNewDateField: 2023-09-05"))
+
+        // --- the logcat header is only excused at position 0 ---
+        assertFalse(leaks("09-23 12:00:00.000  1234  5678 D PhoneService: code=1006"))
+        // The MESSAGE half of a threadtime line is still hunted.
+        assertTrue(leaks("09-23 12:00:00.000  1234  5678 D PhoneService: to +4712345678"))
+        assertTrue(leaks("PhoneService: saw 09-23 12:00:00.000  1234  5678 D x: inline"))
+    }
+
+    @Test
+    fun logcatHeaderSurvivesRedactionWithItsPidAndTid() {
+        // REGRESSION PIN. Redact.line over a whole threadtime line collapses
+        // `.mmm  PID  TID` into one num: token, because that IS a 7+ digit run
+        // with separators — so the file lost the thread attribution that makes
+        // a flap storm readable. redactThreadtimeLine keeps the header.
+        val line = "09-23 12:25:46.123  1234  5678 D PhoneService: ws close code=1000 remote=false"
+        val out = DiagZip.redactThreadtimeLine(line)
+        assertEquals(line, out)
+        assertFalse("header was eaten: $out", out.contains("num:"))
+        // Control: the MESSAGE is still redacted.
+        val leaky = "09-23 12:25:46.123  1234  5678 D PhoneService: dial +4712345678"
+        val red = DiagZip.redactThreadtimeLine(leaky)
+        assertTrue(red, red.startsWith("09-23 12:25:46.123  1234  5678 D PhoneService: "))
+        assertFalse(red, red.contains("4712345678"))
+        assertTrue(red, red.contains("num:"))
+        // Control: a non-threadtime line is still redacted whole.
+        assertFalse(DiagZip.redactThreadtimeLine("loose line +4712345678").contains("4712345678"))
     }
 
     private fun entries(zip: File): Map<String, String> =
