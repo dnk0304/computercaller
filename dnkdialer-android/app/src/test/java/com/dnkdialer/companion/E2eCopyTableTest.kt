@@ -60,7 +60,6 @@ class E2eCopyTableTest {
         // vc63 — the Home "Computer" card (T-VC63-MAIN-SCREEN).
         "section_computer",
         "row_send_file_title",
-        "row_send_file_sub",
         "home_e2e_now_verified",
         "home_e2e_now_unverified",
         "home_e2e_now_plaintext",

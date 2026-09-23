@@ -472,7 +472,10 @@
          and the SAME preference as the existing surfaces. -->
     <string name="section_computer">COMPUTER</string>
     <string name="row_send_file_title">Send a file</string>
-    <string name="row_send_file_sub">Pick a file to send to your computer</string>
+    <!-- row_send_file_sub is GONE (Amendment 1): the row became a button,
+         and a button has a label, not a label plus a subtitle. Deleted rather
+         than kept "just in case" — lint counts an unreferenced string as a new
+         UnusedResources cell, and this lane may not regenerate the baseline. -->
 
     <!-- The LIVE pair's mode, shown next to the switch while a pair is active.
          The switch is an intent about the NEXT connection; this is a fact

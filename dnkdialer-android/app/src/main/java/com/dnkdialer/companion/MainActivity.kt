@@ -686,7 +686,7 @@ class MainActivity : AppCompatActivity() {
         // goes through it. A second copy of those checks on Home is a second
         // copy that drifts, and the day it drifts the two entry points
         // disagree about whether a send is possible.
-        findViewById<View>(R.id.homeSendFileRow).setOnClickListener {
+        findViewById<View>(R.id.homeSendFileButton).setOnClickListener {
             startActivity(
                 Intent(this, FileTransferActivity::class.java)
                     .setAction(FileTransferActivity.ACTION_PICK_FILE)

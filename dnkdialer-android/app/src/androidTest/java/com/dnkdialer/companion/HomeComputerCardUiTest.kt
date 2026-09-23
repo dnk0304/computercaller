@@ -68,7 +68,7 @@ class HomeComputerCardUiTest {
         try {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 instr.waitForIdleSync()
-                scenario.onActivity { it.findViewById<android.view.View>(R.id.homeSendFileRow).performClick() }
+                scenario.onActivity { it.findViewById<android.view.View>(R.id.homeSendFileButton).performClick() }
                 instr.waitForIdleSync()
                 Intents.intended(hasAction(FileTransferActivity.ACTION_PICK_FILE))
                 Intents.intended(
