@@ -227,6 +227,19 @@
             android:parentActivityName=".MainActivity"
             android:exported="false" />
 
+        <!--
+          vc65 - Settings > Permissions. The live permission checklist
+          (the same one the first-run pane shows) with a tap target per
+          row into the matching OS settings page. Navigation only: it
+          requests no permission and declares none, so this <activity>
+          element is the whole manifest diff for that lane.
+        -->
+        <activity
+            android:name=".PermissionsActivity"
+            android:label="@string/permissions_title"
+            android:parentActivityName=".SettingsActivity"
+            android:exported="false" />
+
         <receiver
             android:name=".SmsReceiver"
             android:exported="true"

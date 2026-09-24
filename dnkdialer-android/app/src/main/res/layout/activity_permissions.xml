@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  vc65, T-ANDROID-PERMISSIONS-SCREEN — Settings > Permissions.
+
+  Dennis (2026-09-24): "when i click on permissions i want it to show me
+  the full row of permissions i have allowed (like in the first opening
+  screen). Then if i click on any of them it sends me to the correct
+  setting inside the phone."
+
+  So this is deliberately thin: the Settings app bar (back + title) and
+  ONE container that PermissionRows fills with the SAME
+  item_permission_status.xml rows the first-run pane uses, in the same
+  order, from the same PermissionChecker.checkAllWithStatus() call.
+  There is no second row layout and no second status table — if the
+  first-run screen changes, this screen changes with it.
+
+  ID CONTRACT: PermissionsActivity binds permissionsContent,
+  permissionsBackButton and permissionsList.
+
+  Padding / app-bar / page-padding dimens are Settings' own so the two
+  screens read as one surface; theme + dark mode come from the Activity's
+  AppCompat DayNight theme with no per-screen colours declared here.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/permissionsScroll"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:scrollbars="none"
+    android:overScrollMode="never"
+    android:background="?android:attr/windowBackground">
+
+    <LinearLayout
+        android:id="@+id/permissionsContent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/cc_page_padding"
+        android:paddingEnd="@dimen/cc_page_padding"
+        android:paddingBottom="@dimen/space_32">
+
+        <!-- ==================== APP BAR ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/cc_appbar_height"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <ImageButton
+                android:id="@+id/permissionsBackButton"
+                android:layout_width="@dimen/cc_touch_min"
+                android:layout_height="@dimen/cc_touch_min"
+                android:layout_marginStart="-12dp"
+                android:padding="13dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_cc_back"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/cd_back" />
+
+            <TextView
+                android:id="@+id/permissionsTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="@dimen/space_8"
+                android:text="@string/permissions_title"
+                android:textSize="@dimen/cc_text_appbar"
+                android:textColor="@color/text_primary"
+                android:fontFamily="sans-serif-medium"
+                android:textStyle="bold"
+                android:letterSpacing="-0.014"
+                android:includeFontPadding="false" />
+        </LinearLayout>
+
+        <!-- One line telling the user the rows are tappable. Without it
+             the screen reads as a report rather than a set of doors. -->
+        <TextView
+            android:id="@+id/permissionsIntro"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="@dimen/space_16"
+            android:text="@string/permissions_intro"
+            android:textSize="@dimen/text_caption"
+            android:textColor="@color/text_secondary"
+            android:lineSpacingMultiplier="1.3"
+            tools:text="Tap any permission to open its setting on this phone." />
+
+        <LinearLayout
+            android:id="@+id/permissionsList"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </LinearLayout>
+</ScrollView>
