@@ -87,6 +87,7 @@ import {
   swBridgeAnswer,
   viewAfterErrorDismissed,
   viewAfterPairEnded,
+  viewAfterPairEndedDuringSas,
   viewAfterSasConfirmed,
   withRelayAbortAccepted,
   writeEncryptedMode,
@@ -1276,6 +1277,14 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // The pair is gone, so there is nothing left to block; the CONFIRMATION
     // goes with it, because the next pair mints new digits and a carried-over
     // answer would approve a code nobody looked at.
+    // INC-0924. Read BEFORE the clear, because the answer is the whole point:
+    // a pair that ended while this side was still showing five digits ended
+    // with the verification UNANSWERED, and the phone's "Doesn't match" path
+    // (LEAVE_ACTIVE -> PAIRING_TERMINATED) arrives here exactly like any other
+    // teardown. Without this the dialog would simply disappear and the user
+    // would be told nothing about the one event this whole feature exists to
+    // surface.
+    const endedMidSas = sasPendingRef.current;
     sasPendingRef.current = false;
     confirmedSasRef.current = null;
     currentSasRef.current = null;
@@ -1284,7 +1293,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // meant the error was erased by the teardown it had itself caused, and the
     // user saw nothing at all. viewAfterPairEnded carries the rule and its
     // table; this line must stay a call to it. See hooks/phoneE2e.ts.
-    setView(viewAfterPairEnded);
+    setView(endedMidSas ? viewAfterPairEndedDuringSas : viewAfterPairEnded);
   }, []);
 
   /**

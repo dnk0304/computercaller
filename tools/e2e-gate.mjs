@@ -521,6 +521,17 @@ const MIN_CHECKS_OVERRIDE = {
   // a cheerful N/N - with the browser->phone file path broken again and nothing
   // red. Measured at the commit that adds it: 156 assertions.
   'relay:e2e-ft-hint-contract.test.mjs': 156,
+  // INC-0924 (RULE 30). tests/e2e-sas-order-contract.test.mjs holds the WEB half
+  // of the ACCEPT-before-SAS ordering over tests/e2e-sas-order-vectors.json, the
+  // SAME file the Android lane's E2eSasOrderContractTest asserts. Auto-discovered
+  // by the tests/e2e-*.test.mjs sweep, so what it needs here is the floor — and
+  // it needs one, because the rows that carry the incident are deletable: the
+  // `phone-first-confirm` FORBIDDEN row and the two CONTROLs (an ordinary
+  // teardown stays quiet; a different error keeps its own copy). Delete any of
+  // them and the count drops while the suite still prints a cheerful N/N, with
+  // the phone free to ask for a code the computer has not been given. Measured
+  // at the commit that adds it: 54 assertions.
+  'relay:e2e-sas-order-contract.test.mjs': 54,
   // T-FT-WEB-CHUNK-SEQ-RACE (RULE 30). tests/e2e-ft-chunk-seq-contract.test.mjs
   // drives the REAL createFailClosedSender (lib/e2e/session.mjs) with N seals IN
   // FLIGHT TOGETHER - the way lib/fileTransfer/sender.ts pump() drives it - over
@@ -694,7 +705,9 @@ const MIN_CHECKS_OVERRIDE = {
   // the other cannot pass.
   // T-FT-WEB-SEAL-NO-HINT re-measure 186 -> 187: the frozen MIN_CHECKS pin list
   // gains relay:e2e-ft-hint-contract.test.mjs (156).
-  'unit:harness-list': 187,
+  // INC-0924 re-measure 187 -> 188: the frozen MIN_CHECKS pin list gains
+  // relay:e2e-sas-order-contract.test.mjs (54).
+  'unit:harness-list': 188,
   // GATE-TOOLING-1 (4). The phase whitelist suite had NO floor for its whole
   // life: a step whose entire job is to prove a phase cannot silently vanish
   // could itself have had half its arms deleted under a cheerful N/N. Measured

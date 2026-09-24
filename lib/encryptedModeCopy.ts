@@ -45,6 +45,7 @@ export const E2E_ERRORS = [
   'e2e-seq-fail-closed',
   'e2e-epoch-replayed',
   'e2e-sw-key-unavailable',
+  'e2e-sas-unconfirmed',
 ] as const;
 export type E2eErrorName = (typeof E2E_ERRORS)[number];
 
@@ -307,6 +308,24 @@ function errorIndicator(error: E2eErrorName | undefined): EncryptionIndicator {
       return { ...base, label: 'Pair again', detail: 'This browser restarted before the extension was ready. Pair again.' };
     case 'e2e-epoch-replayed':
       return { ...base, label: 'Pairing refused', detail: 'A repeated pairing request was refused. Start a new pairing from your phone.' };
+    // INC-0924. Reached when the pair is torn down while this side's SAS
+    // dialog is still open — overwhelmingly because the phone's user answered
+    // "Doesn't match", which is the phone's refusal path (LEAVE_ACTIVE, seen
+    // here as PAIRING_TERMINATED).
+    //
+    // The wording stops at what this browser can actually know. The relay
+    // frame carries no reason, and inventing "your phone said the codes don't
+    // match" for a teardown that might have been a dropped socket would put
+    // an attack claim in front of a user on no evidence — the opposite
+    // mistake, and the more expensive one. It does NOT offer "try again" as
+    // the obvious next tap, for the same reason the phone's own refusal copy
+    // does not: retrying is what an attacker needs.
+    case 'e2e-sas-unconfirmed':
+      return {
+        ...base,
+        label: 'Code not confirmed',
+        detail: 'Your phone ended the pairing before both codes were confirmed. If the codes on the two screens were different, do not pair from this computer again.',
+      };
     case 'e2e-setup-failed':
     default:
       return { ...base, label: 'Pairing refused', detail: `${ABORT_SETUP_FAILED}.` };
