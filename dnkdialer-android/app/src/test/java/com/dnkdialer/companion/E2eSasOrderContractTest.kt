@@ -298,4 +298,78 @@ class E2eSasOrderContractTest {
             E2eSettings.requiresSas(E2eSettings.EffectiveMode.ENCRYPTED_VERIFIED)
         )
     }
+
+    // ------------------------------------------- (4) THE STATUS THE PHONE SHOWS
+
+    /**
+     * INC-0924 Security F-1 (C1). What the phone TELLS ITS OWN USER while the
+     * SAS dialog is unanswered.
+     *
+     * `e2eVerified` is the key-pin verdict alone. Against a TOFU-pinned peer
+     * it is already `true` when `broadcastE2eState()` runs one line above
+     * `sendPairingDecision("ACCEPT_PAIRING", ...)` — i.e. at the TOP of the
+     * window — so the un-amended predicate badged the pair "Encrypted and
+     * verified" at the exact moment it was asking the user to verify it. That
+     * is a tap-through prime, and a tap-through is the only thing that defeats
+     * this SAS.
+     *
+     * Two instruments, because [E2eStatusCopy.stateOf] is unchanged and a value
+     * test alone would pass over the old one-arg call:
+     *  - the VALUE, through the real `stateOf`, over every row that states a
+     *    `statusState` (`accept-then-both-confirm` is the control: a predicate
+     *    that answered UNVERIFIED unconditionally passes the window row and
+     *    fails that one);
+     *  - the PREDICATE, read out of `PhoneService.currentE2eState` itself,
+     *    which is the only instrument that sees `&& !e2eSasPending` go missing.
+     */
+    @Test
+    fun the_phone_reports_unverified_for_the_whole_sas_window() {
+        var checked = 0
+        for (r in rows()) {
+            val id = r.get("id").asString
+            val p = phone(r) ?: continue
+            val want = p.get("statusState")?.asString ?: continue
+            val pinned = p.get("keyPinVerified").asBoolean
+            val pending = p.get("sasPending").asBoolean
+            checked++
+            assertEquals(
+                "$id: keyPinVerified=$pinned sasPending=$pending",
+                E2eStatusCopy.State.valueOf(want),
+                E2eStatusCopy.stateOf(encrypted = true, verified = pinned && !pending),
+            )
+        }
+        assertEquals("both status rows must survive in the file", 2, checked)
+
+        val src = service.readText().replace("\r\n", "\n")
+        val fnStart = src.indexOf("fun currentE2eState()")
+        assertTrue("currentE2eState has been renamed or removed", fnStart >= 0)
+        val fnEnd = src.indexOf("private fun broadcastE2eState", fnStart)
+        assertTrue("could not find the end of currentE2eState", fnEnd > fnStart)
+        val body = src.substring(fnStart, fnEnd)
+        assertTrue("currentE2eState did not slice (got ${body.length} chars)", body.length > 120)
+        assertTrue(
+            "Security F-1: currentE2eState must report UNVERIFIED while the phone's own " +
+                "SAS dialog is unanswered — verified = e2eVerified && !e2eSasPending",
+            body.contains("verified = e2eVerified && !e2eSasPending"),
+        )
+    }
+
+    /**
+     * C2 (Security F-3). The refusal counters are the ONLY forensic trace of
+     * this window — a field MITM attempt leaves nothing else behind. There is
+     * no allowlist to add them to: `DiagLog.counter` is an open registry and
+     * every name it is given is persisted to `counters.json` and shipped
+     * verbatim in the export zip. So what needs pinning is that the two call
+     * sites still exist, spelled the way a field zip will be grepped for.
+     */
+    @Test
+    fun the_window_refusals_leave_a_counter_behind() {
+        val src = service.readText().replace("\r\n", "\n")
+        for (name in listOf("e2e.sas.refused-after-accept", "e2e.sas.malformed")) {
+            assertTrue(
+                "the only forensic trace of a refused SAS is DiagLog.counter(\"$name\")",
+                src.contains("DiagLog.counter(\"$name\")"),
+            )
+        }
+    }
 }

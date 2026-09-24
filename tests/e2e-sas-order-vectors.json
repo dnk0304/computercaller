@@ -53,17 +53,18 @@
       "id": "accept-then-both-confirm",
       "label": "ACCEPT first, both screens show the same code, both users confirm",
       "forbidden": false,
-      "phone": { "acceptSent": true, "sasPending": false, "verdict": "MATCHED", "mayProceed": true, "sealedOutbound": "send", "sealedInbound": "deliver" },
+      "phone": { "acceptSent": true, "sasPending": false, "verdict": "MATCHED", "mayProceed": true, "sealedOutbound": "send", "sealedInbound": "deliver", "keyPinVerified": true, "statusState": "ENCRYPTED_VERIFIED" },
       "browser": { "hasDigits": true, "sasPending": false },
-      "note": "phone values are AFTER the MATCH verdict clears the window"
+      "note": "phone values are AFTER the MATCH verdict clears the window; this row is the CONTROL for statusState — a predicate that answered UNVERIFIED unconditionally would pass the row below and fail here"
     },
     {
       "id": "sealed-frame-before-both-confirm",
       "label": "inside the window: accepted, digits on both screens, nobody has confirmed yet",
       "forbidden": false,
-      "phone": { "acceptSent": true, "sasPending": true, "verdict": null, "sealedOutbound": "drop", "sealedInbound": "drop" },
+      "phone": { "acceptSent": true, "sasPending": true, "verdict": null, "sealedOutbound": "drop", "sealedInbound": "drop", "keyPinVerified": true, "statusState": "ENCRYPTED_UNVERIFIED" },
       "browser": { "hasDigits": true, "sasPending": true, "sealedOutbound": "throw", "sealedInbound": "drop" },
-      "why": "a session exists and nobody has verified the peer; SEND_SMS and MAKE_CALL are sealed types the phone RECEIVES, so the window is closed in BOTH directions"
+      "why": "a session exists and nobody has verified the peer; SEND_SMS and MAKE_CALL are sealed types the phone RECEIVES, so the window is closed in BOTH directions",
+      "whyStatus": "Security F-1: keyPinVerified is the KEY-PIN verdict and against a TOFU-pinned peer it is ALREADY true here, so the phone's own status must still read ENCRYPTED_UNVERIFIED for the whole window. Claiming 'verified' on the screen that is asking the user to verify is a tap-through prime, and a tap-through is the only thing that defeats this SAS. Same answer the browser gives, so the two surfaces stay symmetrical."
     },
     {
       "id": "phone-mismatch-abort",

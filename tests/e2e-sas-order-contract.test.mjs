@@ -225,5 +225,42 @@ const row = (id) => {
     /Security/.test(r.why), r.why);
 }
 
+// -- 6. what each surface SAYS while the window is open (Security F-1 / C1) --
+// The phone's `statusState` rows and the browser's own copy are one claim:
+// "nobody has confirmed a code here yet". The phone's key-pin verdict is
+// already true inside the window (TOFU-pinned peer), so the phone half of this
+// is asserted in the Kotlin twin against `PhoneService.currentE2eState`; what
+// this half owes is that the browser answers the SAME for the SAME row, and
+// that the two rows are not the same answer twice.
+{
+  const STATE = {
+    ENCRYPTED_UNVERIFIED: 'encrypted-unverified',
+    ENCRYPTED_VERIFIED: 'encrypted-verified',
+  };
+  const rows = VECTORS.rows.filter((r) => r.phone && r.phone.statusState);
+  eq('both surfaces have a status row to compare', rows.length, 2);
+  for (const r of rows) {
+    const want = STATE[r.phone.statusState];
+    check(`${r.id}: states a status the browser also has a name for`, Boolean(want),
+      r.phone.statusState);
+    const ind = encryptionIndicator({ state: want, peer: { supports: true } });
+    if (r.phone.sasPending === true) {
+      check(`${r.id}: the key pin is already true inside the window`,
+        r.phone.keyPinVerified === true);
+      eq(`${r.id}: so the phone must read UNVERIFIED`,
+        r.phone.statusState, 'ENCRYPTED_UNVERIFIED');
+      eq(`${r.id}: and the browser says the same`, ind.label, 'Encrypted, unverified');
+      check(`${r.id}: without claiming a confirmed code`,
+        !/you confirmed/.test(ind.detail), ind.detail);
+    } else {
+      // CONTROL: after the MATCH the two surfaces flip together, so neither
+      // half of this is satisfied by a constant.
+      eq(`${r.id}: after the MATCH the phone reads VERIFIED`,
+        r.phone.statusState, 'ENCRYPTED_VERIFIED');
+      eq(`${r.id}: and so does the browser`, ind.label, 'Encrypted');
+    }
+  }
+}
+
 console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'}  ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
