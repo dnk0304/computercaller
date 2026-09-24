@@ -1,0 +1,164 @@
+{
+  "$comment": [
+    "vc67 / T-SAS-TIMEOUT-LATCH + T-SAS-GATE-TIMEOUT-30S — WHICH refusals set the downgrade latch, and",
+    "how long the SAS may wait. RESUME-PROTOCOL v3.0 RULE 30.",
+    "",
+    "ONE file, TWO consumers:",
+    "  dnkdialer-android/.../E2eDowngradeLatchTest.kt   (phone: E2eNegotiation.DowngradeLatch.latchesOnRefusal,",
+    "                                                    the real latch object, PhoneService's call sites and",
+    "                                                    E2eSasGate.Pending's two deadlines)",
+    "  tests/e2e-sas-latch-contract.test.mjs            (node twin: the same table read out of the Kotlin",
+    "                                                    sources, so a row edited on one side and not the",
+    "                                                    other fails a build instead of shipping)",
+    "",
+    "THE INCIDENT (live-acceptance-vc66-20260924T1630Z). A SAS nobody answered for 30 s returned TIMED_OUT,",
+    "the refusal path called latch(), and the NEXT browser request 9 s later was refused with 'downgrade",
+    "latch is set for this pair; refusing a non-encrypting offer'. Every later offer was refused too: the",
+    "latch is process-lifetime and clears only on a local disconnect or a service restart (R-CO). So not",
+    "answering a prompt within 30 s bricked pairing until the app was force-stopped.",
+    "",
+    "THE RULE. The downgrade latch exists for a PEER that tries to weaken a pair (SPEC 13.1). Our OWN",
+    "outcomes — a clock, a user's answer, a local crypto fault — are not evidence of a peer doing anything,",
+    "and must not set it. The pair is still torn down in every case; what changes is whether the ROOM is",
+    "blinded against future pairings.",
+    "",
+    "WHY 'Doesn't match' DOES NOT LATCH (Security ruling, proposed by this lane). A REFUSED verdict IS",
+    "evidence of interference, so latching is tempting. But the response to that evidence is to END THE",
+    "PAIR, which happens: leaveActivePair + tearDownE2e closes the session and drops its kid. Because an",
+    "Accept always mints a FRESH kid (E2eAccept.prepare, freshEpoch = true) the next pairing produces FRESH",
+    "DIGITS the user compares again — a refused peer cannot replay a code it saw. Latching instead would",
+    "mean one mis-read digit, or one attacker-provoked refusal, disables encrypted pairing on that phone",
+    "until it is force-stopped. There is no resume path that could carry a refused pair forward.",
+    "",
+    "THE DEADLINE. 30 s bounds a pairing REQUEST (one tap). A SAS asks for a five-digit comparison across",
+    "two screens. The service cannot observe 'foreground' — sendBroadcast reports nothing about delivery —",
+    "so MainActivity.showSasConfirm ACKS (ACTION_E2E_SAS_SHOWN) once the digits are visible, and only then",
+    "does the wait extend to 120 s. No ack, no extension: an Activity-absent prompt still fails closed in",
+    "30 s. The ack carries no digits, can only EXTEND, and never approves anything."
+  ],
+  "version": 1,
+
+  "latch": {
+    "$comment": [
+      "reason -> latches. The enum is E2eNegotiation.DowngradeLatch.RefusalReason and the function under",
+      "test is latchesOnRefusal(reason). `nextOfferAccepted` is the consequence the incident was about: with",
+      "the latch unset, the next mode0 offer from the same peer is ACCEPTED rather than refused by",
+      "E2eNegotiation.decide's latch arm."
+    ],
+    "rows": [
+      {
+        "id": "peer-offered-nothing",
+        "reason": "PEER_OFFERED_NOTHING",
+        "latches": true,
+        "nextOfferAccepted": false,
+        "why": "Local mode ON, peer advertised nothing — the original SPEC 13.1 downgrade the latch was built for."
+      },
+      {
+        "id": "key-pin-mismatch",
+        "reason": "KEY_PIN_MISMATCH",
+        "latches": true,
+        "nextOfferAccepted": false,
+        "why": "The registry actively contradicts the advertised key (substituted, wrong kind, REVOKED row). A substitution signature; a later weaker offer is its second step."
+      },
+      {
+        "id": "own-sas-timed-out",
+        "reason": "SAS_TIMED_OUT",
+        "latches": false,
+        "nextOfferAccepted": true,
+        "why": "A clock ran out. THE incident: this row latching is what made a slow reader un-pairable until force-stop."
+      },
+      {
+        "id": "own-sas-refused",
+        "reason": "SAS_REFUSED",
+        "latches": false,
+        "nextOfferAccepted": true,
+        "freshDigits": true,
+        "why": "The user said the codes differ. The pair is torn down and its kid dropped; the next Accept mints a fresh kid and fresh digits the user compares again. Blinding the room instead hands an attacker a denial-of-pairing for the price of one provoked refusal."
+      },
+      {
+        "id": "own-sas-not-shown",
+        "reason": "SAS_NOT_SHOWN",
+        "latches": false,
+        "nextOfferAccepted": true,
+        "why": "The prompt never reached a surface, or the pair ended under it (CANCELLED). Nothing was offered and nothing was refused."
+      },
+      {
+        "id": "own-sas-malformed",
+        "reason": "SAS_MALFORMED",
+        "latches": false,
+        "nextOfferAccepted": true,
+        "why": "Mode ON but the digits were not a SPEC 13.3 SAS. A local fault, caught pre-ACCEPT, and never prompted."
+      },
+      {
+        "id": "local-crypto-failure",
+        "reason": "LOCAL_CRYPTO_FAILURE",
+        "latches": false,
+        "nextOfferAccepted": true,
+        "why": "Keystore, sequence counter or kid-reuse: we could not seal this pairing. Our fault, not their offer — the same reasoning that un-latched E2eKeyPin.Verdict.FailClosed after INC-0923."
+      }
+    ],
+    "clear": {
+      "$comment": "Unchanged by vc67, re-pinned here so a latch that IS set still clears only on locally-originated events.",
+      "LOCAL_USER_DISCONNECT": true,
+      "SERVICE_RESTART": true,
+      "RELAY_RESET_ROOM": false,
+      "RELAY_PAIRING_TERMINATED": false,
+      "SOCKET_FLAP": false
+    },
+    "callSites": {
+      "$comment": [
+        "Every latch call site in PhoneService.kt must name a RefusalReason and go through latchForRefusal,",
+        "which applies latchesOnRefusal. A bare e2eDowngradeLatch.latch() is how TIMED_OUT came to blind a",
+        "room, and the Kotlin twin asserts there is no longer one."
+      ],
+      "door": "latchForRefusal",
+      "bareLatchCalls": 0
+    }
+  },
+
+  "timeout": {
+    "$comment": [
+      "Milliseconds. `unsurfaced` is PhoneService.PENDING_REQUEST_TIMEOUT_MS and `surfaced` is",
+      "SAS_SURFACED_TIMEOUT_MS; the gate takes both and picks at the short deadline on the state of the",
+      "UI ack."
+    ],
+    "unsurfacedMs": 30000,
+    "surfacedMs": 120000,
+    "ackAction": "com.dnkdialer.companion.E2E_SAS_SHOWN",
+    "ackCarriesDigits": false,
+    "expiryVerdict": "TIMED_OUT",
+    "expiryTeardown": "LEAVE_ACTIVE",
+    "expiryCopy": "Code not confirmed — pair again",
+    "rows": [
+      {
+        "id": "surface-acked-long-window",
+        "surfaced": true,
+        "answerAtMs": 60000,
+        "expect": "MATCHED",
+        "why": "Foreground wait of 60 s then Matches: the pair verifies. Under the old single 30 s deadline this was a TIMED_OUT."
+      },
+      {
+        "id": "surface-acked-still-bounded",
+        "surfaced": true,
+        "answerAtMs": null,
+        "expect": "TIMED_OUT",
+        "why": "The long window is a window, not an absence of one: an acked prompt nobody ever answers still refuses, because the wait holds the single-threaded e2e-accept worker."
+      },
+      {
+        "id": "activity-absent-fails-closed-30s",
+        "surfaced": false,
+        "answerAtMs": null,
+        "expect": "TIMED_OUT",
+        "why": "No ack means no surface received the digits. Fail closed on the short deadline; nobody is coming to answer."
+      },
+      {
+        "id": "ack-for-another-pairing-ignored",
+        "surfaced": false,
+        "ackPairingId": "some-other-pairing",
+        "answerAtMs": null,
+        "expect": "TIMED_OUT",
+        "why": "An ack is scoped to its pairingId exactly as an answer is: a stale ack from a pairing the user already dealt with must not extend this one."
+      }
+    ]
+  }
+}

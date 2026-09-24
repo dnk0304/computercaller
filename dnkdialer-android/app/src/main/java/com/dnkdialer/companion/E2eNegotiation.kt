@@ -106,6 +106,17 @@ object E2eNegotiation {
     /** The copy shown when a mode-ON device cannot get an encrypted pairing. */
     const val ABORT_MESSAGE = "Couldn't set up encrypted pairing — try again"
 
+    /**
+     * vc67 — what the phone says when the SAS deadline ran out.
+     *
+     * Deliberately NOT [ABORT_MESSAGE]: nothing failed and nobody refused, the
+     * code simply was not confirmed in time, and a user told "couldn't set up
+     * encrypted pairing" for their own slow comparison learns that the security
+     * prompt is flaky. It also does not offer a one-tap retry — retry-on-
+     * refusal is what an attacker needs — it names the next step instead.
+     */
+    const val SAS_TIMEOUT_MESSAGE = "Code not confirmed — pair again"
+
     // ------------------------------------------------------------- parsing
 
     /**
@@ -198,7 +209,7 @@ object E2eNegotiation {
 
         return when (E2eSettings.effectiveMode(localEnabled, offer.advertisement)) {
             E2eSettings.EffectiveMode.ABORT -> {
-                latch?.latch()
+                latch?.latch(DowngradeLatch.RefusalReason.PEER_OFFERED_NOTHING)
                 Decision.Abort(
                     ABORT_MESSAGE,
                     "local mode ON but peer offered nothing: ${offer.absentReason ?: "absent"}"
@@ -225,14 +236,25 @@ object E2eNegotiation {
      *
      * ## What may set it, and what may clear it (INC-0923)
      *
-     * SET by a genuine downgrade only: [Decision.Abort] from
-     * [E2eSettings.EffectiveMode.ABORT] (local mode ON, peer offered nothing),
-     * a SAS the user refused, and a pin [E2eKeyPin.Verdict.Mismatch] — a key
-     * the registry actively contradicts. It is NOT set by a pin
-     * [E2eKeyPin.Verdict.FailClosed] (registry unreachable, or the recipient
-     * simply unregistered) or by an account-id mismatch: those are faults, not
-     * offers, and latching on them made one missing service-worker row abort
-     * every later pairing attempt for the life of the process.
+     * SET by a genuine downgrade only, and the rule is the pure function
+     * [DowngradeLatch.latchesOnRefusal] over [DowngradeLatch.RefusalReason] —
+     * every `latch(...)` call site goes through it, so the table is the
+     * security property and there is nowhere else to get it wrong.
+     *
+     * LATCHES: [Decision.Abort] from [E2eSettings.EffectiveMode.ABORT] (local
+     * mode ON, peer offered nothing) and a pin [E2eKeyPin.Verdict.Mismatch] —
+     * a key the registry actively contradicts. Both are a PEER weakening or
+     * substituting into the pair.
+     *
+     * DOES NOT LATCH: a pin [E2eKeyPin.Verdict.FailClosed] (registry
+     * unreachable, or the recipient simply unregistered), an account-id
+     * mismatch, and — vc67 — every outcome this device produced: a SAS that
+     * timed out, a SAS the user refused, a SAS that never surfaced, malformed
+     * digits, and a local crypto failure. Those are faults or answers, not
+     * offers. Latching on FailClosed made one missing service-worker row abort
+     * every later pairing attempt for the life of the process (INC-0923);
+     * latching on TIMED_OUT did the same to anyone who read two screens
+     * slowly (vc66 live acceptance).
      *
      * CLEARED only by events this device originates: the user disconnecting
      * from the lobby, and a service restart. Never by a relay-delivered frame
@@ -244,7 +266,19 @@ object E2eNegotiation {
         var isLatched: Boolean = false
             private set
 
-        fun latch() { isLatched = true }
+        /**
+         * Latch, but only when [latchesOnRefusal] says this refusal is EVIDENCE
+         * of a peer weakening the pair. Every call site goes through this door,
+         * which is why [latchesOnRefusal] is the whole rule and this is the
+         * whole enforcement.
+         *
+         * @return true when the latch is now set BY THIS CALL.
+         */
+        fun latch(reason: RefusalReason): Boolean {
+            if (!latchesOnRefusal(reason)) return false
+            isLatched = true
+            return true
+        }
 
         /**
          * Clear the latch. Callers MUST gate this on [clearsLatch] so the
@@ -252,6 +286,72 @@ object E2eNegotiation {
          * rather than in the reader's memory of which frame came from where.
          */
         fun clear() { isLatched = false }
+
+        /**
+         * Why a pairing was refused — the input to the one rule that decides
+         * whether the DOWNGRADE latch is the right response (vc67, T-SAS-LATCH).
+         *
+         * ## The rule, in one sentence
+         *
+         * The latch exists for a PEER that tries to weaken a pair (SPEC 13.1).
+         * It is not a general "this pairing failed" flag, and our OWN outcomes
+         * must never set it — because the latch lives for the whole process and
+         * refuses every later offer, so setting it on an outcome the user (or a
+         * clock) produced turns a normal non-answer into an un-pairable phone
+         * until the app is force-stopped.
+         *
+         * ## What the live run showed (live-acceptance-vc66-20260924T1630Z)
+         *
+         * A SAS left unanswered for 30 s produced `TIMED_OUT` -> `latch()`, and
+         * the next Connect 9 s later was refused with "downgrade latch is set
+         * for this pair" — for the rest of the process. That is the "fast
+         * declines" report, reachable by nothing more hostile than reading two
+         * screens slowly.
+         *
+         * ## Why REFUSED does not latch either (Security ruling, INC-0924)
+         *
+         * "Doesn't match" IS evidence of interference, so it is tempting. But
+         * the correct response to that evidence is to END THE PAIR, not to
+         * blind the room: the refused pair is torn down, its session closed and
+         * its `kid` dropped, and — because an Accept always mints a fresh `kid`
+         * and therefore FRESH DIGITS ([E2eAccept.prepare], `freshEpoch = true`)
+         * — the next pairing is a new comparison the user performs again, with
+         * a code the refused peer cannot have seen. Latching instead would mean
+         * a user who mis-reads one digit, or an attacker who can provoke one
+         * refusal, has disabled encrypted pairing on that phone until it is
+         * force-stopped. There is no resume path that could carry the refused
+         * pair forward: `tearDownE2e` nulls the session, and a reconnect
+         * re-Accepts from scratch.
+         */
+        enum class RefusalReason {
+            /**
+             * Local mode ON and the peer advertised nothing — the original
+             * 13.1 downgrade. LATCHES.
+             */
+            PEER_OFFERED_NOTHING,
+
+            /**
+             * [E2eKeyPin.Verdict.Mismatch]: the registry actively contradicts
+             * the advertised key (substituted, wrong kind, REVOKED row). A
+             * substitution signature. LATCHES.
+             */
+            KEY_PIN_MISMATCH,
+
+            /** Nobody answered the SAS inside the deadline. Ours, not theirs. */
+            SAS_TIMED_OUT,
+
+            /** The user tapped "Doesn't match". Tear down; do not blind the room. */
+            SAS_REFUSED,
+
+            /** The pair ended underneath the prompt, or it never surfaced. */
+            SAS_NOT_SHOWN,
+
+            /** Mode ON but the digits were not a 13.3 SAS. A local fault. */
+            SAS_MALFORMED,
+
+            /** We could not seal this pairing (Keystore, counter, kid reuse). */
+            LOCAL_CRYPTO_FAILURE,
+        }
 
         /** The events that may end a latched pair. */
         enum class Event {
@@ -289,6 +389,27 @@ object E2eNegotiation {
             }
 
             /**
+             * **The rule.** True only for refusals that are EVIDENCE of a peer
+             * weakening or substituting into this pair; false for every outcome
+             * this device (or its clock, or its user) produced.
+             *
+             * Pinned row-by-row by `tests/e2e-sas-latch-vectors.json` in both
+             * the Kotlin and the node twin (RULE 30), because the table IS the
+             * security property — a reader cannot tell a correct row from an
+             * incorrect one by looking at the call site.
+             */
+            @JvmStatic
+            fun latchesOnRefusal(reason: RefusalReason): Boolean = when (reason) {
+                RefusalReason.PEER_OFFERED_NOTHING,
+                RefusalReason.KEY_PIN_MISMATCH -> true
+                RefusalReason.SAS_TIMED_OUT,
+                RefusalReason.SAS_REFUSED,
+                RefusalReason.SAS_NOT_SHOWN,
+                RefusalReason.SAS_MALFORMED,
+                RefusalReason.LOCAL_CRYPTO_FAILURE -> false
+            }
+
+            /**
              * True only for a pin verdict that is EVIDENCE, not a fault.
              *
              * [E2eKeyPin.Verdict.Mismatch] means the registry actively
@@ -301,7 +422,8 @@ object E2eNegotiation {
              */
             @JvmStatic
             fun latchesOn(verdict: E2eKeyPin.Verdict): Boolean =
-                verdict is E2eKeyPin.Verdict.Mismatch
+                verdict is E2eKeyPin.Verdict.Mismatch &&
+                    latchesOnRefusal(RefusalReason.KEY_PIN_MISMATCH)
         }
     }
 

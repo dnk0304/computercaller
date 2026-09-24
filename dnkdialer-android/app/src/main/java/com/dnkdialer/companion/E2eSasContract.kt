@@ -64,6 +64,34 @@ object E2eSasContract {
      */
     const val ACTION_E2E_SAS_RESULT = "com.dnkdialer.companion.E2E_SAS_RESULT"
 
+    /**
+     * UI → service, vc67. "The digits are ON SCREEN." Carries
+     * [PhoneService.EXTRA_PAIRING_ID] only — never the digits, which travel in
+     * one direction and are never echoed back.
+     *
+     * ## Why this exists
+     *
+     * The SAS deadline has to be two different numbers. A user who is looking
+     * at two screens and comparing five digits needs longer than 30 s; a
+     * pairing whose prompt reached NO surface must still fail closed fast,
+     * because nobody is going to answer it. The service cannot infer which it
+     * is: `sendBroadcast` reports nothing about delivery, and the only listener
+     * for SAS_REQUIRED is MainActivity's receiver, registered in `onResume`.
+     *
+     * So the Activity SAYS SO, at the end of [MainActivity.showSasConfirm] —
+     * after the malformed-payload refusal and after the hero face is actually
+     * visible, so the ack means "a human can see these digits", not "an intent
+     * was delivered". Until it arrives the deadline is the old 30 s; after it,
+     * the wait extends to the full window.
+     *
+     * Delivery is `setPackage` + `RECEIVER_NOT_EXPORTED`, like every other
+     * intent in this contract. The ack can only EXTEND a wait, never shorten
+     * one and never approve anything — so even an in-process caller that
+     * spammed it would buy the user more time to compare, which is not an
+     * attack.
+     */
+    const val ACTION_E2E_SAS_SHOWN = "com.dnkdialer.companion.E2E_SAS_SHOWN"
+
     /** The six decimal digits from §13.3, as a string (leading zeros matter). */
     const val EXTRA_SAS_DIGITS = "e2e_sas_digits"
 

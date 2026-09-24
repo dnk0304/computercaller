@@ -547,6 +547,15 @@ const MIN_CHECKS_OVERRIDE = {
   // the phone free to ask for a code the computer has not been given. Measured
   // at the commit that adds it: 54 assertions.
   'relay:e2e-sas-order-contract.test.mjs': 54,
+  // vc67 T-SAS-TIMEOUT-LATCH (RULE 30). tests/e2e-sas-latch-contract.test.mjs is
+  // the node twin of E2eDowngradeLatchTest over tests/e2e-sas-latch-vectors.json:
+  // WHICH refusals set the downgrade latch, and the two SAS deadlines. It needs a
+  // floor for the reason the incident happened at all — the rows that carry it are
+  // deletable. Drop `own-sas-timed-out` and nothing is left to notice that an
+  // unanswered prompt blinds the room until force-stop (the vc66 live finding),
+  // and the suite still prints a cheerful N/N. Measured at the commit that adds
+  // it, on a green run: 83 assertions.
+  'relay:e2e-sas-latch-contract.test.mjs': 83,
   // T-FT-WEB-CHUNK-SEQ-RACE (RULE 30). tests/e2e-ft-chunk-seq-contract.test.mjs
   // drives the REAL createFailClosedSender (lib/e2e/session.mjs) with N seals IN
   // FLIGHT TOGETHER - the way lib/fileTransfer/sender.ts pump() drives it - over
