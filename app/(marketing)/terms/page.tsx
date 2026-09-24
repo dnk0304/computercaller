@@ -29,8 +29,8 @@ export default function TermsPage() {
             <Image
               src="/brand/computercaller-icon-transparent.png"
               alt="ComputerCaller"
-              width={396}
-              height={317}
+              width={512}
+              height={512}
               priority
               className="h-12 w-auto"
             />

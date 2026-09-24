@@ -101,7 +101,11 @@ export const metadata: Metadata = {
     },
   },
   icons: {
-    icon: "/brand/computercaller-icon-transparent.png",
+    // MARK-SMALL, the same raster Next's app/icon.png file convention serves.
+    // Declared explicitly because a metadata.icons OBJECT suppresses the file
+    // convention entirely — with only `apple` here, Next emitted no
+    // <link rel="icon"> at all and /favicon.ico is 404, i.e. NO favicon.
+    icon: "/icon.png",
     apple: "/brand/computercaller-icon-square-padded-1024.png",
   },
 };

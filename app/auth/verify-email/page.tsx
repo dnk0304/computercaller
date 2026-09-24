@@ -106,8 +106,8 @@ function VerifyEmailForm() {
         <Image
           src="/brand/computercaller-icon-transparent.png"
           alt="ComputerCaller"
-          width={396}
-          height={317}
+          width={512}
+          height={512}
           priority
           className="h-14 w-auto"
         />
