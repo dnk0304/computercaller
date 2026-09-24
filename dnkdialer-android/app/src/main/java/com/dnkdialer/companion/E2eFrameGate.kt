@@ -59,6 +59,29 @@ class E2eFrameGate(
      * plaintext path underneath a pairing the user was told is encrypted.
      */
     private val latchedProvider: () -> Boolean,
+    /**
+     * INC-0924 — true while this pair is ACCEPTED but the user has not yet
+     * confirmed the SAS on this device.
+     *
+     * The ordering fix sends `ACCEPT_PAIRING` (and therefore the e2e block the
+     * computer derives its digits from) BEFORE the phone user is asked to
+     * compare the codes, which is the only way both screens can show the same
+     * code at the same time. That opens a window — seconds, but a real one —
+     * in which a session exists and nobody has verified who is on the other
+     * end. SPEC §13.2's whole claim is that no user data crosses an
+     * unverified channel, so for the length of that window this gate is
+     * CLOSED in both directions.
+     *
+     * A DROP, never a plaintext downgrade: the pair is encrypted, and a frame
+     * that cannot go sealed-and-verified must not go at all. The browser half
+     * has held exactly this rule since P6.1c (`sasPendingRef` in
+     * hooks/useE2e.ts gates `sealOutbound` and `openInbound`), so the two
+     * surfaces now enforce the same window with the same verb.
+     *
+     * Defaults to "not pending" so every existing construction site and test
+     * keeps its behaviour.
+     */
+    private val sasPendingProvider: () -> Boolean = { false },
 ) {
 
     companion object {
@@ -156,6 +179,16 @@ class E2eFrameGate(
      */
     fun outbound(type: String, json: String): String? {
         if (!isSealedType(type)) return json
+
+        // INC-0924. Above the session arm on purpose: a pair mid-SAS HAS a
+        // session, so a check placed below would never run. Sealing and
+        // sending here would put the user's SMS on a channel whose peer they
+        // are at this instant being asked to verify.
+        if (sasPendingProvider()) {
+            droppedOutbound++
+            lastDropReason = "sas pending — the code is not confirmed on this device"
+            return null
+        }
 
         val session = sessionProvider()
         if (session == null) {
@@ -287,6 +320,20 @@ class E2eFrameGate(
      * denial of service worth about one packet.
      */
     fun inbound(type: String, json: String): Inbound {
+        // INC-0924, inbound half of the same window. Symmetric with the
+        // browser's `openInbound`, and symmetric for a reason that is not just
+        // tidiness: SEND_SMS and MAKE_CALL are §13.7 sealed types the phone
+        // RECEIVES, so an unverified peer that reached a key would be issuing
+        // commands, not merely reading. The verification the user is mid-way
+        // through is the control that has not yet run.
+        //
+        // Sealed OR plaintext: under the latch a §13.7 type must arrive sealed
+        // anyway, and letting a plaintext one through while a security dialog
+        // is on screen is the downgrade the latch exists to stop.
+        if (sasPendingProvider() && isSealedType(type)) {
+            droppedInbound++
+            return Inbound.Drop("sas pending — the code is not confirmed on this device")
+        }
         val sealed = looksSealed(json)
 
         if (!sealed) {

@@ -116,9 +116,15 @@ class E2eCopyTableTest {
             "the SAS question must send the user to look at the other device",
             prompt.contains("computer", true)
         )
-        // Parity with the web/extension surface, which asks "Same code on your
-        // phone?". Same question, other direction.
-        assertEquals("Same code on your computer?", prompt)
+        // INC-0924. Was "Same code on your computer?" — a question the user
+        // could not answer, because the phone asked it BEFORE sending the
+        // ACCEPT the computer derives its digits from, so the other screen was
+        // blank. PhoneService now accepts first and both codes appear at the
+        // same moment, and the copy is an INSTRUCTION to compare rather than a
+        // question about a screen that had nothing on it. The web/extension
+        // side keeps its own question ("Same code on your phone?"): it is the
+        // side that has had its digits all along.
+        assertEquals("Compare with the code on your computer", prompt)
         assertEquals("Matches", strings.getValue("e2e_sas_matches"))
         assertEquals("Doesn't match", strings.getValue("e2e_sas_no_match"))
     }

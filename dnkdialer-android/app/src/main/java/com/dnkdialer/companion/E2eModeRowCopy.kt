@@ -52,22 +52,45 @@ object E2eModeRowCopy {
         val checked: Boolean,
         @StringRes val reasonRes: Int,
         val alpha: Float,
+        /**
+         * INC-0924 — non-null exactly when the stored preference is ON while
+         * the control is inoperable. The switch now shows the truth, so this
+         * line is what stops "on, but greyed" from reading as a malfunction.
+         */
+        @StringRes val onWhileDisabledRes: Int? = null,
     )
 
     /**
      * The capability answer: may the control be operated, is it on, and why.
      *
-     * [checked] is ANDed with [enabled] on purpose. A stored `true` under a
-     * capability state that forbids the mode would otherwise render a switch
-     * that is on and inert — a claim that the next connection will be
-     * encrypted, made by a control the user cannot turn off.
+     * ## INC-0924 — [checked] is the stored preference, in EVERY state
+     *
+     * It used to be `enabled && checkedPref`, on the reasoning that a switch
+     * drawn ON but inert claims something about the next connection that the
+     * user cannot act on. That reasoning was backwards, and it cost a live
+     * incident: the value the switch masked is the SAME value
+     * `E2eNegotiation.decide()` reads at Accept
+     * ([E2eSettings.isEncryptedModeEnabled]). So a phone in the lobby drew the
+     * switch OFF and then forced a SAS-blocking, encrypted pair — "the phone
+     * automatically is pushing encrypted mode even though it's not toggled on"
+     * (Dennis, 2026-09-24). A control that lies about the value it controls is
+     * strictly worse than a control that is honest and temporarily inert.
+     *
+     * The masking is replaced by SPEECH: when the row is disabled and the
+     * preference is ON, [onWhileDisabledRes] says so in words. One source of
+     * truth, stated rather than hidden.
      */
     @JvmStatic
     fun forState(state: E2ePeerCapability.State, checkedPref: Boolean): RowCopy {
         val enabled = E2ePeerCapability.isToggleEnabled(state)
         return RowCopy(
             enabled = enabled,
-            checked = enabled && checkedPref,
+            checked = checkedPref,
+            onWhileDisabledRes = if (!enabled && checkedPref) {
+                R.string.settings_encrypted_mode_on_while_disabled
+            } else {
+                null
+            },
             reasonRes = when (state) {
                 E2ePeerCapability.State.UNKNOWN -> R.string.settings_encrypted_mode_waiting
                 E2ePeerCapability.State.PEER_UNSUPPORTED -> R.string.settings_encrypted_mode_peer_old

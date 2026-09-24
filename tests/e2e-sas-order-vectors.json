@@ -1,0 +1,109 @@
+{
+  "$comment": [
+    "INC-0924 / T-SAS-ORDER-PHONE-FIRST — the order of ACCEPT_PAIRING and the SAS prompt, and what the",
+    "data plane is allowed to do inside the window the new order opens. RESUME-PROTOCOL v3.0 RULE 30.",
+    "",
+    "ONE file, TWO consumers:",
+    "  tests/e2e-sas-order-contract.test.mjs                       (web: hooks/useE2e.ts sasPendingRef +",
+    "                                                               isSealedFrameType, hooks/phoneE2e.ts",
+    "                                                               viewAfterPairEnded[DuringSas],",
+    "                                                               lib/encryptedModeCopy.ts)",
+    "  dnkdialer-android/.../E2eSasOrderContractTest.kt            (phone: PhoneService's accept ORDER,",
+    "                                                               E2eFrameGate, E2eSasGate.mayProceed)",
+    "",
+    "THE INCIDENT. Until this build PhoneService called E2eSasGate.await BEFORE sendPairingDecision",
+    "('ACCEPT_PAIRING', ...). The computer derives its five digits from the e2e block inside that ACCEPT,",
+    "so the phone asked 'same code?' while the computer's screen was blank: 'the pairing code doesn't show",
+    "up in the CC webapp or extension before I confirm on the phone' (Dennis, 2026-09-24). Row",
+    "`phone-first-confirm` pins that ordering as FORBIDDEN — it is the only row here whose expected value",
+    "is that the product must NOT do something it used to do.",
+    "",
+    "WHERE sasPending LIVES. Nowhere on the wire. It is not a field in the e2e block, not in the SPEC 13.3",
+    "transcript, and not a new frame: each side derives 'the code is not confirmed here yet' from its own",
+    "local state (phone: PhoneService.e2eSasPending; browser: useE2e sasPendingRef, keyed on",
+    "decision.effective, unchanged since P6.1c). The digits are therefore byte-identical to the ones the",
+    "frozen transcript produced before this change, and tests/sas-vectors.json is untouched.",
+    "",
+    "`sealedOutbound` / `sealedInbound` are what the FRAME GATE does to a SPEC 13.7 sealed type in that",
+    "row's state, on the phone. `drop` is a DROP, never a plaintext downgrade: the pair is encrypted and",
+    "the user has been told so."
+  ],
+  "version": 1,
+  "ordering": {
+    "$comment": [
+      "Asserted against the SOURCE of PhoneService.completeEncryptedAccept, because the accept path needs a",
+      "relay socket, a Keystore and a bound Activity and so has no JVM unit seam. A source-order assertion",
+      "is crude; it is also exactly the regression that shipped, and it goes red when the two statements",
+      "are swapped back."
+    ],
+    "acceptBeforePrompt": true,
+    "acceptCall": "sendPairingDecision(\"ACCEPT_PAIRING\", pairingId, block)",
+    "promptCall": "E2eSasGate.await("
+  },
+  "rows": [
+    {
+      "id": "phone-first-confirm",
+      "label": "the OLD order: the phone waits for the user before the computer has any digits — now FORBIDDEN",
+      "forbidden": true,
+      "phone": { "acceptSent": false, "sasPrompted": true },
+      "browser": { "hasDigits": false },
+      "why": "a comparison with one side blank is not a verification; it teaches the user to tap Matches on sight"
+    },
+    {
+      "id": "accept-then-both-confirm",
+      "label": "ACCEPT first, both screens show the same code, both users confirm",
+      "forbidden": false,
+      "phone": { "acceptSent": true, "sasPending": false, "verdict": "MATCHED", "mayProceed": true, "sealedOutbound": "send", "sealedInbound": "deliver" },
+      "browser": { "hasDigits": true, "sasPending": false },
+      "note": "phone values are AFTER the MATCH verdict clears the window"
+    },
+    {
+      "id": "sealed-frame-before-both-confirm",
+      "label": "inside the window: accepted, digits on both screens, nobody has confirmed yet",
+      "forbidden": false,
+      "phone": { "acceptSent": true, "sasPending": true, "verdict": null, "sealedOutbound": "drop", "sealedInbound": "drop" },
+      "browser": { "hasDigits": true, "sasPending": true, "sealedOutbound": "throw", "sealedInbound": "drop" },
+      "why": "a session exists and nobody has verified the peer; SEND_SMS and MAKE_CALL are sealed types the phone RECEIVES, so the window is closed in BOTH directions"
+    },
+    {
+      "id": "phone-mismatch-abort",
+      "label": "the phone's user answers \"Doesn't match\" after the ACCEPT",
+      "forbidden": false,
+      "phone": { "acceptSent": true, "sasPending": true, "verdict": "REFUSED", "mayProceed": false, "teardownFrame": "LEAVE_ACTIVE", "sealedOutbound": "drop" },
+      "browser": { "onFrame": "PAIRING_TERMINATED", "state": "error", "error": "e2e-sas-unconfirmed" },
+      "why": "the request is already resolved on the relay, so DECLINE_PAIRING names nothing; LEAVE_ACTIVE is the existing phone-initiated teardown and the relay answers it with PAIRING_TERMINATED"
+    },
+    {
+      "id": "browser-mismatch-abort",
+      "label": "the computer's user answers \"Doesn't match\"",
+      "forbidden": false,
+      "browser": { "confirmSas": false, "tearsDown": true, "sasPending": true },
+      "phone": { "sasPending": true, "verdict": "CANCELLED", "mayProceed": false, "sealedOutbound": "drop" },
+      "why": "confirmSas(false) keeps the block ON (fail closed) and returns true, which is usePhoneBridge's existing revokeLocalPair -> RESET_ROOM; the phone's in-flight wait is cancelled by the teardown, and CANCELLED is a refusal"
+    },
+    {
+      "id": "sas-timeout",
+      "label": "nobody answers on the phone inside the 30 s pairing deadline",
+      "forbidden": false,
+      "phone": { "acceptSent": true, "sasPending": true, "verdict": "TIMED_OUT", "mayProceed": false, "teardownFrame": "LEAVE_ACTIVE", "sealedOutbound": "drop" },
+      "browser": { "onFrame": "PAIRING_TERMINATED", "state": "error", "error": "e2e-sas-unconfirmed" },
+      "why": "silence is never a yes; it takes the same path as a refusal because downstream they must be indistinguishable"
+    },
+    {
+      "id": "resume-during-sas-pending",
+      "label": "the socket flaps while the code is on both screens and unanswered",
+      "forbidden": false,
+      "phone": { "acceptSent": true, "sasPending": true, "sealedOutbound": "drop", "sealedInbound": "drop" },
+      "browser": { "sasPending": true, "sealedOutbound": "throw" },
+      "why": "a resume re-forms the SAME pair, so the window is still open; the flag is cleared only by a MATCH or by the teardown that drops the session"
+    },
+    {
+      "id": "killswitch-off-phone-on",
+      "label": "E2E_PAIRING_ENABLED=0 and the PHONE's local Encrypted mode ON — DOCUMENTED, NOT ENDORSED",
+      "forbidden": false,
+      "documentedNotEndorsed": true,
+      "phone": { "effectiveMode": "ENCRYPTED_VERIFIED", "requiresSas": true, "acceptSent": true, "sasPending": true },
+      "why": "the relay refuses only mode=1 REQUESTS (server.js:1622); a mode=0 request is forwarded intact and the phone's local ON makes the pair verified by the SPEC 13.1 OR. So the kill switch does NOT stop a SAS-blocking pair. Pinned here so a change to that behaviour is a deliberate, reviewed change — see the open question in DISPATCH-BRIEF-FORGE-SAS-ORDER.md, which is Security's to rule on, not this lane's"
+    }
+  ]
+}

@@ -122,6 +122,11 @@ class E2eModeRowBinder(
         val parts = ArrayList<String>(3)
         if (live != null) parts.add(ctx.getString(E2eModeRowCopy.liveModeLine(live)))
         if (live == null || !copy.enabled) parts.add(ctx.getString(copy.reasonRes))
+        // INC-0924. Appended AFTER the capability reason, never instead of it:
+        // "your computer is too old" is why the control is grey, and "it is on
+        // and will apply when you pair" is what the grey ON state means. A user
+        // who is shown only the second has no idea why they cannot change it.
+        copy.onWhileDisabledRes?.let { parts.add(ctx.getString(it)) }
         if (live != null && copy.enabled &&
             !E2eModeRowCopy.switchAgreesWithLiveMode(copy.checked, live)
         ) {

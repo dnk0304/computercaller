@@ -465,6 +465,14 @@
     <string name="settings_encrypted_mode_peer_old">Update ComputerCaller on your computer to use encrypted mode.</string>
     <string name="settings_encrypted_mode_device_old">This phone\'s Android version can\'t use encrypted mode.</string>
     <string name="settings_encrypted_mode_ready">Both this phone and your computer support encrypted mode.</string>
+    <!-- INC-0924. The switch now shows the STORED preference in every
+         capability state, so a stored ON can be drawn on a control the user
+         cannot currently operate. This line is what makes that state readable
+         instead of looking like a stuck switch: the value is real, it is the
+         value the next pairing will use, and no computer is around to use it
+         with yet. Never say the current connection is encrypted here — the
+         row is only reachable in this state when nothing is paired. -->
+    <string name="settings_encrypted_mode_on_while_disabled">Encrypted mode is on — applies when you pair.</string>
     <!-- P5b (b). The mode of a live pair is latched at Accept (B6), so the
          switch describes the NEXT connection. Saying "next time you connect"
          is the difference between a setting the user trusts and one they
@@ -509,7 +517,14 @@
          against a screen, "four hundred twelve thousand nine hundred and
          eight" is not. -->
     <string name="e2e_sas_title">Check the code</string>
-    <string name="e2e_sas_prompt">Same code on your computer?</string>
+    <!-- INC-0924. Was "Same code on your computer?" — a question the user
+         could not answer, because until this build the phone asked it BEFORE
+         the ACCEPT that gives the computer its digits, so there was nothing on
+         the computer to compare against. The ordering is fixed (PhoneService
+         sends ACCEPT_PAIRING first, then waits here) and the copy is now an
+         instruction rather than a question: the code is on both screens at the
+         same moment and the user's job is to compare them. -->
+    <string name="e2e_sas_prompt">Compare with the code on your computer</string>
     <string name="e2e_sas_matches">Matches</string>
     <string name="e2e_sas_no_match">Doesn\'t match</string>
     <!-- Why the user is being asked at all. Without it the six digits read as
