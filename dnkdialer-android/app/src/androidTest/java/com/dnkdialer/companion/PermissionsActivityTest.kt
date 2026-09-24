@@ -8,7 +8,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.intent.Intents
 import androidx.test.espresso.intent.Intents.intended
 import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
-import androidx.test.espresso.intent.matcher.IntentMatchers.anyIntent
+import androidx.test.espresso.intent.matcher.IntentMatchers.isInternal
+import org.hamcrest.Matchers.not
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
@@ -51,9 +52,15 @@ class PermissionsActivityTest {
     @Before
     fun setUp() {
         Intents.init()
-        // Swallow every outbound Intent. Without this the first tap leaves
-        // our Activity and the rest of the suite taps at the Settings app.
-        Intents.intending(anyIntent())
+        // Swallow every intent that LEAVES the app. Without this the first
+        // tap lands in the Settings app and the rest of the suite taps at it.
+        //
+        // not(isInternal()) rather than anyIntent(): anyIntent() also stubs
+        // ActivityScenario's OWN launch of PermissionsActivity, so the
+        // Activity is never started and launch() blocks forever. That cost a
+        // run to find, and it fails as a hang rather than as an assertion,
+        // which is the worst way for a harness to be wrong.
+        Intents.intending(not(isInternal()))
             .respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, null))
     }
 
