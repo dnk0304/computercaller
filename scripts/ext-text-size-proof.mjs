@@ -962,8 +962,13 @@ try {
 
       check(`${size}: the helper span is allowed to wrap (white-space is not nowrap)`,
         m.helper && m.before !== 'nowrap', `helper ${m.before}, row ${m.rowWs}`);
+      // BOTH halves, and the second is why this arm can fail at all: a span
+      // that is clipped by its own `overflow` keeps a BOUNDED rect, so the
+      // right-edge test alone passes just as happily on text that is being cut
+      // off as on text that fits. Attempt 1 of this proof proved that — it went
+      // green on the very render whose notice was 193px wider than its box.
       check(`${size}: the repair notice stays inside the menu box`,
-        m.helper && m.planted.right <= m.menuInnerRight + 0.5,
+        m.helper && m.planted.right <= m.menuInnerRight + 0.5 && m.planted.scrollOver <= 0.5,
         m.helper
           ? `text right ${Math.round(m.planted.right)}px vs menu inner right ${Math.round(m.menuInnerRight)}px (menu ${Math.round(m.menuWidth)}px)`
           : 'helper span not found');

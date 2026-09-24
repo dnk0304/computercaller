@@ -523,7 +523,7 @@ const MIN_CHECKS_OVERRIDE = {
   // the :not() scoping of the header's nowrap rule. Delete any of them and the
   // suite prints a cheerful N/N with the "needs v58" guess back on screen.
   // Measured at the commit that adds it.
-  'relay:e2e-setting-availability.test.mjs': 107,
+  'relay:e2e-setting-availability.test.mjs': 109,
   // T-FT-WEB-SEAL-NO-HINT (RULE 30). tests/e2e-ft-hint-contract.test.mjs drives
   // the REAL web hint producer (lib/fileTransfer/frames.ts ftHintFor, called on
   // useE2e's seal path) into the REAL relay gate (ftOfferMetadata, sliced out of
@@ -798,7 +798,7 @@ const MIN_CHECKS_OVERRIDE = {
   // the CONTROL that forcing nowrap back on puts the SAME text outside the box.
   // The CONTROL is why the rest is evidence rather than a green that a missing
   // element would also produce. Never lower.
-  'harness:ext-text-size-proof': 208,
+  'harness:ext-text-size-proof': 224,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit

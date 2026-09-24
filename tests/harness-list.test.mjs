@@ -407,7 +407,7 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // and asserted here so the registration and the floor cannot separate.
     // T-EXT-TEXTS-OVERFLOW: 202 -> 208 (+6 = the 8-visible-character floor).
     // T-EXT-E2E-ROW-COPY-WRAP: 208 -> 208 (the account-menu wrap block).
-    ['harness:ext-text-size-proof', 208],
+    ['harness:ext-text-size-proof', 224],
     // E2E-P4.4: the §13.10.3 userId parity proof, registered as a node-only
     // gate step. Declared here for the same reason as the rest of this list.
     ['unit:ctx-parity', 14],
@@ -430,7 +430,7 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // T-EXT-E2E-ROW-STANDBY-COPY: the Encrypted-mode availability/copy vectors,
     // sweep-discovered by the tests/e2e-*.test.mjs rule and therefore carrying
     // only a floor.
-    ['relay:e2e-setting-availability.test.mjs', 107],
+    ['relay:e2e-setting-availability.test.mjs', 109],
   ]) {
     check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,
       gate.includes(`'${name}': ${floor},`));

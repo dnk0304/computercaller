@@ -288,6 +288,18 @@ check('css: the segmented control keeps its OWN nowrap',
   /\.cc-ext \.cc-menu \[role="menuitemradio"\] \{ white-space: nowrap; \}/.test(css));
 check('css: nothing re-declares a nowrap over the whole menu subtree',
   !/\.cc-menu \*\s*\{[^}]*white-space:\s*nowrap/.test(css));
+// The exclusion alone is NOT the fix, and the harness proved it: `white-space`
+// INHERITS, so .cc-menu still took nowrap down the parent chain from the
+// <header> and every helper span still computed nowrap (193/220/248px of the
+// repair notice hidden at Small/Medium/Large, gate-P5A run 2). The popover has
+// to reset the inherited value at its own root.
+check('css: and the popover RESETS the inherited nowrap at its own root',
+  /\.cc-ext \.cc-ext-header \.cc-menu \{ white-space: normal; \}/.test(css));
+// On .cc-menu alone, never on its descendants — a reset on `.cc-menu *` would
+// out-specify the identity line's own `truncate` and the segmented control's
+// rule, and take their deliberate nowrap away with it.
+check('css: the reset does NOT reach into the menu descendants',
+  !/\.cc-ext-header \.cc-menu \*\s*\{[^}]*white-space:\s*normal/.test(css));
 check('component: both helper spans can still wrap',
   (toggleSrc.match(/block break-words/g) || []).length === 2,
   String((toggleSrc.match(/block break-words/g) || []).length));
