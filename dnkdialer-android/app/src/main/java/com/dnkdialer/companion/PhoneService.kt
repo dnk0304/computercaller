@@ -3243,7 +3243,20 @@ class PhoneService : Service() {
      * its next tick instead of inheriting a missed edge.
      */
     fun currentE2eState(): E2eStatusCopy.State =
-        E2eStatusCopy.stateOf(encrypted = e2eSession != null, verified = e2eVerified)
+        E2eStatusCopy.stateOf(
+            encrypted = e2eSession != null,
+            // INC-0924 / Security F-1 (C1). `e2eVerified` is the KEY-PIN
+            // verdict alone, and against a TOFU-pinned peer it is already
+            // true when the ACCEPT leaves — one line before broadcastE2eState
+            // at the top of the SAS window. Reporting "Encrypted and verified"
+            // while our own SAS dialog is unanswered tells the user the check
+            // passed at the exact moment we are asking them to perform it,
+            // which is a tap-through prime — and a tap-through is the only
+            // thing that defeats this SAS. So the window is UNVERIFIED on both
+            // surfaces: the flag flips at the broadcast below the gate, and
+            // tearDownE2e clears both.
+            verified = e2eVerified && !e2eSasPending,
+        )
 
     /** Push [currentE2eState] to the foreground UI. Idempotent. */
     private fun broadcastE2eState() {
