@@ -6,6 +6,7 @@ import { Lock, LockOpen, ShieldAlert } from 'lucide-react';
 import { usePhone } from '@/hooks';
 import {
   encryptionIndicator,
+  type PeerSupport,
   type E2eErrorName,
   type E2eStateName,
   type EncryptionIndicator,
@@ -45,7 +46,11 @@ interface E2eLike {
   mode: 'off' | 'on';
   state: E2eStateName;
   error?: E2eErrorName;
-  peer: { supports: boolean };
+  peer: { supports: PeerSupport };
+  /** T-WEB-HEADER-VERIFIED-BEFORE-CONFIRM: the header may not claim the code
+   *  was confirmed before the user confirmed it, so the answer has to reach
+   *  the copy function. */
+  sas?: { confirmed: boolean };
 }
 
 function useIndicator(): { view: E2eLike; indicator: EncryptionIndicator } | null {

@@ -862,6 +862,131 @@ try {
   }
 
   {
+    // ── T-EXT-E2E-ROW-COPY-WRAP ────────────────────────────────────────────
+    // Dennis, 2026-09-24: the Encrypted mode row's helper text was cut at the
+    // menu edge — "Pairing again to turn this on. Your ph". The cause was not
+    // the copy's length and not the component: <AccountMenu> is a DESCENDANT of
+    // <header class="cc-ext-header">, and that header's AC-1 belt-and-braces
+    // rule set `white-space: nowrap` on `*`. The helper spans carried
+    // `break-words`, but `overflow-wrap: break-word` cannot break a line that
+    // `white-space: nowrap` forbids, so both lines ran one line wide and were
+    // clipped.
+    //
+    // WHY THE LONGEST STRING IS PLANTED RATHER THAN PROVOKED. The sentence that
+    // clipped is SETTING_REPAIR_NOTICE, and it renders only for `mode === 'on'`
+    // on an ACTIVE pair — a paired phone, which this harness has no way to
+    // produce on a bare page. So the cell reads the sentence out of the SHIPPED
+    // lib/encryptedModeCopy.ts (never retyped — a retyped assertion passes while
+    // the product says something else) and writes it into the row's OWN helper
+    // span, which is the element the product renders it into, inside the real
+    // menu, at the real width, under the real cascade. The only thing simulated
+    // is the pair.
+    //
+    // Three arms per size, and the third is the one that makes the first two
+    // mean anything: with nowrap forced back on, the same measurement must go
+    // RED. Without it, "the text fits" would pass just as happily on a span
+    // that was never found or never measured.
+    const NOTICE = (() => {
+      const src = fs.readFileSync(path.join(REPO, 'lib/encryptedModeCopy.ts'), 'utf8');
+      const m = src.match(/export const SETTING_REPAIR_NOTICE =\s*([\s\S]*?);\n/);
+      if (!m) return null;
+      // A single- or multi-part quoted literal, joined the way TS joins it.
+      // The literal carries no escapes (a copy string with one would fail the
+      // length arm below rather than pass wrong), so a plain quoted-run match
+      // is honest and keeps this extractor readable.
+      const parts = m[1].match(/'[^']*'/g) || [];
+      return parts.map((q) => q.slice(1, -1)).join('');
+    })();
+    check(
+      'the repair notice is read out of the shipped copy module',
+      typeof NOTICE === 'string' && NOTICE.length >= 60,
+      NOTICE === null ? 'not extracted' : `${NOTICE.length} chars: ${NOTICE}`,
+    );
+
+    for (const size of SIZES) {
+      const page = await browser.newPage();
+      await page.addInitScript(bootScript({ size }));
+      await page.setViewportSize({ width: 400, height: 900 });
+      await page.goto(`${BASE}/extension`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+      await settle(page);
+      await page.getByRole('button', { name: /Account menu/ }).click();
+      await page.waitForTimeout(350);
+
+      const row = page.locator('[data-cc-e2e-toggle="menuitem"]');
+      const found = (await row.count()) === 1;
+      check(`${size}: the account menu carries the Encrypted mode row`, found,
+        `${await row.count()} rows`);
+      if (!found) { await page.close(); continue; }
+
+      const m = await page.evaluate((notice) => {
+        const btn = document.querySelector('[data-cc-e2e-toggle="menuitem"]');
+        const menu = btn.closest('.cc-menu');
+        // The helper span the product renders the reason into. It is the block
+        // break-words span inside the row's text column — the same element the
+        // notice would occupy on a live pair.
+        const helper = btn.querySelector('span.block.break-words')
+          || btn.querySelector('span > span:last-child');
+        if (!helper) return { helper: false };
+        const before = getComputedStyle(helper).whiteSpace;
+        const rowWs = getComputedStyle(btn).whiteSpace;
+        const menuStyle = getComputedStyle(menu);
+        const menuInnerRight =
+          menu.getBoundingClientRect().right
+          - parseFloat(menuStyle.paddingRight)
+          - parseFloat(menuStyle.borderRightWidth);
+
+        const measure = () => {
+          const r = helper.getBoundingClientRect();
+          return {
+            right: r.right,
+            height: r.height,
+            lines: Math.round(r.height / parseFloat(getComputedStyle(helper).lineHeight)),
+            scrollOver: helper.scrollWidth - helper.clientWidth,
+          };
+        };
+        const original = helper.textContent;
+        helper.textContent = notice;
+        const planted = measure();
+        // CONTROL: put the defect back, on this element, at this width.
+        helper.style.whiteSpace = 'nowrap';
+        const withNowrap = measure();
+        helper.style.whiteSpace = '';
+        helper.textContent = original;
+        return {
+          helper: true, before, rowWs, menuInnerRight,
+          menuWidth: menu.getBoundingClientRect().width,
+          planted, withNowrap,
+        };
+      }, NOTICE);
+
+      check(`${size}: the helper span is allowed to wrap (white-space is not nowrap)`,
+        m.helper && m.before !== 'nowrap', `helper ${m.before}, row ${m.rowWs}`);
+      // BOTH halves, and the second is why this arm can fail at all: a span
+      // that is clipped by its own `overflow` keeps a BOUNDED rect, so the
+      // right-edge test alone passes just as happily on text that is being cut
+      // off as on text that fits. Attempt 1 of this proof proved that — it went
+      // green on the very render whose notice was 193px wider than its box.
+      check(`${size}: the repair notice stays inside the menu box`,
+        m.helper && m.planted.right <= m.menuInnerRight + 0.5 && m.planted.scrollOver <= 0.5,
+        m.helper
+          ? `text right ${Math.round(m.planted.right)}px vs menu inner right ${Math.round(m.menuInnerRight)}px (menu ${Math.round(m.menuWidth)}px)`
+          : 'helper span not found');
+      check(`${size}: and it wraps onto more than one line instead of being cut`,
+        m.helper && m.planted.lines >= 2 && m.planted.scrollOver <= 0.5,
+        m.helper ? `${m.planted.lines} line(s), ${Math.round(m.planted.scrollOver)}px of hidden overflow` : 'helper span not found');
+      check(`${size}: CONTROL — forcing nowrap back on puts the SAME text outside the menu`,
+        m.helper && (m.withNowrap.right > m.menuInnerRight + 1 || m.withNowrap.scrollOver > 1),
+        m.helper
+          ? `nowrap: right ${Math.round(m.withNowrap.right)}px vs ${Math.round(m.menuInnerRight)}px, ${Math.round(m.withNowrap.scrollOver)}px hidden`
+          : 'helper span not found');
+
+      await page.screenshot({ path: path.join(SHOTS, `ext-e2e-row-menu-${size}.png`) });
+      await page.close();
+    }
+  }
+
+  {
     // Per-account isolation. A shared browser profile is the normal case for a
     // Chrome extension; one person's Large must not follow the next person in.
     const page = await browser.newPage();

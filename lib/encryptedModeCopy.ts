@@ -56,6 +56,26 @@ export const ABORT_SETUP_FAILED = "Couldn't set up encrypted pairing — try aga
 /** P4(e) C-2 fail-closed. Verbatim; Android ships the same. */
 export const ABORT_KEY_MISMATCH = "Couldn't verify this device — try again";
 
+/**
+ * ── WHY `supports` IS A TRI-STATE AND NOT A BOOLEAN ─────────────────────────
+ *
+ * `true`  — the phone ANSWERED and can do this (a sealed accept carrying a
+ *           usable e2e block; hooks/useE2e.ts publishes it on that path only).
+ * `false` — the phone ANSWERED and cannot (PAIRING_ACTIVE with no usable block
+ *           on a pair that does not seal). This is the ONLY state that may be
+ *           reported to the user as a version gap.
+ * `'unknown'` — nobody has answered yet. The seeded value (E2E_VIEW_INITIAL)
+ *           and the value a torn-down pair returns to (viewAfterPairEnded).
+ *
+ * As a boolean the seed had to be `false`, and `false` means "the phone told us
+ * no". So every standby session — phone in the lobby, no pair yet — rendered
+ * "Your phone app needs v58 or newer" about a phone that had said nothing at
+ * all. That is the defect T-EXT-E2E-ROW-STANDBY-COPY names, and the reason the
+ * fix is a type change rather than a copy change: the boolean had no room to
+ * hold the difference between a `no` and a silence.
+ */
+export type PeerSupport = true | false | 'unknown';
+
 // ── the setting ─────────────────────────────────────────────────────────────
 
 export const SETTING_LABEL = 'Encrypted mode';
@@ -77,7 +97,19 @@ export const SETTING_BLOCKED_REASONS = {
    *  connected has no evidence either way about the phone's version, and
    *  "needs v58" would be a guess presented as a fact. */
   noPhone: 'Connect your phone first',
-  /** peer.supports === false — the phone answered and cannot do this. */
+  /**
+   * T-EXT-E2E-ROW-STANDBY-COPY. The phone is in the lobby but has NOT answered
+   * about capability yet — `peer.supports === 'unknown'`, which is the seeded
+   * value from E2E_VIEW_INITIAL / viewAfterPairEnded and is where every standby
+   * session sits. The rule the `noPhone` comment above states applies here word
+   * for word: with no capability answer there is no evidence either way about
+   * the phone's version, so `peerTooOld` would be a guess presented as a fact.
+   * It shipped as exactly that guess because `supports` was a BOOLEAN and the
+   * seed had to pick a side.
+   */
+  peerUnknown: 'Connect your phone to change this',
+  /** peer.supports === false — the phone ANSWERED and cannot do this. Never
+   *  reachable from the seed; see {@link PeerSupport}. */
   peerTooOld: 'Your phone app needs v58 or newer',
   /**
    * TOFU key change (§13.8 / M-C). The benign cause is named first on purpose:
@@ -107,7 +139,7 @@ export interface SettingAvailability {
  * {@link encryptionIndicator} for the other half of that rule).
  */
 export function settingAvailability(
-  peer: { supports: boolean },
+  peer: { supports: PeerSupport },
   phonePresent: boolean,
   error?: E2eErrorName,
 ): SettingAvailability {
@@ -117,7 +149,12 @@ export function settingAvailability(
   if (!phonePresent) {
     return { enabled: false, reason: SETTING_BLOCKED_REASONS.noPhone, reasonKey: 'noPhone' };
   }
-  if (!peer.supports) {
+  // BEFORE peerTooOld, and the order is the whole fix: 'unknown' used to fall
+  // into the `!peer.supports` branch below and be rendered as a version verdict.
+  if (peer.supports === 'unknown') {
+    return { enabled: false, reason: SETTING_BLOCKED_REASONS.peerUnknown, reasonKey: 'peerUnknown' };
+  }
+  if (peer.supports === false) {
     return { enabled: false, reason: SETTING_BLOCKED_REASONS.peerTooOld, reasonKey: 'peerTooOld' };
   }
   return { enabled: true, reason: null, reasonKey: null };
@@ -190,6 +227,19 @@ export interface EncryptionIndicator {
 }
 
 /** m-G: the fix belongs to whichever end is behind, and the copy says which. */
+/**
+ * T-WEB-HEADER-VERIFIED-BEFORE-CONFIRM. The sentence for a pair that is sealed
+ * and key-pinned but whose SAS the user has not answered yet. It reuses the
+ * EXISTING `encrypted-unverified` label rather than inventing a third word,
+ * because the user-visible truth is identical in both cases — the traffic is
+ * encrypted, nobody confirmed the code — and a second vocabulary for one truth
+ * is how two surfaces start disagreeing. Only the detail differs, and it
+ * differs because the next action does: here the code is ON SCREEN RIGHT NOW.
+ */
+export const ENCRYPTED_PENDING_LABEL = 'Encrypted, unverified';
+export const ENCRYPTED_PENDING_DETAIL =
+  'Encrypted. Confirm the code on both screens to finish verifying it.';
+
 export const UPDATE_PHONE = 'Update your phone app';
 export const UPDATE_COMPUTER = 'Update this computer';
 
@@ -220,10 +270,42 @@ export const PAIRING_UNAVAILABLE_DETAIL =
 export function encryptionIndicator(view: {
   state: E2eStateName;
   error?: E2eErrorName;
-  peer: { supports: boolean };
+  peer: { supports: PeerSupport };
+  /**
+   * T-WEB-HEADER-VERIFIED-BEFORE-CONFIRM. OPTIONAL, and read for exactly one
+   * purpose — see the `encrypted-verified` branch. A caller that omits it gets
+   * the pre-existing behaviour, which is why every vector row that does not
+   * care about the SAS answer is unchanged.
+   */
+  sas?: { confirmed: boolean };
 }): EncryptionIndicator {
   switch (view.state) {
     case 'encrypted-verified':
+      // T-WEB-HEADER-VERIFIED-BEFORE-CONFIRM (web twin of Security C1).
+      //
+      // `state: 'encrypted-verified'` is set by decideAccept the moment the
+      // KEY pins and the effective mode is ON — i.e. at accept time, BEFORE
+      // the user has looked at anything. The SAS dialog is still open at that
+      // instant (`sasIsBlocking` is true for exactly this view), and the
+      // header was already saying "verified with the code you confirmed" about
+      // a code nobody had confirmed. That sentence is a VERIFICATION CLAIM, and
+      // the one thing a verification claim may never do is arrive before the
+      // verification. A user who reads it and then dismisses the dialog has
+      // been told the product checked something it did not check.
+      //
+      // The state name is not the bug — `verified` there means KEY-PINNED-AND-
+      // SAS-EXPECTED, which is what decideAccept documents. The bug was the
+      // copy reading it as the human answer. So the branch splits on the human
+      // answer, which lives on `sas.confirmed` and nowhere else.
+      if (view.sas && !view.sas.confirmed) {
+        return {
+          label: ENCRYPTED_PENDING_LABEL,
+          detail: ENCRYPTED_PENDING_DETAIL,
+          tone: 'encrypted',
+          lock: true,
+          banner: false,
+        };
+      }
       return {
         label: 'Encrypted',
         detail: 'Encrypted and verified with the code you confirmed.',

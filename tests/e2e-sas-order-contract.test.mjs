@@ -141,7 +141,11 @@ const row = (id) => {
   eq('the mode rides along so the badge can still say what was asked for',
     ended.mode, 'on');
   eq('the pair-scoped digits are gone', ended.sas.digits, null);
-  eq('and the peer no longer supports (there is no peer)', ended.peer.supports, false);
+  // T-EXT-E2E-ROW-STANDBY-COPY re-pin: `false` -> `'unknown'`, same claim. With
+  // no peer there is no capability ANSWER either, and `false` is the wire's word
+  // for an answer of no — see PeerSupport in lib/encryptedModeCopy.ts.
+  eq('and the peer capability is unknown again (there is no peer)',
+    ended.peer.supports, 'unknown');
   eq('peer.kind is a property of THIS browser and survives', ended.peer.kind, 'extension');
 
   // The control: the ordinary teardown must NOT invent this error, or the

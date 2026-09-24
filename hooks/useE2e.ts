@@ -801,7 +801,12 @@ export function useE2e(emailProp?: string | null): E2eApi {
     if (decision.mode === 'off' || !block || !key) {
       setView((v) => ({
         ...v, mode: 'off', effective: 'off', state: 'unencrypted', error: undefined,
-        peer: { supports: false, kind: swRef.current.status },
+        // `false`, not `'unknown'`: this is the ONE place the phone has actually
+        // ANSWERED about capability and the answer is no — PAIRING_ACTIVE
+        // arrived and carried no usable e2e block on a pair that does not seal.
+        // Everything else (the seed, a teardown) says `'unknown'`; see
+        // PeerSupport in lib/encryptedModeCopy.ts.
+        peer: { supports: false as const, kind: swRef.current.status },
       }));
       return false;
     }

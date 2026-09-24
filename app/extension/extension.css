@@ -326,9 +326,39 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 /* ---- Header: one 40px row that must never wrap (AC-1) ---- */
 /* Belt and braces on the AC-1 pass condition: nothing in the header row is
-   allowed to wrap, whatever a future edit puts in it. */
+   allowed to wrap, whatever a future edit puts in it.
+
+   T-EXT-E2E-ROW-COPY-WRAP — WHY THE `:not()` IS HERE, AND IT IS THE WHOLE FIX.
+   <AccountMenu> is a DESCENDANT of <header class="cc-ext-header"> (it is
+   `absolute right-0 top-full`, positioned out of the row but never out of the
+   tree), so the `*` above reached every node inside the popover. The Encrypted
+   mode row's helper spans already carried `break-words`, but `break-words` is
+   `overflow-wrap: break-word` and overflow-wrap cannot break ANY line while
+   `white-space: nowrap` forbids the break — so both helper lines ran one line
+   wide and were clipped at the menu edge ("...Your ph"). Dennis, 2026-09-24.
+   The menu is not the 40px row and AC-1 says nothing about it; the one segment
+   inside it that genuinely must not wrap declares that for itself at the foot
+   of this file (`[role="menuitemradio"]`), and the identity line keeps its own
+   `truncate`, which brings its own nowrap. Scoping this rule off the popover
+   therefore costs AC-1 nothing and is a single selector change. */
 .cc-ext .cc-ext-header,
-.cc-ext .cc-ext-header * { white-space: nowrap; }
+.cc-ext .cc-ext-header *:not(.cc-menu, .cc-menu *) { white-space: nowrap; }
+/* AND THE SECOND HALF, WHICH THE FIRST RUN OF THE PROOF FOUND AND I HAD MISSED:
+   `white-space` is an INHERITED property. Excluding the popover from the `*`
+   rule above stops it being TOLD `nowrap`, but the <header> itself is still
+   told `nowrap` by the first selector, and .cc-menu inherits that from its
+   parent chain — so every span inside the menu still computed `nowrap` and the
+   helper text still ran one line wide (measured: 193/220/248px of the repair
+   notice hidden at Small/Medium/Large). The popover therefore has to RESET the
+   inherited value at its own root, which is the one element the exclusion
+   above leaves free to be styled.
+
+   This is on `.cc-menu` alone and not on its descendants, so it arrives by
+   inheritance and loses to anything inside the menu that declares its own
+   value: the identity line's Tailwind `truncate` and the segmented control's
+   `[role="menuitemradio"]` rule both keep their nowrap. AC-1 is untouched —
+   the menu is a floating layer, not the 40px row. */
+.cc-ext .cc-ext-header .cc-menu { white-space: normal; }
 
 /* ---- Tabs: 26px instead of 44px. This is the one place the density pass
        genuinely lowers a hit target, and it is defensible ONLY because this
