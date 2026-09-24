@@ -11,6 +11,7 @@ import {
   SETTING_REPAIR_NOTICE,
   settingAvailability,
   type E2eErrorName,
+  type PeerSupport,
 } from '@/lib/encryptedModeCopy';
 
 /**
@@ -47,13 +48,16 @@ interface EncryptedModeToggleProps {
 
 export function EncryptedModeToggle({ variant = 'row', email = null }: EncryptedModeToggleProps) {
   const phone = usePhone() as {
-    e2e?: { mode: 'off' | 'on'; error?: E2eErrorName; peer: { supports: boolean } };
+    e2e?: { mode: 'off' | 'on'; error?: E2eErrorName; peer: { supports: PeerSupport } };
     phonePresentInLobby?: boolean;
     lobbyState?: string;
   };
 
   const e2e = phone?.e2e;
-  const peer = e2e?.peer ?? { supports: false };
+  // `'unknown'`, not `false`: no view at all means nobody has answered, and
+  // `false` is reserved for a phone that answered no. This default used to be
+  // the second source of the standby "needs v58" claim.
+  const peer: { supports: PeerSupport } = e2e?.peer ?? { supports: 'unknown' };
   // The LOBBY's fact about the phone, read from the lobby's own state. The
   // encryption state machine is never asked whether a phone is connected — see
   // the independence rule in lib/encryptedModeCopy.ts.

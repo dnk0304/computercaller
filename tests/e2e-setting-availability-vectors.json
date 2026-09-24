@@ -1,0 +1,162 @@
+{
+  "_doc": [
+    "tests/e2e-setting-availability-vectors.json — T-EXT-E2E-ROW-STANDBY-COPY,",
+    "T-EXT-E2E-ROW-COPY-WRAP coherence, T-WEB-HEADER-VERIFIED-BEFORE-CONFIRM.",
+    "",
+    "settingAvailability() decides whether the Encrypted mode switch is operable",
+    "and, when it is not, WHICH sentence the user is told. It had no test of any",
+    "kind: the reason Dennis's standby session asserted 'Your phone app needs v58",
+    "or newer' about a phone that had never said anything is that peer.supports",
+    "was a BOOLEAN whose seed value was false, and false is the wire's word for",
+    "'the phone answered no'. Nothing pinned the difference, so nothing noticed.",
+    "",
+    "TWO SURFACES, ONE DECISION. There is no Kotlin twin for this function — the",
+    "phone has no Encrypted-mode availability row — so RULE 30's 'both",
+    "implementations in one harness' is satisfied by the two WEB surfaces that do",
+    "render it: components/EncryptedModeToggle.tsx variant='row' (/app Settings)",
+    "and variant='menuitem' (the extension account menu). The suite reads that",
+    "component's SHIPPED source and proves both variants publish the same",
+    "reasonKey through data-cc-e2e-reason, so a surface that starts deciding for",
+    "itself cannot pass.",
+    "",
+    "Consumed by tests/e2e-setting-availability.test.mjs."
+  ],
+
+  "availability": [
+    {
+      "name": "standby-unknown",
+      "why": "THE BUG. Phone in the lobby, no pair yet, capability never answered. Pre-fix this rendered peerTooOld.",
+      "peerSupports": "unknown",
+      "phonePresent": true,
+      "expect": { "enabled": false, "reasonKey": "peerUnknown" }
+    },
+    {
+      "name": "connected-unknown-pending",
+      "why": "lobbyState active but the accept has not published a capability answer yet. Same silence, same sentence.",
+      "peerSupports": "unknown",
+      "phonePresent": true,
+      "expect": { "enabled": false, "reasonKey": "peerUnknown" }
+    },
+    {
+      "name": "connected-supports-false",
+      "why": "The phone ANSWERED no — PAIRING_ACTIVE with no usable e2e block. The ONLY row allowed to claim a version gap.",
+      "peerSupports": false,
+      "phonePresent": true,
+      "expect": { "enabled": false, "reasonKey": "peerTooOld" }
+    },
+    {
+      "name": "connected-supports-true",
+      "why": "A sealed pair with a usable block. The switch is operable and says nothing.",
+      "peerSupports": true,
+      "phonePresent": true,
+      "expect": { "enabled": true, "reasonKey": null }
+    },
+    {
+      "name": "key-mismatch",
+      "why": "TOFU key change outranks everything, including a phone that can do this.",
+      "peerSupports": true,
+      "phonePresent": true,
+      "error": "e2e-key-mismatch",
+      "expect": { "enabled": false, "reasonKey": "keyChanged" }
+    },
+    {
+      "name": "key-mismatch-outranks-no-phone",
+      "why": "CONTROL on the ORDER: keyChanged is checked before noPhone, so a mismatch survives the teardown that follows it.",
+      "peerSupports": "unknown",
+      "phonePresent": false,
+      "error": "e2e-key-mismatch",
+      "expect": { "enabled": false, "reasonKey": "keyChanged" }
+    },
+    {
+      "name": "no-phone",
+      "why": "Nothing in the lobby. noPhone outranks the capability branches — unchanged by this lane.",
+      "peerSupports": "unknown",
+      "phonePresent": false,
+      "expect": { "enabled": false, "reasonKey": "noPhone" }
+    },
+    {
+      "name": "no-phone-outranks-supports-false",
+      "why": "CONTROL on the ORDER: a phone that answered no and then left is still 'connect your phone first'.",
+      "peerSupports": false,
+      "phonePresent": false,
+      "expect": { "enabled": false, "reasonKey": "noPhone" }
+    }
+  ],
+
+  "coherence": [
+    {
+      "name": "local-on-effective-off-active-pair",
+      "why": "Screenshot 1. mode is the LOCAL pref (§12.2), so the switch shows ON and the repair notice explains why nothing changed on the latched pair.",
+      "mode": "on",
+      "effective": "off",
+      "lobbyState": "active",
+      "peerSupports": true,
+      "expect": { "switchChecked": true, "repairNotice": true, "enabled": true }
+    },
+    {
+      "name": "local-on-effective-on",
+      "why": "A pair that is already encrypting at the user's request. Switch ON, and NO notice: there is nothing to re-pair for.",
+      "mode": "on",
+      "effective": "on",
+      "lobbyState": "idle",
+      "peerSupports": true,
+      "expect": { "switchChecked": true, "repairNotice": false, "enabled": true }
+    },
+    {
+      "name": "standby-switch-reflects-pref-but-disabled",
+      "why": "Standby. The switch still mirrors the LOCAL pref (it is a pref, not a status light) and is inoperable with peerUnknown.",
+      "mode": "on",
+      "effective": "off",
+      "lobbyState": "lobby",
+      "peerSupports": "unknown",
+      "expect": { "switchChecked": true, "repairNotice": false, "enabled": false, "reasonKey": "peerUnknown" }
+    }
+  ],
+
+  "indicator": [
+    {
+      "name": "verified-before-confirm",
+      "why": "T-WEB-HEADER-VERIFIED-BEFORE-CONFIRM. The SAS dialog is OPEN. The header may not claim a code was confirmed before the user confirmed it.",
+      "state": "encrypted-verified",
+      "peerSupports": true,
+      "sas": { "confirmed": false },
+      "expect": { "label": "Encrypted, unverified", "detailMustNotInclude": "you confirmed", "lock": true, "banner": false }
+    },
+    {
+      "name": "verified-after-confirm",
+      "why": "The user answered Matches. NOW the claim is true.",
+      "state": "encrypted-verified",
+      "peerSupports": true,
+      "sas": { "confirmed": true },
+      "expect": { "label": "Encrypted", "detailMustInclude": "you confirmed", "lock": true, "banner": false }
+    },
+    {
+      "name": "verified-no-sas-field",
+      "why": "CONTROL: a caller that passes no sas object keeps the pre-lane behaviour exactly. Every existing vector row depends on this.",
+      "state": "encrypted-verified",
+      "peerSupports": true,
+      "expect": { "label": "Encrypted", "detailMustInclude": "you confirmed", "lock": true, "banner": false }
+    },
+    {
+      "name": "unencrypted-peer-answered-no",
+      "why": "supports === false is an ANSWER, so naming the phone as the end that must update is honest here.",
+      "state": "unencrypted",
+      "peerSupports": false,
+      "expect": { "label": "Not encrypted", "detailMustInclude": "Update your phone app", "lock": false, "banner": false }
+    },
+    {
+      "name": "unencrypted-peer-unknown",
+      "why": "Nobody answered, so the detail may NOT name the phone as the end at fault — the same rule as peerUnknown, on the other surface.",
+      "state": "unencrypted",
+      "peerSupports": "unknown",
+      "expect": { "label": "Not encrypted", "detailMustNotInclude": "Update your phone app", "lock": false, "banner": false }
+    },
+    {
+      "name": "unencrypted-peer-supports",
+      "why": "Both ends can, neither asked. Unchanged by this lane.",
+      "state": "unencrypted",
+      "peerSupports": true,
+      "expect": { "label": "Not encrypted", "detailMustNotInclude": "Update your phone app", "lock": false, "banner": false }
+    }
+  ]
+}

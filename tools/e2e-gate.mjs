@@ -509,6 +509,21 @@ const MIN_CHECKS_OVERRIDE = {
   // adds it: 79 assertions (8 rows x per-row checks + the named row-4 block
   // with its keyed-on-the-sealing-flag control).
   'relay:e2e-sas-blocking-contract.test.mjs': 79,
+  // T-EXT-E2E-ROW-STANDBY-COPY / T-WEB-HEADER-VERIFIED-BEFORE-CONFIRM.
+  // tests/e2e-setting-availability.test.mjs drives the REAL settingAvailability,
+  // the REAL encryptionIndicator, the SHIPPED view seeds from hooks/phoneE2e.ts
+  // and slices from components/EncryptedModeToggle.tsx over
+  // tests/e2e-setting-availability-vectors.json. Auto-discovered by the
+  // tests/e2e-*.test.mjs sweep, so what it needs here is the FLOOR.
+  //
+  // It needs one badly, and for the same reason as the copy scan: most of its
+  // value is in rows and CONTROLS that can be DELETED rather than broken — the
+  // standby-unknown row (the shipped defect), the two ordering controls, the
+  // three seed arms, the sliced-predicate controls, and the css arm that pins
+  // the :not() scoping of the header's nowrap rule. Delete any of them and the
+  // suite prints a cheerful N/N with the "needs v58" guess back on screen.
+  // Measured at the commit that adds it.
+  'relay:e2e-setting-availability.test.mjs': 106,
   // T-FT-WEB-SEAL-NO-HINT (RULE 30). tests/e2e-ft-hint-contract.test.mjs drives
   // the REAL web hint producer (lib/fileTransfer/frames.ts ftHintFor, called on
   // useE2e's seal path) into the REAL relay gate (ftOfferMetadata, sliced out of
@@ -707,7 +722,9 @@ const MIN_CHECKS_OVERRIDE = {
   // gains relay:e2e-ft-hint-contract.test.mjs (156).
   // INC-0924 re-measure 187 -> 188: the frozen MIN_CHECKS pin list gains
   // relay:e2e-sas-order-contract.test.mjs (54).
-  'unit:harness-list': 188,
+  // T-EXT-E2E-ROW-STANDBY-COPY re-measure 188 -> 189: the frozen MIN_CHECKS pin
+  // list gains relay:e2e-setting-availability.test.mjs (106).
+  'unit:harness-list': 189,
   // GATE-TOOLING-1 (4). The phase whitelist suite had NO floor for its whole
   // life: a step whose entire job is to prove a phase cannot silently vanish
   // could itself have had half its arms deleted under a cheerful N/N. Measured
@@ -774,7 +791,14 @@ const MIN_CHECKS_OVERRIDE = {
   // arm was REPLACED, not removed — same six combinations, a bounded-cost rule
   // instead of a zero-cost one, because the zero it measured was produced by
   // the 21px overflow this lane closes. Never lower.
-  'harness:ext-text-size-proof': 208,
+  // T-EXT-E2E-ROW-COPY-WRAP re-measure 208 -> __TEXTSIZE__. The new arms are the
+  // account-menu block: the shipped-copy extraction, and per size the Encrypted
+  // mode row being present, its helper span not being `nowrap`, the repair
+  // notice staying inside the menu box, it wrapping to more than one line, and
+  // the CONTROL that forcing nowrap back on puts the SAME text outside the box.
+  // The CONTROL is why the rest is evidence rather than a green that a missing
+  // element would also produce. Never lower.
+  'harness:ext-text-size-proof': __TEXTSIZE__,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit

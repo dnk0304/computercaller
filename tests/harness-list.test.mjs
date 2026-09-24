@@ -399,13 +399,15 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // GATE-TOOLING-1 (3): 165 -> 177 -> 185 (GATE-TOOLING-1 (4): ANDROID-FIX) with ext-text-size-proof's arms.
     // T-FT-WEB-SEAL-NO-HINT: 186 -> 187 with the FT hint contract's pin.
     // INC-0924: 187 -> 188 with the SAS ordering contract's pin.
-    ['unit:harness-list', 188],
+    // T-EXT-E2E-ROW-STANDBY-COPY: 188 -> 189 with the availability contract's pin.
+    ['unit:harness-list', 189],
     // GATE-TOOLING-1 (4). The phase whitelist suite's first floor.
     ['unit:gate-phase-whitelist', 79],
     // GATE-TOOLING-1 (3). The text-size proof's own floor, declared in the gate
     // and asserted here so the registration and the floor cannot separate.
     // T-EXT-TEXTS-OVERFLOW: 202 -> 208 (+6 = the 8-visible-character floor).
-    ['harness:ext-text-size-proof', 208],
+    // T-EXT-E2E-ROW-COPY-WRAP: 208 -> __TEXTSIZE__ (the account-menu wrap block).
+    ['harness:ext-text-size-proof', __TEXTSIZE__],
     // E2E-P4.4: the §13.10.3 userId parity proof, registered as a node-only
     // gate step. Declared here for the same reason as the rest of this list.
     ['unit:ctx-parity', 14],
@@ -425,6 +427,10 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // INC-0924: the SAS ORDERING contract (RULE 30), sweep-discovered by the
     // tests/e2e-*.test.mjs rule and therefore carrying only a floor.
     ['relay:e2e-sas-order-contract.test.mjs', 54],
+    // T-EXT-E2E-ROW-STANDBY-COPY: the Encrypted-mode availability/copy vectors,
+    // sweep-discovered by the tests/e2e-*.test.mjs rule and therefore carrying
+    // only a floor.
+    ['relay:e2e-setting-availability.test.mjs', 106],
   ]) {
     check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,
       gate.includes(`'${name}': ${floor},`));

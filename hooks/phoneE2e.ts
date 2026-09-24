@@ -30,6 +30,7 @@
  */
 
 import type { WebDeviceKey } from '@/lib/e2e/webKey';
+import type { PeerSupport } from '@/lib/encryptedModeCopy';
 
 /** What the user chose on THIS device. Per-device by design; never read back from the server. */
 export type LocalMode = 'off' | 'on';
@@ -818,7 +819,12 @@ export interface E2eView {
   effective: 'off' | 'on';
   state: E2eState;
   error?: E2eError;
-  peer: { supports: boolean; kind: SwKeyStatus };
+  /**
+   * T-EXT-E2E-ROW-STANDBY-COPY. Tri-state, NOT a boolean — see
+   * {@link PeerSupport} in lib/encryptedModeCopy.ts for why. `'unknown'` is the
+   * seed and the post-teardown value; `false` means the phone answered no.
+   */
+  peer: { supports: PeerSupport; kind: SwKeyStatus };
   sas: {
     digits: string | null;
     confirmed: boolean;
@@ -896,7 +902,7 @@ export const E2E_VIEW_INITIAL: E2eView = {
   mode: 'off',
   effective: 'off',
   state: 'unencrypted',
-  peer: { supports: false, kind: 'unknown' },
+  peer: { supports: 'unknown', kind: 'unknown' },
   sas: { digits: null, confirmed: false, coverage: null },
   debug: {
     drops: 0,
@@ -961,10 +967,10 @@ export function viewAfterPairEnded(v: E2eView): E2eView {
       effective: v.effective,
       state: 'error',
       error: v.error,
-      peer: { supports: false, kind: v.peer.kind },
+      peer: { supports: 'unknown', kind: v.peer.kind },
     };
   }
-  return { ...E2E_VIEW_INITIAL, peer: { supports: false, kind: v.peer.kind } };
+  return { ...E2E_VIEW_INITIAL, peer: { supports: 'unknown', kind: v.peer.kind } };
 }
 
 /**
@@ -993,7 +999,7 @@ export function viewAfterPairEndedDuringSas(v: E2eView): E2eView {
     effective: v.effective,
     state: 'error',
     error: 'e2e-sas-unconfirmed',
-    peer: { supports: false, kind: v.peer.kind },
+    peer: { supports: 'unknown', kind: v.peer.kind },
   };
 }
 

@@ -326,9 +326,23 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 /* ---- Header: one 40px row that must never wrap (AC-1) ---- */
 /* Belt and braces on the AC-1 pass condition: nothing in the header row is
-   allowed to wrap, whatever a future edit puts in it. */
+   allowed to wrap, whatever a future edit puts in it.
+
+   T-EXT-E2E-ROW-COPY-WRAP — WHY THE `:not()` IS HERE, AND IT IS THE WHOLE FIX.
+   <AccountMenu> is a DESCENDANT of <header class="cc-ext-header"> (it is
+   `absolute right-0 top-full`, positioned out of the row but never out of the
+   tree), so the `*` above reached every node inside the popover. The Encrypted
+   mode row's helper spans already carried `break-words`, but `break-words` is
+   `overflow-wrap: break-word` and overflow-wrap cannot break ANY line while
+   `white-space: nowrap` forbids the break — so both helper lines ran one line
+   wide and were clipped at the menu edge ("...Your ph"). Dennis, 2026-09-24.
+   The menu is not the 40px row and AC-1 says nothing about it; the one segment
+   inside it that genuinely must not wrap declares that for itself at the foot
+   of this file (`[role="menuitemradio"]`), and the identity line keeps its own
+   `truncate`, which brings its own nowrap. Scoping this rule off the popover
+   therefore costs AC-1 nothing and is a single selector change. */
 .cc-ext .cc-ext-header,
-.cc-ext .cc-ext-header * { white-space: nowrap; }
+.cc-ext .cc-ext-header *:not(.cc-menu, .cc-menu *) { white-space: nowrap; }
 
 /* ---- Tabs: 26px instead of 44px. This is the one place the density pass
        genuinely lowers a hit target, and it is defensible ONLY because this
