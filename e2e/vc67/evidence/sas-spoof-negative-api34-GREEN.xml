@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<testsuite name="com.dnkdialer.companion.E2eSasSpoofNegativeTest" tests="2" failures="0" errors="0" skipped="0" time="13.458" timestamp="2026-09-24T22:45:24" hostname="localhost">
+  <properties>
+    <property name="device" value="bat3_api34(AVD) - 14" />
+    <property name="flavor" value="" />
+    <property name="project" value=":app" />
+  </properties>
+  <testcase name="spoof_is_refused_but_our_own_broadcast_is_accepted" classname="com.dnkdialer.companion.E2eSasSpoofNegativeTest" time="5.97" />
+  <testcase name="a_broadcast_from_another_uid_cannot_close_the_sas_gate" classname="com.dnkdialer.companion.E2eSasSpoofNegativeTest" time="5.953" />
+</testsuite>

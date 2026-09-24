@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<testsuite name="com.dnkdialer.companion.E2eSasSpoofNegativeTest" tests="2" failures="2" errors="0" skipped="0" time="1.724" timestamp="2026-09-24T22:46:41" hostname="localhost">
+  <properties>
+    <property name="device" value="bat3_api34(AVD) - 14" />
+    <property name="flavor" value="" />
+    <property name="project" value=":app" />
+  </properties>
+  <testcase name="spoof_is_refused_but_our_own_broadcast_is_accepted" classname="com.dnkdialer.companion.E2eSasSpoofNegativeTest" time="0.063">
+    <failure>java.lang.AssertionError: same intent from uid 2000 reached the receiver — it is EXPORTED (F-3) expected:&lt;TIMED_OUT&gt; but was:&lt;MATCHED&gt;
+at org.junit.Assert.fail(Assert.java:89)
+at org.junit.Assert.failNotEquals(Assert.java:835)
+at org.junit.Assert.assertEquals(Assert.java:120)
+at com.dnkdialer.companion.E2eSasSpoofNegativeTest.spoof_is_refused_but_our_own_broadcast_is_accepted(E2eSasSpoofNegativeTest.kt:138)
+</failure>
+  </testcase>
+  <testcase name="a_broadcast_from_another_uid_cannot_close_the_sas_gate" classname="com.dnkdialer.companion.E2eSasSpoofNegativeTest" time="0.012">
+    <failure>java.lang.AssertionError: a broadcast from uid 2000 approved the SAS — the receiver is EXPORTED (F-3) expected:&lt;TIMED_OUT&gt; but was:&lt;MATCHED&gt;
+at org.junit.Assert.fail(Assert.java:89)
+at org.junit.Assert.failNotEquals(Assert.java:835)
+at org.junit.Assert.assertEquals(Assert.java:120)
+at com.dnkdialer.companion.E2eSasSpoofNegativeTest.a_broadcast_from_another_uid_cannot_close_the_sas_gate(E2eSasSpoofNegativeTest.kt:111)
+</failure>
+  </testcase>
+</testsuite>

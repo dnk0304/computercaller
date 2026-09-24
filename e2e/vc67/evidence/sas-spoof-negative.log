@@ -1,0 +1,88 @@
+SAS SPOOF NEGATIVE — vc67 AMENDMENT 1, Security F-3 / C1
+========================================================
+Lane   : forge/vc67-sas-latch, code tip 7fe4928
+Device : bat3_api34 (AVD, Android 14 / API 34), emulator-5554, one emulator on the box
+Test   : com.dnkdialer.companion.E2eSasSpoofNegativeTest (app/src/androidTest)
+When   : 2026-09-24T22:45Z (green) / 22:48Z (planted control)
+Runner : gradlew.bat :app:connectedDebugAndroidTest
+         -Pandroid.testInstrumentationRunnerArguments.class=com.dnkdialer.companion.E2eSasSpoofNegativeTest
+
+THE ATTACK BEING REPRODUCED
+---------------------------
+E2eSasGate registers the receiver that carries ACTION_E2E_SAS_RESULT. If that
+receiver is EXPORTED, any other app on the device can broadcast
+
+    am broadcast -a com.dnkdialer.companion.E2E_SAS_RESULT \
+                 -p com.dnkdialer.companion \
+                 --es pairingId <id> --ez sasMatched true
+
+and APPROVE THE SAS on the user's behalf — the whole man-in-the-middle defence
+defeated without the digits ever being compared. On minSdk 26 / API 26-32 a
+bare registerReceiver(receiver, filter) for an implicit action is exactly that.
+
+The broadcast above is issued through UiAutomation.executeShellCommand, so its
+sender is the SHELL user (uid 2000): a genuinely external sender holding
+neither our package identity nor the signature permission
+com.dnkdialer.companion.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION.
+
+RESULT — FIXED TREE (7fe4928)                                            PASS
+-----------------------------------------------------------------------------
+  tests="2" failures="0" errors="0" skipped="0" time=13.458s
+    spoof_is_refused_but_our_own_broadcast_is_accepted            PASSED
+    a_broadcast_from_another_uid_cannot_close_the_sas_gate        PASSED
+  XML: e2e/vc67/evidence/sas-spoof-negative-api34-GREEN.xml
+
+  Both cells require the gate to reach TIMED_OUT after the uid-2000 broadcast:
+  the intent is not delivered at all, so the gate can only hit its deadline.
+
+  The first cell carries the POSITIVE CONTROL. Before spoofing, it sends the
+  IDENTICAL intent IN-PROCESS and requires the gate to close with MATCHED. A
+  green built on absence alone would also be produced by a mistyped action, a
+  wrong extra name, or a gate that never armed; the control is what makes the
+  negative evidence about the export flag rather than about the intent.
+
+RESULT — PLANTED EXPORTED RECEIVER                                       RED
+-----------------------------------------------------------------------------
+  Plant: E2eSasGate.kt:317
+    -  ContextCompat.registerReceiver(ctx, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+    +  @Suppress("UnspecifiedRegisterReceiverFlag")
+    +  ctx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+
+  tests="2" failures="2"
+    spoof_is_refused_but_our_own_broadcast_is_accepted            FAILED
+      java.lang.AssertionError: same intent from uid 2000 reached the receiver
+      - it is EXPORTED (F-3) expected:<TIMED_OUT> but was:<MATCHED>
+    a_broadcast_from_another_uid_cannot_close_the_sas_gate        FAILED
+      java.lang.AssertionError: a broadcast from uid 2000 approved the SAS
+      - the receiver is EXPORTED (F-3) expected:<TIMED_OUT> but was:<MATCHED>
+  XML: e2e/vc67/evidence/sas-spoof-negative-api34-PLANT-RED.xml
+
+  "but was:<MATCHED>" is the exploit itself, on a real device: a shell-uid
+  broadcast walked the SAS gate to APPROVED. The plant was reverted by file
+  copy (never `git checkout`, which would also have taken the fix) and the
+  restored tree verified byte-identical to the committed one.
+
+COVERAGE NOTE — WHAT THIS RUN DOES NOT COVER
+--------------------------------------------
+API 34 exercises the PLATFORM RECEIVER_NOT_EXPORTED flag. It does NOT exercise
+the API 26-32 path, which is the one F-3 is actually about and which no AVD in
+this lane runs. Below API 33 ContextCompat registers the receiver under the
+signature-level permission androidx.core declares in its manifest
+(<applicationId>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION, protectionLevel
+signature) — verified by reading core-1.12.0.aar's AndroidManifest.xml in this
+lane, not assumed. That path is covered by the SOURCE pin
+E2eReceiverExportContractTest, which asserts every registration in
+app/src/main goes through ContextCompat and therefore cannot be exported on
+ANY API level, plus the lint rule now failing the build on a bare call.
+
+An API-26 on-device run of this same class would close that last gap and the
+AVD exists (e2e_api26). It is not part of this lane: booting a second image
+breaks the one-emulator-at-a-time rule this run was held to, and the two
+checks above already make an exported registration unshippable.
+
+RELATED EVIDENCE IN THIS COMMIT
+-------------------------------
+  receiver-export-contract-PLANT-RED.xml
+      unit source pin, 5 of 6 cells red on a planted bare call
+  lint-UnspecifiedRegisterReceiverFlag-PLANT-RED.xml
+      lint report with the rule firing as an Error on the same plant
