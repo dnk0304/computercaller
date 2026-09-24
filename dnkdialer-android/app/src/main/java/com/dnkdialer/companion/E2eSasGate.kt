@@ -4,8 +4,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -304,12 +304,17 @@ object E2eSasGate {
         val filter = IntentFilter(E2eSasContract.ACTION_E2E_SAS_RESULT).apply {
             addAction(E2eSasContract.ACTION_E2E_SAS_SHOWN)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            ctx.registerReceiver(receiver, filter)
-        }
+        // F-3 (SECURITY-ACK-VC67-SAS-LATCH C1): minSdk is 26, and on API
+        // 26-32 a bare registerReceiver for an implicit action is EXPORTED.
+        // Any other app on the device could then broadcast
+        // ACTION_E2E_SAS_RESULT with EXTRA_SAS_MATCHED=true and approve the
+        // SAS on the user's behalf - defeating the whole MITM defence without
+        // the digits ever being seen. ContextCompat applies
+        // RECEIVER_NOT_EXPORTED on every API level: >=33 via the platform
+        // flag, <33 by registering under the signature-level permission
+        // <applicationId>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION that
+        // androidx.core declares and only our own package holds.
+        ContextCompat.registerReceiver(ctx, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         pending.onClose {
             // Unregistering a receiver twice throws; close() is idempotent
             // above, but a service torn down mid-wait can race us here.

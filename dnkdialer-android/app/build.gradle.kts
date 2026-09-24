@@ -453,6 +453,18 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+    // vc67 AMENDMENT 1 (Security F-3). `UnspecifiedRegisterReceiverFlag` is a
+    // WARNING by default, which is how four in-app receivers shipped EXPORTED
+    // on API 26-32 behind an `@Suppress` nobody re-read. Promoted to ERROR so
+    // the next bare `registerReceiver(receiver, filter)` fails lint instead of
+    // adding a line to a baseline. abortOnError is deliberately left alone:
+    // the android gate grades lint against e2e-evidence/LINT-BASELINE-
+    // android.json (may only SHRINK), and the XML report it reads is produced
+    // either way. Severity here is what puts the finding in that XML as an
+    // error rather than a warning.
+    lint {
+        error += "UnspecifiedRegisterReceiverFlag"
+    }
 }
 
 dependencies {

@@ -2320,12 +2320,12 @@ class MainActivity : AppCompatActivity() {
             addAction(E2eTofuContract.ACTION_E2E_KEY_CHANGED)
             addAction(E2eTofuContract.ACTION_E2E_STATE)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(pairingForegroundReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(pairingForegroundReceiver, filter)
-        }
+        // F-3: NOT_EXPORTED on EVERY API level, not just 33+. The bare
+        // API 26-32 branch that used to live here left ACTION_E2E_SAS_REQUIRED
+        // open to any app on the device.
+        ContextCompat.registerReceiver(
+            this, pairingForegroundReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         pairingReceiverRegistered = true
         android.util.Log.d("MainActivity", "Pairing-foreground receiver registered")
     }

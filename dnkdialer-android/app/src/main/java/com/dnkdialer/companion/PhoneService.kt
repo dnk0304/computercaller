@@ -1071,12 +1071,12 @@ class PhoneService : Service() {
             val filter = android.content.IntentFilter(
                 android.bluetooth.BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED
             )
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                registerReceiver(receiver, filter)
-            }
+            // F-3: NOT_EXPORTED on every API level (minSdk 26). The sender of
+            // this action is the SYSTEM, which is exempt from the permission
+            // check ContextCompat uses below API 33, so delivery is unchanged.
+            ContextCompat.registerReceiver(
+                this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+            )
             bluetoothHeadsetReceiver = receiver
             android.util.Log.d("PhoneService", "BluetoothHeadset state observer registered")
         } catch (e: Exception) {
@@ -1427,12 +1427,11 @@ class PhoneService : Service() {
             val filter = android.content.IntentFilter(
                 android.media.AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED
             )
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                registerReceiver(receiver, filter)
-            }
+            // F-3: NOT_EXPORTED on every API level. Sender is the SYSTEM
+            // (AudioManager), exempt from the <33 permission check.
+            ContextCompat.registerReceiver(
+                this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+            )
             scoStateReceiver = receiver
             android.util.Log.d("PhoneService", "SCO audio state observer registered")
         } catch (e: Exception) {
@@ -2249,16 +2248,14 @@ class PhoneService : Service() {
             addAction(ConnectionRequestReceiver.ACTION_ACCEPT_CONNECTION)
             addAction(ConnectionRequestReceiver.ACTION_DECLINE_CONNECTION)
         }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(
-                connectionRequestReceiver,
-                connectionFilter,
-                Context.RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(connectionRequestReceiver, connectionFilter)
-        }
+        // F-3: NOT_EXPORTED on every API level (was 33+ only, so API 26-32
+        // let any app spoof an ACCEPT_CONNECTION).
+        ContextCompat.registerReceiver(
+            this,
+            connectionRequestReceiver,
+            connectionFilter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         ConnectionRequestReceiver.serviceHandler = { requestId, accept ->
             handleConnectionDecision(requestId, accept)
         }
@@ -2274,16 +2271,13 @@ class PhoneService : Service() {
             addAction(LobbyActionReceiver.ACTION_DISCONNECT_LOBBY)
             addAction(LobbyActionReceiver.ACTION_REJOIN_LOBBY)
         }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(
-                lobbyActionReceiver,
-                lobbyFilter,
-                Context.RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(lobbyActionReceiver, lobbyFilter)
-        }
+        // F-3: NOT_EXPORTED on every API level.
+        ContextCompat.registerReceiver(
+            this,
+            lobbyActionReceiver,
+            lobbyFilter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         LobbyActionReceiver.lobbyActionHandler = { rejoin ->
             if (rejoin) userRejoinLobby() else userDisconnectFromLobby()
         }
@@ -2316,18 +2310,18 @@ class PhoneService : Service() {
         // Use RECEIVER_NOT_EXPORTED on API 33+ — these intents are internal-only and
         // exporting them would let any app spoof send/delivery status.
         smsStatusReceiver = SmsStatusReceiver()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(smsStatusReceiver, android.content.IntentFilter().apply {
+        // F-3: NOT_EXPORTED on every API level. These arrive from our OWN
+        // PendingIntents (sent under our uid), which hold the signature
+        // permission ContextCompat uses below API 33.
+        ContextCompat.registerReceiver(
+            this,
+            smsStatusReceiver,
+            android.content.IntentFilter().apply {
                 addAction("SMS_SENT")
                 addAction("SMS_DELIVERED")
-            }, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(smsStatusReceiver, android.content.IntentFilter().apply {
-                addAction("SMS_SENT")
-                addAction("SMS_DELIVERED")
-            })
-        }
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         SmsStatusReceiver.onSmsSent = { clientMsgId, success, error ->
             val isViaClient = client?.isOpen == true
@@ -4828,12 +4822,11 @@ class PhoneService : Service() {
             addAction(FileTransferActionReceiver.ACTION_REJECT)
             addAction(FileTransferActionReceiver.ACTION_CANCEL)
         }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(receiver, filter)
-        }
+        // F-3: NOT_EXPORTED on every API level (notification-action intents
+        // come from our own PendingIntents).
+        ContextCompat.registerReceiver(
+            this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         FileTransferActionReceiver.handler = { cancelRunning ->
             if (cancelRunning) manager.cancel() else manager.rejectOffer()
         }
