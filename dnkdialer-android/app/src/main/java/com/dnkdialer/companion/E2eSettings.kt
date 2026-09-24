@@ -75,6 +75,21 @@ object E2eSettings {
 
     private const val KEY_ENCRYPTED_MODE = "encrypted_mode"
 
+    /**
+     * INC-0924 — "did a HUMAN ever flip this switch?".
+     *
+     * Deliberately a NEW key rather than a value inside the old one: the whole
+     * point is to distinguish a preference this build can prove the user set
+     * from one that merely exists on disk, and a `true` written by an earlier
+     * build carries no such proof. An absent marker therefore reads as "not by
+     * a user", which is exactly what makes the one-time reset below safe.
+     *
+     * `_v2` because a first attempt at this key would have shipped with the
+     * broken switch still masking the value; the suffix means a device that
+     * somehow carries the old name is not read as consent.
+     */
+    private const val KEY_ENCRYPTED_MODE_USER_SET = "encrypted_mode_user_set_v2"
+
     /** Default OFF: encrypted mode ships dark and the user opts in. */
     const val DEFAULT_ENCRYPTED_MODE = false
 
@@ -187,7 +202,80 @@ object E2eSettings {
      * channel.
      */
     fun setEncryptedModeEnabled(ctx: Context, enabled: Boolean) {
-        prefs(ctx).edit { putBoolean(KEY_ENCRYPTED_MODE, enabled) }
+        // INC-0924: the marker is written on EVERY flip, on or off, because it
+        // records that a human operated the control — not which way. Writing it
+        // only on `true` would leave a user who deliberately turned the mode
+        // OFF indistinguishable from one who never touched it, and the next
+        // migration of this preference would then be free to overwrite their
+        // choice. Same transaction as the value: a marker that could be lost
+        // separately from the value it describes is not a marker.
+        prefs(ctx).edit {
+            putBoolean(KEY_ENCRYPTED_MODE, enabled)
+            putBoolean(KEY_ENCRYPTED_MODE_USER_SET, true)
+        }
+    }
+
+    /** True once the user has operated the Encrypted-mode switch on this device. */
+    fun isEncryptedModeUserSet(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_ENCRYPTED_MODE_USER_SET, false)
+
+    // -------------------------------------------- INC-0924 one-time migration
+
+    /** What [migrateLegacyEncryptedModePref] should do, as a pure function. */
+    enum class LegacyPrefMigration {
+        /** Leave the stored preference exactly as it is. */
+        NONE,
+
+        /** A stored ON that no user is known to have asked for. Reset to OFF. */
+        RESET_TO_OFF,
+    }
+
+    /**
+     * INC-0924 — the decision, with no Context so it is pinned by vectors.
+     *
+     * Until this incident `E2eModeRowCopy.forState` ANDed the drawn state of
+     * the switch with the capability, so a stored `true` rendered as an OFF,
+     * greyed switch while `decide()` read the raw `true` and forced a
+     * SAS-blocking pair. Dennis's phone was in exactly that state: the value
+     * went ON during the v62/v63 attempts, survived every upgrade, and no
+     * screen has shown it since.
+     *
+     * With the switch fixed to show the truth, that stored `true` would simply
+     * start rendering as ON — accurate, but still not a setting he chose while
+     * the feature ships dark by spec (§12, default OFF). So a value this build
+     * cannot attribute to a human is reset ONCE, and the user who wants it
+     * flips it again with the switch that now works.
+     *
+     * A reset is never applied to a value carrying the marker: the marker is
+     * consent, and a migration that overwrites consent is a bug with a
+     * changelog entry.
+     */
+    @JvmStatic
+    fun legacyPrefMigration(enabled: Boolean, userSet: Boolean): LegacyPrefMigration =
+        if (enabled && !userSet) LegacyPrefMigration.RESET_TO_OFF else LegacyPrefMigration.NONE
+
+    /**
+     * Apply [legacyPrefMigration] to this device's store. Returns true when the
+     * preference was reset, so the caller can log and repaint exactly once.
+     *
+     * Committed synchronously: the whole value of this call is that the NEXT
+     * `decide()` in this process reads the corrected value, and an `apply()`
+     * that had not flushed when the service was killed would leave the
+     * incident live on the next boot.
+     *
+     * Idempotent by construction — after a reset `enabled` is false, so a
+     * second call decides NONE. The marker is deliberately NOT set: the user
+     * still has not made a choice, and claiming they did would suppress a
+     * future migration that has every right to run.
+     */
+    fun migrateLegacyEncryptedModePref(ctx: Context): Boolean {
+        val decision = legacyPrefMigration(
+            isEncryptedModeEnabled(ctx),
+            isEncryptedModeUserSet(ctx),
+        )
+        if (decision != LegacyPrefMigration.RESET_TO_OFF) return false
+        prefs(ctx).edit(commit = true) { putBoolean(KEY_ENCRYPTED_MODE, false) }
+        return true
     }
 
     // ------------------------------------------ P4.1: peer advertisement

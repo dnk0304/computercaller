@@ -38,18 +38,47 @@ class E2eModeRowCopyTest {
         }
     }
 
+    /**
+     * INC-0924 — this case used to assert the OPPOSITE, and passing is what
+     * let the incident ship.
+     *
+     * It read: "a stored true never renders on a switch that cannot be
+     * operated", on the reasoning that an ON, inert switch is a claim the user
+     * cannot withdraw. The flaw is that the masking only ever reached the
+     * DRAWING. `E2eNegotiation.decide()` at Accept reads
+     * [E2eSettings.isEncryptedModeEnabled] raw, so what the old rule produced
+     * was not a cautious switch — it was a phone that paired encrypted and
+     * SAS-blocking while its own Settings screen showed the control off.
+     *
+     * A control that hides the value it controls is worse than an honest one
+     * that is temporarily inert, and the inertness is now explained in words
+     * ([E2eModeRowCopy.RowCopy.onWhileDisabledRes]) rather than by lying about
+     * the state. The exhaustive table lives in [E2eModeRowVectorsTest].
+     */
     @Test
-    fun a_stored_true_never_renders_on_a_switch_that_cannot_be_operated() {
-        // A switch that is ON and inert is a claim the user cannot withdraw:
-        // it says the next connection will be encrypted while refusing to let
-        // them change their mind about it.
+    fun a_stored_true_renders_on_in_every_state_and_says_why_it_is_inert() {
         for (state in E2ePeerCapability.State.values()) {
             val copy = E2eModeRowCopy.forState(state, checkedPref = true)
-            if (state == E2ePeerCapability.State.PEER_SUPPORTED) {
-                assertTrue("$state must honour a stored ON", copy.checked)
+            assertTrue("$state must honour a stored ON", copy.checked)
+            if (copy.enabled) {
+                assertEquals("$state needs no sub-line", null, copy.onWhileDisabledRes)
             } else {
-                assertFalse("$state must not render checked", copy.checked)
+                assertEquals(
+                    "$state must explain an ON that cannot be changed",
+                    R.string.settings_encrypted_mode_on_while_disabled,
+                    copy.onWhileDisabledRes
+                )
             }
+        }
+    }
+
+    @Test
+    fun a_stored_false_renders_off_in_every_state() {
+        for (state in E2ePeerCapability.State.values()) {
+            assertFalse(
+                "$state must not render checked on a stored OFF",
+                E2eModeRowCopy.forState(state, checkedPref = false).checked
+            )
         }
     }
 

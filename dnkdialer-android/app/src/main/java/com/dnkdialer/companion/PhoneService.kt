@@ -332,6 +332,23 @@ class PhoneService : Service() {
     private var e2eVerified: Boolean = false
 
     /**
+     * INC-0924 — true between `ACCEPT_PAIRING` and the phone user's MATCH.
+     *
+     * The ordering fix (see [completeEncryptedAccept]) sends the ACCEPT, and
+     * with it the e2e block the computer derives its digits from, BEFORE the
+     * user is asked to compare the codes — because until they have it there is
+     * nothing on the computer to compare against, which is the bug Dennis hit.
+     * The cost of that is a window in which a session exists and nobody has
+     * verified the peer, and this flag is what keeps the [E2eFrameGate] shut
+     * for its duration.
+     *
+     * Volatile: written on the `e2e-accept` worker, read on the socket thread
+     * by every frame that passes the gate.
+     */
+    @Volatile
+    private var e2eSasPending: Boolean = false
+
+    /**
      * Single worker for the Accept handshake. The (e) pin is a blocking HTTPS
      * call and the Accept path is reached from a BroadcastReceiver — i.e. the
      * main thread. Single-threaded so two Accepts cannot race to install a
@@ -344,7 +361,8 @@ class PhoneService : Service() {
      * a gate holding a captured session would keep sealing under a key the
      * service had already torn down.
      */
-    private val e2eFrameGate = E2eFrameGate({ e2eSession }, { e2eLatchedOn })
+    private val e2eFrameGate =
+        E2eFrameGate({ e2eSession }, { e2eLatchedOn }, { e2eSasPending })
 
     /**
      * P6.1c 1b. The SAS wait currently in flight, or null.
@@ -2149,6 +2167,28 @@ class PhoneService : Service() {
         // make a latch survive the app.
         clearDowngradeLatch(E2eNegotiation.DowngradeLatch.Event.SERVICE_RESTART)
 
+        // INC-0924 — the one-time reset of a stored Encrypted-mode ON that no
+        // user is known to have asked for.
+        //
+        // Here rather than in an Activity because this is the process that
+        // READS the preference at Accept (`decideE2e`), and the incident is a
+        // pairing that goes encrypted on a phone whose screens all say it is
+        // off. Running it at the top of the service's life means no Accept in
+        // this process can ever see the uncorrected value, whether or not the
+        // user opened an app screen first. Idempotent and a no-op on every
+        // device that is not in the broken state.
+        if (E2eSettings.migrateLegacyEncryptedModePref(this)) {
+            android.util.Log.i(
+                "PhoneService",
+                "e2e: legacy ON pref reset to OFF (INC-0924)"
+            )
+            DiagLog.counter("e2e.pref.legacy-reset")
+            DiagLog.d("PhoneService", "e2e: legacy ON pref reset to OFF (INC-0924)")
+            // Any screen already up is showing the old value; the row reads the
+            // store on this broadcast's tick the same way it does on resume.
+            broadcastE2eState()
+        }
+
         // Initialize handlers
         callHandler = CallHandler(this)
         smsHandler = SmsHandler(this)
@@ -2965,6 +3005,10 @@ class PhoneService : Service() {
         }
 
         // ------------------------------------------------- the handshake
+        //
+        // INC-0924: the ACCEPT now leaves inside this try, so the catch below
+        // has two different worlds to clean up. `accepted` is which one.
+        var accepted = false
         try {
             val epoch = E2ePairIdentity.nextPairEpoch(this)
             val pairContext = E2ePairIdentity.contextFor(
@@ -2982,18 +3026,81 @@ class PhoneService : Service() {
                         "silently continue in plaintext"
                 )
 
-            // ------------------------------------------------- (1b) the SAS
+            // -------------------------------- (1b') malformed digits, BEFORE
             //
-            // P6.1c 1b / E2eSasContract. The digits exist at this point and up
-            // to this commit were only ever LOGGED. Mode ON means the user
-            // must compare them against the computer's before anything is
-            // accepted, so the wait goes HERE: after prepare (which is what
-            // produces the digits) and before the session is installed or the
-            // ACCEPT is sent. A SAS the peer learns about only after we have
-            // armed and accepted verifies nothing.
+            // The one refusal that must still happen ahead of the ACCEPT.
+            // E2eSasGate returns MALFORMED without ever prompting, and under
+            // the new ordering a MALFORMED verdict would arrive on a pairing we
+            // had already accepted — i.e. we would have to tear down a live
+            // pair over a fault we could have seen one statement earlier.
+            // Checking it here keeps "never accept with digits the user cannot
+            // compare" a pre-ACCEPT property, and leaves the gate below with
+            // only verdicts that come from a human or a clock.
+            if (prepared.modeOn && !E2eSasContract.isWellFormed(prepared.sasDigits)) {
+                android.util.Log.w(
+                    "PhoneService",
+                    "E2E refused: the SAS is not five decimal digits for $pairingId"
+                )
+                DiagLog.counter("e2e.sas.malformed")
+                prepared.session.close()
+                e2eDowngradeLatch.latch()
+                sendPairingDecision("DECLINE_PAIRING", pairingId, null)
+                broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
+                return
+            }
+
+            // ------------------------------------- (1b) ACCEPT, then the SAS
             //
-            // Mode OFF/UNVERIFIED returns NOT_REQUIRED without prompting —
-            // unchanged behaviour, §13.1's row for a pairing nobody required.
+            // INC-0924. The order of these two statements IS the fix.
+            //
+            // P6.1c put `E2eSasGate.await` above `sendPairingDecision` on the
+            // reasoning that we should not commit to a pairing before the user
+            // confirms. But the computer derives its five digits from the e2e
+            // block inside ACCEPT_PAIRING (hooks/useE2e.ts ~851-940), so under
+            // that order the phone asked "do these match?" while the computer
+            // had nothing to show — "the pairing code doesn't show up in the CC
+            // webapp or extension before I confirm on the phone" (Dennis,
+            // 2026-09-24). A comparison with one side blank is not a
+            // verification; it trains the user to tap Matches on sight, which
+            // is precisely what a SAS exists to prevent.
+            //
+            // So the ACCEPT goes first and both screens light up with the same
+            // code at the same instant. What the old order was protecting —
+            // "nothing of the user's crosses an unverified channel" — is not
+            // protected by withholding the ACCEPT; it is protected by the DATA
+            // PLANE, and that is where it now lives: [e2eSasPending] holds
+            // [e2eFrameGate] shut in both directions until the verdict is
+            // MATCH. The digits are unchanged (they are a function of the
+            // frozen §13.3 transcript) and nothing new rides on the wire.
+            //
+            // Mode OFF/UNVERIFIED sets no pending flag and returns
+            // NOT_REQUIRED without prompting — §13.1's row for a pairing
+            // nobody required, unchanged.
+            e2eSession?.close()
+            e2eSession = prepared.session
+            e2eVerified = E2eKeyPin.isVerified(verdict)
+            e2eLatchedOn = true
+            // Set BEFORE the ACCEPT leaves, not after: the peer may answer the
+            // instant it lands, and a gate armed one statement later would
+            // have let that first frame through.
+            e2eSasPending = prepared.modeOn
+            android.util.Log.i(
+                "PhoneService",
+                "E2E armed kid=${prepared.session.kid} epoch=$epoch mode=" +
+                    (if (prepared.modeOn) "ON" else "UNVERIFIED") +
+                    " verified=$e2eVerified recipients=${decision.recipients.size}" +
+                    " sasPending=$e2eSasPending"
+            )
+            DiagLog.d(
+                "PhoneService",
+                "e2e accepted pair=${Redact.hash6(pairingId)} " +
+                    "mode=${if (prepared.modeOn) "ON" else "UNVERIFIED"} " +
+                    "sasPending=$e2eSasPending",
+            )
+            broadcastE2eState()
+            sendPairingDecision("ACCEPT_PAIRING", pairingId, block)
+            accepted = true
+
             val sas = E2eSasGate.await(
                 ctx = this,
                 pairingId = pairingId,
@@ -3003,34 +3110,36 @@ class PhoneService : Service() {
                 onArmed = { pendingSasGate = it },
             )
             if (!E2eSasGate.mayProceed(sas)) {
-                // The EXISTING refusal path, verbatim — latch, DECLINE,
-                // broadcastE2eRefusal. E2eSasContract forbids a second
-                // implementation, and this is why: "the user says the codes
-                // differ" must be indistinguishable downstream from every
-                // other refusal.
+                // The refusal path is the same one every other E2E failure
+                // takes — latch, tear down, broadcastE2eRefusal — with ONE
+                // addition forced by the new ordering: the pair is ACTIVE by
+                // now, so a DECLINE_PAIRING would be answering a request the
+                // relay has already resolved and the browser would sit on its
+                // dialog forever. `LEAVE_ACTIVE:{}` is the existing
+                // phone-initiated teardown (server.js:3345, gated on the
+                // active phone socket); the relay answers it with
+                // PAIRING_TERMINATED to the browser, which is how that dialog
+                // closes. No new frame type, no new relay behaviour.
                 android.util.Log.w("PhoneService", "E2E SAS not confirmed ($sas) for $pairingId")
-                prepared.session.close()
+                DiagLog.counter("e2e.sas.refused-after-accept")
+                DiagLog.w(
+                    "PhoneService",
+                    "SAS refused after ACCEPT verdict=$sas pair=${Redact.hash6(pairingId)} " +
+                        "— tearing the pair down",
+                )
                 e2eDowngradeLatch.latch()
-                sendPairingDecision("DECLINE_PAIRING", pairingId, null)
+                leaveActivePair("SAS not confirmed")
+                // AFTER the frame: tearDownE2e drops the session, and the gate
+                // must stay shut for anything still in flight until it does.
+                tearDownE2e("SAS not confirmed ($sas)")
                 broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
                 return
             }
-
-            // A new Accept replaces whatever was live; the old SK is dropped,
-            // never carried across (§13.8).
-            e2eSession?.close()
-            e2eSession = prepared.session
-            e2eVerified = E2eKeyPin.isVerified(verdict)
-            e2eLatchedOn = true
-            android.util.Log.i(
-                "PhoneService",
-                "E2E armed kid=${prepared.session.kid} epoch=$epoch mode=" +
-                    (if (prepared.modeOn) "ON" else "UNVERIFIED") +
-                    " verified=$e2eVerified recipients=${decision.recipients.size}" +
-                    " sas=${prepared.sasDigits ?: "-"}"
-            )
+            // Verified. Open the data plane — this is the only statement that
+            // may clear the flag on a pair that is staying up.
+            e2eSasPending = false
+            DiagLog.d("PhoneService", "e2e sas confirmed — data plane open")
             broadcastE2eState()
-            sendPairingDecision("ACCEPT_PAIRING", pairingId, block)
         } catch (e: RuntimeException) {
             // E2eAccept.AcceptException (oversized block, no recipients),
             // E2eSeqStore.CounterUnsafeException (the counter cannot be proved
@@ -3041,6 +3150,21 @@ class PhoneService : Service() {
             // pairing proceeds in the clear and is badged Unencrypted — §13.1's
             // row for "neither side required it".
             val why = "${e.javaClass.simpleName}: ${e.message}"
+            // INC-0924. Once the ACCEPT is out there is no "continue in
+            // plaintext" available and no request left to DECLINE: the pair is
+            // live, the gate is shut, and the only honest outcome is to end
+            // it. Reached when arming the SAS receiver itself fails — rare,
+            // and without this arm it would leave e2eSasPending stuck true and
+            // every frame silently dropped for the life of the pair.
+            if (accepted) {
+                android.util.Log.e("PhoneService", "E2E failed after ACCEPT — $why")
+                DiagLog.w("PhoneService", "e2e failure after ACCEPT — tearing down: $why")
+                e2eDowngradeLatch.latch()
+                leaveActivePair("e2e failure after accept")
+                tearDownE2e("e2e failure after accept")
+                broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
+                return
+            }
             if (decision.modeOn) {
                 e2eDowngradeLatch.latch()
                 android.util.Log.e("PhoneService", "E2E accept failed — $why")
@@ -3051,6 +3175,39 @@ class PhoneService : Service() {
                 broadcastE2eState()
                 sendPairingDecision("ACCEPT_PAIRING", pairingId, null)
             }
+        }
+    }
+
+    /**
+     * INC-0924 — end the ACTIVE pair from this side.
+     *
+     * `LEAVE_ACTIVE:{}` is the frame server.js already accepts from the active
+     * PHONE socket (the handler is gated on `ws === room.active.phone`) and
+     * answers by broadcasting `PAIRING_TERMINATED:{reason:'user_left'}` to the
+     * browser. It is the same frame the browser's own Disconnect sends, which
+     * is why nothing new is needed on the relay or in the web client for the
+     * post-ACCEPT SAS refusal to reach the computer.
+     *
+     * Deliberately NOT `DECLINE_PAIRING`: by the time this is reached the
+     * relay has already resolved the pairing request, so a decline names
+     * nothing and the browser would sit on its dialog until it gave up.
+     *
+     * The socket is left OPEN. The phone stays in the lobby and is immediately
+     * re-pairable, which is what the user wants after a code that did not
+     * match on a connection they were not expecting.
+     */
+    private fun leaveActivePair(reason: String) {
+        if (client?.isOpen != true) {
+            android.util.Log.w("PhoneService", "Cannot leave the active pair ($reason) — relay closed")
+            return
+        }
+        try {
+            client?.sendResponse("LEAVE_ACTIVE", emptyMap<String, Any>())
+            android.util.Log.i("PhoneService", "LEAVE_ACTIVE sent ($reason)")
+            DiagLog.counter("pairing.leave_active")
+            DiagLog.d("PhoneService", "LEAVE_ACTIVE sent reason=$reason")
+        } catch (e: Exception) {
+            android.util.Log.e("PhoneService", "Failed to send LEAVE_ACTIVE: ${e.message}", e)
         }
     }
 
@@ -3160,6 +3317,11 @@ class PhoneService : Service() {
         e2eSession = null
         e2eLatchedOn = false
         e2eVerified = false
+        // INC-0924. Cleared with the session, never before it: the flag is a
+        // CLOSED gate, and a pair torn down mid-SAS must not leave the next
+        // one inheriting an open one. There is nothing left to protect once
+        // e2eSession is null — the gate's own `latched` arm covers that state.
+        e2eSasPending = false
         if (outcome.sessionClosed) {
             android.util.Log.i("PhoneService", "E2E torn down ($reason): ${outcome.notes}")
         }
