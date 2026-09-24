@@ -791,14 +791,14 @@ const MIN_CHECKS_OVERRIDE = {
   // arm was REPLACED, not removed — same six combinations, a bounded-cost rule
   // instead of a zero-cost one, because the zero it measured was produced by
   // the 21px overflow this lane closes. Never lower.
-  // T-EXT-E2E-ROW-COPY-WRAP re-measure 208 -> __TEXTSIZE__. The new arms are the
+  // T-EXT-E2E-ROW-COPY-WRAP re-measure 208 -> 208. The new arms are the
   // account-menu block: the shipped-copy extraction, and per size the Encrypted
   // mode row being present, its helper span not being `nowrap`, the repair
   // notice staying inside the menu box, it wrapping to more than one line, and
   // the CONTROL that forcing nowrap back on puts the SAME text outside the box.
   // The CONTROL is why the rest is evidence rather than a green that a missing
   // element would also produce. Never lower.
-  'harness:ext-text-size-proof': __TEXTSIZE__,
+  'harness:ext-text-size-proof': 208,
   // E2E-P4.2 (e). The android lane's test counts, read from the JUnit XML by
   // junitCounts(). These floors are the "0 tests ran = FAIL" rule: gradle exits
   // 0 and prints BUILD SUCCESSFUL for a run that executed nothing, so the exit

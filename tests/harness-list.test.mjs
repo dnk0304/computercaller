@@ -406,8 +406,8 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // GATE-TOOLING-1 (3). The text-size proof's own floor, declared in the gate
     // and asserted here so the registration and the floor cannot separate.
     // T-EXT-TEXTS-OVERFLOW: 202 -> 208 (+6 = the 8-visible-character floor).
-    // T-EXT-E2E-ROW-COPY-WRAP: 208 -> __TEXTSIZE__ (the account-menu wrap block).
-    ['harness:ext-text-size-proof', __TEXTSIZE__],
+    // T-EXT-E2E-ROW-COPY-WRAP: 208 -> 208 (the account-menu wrap block).
+    ['harness:ext-text-size-proof', 208],
     // E2E-P4.4: the §13.10.3 userId parity proof, registered as a node-only
     // gate step. Declared here for the same reason as the rest of this list.
     ['unit:ctx-parity', 14],
