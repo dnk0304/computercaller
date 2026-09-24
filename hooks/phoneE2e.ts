@@ -59,6 +59,23 @@ export type E2eError =
    */
   | 'e2e-epoch-replayed'
   /**
+   * INC-0924. The pair ENDED while this browser was still showing the SAS
+   * dialog — i.e. before both sides had confirmed the code.
+   *
+   * It exists because the phone now sends `ACCEPT_PAIRING` (and with it the
+   * block these digits are derived from) BEFORE its user is asked to compare
+   * the codes, which is the only ordering in which both screens can show the
+   * same code at the same time. The cost is a new outcome: the phone's user
+   * can answer "Doesn't match", and the phone's refusal path tears the pair
+   * down with `LEAVE_ACTIVE` — which reaches this browser as
+   * `PAIRING_TERMINATED`, with the dialog still open.
+   *
+   * Its own code rather than another 'e2e-setup-failed' because the sentence
+   * the user needs is different: nothing failed to be built here, and the
+   * next action is not "try again" but "find out why the codes differed".
+   */
+  | 'e2e-sas-unconfirmed'
+  /**
    * T-RESUME-SW-KEY-RACE. The pair was RESUMED, its transcript carries an
    * extension recipient, and after a bounded re-query the service worker still
    * reports no key of its own. Distinct from `re-pair-needed` because the story
@@ -948,6 +965,36 @@ export function viewAfterPairEnded(v: E2eView): E2eView {
     };
   }
   return { ...E2E_VIEW_INITIAL, peer: { supports: false, kind: v.peer.kind } };
+}
+
+/**
+ * INC-0924 — the pair ended while the SAS dialog was still open on this side.
+ *
+ * Distinct from {@link viewAfterPairEnded} because the plain teardown returns
+ * the INITIAL view, and the initial view has no error: a user staring at five
+ * digits would have watched the dialog simply vanish, with the pair gone and
+ * nothing said. That is the shape of a bug, not of a refusal — and this
+ * teardown's most likely cause is the phone's user answering "Doesn't match",
+ * which is the single most important thing this product ever has to tell
+ * someone.
+ *
+ * An error already on screen still outranks it: a pair that had ALREADY
+ * refused for a named reason must keep that reason (the P5a rule above), and
+ * a stale SAS block cannot upgrade itself into a newer story.
+ *
+ * Pure, and the caller decides whether the SAS was pending — this function
+ * cannot see a ref.
+ */
+export function viewAfterPairEndedDuringSas(v: E2eView): E2eView {
+  if (v.state === 'error') return viewAfterPairEnded(v);
+  return {
+    ...E2E_VIEW_INITIAL,
+    mode: v.mode,
+    effective: v.effective,
+    state: 'error',
+    error: 'e2e-sas-unconfirmed',
+    peer: { supports: false, kind: v.peer.kind },
+  };
 }
 
 /**

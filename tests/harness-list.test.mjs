@@ -398,7 +398,8 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     ['android:instrumented-A5', 8],
     // GATE-TOOLING-1 (3): 165 -> 177 -> 185 (GATE-TOOLING-1 (4): ANDROID-FIX) with ext-text-size-proof's arms.
     // T-FT-WEB-SEAL-NO-HINT: 186 -> 187 with the FT hint contract's pin.
-    ['unit:harness-list', 187],
+    // INC-0924: 187 -> 188 with the SAS ordering contract's pin.
+    ['unit:harness-list', 188],
     // GATE-TOOLING-1 (4). The phase whitelist suite's first floor.
     ['unit:gate-phase-whitelist', 79],
     // GATE-TOOLING-1 (3). The text-size proof's own floor, declared in the gate
@@ -421,6 +422,9 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // sweep-discovered by the tests/e2e-*.test.mjs rule and therefore carrying
     // only a floor.
     ['relay:e2e-ft-hint-contract.test.mjs', 156],
+    // INC-0924: the SAS ORDERING contract (RULE 30), sweep-discovered by the
+    // tests/e2e-*.test.mjs rule and therefore carrying only a floor.
+    ['relay:e2e-sas-order-contract.test.mjs', 54],
   ]) {
     check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,
       gate.includes(`'${name}': ${floor},`));
