@@ -1,21 +1,21 @@
 {
-  "_note": "Android lint baseline for the E2E programme. Programme identity BASE_SHA 445138a6c58c12b2848cb4c24371b0d443e51c27; measured against scopeBase 9b669fbea0e9bdc4915e280abb38f6d7c88a16de (merge-base). May only SHRINK. Regenerate with: gradlew.bat :app:lintDebug --continue ; node tools/lint-manifest.mjs --generate",
+  "_note": "Android lint baseline for the E2E programme. Programme identity BASE_SHA 445138a6c58c12b2848cb4c24371b0d443e51c27; measured against scopeBase ea2fe608357454d6391962396caae5046831354e (merge-base). May only SHRINK. Regenerate with: gradlew.bat :app:lintDebug --continue ; node tools/lint-manifest.mjs --generate",
   "_owners": {
     "MissingPermission": "forge-backend — fixed at source (ANDROID-LINT b2): every site checks the permission locally before the call. ZERO allowed cells. A new one is a REGRESSION, not a baseline entry — fix it at the call site; do not widen this manifest.",
     "_default": "forge-backend — pre-existing at BASE_SHA; not an E2E programme deliverable."
   },
   "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
   "scopeBase": {
-    "sha": "9b669fbea0e9bdc4915e280abb38f6d7c88a16de",
+    "sha": "ea2fe608357454d6391962396caae5046831354e",
     "kind": "merge-base",
     "ref": "origin/e2e/integration",
-    "integrationTip": "9b669fbea0e9bdc4915e280abb38f6d7c88a16de",
+    "integrationTip": "ea2fe608357454d6391962396caae5046831354e",
     "fellBackToBaseSha": false,
     "reason": null
   },
-  "generatedUtc": "2026-09-24T13:20:03Z",
+  "generatedUtc": "2026-09-20T04:52:37Z",
   "lintVersion": "lint 8.13.2",
-  "total": 172,
+  "total": 175,
   "severities": {
     "BatteryLife": "Warning",
     "GradleDependency": "Warning",
@@ -77,6 +77,9 @@
       "UnusedResources": 1
     },
     "app/src/main/res/drawable/bg_row_group.xml": {
+      "UnusedResources": 1
+    },
+    "app/src/main/res/drawable/ic_cc_clock.xml": {
       "UnusedResources": 1
     },
     "app/src/main/res/layout/activity_main.xml": {
@@ -152,7 +155,7 @@
     },
     "app/src/main/res/values/strings.xml": {
       "PluralsCandidate": 2,
-      "UnusedResources": 50
+      "UnusedResources": 52
     },
     "app/src/main/res/values/themes.xml": {
       "ObsoleteSdkInt": 1
