@@ -381,8 +381,8 @@ android {
         // vc64 (2026-09-24, Ken cut, R-DE): FT picker fix (noHistory dropped), first-sign-in
         // auto-dial (PhoneServiceStartPolicy), mode-0 status broadcast. Icon unchanged (Dennis:
         // "forget the logo"). Pilot CAMERA/ZXing cleanup deferred to vc65.
-        versionCode = 66
-        versionName = "1.0.42"
+        versionCode = 67
+        versionName = "1.0.43"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
@@ -452,6 +452,18 @@ android {
     }
     kotlinOptions {
         jvmTarget = "1.8"
+    }
+    // vc67 AMENDMENT 1 (Security F-3). `UnspecifiedRegisterReceiverFlag` is a
+    // WARNING by default, which is how four in-app receivers shipped EXPORTED
+    // on API 26-32 behind an `@Suppress` nobody re-read. Promoted to ERROR so
+    // the next bare `registerReceiver(receiver, filter)` fails lint instead of
+    // adding a line to a baseline. abortOnError is deliberately left alone:
+    // the android gate grades lint against e2e-evidence/LINT-BASELINE-
+    // android.json (may only SHRINK), and the XML report it reads is produced
+    // either way. Severity here is what puts the finding in that XML as an
+    // error rather than a warning.
+    lint {
+        error += "UnspecifiedRegisterReceiverFlag"
     }
 }
 

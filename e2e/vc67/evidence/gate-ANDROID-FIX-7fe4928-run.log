@@ -1,0 +1,23 @@
+
+e2e-gate ANDROID-FIX lane=android
+root=C:\Users\D\worktrees\computercaller\vc67-amend1
+base=445138a (programme identity)
+scope-base=4dc9282 (merge-base vs origin/e2e/integration)
+
+  PASS  git-identity-clean-base-ancestry ({"dirtyPaths":0,"baseIsAncestor":true})
+  FAIL  scope-diff-vs-base ({"changed":20,"android":10,"nonAndroid":10,"offLane":10,"scopeBase":"4dc92826109528355a550a320b2bbc70c63df4b6","scopeBaseKind":"merge-base"})
+  PASS  android:java-home ({"missing":0})
+  PASS  android:assembleDebug
+  PASS  android:lint ({"issues":0,"reportFresh":1,"gradleExit":0})
+  PASS  android:SasVectorsTest ({"passed":7,"total":7,"failures":0,"errors":0,"skipped":0,"files":1})
+  PASS  android:testDebugUnitTest ({"passed":411,"total":411,"failures":0,"errors":0,"skipped":0,"files":37})
+  PASS  android:instrumented-A5 ({"passed":8,"total":8,"failures":0,"errors":0,"skipped":0,"files":1})
+  PASS  android:never-signs-release ({"releaseTasks":0})
+  PASS  android:gradle-stop ({"javaBefore":2,"javaAfter":2})
+  WARN  android:gradle-stop — 2 java.exe still running after --stop (was 2). Not a FAIL: a JVM on this box may be Dennis's IDE or another lane's daemon, and this gate never kills what it did not start.
+  PASS  baseline-parity ({"reference":16,"comparable":0,"regressed":0,"why":"lane=android runs no web-lane steps; nothing in the reference is comparable"})
+
+FAIL — 10/11 steps; first failure: scope-diff-vs-base
+evidence: C:/Users/D/worktrees/computercaller/vc67-amend1/e2e-evidence/gate-ANDROID-FIX-7fe4928.json
+logs (LOCAL, never committed): C:/Users/D/worktrees/computercaller/vc67-amend1/.e2e-gate-logs
+

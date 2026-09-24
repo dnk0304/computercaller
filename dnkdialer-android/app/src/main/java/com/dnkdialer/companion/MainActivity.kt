@@ -2320,12 +2320,12 @@ class MainActivity : AppCompatActivity() {
             addAction(E2eTofuContract.ACTION_E2E_KEY_CHANGED)
             addAction(E2eTofuContract.ACTION_E2E_STATE)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(pairingForegroundReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(pairingForegroundReceiver, filter)
-        }
+        // F-3: NOT_EXPORTED on EVERY API level, not just 33+. The bare
+        // API 26-32 branch that used to live here left ACTION_E2E_SAS_REQUIRED
+        // open to any app on the device.
+        ContextCompat.registerReceiver(
+            this, pairingForegroundReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         pairingReceiverRegistered = true
         android.util.Log.d("MainActivity", "Pairing-foreground receiver registered")
     }
@@ -2483,6 +2483,17 @@ class MainActivity : AppCompatActivity() {
         )
         code.sendAccessibilityEvent(
             android.view.accessibility.AccessibilityEvent.TYPE_VIEW_FOCUSED
+        )
+        // vc67 T-SAS-GATE-TIMEOUT-30S — tell the service the digits reached a
+        // SCREEN, which is the fact it cannot observe for itself and the only
+        // thing that earns the long deadline. Sent LAST, after the malformed
+        // refusal and after the hero face is visible, so the ack means "a human
+        // can see these", not "an intent was delivered".
+        sendBroadcast(
+            Intent(E2eSasContract.ACTION_E2E_SAS_SHOWN).apply {
+                setPackage(packageName)
+                putExtra(PhoneService.EXTRA_PAIRING_ID, pairingId)
+            }
         )
         android.util.Log.d("MainActivity", "SAS confirm surfaced for $pairingId")
     }

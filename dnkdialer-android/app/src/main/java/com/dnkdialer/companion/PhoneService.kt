@@ -137,6 +137,26 @@ class PhoneService : Service() {
          * on a phone the user walked away from.
          */
         private const val PENDING_REQUEST_TIMEOUT_MS = 30_000L
+
+        /**
+         * vc67 T-SAS-GATE-TIMEOUT-30S — how long the SAS may wait once the
+         * Activity has acked that the digits are ON SCREEN
+         * ([E2eSasContract.ACTION_E2E_SAS_SHOWN]).
+         *
+         * 30 s is the bound for a pairing REQUEST, where the phone shows a
+         * yes/no card and the answer is one tap. A SAS asks the user to find
+         * the other code on a second screen and compare five digits, twice, and
+         * the vc66 live run timed out on exactly that: a person doing what the
+         * prompt asks. A verification the user cannot finish in time is not a
+         * verification, it is a trained reflex to tap fast.
+         *
+         * It stays BOUNDED (not "forever while foreground") because the wait
+         * occupies the single-threaded `e2e-accept` worker and the Activity can
+         * die between the ack and the answer. Unacked, the deadline is still
+         * [PENDING_REQUEST_TIMEOUT_MS]: a prompt no surface received must fail
+         * closed fast, because nobody is coming to answer it.
+         */
+        private const val SAS_SURFACED_TIMEOUT_MS = 120_000L
     }
 
     /**
@@ -1051,12 +1071,12 @@ class PhoneService : Service() {
             val filter = android.content.IntentFilter(
                 android.bluetooth.BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED
             )
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                registerReceiver(receiver, filter)
-            }
+            // F-3: NOT_EXPORTED on every API level (minSdk 26). The sender of
+            // this action is the SYSTEM, which is exempt from the permission
+            // check ContextCompat uses below API 33, so delivery is unchanged.
+            ContextCompat.registerReceiver(
+                this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+            )
             bluetoothHeadsetReceiver = receiver
             android.util.Log.d("PhoneService", "BluetoothHeadset state observer registered")
         } catch (e: Exception) {
@@ -1407,12 +1427,11 @@ class PhoneService : Service() {
             val filter = android.content.IntentFilter(
                 android.media.AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED
             )
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                registerReceiver(receiver, filter)
-            }
+            // F-3: NOT_EXPORTED on every API level. Sender is the SYSTEM
+            // (AudioManager), exempt from the <33 permission check.
+            ContextCompat.registerReceiver(
+                this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+            )
             scoStateReceiver = receiver
             android.util.Log.d("PhoneService", "SCO audio state observer registered")
         } catch (e: Exception) {
@@ -2229,16 +2248,14 @@ class PhoneService : Service() {
             addAction(ConnectionRequestReceiver.ACTION_ACCEPT_CONNECTION)
             addAction(ConnectionRequestReceiver.ACTION_DECLINE_CONNECTION)
         }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(
-                connectionRequestReceiver,
-                connectionFilter,
-                Context.RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(connectionRequestReceiver, connectionFilter)
-        }
+        // F-3: NOT_EXPORTED on every API level (was 33+ only, so API 26-32
+        // let any app spoof an ACCEPT_CONNECTION).
+        ContextCompat.registerReceiver(
+            this,
+            connectionRequestReceiver,
+            connectionFilter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         ConnectionRequestReceiver.serviceHandler = { requestId, accept ->
             handleConnectionDecision(requestId, accept)
         }
@@ -2254,16 +2271,13 @@ class PhoneService : Service() {
             addAction(LobbyActionReceiver.ACTION_DISCONNECT_LOBBY)
             addAction(LobbyActionReceiver.ACTION_REJOIN_LOBBY)
         }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(
-                lobbyActionReceiver,
-                lobbyFilter,
-                Context.RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(lobbyActionReceiver, lobbyFilter)
-        }
+        // F-3: NOT_EXPORTED on every API level.
+        ContextCompat.registerReceiver(
+            this,
+            lobbyActionReceiver,
+            lobbyFilter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         LobbyActionReceiver.lobbyActionHandler = { rejoin ->
             if (rejoin) userRejoinLobby() else userDisconnectFromLobby()
         }
@@ -2296,18 +2310,18 @@ class PhoneService : Service() {
         // Use RECEIVER_NOT_EXPORTED on API 33+ — these intents are internal-only and
         // exporting them would let any app spoof send/delivery status.
         smsStatusReceiver = SmsStatusReceiver()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(smsStatusReceiver, android.content.IntentFilter().apply {
+        // F-3: NOT_EXPORTED on every API level. These arrive from our OWN
+        // PendingIntents (sent under our uid), which hold the signature
+        // permission ContextCompat uses below API 33.
+        ContextCompat.registerReceiver(
+            this,
+            smsStatusReceiver,
+            android.content.IntentFilter().apply {
                 addAction("SMS_SENT")
                 addAction("SMS_DELIVERED")
-            }, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(smsStatusReceiver, android.content.IntentFilter().apply {
-                addAction("SMS_SENT")
-                addAction("SMS_DELIVERED")
-            })
-        }
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         SmsStatusReceiver.onSmsSent = { clientMsgId, success, error ->
             val isViaClient = client?.isOpen == true
@@ -2991,7 +3005,9 @@ class PhoneService : Service() {
             // service-worker row into "Couldn't set up encrypted pairing" on
             // EVERY subsequent attempt until the app was force-stopped, because
             // the latch is process-lifetime.
-            if (E2eNegotiation.DowngradeLatch.latchesOn(verdict)) e2eDowngradeLatch.latch()
+            if (verdict is E2eKeyPin.Verdict.Mismatch) {
+                latchForRefusal(E2eNegotiation.DowngradeLatch.RefusalReason.KEY_PIN_MISMATCH)
+            }
             sendPairingDecision("DECLINE_PAIRING", pairingId, null)
             broadcastE2eRefusal(pairingId, message)
             return
@@ -3043,7 +3059,10 @@ class PhoneService : Service() {
                 )
                 DiagLog.counter("e2e.sas.malformed")
                 prepared.session.close()
-                e2eDowngradeLatch.latch()
+                // vc67 T-SAS-LATCH: malformed digits are OUR fault, not a peer
+                // downgrade. The call still goes through the rule so the table
+                // is the only place the answer lives.
+                latchForRefusal(E2eNegotiation.DowngradeLatch.RefusalReason.SAS_MALFORMED)
                 sendPairingDecision("DECLINE_PAIRING", pairingId, null)
                 broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
                 return
@@ -3108,6 +3127,7 @@ class PhoneService : Service() {
                 digits = prepared.sasDigits,
                 timeoutMs = PENDING_REQUEST_TIMEOUT_MS,
                 onArmed = { pendingSasGate = it },
+                surfacedTimeoutMs = SAS_SURFACED_TIMEOUT_MS,
             )
             if (!E2eSasGate.mayProceed(sas)) {
                 // The refusal path is the same one every other E2E failure
@@ -3127,12 +3147,32 @@ class PhoneService : Service() {
                     "SAS refused after ACCEPT verdict=$sas pair=${Redact.hash6(pairingId)} " +
                         "— tearing the pair down",
                 )
-                e2eDowngradeLatch.latch()
+                // vc67 T-SAS-LATCH. THE fix. Every verdict here is one this
+                // device produced — a clock ran out, a user answered, or the
+                // pair vanished under the prompt — and none of them is a peer
+                // weakening the pair, which is the only thing the downgrade
+                // latch defends against. Latching them made an unanswered SAS
+                // refuse every later Connect until the app was force-stopped
+                // (live-acceptance-vc66-20260924T1630Z). The pair is still torn
+                // down; the ROOM is not blinded, and the next Accept mints a
+                // fresh kid and therefore fresh digits for the user to compare.
+                latchForRefusal(refusalReasonFor(sas))
                 leaveActivePair("SAS not confirmed")
                 // AFTER the frame: tearDownE2e drops the session, and the gate
                 // must stay shut for anything still in flight until it does.
                 tearDownE2e("SAS not confirmed ($sas)")
-                broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
+                // vc67: a deadline that ran out is not "we couldn't set up
+                // encrypted pairing" — nothing failed, nobody answered — and
+                // telling the user the wrong story about a security prompt is
+                // how they learn to ignore the next one.
+                broadcastE2eRefusal(
+                    pairingId,
+                    if (sas == E2eSasGate.Verdict.TIMED_OUT) {
+                        E2eNegotiation.SAS_TIMEOUT_MESSAGE
+                    } else {
+                        E2eNegotiation.ABORT_MESSAGE
+                    },
+                )
                 return
             }
             // Verified. Open the data plane — this is the only statement that
@@ -3159,14 +3199,14 @@ class PhoneService : Service() {
             if (accepted) {
                 android.util.Log.e("PhoneService", "E2E failed after ACCEPT — $why")
                 DiagLog.w("PhoneService", "e2e failure after ACCEPT — tearing down: $why")
-                e2eDowngradeLatch.latch()
+                latchForRefusal(E2eNegotiation.DowngradeLatch.RefusalReason.LOCAL_CRYPTO_FAILURE)
                 leaveActivePair("e2e failure after accept")
                 tearDownE2e("e2e failure after accept")
                 broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
                 return
             }
             if (decision.modeOn) {
-                e2eDowngradeLatch.latch()
+                latchForRefusal(E2eNegotiation.DowngradeLatch.RefusalReason.LOCAL_CRYPTO_FAILURE)
                 android.util.Log.e("PhoneService", "E2E accept failed — $why")
                 sendPairingDecision("DECLINE_PAIRING", pairingId, null)
                 broadcastE2eRefusal(pairingId, E2eNegotiation.ABORT_MESSAGE)
@@ -3297,6 +3337,52 @@ class PhoneService : Service() {
      * here is a no-op by design — deliberately not an exception, because a
      * peer must never be able to crash the service by sending a frame.
      */
+    /**
+     * vc67 T-SAS-LATCH — the single door to [E2eNegotiation.DowngradeLatch.latch].
+     *
+     * Every refusal path names its REASON and this applies the one rule
+     * ([E2eNegotiation.DowngradeLatch.latchesOnRefusal]), the same shape
+     * [clearDowngradeLatch] already uses for the clear side. A call site that
+     * decided for itself is how TIMED_OUT came to blind a room for the life of
+     * the process, so there is no longer a call site that can.
+     *
+     * The DiagLog line is the forensic trace: it says what was refused and
+     * whether the latch answered, which is exactly the pair of facts a support
+     * thread needs to tell "deliberate" from "bug".
+     */
+    private fun latchForRefusal(reason: E2eNegotiation.DowngradeLatch.RefusalReason) {
+        val set = e2eDowngradeLatch.latch(reason)
+        DiagLog.d(
+            "PhoneService",
+            "latch decision reason=$reason latches=" +
+                "${E2eNegotiation.DowngradeLatch.latchesOnRefusal(reason)} " +
+                "setByThisCall=$set latched=${e2eDowngradeLatch.isLatched}",
+        )
+        android.util.Log.i(
+            "PhoneService",
+            "E2E refusal reason=$reason latched=${e2eDowngradeLatch.isLatched}",
+        )
+    }
+
+    /** The SAS verdicts that refuse, mapped onto the latch rule's vocabulary. */
+    private fun refusalReasonFor(
+        verdict: E2eSasGate.Verdict,
+    ): E2eNegotiation.DowngradeLatch.RefusalReason = when (verdict) {
+        E2eSasGate.Verdict.TIMED_OUT ->
+            E2eNegotiation.DowngradeLatch.RefusalReason.SAS_TIMED_OUT
+        E2eSasGate.Verdict.REFUSED ->
+            E2eNegotiation.DowngradeLatch.RefusalReason.SAS_REFUSED
+        E2eSasGate.Verdict.CANCELLED ->
+            E2eNegotiation.DowngradeLatch.RefusalReason.SAS_NOT_SHOWN
+        E2eSasGate.Verdict.MALFORMED ->
+            E2eNegotiation.DowngradeLatch.RefusalReason.SAS_MALFORMED
+        // MATCHED / NOT_REQUIRED never reach a refusal path (mayProceed is
+        // true for both); naming them here keeps the `when` exhaustive without
+        // an else that would silently absorb a verdict added later.
+        E2eSasGate.Verdict.MATCHED, E2eSasGate.Verdict.NOT_REQUIRED ->
+            E2eNegotiation.DowngradeLatch.RefusalReason.SAS_NOT_SHOWN
+    }
+
     private fun clearDowngradeLatch(event: E2eNegotiation.DowngradeLatch.Event) {
         if (!E2eNegotiation.DowngradeLatch.clearsLatch(event)) {
             android.util.Log.d("PhoneService", "downgrade latch kept across $event")
@@ -4736,12 +4822,11 @@ class PhoneService : Service() {
             addAction(FileTransferActionReceiver.ACTION_REJECT)
             addAction(FileTransferActionReceiver.ACTION_CANCEL)
         }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(receiver, filter)
-        }
+        // F-3: NOT_EXPORTED on every API level (notification-action intents
+        // come from our own PendingIntents).
+        ContextCompat.registerReceiver(
+            this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         FileTransferActionReceiver.handler = { cancelRunning ->
             if (cancelRunning) manager.cancel() else manager.rejectOffer()
         }

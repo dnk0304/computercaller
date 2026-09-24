@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import androidx.core.content.ContextCompat
 
 /**
  * BAT-1 (a) — phone battery telemetry.
@@ -152,7 +153,14 @@ class BatteryReporter(
             }
         }
         try {
-            context.registerReceiver(r, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            // F-3: NOT_EXPORTED on every API level. ACTION_BATTERY_CHANGED is
+            // a protected broadcast sent by the SYSTEM, which is exempt from the
+            // permission check ContextCompat uses below API 33 - delivery is
+            // unchanged, but no other app can feed us a forged battery sample.
+            ContextCompat.registerReceiver(
+                context, r, IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
             receiver = r
             android.util.Log.d(TAG, "battery observer registered")
         } catch (e: Exception) {

@@ -1,0 +1,14 @@
+
+1. latchesOnRefusal — the table
+
+2. PhoneService call sites go through the rule
+
+3. clearsLatch is unchanged
+
+4. the SAS deadlines
+
+5. the SAS_SHOWN ack
+
+6. what the user is told on expiry
+
+PASS  83 passed, 0 failed
