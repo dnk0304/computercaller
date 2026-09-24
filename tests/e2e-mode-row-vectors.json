@@ -1,0 +1,131 @@
+{
+  "$comment": [
+    "INC-0924 — the Encrypted-mode row, and the one-time migration of the preference behind it.",
+    "",
+    "Consumer: dnkdialer-android/app/src/test/.../E2eModeRowVectorsTest.kt",
+    "  rows      -> E2eModeRowCopy.forState(capability, checkedPref)",
+    "  migration -> E2eSettings.legacyPrefMigration(enabled, userSet)",
+    "",
+    "There is no web consumer and there must not be one: this table is about an ANDROID control over an",
+    "ANDROID-local preference (E2eSettings C-1: the setting is per-device and the server never gets a vote).",
+    "The file lives in tests/ beside the cross-surface vectors so the android lane reads its fixtures from",
+    "one place, not to imply a second implementation exists.",
+    "",
+    "THE INCIDENT THIS FILE EXISTS FOR. Until this build forState returned `checked = enabled && checkedPref`,",
+    "so a stored ON was drawn as OFF in every state except PEER_SUPPORTED. The masked value was the SAME",
+    "value E2eNegotiation.decide() reads at Accept, so a phone sitting in the lobby showed an OFF switch and",
+    "then forced a SAS-blocking encrypted pair: 'the phone automatically is pushing encrypted mode even",
+    "though it's not toggled on' (Dennis, 2026-09-24, phone v65 1.0.41). Every `checked` below is therefore",
+    "EXACTLY `checkedPref` — that is the assertion, not an accident of the table.",
+    "",
+    "`subLine` names the extra line the row shows underneath the capability reason, or null. It exists so",
+    "that un-masking the switch does not produce a control that is ON, grey and unexplained."
+  ],
+  "version": 1,
+  "rows": [
+    {
+      "id": "unknown-off",
+      "capability": "UNKNOWN",
+      "checkedPref": false,
+      "enabled": false,
+      "checked": false,
+      "reasonKey": "settings_encrypted_mode_waiting",
+      "subLine": null
+    },
+    {
+      "id": "unknown-on",
+      "label": "the lobby cell Dennis was in — no computer has advertised yet, and the stored pref is ON",
+      "capability": "UNKNOWN",
+      "checkedPref": true,
+      "enabled": false,
+      "checked": true,
+      "reasonKey": "settings_encrypted_mode_waiting",
+      "subLine": "settings_encrypted_mode_on_while_disabled"
+    },
+    {
+      "id": "peer-unsupported-off",
+      "capability": "PEER_UNSUPPORTED",
+      "checkedPref": false,
+      "enabled": false,
+      "checked": false,
+      "reasonKey": "settings_encrypted_mode_peer_old",
+      "subLine": null
+    },
+    {
+      "id": "peer-unsupported-on",
+      "capability": "PEER_UNSUPPORTED",
+      "checkedPref": true,
+      "enabled": false,
+      "checked": true,
+      "reasonKey": "settings_encrypted_mode_peer_old",
+      "subLine": "settings_encrypted_mode_on_while_disabled"
+    },
+    {
+      "id": "device-unsupported-off",
+      "capability": "DEVICE_UNSUPPORTED",
+      "checkedPref": false,
+      "enabled": false,
+      "checked": false,
+      "reasonKey": "settings_encrypted_mode_device_old",
+      "subLine": null
+    },
+    {
+      "id": "device-unsupported-on",
+      "capability": "DEVICE_UNSUPPORTED",
+      "checkedPref": true,
+      "enabled": false,
+      "checked": true,
+      "reasonKey": "settings_encrypted_mode_device_old",
+      "subLine": "settings_encrypted_mode_on_while_disabled"
+    },
+    {
+      "id": "peer-supported-off",
+      "capability": "PEER_SUPPORTED",
+      "checkedPref": false,
+      "enabled": true,
+      "checked": false,
+      "reasonKey": "settings_encrypted_mode_ready",
+      "subLine": null
+    },
+    {
+      "id": "peer-supported-on",
+      "label": "the only cell the old code got right",
+      "capability": "PEER_SUPPORTED",
+      "checkedPref": true,
+      "enabled": true,
+      "checked": true,
+      "reasonKey": "settings_encrypted_mode_ready",
+      "subLine": null
+    }
+  ],
+  "migration": [
+    {
+      "id": "on-unset-resets",
+      "label": "Dennis's device: ON from the v62/v63 attempts, no marker, never a deliberate choice",
+      "enabled": true,
+      "userSet": false,
+      "decision": "RESET_TO_OFF"
+    },
+    {
+      "id": "on-set-kept",
+      "label": "a user who flipped the switch ON keeps it — consent is never overwritten",
+      "enabled": true,
+      "userSet": true,
+      "decision": "NONE"
+    },
+    {
+      "id": "off-unset-noop",
+      "label": "the shipping default; the migration must not write on a clean device",
+      "enabled": false,
+      "userSet": false,
+      "decision": "NONE"
+    },
+    {
+      "id": "off-set-noop",
+      "label": "a user who deliberately turned it OFF",
+      "enabled": false,
+      "userSet": true,
+      "decision": "NONE"
+    }
+  ]
+}
