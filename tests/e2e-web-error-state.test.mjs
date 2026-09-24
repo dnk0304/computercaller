@@ -180,7 +180,17 @@ const bridge = readFileSync(join(ROOT, 'hooks', 'usePhoneBridge.ts'), 'utf8');
 
 check('useE2e imports viewAfterPairEnded', /\bviewAfterPairEnded\b/.test(useE2e));
 check('useE2e imports viewAfterErrorDismissed', /\bviewAfterErrorDismissed\b/.test(useE2e));
-check('onPairEnded calls viewAfterPairEnded', useE2e.includes('setView(viewAfterPairEnded)'));
+// INC-0924: onPairEnded now chooses between two teardown views. Both arms are
+// required — asserting only the plain one would pass on a build that had lost
+// the mid-SAS branch, which is the branch that tells a user their phone said
+// the codes did not match.
+check('onPairEnded calls viewAfterPairEnded on an ordinary teardown',
+  useE2e.includes('viewAfterPairEndedDuringSas : viewAfterPairEnded'));
+check('onPairEnded calls viewAfterPairEndedDuringSas when the SAS was open',
+  /setView\(endedMidSas \? viewAfterPairEndedDuringSas : viewAfterPairEnded\);/.test(useE2e));
+check('and it reads the SAS window BEFORE clearing it',
+  useE2e.indexOf('const endedMidSas = sasPendingRef.current;')
+    < useE2e.indexOf('setView(endedMidSas ?'));
 
 /**
  * THE REGRESSION ITSELF: onPairEnded must not reset the view unconditionally.
@@ -242,13 +252,33 @@ check('usePhoneBridge exposes the dismiss to the UI',
 
 /**
  * RESET_ROOM and a socket close reach the error rule through the SAME funnel.
- * There is exactly one onPairEnded call site, so proving the funnel is proving
- * that all three teardowns are covered. If a second call site ever appears,
- * this fires and someone re-reads the table.
+ *
+ * INC-0924 re-read the table, as this assertion's previous wording asked the
+ * next person to. There are now TWO call sites, and the second is not a leak:
+ * the PAIRING_TERMINATED frame is the one place a pair ends WITHOUT this
+ * browser asking, and until this commit nothing in that case told the e2e half
+ * anything — the session, the SAS block and the digits stayed installed
+ * against a pair that no longer existed. It is also the frame the phone's
+ * "Doesn't match" arrives as. So the count is pinned at 2 AND each site is
+ * named, which is strictly stronger than the bare count it replaces: a third,
+ * unreviewed site still fires this, and so does either of these two vanishing.
  */
 {
   const sites = (bridge.match(/e2eRef\.current\.onPairEnded\(\)/g) || []).length;
-  eq('onPairEnded has exactly ONE call site (the single teardown funnel)', sites, 1);
+  eq('onPairEnded has exactly TWO reviewed call sites', sites, 2);
+  {
+    const i = bridge.indexOf("case 'PAIRING_TERMINATED': {");
+    const body = bridge.slice(i, bridge.indexOf(`\n      }`, i));
+    check('the PAIRING_TERMINATED case actually sliced',
+      body.includes('setLobbyState') && body.length > 200, `${body.length} chars`);
+    check('site 1: the PAIRING_TERMINATED frame tells the e2e half',
+      body.includes('e2eRef.current.onPairEnded()'));
+  }
+  {
+    const i = bridge.indexOf('const leaveActive = useCallback');
+    check('site 2: the local Disconnect still funnels through it',
+      i > 0 && bridge.slice(i, i + 1200).includes('e2eRef.current.onPairEnded()'));
+  }
 }
 
 const total = pass + fail;

@@ -1725,6 +1725,18 @@ export function usePhoneBridge() {
         // Reset to lobby and wipe data caches — same shape as the old
         // disconnect path so downstream views (contacts, messages, calls)
         // don't render stale data while waiting for a new pair.
+        //
+        // INC-0924: tell the e2e half too. This frame is the one place a pair
+        // ends WITHOUT this browser having asked, and until now nothing here
+        // called into useE2e at all — the session, the SAS block and the
+        // digits all stayed installed against a pair that no longer existed,
+        // and an open SAS dialog just sat there. It is also how the phone's
+        // "Doesn't match" reaches us: the phone answers a refusal after
+        // ACCEPT with LEAVE_ACTIVE, and the relay turns that into this frame.
+        // onPairEnded is the existing, tested teardown (it is what Disconnect
+        // already calls) and it decides the copy from whether a SAS was
+        // pending; nothing new is implemented here.
+        e2eRef.current.onPairEnded();
         if (pairingTimerRef.current) {
           clearTimeout(pairingTimerRef.current);
           pairingTimerRef.current = null;
