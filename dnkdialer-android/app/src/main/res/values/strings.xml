@@ -561,7 +561,12 @@
     <string name="settings_account_signed_in">Signed in on this phone</string>
     <string name="settings_account_unknown">This phone</string>
     <string name="settings_signout_sub">Clears this phone\'s login</string>
-    <string name="settings_permissions_sub">Review what this app can reach</string>
+    <string name="settings_permissions_sub">See every permission and open its setting</string>
+
+    <!-- vc65, T-ANDROID-PERMISSIONS-SCREEN - Settings > Permissions. -->
+    <string name="permissions_title">Permissions</string>
+    <string name="permissions_intro">Tap any permission to open its setting on this phone.</string>
+    <string name="perms_deeplink_unavailable">This phone has no settings page for that permission.</string>
     <string name="settings_notifications_sub">Alert style, sounds and channels</string>
     <string name="settings_hard_reset_sub">Wipes app data and re-runs setup</string>
 

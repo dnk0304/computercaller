@@ -185,8 +185,13 @@ class SettingsActivity : AppCompatActivity() {
                 Intent(this, SyncedDataActivity::class.java).putExtra("tab", "calls")
             )
         }
+        // vc65 - was AccountActions.openAppDetails(this), i.e. straight to
+        // app info. That page cannot answer "what have I allowed" for the
+        // special accesses this app depends on, so the row now opens our
+        // own checklist and app info becomes one of the destinations it
+        // offers rather than the only one.
         findViewById<View>(R.id.settingsPermissionsButton).setOnClickListener {
-            AccountActions.openAppDetails(this)
+            startActivity(Intent(this, PermissionsActivity::class.java))
         }
         enableNotificationsButton = findViewById(R.id.settingsEnableNotificationsButton)
         enableNotificationsButton.setOnClickListener {

@@ -2039,51 +2039,11 @@ class MainActivity : AppCompatActivity() {
         container: LinearLayout,
         items: List<PermissionChecker.PermissionStatusItem>
     ) {
-        container.removeAllViews()
-        val inflater = LayoutInflater.from(this)
-        for (item in items) {
-            val row = inflater.inflate(R.layout.item_permission_status, container, false)
-            row.findViewById<TextView>(R.id.permTitle).text = item.displayName
-            row.findViewById<TextView>(R.id.permWhy).text = item.why
-
-            val (colorRes, badgeRes) = when (item.status) {
-                PermissionChecker.Status.GRANTED ->
-                    R.color.dot_live to R.string.perm_status_granted
-                PermissionChecker.Status.MISSING_REQUIRED ->
-                    R.color.dot_failed to R.string.perm_status_missing_required
-                PermissionChecker.Status.MISSING_SOFT ->
-                    R.color.dot_waiting to R.string.perm_status_missing_soft
-            }
-            val color = ContextCompat.getColor(this, colorRes)
-            row.findViewById<View>(R.id.permStatusIcon).backgroundTintList =
-                ColorStateList.valueOf(color)
-            val badge: TextView = row.findViewById(R.id.permStatusBadge)
-            badge.text = getString(badgeRes)
-            badge.setTextColor(color)
-
-            // Tap a missing row to deep-link straight into the relevant
-            // grant surface. Granted rows are non-interactive. Helpful
-            // for the user who wants to fix just one thing instead of
-            // running the full Grant All flow.
-            val tapTarget = item.intent
-            if (tapTarget != null) {
-                row.setOnClickListener {
-                    try {
-                        startActivity(tapTarget)
-                    } catch (e: Exception) {
-                        android.util.Log.w(
-                            "MainActivity",
-                            "Per-row tap intent failed for ${item.id}: ${e.message}"
-                        )
-                    }
-                }
-            } else {
-                row.setOnClickListener(null)
-                row.isClickable = false
-            }
-
-            container.addView(row)
-        }
+        // vc65 — the painter moved to PermissionRows so Settings >
+        // Permissions renders the identical row. Passing no onRowTap
+        // keeps this screen's behaviour exactly as it was: granted rows
+        // inert, missing rows opening item.intent.
+        PermissionRows.bind(this, container, items)
     }
 
     /**
