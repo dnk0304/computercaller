@@ -104,7 +104,15 @@ for (const error of ALL_ERRORS) {
   eq('onPairEnded clears the kid', out.debug.kid, null);
   eq('onPairEnded clears the drop counters', out.debug.drops, 0);
   eq('onPairEnded clears downgradesDropped', out.debug.downgradesDropped, 0);
-  eq('onPairEnded clears peer.supports', out.peer.supports, false);
+  // T-EXT-E2E-ROW-STANDBY-COPY re-pin: `false` -> `'unknown'`. The ASSERTION IS
+  // NOT WEAKENED — it is the same claim, now expressible. `peer.supports` is a
+  // tri-state (lib/encryptedModeCopy.ts PeerSupport), and `false` there means
+  // "the phone answered no", which a teardown is no evidence of. Clearing it to
+  // `false` is what made every standby session say "your phone app needs v58 or
+  // newer" about a phone that had said nothing. `'unknown'` is the cleared
+  // value; a row asserting `false` here would be asserting the defect.
+  eq('onPairEnded clears peer.supports to unknown, not to a version verdict',
+    out.peer.supports, 'unknown');
   // peer.kind is a property of the BROWSER (the extension SW's key), not of the
   // pair, so it survives a teardown.
   eq('onPairEnded PRESERVES peer.kind', out.peer.kind, 'present');

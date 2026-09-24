@@ -225,6 +225,12 @@ for (const row of V.indicator) {
   eq(`indicator ${row.name}: label`, ind.label, row.expect.label);
   eq(`indicator ${row.name}: lock`, ind.lock, row.expect.lock);
   eq(`indicator ${row.name}: banner`, ind.banner, row.expect.banner);
+  if (row.expect.detailMustInclude === 'Update your phone app') {
+    // The vector names the sentence; the module owns it. Assert they are the
+    // same string rather than letting the row carry a retyped copy.
+    eq(`indicator ${row.name}: the vector's phrase IS the exported constant`,
+      row.expect.detailMustInclude, UPDATE_PHONE);
+  }
   if (row.expect.detailMustInclude) {
     check(`indicator ${row.name}: detail includes "${row.expect.detailMustInclude}"`,
       ind.detail.includes(row.expect.detailMustInclude), ind.detail);

@@ -523,7 +523,7 @@ const MIN_CHECKS_OVERRIDE = {
   // the :not() scoping of the header's nowrap rule. Delete any of them and the
   // suite prints a cheerful N/N with the "needs v58" guess back on screen.
   // Measured at the commit that adds it.
-  'relay:e2e-setting-availability.test.mjs': 106,
+  'relay:e2e-setting-availability.test.mjs': 107,
   // T-FT-WEB-SEAL-NO-HINT (RULE 30). tests/e2e-ft-hint-contract.test.mjs drives
   // the REAL web hint producer (lib/fileTransfer/frames.ts ftHintFor, called on
   // useE2e's seal path) into the REAL relay gate (ftOfferMetadata, sliced out of

@@ -430,7 +430,7 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // T-EXT-E2E-ROW-STANDBY-COPY: the Encrypted-mode availability/copy vectors,
     // sweep-discovered by the tests/e2e-*.test.mjs rule and therefore carrying
     // only a floor.
-    ['relay:e2e-setting-availability.test.mjs', 106],
+    ['relay:e2e-setting-availability.test.mjs', 107],
   ]) {
     check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,
       gate.includes(`'${name}': ${floor},`));
