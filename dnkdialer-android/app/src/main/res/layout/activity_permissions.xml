@@ -18,7 +18,10 @@
   permissionsBackButton and permissionsList.
 
   Padding / app-bar / page-padding dimens are Settings' own so the two
-  screens read as one surface; theme + dark mode come from the Activity's
+  screens read as one surface. Unlike activity_settings.xml this root sets
+  no android:background: the theme's windowBackground is the same colour and
+  already painted, so a second copy of it is pure overdraw (lint agrees, and
+  the surface is identical either way). Theme + dark mode come from the Activity's
   AppCompat DayNight theme with no per-screen colours declared here.
 -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
@@ -28,8 +31,7 @@
     android:layout_height="match_parent"
     android:fillViewport="true"
     android:scrollbars="none"
-    android:overScrollMode="never"
-    android:background="?android:attr/windowBackground">
+    android:overScrollMode="never">
 
     <LinearLayout
         android:id="@+id/permissionsContent"

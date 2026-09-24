@@ -1,5 +1,6 @@
 package com.dnkdialer.companion
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
@@ -191,7 +192,16 @@ object PermissionDeepLinks {
      *
      * Returns the action that was launched, or null if nothing
      * resolved — in which case the user has been toasted.
+     *
+     * QueryPermissionsNeeded is suppressed rather than answered with a
+     * <queries> element or QUERY_ALL_PACKAGES. API 30 package visibility
+     * does not filter platform/system components, and every action in
+     * every chain resolves to the Settings app — so resolveActivity
+     * cannot be blinded here. It is also only the CHEAP check: the
+     * try/catch below is what actually decides, and it would be correct
+     * even if visibility filtering did apply.
      */
+    @SuppressLint("QueryPermissionsNeeded")
     fun launch(activity: Activity, id: String): String? {
         for (intent in candidates(activity, id)) {
             if (intent.resolveActivity(activity.packageManager) == null) continue
