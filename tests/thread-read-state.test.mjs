@@ -144,8 +144,8 @@ check('threadOpened is not a cc-ft store', !CC_FT_STORES.includes(CC_READ_STORE_
 // The whole point of a separate database is that this feature cannot bump
 // theirs. These are the numbers that must not have changed.
 eq('CC_E2E_DB_VERSION unchanged', CC_E2E_DB_VERSION, 2);
-eq('CC_FT_DB_VERSION unchanged', CC_FT_DB_VERSION, 1);
-eq('CC_FT_STORES unchanged', [...CC_FT_STORES], ['resume']);
+eq('CC_FT_DB_VERSION unchanged', CC_FT_DB_VERSION, 2);
+eq('CC_FT_STORES unchanged', [...CC_FT_STORES], ['resume', 'queue']);
 check('cc-e2e still holds the device key store', CC_E2E_STORES.includes('deviceKey'));
 
 // ── 4. dispatch: the helpers open cc-read and nothing else ──────────────────

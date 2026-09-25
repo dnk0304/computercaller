@@ -202,11 +202,21 @@ for (const reason of ['size_mismatch', 'busy']) {
   check('glue: Try again is no longer wired to dismiss', !/onRetry=\{onDismissError\}/.test(layer));
   check('glue: the layer wires onRetry to ft.retry()', /void ft\.retry\(\)\.then/.test(layer));
   check('glue: repick opens the picker from the retry click', /outcome === 'repick'\) repickInputRef\.current\?\.click\(\)/.test(layer));
-  check('glue: sendFile retains the File for retry', /setOutgoing\(\{ file, from, size: file\.size, failedId: null \}\)/.test(hook));
-  check('glue: retry plans through planRetry', /await planRetry\(outgoing\)/.test(hook));
-  check('glue: retry re-sends through sendFile (new id via sender.send)', /await sendFile\(outgoing\.file as File, outgoing\.from\)/.test(hook));
+  // FILE-QUEUE-WEB moved the retained File and the retry decision from the
+  // hook into lib/fileTransfer/queueController.ts (the queue owns the one
+  // sender). Same four guarantees, pinned where the code now lives; the
+  // controller itself is driven end-to-end by tests/e2e-ft-queue.test.mjs.
+  const ctl = readFileSync(join(ROOT, 'lib/fileTransfer/queueController.ts'), 'utf8');
+  check('glue: sendFile retains the File for retry',
+    /queueCtl\.enqueue\(\[file\], from\)/.test(hook) && /files\.set\(s\.id, list\[i\]\)/.test(ctl));
+  check('glue: retry plans through planRetry',
+    /await planRetry\(\s*\{ file, from: it\.from, size: it\.size, failedId: it\.transferId \}/.test(ctl)
+    && /queueCtl\.retry\(target, replacement\)/.test(hook));
+  check('glue: retry re-sends through sendFile (new id via sender.send)',
+    /dispatch\(\{ type: 'retry', id \}\)/.test(ctl) && /sender\.send\(file, next\.from\)/.test(ctl));
   check('glue: cancel clears the banner and the retained File',
-    /sender\.cancel\(\);\s*receiver\.cancel\(\);\s*setError\(null\);\s*setOutgoing\(null\);/.test(hook));
+    /queueCtl\.cancelActiveSend\(\);\s*receiver\.cancel\(\);\s*queueCtl\.dismissFailure\(\);/.test(hook)
+    && /files\.delete\(id\);\s*if \(it\.direction === 'send' && isActive\(it\)\) sender\.cancel\(\);/.test(ctl));
   check('glue: the banner renders the repick action', /data-cc-ft-action="repick"/.test(banner));
 }
 

@@ -2372,3 +2372,29 @@ html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-unsupported] {
   user-select: none;
 }
 .cc-ext .cc-toast-icon { --cc-app-icon: 24px; margin-top: 1px; }
+
+/* ===========================================================================
+   FILE-QUEUE-WEB — the Transfers strip on the .cc-ext ladder. Only the tokens
+   move; the geometry is globals.css's. Dark values are measured on --cc-l1
+   #131316 (the strip) and the sheet #18181b, AAA like the light set:
+     ink #fafafa 17.8:1 · sec #d4d4d4 12.5:1 · fail #fecdd3 13.2:1 ·
+     pause #fde68a 14.9:1 (all on #131316; on #18181b sec 12.0, fail 12.6)
+   =========================================================================== */
+.cc-ext .cc-ftq {
+  --ftq-bg: var(--cc-l1);
+  --ftq-sheet: var(--cc-l2);
+  --ftq-hair: var(--cc-hair);
+  --ftq-ring: var(--cc-ring);
+}
+.cc-ext .cc-ftq-fill { background: var(--cc-grad); }
+:where([data-cc-theme=dark]) .cc-ext .cc-ftq {
+  --ftq-ink: #fafafa;
+  --ftq-sec: #d4d4d4;
+  --ftq-fail: #fecdd3;
+  --ftq-pause: #fde68a;
+  --ftq-track: #3f3f46;
+  --ftq-hover: rgba(255, 255, 255, 0.07);
+  --ftq-chip: #3f3f46;
+}
+/* Header queue badge, dark: #0b0b0d on #93c5fd is 10.9:1. */
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-header-count { background: #93c5fd; color: #0b0b0d; }

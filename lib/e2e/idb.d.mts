@@ -23,6 +23,7 @@ export declare class CcE2eDbBlockedError extends Error {
 export declare const CC_FT_DB_NAME: 'cc-ft';
 export declare const CC_FT_DB_VERSION: number;
 export declare const CC_FT_STORE_RESUME: 'resume';
+export declare const CC_FT_STORE_QUEUE: 'queue';
 export declare const CC_FT_STORES: readonly string[];
 
 /**
