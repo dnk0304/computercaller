@@ -21,6 +21,7 @@ import android.service.notification.StatusBarNotification
 class DnkNotificationListenerService : NotificationListenerService() {
 
     companion object {
+        private const val TAG = "DnkNotificationListener"
         private var instance: DnkNotificationListenerService? = null
         fun getInstance(): DnkNotificationListenerService? = instance
 
@@ -61,11 +62,14 @@ class DnkNotificationListenerService : NotificationListenerService() {
         // is a notification that appears on one path and not the other, and
         // nobody can say which behaviour was intended.
 
-        // Per-package icon cache. Keyed by packageName; value is a base64-encoded
-        // PNG of the app's launcher icon scaled to 48x48. Lives for the process
-        // lifetime — drawables don't change without a reinstall, so caching here
-        // avoids re-encoding on every notification.
-        private val iconCache = java.util.concurrent.ConcurrentHashMap<String, String>() // packageName → base64 PNG
+        // Per-(package, user) icon cache. Value is a base64-encoded PNG of the
+        // app's unbadged icon (96px, 64px fallback — see NotificationIconPipeline).
+        // Keyed by user too: a work-profile WhatsApp and the personal one are
+        // separate entries. Capped by encoded bytes, not entry count.
+        private val iconCache = ByteCappedIconCache(NotificationIconPipeline.CACHE_MAX_BYTES)
+
+        // Failure lines are logged once per package per process.
+        private val iconFailureLogged = NotificationIconPipeline.OncePerKey()
 
         // Callback set by PhoneService so it can forward intercepted notifications.
         // Includes the full set of fields the web client needs to render and
@@ -201,7 +205,7 @@ class DnkNotificationListenerService : NotificationListenerService() {
             replyKey = replyKey,
             notificationKey = notificationKey,
             timestamp = sbn.postTime,
-            icon = captureAppIcon(pkg),
+            icon = captureAppIcon(sbn, extras),
             senderPersonUri = extractSenderPersonUri(extras),
             backfill = backfill,
         )
@@ -259,47 +263,73 @@ class DnkNotificationListenerService : NotificationListenerService() {
     }
 
     /**
-     * Resolves the app's launcher icon to a base64-encoded 48x48 PNG suitable
-     * for the web client. Result is memoised in iconCache so we encode each
-     * package at most once per process lifetime. Returns null if the package
-     * has no resolvable icon or rendering fails — caller treats null as
-     * "no icon, fall back to placeholder".
+     * Resolves the posting app's icon to a base64 PNG (96px, 64px fallback,
+     * <= 16 KB encoded) for the web client, or null ("no icon, placeholder").
+     *
+     * Source chain, first hit wins:
+     *  1. extras: the ApplicationInfo that Notification.Builder stamps into
+     *     every notification's extras ("android.appInfo"). Loading an icon
+     *     from an ApplicationInfo does not depend on package visibility, so
+     *     it needs no <queries> and no QUERY_ALL_PACKAGES.
+     *  2. pm: packageManager.getApplicationIcon(packageName) — the old path.
+     *     Resolves by package name, so it is subject to package-visibility
+     *     filtering (NameNotFoundException when the package is not visible);
+     *     kept as a fallback.
+     *
+     * Catches Throwable (OOM on a huge adaptive-icon bitmap must never crash
+     * the listener). No stack traces are logged.
      */
-    private fun captureAppIcon(packageName: String): String? {
-        // Return cached icon if available
-        iconCache[packageName]?.let { return it }
+    private fun captureAppIcon(sbn: StatusBarNotification, extras: Bundle): String? {
+        val pkg = sbn.packageName ?: return null
+        val key = NotificationIconPipeline.cacheKey(pkg, sbn.user?.toString() ?: "")
+        iconCache.get(key)?.let { return it }
 
-        // Catch Throwable (not just Exception) so OutOfMemoryError — which can
-        // fire on packageManager.getApplicationIcon for adaptive icons with
-        // huge backing drawables — never crashes the notification listener.
-        // SecurityException, NameNotFoundException, NPE from a malformed
-        // drawable, OOM during bitmap alloc — all funnel into a null return.
-        // Canvas.draw() correctly rasterises AdaptiveIconDrawable (API 26+)
-        // without special-casing, so no explicit instanceof branch needed.
-        return try {
-            val drawable = packageManager.getApplicationIcon(packageName)
-            val bitmap = android.graphics.Bitmap.createBitmap(48, 48, android.graphics.Bitmap.Config.ARGB_8888)
-            val canvas = android.graphics.Canvas(bitmap)
-            drawable.setBounds(0, 0, 48, 48)
-            drawable.draw(canvas)
-
-            val out = java.io.ByteArrayOutputStream()
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 85, out)
-            bitmap.recycle()
-
-            val base64 = android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
-            // Cap the cache at 100 entries — the most-frequently-seen 100 apps
-            // (which is the realistic ceiling on any phone) stay cached for
-            // the process lifetime. Anything past that is re-encoded on demand
-            // each time; cheap relative to the ~5-15ms encode cost and avoids
-            // unbounded native memory growth on devices with thousands of apps.
-            if (iconCache.size < 100) {
-                iconCache[packageName] = base64
+        val pm = packageManager
+        val icon = NotificationIconPipeline.resolve(
+            listOf(
+                NotificationIconPipeline.Source.EXTRAS to {
+                    extrasAppInfo(extras)?.let { ai -> renderCapped(ai.loadUnbadgedIcon(pm)) }
+                },
+                NotificationIconPipeline.Source.PM to {
+                    renderCapped(pm.getApplicationIcon(pkg))
+                },
+            ),
+        ) { source, cause ->
+            if (iconFailureLogged.first(pkg)) {
+                android.util.Log.w(TAG, NotificationIconPipeline.failureLine(pkg, source, cause))
             }
-            base64
-        } catch (t: Throwable) {
-            android.util.Log.w("DnkNotificationListener", "Failed to capture icon for $packageName: ${t.message}")
-            null
+        }
+        if (icon != null) iconCache.put(key, icon)
+        return icon
+    }
+
+    private fun extrasAppInfo(extras: Bundle): android.content.pm.ApplicationInfo? {
+        val k = NotificationIconPipeline.EXTRA_APP_INFO
+        return if (android.os.Build.VERSION.SDK_INT >= 33) {
+            extras.getParcelable(k, android.content.pm.ApplicationInfo::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            extras.getParcelable<android.os.Parcelable>(k) as? android.content.pm.ApplicationInfo
+        }
+    }
+
+    /** 96px -> 64px -> IconTooLargeException, per NotificationIconPipeline.encodeCapped. */
+    private fun renderCapped(drawable: android.graphics.drawable.Drawable): String =
+        NotificationIconPipeline.encodeCapped { px -> renderPngBase64(drawable, px) }
+
+    private fun renderPngBase64(drawable: android.graphics.drawable.Drawable, px: Int): String {
+        // Full bounds, no transparent-bounds crop: an AdaptiveIconDrawable is
+        // drawn with all its layers exactly as the launcher masks it.
+        val bitmap = android.graphics.Bitmap.createBitmap(px, px, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            val canvas = android.graphics.Canvas(bitmap)
+            drawable.setBounds(0, 0, px, px)
+            drawable.draw(canvas)
+            val out = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            return android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+        } finally {
+            bitmap.recycle()
         }
     }
 
@@ -359,4 +389,97 @@ class DnkNotificationListenerService : NotificationListenerService() {
         val key = sbn.key ?: return
         onNotificationRemovedCb?.invoke(key)
     }
+}
+
+/**
+ * The framework-free half of icon capture: source chain, size cap, cache key,
+ * failure line. Pure Kotlin so the rules are unit-testable on the JVM.
+ */
+internal object NotificationIconPipeline {
+    /** Notification.EXTRA_BUILDER_APPLICATION_INFO — @hide in the SDK, stable literal. */
+    const val EXTRA_APP_INFO = "android.appInfo"
+    const val PRIMARY_PX = 96
+    const val FALLBACK_PX = 64
+    const val MAX_ENCODED_BYTES = 16 * 1024
+    const val CACHE_MAX_BYTES = 1_500_000L
+
+    enum class Source(val label: String) { EXTRAS("extras"), PM("pm") }
+
+    /** Both sizes exceed MAX_ENCODED_BYTES: send no icon rather than a huge frame. */
+    class IconTooLargeException : RuntimeException()
+
+    fun cacheKey(packageName: String, user: String): String = "$packageName#$user"
+
+    /**
+     * Encodes at PRIMARY_PX; if the base64 (ASCII, so chars == bytes) exceeds
+     * MAX_ENCODED_BYTES, re-encodes at FALLBACK_PX; if that is still too big,
+     * throws IconTooLargeException so the chain records it as the cause.
+     */
+    fun encodeCapped(encode: (Int) -> String): String {
+        val big = encode(PRIMARY_PX)
+        if (big.length <= MAX_ENCODED_BYTES) return big
+        val small = encode(FALLBACK_PX)
+        if (small.length <= MAX_ENCODED_BYTES) return small
+        throw IconTooLargeException()
+    }
+
+    /**
+     * Tries each source in order; the first non-null result wins. A source
+     * returning null means "not available" (e.g. no appInfo in extras) and is
+     * not a failure. If nothing produced an icon and at least one source
+     * threw, [onFailure] is called exactly once with the LAST failing source.
+     */
+    fun resolve(
+        sources: List<Pair<Source, () -> String?>>,
+        onFailure: (Source, Throwable) -> Unit,
+    ): String? {
+        var lastFailure: Pair<Source, Throwable>? = null
+        for ((source, load) in sources) {
+            try {
+                val icon = load()
+                if (icon != null) return icon
+            } catch (t: Throwable) {
+                lastFailure = source to t
+            }
+        }
+        lastFailure?.let { (source, cause) -> onFailure(source, cause) }
+        return null
+    }
+
+    fun failureLine(packageName: String, source: Source, cause: Throwable): String =
+        "Failed to capture icon pkg=$packageName source=${source.label} cause=${cause.javaClass.simpleName}"
+
+    /** true the first time a key is seen in this process, false after. */
+    class OncePerKey {
+        private val seen = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        fun first(key: String): Boolean = seen.add(key)
+    }
+}
+
+/**
+ * LRU cache of base64 icons bounded by total encoded bytes (ASCII, so string
+ * length == bytes). An entry larger than the whole cap is not stored.
+ */
+internal class ByteCappedIconCache(private val maxBytes: Long) {
+    private val map = LinkedHashMap<String, String>(16, 0.75f, true)
+    private var bytes = 0L
+
+    @Synchronized fun get(key: String): String? = map[key]
+
+    @Synchronized fun put(key: String, value: String) {
+        val size = value.length.toLong()
+        if (size > maxBytes) return
+        map.remove(key)?.let { bytes -= it.length }
+        map[key] = value
+        bytes += size
+        val it = map.entries.iterator()
+        while (bytes > maxBytes && it.hasNext()) {
+            val eldest = it.next()
+            bytes -= eldest.value.length
+            it.remove()
+        }
+    }
+
+    @Synchronized fun totalBytes(): Long = bytes
+    @Synchronized fun size(): Int = map.size
 }
