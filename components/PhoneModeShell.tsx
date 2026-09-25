@@ -98,6 +98,7 @@ import {
 import { useTemplates } from '@/hooks/useTemplates';
 import { ChipScroller } from '@/components/ChipScroller';
 import { AppIcon } from '@/components/AppIcon';
+import { cleanNotificationTitle } from '@/lib/notificationTitle';
 
 import {
   useThreadReadState,
@@ -2123,7 +2124,7 @@ function BellView() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline justify-between gap-2">
                       <p className="truncate text-sm font-semibold text-slate-800">
-                        {n.appName} · {n.title}
+                        {n.appName} · {cleanNotificationTitle(n.title)}
                       </p>
                       <button
                         type="button"
@@ -2390,8 +2391,10 @@ function ExtBellView() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return items;
+    // Raw OR cleaned title: the stored text still has the phone's doubled
+    // sender, the card shows the repaired one — either typed form must match.
     return items.filter(n =>
-      `${n.appName} ${n.title} ${n.body}`.toLowerCase().includes(q),
+      `${n.appName} ${n.title} ${cleanNotificationTitle(n.title)} ${n.body}`.toLowerCase().includes(q),
     );
   }, [items, search]);
 
@@ -2487,7 +2490,7 @@ function ExtBellView() {
                 </div>
                 <NoteText
                   id={n.id}
-                  title={n.title}
+                  title={cleanNotificationTitle(n.title)}
                   body={n.body}
                   expanded={expandedIds.has(n.id)}
                   onToggle={toggleExpanded}
@@ -2593,7 +2596,7 @@ const NotificationToast = React.memo(function NotificationToast({ notif, onDismi
         )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-semibold text-slate-800">
-            {notif.appName} · {notif.title}
+            {notif.appName} · {cleanNotificationTitle(notif.title)}
           </p>
           <p className="line-clamp-2 text-xs leading-snug text-slate-600">{notif.body}</p>
         </div>
