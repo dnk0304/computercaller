@@ -203,6 +203,13 @@ class MainActivity : AppCompatActivity() {
     private var lastPaintedLiveMode: E2eStatusCopy.State? = null
     private var hasPaintedModeRow = false
 
+    /**
+     * vc69 — the account-pref facts the row and the B1 prompt card were last
+     * painted for (online + the persisted record). A push, a refusal or a
+     * relay open/close changes it; an idle 2 s tick does not.
+     */
+    private var lastPaintedAcctSig: String? = null
+
     // Dispatch #34 (v20) — Disconnect button (terminates the active
     // pair without signing out). Hoisted to a field so updateStatus()
     // and handleRelayPhaseChanged() can flip visibility based on the
@@ -1254,11 +1261,65 @@ class MainActivity : AppCompatActivity() {
      */
     private fun paintEncryptedModeRow(live: E2eStatusCopy.State?) {
         val binder = encryptedModeBinder ?: return
-        if (hasPaintedModeRow && lastPaintedLiveMode == live) return
+        val acctSig = E2eAccountPrefController.isOnline().toString() + "|" +
+            (E2eAccountPrefController.state(this)?.let { E2eAccountPref.encode(it) } ?: "-")
+        if (hasPaintedModeRow && lastPaintedLiveMode == live && lastPaintedAcctSig == acctSig) return
         hasPaintedModeRow = true
         lastPaintedLiveMode = live
+        lastPaintedAcctSig = acctSig
         binder.livePairMode = live
         binder.refresh()
+        paintE2ePrefPrompt()
+    }
+
+    /**
+     * vc69 Security B1 — the latch prompt card, and the one-time raise notice.
+     * The buttons act through [E2eAccountPrefController]; the next tick
+     * repaints from the persisted record, so a restart shows the same card.
+     */
+    private fun paintE2ePrefPrompt() {
+        val card = findViewById<View>(R.id.homeE2ePrefPromptCard) ?: return
+        val pending = E2eAccountPrefController.state(this)?.pendingDowngrade
+        if (pending == null) {
+            card.visibility = View.GONE
+        } else {
+            val paused = pending.kind == E2eAccountPref.DowngradeKind.PAUSED
+            findViewById<TextView>(R.id.homeE2ePrefPromptText).text =
+                E2eAccountPrefCopy.promptText(this, pending)
+            val secondary = findViewById<Button>(R.id.homeE2ePrefPromptSecondary)
+            val primary = findViewById<Button>(R.id.homeE2ePrefPromptPrimary)
+            if (paused) {
+                secondary.setText(R.string.e2e_pref_prompt_keep_check)
+                primary.setText(R.string.e2e_pref_prompt_continue_without)
+                secondary.setOnClickListener { E2eAccountPrefController.keepCodeCheck(this); forceAcctRepaint() }
+                primary.setOnClickListener { E2eAccountPrefController.keepOff(this); forceAcctRepaint() }
+            } else {
+                secondary.setText(R.string.e2e_pref_prompt_keep_off)
+                primary.setText(R.string.e2e_pref_prompt_turn_back_on)
+                secondary.setOnClickListener { E2eAccountPrefController.keepOff(this); forceAcctRepaint() }
+                primary.setOnClickListener {
+                    // The tap IS the confirmation (design §12) — no second dialog.
+                    when (E2eAccountPrefController.turnBackOn(this)) {
+                        E2eAccountPrefController.Result.SENT -> Unit
+                        E2eAccountPrefController.Result.OFFLINE ->
+                            Toast.makeText(this, R.string.e2e_pref_offline, Toast.LENGTH_LONG).show()
+                        else -> Toast.makeText(this, R.string.e2e_pref_toast_failed, Toast.LENGTH_LONG).show()
+                    }
+                    forceAcctRepaint()
+                }
+            }
+            card.visibility = View.VISIBLE
+        }
+        val notice = findViewById<TextView>(R.id.homeE2ePrefNotice) ?: return
+        E2eAccountPrefController.takeNotice(this)?.let {
+            notice.text = E2eAccountPrefCopy.noticeText(this, it)
+            notice.visibility = View.VISIBLE
+        }
+    }
+
+    private fun forceAcctRepaint() {
+        lastPaintedAcctSig = null
+        paintEncryptedModeRow(lastPaintedLiveMode)
     }
 
     /**

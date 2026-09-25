@@ -104,6 +104,9 @@ class PhoneService : Service() {
             private set
 
         private const val NOTIFICATION_ID = 1001
+
+        /** vc69 B1: the "Encrypted mode was turned off from X" prompt. */
+        private const val E2E_PREF_PROMPT_NOTIFICATION_ID = 1401
         private const val CHANNEL_ID = "dnk_dialer_service"
 
         /**
@@ -2186,6 +2189,21 @@ class PhoneService : Service() {
         // make a latch survive the app.
         clearDowngradeLatch(E2eNegotiation.DowngradeLatch.Event.SERVICE_RESTART)
 
+        // vc69 T-E2E-ACCOUNT-PREF: lend the relay socket to the account-pref
+        // controller (SET_E2E_PREF / SEED_E2E_PREF go over it, never HTTP) and
+        // take its prompt callbacks. A latch persisted before a restart is
+        // re-announced here: the card and notification must survive the kill.
+        E2eAccountPrefController.transport = object : E2eAccountPrefController.Transport {
+            override fun isOpen(): Boolean = client?.isOpen == true
+            override fun send(type: String, payload: Map<String, Any>): Boolean {
+                val c = client ?: return false
+                if (!c.isOpen) return false
+                c.sendResponse(type, payload)
+                return true
+            }
+        }
+        E2eAccountPrefController.promptListener = { show -> onE2ePrefPrompt(show) }
+
         // INC-0924 — the one-time reset of a stored Encrypted-mode ON that no
         // user is known to have asked for.
         //
@@ -2225,6 +2243,8 @@ class PhoneService : Service() {
 
         createNotificationChannel()
         createConnectionRequestChannel()
+        // vc69 B1: re-announce a latch persisted before a kill (after the channels exist).
+        if (E2eAccountPrefController.state(this)?.pendingDowngrade != null) onE2ePrefPrompt(true)
 
         // P6.1c 1a — SPEC v1.0 l.118 "registered on login". Sign-in covers the
         // login edge; this covers every app start where the registry has no
@@ -2892,8 +2912,11 @@ class PhoneService : Service() {
             ?: E2eNegotiation.parsePeerOffer(null).also {
                 android.util.Log.w("PhoneService", "no stashed e2e offer for $pairingId")
             }
+        // vc69 T-E2E-ACCOUNT-PREF: the ACCOUNT value after the B1 latch —
+        // never lowered by a push this phone has not agreed to. With no stored
+        // account id yet, the legacy local switch (vc68 behaviour).
         val decision = E2eNegotiation.decide(
-            E2eSettings.isEncryptedModeEnabled(this), offer, e2eDowngradeLatch
+            E2eAccountPrefController.advertisedOn(this), offer, e2eDowngradeLatch
         )
         // vc63 — the line that would have named INC-0923 in one read. The
         // Abort reason is E2eNegotiation's own constant string, not anything a
@@ -3252,6 +3275,42 @@ class PhoneService : Service() {
     }
 
     /** Tell any foreground UI that the pairing was refused, and why. */
+    /**
+     * vc69 B1 — the latch prompt's second surface. The card on Home is the
+     * control; this notification only brings the user there when the app is
+     * in the background. Cleared when the prompt is answered or a raise
+     * supersedes it.
+     */
+    private fun onE2ePrefPrompt(show: Boolean) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (!show) {
+            nm.cancel(E2E_PREF_PROMPT_NOTIFICATION_ID)
+            return
+        }
+        if (isAppInForeground()) return
+        val pending = E2eAccountPrefController.state(this)?.pendingDowngrade ?: return
+        val tap = PendingIntent.getActivity(
+            this,
+            E2E_PREF_PROMPT_NOTIFICATION_ID,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val text = E2eAccountPrefCopy.promptText(this, pending)
+        val n = NotificationCompat.Builder(this, CONNECTION_REQUEST_CHANNEL_ID)
+            .setContentTitle(getString(R.string.e2e_pref_notif_title))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setSmallIcon(R.drawable.ic_stat_cc)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(tap)
+            .build()
+        runCatching { nm.notify(E2E_PREF_PROMPT_NOTIFICATION_ID, n) }
+            .onFailure { android.util.Log.w("PhoneService", "e2e-pref prompt notify failed: ${it.javaClass.simpleName}") }
+    }
+
     private fun broadcastE2eRefusal(pairingId: String, message: String) {
         sendBroadcast(
             Intent(ACTION_PAIRING_E2E_REFUSED).apply {
@@ -4939,6 +4998,12 @@ class PhoneService : Service() {
                 // removed — its semantics (close the relay socket) are
                 // now covered by PAIRING_TERMINATED (which keeps the
                 // socket open and just updates UI).
+                // vc69 T-E2E-ACCOUNT-PREF — the account's Encrypted-mode value.
+                // Every decision (rev drop, B1 latch, seed) is the pure
+                // E2eAccountPref reducer's; this only routes the frame.
+                E2eAccountPref.FRAME_PUSH -> E2eAccountPrefController.onPushFrame(this, payload)
+                E2eAccountPref.FRAME_REFUSED -> E2eAccountPrefController.onRefusedFrame(this, payload)
+
                 "PAIRING_REQUEST" -> {
                     val pairingId = payload?.get("pairingId") as? String
                     if (pairingId.isNullOrBlank()) {
@@ -5773,6 +5838,10 @@ class PhoneService : Service() {
         // Activity onResume sees "not started" and re-starts us rather than
         // binding to a dying instance.
         markStopped()
+
+        // vc69: the controller must not hold a dead service's socket.
+        E2eAccountPrefController.transport = null
+        E2eAccountPrefController.promptListener = null
 
         // FT-2: first, so a broadcast or an Activity that arrives during the
         // rest of the teardown finds a null handler rather than a half-torn

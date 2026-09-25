@@ -74,34 +74,71 @@ class E2eModeRowBinder(
     fun bind(onChanged: (Boolean) -> Unit = {}) {
         toggle.setOnCheckedChangeListener { _, isChecked ->
             if (suppressCallback) return@setOnCheckedChangeListener
-            E2eSettings.setEncryptedModeEnabled(ctx, isChecked)
-            val line = afterFlipText(isChecked)
-            reason.text = line
-            applyA11y(line)
-            // A change to a node that is not focused is not announced, so a
-            // TalkBack user would otherwise hear "on" and never learn that
-            // "on" applies to the next connection rather than this one.
-            toggle.announceForAccessibility(line)
-            onChanged(isChecked)
+            // vc69 (T-E2E-ACCOUNT-PREF): the switch is the ACCOUNT value. A tap
+            // is a request, not a write: snap back to the stored value and ask
+            // first (design §8). The switch moves when the server's E2E_PREF
+            // confirms it. The legacy local store is read-only from vc69 on.
+            refresh()
+            confirmAndSet(isChecked, onChanged)
         }
     }
 
-    /** Repaint the whole row from the store and the capability provider. */
+    /** §8: confirm dialog -> SET_E2E_PREF (through the controller), or nothing. */
+    private fun confirmAndSet(on: Boolean, onChanged: (Boolean) -> Unit) {
+        val activity = ctx as? android.app.Activity ?: return
+        android.app.AlertDialog.Builder(activity)
+            .setTitle(if (on) R.string.e2e_pref_confirm_on_title else R.string.e2e_pref_confirm_off_title)
+            .setMessage(if (on) R.string.e2e_pref_confirm_on_body else R.string.e2e_pref_confirm_off_body)
+            .setNegativeButton(R.string.e2e_pref_cancel, null)
+            .setPositiveButton(
+                if (on) R.string.e2e_pref_confirm_on_action else R.string.e2e_pref_confirm_off_action,
+            ) { _, _ ->
+                when (E2eAccountPrefController.requestSet(ctx, on)) {
+                    E2eAccountPrefController.Result.SENT -> {
+                        val line = afterFlipText(on)
+                        reason.text = line
+                        applyA11y(line)
+                        // A change to a node that is not focused is not announced.
+                        toggle.announceForAccessibility(line)
+                        onChanged(on)
+                    }
+                    E2eAccountPrefController.Result.OFFLINE -> toast(R.string.e2e_pref_offline)
+                    else -> toast(R.string.e2e_pref_toast_failed)
+                }
+            }
+            .show()
+    }
+
+    private fun toast(res: Int) {
+        android.widget.Toast.makeText(ctx, res, android.widget.Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * Repaint the whole row from the ACCOUNT value (vc69) and the capability
+     * provider. Checked = the account preference (the last push); before any
+     * push, what this phone advertises. Enabled = the relay is open (writes go
+     * over the socket, no offline writes, §8) and this phone can do e2e at all.
+     */
     fun refresh() {
-        val copy = E2eModeRowCopy.forState(
-            E2ePeerCapability.current(ctx),
-            E2eSettings.isEncryptedModeEnabled(ctx),
-        )
-        toggle.isEnabled = copy.enabled
+        val st = E2eAccountPrefController.state(ctx)
+        val mirror = st?.mirror
+        val checked = mirror?.preference ?: E2eAccountPrefController.advertisedOn(ctx)
+        val capability = E2ePeerCapability.current(ctx)
+        val copy = E2eModeRowCopy.forState(capability, checked)
+        val online = E2eAccountPrefController.isOnline()
+        val enabled = online && st != null &&
+            capability != E2ePeerCapability.State.DEVICE_UNSUPPORTED
+        val alpha = if (enabled) E2eModeRowCopy.FULL_ALPHA else E2eModeRowCopy.DIMMED_ALPHA
+        toggle.isEnabled = enabled
         suppressCallback = true
-        toggle.isChecked = copy.checked
+        toggle.isChecked = checked
         suppressCallback = false
 
-        title?.alpha = copy.alpha
-        sub?.alpha = copy.alpha
-        toggle.alpha = copy.alpha
+        title?.alpha = alpha
+        sub?.alpha = alpha
+        toggle.alpha = alpha
 
-        val line = reasonText(copy)
+        val line = reasonText(copy, enabled, online, st)
         reason.text = line
         applyA11y(line)
     }
@@ -117,17 +154,29 @@ class E2eModeRowBinder(
      * with no explanation is the thing users file bugs about — so the
      * capability copy is appended even while paired.
      */
-    private fun reasonText(copy: E2eModeRowCopy.RowCopy): String {
+    private fun reasonText(
+        copy: E2eModeRowCopy.RowCopy,
+        enabled: Boolean,
+        online: Boolean,
+        st: E2eAccountPref.State?,
+    ): String {
         val live = livePairMode
-        val parts = ArrayList<String>(3)
+        val parts = ArrayList<String>(6)
         if (live != null) parts.add(ctx.getString(E2eModeRowCopy.liveModeLine(live)))
-        if (live == null || !copy.enabled) parts.add(ctx.getString(copy.reasonRes))
+        val mirror = st?.mirror
+        // vc69: "On, paused by ComputerCaller", never a plain "Off" (design §3).
+        if (mirror?.pausedByServer == true) parts.add(ctx.getString(R.string.e2e_pref_paused))
+        // B1: the account says lower, this phone has not agreed yet.
+        if (st?.pendingDowngrade != null) parts.add(ctx.getString(R.string.e2e_pref_latched_line))
+        if (!online) parts.add(ctx.getString(R.string.e2e_pref_offline))
+        if (live == null || !enabled) parts.add(ctx.getString(copy.reasonRes))
         // INC-0924. Appended AFTER the capability reason, never instead of it:
-        // "your computer is too old" is why the control is grey, and "it is on
-        // and will apply when you pair" is what the grey ON state means. A user
-        // who is shown only the second has no idea why they cannot change it.
-        copy.onWhileDisabledRes?.let { parts.add(ctx.getString(it)) }
-        if (live != null && copy.enabled &&
+        // an ON value on an inoperable control is said in words.
+        if (!enabled && copy.checked) {
+            parts.add(ctx.getString(R.string.settings_encrypted_mode_on_while_disabled))
+        }
+        mirror?.let { m -> E2eAccountPrefCopy.changedByLine(ctx, m)?.let { parts.add(it) } }
+        if (live != null && enabled &&
             !E2eModeRowCopy.switchAgreesWithLiveMode(copy.checked, live)
         ) {
             parts.add(ctx.getString(R.string.home_e2e_next_only))
