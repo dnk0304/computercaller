@@ -544,10 +544,73 @@ const FT_SWEEP_MS = 5_000;
 /**
  * Declared-size enforcement (spec §2 rule 2): forwarded wire bytes may exceed
  * the declared RAW size by at most this factor (base64 is +33 %, the JSON
- * envelope and any E2E seal the rest). A sender cannot declare 1 MB and push
- * 200 MB.
+ * envelope the rest). A sender cannot declare 1 MB and push 200 MB.
+ *
+ * PLAINTEXT transfers only. A SEALED transfer has its own factor below — this
+ * 1.40 used to cover both, and the sealed chunk is 1.78x, so every encrypted
+ * file over ~170 KB died at the meter as `size_mismatch` (FT-METER-1, prod
+ * 2026-09-25 id 4482bd32: metered=693592148 ceiling=693667630).
  */
 const FT_WIRE_OVERHEAD_FACTOR = 1.40;
+
+/**
+ * FT-METER-1 — the SEALED-transfer constants. Selected by `rec.sealed`, which is
+ * what the relay OBSERVED on the FILE_OFFER (an `{e,…,c}` envelope), never a
+ * field the sender declares. The wire format is unchanged; only the relay's
+ * arithmetic learns that a sealed chunk is base64'd TWICE:
+ *
+ *   FILE_CHUNK:{"e":1,"kid":K,"s":S,"c": b64url( GCM( {"id","seq","n","data": b64(raw)} ) ) }
+ *
+ * MEASURED with the real seal path (lib/e2e/kdf.mjs seal + session.mjs
+ * encodeEnvelope, AES-GCM, 22-char kid as Android's newKid() mints):
+ *   full 48 KiB chunk, typical counters ........ 87 555 B  = 1.78131 x raw
+ *   full chunk, seq 21845 / s 123456 ........... 87 567 B  = 1.78156 x raw
+ *     (prod FT-DIAG measured 87 559 B = 1.7814 — agrees)
+ *   full chunk, WORST envelope (kid 128 chars —
+ *     decodeEnvelope's max — and s = 2^32-1) ... 87 677 B  = 1.78379 x raw
+ *   1-byte final chunk .......................... 176 B (worst 301 B)
+ *   plaintext full chunk, for comparison ........ 65 620 B  = 1.33504 x raw
+ */
+
+/**
+ * Charge-side inversion for a SEALED transfer: the double-base64 FLOOR,
+ * (4/3)^2 = 16/9 = 1.7778. Every sealed chunk is at least this many wire bytes
+ * per raw byte (ceil(ceil(r*4/3)*4/3) >= 16r/9 before any envelope), so dividing
+ * the meter by it never charges LESS raw than was moved — same direction of
+ * error as FT_WIRE_B64_FACTOR, and for the same reason (A1.1-M12).
+ *
+ * Inverting a sealed meter on the plaintext 4/3 is the FT-METER-1 overcharge:
+ * 1.7814 / 1.3333 = +33.6 % on every encrypted file.
+ */
+const FT_WIRE_B64_FACTOR_SEALED = 16 / 9;
+
+/**
+ * Ceiling-side factor for a SEALED transfer. Measured full-chunk ratio is
+ * 1.7813 (typical) to 1.7838 (worst envelope); 1.85 is +3.85 % / +3.71 % over
+ * those — inside the <= 4 % margin Ken's FT-METER-1 decision allows, and the
+ * same shape as the plaintext pair (1.3350 measured, 1.40 ceiling).
+ *
+ * The per-chunk fixed cost of a SHORT final chunk is not what this factor is
+ * for; that is FT_CHUNK_WIRE_BYTES_SEALED below.
+ */
+const FT_WIRE_OVERHEAD_FACTOR_SEALED = 1.85;
+
+/**
+ * One full SEALED chunk on the wire, with headroom — the sealed-units twin of
+ * FT_CHUNK_WIRE_BYTES, and the ceiling's floor for a sealed transfer. The slack
+ * must be in sealed units: the plaintext 66 600 is SMALLER than one real sealed
+ * chunk (87 559), so a sealed 10-byte file on the plaintext floor would die on
+ * its own first chunk.
+ *
+ *   inner:  b64(49152) = 65 536 chars + 128 for the {id,seq,n,data} JSON
+ *           (measured 73 at seq 21845) + 16 GCM tag           = 65 680 B
+ *   outer:  b64url of that                                  = 87 576 chars
+ *   + 1024 for `FILE_CHUNK:` + {"e","kid"<=128,"s"} (measured <= 190)
+ *                                                           = 88 600 B
+ * Measured worst full sealed chunk is 87 677 B, 923 B under this.
+ */
+const FT_CHUNK_WIRE_BYTES_SEALED =
+  4 * Math.ceil((4 * Math.ceil(FT_CHUNK_RAW_BYTES / 3) + 128 + 16) / 3) + 1024;
 
 /**
  * Tiers entitled to file transfer. An ALLOW-list, not a deny-list, so an
@@ -2224,7 +2287,7 @@ function startRelay(httpServer) {
     for (const role of ['phone', 'browser']) {
       safeSend(ftSocketForRole(room, role), frame);
     }
-    rlog(`[Relay][${redactToken(room.token)}] FILE transfer aborted id=${rec.id} reason=${reason} bytes=${rec.bytesForwarded}`);
+    rlog(`[Relay][${redactToken(room.token)}] FILE transfer aborted id=${rec.id} reason=${reason} bytes=${rec.bytesForwarded} sealed=${rec.sealed}`);
   }
 
   /**
@@ -2309,7 +2372,7 @@ function startRelay(httpServer) {
     // length, summed, for this (room, id). It is deliberately one field and not
     // a second `metered` counter alongside it — two names for one quantity is
     // how one of them stops being incremented.
-    const actual = ftRawFromWire(rec.bytesForwarded);
+    const actual = ftRawFromWire(rec.bytesForwarded, rec.sealed);
     const delta = actual - size;                 // negative = refund the unused part
     rec.settledRaw = actual;
     if (delta === 0) return;
@@ -2367,7 +2430,7 @@ function startRelay(httpServer) {
     // envelope is {"e":1,"kid":"kid-ftA1","s":42,"c":"..."}. Keying the check on
     // `c` being a non-empty string is what makes it independent of how `e` is
     // spelled if the envelope version ever moves.
-    const sealed = typeof payload.c === 'string' && payload.c.length > 0 && payload.e !== undefined;
+    const sealed = ftIsSealedBody(payload);
 
     if (sealed) {
       // MUST A-2 — FAIL CLOSED on a missing or malformed hint. This is the hole
@@ -2413,11 +2476,46 @@ function startRelay(httpServer) {
    * The second term applies the 1 GiB PER-FILE cap in the same units, so a
    * sender that hints 1 GiB and then streams forever is stopped at the cap
    * rather than at 1.4x the cap.
+   *
+   * FT-METER-1: `sealed` picks the factor/slack PAIR. It is REQUIRED — a
+   * missing mode throws rather than defaulting to plaintext, because the
+   * plaintext default is exactly the bug (a sealed file judged on 1.40), and
+   * the hard cap uses the SAME per-mode pair, or a 1 GiB sealed file would
+   * still die at a plaintext-units cap.
    */
-  function ftWireCeiling(size) {
-    const hinted = Math.ceil(size * FT_WIRE_OVERHEAD_FACTOR) + FT_CHUNK_WIRE_BYTES;
-    const hardCap = Math.ceil(FT_MAX_FILE_BYTES * FT_WIRE_OVERHEAD_FACTOR) + FT_CHUNK_WIRE_BYTES;
+  function ftWireCeiling(size, sealed) {
+    ftRequireMode(sealed);
+    const factor = sealed ? FT_WIRE_OVERHEAD_FACTOR_SEALED : FT_WIRE_OVERHEAD_FACTOR;
+    const slack = sealed ? FT_CHUNK_WIRE_BYTES_SEALED : FT_CHUNK_WIRE_BYTES;
+    const hinted = Math.ceil(size * factor) + slack;
+    const hardCap = Math.ceil(FT_MAX_FILE_BYTES * factor) + slack;
     return Math.min(hinted, hardCap);
+  }
+
+  /**
+   * FT-METER-1 — the transfer's mode is a boolean the relay OBSERVED, and every
+   * meter conversion must be told it. No default: `undefined` silently meaning
+   * "plaintext" is the shape of the bug this dispatch fixes.
+   */
+  function ftRequireMode(sealed) {
+    if (typeof sealed !== 'boolean') {
+      throw new TypeError(`ft meter: transfer mode must be an explicit boolean, got ${typeof sealed}`);
+    }
+  }
+
+  /**
+   * Is this FILE_* body an E2E envelope? The ONE predicate for "sealed", used by
+   * the FILE_OFFER accessor (to set rec.sealed) and by the FILE_CHUNK mode
+   * binding, so the two can never disagree about what a sealed frame looks like.
+   *
+   * `c` is the ciphertext and `e` the version marker — a NUMBER (1), not a
+   * string; keying on `c` being a non-empty string keeps this independent of how
+   * `e` is spelled if the envelope version ever moves. A marker check only: no
+   * crypto, no decode — the relay holds no keys.
+   */
+  function ftIsSealedBody(payload) {
+    return !!payload && typeof payload === 'object'
+      && typeof payload.c === 'string' && payload.c.length > 0 && payload.e !== undefined;
   }
 
   /**
@@ -2433,13 +2531,19 @@ function startRelay(httpServer) {
    * derived from a MEASUREMENT rather than from the sender's claim, and it errs
    * within one chunk of the real figure. It is clamped to the per-file cap so a
    * settle can never charge more than a file is allowed to be.
+   *
+   * FT-METER-1: inverted on the floor for the transfer's MODE (4/3 plaintext,
+   * 16/9 sealed). A sealed meter inverted on 4/3 charged every encrypted file
+   * ~34 % more than it moved. Mode is required, as in ftWireCeiling.
    */
-  function ftRawFromWire(wireBytes) {
+  function ftRawFromWire(wireBytes, sealed) {
+    ftRequireMode(sealed);
     if (!wireBytes) return 0;
-    // Inverted on the base64 FLOOR (4/3), never on the ceiling's 1.40 — see
+    // Inverted on the base64 FLOOR for the mode, never on a ceiling factor — see
     // FT_WIRE_B64_FACTOR. Dividing by the larger number returns FEWER raw bytes
     // than were really moved, which is the wrong direction of error for a charge.
-    return Math.min(Math.ceil(wireBytes / FT_WIRE_B64_FACTOR), FT_MAX_FILE_BYTES);
+    const floor = sealed ? FT_WIRE_B64_FACTOR_SEALED : FT_WIRE_B64_FACTOR;
+    return Math.min(Math.ceil(wireBytes / floor), FT_MAX_FILE_BYTES);
   }
 
   /**
@@ -2518,6 +2622,10 @@ function startRelay(httpServer) {
       senderUserId: ws.userId,
       quotaDay: null,
       quotaSettled: false,
+      // FT-METER-1: the mode the relay OBSERVED on this offer (an {e,…,c}
+      // envelope), fixed for the life of the transfer. Picks the meter's
+      // ceiling and charge factors, and every FILE_CHUNK must match it.
+      sealed: meta.sealed,
     };
     room.transfer = rec;
 
@@ -2560,7 +2668,7 @@ function startRelay(httpServer) {
     rec.state = 'offered';
     rec.lastActivityAt = Date.now();
     safeSend(destNow, `FILE_OFFER:${JSON.stringify(payload)}`);
-    rlog(`[Relay][${redactToken(token)}] FILE_OFFER armed id=${id} from=${role} size=${size}`);
+    rlog(`[Relay][${redactToken(token)}] FILE_OFFER armed id=${id} from=${role} size=${size} sealed=${rec.sealed}`);
   }
 
   /**
@@ -2706,13 +2814,31 @@ function startRelay(httpServer) {
         //
         // FILE_CHUNK is padding-exempt (`_CHUNK` suffix), so the count is exact
         // and costs no crypto and no parsing.
+        //
+        // FT-METER-1 — MODE BINDING (L5). The ceiling and the charge are picked
+        // by rec.sealed, so a chunk whose mode differs from the offer's is
+        // metered on the wrong pair: an UNSEALED chunk on a sealed transfer is
+        // ~1.33x raw against a 1.85x ceiling, i.e. ~39 % more raw bytes past the
+        // hint and a charge inverted on 16/9 instead of 4/3. No honest client
+        // sends one — §13.7 seals every FILE_CHUNK under mode ON and none under
+        // OFF. Envelope-marker check only (no crypto, no decode), refused BEFORE
+        // it is metered or forwarded. Reason is `size_mismatch`: it is in the
+        // frozen, relay-owned vocabulary and is the tamper word (A-7); a new
+        // `malformed` reason would normalise to `cancelled`, lose the relay mark
+        // and be dropped by a mode-ON receiver — a 30 s hang instead of an error.
+        if (ftIsSealedBody(payload) !== rec.sealed) {
+          const n = ftCountDrop(token, type, 'mode_mismatch');
+          rlog(`[Relay][${redactToken(token)}] FILE_CHUNK mode mismatch id=${rec.id} sealed=${rec.sealed} count=${n}`);
+          ftAbort(room, 'size_mismatch');
+          return true;
+        }
         const wire = Buffer.byteLength(msg, 'utf8');
         // ftWireCeiling converts the RAW hint into WIRE bytes before comparing.
         // Comparing them directly would abort every honest transfer at about
         // three quarters through — and it would look like an attack.
-        const ceiling = ftWireCeiling(rec.size);
+        const ceiling = ftWireCeiling(rec.size, rec.sealed);
         if (rec.bytesForwarded + wire > ceiling) {
-          rlog(`[Relay][${redactToken(token)}] FILE_CHUNK over metered ceiling id=${rec.id} hinted=${rec.size} metered=${rec.bytesForwarded} ceiling=${ceiling}`);
+          rlog(`[Relay][${redactToken(token)}] FILE_CHUNK over metered ceiling id=${rec.id} hinted=${rec.size} metered=${rec.bytesForwarded} ceiling=${ceiling} sealed=${rec.sealed}`);
           // `size_mismatch` per Ken's Addendum 2, which is the binding text and
           // is also the more precise word: what happened is that the declared
           // size and the actual stream disagree. Security's A-3 says `quota`;

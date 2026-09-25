@@ -120,6 +120,10 @@ function extractConst(name) {
 
 const relay = new Function([
   extractConst('FT_MAX_FILE_BYTES'),
+  // FT-METER-1: ftOfferMetadata's "is this sealed?" test moved into the shared
+  // ftIsSealedBody (also used by the FILE_CHUNK mode binding). Injected REAL,
+  // never stubbed — a stub here would let the two predicates drift apart.
+  extractFn('ftIsSealedBody'),
   extractFn('ftOfferMetadata'),
   extractFn('ftFrameId'),
   'return { ftOfferMetadata, ftFrameId };',
