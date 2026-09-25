@@ -293,8 +293,8 @@ check('(e) the sent bubble no longer paints bg-blue-600',
   SHELL.includes("'rounded-tr-md bg-blue-600 text-white'") === false);
 check('(e) it carries the token class instead',
   SHELL.includes("'cc-bubble-out rounded-tr-md'"));
-check('(e) the light token pair is declared', CSS.includes('--cc-bubble-out: #cfe6ff;'));
-check('(e) the dark token pair is declared', CSS.includes('--cc-bubble-out: #9cc8ff;'));
+check('(e) the light token pair is declared', CSS.includes('--cc-bubble-out: #cfffdf;'));
+check('(e) the dark token pair is declared', CSS.includes('--cc-bubble-out: #9cffbd;'));
 check('(e) the ink is the same near-black in both themes',
   (CSS.match(/--cc-bubble-out-ink: #0b1220;/g) || []).length === 2);
 check('(e) the rule cancels the gradient remap explicitly',
@@ -317,8 +317,8 @@ const ratio = (a, b) => {
   const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
   return (x + 0.05) / (y + 0.05);
 };
-const light = ratio('#cfe6ff', '#0b1220');
-const dark = ratio('#9cc8ff', '#0b1220');
+const light = ratio('#cfffdf', '#0b1220');
+const dark = ratio('#9cffbd', '#0b1220');
 check('(e) light bubble clears WCAG AA 4.5:1', light >= 4.5, `${light.toFixed(2)}:1`);
 check('(e) dark bubble clears WCAG AA 4.5:1', dark >= 4.5, `${dark.toFixed(2)}:1`);
 check('(e) both clear AAA 7:1 too — this panel runs at 0.8x density',
@@ -329,7 +329,7 @@ check('(e) the committed comment states the measured numbers, not rounded guesse
 // Plant: the ratio function must be able to FAIL, or the three checks above are
 // three ways of printing PASS.
 check('(e-ctl) the contrast function reports a genuine failure when handed one',
-  ratio('#cfe6ff', '#ffffff') < 4.5, `${ratio('#cfe6ff', '#ffffff').toFixed(2)}:1`);
+  ratio('#cfffdf', '#ffffff') < 4.5, `${ratio('#cfffdf', '#ffffff').toFixed(2)}:1`);
 
 console.log(`\n${passed}/${total} checks passed`);
 if (passed !== total) process.exit(1);
