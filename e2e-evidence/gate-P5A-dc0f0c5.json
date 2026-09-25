@@ -1444,6 +1444,11 @@
       "reap:e2e-ui-proof"
     ],
     "detail": "both attempts exit 124 (timeout); 0 FAIL assertions in either attempt log (228 + 361 PASS lines); orphan node#3076 exited on its own. Re-run e2e-ui-proof alone on a free box.",
-    "baselineParity": "16/16 comparable, 0 regressed"
+    "baselineParity": "16/16 comparable, 0 regressed",
+    "rerun": {
+      "file": "e2e-evidence/rerun-e2e-ui-proof-dc0f0c5.json",
+      "result": "371/371 exit 0 in 372s solo",
+      "classification": "ENV"
+    }
   }
 }

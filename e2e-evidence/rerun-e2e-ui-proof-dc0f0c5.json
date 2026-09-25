@@ -1,0 +1,30 @@
+{
+  "phase": "P5A",
+  "kind": "solo-rerun",
+  "harness": "e2e-ui-proof",
+  "sha": "dc0f0c5",
+  "commit": "8f2ea67",
+  "tree": "8532bd01a822f705c6f3c0f607fd87389e1f7d32",
+  "utcStart": "2026-09-25T17:42:53Z",
+  "utcEnd": "2026-09-25T17:49:06Z",
+  "ms": 372000,
+  "gateBudgetMs": 480000,
+  "exit": 0,
+  "counts": {
+    "passed": 371,
+    "total": 371,
+    "failed": 0
+  },
+  "reap": {
+    "spawnedPidsReaped": true,
+    "leaked": 0
+  },
+  "freeRamGiB": {
+    "start": 9.65,
+    "end": 8.91
+  },
+  "conditions": "alone on the browser lane: no emulator/qemu, no other e2e-gate or ms-playwright process; own node server.js NODE_ENV=production PORT=3300 on the P5A build; gate harness env (DATABASE_URL local pg, JWT_SECRET, DEV_URL/BASE_URL/CC_BASE_URL, CC_SHOT_EMAIL, CC_SHOTS); docs/screenshots churn reverted to HEAD",
+  "verdict": "GREEN — clears POSSIBLY-CONTAMINATED harness:e2e-ui-proof + reap:e2e-ui-proof in gate-P5A-dc0f0c5.json as ENV (low-RAM vc69 emulator window), not REAL; no STALE-PIN reds",
+  "releaseLine": "RERUN e2e-ui-proof 371/371 dc0f0c5 (solo)",
+  "by": "forge"
+}
