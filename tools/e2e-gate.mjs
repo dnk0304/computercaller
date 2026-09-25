@@ -590,6 +590,24 @@ const MIN_CHECKS_OVERRIDE = {
   // again on the next live acceptance. Measured at the commit that adds it: 101
   // assertions.
   'relay:e2e-resume-sw-key-race.test.mjs': 101,
+  // T-RESUME-PHONE-RESTART-DESYNC (RULE 30). tests/e2e-resume-phone-restart-
+  // contract.test.mjs drives the REAL relay predicates (lib/resumeGate-core.js,
+  // required rather than mirrored) AND the REAL page predicates
+  // (hooks/phoneE2e.ts resumedPeerSessionVerdict / pairEndedErrorForReason /
+  // viewAfterPairEndedWithError) and the REAL copy, over one shared
+  // tests/e2e-resume-vectors.json. Auto-discovered by the tests/e2e-*.test.mjs
+  // sweep, so what it needs from this table is the FLOOR.
+  //
+  // It needs one more than most, for two reasons. First, most of the value is
+  // in three CONTROL arms that replay the PRE-FIX predicates and must disagree
+  // with the shipped ones on the prod rows (and AGREE on the blip row, so the
+  // fix cannot degrade into "terminate always"); delete those and the suite can
+  // no longer tell the fix from the defect while still printing a cheerful N/N.
+  // Second, section 7 is a SOURCE pin over server.js proving the predicates are
+  // actually CALLED at the two sites that had the bug — a pure function nobody
+  // invokes is a green test over dead code, which is exactly how a relay ships
+  // a gate it never consults. Measured at the commit that adds it: 98.
+  'relay:e2e-resume-phone-restart-contract.test.mjs': 98,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job
