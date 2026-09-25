@@ -28,6 +28,11 @@ chrome-extension/** text eol=lf
 *.jpg binary
 *.ico binary
 *.woff2 binary
+# WE-0 (2026-09-25): the Apple Pay domain-association file must be served
+# byte-for-byte (Apple/Whop: "no modifications"). It is one 228-byte line with
+# NO trailing newline; core.autocrlf=true on this box must never touch it.
+# `binary` = -text -diff: no EOL conversion in either direction, ever.
+public/.well-known/** binary
 
 # ── OUT OF LANE, REPORTED TO KEN (P2.8 STOP, item 3.2) ─────────────────────
 # These six blobs are committed with MIXED CRLF/CR/LF line terminators. Under
