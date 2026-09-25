@@ -558,6 +558,15 @@ const MIN_CHECKS_OVERRIDE = {
   // cheerful N/N - with the browser->phone file path broken again, exactly as it
   // shipped on 8e0c035. Measured at the commit that adds it: 41 assertions.
   'relay:e2e-ft-chunk-seq-contract.test.mjs': 41,
+  // FT-METER-1 (RULE 30). tests/ft-relay.test.mjs PART 13 streams REAL sealed
+  // chunks (lib/e2e/kdf.mjs seal, one per chunk) through the REAL relay meter:
+  // the ~170 KB boundary, 500 MiB and 1 GiB in both modes, L5 in both modes,
+  // chunk/offer mode binding and the sealed quota settle. The sealed 500 MiB
+  // case is the one whose absence let every encrypted file > ~170 KB ship
+  // broken (prod 2026-09-25, 4482bd32). The suite had NO floor (it post-dates
+  // BASELINE-harness.json), so deleting those arms would have gone green.
+  // Measured at the commit that adds them: 298 assertions.
+  'relay:ft-relay': 298,
   // T-FT-EXT-NO-SAVE-PICKER. tests/e2e-ft-ext-receive.test.mjs drives the REAL
   // sender and receiver against each other with picker=null (the extension
   // surface) and asserts the DELIVERED BYTES hash to the source file, plus the
@@ -724,7 +733,9 @@ const MIN_CHECKS_OVERRIDE = {
   // relay:e2e-sas-order-contract.test.mjs (54).
   // T-EXT-E2E-ROW-STANDBY-COPY re-measure 188 -> 189: the frozen MIN_CHECKS pin
   // list gains relay:e2e-setting-availability.test.mjs (106).
-  'unit:harness-list': 189,
+  // FT-METER-1 re-measure 189 -> 190: the frozen MIN_CHECKS pin list gains
+  // relay:ft-relay (298).
+  'unit:harness-list': 190,
   // GATE-TOOLING-1 (4). The phase whitelist suite had NO floor for its whole
   // life: a step whose entire job is to prove a phase cannot silently vanish
   // could itself have had half its arms deleted under a cheerful N/N. Measured
