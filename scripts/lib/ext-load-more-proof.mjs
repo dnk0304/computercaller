@@ -277,11 +277,15 @@ export async function runExtLoadMoreProof({ open, settle, check, shot, rawShot }
         const m = String(fg).match(/-?[\d.]+/g) || [];
         return Number(m[0]) < 60 && Number(m[1]) < 60 && Number(m[2]) < 70;
       }, painted.fg), painted.fg);
-    check(`(e) [${theme}] the fill is a LIGHT blue (blue channel highest, and light)`,
-      await page.evaluate((bg) => {
+    // Approved sent-bubble fill is the GREEN token pair in extension.css
+    // (--cc-bubble-out): #cfffdf light / #9cffbd dark. Pinned exactly so a
+    // regression to the old light-blue fill (#cfe6ff / #9cc8ff) fails loudly.
+    const wantBubble = theme === 'dark' ? [156, 255, 189] : [207, 255, 223];
+    check(`(e) [${theme}] the fill is the approved GREEN token (${theme === 'dark' ? '#9cffbd' : '#cfffdf'})`,
+      await page.evaluate(({ bg, want }) => {
         const m = (String(bg).match(/-?[\d.]+/g) || []).map(Number);
-        return m[2] > m[1] && m[1] > m[0] && m[2] >= 200;
-      }, painted.bg), painted.bg);
+        return m[0] === want[0] && m[1] === want[1] && m[2] === want[2];
+      }, { bg: painted.bg, want: wantBubble }), painted.bg);
     // The remap must SURVIVE for everything that is not a bubble.
     check(`(e-keep) [${theme}] the gradient still paints the primary action in the panel`,
       await page.evaluate(() => {
