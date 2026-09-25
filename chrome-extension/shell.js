@@ -796,6 +796,47 @@ async function sendE2ePubKey(rid, pairingId) {
   } catch {}
 }
 
+/**
+ * T-E2E-ACCOUNT-PREF step 3 — the extension's write path for the ACCOUNT
+ * Encrypted-mode setting (lib/e2eAccountPref.ts writeViaExtension).
+ *
+ * frame --e2e-pref-write--> this page --runtime msg--> service worker, which
+ * sends PUT /api/prefs/e2e (or POST .../seed) with the ext-session token in the
+ * Authorization header and nothing else (Security m2: header only, no cookie,
+ * no query). The account then records `updatedBy: ext`, and signing out
+ * revokes the token that could write it (web #18, forge m2).
+ *
+ * Everything from the frame is re-validated here before it reaches the worker:
+ * `rid` is an opaque bounded correlator echoed back, `op` and `value` are closed
+ * sets, and a seed can only ask for 'on' (the server refuses anything else too).
+ * The answer goes back with the same targetOrigin pin as every other message.
+ */
+async function relayE2ePrefWrite(data) {
+  const rid = typeof data.rid === 'string' && data.rid.length > 0 && data.rid.length <= 64 ? data.rid : null;
+  if (!rid) return;
+  const op = data.op === 'put' || data.op === 'seed' ? data.op : null;
+  const value = data.value === 'on' || data.value === 'off' ? data.value : null;
+  let result = { status: 0, body: null };
+  if (op && value && !(op === 'seed' && value !== 'on')) {
+    try {
+      const r = await chrome.runtime.sendMessage({ type: 'e2e-pref-write', op, value });
+      if (r && typeof r.status === 'number') result = { status: r.status, body: r.body ?? null };
+    } catch {
+      // Worker asleep or mid-respawn: status 0, which the frame shows as
+      // "Could not apply, try again" and then re-reads the server value.
+    }
+  } else {
+    result = { status: 400, body: null };
+  }
+  if (!frame || !frame.contentWindow) return;
+  try {
+    frame.contentWindow.postMessage(
+      { source: NS, type: 'e2e-pref-result', rid, status: result.status, body: result.body },
+      self.CC.WEBAPP_ORIGIN,
+    );
+  } catch {}
+}
+
 /** How long the object URL survives the click. See ft-download below. */
 const FT_DOWNLOAD_URL_TTL_MS = 60000;
 
@@ -926,6 +967,11 @@ window.addEventListener('message', (event) => {
         ? data.pairingId
         : undefined,
     );
+  } else if (data.type === 'e2e-pref-write') {
+    // T-E2E-ACCOUNT-PREF step 3. App frame ONLY (this branch is inside the
+    // `fromApp` verb set). The frame holds a session cookie but not the
+    // ext-session token; the worker holds the token and sends the write.
+    relayE2ePrefWrite(data);
   } else if (data.type === 'open-popout') {
     if (CAN_POPOUT) openPopout();
   } else if (data.type === 'dock') {

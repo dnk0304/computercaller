@@ -62,6 +62,7 @@ import {
   clearStoredHeight,
 } from '@/lib/extensionComposerHeight';
 import { EncryptionBanner } from '@/components/EncryptionStatus';
+import { EncryptedModeNotice } from '@/components/EncryptedModeNotice';
 import { SasConfirmDialog } from '@/components/SasConfirmDialog';
 // FT-3b. Three self-wiring slots: the overlay layer (offer dialog, progress,
 // error banner, received toast), the send control, and the panel drop target.
@@ -2855,6 +2856,8 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           thing both surfaces render, which is what keeps the blocking step from
           existing on one surface and not the other. */}
       <EncryptionBanner />
+      {/* T-E2E-ACCOUNT-PREF: the one-time "changed from <device>" notice. */}
+      <EncryptedModeNotice />
       <SasConfirmDialog />
       {/* FT-3b. Mounted here for the same reason SasConfirmDialog is: this
           component is the only thing both surfaces render, so the offer dialog

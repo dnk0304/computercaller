@@ -1464,6 +1464,38 @@ async function runPasswordSignIn() {
   });
 }
 
+// ── Account Encrypted-mode write (T-E2E-ACCOUNT-PREF step 3) ────────────────
+/**
+ * PUT /api/prefs/e2e {value} or POST /api/prefs/e2e/seed {value:'on'} with the
+ * ext-session token in the Authorization header ONLY — `credentials:'omit'` so
+ * no cookie rides along and the server's `ext-token` arm (lib/deviceKeyAuth.ts)
+ * is what authenticates it, recording `updatedBy: ext`. Returns the HTTP status
+ * and JSON body verbatim for the frame to classify; never throws. No token =
+ * 401 without a request.
+ */
+async function writeE2ePref(op, value) {
+  const isSeed = op === 'seed';
+  if (!(op === 'put' || isSeed) || !(value === 'on' || value === 'off') || (isSeed && value !== 'on')) {
+    return { status: 400, body: null };
+  }
+  const token = await getToken();
+  if (!token) return { status: 401, body: null };
+  try {
+    const res = await fetch(isSeed ? self.CC.E2E_PREF_SEED_URL : self.CC.E2E_PREF_URL, {
+      method: isSeed ? 'POST' : 'PUT',
+      credentials: 'omit',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    let body = null;
+    try { body = await res.json(); } catch (_) { body = null; }
+    trace('e2e-pref-write', { op, status: res.status });
+    return { status: res.status, body };
+  } catch (_) {
+    return { status: 0, body: null };
+  }
+}
+
 // ── Relay-ticket exchange (durable ext-session JWT → 30s relay ticket) ───────
 async function mintTicket(token) {
   const res = await fetch(self.CC.TICKET_URL, {
@@ -2522,6 +2554,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // directly instead of inferring it from a pairingId that changed.
       ...pinProvenance(own),
     }));
+  } else if (message?.type === 'e2e-pref-write') {
+    // T-E2E-ACCOUNT-PREF step 3, relayed by shell.js from the app frame. Only
+    // our own extension pages may ask: a message from anywhere else (another
+    // extension via an external channel) is refused without a request.
+    if (!sender || sender.id !== chrome.runtime.id) {
+      sendResponse?.({ status: 403, body: null });
+    } else {
+      writeE2ePref(message.op, message.value).then((r) => sendResponse?.(r));
+    }
   } else if (message?.type === 'unread-get') {
     readUnread().then((unread) => sendResponse?.({ ok: true, unread }));
   } else if (message?.type === 'tab-viewed') {

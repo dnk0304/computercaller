@@ -55,6 +55,11 @@ const CC = {
   // account chip POSTs here (credentials:'include') and additionally removes
   // the durable ext-session token from chrome.storage.local.
   LOGOUT_URL: 'https://computercaller.com/api/auth/logout',
+  // T-E2E-ACCOUNT-PREF step 3: the account's Encrypted-mode setting. The SW
+  // writes it on the app frame's behalf with the ext-session token in the
+  // Authorization header ONLY (Security m2) — see background.js writeE2ePref.
+  E2E_PREF_URL: 'https://computercaller.com/api/prefs/e2e',
+  E2E_PREF_SEED_URL: 'https://computercaller.com/api/prefs/e2e/seed',
   // chrome.storage.local key holding the durable ext-session JWT.
   TOKEN_KEY: 'ext_token',
 };

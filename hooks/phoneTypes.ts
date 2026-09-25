@@ -174,6 +174,10 @@ export type PhoneEventType =
   // initiate the reset can tell a deliberate teardown from a network fault.
   //   payload: { reason: 'room_reset' }
   | 'ROOM_RESET'
+  // T-E2E-ACCOUNT-PREF (DESIGN §4). The account's resolved Encrypted-mode
+  // setting, pushed on every connect and after every accepted write.
+  //   payload: { preference, effective, pausedByServer, rev, updatedAt, updatedBy }
+  | 'E2E_PREF'
   // FT-3a (2026-09-18). Phone <-> PC file transfer. Shapes are FROZEN by
   // FILE-TRANSFER-SPEC.md + Addendum A and are built against in parallel by
   // FT-1 (relay) and FT-2 (Android), so do not rename a field without Ken.

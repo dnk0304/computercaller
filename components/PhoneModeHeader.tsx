@@ -38,6 +38,7 @@ import { Maximize2, ExternalLink, LogOut, LayoutDashboard, Settings, PanelRight,
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { EncryptionChip } from '@/components/EncryptionStatus';
 import { EncryptedModeToggle } from '@/components/EncryptedModeToggle';
+import { wipeAccountPrefOnSignOut } from '@/lib/e2eAccountPref';
 import { CcLockup } from '@/components/CcLockup';
 import { CcMark } from '@/components/CcMark';
 import { usePhoneMode } from '@/hooks';
@@ -480,7 +481,14 @@ function AccountMenu({ email, canSignOut }: { email: string | null; canSignOut: 
                 <button
                   type="button"
                   role="menuitem"
-                  onClick={() => { setOpen(false); requestSignOut(); }}
+                  onClick={() => {
+                    setOpen(false);
+                    // Security M1: this account's Encrypted-mode mirror and rev
+                    // go BEFORE the shell drops the session (the shell cannot
+                    // reach this frame's storage).
+                    wipeAccountPrefOnSignOut();
+                    requestSignOut();
+                  }}
                   className="flex h-7 w-full items-center gap-2 rounded-lg px-2 text-[12px] font-medium text-red-600 transition-colors hover:bg-red-50 focus:outline-none focus-visible:bg-red-50"
                 >
                   <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
