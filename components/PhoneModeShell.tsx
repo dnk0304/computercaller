@@ -1487,12 +1487,6 @@ function ThreadView({ threadId, from, focusMessageId, surface = 'app' }: ThreadV
           {displayName.charAt(0).toUpperCase()}
         </div>
         <p className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-800">{displayName}</p>
-        {/* FT-3b. Icon-only: this row is h-10 and already carries a back arrow,
-            an avatar, the name and the call button, so a labelled control does
-            not fit at 360 px. The verbatim tier string survives as the button's
-            accessible name and tooltip, and is visible in full on the Dial
-            view's control and in the `tier` failure banner. */}
-        <SendFileSlot iconOnly />
         <button
           type="button"
           onClick={() => { makeCall(threadId); }}
