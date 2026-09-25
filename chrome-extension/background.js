@@ -1488,10 +1488,10 @@ async function writeE2ePref(op, value) {
       body: JSON.stringify({ value }),
     });
     let body = null;
-    try { body = await res.json(); } catch (_) { body = null; }
+    try { body = await res.json(); } catch { body = null; }
     trace('e2e-pref-write', { op, status: res.status });
     return { status: res.status, body };
-  } catch (_) {
+  } catch {
     return { status: 0, body: null };
   }
 }
