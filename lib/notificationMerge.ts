@@ -44,6 +44,17 @@ export function notificationCompositeSig(n: PhoneNotification): string {
   return `${n.packageName}|${norm(n.title)}|${norm(n.body)}`;
 }
 
+/**
+ * THE definition of an unread alert, shared by the tab badge and the in-list
+ * unread dot (ALERTS-BADGE, 2026-09-25). A backfill card is the phone replaying
+ * its shade on sync: the user already saw it on the phone, so it is history,
+ * not news. Before this, the dot excluded backfill and the badge counted it,
+ * so the badge could say "1" over a list with nothing marked.
+ */
+export function isUnreadAlert(n: Pick<PhoneNotification, 'read' | 'backfill'>): boolean {
+  return !n.read && !n.backfill;
+}
+
 export type NotifEvent =
   | { type: 'add'; notif: PhoneNotification; backfill?: boolean }
   | { type: 'remove'; key: string };
@@ -123,8 +134,16 @@ export function applyNotifEvents(
       result = insertByTimestamp(result, event.notif);
       continue;
     }
+    // A live re-post of a card the user already READ, with identical content
+    // (same package/title/body — Android re-posts on group-summary refreshes
+    // and silent updates), is not news: it keeps its read state. New content
+    // under the same key still arrives unread.
+    const sig = notificationCompositeSig(event.notif);
+    const alreadyRead = result.some(
+      (n) => n.read && isSameNotification(n, event.notif) && notificationCompositeSig(n) === sig,
+    );
     result = result.filter((n) => !isSameNotification(n, event.notif));
-    result = [event.notif, ...result];
+    result = [alreadyRead ? { ...event.notif, read: true } : event.notif, ...result];
   }
   return result.slice(0, NOTIFICATION_LIST_CAP);
 }

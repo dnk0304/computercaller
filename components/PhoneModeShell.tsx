@@ -97,6 +97,9 @@ import {
 } from '@/hooks';
 import { useTemplates } from '@/hooks/useTemplates';
 import { ChipScroller } from '@/components/ChipScroller';
+import { AppIcon } from '@/components/AppIcon';
+import { cleanNotificationTitle } from '@/lib/notificationTitle';
+import { isUnreadAlert } from '@/lib/notificationMerge';
 
 import {
   useThreadReadState,
@@ -1487,12 +1490,6 @@ function ThreadView({ threadId, from, focusMessageId, surface = 'app' }: ThreadV
           {displayName.charAt(0).toUpperCase()}
         </div>
         <p className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-800">{displayName}</p>
-        {/* FT-3b. Icon-only: this row is h-10 and already carries a back arrow,
-            an avatar, the name and the call button, so a labelled control does
-            not fit at 360 px. The verbatim tier string survives as the button's
-            accessible name and tooltip, and is visible in full on the Dial
-            view's control and in the `tier` failure banner. */}
-        <SendFileSlot iconOnly />
         <button
           type="button"
           onClick={() => { makeCall(threadId); }}
@@ -2122,7 +2119,7 @@ function BellView() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline justify-between gap-2">
                       <p className="truncate text-sm font-semibold text-slate-800">
-                        {n.appName} · {n.title}
+                        {n.appName} · {cleanNotificationTitle(n.title)}
                       </p>
                       <button
                         type="button"
@@ -2193,8 +2190,8 @@ function BellView() {
 // A SEPARATE VIEW, not a prop on BellView. The /app render is a hard gate on
 // this dispatch, and the surest way to keep it is for the dashboard to render
 // a function this one cannot reach — the same construction ExtDialerView uses.
-// Everything shared lives in the helpers above (getNotificationIcon, appGlyph,
-// formatRelative) rather than being copied.
+// Everything shared lives in the helpers above (AppIcon, formatRelative)
+// rather than being copied.
 //
 // Layering (ART-DIRECTION §3.1): an L1 toolbar band holding the search field,
 // then cards at L3 floating on the L2 content ground. No wrapping list card —
@@ -2310,7 +2307,7 @@ function ExtBellView() {
   // them. Backfill (the phone replaying its shade on sync) never counts, the
   // same rule as Messages' baseline: history is not news.
   const [unreadIds, setUnreadIds] = useState<Set<string>>(
-    () => new Set(items.filter(n => !n.read && !n.backfill).map(n => n.id)),
+    () => new Set(items.filter(isUnreadAlert).map(n => n.id)),
   );
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
 
@@ -2320,7 +2317,7 @@ function ExtBellView() {
   const [seenItems, setSeenItems] = useState(items);
   if (items !== seenItems) {
     setSeenItems(items);
-    const fresh = items.filter(n => !n.read && !n.backfill && !unreadIds.has(n.id));
+    const fresh = items.filter(n => isUnreadAlert(n) && !unreadIds.has(n.id));
     if (fresh.length) {
       const next = new Set(unreadIds);
       fresh.forEach(n => next.add(n.id));
@@ -2389,8 +2386,10 @@ function ExtBellView() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return items;
+    // Raw OR cleaned title: the stored text still has the phone's doubled
+    // sender, the card shows the repaired one — either typed form must match.
     return items.filter(n =>
-      `${n.appName} ${n.title} ${n.body}`.toLowerCase().includes(q),
+      `${n.appName} ${n.title} ${cleanNotificationTitle(n.title)} ${n.body}`.toLowerCase().includes(q),
     );
   }, [items, search]);
 
@@ -2454,7 +2453,6 @@ function ExtBellView() {
         ) : (
           filtered.map((n) => {
             const isReplying = replyingId === n.id;
-            const iconB64 = getNotificationIcon(n.packageName);
             const isUnread = unreadIds.has(n.id);
             return (
               <article
@@ -2463,18 +2461,7 @@ function ExtBellView() {
                 data-cc-unread={isUnread ? '1' : undefined}
               >
                 <div className="cc-note-head">
-                  {iconB64 ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={`data:image/png;base64,${iconB64}`}
-                      alt=""
-                      className="cc-note-icon"
-                    />
-                  ) : (
-                    <span className="cc-note-icon cc-note-glyph" aria-hidden="true">
-                      {appGlyph(n.packageName)}
-                    </span>
-                  )}
+                  <AppIcon packageName={n.packageName} appName={n.appName} className="cc-note-icon" />
                   {/* App name and age on one meta line, the title below it —
                       the reference's order, and the one that lets a stack of
                       cards be scanned by app without reading the titles. */}
@@ -2498,7 +2485,7 @@ function ExtBellView() {
                 </div>
                 <NoteText
                   id={n.id}
-                  title={n.title}
+                  title={cleanNotificationTitle(n.title)}
                   body={n.body}
                   expanded={expandedIds.has(n.id)}
                   onToggle={toggleExpanded}
@@ -2570,6 +2557,12 @@ interface NotificationToastProps {
   notif: ToastNotif;
   onDismiss: () => void;
   onOpen: () => void;
+  /**
+   * Extension surface: draw the app's real icon (or its letter tile) through
+   * the shared <AppIcon>, the same mark as the Alerts card. /app keeps its
+   * emoji glyph — the dashboard's render is out of this lane's scope.
+   */
+  isExt?: boolean;
 }
 
 /**
@@ -2581,7 +2574,7 @@ interface NotificationToastProps {
  * CallModal; the actual code uses z-50, so the toast sits one tier below
  * to guarantee a ringing call always wins paint order.
  */
-const NotificationToast = React.memo(function NotificationToast({ notif, onDismiss, onOpen }: NotificationToastProps) {
+const NotificationToast = React.memo(function NotificationToast({ notif, onDismiss, onOpen, isExt = false }: NotificationToastProps) {
   return (
     <div
       role="alert"
@@ -2589,12 +2582,16 @@ const NotificationToast = React.memo(function NotificationToast({ notif, onDismi
       className="pointer-events-none fixed inset-x-2 top-2 z-40 animate-in slide-in-from-top-3 fade-in duration-200"
     >
       <div className="pointer-events-auto mx-auto flex w-full max-w-md items-start gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-lg shadow-slate-900/10">
-        <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-base" aria-hidden="true">
-          {appGlyph(notif.packageName)}
-        </div>
+        {isExt ? (
+          <AppIcon packageName={notif.packageName} appName={notif.appName} className="cc-toast-icon" />
+        ) : (
+          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-base" aria-hidden="true">
+            {appGlyph(notif.packageName)}
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-semibold text-slate-800">
-            {notif.appName} · {notif.title}
+            {notif.appName} · {cleanNotificationTitle(notif.title)}
           </p>
           <p className="line-clamp-2 text-xs leading-snug text-slate-600">{notif.body}</p>
         </div>
@@ -2645,7 +2642,8 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
   const { current, setTab, push } = usePhoneMode();
   const isExt = surface === 'extension';
   const { phoneNotifications } = useNotifications();
-  const unreadCount = phoneNotifications.filter(n => !n.read).length;
+  // Same rule as the in-list dot (isUnreadAlert): backfill is never unread.
+  const unreadCount = phoneNotifications.filter(isUnreadAlert).length;
 
   // ---------- Deep links from extension notifications ----------------------
   // background.js opens the surface at #tab=texts&thread=<id> (or #tab=alerts)
@@ -2913,6 +2911,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           }}
           onDismiss={() => setToastId(null)}
           onOpen={() => { setToastId(null); setTab('bell'); }}
+          isExt={isExt}
         />
       )}
     </div>

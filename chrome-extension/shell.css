@@ -33,7 +33,9 @@
      half the reason the old popup looked wrong. */
   /* PIXEL-Q: the hosted app's outermost surface is now L2 of the four-level
      ladder (ART-DIRECTION §3.1), not the old flat page colour. */
-  --cc-page: #f1f1f2;
+  /* R-WB (Dennis 2026-09-25): white ground in light, in lockstep with
+     extension.css --cc-l2 / html ground. */
+  --cc-page: #ffffff;
   --cc-card: #ffffff;
   --cc-hair: #e5e5e5;
   /* L0 — the header surface. There is NO BAND any more. Must equal
@@ -61,8 +63,9 @@
   --cc-ink: #171717;
   --cc-sec: #525252;
   /* Mirrors app/extension/extension.css: R-CH restored the light ground, so
-     the muted ink goes back with it — 4.20:1 on the restored --cc-page. */
-  --cc-mut: #737373;
+     the muted ink goes back with it — 4.20:1 on the restored --cc-page.
+     R-WB: #6b6b70, mirrors extension.css (5.30:1 on white). */
+  --cc-mut: #6b6b70;
 
   --cc-grad: linear-gradient(135deg, #35c977 0%, #22a89a 55%, #1e8fb2 100%);
   --cc-ring: rgba(53, 201, 119, 0.45);

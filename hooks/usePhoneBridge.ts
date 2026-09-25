@@ -26,6 +26,7 @@ import { useE2e } from './useE2e';
 // P2.3 (a)+(b): the ORDER of a revoking teardown, pure and node-testable.
 import { runRevokingTeardown } from '@/lib/e2e/signOutEverywhere';
 import { clearThreadReadStateForCurrentUser } from '@/hooks/useThreadReadState';
+import { setNotificationIcon, clearNotificationIcons } from '@/lib/notifIconStore';
 import { useFileTransfer } from './useFileTransfer';
 import type { FileTransferBridgeSlot } from './useFileTransfer';
 import { isFileFrameType } from '@/lib/fileTransfer/frames.ts';
@@ -177,14 +178,12 @@ export interface PhoneNotification {
   backfill?: boolean;
 }
 
-// Module-level icon cache — keyed by packageName, outside React state so
-// icon updates never trigger notification list re-renders.
-const _notifIconCache = new Map<string, string>();
-
-/** Read an app icon (base64 PNG) by Android package name. Returns undefined if not cached. */
-export function getNotificationIcon(packageName: string): string | undefined {
-  return _notifIconCache.get(packageName);
-}
+// App icons live in a small external store (lib/notifIconStore.ts): keyed by
+// packageName and outside React state, so an icon arriving never re-renders
+// the notification LIST — only the one card or toast subscribed to that app.
+// It also persists per device and is cleared on sign-out. Re-exported here so
+// the Dashboard's `getNotificationIcon` import path is unchanged.
+export { getNotificationIcon } from '@/lib/notifIconStore';
 
 // -------------------- Call-log normalization & dedup --------------------
 //
@@ -2768,9 +2767,11 @@ export function usePhoneBridge() {
       }
 
       case 'PHONE_NOTIFICATION': {
-        // Cache the icon by packageName (outside state — avoids re-renders)
-        if (payload.icon && payload.packageName) {
-          _notifIconCache.set(payload.packageName, payload.icon);
+        // Cache the icon by packageName (outside state — avoids list
+        // re-renders). Before the alert is queued, so its card and toast
+        // find the icon on their first render.
+        if (typeof payload.icon === 'string' && typeof payload.packageName === 'string') {
+          setNotificationIcon(payload.packageName, payload.icon);
         }
         // v58 BACKFILL. On sync the phone replays everything currently in its
         // shade as ordinary PHONE_NOTIFICATION frames carrying `backfill:true`
@@ -3596,6 +3597,10 @@ export function usePhoneBridge() {
     // Those wipe the message caches, and when the caches refill the threads the
     // user already opened must still look opened.
     clearThreadReadStateForCurrentUser();
+    // App icons go with the account too: the set of icons is the set of apps
+    // installed on the user's phone. Sign-out only — Forget keeps them, the
+    // same account is still signed in and still owns that knowledge.
+    clearNotificationIcons();
   }, [resetRoom]);
 
   // "Forget this computer" (P2.3 (b)). NOT a sign-out — the user stays logged

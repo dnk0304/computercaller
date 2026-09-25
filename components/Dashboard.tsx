@@ -89,6 +89,7 @@ import { useQuickReplyTemplates } from '@/hooks/useQuickReplyTemplates';
 import { DEFAULT_QUICK_REPLIES, type CallSurfaceQuickReply } from '@/lib/callSurfaceQuickReplies';
 import type { TemplateDTO } from '@/lib/templates';
 import { resolveAudioMime, base64ToBytes, audioFileExtension } from '@/lib/audioMime';
+import { cleanNotificationTitle } from '@/lib/notificationTitle';
 import {
   conversationKey,
   sameConversation,
@@ -2354,7 +2355,7 @@ const PhoneLinkLayout: React.FC<PhoneLinkLayoutProps> = ({
                       )}
                       <span className="min-w-0 flex-1">
                         <span className="block text-[12px] font-semibold text-slate-800 truncate">
-                          {n.title || n.appName || 'Notification'}
+                          {cleanNotificationTitle(n.title) || n.appName || 'Notification'}
                         </span>
                         {n.body && (
                           <span className="block text-[11px] text-slate-500 line-clamp-2">
@@ -4728,7 +4729,8 @@ const NotificationToasts: React.FC<NotificationToastsProps> = ({ notifications, 
             id: n.id,
             appName: n.appName ?? '',
             packageName: n.packageName ?? '',
-            title: n.title ?? n.appName ?? 'Notification',
+            // Render-time repair of the phone's doubled sender (ALERT-TITLE).
+            title: n.title != null ? cleanNotificationTitle(n.title) : (n.appName ?? 'Notification'),
             body: n.body ?? '',
           });
         }
@@ -4984,7 +4986,7 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
                             {formatTime(notif.timestamp)}
                           </span>
                         </div>
-                        <p className="text-[12px] font-semibold text-slate-800 truncate">{notif.title}</p>
+                        <p className="text-[12px] font-semibold text-slate-800 truncate">{cleanNotificationTitle(notif.title)}</p>
                         <p className="text-[11px] text-slate-500 line-clamp-2 mt-0.5">{notif.body}</p>
                       </div>
                     </button>
@@ -5021,7 +5023,7 @@ const NotificationOverlay: React.FC<NotificationOverlayProps> = ({
                                 setTimeout(() => setExpandedId(null), 1500);
                               }
                             }}
-                            placeholder={`Reply to ${notif.title}...`}
+                            placeholder={`Reply to ${cleanNotificationTitle(notif.title)}...`}
                             aria-label={`Reply to ${notif.appName}`}
                             className="flex-1 text-[12px] px-3 py-1.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
                             autoFocus

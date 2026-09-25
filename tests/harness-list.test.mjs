@@ -400,7 +400,8 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // T-FT-WEB-SEAL-NO-HINT: 186 -> 187 with the FT hint contract's pin.
     // INC-0924: 187 -> 188 with the SAS ordering contract's pin.
     // T-EXT-E2E-ROW-STANDBY-COPY: 188 -> 189 with the availability contract's pin.
-    ['unit:harness-list', 189],
+    // FT-METER-1: 189 -> 190 with the ft-relay pin.
+    ['unit:harness-list', 190],
     // GATE-TOOLING-1 (4). The phase whitelist suite's first floor.
     ['unit:gate-phase-whitelist', 79],
     // GATE-TOOLING-1 (3). The text-size proof's own floor, declared in the gate
@@ -431,6 +432,9 @@ check('CONTROL: …and a complete table reports nothing, so it is not stuck on "
     // sweep-discovered by the tests/e2e-*.test.mjs rule and therefore carrying
     // only a floor.
     ['relay:e2e-setting-availability.test.mjs', 109],
+    // FT-METER-1: the relay FT suite, named in the RELAY list (not swept), whose
+    // PART 13 real-seal stream arms had no floor at all.
+    ['relay:ft-relay', 298],
   ]) {
     check(`gate: MIN_CHECKS declares ${name} >= ${floor}`,
       gate.includes(`'${name}': ${floor},`));

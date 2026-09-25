@@ -53,7 +53,8 @@ export interface SendFileControlProps {
   subscribed: boolean;
   /** True while a transfer is running; one transfer per room by rule. */
   busy: boolean;
-  onPick: (file: File) => void;
+  /** FILE-QUEUE-WEB: the picker is multi-select; every pick is queued in order. */
+  onPick: (files: File[]) => void;
   /** Opens the existing pricing modal. */
   onUpgrade: () => void;
   compact?: boolean;
@@ -79,6 +80,11 @@ export interface SendFileControlProps {
    * corner of a panel reads as "broken", not as "working".
    */
   sendPercent?: number | null;
+  /**
+   * FILE-QUEUE-WEB. Outgoing files waiting or moving; rendered as a count badge
+   * on the header icon while > 0 and folded into its accessible name.
+   */
+  queueCount?: number;
 }
 
 /**
@@ -114,16 +120,16 @@ function SendArc({ percent }: { percent: number }) {
 
 export function SendFileControl({
   subscribed, busy, onPick, onUpgrade, compact = false, iconOnly = false,
-  headerIcon = false, sendPercent = null,
+  headerIcon = false, sendPercent = null, queueCount = 0,
 }: SendFileControlProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const onChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files ?? []);
     // Reset first: picking the SAME file twice must fire change twice, and it
     // will not if the input still holds the previous value.
     e.target.value = '';
-    if (file) onPick(file);
+    if (files.length) onPick(files);
   }, [onPick]);
 
   // ── HEADER SLOT ───────────────────────────────────────────────────────────
@@ -174,11 +180,16 @@ export function SendFileControl({
     const pct = sendPercent === null
       ? null
       : Math.max(0, Math.min(100, Math.round(sendPercent)));
+    // One name for the glyph, the badge and the tooltip. The plain label is
+    // kept verbatim when nothing is queued (the FT-3b proof pins it).
+    const base = pct !== null ? `Sending file, ${pct}%` : FT_SEND_LABEL;
+    const headerName = queueCount > 0 ? `${base} — ${queueCount} in queue` : base;
     return (
       <>
         <input
           ref={inputRef}
           type="file"
+          multiple
           className="sr-only"
           onChange={onChange}
           data-cc-ft-input="true"
@@ -190,19 +201,19 @@ export function SendFileControl({
           disabled={busy}
           onClick={() => inputRef.current?.click()}
           data-cc-ft-action="header-send"
-          aria-label={
-            pct !== null
-              ? `Sending file, ${pct}%`
-              : busy
-                ? 'Send file — a transfer is already running'
-                : FT_SEND_LABEL
-          }
-          title={pct !== null ? `Sending file, ${pct}%` : FT_SEND_LABEL}
+          data-cc-ft-queue-count={queueCount > 0 ? queueCount : undefined}
+          aria-label={headerName}
+          title={headerName}
           className={`${headerBox} disabled:cursor-not-allowed disabled:hover:bg-transparent`}
         >
           {pct !== null
             ? <SendArc percent={pct} />
             : <Upload className="h-3.5 w-3.5" aria-hidden="true" />}
+          {queueCount > 0 && (
+            <span className="cc-ft-header-count" aria-hidden="true">
+              {queueCount > 9 ? '9+' : queueCount}
+            </span>
+          )}
         </button>
       </>
     );
@@ -248,6 +259,7 @@ export function SendFileControl({
       <input
         ref={inputRef}
         type="file"
+        multiple
         className="sr-only"
         onChange={onChange}
         data-cc-ft-input="true"

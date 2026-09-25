@@ -287,9 +287,12 @@ const shell = stripComments(readFileSync(join(ROOT, 'chrome-extension', 'shell.j
 
 // ── push half: shell.js turns the registration EDGE into a key ──────────────
 {
-  const i = shell.indexOf('presencePort.onMessage.addListener');
-  check('the presence-port listener exists', i > 0);
-  const body = shell.slice(i, shell.indexOf('presencePort.onDisconnect'));
+  // ALERTS-BADGE (2026-09-25): the listener is a named function so a
+  // re-opened port (connectPresence) gets the SAME handler as the first one.
+  check('the presence-port listener exists',
+    /port\.onMessage\.addListener\(onPresenceMessage\)/.test(shell));
+  const i = shell.indexOf('function onPresenceMessage(msg)');
+  const body = shell.slice(i, shell.indexOf('\nconnectPresence();', i));
   check('the presence listener handles e2e-status at all',
     /msg\.type === 'e2e-status'/.test(body), body);
   check('the push is on the false->true EDGE, not on every broadcast',

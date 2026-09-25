@@ -46,6 +46,7 @@ import { spawn } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Reaper } from './lib/reap.mjs';
@@ -59,7 +60,7 @@ import { Reaper } from './lib/reap.mjs';
 import {
   ftFailureCopy, FT_WIRE_REASONS, FT_RELAY_OWNED_REASONS,
   FT_TIER_LOCK_COPY, FT_PICKER_HINT, FT_OFFER_TRUST, FT_OFFER_NO_SCAN,
-  FT_SEND_LABEL,
+  FT_SEND_LABEL, FT_REPICK_ACTION, ftQueueCount,
 } from '../components/fileTransfer/ftCopy.ts';
 
 /**
@@ -123,7 +124,11 @@ fs.mkdirSync(SHOTS, { recursive: true });
 // tier-banner assertions MOVED onto the lapsing panel (same assertions, a
 // harder fixture), plus 6 for the extension lapse, 4 for the /app lapse and 2
 // for the `quota` negative control. Node arm 47 + browser arm 67.
-export const MIN_CHECKS = 113;
+// FT-RETRY-1 added 28 browser-arm checks and removed none: the real Try again
+// (size_mismatch + busy re-offer on the wire under a new id, to FILE_DONE),
+// Cancel/dismiss exits, the quota negative control, the disk-append repick
+// path, and one /app round-trip. 113 + 28.
+export const MIN_CHECKS = 141;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -774,6 +779,260 @@ try {
     await ctx.close();
   }
 
+  // ── FT-RETRY-1: a real "Try again", and a sender that always has an exit ──
+  /*
+   * Before FT-RETRY-1 "Try again" was wired to the dismiss handler: it cleared
+   * the banner and sent nothing. Every assertion below is on the WIRE — a
+   * second FILE_OFFER with a NEW id leaving the real socket — not on the banner
+   * going away, because the banner going away is exactly what the no-op did.
+   *
+   * The disk arm uses a REAL file on disk (setInputFiles with a path, so the
+   * page's File is disk-backed) and APPENDS to it after the offer: Chromium
+   * snapshots a picked file and refuses reads once it changes, so the honest
+   * outcome of Try again there is the picker, and that is what it asserts.
+   */
+  const outbound = (page, type) => page.evaluate((t) => (window.__ccSocket?.sent || [])
+    .filter((s) => typeof s === 'string' && s.startsWith(t + ':'))
+    .map((s) => {
+      const j = JSON.parse(s.slice(t.length + 1));
+      return { id: j.id ?? j.ft?.id ?? null, size: j.size ?? j.ft?.size ?? null, seq: j.seq ?? null };
+    }), type);
+  const waitOffers = async (page, n) => {
+    for (let i = 0; i < 100; i++) {
+      const o = await outbound(page, 'FILE_OFFER');
+      if (o.length >= n) return o;
+      await page.waitForTimeout(100);
+    }
+    return outbound(page, 'FILE_OFFER');
+  };
+  /** Accept `id` and ACK its chunks until the page sends FILE_DONE for it. */
+  const completeSend = async (page, id) => {
+    await sendFrame(page, 'FILE_ACCEPT', { id });
+    for (let i = 0; i < 200; i++) {
+      const doneFrames = await outbound(page, 'FILE_DONE');
+      if (doneFrames.some((d) => d.id === id)) return true;
+      const chunks = (await outbound(page, 'FILE_CHUNK')).filter((c) => c.id === id);
+      if (chunks.length) await sendFrame(page, 'FILE_ACK', { id, upTo: Math.max(...chunks.map((c) => c.seq)) });
+      await page.waitForTimeout(50);
+    }
+    return false;
+  };
+  const enabled = async (page, loc) => page.waitForFunction(
+    (el) => !el.disabled, await loc.elementHandle(), { timeout: 5000 },
+  ).then(() => true).catch(() => false);
+  const retryBtn = (page) => page.locator('[data-cc-ft-error] [data-cc-ft-action="retry"]');
+  {
+    const { ctx, page } = await openPanel({ subscribed: true });
+    const input = page.locator('[data-cc-ft-input]').first();
+    await input.waitFor({ state: 'attached', timeout: 20_000 });
+    const hdrSend = page.locator('.cc-ext-header [data-cc-ft-action="header-send"]').first();
+
+    // (1) size_mismatch -> Try again -> a NEW id with the same File -> completes
+    await input.setInputFiles({ name: 'retry.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(150_000, 3) });
+    const [o1] = await waitOffers(page, 1);
+    check('retry: the first offer left the socket', !!o1?.id, JSON.stringify(o1));
+    await sendFrame(page, 'FILE_FAILED', { id: o1.id, reason: 'size_mismatch' });
+    await page.locator('[data-cc-ft-error="size_mismatch"]').waitFor({ timeout: 5000 });
+    check('retry: size_mismatch banner carries Try again', (await retryBtn(page).count()) === 1);
+    await shot(page, 'ext-retry-size-mismatch-light-360');
+    await retryBtn(page).click();
+    const offers = await waitOffers(page, 2);
+    const o2 = offers[1];
+    check('retry: Try again sent a SECOND FILE_OFFER', offers.length === 2, `offers=${offers.length}`);
+    check('retry: under a NEW transfer id', !!o2 && o2.id !== o1.id, `${o1.id} -> ${o2?.id}`);
+    check('retry: with the same File (size)', !!o2 && o2.size === o1.size, `${o1.size} vs ${o2?.size}`);
+    check('retry: the banner cleared on re-offer',
+      await page.locator('[data-cc-ft-error]').waitFor({ state: 'detached', timeout: 5000 }).then(() => true).catch(() => false));
+    check('retry: the re-offer runs to FILE_DONE', o2 ? await completeSend(page, o2.id) : false);
+    check('retry: after done the send control is enabled again', await enabled(page, hdrSend));
+
+    // (2) FILE-QUEUE-WEB: busy -> the row is RE-QUEUED (no banner) and
+    // re-offered on its own after the back-off; Cancel (strip X) clears it.
+    await input.setInputFiles({ name: 'busy.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(60_000, 4) });
+    const b1 = (await waitOffers(page, 3))[2];
+    await sendFrame(page, 'FILE_FAILED', { id: b1.id, reason: 'busy' });
+    await page.locator('[data-cc-ft-queue]').waitFor({ timeout: 5000 });
+    await page.waitForTimeout(400);
+    check('busy: no failure banner — the row is re-queued', (await page.locator('[data-cc-ft-error]').count()) === 0);
+    check('busy: the strip shows it waiting',
+      (await page.locator('[data-cc-ft-queue]').innerText()).includes(ftQueueCount(1)));
+    await shot(page, 'ext-queue-busy-requeued-light-360');
+    const b2 = (await waitOffers(page, 4))[3];
+    check('busy: re-offered automatically under a new id', !!b2 && b2.id !== b1.id);
+    const bar = page.locator('[data-cc-ft-progress][data-cc-ft-direction="send"]');
+    check('busy: the waiting-for-accept row shows Cancel',
+      await bar.locator('[data-cc-ft-action="cancel"]').waitFor({ timeout: 5000 }).then(() => true).catch(() => false));
+    await bar.locator('[data-cc-ft-action="cancel"]').click();
+    const cancels = (await outbound(page, 'FILE_FAILED')).filter((f) => f.id === b2?.id);
+    check('cancel: sent the existing cancel frame for the live id', cancels.length === 1, `n=${cancels.length}`);
+    check('cancel: the row is gone',
+      await bar.waitFor({ state: 'detached', timeout: 5000 }).then(() => true).catch(() => false));
+    check('cancel: no banner left behind', (await page.locator('[data-cc-ft-error]').count()) === 0);
+    check('cancel: the send control is enabled', await enabled(page, hdrSend));
+
+    // (3) busy -> Remove the re-queued row: nothing is offered again
+    await input.setInputFiles({ name: 'busy2.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(10_000, 5) });
+    const b3 = (await waitOffers(page, 5))[4];
+    await sendFrame(page, 'FILE_FAILED', { id: b3.id, reason: 'busy' });
+    await page.locator('[data-cc-ft-queue-action="toggle"]').click();
+    const queuedRow = page.locator('[data-cc-ft-queue-row][data-cc-ft-queue-state="queued"]');
+    await queuedRow.waitFor({ timeout: 5000 });
+    await queuedRow.locator('[data-cc-ft-queue-action="remove"]').click();
+    check('busy: Remove drops the re-queued row',
+      await queuedRow.waitFor({ state: 'detached', timeout: 5000 }).then(() => true).catch(() => false));
+    await page.waitForTimeout(6000);
+    check('busy: a removed row is never re-offered', (await outbound(page, 'FILE_OFFER')).length === 5);
+    check('busy: after Remove the send control is enabled', await enabled(page, hdrSend));
+
+    // (4) quota -> no retry (unchanged rule)
+    await input.setInputFiles({ name: 'q.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(10_000, 6) });
+    const q1 = (await waitOffers(page, 6))[5];
+    await sendFrame(page, 'FILE_FAILED', { id: q1.id, reason: 'quota' });
+    await page.locator('[data-cc-ft-error="quota"]').waitFor({ timeout: 5000 });
+    check('quota: our own send refused on quota offers NO retry', (await retryBtn(page).count()) === 0);
+    await page.locator('[data-cc-ft-action="dismiss-error"]').click();
+    await page.locator('[data-cc-ft-error]').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+    // FILE-QUEUE-WEB: an account refusal PAUSES the queue (no auto-resume).
+    const resumeBtn = page.locator('[data-cc-ft-queue-action="resume"]');
+    check('quota: the queue is paused with a Resume', await resumeBtn.isVisible().catch(() => false));
+    await resumeBtn.click();
+
+    // (5) disk file appended after the offer -> Try again -> picker -> completes
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-retry-'));
+    const diskFile = path.join(tmpDir, 'growing.log');
+    try {
+      fs.writeFileSync(diskFile, Buffer.alloc(80_000, 7));
+      await input.setInputFiles(diskFile);
+      const d1 = (await waitOffers(page, 7))[6];
+      await page.waitForTimeout(50);
+      fs.appendFileSync(diskFile, Buffer.alloc(5_000, 8));           // the file changes on disk
+      await sendFrame(page, 'FILE_FAILED', { id: d1.id, reason: 'size_mismatch' });
+      await page.locator('[data-cc-ft-error="size_mismatch"]').waitFor({ timeout: 5000 });
+      const chooser = page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+      await retryBtn(page).click();
+      const fc = await chooser;
+      check('repick: Try again on a changed file OPENS the picker', !!fc);
+      const repickBanner = page.locator('[data-cc-ft-error][data-cc-ft-repick="true"]');
+      check('repick: the banner says the file cannot be read',
+        await repickBanner.waitFor({ timeout: 5000 }).then(() => true).catch(() => false));
+      check('repick: it offers "Pick the file again"',
+        (await repickBanner.locator('[data-cc-ft-action="repick"]').innerText().catch(() => '')).trim() === FT_REPICK_ACTION);
+      check('repick: no silent resend of the stale File',
+        (await outbound(page, 'FILE_OFFER')).length === 7);
+      await shot(page, 'ext-retry-repick-light-360');
+      if (fc) await fc.setFiles(diskFile);                            // stable now
+      const d2 = (await waitOffers(page, 8))[7];
+      check('repick: the re-picked file is offered under a new id', !!d2 && d2.id !== d1.id);
+      check('repick: at its NEW size', d2?.size === 85_000, String(d2?.size));
+      check('repick: and completes', d2 ? await completeSend(page, d2.id) : false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+    await ctx.close();
+  }
+  // The WEB surface runs the same layer: one Try again round-trip on /app.
+  {
+    const { ctx, page } = await openPanel({ subscribed: true, route: '/app' });
+    const input = page.locator('[data-cc-ft-input]').first();
+    await input.waitFor({ state: 'attached', timeout: 25_000 });
+    await input.setInputFiles({ name: 'web.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(20_000, 9) });
+    const [w1] = await waitOffers(page, 1);
+    await sendFrame(page, 'FILE_FAILED', { id: w1.id, reason: 'size_mismatch' });
+    await page.locator('[data-cc-ft-error="size_mismatch"]').waitFor({ timeout: 5000 });
+    await retryBtn(page).click();
+    const w2 = (await waitOffers(page, 2))[1];
+    check('web: Try again re-offers under a new id on /app', !!w2 && w2.id !== w1.id);
+    check('web: and completes', w2 ? await completeSend(page, w2.id) : false);
+    await ctx.close();
+  }
+
+  // ── FILE-QUEUE-WEB: the queue itself, extension 390 + /app ───────────────
+  /*
+   * ADDENDUM 2 acceptance: add 3 -> all complete in order; remove a queued
+   * item; cancel the active one -> the next proceeds; forced size_mismatch ->
+   * Retry re-sends; panel reload mid-queue -> failed / needs-file rows, no
+   * stuck row. Every "worked" is on the WIRE (FILE_OFFER order, ids), as above.
+   */
+  for (const surface of [{ route: '/extension', width: 390, tag: 'ext' }, { route: '/app', width: 390, tag: 'app' }]) {
+    const { ctx, page } = await openPanel({ subscribed: true, route: surface.route, width: surface.width });
+    const input = page.locator('[data-cc-ft-input]').first();
+    await input.waitFor({ state: 'attached', timeout: 25_000 });
+    const hdr = page.locator('[data-cc-ft-action="header-send"]').first();
+    const blob = (name, n) => ({ name, mimeType: 'application/octet-stream', buffer: Buffer.alloc(n, 1) });
+    const T = surface.tag;
+
+    // add 3 -> ONE offer out, badge 3, strip says 2 queued
+    await input.setInputFiles([blob('one.bin', 30_000), blob('two.bin', 20_000), blob('three.bin', 10_000)]);
+    const [a1] = await waitOffers(page, 1);
+    await page.waitForTimeout(300);
+    check(`queue ${T}: three picked, ONE offered`, (await outbound(page, 'FILE_OFFER')).length === 1);
+    if (await hdr.count()) {
+      check(`queue ${T}: the header icon badges the queue`, (await hdr.getAttribute('data-cc-ft-queue-count')) === '3');
+    }
+    const strip = page.locator('[data-cc-ft-queue]');
+    check(`queue ${T}: the strip shows "2 queued"`, (await strip.innerText()).includes(ftQueueCount(2)));
+    await shot(page, `${T}-queue-collapsed-light-${surface.width}`);
+    await page.locator('[data-cc-ft-queue-action="toggle"]').click();
+    check(`queue ${T}: expanded lists three rows`, (await page.locator('[data-cc-ft-queue-row]').count()) === 3);
+    await shot(page, `${T}-queue-expanded-light-${surface.width}`);
+
+    // remove the queued "three"
+    const three = page.locator('[data-cc-ft-queue-row]', { hasText: 'three.bin' });
+    await three.locator('[data-cc-ft-queue-action="remove"]').click();
+    check(`queue ${T}: Remove drops a queued row`, (await page.locator('[data-cc-ft-queue-row]').count()) === 2);
+
+    // cancel the active "one" -> "two" proceeds
+    await page.locator('[data-cc-ft-progress] [data-cc-ft-action="cancel"]').click();
+    const o2 = (await waitOffers(page, 2))[1];
+    const cancelled = (await outbound(page, 'FILE_FAILED')).filter((f) => f.id === a1.id);
+    check(`queue ${T}: cancel sent the existing cancel frame`, cancelled.length === 1);
+    check(`queue ${T}: cancel -> the next item proceeds`, !!o2 && o2.id !== a1.id && o2.size === 20_000);
+    check(`queue ${T}: "three" was never offered`, (await outbound(page, 'FILE_OFFER')).every((o) => o.size !== 10_000));
+
+    // forced size_mismatch -> row Retry re-sends under a new id -> completes
+    await sendFrame(page, 'FILE_FAILED', { id: o2.id, reason: 'size_mismatch' });
+    const failedRow = page.locator('[data-cc-ft-queue-row][data-cc-ft-queue-state="failed"]');
+    await failedRow.waitFor({ timeout: 5000 });
+    await failedRow.locator('[data-cc-ft-queue-action="retry"]').click();
+    const o3 = (await waitOffers(page, 3))[2];
+    check(`queue ${T}: row Retry re-offers under a NEW id`, !!o3 && o3.id !== o2.id && o3.size === 20_000);
+    check(`queue ${T}: and it completes`, o3 ? await completeSend(page, o3.id) : false);
+
+    // add 3, complete all, in order
+    await input.setInputFiles([blob('a.bin', 11_000), blob('b.bin', 12_000), blob('c.bin', 13_000)]);
+    const order = [];
+    for (let i = 0; i < 3; i++) {
+      const o = (await waitOffers(page, 4 + i))[3 + i];
+      order.push(o?.size);
+      check(`queue ${T}: item ${i + 1} completes`, o ? await completeSend(page, o.id) : false);
+    }
+    check(`queue ${T}: all three completed IN ORDER`, order.join() === '11000,12000,13000', order.join());
+
+    // reload mid-queue -> failed / needs-file, never stuck
+    await input.setInputFiles([blob('r1.bin', 9_000), blob('r2.bin', 8_000), blob('r3.bin', 7_000)]);
+    await waitOffers(page, 7);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('[data-cc-ft-queue]').waitFor({ timeout: 30_000 });
+    await page.locator('[data-cc-ft-queue-action="toggle"]').click();
+    const r1 = page.locator('[data-cc-ft-queue-row]', { hasText: 'r1.bin' });
+    check(`queue ${T}: after reload the mid-send row is failed`, (await r1.getAttribute('data-cc-ft-queue-state')) === 'failed');
+    check(`queue ${T}: ...with Try again`, (await r1.locator('[data-cc-ft-queue-action="retry"]').count()) === 1);
+    for (const n of ['r2.bin', 'r3.bin']) {
+      const row = page.locator('[data-cc-ft-queue-row]', { hasText: n });
+      check(`queue ${T}: after reload ${n} needs the file`, (await row.getAttribute('data-cc-ft-queue-state')) === 'needs-file');
+    }
+    const stuck = await page.locator('[data-cc-ft-queue-row][data-cc-ft-queue-state="offering"], [data-cc-ft-queue-row][data-cc-ft-queue-state="sending"], [data-cc-ft-queue-row][data-cc-ft-queue-state="queued"]').count();
+    check(`queue ${T}: no stuck row after reload`, stuck === 0);
+    await shot(page, `${T}-queue-restored-light-${surface.width}`);
+    if (surface.route === '/extension') {
+      await page.evaluate(() => document.documentElement.setAttribute('data-cc-theme', 'dark'));
+      await shot(page, `${T}-queue-expanded-dark-${surface.width}`);
+      await page.locator('[data-cc-ft-queue-action="toggle"]').click();
+      await shot(page, `${T}-queue-collapsed-dark-${surface.width}`);
+    }
+    await ctx.close();
+  }
+
   // ── the WEB surface (/app phone mode), not just the extension ────────────
   {
     const { ctx, page } = await openPanel({ subscribed: false, route: '/app' });
@@ -782,9 +1041,9 @@ try {
       .then(() => true).catch(() => false);
     check('web: the trial lock renders on /app phone mode', there);
     if (there) {
-      // The Dial slot carries the FULL sentence; the thread header's icon-only
-      // variant carries it as an accessible name. At least one must be visible
-      // text on this surface, which is the (c) requirement.
+      // The Dial slot carries the FULL sentence as visible text, which is the
+      // (c) requirement. (The chat-header icon-only slot was removed: it sent
+      // to the user's own phone, which read as "attach to this SMS".)
       const withText = page.locator('[data-cc-ft-action="tier-lock"]:not([title])').first();
       const visibleCopy = (await withText.count())
         ? (await withText.innerText()).trim() : '';

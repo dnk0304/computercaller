@@ -133,8 +133,8 @@ const ftFactory = () => fakeFactory({ stores: [...CC_FT_STORES] });
 
 // ── 1. the cc-ft schema, stated once ────────────────────────────────────────
 eq('cc-ft db name', CC_FT_DB_NAME, 'cc-ft');
-eq('cc-ft db version', CC_FT_DB_VERSION, 1);
-eq('cc-ft stores', [...CC_FT_STORES], ['resume']);
+eq('cc-ft db version', CC_FT_DB_VERSION, 2);
+eq('cc-ft stores', [...CC_FT_STORES], ['resume', 'queue']);
 eq('the resume store name is the exported constant', CC_FT_STORE_RESUME, 'resume');
 check('the cc-ft store list is frozen (a mutated list is a schema nobody bumped)',
   Object.isFrozen(CC_FT_STORES));

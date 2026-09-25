@@ -85,8 +85,9 @@ const STOPPED = 'The transfer was stopped:';
  * Actions are assigned by whether retrying could plausibly succeed, not by how
  * the message feels. `relay_backpressure`, `timeout` and `connection_lost` are
  * transient, so they offer a retry. `size_mismatch` offers one because the
- * named fix IS to send it again. `busy` does not: the remedy is to wait, and a
- * retry button that will refuse again is a trap. `quota`, `tier` and
+ * named fix IS to send it again. `busy` offers one too (FT-RETRY-1): the phone
+ * may free up, and a banner with no way forward left the sender stranded
+ * (incident 2) — a retry that refuses again just says so again. `quota`, `tier` and
  * `too_large` do not, because nothing the user can do in this banner changes
  * the outcome — and for `tier` specifically, an Upgrade here is the steering
  * surface M10 and the Play ruling both keep off failure copy.
@@ -107,6 +108,7 @@ const RELAY_OWNED_COPY: Record<string, FailureCopy> = {
   },
   busy: {
     message: `${STOPPED} another transfer is already running.`,
+    action: 'retry',
   },
   relay_backpressure: {
     message: `${STOPPED} the connection could not keep up.`,
@@ -155,3 +157,43 @@ export const FT_OFFER_TRUST = 'Only accept files from people you trust.';
 export const FT_OFFER_NO_SCAN = 'Files are not scanned for viruses.';
 export const FT_OFFER_ACCEPT = 'Accept';
 export const FT_OFFER_DECLINE = 'Decline';
+
+/** The failure banner's retry button. */
+export const FT_RETRY_ACTION = 'Try again';
+
+/**
+ * FT-RETRY-1. Shown when Try again finds the picked File no longer readable
+ * (changed or moved on disk, or the handle went stale). Retry never silently
+ * does nothing: it says why and opens the picker.
+ */
+export const FT_REPICK_MESSAGE = "The file can't be read anymore — it may have been changed or moved.";
+export const FT_REPICK_ACTION = 'Pick the file again';
+
+/* ===========================================================================
+   FILE-QUEUE-WEB — the Transfers strip and list. PROPOSED wording, pending
+   Ken's approval (brief item 5). Failure lines are NOT here: a failed row
+   renders ftFailureCopy(reason).message, the same sentence the banner shows.
+   =========================================================================== */
+
+/** The strip's accessible name and the list heading. */
+export const FT_QUEUE_TITLE = 'Transfers';
+/** A row waiting its turn. */
+export const FT_QUEUE_QUEUED = 'Queued';
+/** The strip's count of rows still waiting. */
+export const ftQueueCount = (n: number): string => `${n} queued`;
+/** The queue stopped walking (link lost, account refusal, phone stayed busy). */
+export const FT_QUEUE_PAUSED = 'Paused';
+export const FT_QUEUE_RESUME = 'Resume';
+/** A row whose File did not survive a restart, or no longer reads. */
+export const FT_QUEUE_NEEDS_FILE = 'Pick the file again to send it.';
+export const FT_QUEUE_REPICK = 'Pick again';
+export const FT_QUEUE_REMOVE = 'Remove';
+export const FT_QUEUE_CANCEL = 'Cancel';
+export const FT_QUEUE_CLEAR = 'Clear';
+export const FT_QUEUE_CLEAR_FINISHED = 'Clear finished';
+export const FT_QUEUE_OPEN = 'Open';
+/** The queue's own "Add file" entry (ADDENDUM 1). */
+export const FT_QUEUE_ADD = 'Add files';
+/** Strip summary when nothing is moving: "2 sent", "1 failed". */
+export const ftQueueDoneCount = (n: number): string => `${n} finished`;
+export const ftQueueFailedCount = (n: number): string => `${n} failed`;
