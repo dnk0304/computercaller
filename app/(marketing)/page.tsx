@@ -332,8 +332,8 @@ export default function LandingPage() {
             <Image
               src="/brand/computercaller-icon-transparent.png"
               alt="ComputerCaller"
-              width={512}
-              height={512}
+              width={396}
+              height={317}
               priority
               className="h-14 w-auto"
             />
@@ -937,8 +937,8 @@ export default function LandingPage() {
                 <Image
                   src="/brand/computercaller-icon-transparent.png"
                   alt=""
-                  width={512}
-                  height={512}
+                  width={396}
+                  height={317}
                   className="h-7 w-auto"
                 />
                 <span className="font-semibold text-slate-900">ComputerCaller</span>

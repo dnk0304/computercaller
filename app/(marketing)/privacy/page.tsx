@@ -32,8 +32,8 @@ export default function PrivacyPage() {
             <Image
               src="/brand/computercaller-icon-transparent.png"
               alt="ComputerCaller"
-              width={512}
-              height={512}
+              width={396}
+              height={317}
               priority
               className="h-12 w-auto"
             />
