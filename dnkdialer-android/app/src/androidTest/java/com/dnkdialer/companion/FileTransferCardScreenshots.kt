@@ -87,9 +87,20 @@ class FileTransferCardScreenshots {
                     )
                 }
                 capture("ft-card-outgoing-$theme.png")
-                shell("cmd statusbar expand-notifications")
-                Thread.sleep(1500)
-                capture("ft-card-shade-outgoing-$theme.png")
+                // The first expand after a launch is sometimes swallowed (the
+                // first dark run captured the app, byte-identical to the card
+                // shot). Retry until the shade capture actually differs.
+                val cardShot = shotFile("ft-card-outgoing-$theme.png").readBytes()
+                var tries = 0
+                do {
+                    shell("cmd statusbar expand-notifications")
+                    Thread.sleep(2500)
+                    capture("ft-card-shade-outgoing-$theme.png")
+                } while (shotFile("ft-card-shade-outgoing-$theme.png").readBytes().contentEquals(cardShot) && ++tries < 3)
+                assertTrue(
+                    "the shade never opened - the capture is the app, not the notification",
+                    !shotFile("ft-card-shade-outgoing-$theme.png").readBytes().contentEquals(cardShot),
+                )
                 shell("cmd statusbar collapse")
                 Thread.sleep(800)
                 notifier.dismissProgress()
@@ -174,6 +185,8 @@ class FileTransferCardScreenshots {
     private fun shell(cmd: String) {
         instr.uiAutomation.executeShellCommand(cmd).close()
     }
+
+    private fun shotFile(name: String) = File(File(ctx.getExternalFilesDir(null), "screenshots"), name)
 
     private fun capture(name: String) {
         val bmp: Bitmap = instr.uiAutomation.takeScreenshot()
