@@ -21,6 +21,7 @@
 import {
   applyNotifEvents,
   isSameNotification,
+  isUnreadAlert,
   notificationCompositeSig,
   NOTIFICATION_COMPOSITE_WINDOW_MS,
   NOTIFICATION_LIST_CAP,
@@ -278,6 +279,29 @@ console.log('\nPART 4 — cap + mixed batches');
   check('the backfill flag reaches the rendered card', out[0].backfill === true, out[0]);
   const live = applyNotifEvents([], [add(notif({ notificationKey: 'k2' }))]);
   check('a live card carries no backfill flag', !live[0].backfill, live[0]);
+}
+
+console.log('\nPART 5 — ALERTS-BADGE: one unread definition, re-posts stay read');
+
+{
+  check('live unread card is unread', isUnreadAlert(notif()));
+  check('backfill card is NOT unread (seen on the phone)', !isUnreadAlert(notif({ backfill: true })));
+  check('read card is not unread', !isUnreadAlert(notif({ read: true })));
+
+  // The phantom candidate: an identical live re-post of a card already read.
+  const seen = [notif({ id: 'a', read: true })];
+  const repost = applyNotifEvents(seen, [add(notif({ id: 'b', timestamp: T0 + 2_000 }))]);
+  check('identical re-post of a READ card stays read', repost.length === 1 && repost[0].read === true, repost);
+
+  // No over-correction: new content under the same key is news.
+  const changed = applyNotifEvents(seen, [add(notif({ id: 'c', body: 'ny melding', timestamp: T0 + 2_000 }))]);
+  check('same key, NEW body => unread', changed.length === 1 && changed[0].read === false, changed);
+
+  const unseen = applyNotifEvents([notif({ id: 'a' })], [add(notif({ id: 'b', timestamp: T0 + 1_000 }))]);
+  check('re-post of an UNREAD card stays unread', unseen[0].read === false, unseen);
+
+  const fresh = applyNotifEvents(seen, [add(notif({ id: 'd', notificationKey: 'other', title: 'Bo', body: 'hallo' }))]);
+  check('a genuinely new alert arrives unread', fresh[0].read === false && fresh.length === 2, fresh);
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);

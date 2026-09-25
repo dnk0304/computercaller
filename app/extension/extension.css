@@ -1421,20 +1421,9 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   gap: 6px;
   min-width: 0;
 }
-.cc-ext .cc-note-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  border-radius: var(--r-pill);
-  object-fit: cover;
-}
-.cc-ext .cc-note-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--cc-field);
-  line-height: 1;
-}
+/* The app mark itself is <AppIcon> — see the ALERT-ICONS block at the end of
+   this file. The card only says how big it is. */
+.cc-ext .cc-note-icon { --cc-app-icon: 20px; }
 .cc-ext .cc-note-app {
   min-width: 0;
   flex: 1 1 auto;
@@ -1894,7 +1883,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 .cc-ext .cc-auth-foot { font-size: var(--cc-t-105); }
 
 /* Alerts cards */
-.cc-ext .cc-note-glyph { font-size: var(--cc-t-10); }
 .cc-ext .cc-note-app { font-size: var(--cc-t-105); font-weight: var(--cc-w-3); }
 .cc-ext .cc-note-time { font-size: var(--cc-t-105); }
 .cc-ext .cc-note-title { font-size: var(--cc-t-125); font-weight: var(--cc-w-3); }
@@ -2346,3 +2334,41 @@ html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-unsupported] {
   outline-offset: -2px;
   border-radius: 2px;
 }
+
+/* ---- ALERT-ICONS (2026-09-25): the app mark on cards and the toast --------
+   One component, <AppIcon>, three states: the phone's real launcher icon, a
+   messenger SVG we already ship, or a letter tile. All three sit in the same
+   box so a card never shifts when its logo arrives and replaces the tile.
+
+   Rounded square, not a circle. A launcher icon is designed for a squircle
+   mask; a circle crops the corners of every square logo, which is what the
+   old 16px `object-fit: cover` circle did. 22% is the Android adaptive-icon
+   corner, and `contain` means a logo is shrunk to fit, never cut.
+
+   Size is a custom property the caller sets (card 20px, toast 24px): 20px is
+   the smallest a real logo stays recognisable at this panel's 0.8x density,
+   and it lines the tile up with the card's 10.5px meta line without growing
+   the head row. The toast is a two-line banner, so it takes the next step. */
+.cc-ext .cc-app-icon {
+  --cc-app-icon-size: var(--cc-app-icon, 20px);
+  width: var(--cc-app-icon-size);
+  height: var(--cc-app-icon-size);
+  flex-shrink: 0;
+  border-radius: 22%;
+  object-fit: contain;
+}
+/* Letter tile. The fill is inline (hashed from the package, lib/appTile.ts);
+   the letter is always white, and every fill is asserted >= 4.5:1 against it
+   in tests/notif-icon-store.test.ts, so it holds in light and dark alike —
+   the letter sits on the tile, not on the panel. */
+.cc-ext .cc-app-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: calc(var(--cc-app-icon-size) * .55);
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+.cc-ext .cc-toast-icon { --cc-app-icon: 24px; margin-top: 1px; }
