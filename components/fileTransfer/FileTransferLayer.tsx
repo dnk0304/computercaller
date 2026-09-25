@@ -8,7 +8,7 @@ import { entitlementStaleKey } from '@/lib/fileTransfer/tierRefetch';
 import type { FileTransferApi } from '@/hooks/useFileTransfer';
 
 import { FileOfferDialog } from './FileOfferDialog';
-import { FileTransferProgress } from './FileTransferProgress';
+import { FileQueueTray } from './FileQueueTray';
 import { FileTransferError } from './FileTransferError';
 import { FileReceivedToast } from './FileReceivedToast';
 
@@ -40,6 +40,9 @@ import { FileReceivedToast } from './FileReceivedToast';
  * cleared itself, and keeping that on top of a hook that DOES clear would be
  * two pieces of state free to disagree about whether the toast is showing.
  */
+
+/** The FILE_OFFER `from` label; same constant as FileTransferSlots. */
+const FT_SENDER_LABEL = 'Computer';
 
 export interface FileTransferLayerProps {
   /** Extension surface renders the compact skin. */
@@ -102,7 +105,17 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
       if (outcome === 'repick') repickInputRef.current?.click();
     });
   }, [ft]);
-  const onRepick = useCallback((file: File) => { void ft?.retry(file); }, [ft]);
+  const onRepick = useCallback((file: File) => { void ft?.retry(null, file); }, [ft]);
+  // FILE-QUEUE-WEB — the tray's row actions. Same hook calls the banner uses.
+  const onRemove = useCallback((id: string) => { ft?.remove(id); }, [ft]);
+  const onRowRetry = useCallback(
+    (id: string) => (ft ? ft.retry(id) : Promise.resolve('unavailable' as const)),
+    [ft],
+  );
+  const onRowRepick = useCallback((id: string, file: File) => { void ft?.retry(id, file); }, [ft]);
+  const onClear = useCallback((id: string) => { ft?.clear(id); }, [ft]);
+  const onResume = useCallback(() => { ft?.resume(); }, [ft]);
+  const onAdd = useCallback((files: File[]) => { ft?.enqueue(files, FT_SENDER_LABEL); }, [ft]);
   const onDismissCompleted = useCallback(() => { ft?.dismissCompleted(); }, [ft]);
   const completedId = ft?.completed?.id ?? null;
   // Bound to the id so the handler cannot outlive the transfer it names.
@@ -139,7 +152,22 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
         repickInputRef={repickInputRef}
       />
 
-      <FileTransferProgress progress={progress} onCancel={onCancel} compact={compact} />
+      {/* FILE-QUEUE-WEB: the Transfers strip, in the slot the single progress
+          row held — shell chrome, never inside a thread. */}
+      <FileQueueTray
+        queue={ft.queue}
+        progress={progress}
+        onCancel={onCancel}
+        onRemove={onRemove}
+        onRetry={onRowRetry}
+        onRepick={onRowRepick}
+        onClear={onClear}
+        onResume={onResume}
+        onAdd={onAdd}
+        openableId={completed?.canOpen ? completed.id : null}
+        onOpen={() => { void onOpenReceived(); }}
+        compact={compact}
+      />
 
       <FileOfferDialog
         offer={pendingOffer}

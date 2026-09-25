@@ -60,7 +60,7 @@ import { Reaper } from './lib/reap.mjs';
 import {
   ftFailureCopy, FT_WIRE_REASONS, FT_RELAY_OWNED_REASONS,
   FT_TIER_LOCK_COPY, FT_PICKER_HINT, FT_OFFER_TRUST, FT_OFFER_NO_SCAN,
-  FT_SEND_LABEL, FT_REPICK_ACTION,
+  FT_SEND_LABEL, FT_REPICK_ACTION, ftQueueCount,
 } from '../components/fileTransfer/ftCopy.ts';
 
 /**
@@ -846,18 +846,19 @@ try {
     check('retry: the re-offer runs to FILE_DONE', o2 ? await completeSend(page, o2.id) : false);
     check('retry: after done the send control is enabled again', await enabled(page, hdrSend));
 
-    // (2) busy -> Try again re-offers; Cancel (progress X) clears everything
+    // (2) FILE-QUEUE-WEB: busy -> the row is RE-QUEUED (no banner) and
+    // re-offered on its own after the back-off; Cancel (strip X) clears it.
     await input.setInputFiles({ name: 'busy.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(60_000, 4) });
     const b1 = (await waitOffers(page, 3))[2];
     await sendFrame(page, 'FILE_FAILED', { id: b1.id, reason: 'busy' });
-    await page.locator('[data-cc-ft-error="busy"]').waitFor({ timeout: 5000 });
-    check('busy: the banner carries Try again (the phone may free up)', (await retryBtn(page).count()) === 1);
-    check('busy: the banner carries a dismiss (Cancel) exit',
-      (await page.locator('[data-cc-ft-error="busy"] [data-cc-ft-action="dismiss-error"]').count()) === 1);
-    await shot(page, 'ext-retry-busy-light-360');
-    await retryBtn(page).click();
+    await page.locator('[data-cc-ft-queue]').waitFor({ timeout: 5000 });
+    await page.waitForTimeout(400);
+    check('busy: no failure banner — the row is re-queued', (await page.locator('[data-cc-ft-error]').count()) === 0);
+    check('busy: the strip shows it waiting',
+      (await page.locator('[data-cc-ft-queue]').innerText()).includes(ftQueueCount(1)));
+    await shot(page, 'ext-queue-busy-requeued-light-360');
     const b2 = (await waitOffers(page, 4))[3];
-    check('busy: Try again re-offered under a new id', !!b2 && b2.id !== b1.id);
+    check('busy: re-offered automatically under a new id', !!b2 && b2.id !== b1.id);
     const bar = page.locator('[data-cc-ft-progress][data-cc-ft-direction="send"]');
     check('busy: the waiting-for-accept row shows Cancel',
       await bar.locator('[data-cc-ft-action="cancel"]').waitFor({ timeout: 5000 }).then(() => true).catch(() => false));
@@ -869,14 +870,19 @@ try {
     check('cancel: no banner left behind', (await page.locator('[data-cc-ft-error]').count()) === 0);
     check('cancel: the send control is enabled', await enabled(page, hdrSend));
 
-    // (3) busy -> dismiss clears local state
+    // (3) busy -> Remove the re-queued row: nothing is offered again
     await input.setInputFiles({ name: 'busy2.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(10_000, 5) });
     const b3 = (await waitOffers(page, 5))[4];
     await sendFrame(page, 'FILE_FAILED', { id: b3.id, reason: 'busy' });
-    await page.locator('[data-cc-ft-error="busy"] [data-cc-ft-action="dismiss-error"]').click();
-    check('busy: dismiss clears the banner',
-      await page.locator('[data-cc-ft-error]').waitFor({ state: 'detached', timeout: 5000 }).then(() => true).catch(() => false));
-    check('busy: after dismiss the send control is enabled', await enabled(page, hdrSend));
+    await page.locator('[data-cc-ft-queue-action="toggle"]').click();
+    const queuedRow = page.locator('[data-cc-ft-queue-row][data-cc-ft-queue-state="queued"]');
+    await queuedRow.waitFor({ timeout: 5000 });
+    await queuedRow.locator('[data-cc-ft-queue-action="remove"]').click();
+    check('busy: Remove drops the re-queued row',
+      await queuedRow.waitFor({ state: 'detached', timeout: 5000 }).then(() => true).catch(() => false));
+    await page.waitForTimeout(6000);
+    check('busy: a removed row is never re-offered', (await outbound(page, 'FILE_OFFER')).length === 5);
+    check('busy: after Remove the send control is enabled', await enabled(page, hdrSend));
 
     // (4) quota -> no retry (unchanged rule)
     await input.setInputFiles({ name: 'q.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(10_000, 6) });
@@ -886,6 +892,10 @@ try {
     check('quota: our own send refused on quota offers NO retry', (await retryBtn(page).count()) === 0);
     await page.locator('[data-cc-ft-action="dismiss-error"]').click();
     await page.locator('[data-cc-ft-error]').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+    // FILE-QUEUE-WEB: an account refusal PAUSES the queue (no auto-resume).
+    const resumeBtn = page.locator('[data-cc-ft-queue-action="resume"]');
+    check('quota: the queue is paused with a Resume', await resumeBtn.isVisible().catch(() => false));
+    await resumeBtn.click();
 
     // (5) disk file appended after the offer -> Try again -> picker -> completes
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-retry-'));
@@ -933,6 +943,93 @@ try {
     const w2 = (await waitOffers(page, 2))[1];
     check('web: Try again re-offers under a new id on /app', !!w2 && w2.id !== w1.id);
     check('web: and completes', w2 ? await completeSend(page, w2.id) : false);
+    await ctx.close();
+  }
+
+  // ── FILE-QUEUE-WEB: the queue itself, extension 390 + /app ───────────────
+  /*
+   * ADDENDUM 2 acceptance: add 3 -> all complete in order; remove a queued
+   * item; cancel the active one -> the next proceeds; forced size_mismatch ->
+   * Retry re-sends; panel reload mid-queue -> failed / needs-file rows, no
+   * stuck row. Every "worked" is on the WIRE (FILE_OFFER order, ids), as above.
+   */
+  for (const surface of [{ route: '/extension', width: 390, tag: 'ext' }, { route: '/app', width: 390, tag: 'app' }]) {
+    const { ctx, page } = await openPanel({ subscribed: true, route: surface.route, width: surface.width });
+    const input = page.locator('[data-cc-ft-input]').first();
+    await input.waitFor({ state: 'attached', timeout: 25_000 });
+    const hdr = page.locator('[data-cc-ft-action="header-send"]').first();
+    const blob = (name, n) => ({ name, mimeType: 'application/octet-stream', buffer: Buffer.alloc(n, 1) });
+    const T = surface.tag;
+
+    // add 3 -> ONE offer out, badge 3, strip says 2 queued
+    await input.setInputFiles([blob('one.bin', 30_000), blob('two.bin', 20_000), blob('three.bin', 10_000)]);
+    const [a1] = await waitOffers(page, 1);
+    await page.waitForTimeout(300);
+    check(`queue ${T}: three picked, ONE offered`, (await outbound(page, 'FILE_OFFER')).length === 1);
+    if (await hdr.count()) {
+      check(`queue ${T}: the header icon badges the queue`, (await hdr.getAttribute('data-cc-ft-queue-count')) === '3');
+    }
+    const strip = page.locator('[data-cc-ft-queue]');
+    check(`queue ${T}: the strip shows "2 queued"`, (await strip.innerText()).includes(ftQueueCount(2)));
+    await shot(page, `${T}-queue-collapsed-light-${surface.width}`);
+    await page.locator('[data-cc-ft-queue-action="toggle"]').click();
+    check(`queue ${T}: expanded lists three rows`, (await page.locator('[data-cc-ft-queue-row]').count()) === 3);
+    await shot(page, `${T}-queue-expanded-light-${surface.width}`);
+
+    // remove the queued "three"
+    const three = page.locator('[data-cc-ft-queue-row]', { hasText: 'three.bin' });
+    await three.locator('[data-cc-ft-queue-action="remove"]').click();
+    check(`queue ${T}: Remove drops a queued row`, (await page.locator('[data-cc-ft-queue-row]').count()) === 2);
+
+    // cancel the active "one" -> "two" proceeds
+    await page.locator('[data-cc-ft-progress] [data-cc-ft-action="cancel"]').click();
+    const o2 = (await waitOffers(page, 2))[1];
+    const cancelled = (await outbound(page, 'FILE_FAILED')).filter((f) => f.id === a1.id);
+    check(`queue ${T}: cancel sent the existing cancel frame`, cancelled.length === 1);
+    check(`queue ${T}: cancel -> the next item proceeds`, !!o2 && o2.id !== a1.id && o2.size === 20_000);
+    check(`queue ${T}: "three" was never offered`, (await outbound(page, 'FILE_OFFER')).every((o) => o.size !== 10_000));
+
+    // forced size_mismatch -> row Retry re-sends under a new id -> completes
+    await sendFrame(page, 'FILE_FAILED', { id: o2.id, reason: 'size_mismatch' });
+    const failedRow = page.locator('[data-cc-ft-queue-row][data-cc-ft-queue-state="failed"]');
+    await failedRow.waitFor({ timeout: 5000 });
+    await failedRow.locator('[data-cc-ft-queue-action="retry"]').click();
+    const o3 = (await waitOffers(page, 3))[2];
+    check(`queue ${T}: row Retry re-offers under a NEW id`, !!o3 && o3.id !== o2.id && o3.size === 20_000);
+    check(`queue ${T}: and it completes`, o3 ? await completeSend(page, o3.id) : false);
+
+    // add 3, complete all, in order
+    await input.setInputFiles([blob('a.bin', 11_000), blob('b.bin', 12_000), blob('c.bin', 13_000)]);
+    const order = [];
+    for (let i = 0; i < 3; i++) {
+      const o = (await waitOffers(page, 4 + i))[3 + i];
+      order.push(o?.size);
+      check(`queue ${T}: item ${i + 1} completes`, o ? await completeSend(page, o.id) : false);
+    }
+    check(`queue ${T}: all three completed IN ORDER`, order.join() === '11000,12000,13000', order.join());
+
+    // reload mid-queue -> failed / needs-file, never stuck
+    await input.setInputFiles([blob('r1.bin', 9_000), blob('r2.bin', 8_000), blob('r3.bin', 7_000)]);
+    await waitOffers(page, 7);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('[data-cc-ft-queue]').waitFor({ timeout: 30_000 });
+    await page.locator('[data-cc-ft-queue-action="toggle"]').click();
+    const r1 = page.locator('[data-cc-ft-queue-row]', { hasText: 'r1.bin' });
+    check(`queue ${T}: after reload the mid-send row is failed`, (await r1.getAttribute('data-cc-ft-queue-state')) === 'failed');
+    check(`queue ${T}: ...with Try again`, (await r1.locator('[data-cc-ft-queue-action="retry"]').count()) === 1);
+    for (const n of ['r2.bin', 'r3.bin']) {
+      const row = page.locator('[data-cc-ft-queue-row]', { hasText: n });
+      check(`queue ${T}: after reload ${n} needs the file`, (await row.getAttribute('data-cc-ft-queue-state')) === 'needs-file');
+    }
+    const stuck = await page.locator('[data-cc-ft-queue-row][data-cc-ft-queue-state="offering"], [data-cc-ft-queue-row][data-cc-ft-queue-state="sending"], [data-cc-ft-queue-row][data-cc-ft-queue-state="queued"]').count();
+    check(`queue ${T}: no stuck row after reload`, stuck === 0);
+    await shot(page, `${T}-queue-restored-light-${surface.width}`);
+    if (surface.route === '/extension') {
+      await page.evaluate(() => document.documentElement.setAttribute('data-cc-theme', 'dark'));
+      await shot(page, `${T}-queue-expanded-dark-${surface.width}`);
+      await page.locator('[data-cc-ft-queue-action="toggle"]').click();
+      await shot(page, `${T}-queue-collapsed-dark-${surface.width}`);
+    }
     await ctx.close();
   }
 

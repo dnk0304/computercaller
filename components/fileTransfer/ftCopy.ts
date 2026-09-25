@@ -168,3 +168,32 @@ export const FT_RETRY_ACTION = 'Try again';
  */
 export const FT_REPICK_MESSAGE = "The file can't be read anymore — it may have been changed or moved.";
 export const FT_REPICK_ACTION = 'Pick the file again';
+
+/* ===========================================================================
+   FILE-QUEUE-WEB — the Transfers strip and list. PROPOSED wording, pending
+   Ken's approval (brief item 5). Failure lines are NOT here: a failed row
+   renders ftFailureCopy(reason).message, the same sentence the banner shows.
+   =========================================================================== */
+
+/** The strip's accessible name and the list heading. */
+export const FT_QUEUE_TITLE = 'Transfers';
+/** A row waiting its turn. */
+export const FT_QUEUE_QUEUED = 'Queued';
+/** The strip's count of rows still waiting. */
+export const ftQueueCount = (n: number): string => `${n} queued`;
+/** The queue stopped walking (link lost, account refusal, phone stayed busy). */
+export const FT_QUEUE_PAUSED = 'Paused';
+export const FT_QUEUE_RESUME = 'Resume';
+/** A row whose File did not survive a restart, or no longer reads. */
+export const FT_QUEUE_NEEDS_FILE = 'Pick the file again to send it.';
+export const FT_QUEUE_REPICK = 'Pick again';
+export const FT_QUEUE_REMOVE = 'Remove';
+export const FT_QUEUE_CANCEL = 'Cancel';
+export const FT_QUEUE_CLEAR = 'Clear';
+export const FT_QUEUE_CLEAR_FINISHED = 'Clear finished';
+export const FT_QUEUE_OPEN = 'Open';
+/** The queue's own "Add file" entry (ADDENDUM 1). */
+export const FT_QUEUE_ADD = 'Add files';
+/** Strip summary when nothing is moving: "2 sent", "1 failed". */
+export const ftQueueDoneCount = (n: number): string => `${n} finished`;
+export const ftQueueFailedCount = (n: number): string => `${n} failed`;
