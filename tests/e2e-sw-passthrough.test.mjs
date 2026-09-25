@@ -367,14 +367,14 @@ await arm('sealed FILE_CHUNK is forwarded and never opened', async () => {
   detach(p);
 });
 
-await arm('page closed: marker + notification, keyed on the HINTED id', async () => {
+// EXT-NO-NOTIFS (2026-09-25): the "A file is waiting" OS toast was removed.
+// The marker is the whole behaviour now; the `notifications` stub above stays
+// as a spy so any reintroduced create() call turns this arm red.
+await arm('page closed: marker (NO OS notification), keyed on the HINTED id', async () => {
   await reset();
   W.handleFrame(`FILE_OFFER:${JSON.stringify(sealedOffer())}`);
   eq(W.pendingOfferForTest().id, HINT_ID, 'marker id comes from ft.id');
-  eq(notifications.size, 1, 'one notification');
-  const n = [...notifications.values()][0];
-  eq(n.title, 'A file is waiting');
-  ok(!/tax-return|\.pdf/.test(JSON.stringify(n)), 'the notification names no file');
+  eq(notifications.size, 0, 'ZERO OS notifications');
 });
 
 await arm('page closed + NO hint: dropped and counted, no marker, no notification', async () => {
@@ -534,7 +534,7 @@ await arm('P3.1 added no chrome.storage.session key', async () => {
   W.handleFrame(`FILE_FAILED:{"id":"${HINT_ID}","reason":"hash_mismatch","relay":true}`);
   W.expirePendingOffer();
   await new Promise((r) => setTimeout(r, 0));
-  const known = new Set([S.DROPS_KEY, S.WRAP_KEY, S.SEQ_KEY, S.DEDUPE_KEY, S.EPOCH_FLOOR_KEY, S.OWN_PAIRING_KEY, 'cc_unread', 'cc_notif_links']);
+  const known = new Set([S.DROPS_KEY, S.WRAP_KEY, S.SEQ_KEY, S.DEDUPE_KEY, S.EPOCH_FLOOR_KEY, S.OWN_PAIRING_KEY, 'cc_unread']);
   for (const k of Object.keys(session)) ok(known.has(k), `new storage key written by P3.1: ${k}`);
   // And the marker itself is not in there — it is module memory by design.
   eq(JSON.stringify(session).includes(HINT_ID), false, 'the marker/envelope never reached storage');
@@ -542,7 +542,7 @@ await arm('P3.1 added no chrome.storage.session key', async () => {
 });
 check('the manifest permissions are byte-for-byte the base list', () => {
   const m = JSON.parse(readFileSync(join(ROOT, 'chrome-extension/manifest.json'), 'utf8'));
-  eq(m.permissions.join(','), 'notifications,storage,identity,alarms,sidePanel', 'permissions');
+  eq(m.permissions.join(','), 'storage,identity,alarms,sidePanel', 'permissions (EXT-NO-NOTIFS: "notifications" removed)');
   eq(m.host_permissions.join(','), 'https://computercaller.com/*', 'host_permissions');
 });
 

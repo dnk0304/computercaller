@@ -5,8 +5,8 @@
  * header 2026-09-14, pixel/ext-redesign / dispatch PIXEL-B2).
  *
  * Responsibilities (all thin plumbing; the real UI is the /extension iframe):
- *   1. Presence: open a `cc-presence` port so the background SW suppresses
- *      duplicate chrome.notifications while a popup / pop-out is open.
+ *   1. Presence: open a `cc-presence` port so the background SW holds badge
+ *      bumps and replays a pending file offer while a surface is open.
  *   2. Auth gate: probe /api/auth/me. THREE outcomes, never two:
  *        200 → authed  → hide overlay, load iframe, hand the email to the app.
  *        401 → anon    → show the sign-in overlay.

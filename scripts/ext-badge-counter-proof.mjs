@@ -198,13 +198,18 @@ try {
     id, from: '+4733333333', body: 'hello', time: Date.now(), type,
   });
 
+  // EXT-NO-NOTIFS (2026-09-25): the "notifications" permission is gone, so
+  // chrome.notifications is undefined in the worker. First pin THAT, then plant
+  // a counting stub in its place: if any code path ever calls
+  // chrome.notifications.create again, the stub counts it and every
+  // "ZERO toasts" check below goes red (instead of the call throwing into a
+  // swallowed catch and reading as "none").
+  const apiAbsent = await sw.evaluate(() => typeof chrome.notifications === 'undefined');
+  check('manifest has no "notifications" permission ⇒ chrome.notifications undefined in SW', apiAbsent, apiAbsent);
   const armNotifSpy = () => sw.evaluate(() => {
     self.__notifSpy = 0;
-    if (!self.__notifOrig) self.__notifOrig = chrome.notifications.create;
-    chrome.notifications.create = function (...args) {
-      self.__notifSpy += 1;
-      return self.__notifOrig.apply(chrome.notifications, args);
-    };
+    const count = () => { self.__notifSpy += 1; };
+    chrome.notifications = { create: count, clear() {}, getAll(cb) { if (cb) cb({}); return Promise.resolve({}); } };
   });
   const notifCount = () => sw.evaluate(() => self.__notifSpy);
 
@@ -224,7 +229,7 @@ try {
   await feed([SMS_DIR(102, 'inbox')]);
   b = await badge();
   check('incoming SMS (type:"inbox") ⇒ badge bumped to "1"', b === '1', b);
-  check('incoming SMS (type:"inbox") ⇒ notification raised', (await notifCount()) === 1, await notifCount());
+  check('incoming SMS (type:"inbox") ⇒ ZERO OS toasts (badge only)', (await notifCount()) === 0, await notifCount());
 
   // 9c. a row with no direction marker at all must still notify. Defaulting to
   // "outgoing" would silently swallow real texts from any producer that omits
@@ -234,7 +239,7 @@ try {
   await feed([SMS(7)]);
   b = await badge();
   check('SMS with NO type field still counts (defaults to incoming)', b === '1', b);
-  check('SMS with NO type field still notifies', (await notifCount()) === 1, await notifCount());
+  check('SMS with NO type field ⇒ ZERO OS toasts', (await notifCount()) === 0, await notifCount());
 
   // 9d. mixed burst: only the incoming half survives.
   await reset();
@@ -242,7 +247,7 @@ try {
   await feed([SMS_DIR(103, 'sent'), SMS_DIR(104, 'inbox'), SMS_DIR(105, 'sent'), SMS_DIR(106, 'inbox')]);
   b = await badge();
   check('2 outgoing + 2 incoming ⇒ badge "2", not "4"', b === '2', b);
-  check('2 outgoing + 2 incoming ⇒ exactly 2 notifications', (await notifCount()) === 2, await notifCount());
+  check('2 outgoing + 2 incoming ⇒ ZERO OS toasts', (await notifCount()) === 0, await notifCount());
 
   // 9e. the wrapped shape the web layer's normalizePayload produces
   // ({message:{...}}) must be read the same way — one spelling of the marker
@@ -540,8 +545,8 @@ try {
   await feed([SMS_DIR(301, 'inbox'), CALL, NOTIF]);
   b = await badge();
   check('HELD pair + panel CLOSED: SMS/call/alert ⇒ badge "3"', b === '3', b);
-  check('HELD pair + panel CLOSED: 3 notifications raised',
-    (await notifCount()) === 3, await notifCount());
+  check('HELD pair + panel CLOSED: ZERO OS toasts (badge only)',
+    (await notifCount()) === 0, await notifCount());
   check('…and the dot still refuses to claim a live pair',
     (await indicator()) === 'resuming', await indicator());
 
@@ -598,7 +603,7 @@ try {
   await feed([LIVE_NOTIF(404)]);
   b = await badge();
   check('LIVE notification (no backfill flag) ⇒ badge "1"', b === '1', b);
-  check('LIVE notification ⇒ notification raised', (await notifCount()) === 1, await notifCount());
+  check('LIVE notification ⇒ ZERO OS toasts (badge only)', (await notifCount()) === 0, await notifCount());
 
   // 13c. `backfill:false` and a nonsense value are NOT backfill. Only an
   // explicit `true` may take the silent path — anything else is a pre-v58 APK

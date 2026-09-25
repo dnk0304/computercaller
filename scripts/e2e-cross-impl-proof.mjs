@@ -751,41 +751,48 @@ async function main() {
           // deliverable exists to prevent, so the suppressor is driven to its
           // unsuppressed state FIRST and a positive control below requires that a
           // notification was actually emitted.
+          //
+          // EXT-NO-NOTIFS (2026-09-25): the extension no longer raises ANY OS
+          // notification and no longer holds the "notifications" permission,
+          // so chrome.notifications is undefined here. A counting stub is
+          // planted in its place — any create() call would be recorded, with
+          // its text — and the positive control is now the badge counter: the
+          // frame must still have been PROCESSED (newSms bumped), or "nothing
+          // rendered" would be indistinguishable from "nothing happened".
           presenceCount = 0;
           const seen = [];
-          const real = chrome.notifications.create;
-          chrome.notifications.create = function (...a) {
+          const apiAbsent = typeof chrome.notifications === 'undefined';
+          await chrome.storage.session.set({ cc_unread: { missedCalls: 0, newSms: 0, alerts: 0 } });
+          chrome.notifications = { create(...a) {
             const opts = a.find((x) => x && typeof x === 'object' && 'message' in x);
-            if (opts) seen.push({ title: opts.title, message: opts.message });
-            try { return real.apply(this, a); } catch { return undefined; }
-          };
+            seen.push(opts ? { title: opts.title, message: opts.message } : { raw: true });
+          }, clear() {}, getAll(cb) { if (cb) cb({}); return Promise.resolve({}); } };
           try {
             handleFrame(`SMS_RECEIVED:${JSON.stringify({ id: 'p6g-1', from: '+3460000000', body: 'PLAINTEXT-CANARY-9c1d', time: Date.now(), type: 'inbox' })}`);
             await new Promise((r) => setTimeout(r, 900));
-          } finally { chrome.notifications.create = real; }
-          return seen;
-        }).catch(() => []);
-        const leaked = JSON.stringify(previewed).includes('PLAINTEXT-CANARY-9c1d');
-        const emitted = Array.isArray(previewed) && previewed.length > 0;
+          } finally { delete chrome.notifications; }
+          const unread = (await chrome.storage.session.get('cc_unread')).cc_unread || {};
+          return { seen, apiAbsent, counted: unread.newSms || 0 };
+        }).catch((e) => ({ seen: [], apiAbsent: false, counted: 0, err: String(e) }));
+        const leaked = JSON.stringify(previewed.seen).includes('PLAINTEXT-CANARY-9c1d');
+        const emitted = previewed.seen.length > 0;
+        const processed = previewed.counted === 1;
         emit('PAIR_STATE — the SW\'s only pairing frame',
           'Does the SW ever NEED a PAIR_STATE, and what does it do with one that carries no e2e block? Driven against the REAL service worker; the relay-side contract is read out of server.js derivePairState().',
           [
             { field: 'SW needs PAIR_STATE?', web: 'n/a — the web client is the BROWSER peer and never receives PAIR_STATE', sw: 'YES — it is the listener\'s ONLY pairing frame and its one source of kid/epk/recipKeys/wrap/ctx', android: 'ABSENT — blocked', match: true },
             { field: 'PAIR_STATE with no e2e block', web: 'n/a', sw: `mode=${noBlock.mode} why=${noBlock.why}`, android: 'ABSENT — blocked', match: noBlock.mode === 'counts-only' },
-            { field: 'plaintext body while counts-only', web: 'n/a', sw: leaked ? 'RENDERED IN FULL (finding D3)' : 'not rendered', android: 'ABSENT — blocked', match: true },
+            { field: 'plaintext body while counts-only', web: 'n/a', sw: leaked ? 'RENDERED IN FULL (finding D3)' : (emitted ? 'toast raised' : 'no OS toast (removed 2026-09-25)'), android: 'ABSENT — blocked', match: true },
           ]);
-        // POSITIVE CONTROL FIRST: a notification must genuinely have been emitted.
-        // Without it, "no plaintext leaked" is indistinguishable from "nothing
-        // happened at all", and the latter would pass — the exact failure this
-        // deliverable exists to prevent. Run 2 passed this scenario vacuously.
-        check('PS-D3PC  positive control — the SW really emitted a notification for the frame',
-          emitted,
-          emitted ? `emitted ${previewed.length}: ${JSON.stringify(previewed)}` : 'deliverFrame emitted NOTHING — the measurement below would be vacuous');
-        check('PS-D3    FINDING D3 measured — counts-only does NOT suppress a PLAINTEXT body',
-          emitted && leaked,
-          emitted && leaked
-            ? 'CONFIRMED (expected, and the point): with NO e2e block the SW sits in counts-only and a PLAINTEXT SMS body is still rendered VERBATIM. Correct per the current design — the downgrade guard INBOUND_DROP_PLAINTEXT is scoped to e2eMode===open, and COUNTS_ONLY_BODY is substituted only when data===null (a sealed frame that would not open). But counts-only names a strictly weaker property than the name suggests, and this row is the evidence.'
-            : `emitted=${emitted} leaked=${leaked} — ${JSON.stringify(previewed)}`);
+        // POSITIVE CONTROL FIRST: the frame must genuinely have been processed
+        // (the badge counted it). Without it, "no toast, no plaintext" is
+        // indistinguishable from "nothing happened at all".
+        check('PS-D3PC  positive control — the SW really processed the frame (newSms badge bumped)',
+          processed,
+          processed ? `counted=${previewed.counted}` : `deliverFrame counted NOTHING — the measurement below would be vacuous ${JSON.stringify(previewed)}`);
+        check('PS-D3    EXT-NO-NOTIFS — no "notifications" permission, ZERO OS toasts, so no plaintext body is ever rendered',
+          processed && previewed.apiAbsent && !emitted && !leaked,
+          `apiAbsent=${previewed.apiAbsent} emitted=${emitted} leaked=${leaked} — ${JSON.stringify(previewed.seen)}`);
 
         // ═══ IDB — the REAL stores, opened, not grepped ═══════════════════
         //

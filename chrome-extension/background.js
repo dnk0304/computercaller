@@ -3,8 +3,10 @@
  * (2026-09-02, forge/chrome-extension-p1).
  *
  * Owns the INCOMING path: a receive-only WebSocket to the relay (?role=listener)
- * that maps phone→browser frames to chrome.notifications so calls/SMS notify even
- * when the popup is closed. It never sends call/SMS commands (that is the popup's
+ * that maps phone→browser frames to toolbar badge counts so calls/SMS are counted
+ * even when the popup is closed. It raises NO OS notifications (Dennis
+ * 2026-09-25: "remove the chrome floating notifications from the extension").
+ * It never sends call/SMS commands (that is the popup's
  * iframe over its OWN active-browser WS) — this socket is passive, which is why
  * the relay keeps it out of pairing and the single-session (SESSION_SUPERSEDED)
  * kill switch. See server.js broadcastToListeners / the `?role=listener` handling.
@@ -69,7 +71,7 @@ let connecting = false;
 let openedAt = 0;               // ms timestamp of the last successful open
 let reconnectAttempts = 0;      // drives exponential backoff
 let reconnectTimer = null;
-let presenceCount = 0;          // >0 ⇒ a popup / pop-out / panel is open (suppress notifs)
+let presenceCount = 0;          // >0 ⇒ a popup / pop-out / panel is open (suppress badge bumps)
 
 // ── Connection indicator state ─────────────────────────────────────────────
 // (2026-09-15 forge/ext-badge-sidepanel; corrected 2026-09-16 FORGE-O.)
@@ -137,9 +139,6 @@ const MAX_BACKOFF_MS = 30_000;
 // Escalation still applies, it just tops out here instead of at 30 s, so the
 // relay's panel hold regains its listener liveness signal quickly.
 const ABNORMAL_CLOSE_BACKOFF_CAP_MS = 5_000;
-const CALL_NOTIF_PREFIX = 'cc-call';
-const SMS_NOTIF_PREFIX = 'cc-sms';
-const PHONE_NOTIF_PREFIX = 'cc-notif';
 
 // Unread counters, per surface tab. Kept in chrome.storage.session (cleared on
 // browser restart, never written to disk) rather than in SW memory, because the
@@ -168,8 +167,6 @@ const BATTERY_RECORD_VERSION = 1;
 // `alerts` count, so a phone-side dismissal can decrement exactly the bumps it
 // owns. See bumpAlert/dropAlert.
 const ALERT_KEYS = 'cc_alert_keys';
-/** Notification id → deep-link hash, so a click survives an SW restart. */
-const NOTIF_LINK_KEY = 'cc_notif_links';
 
 const GREEN = '#16a34a';
 const GREY = '#9ca3af';
@@ -1107,7 +1104,6 @@ function broadcastUnread(unread) {
 // relay drops anything a `?role=listener` socket sends anyway (server.js, the
 // `if (ws.listener) return` short-circuit above the whole data plane).
 const FILE_PASSTHROUGH_MSG = 'file-passthrough';
-const FT_NOTIF_PREFIX = 'cc-ft';
 
 /**
  * The single pending sealed offer. One at a time — one transfer per room, by
@@ -1181,7 +1177,6 @@ function expirePendingOffer() {
   // worker is not the relay. `assertSwMintsNoRelayMark()` pins that.
   const payload = { id: was.id, reason: 'timeout' };
   forwardFileFrameToPage('FILE_FAILED', payload);
-  try { chrome.notifications.clear(`${FT_NOTIF_PREFIX}:${was.id}`); } catch { /* none raised */ }
   trace('ft-offer-expired', { id: was.id });
   return payload;
 }
@@ -1228,20 +1223,6 @@ function routeSealedFileFrame(frameType, envelope) {
     envelope,     // opaque. Never parsed, never logged, never written to disk.
     timer: setTimeout(() => { expirePendingOffer(); }, PENDING_OFFER_TTL_MS),
   };
-  // Leaks nothing the wire did not already carry: the frame TYPE travels in the
-  // clear on every frame (FT-A1 §0/Q1), so "a file is waiting" is a restatement
-  // of what the relay already saw. The name is sealed and is not named here.
-  try {
-    chrome.notifications.create(`${FT_NOTIF_PREFIX}:${id}`, {
-      type: 'basic',
-      iconUrl: 'icon128.png',
-      title: 'A file is waiting',
-      message: 'Open ComputerCaller to receive it.',
-      contextMessage: 'ComputerCaller',
-      priority: 2,
-      buttons: [{ title: 'Open ComputerCaller' }],
-    });
-  } catch { /* notifications unavailable — the marker still stands */ }
   trace('ft-offer-pending', { id });
   return 'pending';
 }
@@ -1259,7 +1240,6 @@ function replayPendingOfferTo(port) {
   try { port.postMessage({ type: FILE_PASSTHROUGH_MSG, frameType: 'FILE_OFFER', payload: live.envelope }); }
   catch { return false; }
   clearPendingOffer();
-  try { chrome.notifications.clear(`${FT_NOTIF_PREFIX}:${live.id}`); } catch { /* none */ }
   trace('ft-offer-replayed', { id: live.id });
   return true;
 }
@@ -1328,40 +1308,6 @@ function routeFileFrame(type, data, sealed) {
 /** Test/diagnostics accessor. Never a source of truth for the page. */
 function pendingFileOfferForTest() {
   return pendingFileOffer;
-}
-
-// ── Deep links carried by a notification ────────────────────────────────────
-// Kept in storage.session, not a Map: the SW is routinely torn down between
-// raising a notification and the user clicking it, and a click that lands on a
-// respawned worker must still know which thread it was about.
-function rememberLink(notifId, hash) {
-  if (!hash) return Promise.resolve();
-  return serialize(async () => {
-    try {
-      const o = await new Promise((r) => chrome.storage.session.get(NOTIF_LINK_KEY, r));
-      const map = (o && o[NOTIF_LINK_KEY]) || {};
-      map[notifId] = hash;
-      // Bound it. A user who ignores 200 notifications should not carry 200 keys.
-      const ids = Object.keys(map);
-      if (ids.length > 50) delete map[ids[0]];
-      await new Promise((r) => chrome.storage.session.set({ [NOTIF_LINK_KEY]: map }, r));
-    } catch (_) {}
-  });
-}
-function takeLink(notifId) {
-  // Queued too, and for the sharper reason: takeLink DELETES. A click landing
-  // while a burst is still writing links would otherwise resurrect the entry it
-  // just consumed, and the next click would reopen a stale thread.
-  return serialize(async () => {
-    try {
-      const o = await new Promise((r) => chrome.storage.session.get(NOTIF_LINK_KEY, r));
-      const map = (o && o[NOTIF_LINK_KEY]) || {};
-      const hash = map[notifId] || '';
-      delete map[notifId];
-      await new Promise((r) => chrome.storage.session.set({ [NOTIF_LINK_KEY]: map }, r));
-      return hash;
-    } catch (_) { return ''; }
-  });
 }
 
 // ── Sign-in (2026-09-15, forge/ext-embedded-login) ────────────────────────
@@ -2012,11 +1958,11 @@ function noteE2eBlock(block) {
  * which is the shape that matters in production. We also read `message.type`
  * and a `direction` field because the web layer's normalizePayload wraps the
  * row under `message`, and older/other producers have used `direction`; a
- * notification suppressor that only knows ONE of the three spellings is a
+ * badge suppressor that only knows ONE of the three spellings is a
  * suppressor that silently stops working the next time a producer changes.
  *
- * DEFAULT IS INCOMING. An unrecognised or absent marker must notify: missing a
- * real incoming text is a product failure, whereas one stray notification for
+ * DEFAULT IS INCOMING. An unrecognised or absent marker must count: missing a
+ * real incoming text is a product failure, whereas one stray badge count for
  * an outgoing one is the bug we are fixing — an annoyance. Fail toward the
  * cheaper mistake.
  */
@@ -2088,7 +2034,7 @@ function handleFrame(msg) {
   // would be pure wire noise.
   if (type === 'HB') return;
   // P3 (c). THE DOWNGRADE GUARD. Placed HERE — above the sealed branch, above
-  // deliverFrame, above every counter and every notifications.create — because
+  // deliverFrame, above every counter — because
   // "unseal before anything sees the bytes" is worth nothing if a frame that
   // was never sealed walks past the check.
   //
@@ -2163,7 +2109,7 @@ function handleFrame(msg) {
   // on the other end, so it still repairs `phonePresent` if a presence frame was
   // ever missed. It must NOT be read as proof of a PAIR: broadcastToListeners()
   // fans phone frames to listeners "regardless of active-pair state" (server.js,
-  // its own doc comment) precisely so notifications survive a closed panel and a
+  // its own doc comment) precisely so badge counts survive a closed panel and a
   // resume gap — so an SMS arriving during a HELD pair, or from a lobby phone, is
   // routine and is not evidence the pair is live. Inferring `paired` here would
   // re-introduce the exact lie this dispatch removes, at the worst moment: the
@@ -2195,10 +2141,9 @@ function handleFrame(msg) {
  *
  * `data === null` means "this frame was sealed and we could not open it". That
  * is a NORMAL state (m-G / deliverable (d)), not an error: the badge still
- * counts, the notification still appears, and the body is the generic
- * COUNTS_ONLY_BODY. It must never become a plaintext preview and never an
- * error toast — a user whose extension is a version behind their phone should
- * see "you have a message", not a crash report.
+ * counts. It must never become an error — a user whose extension is a version
+ * behind their phone should see a count, not a crash report. (No OS toast is
+ * raised for any frame since 2026-09-25.)
  */
 function deliverFrame(type, data) {
   /** True when the body is unreadable and every field below must be generic. */
@@ -2208,30 +2153,8 @@ function deliverFrame(type, data) {
   switch (type) {
     case 'CALL_INCOMING':
     case 'CALL_WAITING': {
-      // Clear/lifecycle frames are still processed below even when suppressed,
-      // but the visible notification is skipped if a popup/pop-out is open.
+      // Badge only. No OS notification (removed 2026-09-25).
       bumpUnread('missedCalls');
-      if (presenceCount > 0) return;
-      // §13.7 seals a caller's number and name — the exact short secret the
-      // padding buckets exist to hide — so an unopenable call frame must not
-      // fall through to `pick()` on an empty object and render "Unknown number"
-      // as if we had looked and found nothing. Say what is true.
-      const who = sealed
-        ? 'Someone is calling your phone'
-        : (pick(data, ['name', 'contactName', 'displayName']) ||
-           pick(data, ['number', 'from', 'phoneNumber', 'msisdn']) || 'Unknown number');
-      const callId = pick(data, ['callId', 'id']) || String(Date.now());
-      chrome.notifications.create(`${CALL_NOTIF_PREFIX}:${callId}`, {
-        type: 'basic',
-        iconUrl: 'icon128.png',
-        title: type === 'CALL_WAITING' ? 'Call waiting' : 'Incoming call',
-        message: who,
-        contextMessage: 'ComputerCaller',
-        priority: 2,
-        requireInteraction: true,
-        buttons: [{ title: 'Open ComputerCaller' }],
-      });
-      rememberLink(`${CALL_NOTIF_PREFIX}:${callId}`, '#tab=dial');
       return;
     }
     case 'SMS_RECEIVED': {
@@ -2250,49 +2173,18 @@ function deliverFrame(type, data) {
       // from the browser, once the provider row lands) arrived here and both
       // raised a notification AND bumped the unread badge.
       //
-      // The direction check has to come BEFORE bumpUnread, not just before the
-      // notifications.create: the badge is a count of things needing attention
+      // The direction check has to come BEFORE bumpUnread: the badge is a count of things needing attention
       // and your own outbox needs none. Suppressing only the popup would leave
       // the badge lying, which is the same bug wearing a different hat.
+      // (The OS toast itself was removed entirely on 2026-09-25; the badge rule
+      // above is what remains.)
       // A sealed row's direction marker is inside the ciphertext, so an
       // unopenable one cannot be classified. DEFAULT IS INCOMING, exactly as
       // isOutgoingSms() already defaults for an absent marker: missing a real
-      // incoming text is a product failure; one stray notification for an
-      // outgoing one is an annoyance. Fail toward the cheaper mistake.
+      // incoming text is a product failure; one stray count for an
+      // outgoing one is one stray badge count. Fail toward the cheaper mistake.
       if (!sealed && isOutgoingSms(data)) return;
       bumpUnread('newSms');
-      if (presenceCount > 0) return;
-      const who = sealed
-        ? COUNTS_ONLY_TITLE
-        : (pick(data, ['name', 'contactName']) ||
-           pick(data, ['from', 'sender', 'number', 'address']) || 'New message');
-      const body = sealed
-        ? COUNTS_ONLY_BODY
-        : (pick(data, ['body', 'text', 'message', 'preview']) || '');
-      // Thread identity, best-effort: the relay's SMS payload shape varies by
-      // APK version, so we take the first field that looks like a thread and
-      // fall back to the sender's address — which is what the app threads on
-      // anyway. An empty id simply deep-links to the Texts tab.
-      const thread = pick(data, ['threadId', 'thread', 'conversationId']) ||
-                     pick(data, ['from', 'sender', 'number', 'address']) || '';
-      const smsId = `${SMS_NOTIF_PREFIX}:${Date.now()}`;
-      chrome.notifications.create(smsId, {
-        type: 'basic',
-        iconUrl: 'icon128.png',
-        title: who,
-        message: body || 'Sent you a message',
-        contextMessage: 'ComputerCaller · SMS',
-        priority: 1,
-        // Button 1 is "Reply", NOT a reply box. chrome.notifications has no
-        // inline text input on any platform — the only notification API that
-        // ever did was the deprecated Rich Notifications 'textPrompt', which
-        // Chrome removed. "Reply" therefore means "open the surface with this
-        // thread already selected", which is one click from typing.
-        buttons: [{ title: 'Open ComputerCaller' }, { title: 'Reply' }],
-      });
-      rememberLink(smsId, thread
-        ? `#tab=texts&thread=${encodeURIComponent(thread)}`
-        : '#tab=texts');
       return;
     }
     case 'PHONE_NOTIFICATION': {
@@ -2300,45 +2192,13 @@ function deliverFrame(type, data) {
       // shade under this same frame type, tagged `backfill:true` with the
       // original `postedAt`. That is history the user has already seen on the
       // phone, so it reaches the Alerts list (the page merges it chronologically)
-      // and NOTHING else here: no toast, no badge bump, no sound. A toast per
-      // card for a shade of twenty would be a notification storm on every sync.
+      // and NOTHING else here: no badge bump, no sound. A bump per
+      // card for a shade of twenty would be a badge storm on every sync.
       //
       // Only an explicit `true` takes this path. Unknown or absent — every APK
       // before v58 — falls through to today's live behaviour unchanged.
       if (data && data.backfill === true) return;
       bumpAlert(notifKeyOf(data));
-      if (presenceCount > 0) return;
-      // Mirror the phone's own notification. Respect an explicit opt-out flag if
-      // the phone sends one; otherwise show it.
-      if (data && (data.suppressMirror === true || data.mirror === false)) return;
-      // (d) / m-G. An unopenable mirror gets the ONE generic body and nothing
-      // else: not the app name (which would leak which app messaged you), not
-      // an empty string, and never an error. The badge above already counted it.
-      const title = sealed
-        ? COUNTS_ONLY_TITLE
-        : (pick(data, ['title', 'appName', 'app']) || 'Phone notification');
-      const body = sealed
-        ? COUNTS_ONLY_BODY
-        : (pick(data, ['body', 'text', 'message', 'content']) || '');
-      const notifId = `${PHONE_NOTIF_PREFIX}:${Date.now()}`;
-      // The phone tells us whether the mirrored notification is actionable.
-      // Only then do we offer Reply — a Reply button on a battery warning is
-      // noise, and worse, a promise we cannot keep.
-      // A Reply button we cannot honour is a promise we cannot keep, and the
-      // flag lives inside the ciphertext, so a sealed frame never offers one.
-      const canReply = !sealed && !!(data && (data.hasReply === true || data.canReply === true));
-      chrome.notifications.create(notifId, {
-        type: 'basic',
-        iconUrl: 'icon128.png',
-        title,
-        message: body,
-        contextMessage: 'ComputerCaller',
-        priority: 0,
-        buttons: canReply
-          ? [{ title: 'Open ComputerCaller' }, { title: 'Reply' }]
-          : [{ title: 'Open ComputerCaller' }],
-      });
-      rememberLink(notifId, '#tab=alerts');
       return;
     }
     case 'NOTIFICATION_REMOVED': {
@@ -2348,16 +2208,6 @@ function deliverFrame(type, data) {
       // for when none is. Without this, clearing your phone left the pinned
       // icon showing a count of alerts that no longer exist anywhere.
       dropAlert(notifKeyOf(data));
-      return;
-    }
-    case 'CALL_ANSWERED':
-    case 'CALL_ENDED': {
-      // The call is handled/over — clear any lingering incoming-call notifs.
-      chrome.notifications.getAll((all) => {
-        Object.keys(all || {}).forEach((id) => {
-          if (id.startsWith(`${CALL_NOTIF_PREFIX}:`)) chrome.notifications.clear(id);
-        });
-      });
       return;
     }
     // FT-3a. Not a notification — a routing marker only. FILE_CHUNK never
@@ -2394,9 +2244,8 @@ function openPopout(hash) {
   // survives the popup blur that kills the toolbar popup — the persistent
   // in-call surface.
   chrome.windows.create({
-    // The hash is the deep link a notification carried (#tab=texts&thread=…).
-    // popout.html hands it to the app iframe's URL, so the surface opens on the
-    // conversation the toast was about instead of on whatever tab was last used.
+    // Optional deep-link hash (#tab=…). popout.html hands it to the app
+    // iframe's URL so the surface opens on that tab.
     url: chrome.runtime.getURL('popout.html') + (hash || ''),
     type: 'popup',
     // 800 × 620 (was 400 × 640), dispatch PIXEL-B2 / AC-1. The detached window
@@ -2410,22 +2259,7 @@ function openPopout(hash) {
   });
 }
 
-// ── Notification interactions → open the pop-out, then clear ─────────────────
-chrome.notifications.onClicked.addListener(async (id) => {
-  openPopout(await takeLink(id));
-  chrome.notifications.clear(id);
-});
-chrome.notifications.onButtonClicked.addListener(async (id, buttonIndex) => {
-  const hash = await takeLink(id);
-  // Button 0 = "Open ComputerCaller" (the surface, wherever it was).
-  // Button 1 = "Reply" (the surface, deep-linked at the thread).
-  // Both open the same window; only the landing spot differs. There is no
-  // reply-from-toast anywhere in this file because Chrome has no API for one.
-  openPopout(buttonIndex === 1 ? hash : '');
-  chrome.notifications.clear(id);
-});
-
-// ── Presence: popup / pop-out connect a port so we suppress duplicate notifs ──
+// ── Presence: popup / pop-out connect a port (badge clears, file-offer replay) ──
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'cc-presence') return;
   presenceCount += 1;
