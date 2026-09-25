@@ -761,8 +761,6 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // epoch floor. `resumed` is set by the RELAY, so clearing the refusal on a
     // resume would mean a relay-position party could lift a revocation refusal
     // simply by causing a reconnect. Only a fresh pairing clears it.
-    const isFreshPairing = payload.resumed !== true;
-
     // ── T-RESUME-PHONE-RESTART-DESYNC ────────────────────────────────────────
     // A resume is the relay's claim that this is the SAME pair. On 2026-09-25
     // that claim was true of the pair and false of the PEER: the phone had been
@@ -804,6 +802,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
       return true;
     }
 
+    const isFreshPairing = payload.resumed !== true;
     if (isFreshPairing) {
       refuseUnsealRef.current = false;
       pinnedPhoneKeyRef.current = null;
