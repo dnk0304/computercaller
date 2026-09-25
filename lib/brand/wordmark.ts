@@ -85,3 +85,14 @@ export type BrandTone = 'auto' | 'light' | 'dark';
 export const WORDMARK_CUT = { light: 'cc-wordmark', dark: 'cc-wordmark-dark' } as const;
 export const LOCKUP_CUT = { light: 'cc-lockup', dark: 'cc-lockup-dark' } as const;
 export const MARK_CUT = 'cc-mark';
+
+/**
+ * Stacked sidebar word cuts (WEB-HEADER-WORDMARK, Dennis 2026-09-25): the
+ * one-line wordmark split at the word gap by scripts/build-brand-lockup.ts.
+ * Native (3x) ink boxes, both cap height 44. Light only — /app has no dark
+ * variant by design (globals.css D4).
+ */
+export const STACKED_WORD_CUT = {
+  computer: { name: 'cc-wordmark-computer', w: 358, h: 44 },
+  caller: { name: 'cc-wordmark-caller', w: 241, h: 44 },
+} as const;

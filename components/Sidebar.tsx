@@ -7,7 +7,7 @@ import { Phone, MessageSquare, LayoutTemplate, Settings, User, FileText, Clock, 
 import { clsx } from 'clsx';
 import { usePhoneMode } from '@/hooks';
 import { CcMark } from '@/components/CcMark';
-import { CcLockup } from '@/components/CcLockup';
+import { SidebarLockup } from '@/components/SidebarLockup';
 
 const SIDEBAR_KEY = 'dnkdialer_sidebar_collapsed';
 
@@ -75,11 +75,16 @@ export const Sidebar = ({ activeTab, setActiveTab, isAdmin = false }: SidebarPro
               w-64 rail minus its padding and the collapse button leaves ~200px
               of row, which fits a 24px mark and a 10px-cap wordmark but not the
               stacked cut. Collapsed (w-16, ~40px of usable row) the mark stands
-              alone at 20px tall and carries the accessible name itself. */}
+              alone at 20px tall and carries the accessible name itself.
+              WEB-HEADER-WORDMARK (Dennis 2026-09-25, "In sidebar, keep the
+              sentences on 2 rows"): expanded now shows the mark beside the
+              wordmark split onto two rows, COMPUTER over CALLER, both rows the
+              same width (~160px total, fits the ~200px row). The header's brand
+              block is gone, so this is the page's one brand name. */}
           {collapsed ? (
             <CcMark size={20} title="ComputerCaller" className="flex-shrink-0" />
           ) : (
-            <CcLockup size={24} layout="inline" className="flex-shrink-0" />
+            <SidebarLockup size={24} className="flex-shrink-0" />
           )}
         </div>
         {!collapsed && (

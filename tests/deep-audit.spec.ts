@@ -78,14 +78,13 @@ test.describe('Deep UI Audit', () => {
     }
   });
 
-  test('Dashboard header shows correct tab name', async ({ page }) => {
+  test('Brand name lives in the sidebar, not the header', async ({ page }) => {
     await page.goto(BASE);
 
-    // Header should show "Dashboard" not just "dashboard"
-    const header = page.locator('header h2');
-    const text = await header.textContent();
-    console.log(`Header capitalization: "${text}"`);
-    // CSS capitalize handles this, but let's verify the raw text
+    // WEB-HEADER-WORDMARK (Dennis 2026-09-25): the header title block is gone;
+    // the sidebar's stacked lockup carries the accessible name.
+    await expect(page.locator('header h2')).toHaveCount(0);
+    await expect(page.getByRole('img', { name: 'ComputerCaller' }).first()).toBeVisible();
   });
 
   test('Templates not accessible from sidebar', async ({ page }) => {
