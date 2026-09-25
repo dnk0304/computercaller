@@ -21,6 +21,8 @@
  *   public/brand/computercaller-icon-square.png       — the Play-listing
  *       lockup, 742x595. The only master that contains the wordmark.
  *   marketing/store/app-icon-512.png                  — the launcher/app icon.
+ *       (No longer an input here: the Android launcher is built from the mark,
+ *       see launcherForeground.)
  *
  * RASTER, NOT VECTOR — AND WHY
  * The brief allowed either. A true vector of this mark would have to be
@@ -61,6 +63,10 @@
  * redrawing the logo.
  *
  * Run: bun scripts/build-brand-lockup.ts
+ *      bun scripts/build-brand-lockup.ts --launcher-only [--play-icon=<out.png>]
+ *        rewrites only the Android launcher icons (adaptive foreground + the
+ *        legacy square/round), and optionally the 512 px Play listing icon to
+ *        <out.png>; every other cut is left untouched.
  *      (sharp comes in with Next.js; this is a manual build tool, its outputs
  *       are committed, so it is not wired into `next build`.)
  */
@@ -87,7 +93,6 @@ const P = (...p: string[]) => join(ROOT, ...p);
 
 const SRC_MARK = P('public', 'brand', 'computercaller-icon-transparent.png');
 const SRC_LOCKUP = P('public', 'brand', 'computercaller-icon-square.png');
-const SRC_APPICON = P('marketing', 'store', 'app-icon-512.png');
 
 /** Ink boxes measured on computercaller-icon-square.png (742x595). */
 const SQUARE = {
@@ -319,6 +324,111 @@ function writeText(file: string, body: string) {
   note(file);
 }
 
+/* ------------------------------------------------------------ launcher icon */
+
+const ARGS = process.argv.slice(2);
+const LAUNCHER_ONLY = ARGS.includes('--launcher-only');
+const PLAY_ICON_OUT = ARGS.find((a) => a.startsWith('--play-icon='))?.slice('--play-icon='.length);
+
+/**
+ * ICON-REVERT-ORIGINAL (Dennis 2026-09-25, variant B "viewport-max").
+ *
+ * The launcher is the original mark alone on WHITE (colors.xml
+ * ic_launcher_background #FFFFFF; it was the artwork's pale blue #C6E9FB until
+ * the ring rollout), enlarged as far as a launcher shows anything: the mark's
+ * farthest opaque pixel lands 35.5 dp from the centre of the 108 dp canvas,
+ * 0.5 dp inside the 72 dp visible viewport.
+ *
+ * That is deliberately past the 66 dp safe circle (33 dp). The mark is 1.94:1,
+ * so inside the safe circle it could grow only ~3% over the original launcher;
+ * the viewport is where the real size is (+9.6% width). The trade-off, accepted
+ * by Dennis on the side-by-side preview: launchers that parallax the layer or
+ * pulse it on press can bring the monitor's left edge and the phone's right
+ * edge to the mask edge. At rest it clips 0 px under circle, squircle,
+ * rounded-square and teardrop masks.
+ *
+ * The fit is on the measured circumradius of the ink (outer pixel corner,
+ * alpha > 0), not on the bbox width: a wide box's corners are what a round
+ * mask cuts, and the radius bounds them.
+ */
+const LAUNCHER_REACH_DP = 35.5;
+const LAUNCHER_BG = { r: 255, g: 255, b: 255, alpha: 1 };
+
+/** Farthest alpha>0 pixel (its outer corner) from the image centre, in px. */
+function farRadius(raw: Raw): number {
+  const cx = raw.width / 2;
+  const cy = raw.height / 2;
+  let far = 0;
+  for (let py = 0; py < raw.height; py++) {
+    for (let px = 0; px < raw.width; px++) {
+      if (raw.data[(py * raw.width + px) * 4 + 3] === 0) continue;
+      const dx = Math.max(Math.abs(px - cx), Math.abs(px + 1 - cx));
+      const dy = Math.max(Math.abs(py - cy), Math.abs(py + 1 - cy));
+      far = Math.max(far, Math.hypot(dx, dy));
+    }
+  }
+  return far;
+}
+
+/** The 108 dp adaptive foreground at `ppd` px per dp: the mark alone, centred, on transparency. */
+async function launcherForeground(mark: Raw, ppd: number): Promise<Buffer> {
+  const n = Math.round(108 * ppd);
+  const reach = LAUNCHER_REACH_DP * ppd;
+  const render = async (w: number): Promise<Raw> => {
+    const h = Math.round((w * mark.height) / mark.width);
+    const { data } = await sharp({
+      create: { width: n, height: n, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: await png(mark).resize(w, h, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer(),
+          left: Math.floor((n - w) / 2),
+          top: Math.floor((n - h) / 2),
+        },
+      ])
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    return { data, width: n, height: n };
+  };
+  // Start from the source ink's circumradius, then step down one px at a time
+  // until the RESAMPLED ink is inside the reach too: lanczos3 spreads a faint
+  // fringe past the source edge, and at mdpi one px of fringe is a whole dp.
+  let w = Math.round((mark.width * reach) / farRadius(mark));
+  let out = await render(w);
+  while (farRadius(out) > reach) out = await render(--w);
+  return png(out).png().toBuffer();
+}
+
+/**
+ * The adaptive icon flattened the way a launcher shows it: foreground over the
+ * white background, cropped to the central 72 dp viewport, `px` square. For the
+ * legacy mipmaps (minSdk 26, so only non-adaptive hosts ever read these) and
+ * the Play listing icon. `circle` masks to a circle with transparent corners;
+ * `square` is opaque RGB.
+ */
+async function launcherFlat(mark: Raw, px: number, shape: 'square' | 'circle'): Promise<Buffer> {
+  const ppd = px / 72;
+  const n = Math.round(108 * ppd);
+  const off = Math.round(18 * ppd);
+  const full = await sharp({ create: { width: n, height: n, channels: 4, background: LAUNCHER_BG } })
+    .composite([{ input: await launcherForeground(mark, ppd), left: 0, top: 0 }])
+    .png()
+    .toBuffer();
+  const view = sharp(full).extract({ left: off, top: off, width: px, height: px });
+  if (shape === 'square') return view.removeAlpha().png({ compressionLevel: 9 }).toBuffer();
+  const disc = Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${px}"><circle cx="${px / 2}" cy="${px / 2}" r="${px / 2}" fill="#fff"/></svg>`,
+  );
+  const cropped = await view.png().toBuffer();
+  return sharp(cropped).composite([{ input: disc, blend: 'dest-in' }]).png({ compressionLevel: 9 }).toBuffer();
+}
+
+function writeBuf(file: string, buf: Buffer) {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, buf);
+  note(file);
+}
+
 /* --------------------------------------------------------------------- main */
 
 /** 1x display widths. 3x lands exactly on the artwork's native pixels. */
@@ -331,119 +441,121 @@ async function main() {
   const wordLight = keyWordmark(squareRaw, INK.light);
   const wordDark = keyWordmark(squareRaw, INK.dark);
 
-  const outDir = P('public', 'brand', 'official');
-  const extDir = P('chrome-extension');
+  if (!LAUNCHER_ONLY) {
+    const outDir = P('public', 'brand', 'official');
+    const extDir = P('chrome-extension');
 
-  // --- mark, wordmark, stacked lockup at 1x/2x/3x -------------------------
-  const lockupH = Math.round((LOCKUP_1X * (SQUARE.mark.h + STACK_GAP + SQUARE.wordmark.h)) / SQUARE.wordmark.w);
+    // --- mark, wordmark, stacked lockup at 1x/2x/3x -------------------------
+    const lockupH = Math.round((LOCKUP_1X * (SQUARE.mark.h + STACK_GAP + SQUARE.wordmark.h)) / SQUARE.wordmark.w);
 
-  for (const scale of [1, 2, 3] as const) {
-    const suffix = scale === 1 ? '' : `@${scale}x`;
+    for (const scale of [1, 2, 3] as const) {
+      const suffix = scale === 1 ? '' : `@${scale}x`;
 
-    await writePng(
-      mark,
-      join(outDir, `cc-mark${suffix}.png`),
-      MARK_1X * scale,
-      Math.round(((MARK_1X * scale) * SQUARE.mark.h) / SQUARE.mark.w),
-    );
-    await writePng(
-      wordLight,
-      join(outDir, `cc-wordmark${suffix}.png`),
-      LOCKUP_1X * scale,
-      Math.max(1, Math.round(((LOCKUP_1X * scale) * SQUARE.wordmark.h) / SQUARE.wordmark.w)),
-    );
-    await writePng(
-      wordDark,
-      join(outDir, `cc-wordmark-dark${suffix}.png`),
-      LOCKUP_1X * scale,
-      Math.max(1, Math.round(((LOCKUP_1X * scale) * SQUARE.wordmark.h) / SQUARE.wordmark.w)),
-    );
+      await writePng(
+        mark,
+        join(outDir, `cc-mark${suffix}.png`),
+        MARK_1X * scale,
+        Math.round(((MARK_1X * scale) * SQUARE.mark.h) / SQUARE.mark.w),
+      );
+      await writePng(
+        wordLight,
+        join(outDir, `cc-wordmark${suffix}.png`),
+        LOCKUP_1X * scale,
+        Math.max(1, Math.round(((LOCKUP_1X * scale) * SQUARE.wordmark.h) / SQUARE.wordmark.w)),
+      );
+      await writePng(
+        wordDark,
+        join(outDir, `cc-wordmark-dark${suffix}.png`),
+        LOCKUP_1X * scale,
+        Math.max(1, Math.round(((LOCKUP_1X * scale) * SQUARE.wordmark.h) / SQUARE.wordmark.w)),
+      );
 
-    // Stacked: the official composition, at the measured proportions.
-    const W = LOCKUP_1X * scale;
-    const H = lockupH * scale;
-    for (const [tone, word] of [
-      ['', wordLight],
-      ['-dark', wordDark],
-    ] as const) {
-      const markW = Math.round((W * SQUARE.mark.w) / SQUARE.wordmark.w);
-      const markH = Math.round((markW * SQUARE.mark.h) / SQUARE.mark.w);
-      const wordH = Math.max(1, Math.round((W * SQUARE.wordmark.h) / SQUARE.wordmark.w));
-      const markBuf = await png(mark).resize(markW, markH, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer();
-      const wordBuf = await png(word).resize(W, wordH, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer();
-      const file = join(outDir, `cc-lockup${tone}${suffix}.png`);
-      mkdirSync(dirname(file), { recursive: true });
-      await sharp({
-        create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
-      })
-        .composite([
-          { input: markBuf, left: Math.round((W - markW) / 2), top: 0 },
-          { input: wordBuf, left: 0, top: H - wordH },
-        ])
-        .png({ compressionLevel: 9 })
-        .toFile(file);
-      note(file);
+      // Stacked: the official composition, at the measured proportions.
+      const W = LOCKUP_1X * scale;
+      const H = lockupH * scale;
+      for (const [tone, word] of [
+        ['', wordLight],
+        ['-dark', wordDark],
+      ] as const) {
+        const markW = Math.round((W * SQUARE.mark.w) / SQUARE.wordmark.w);
+        const markH = Math.round((markW * SQUARE.mark.h) / SQUARE.mark.w);
+        const wordH = Math.max(1, Math.round((W * SQUARE.wordmark.h) / SQUARE.wordmark.w));
+        const markBuf = await png(mark).resize(markW, markH, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer();
+        const wordBuf = await png(word).resize(W, wordH, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer();
+        const file = join(outDir, `cc-lockup${tone}${suffix}.png`);
+        mkdirSync(dirname(file), { recursive: true });
+        await sharp({
+          create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+        })
+          .composite([
+            { input: markBuf, left: Math.round((W - markW) / 2), top: 0 },
+            { input: wordBuf, left: 0, top: H - wordH },
+          ])
+          .png({ compressionLevel: 9 })
+          .toFile(file);
+        note(file);
+      }
     }
-  }
 
-  // --- SVG cuts -----------------------------------------------------------
-  const markB64 = (await png(mark).png({ compressionLevel: 9 }).toBuffer()).toString('base64');
-  const wordLightB64 = (
-    await png(wordLight).png({ compressionLevel: 9 }).toBuffer()
-  ).toString('base64');
-  const wordDarkB64 = (
-    await png(wordDark).png({ compressionLevel: 9 }).toBuffer()
-  ).toString('base64');
+    // --- SVG cuts -----------------------------------------------------------
+    const markB64 = (await png(mark).png({ compressionLevel: 9 }).toBuffer()).toString('base64');
+    const wordLightB64 = (
+      await png(wordLight).png({ compressionLevel: 9 }).toBuffer()
+    ).toString('base64');
+    const wordDarkB64 = (
+      await png(wordDark).png({ compressionLevel: 9 }).toBuffer()
+    ).toString('base64');
 
-  writeText(
-    P('public', 'brand', 'computercaller-lockup-official.svg'),
-    svgLockup(markB64, wordLightB64, wordDarkB64, { themed: true }),
-  );
-  writeText(P('public', 'brand', 'computercaller-mark-official.svg'), svgMark(markB64));
+    writeText(
+      P('public', 'brand', 'computercaller-lockup-official.svg'),
+      svgLockup(markB64, wordLightB64, wordDarkB64, { themed: true }),
+    );
+    writeText(P('public', 'brand', 'computercaller-mark-official.svg'), svgMark(markB64));
 
-  // The extension cannot load computercaller.com images (MV3's default
-  // img-src 'self'), so it carries its own copies.
-  writeText(join(extDir, 'lockup.svg'), svgLockup(markB64, wordLightB64, wordDarkB64, { themed: true }));
-  writeText(join(extDir, 'mark.svg'), svgMark(markB64));
-  // The inline cut paints a ~20px-tall mark, i.e. 117 device px at 3x DPR.
-  // Embedding the 393px master there costs 145KB of base64 to throw away 70% of
-  // it on every popup open, so the inline cut carries a 160px mark. The STACKED
-  // cut keeps the master: its hero renders at 72px tall and gets asked for at
-  // full size by og-image style consumers.
-  const markInlineB64 = (
-    await png(mark)
-      .resize(160, Math.round((160 * SQUARE.mark.h) / SQUARE.mark.w), { kernel: 'lanczos3' })
-      .png({ compressionLevel: 9 })
-      .toBuffer()
-  ).toString('base64');
-  writeText(
-    join(extDir, 'lockup-inline.svg'),
-    svgInline(markInlineB64, wordLightB64, wordDarkB64),
-  );
-  writeText(
-    P('public', 'brand', 'computercaller-lockup-official-inline.svg'),
-    svgInline(markInlineB64, wordLightB64, wordDarkB64),
-  );
+    // The extension cannot load computercaller.com images (MV3's default
+    // img-src 'self'), so it carries its own copies.
+    writeText(join(extDir, 'lockup.svg'), svgLockup(markB64, wordLightB64, wordDarkB64, { themed: true }));
+    writeText(join(extDir, 'mark.svg'), svgMark(markB64));
+    // The inline cut paints a ~20px-tall mark, i.e. 117 device px at 3x DPR.
+    // Embedding the 393px master there costs 145KB of base64 to throw away 70% of
+    // it on every popup open, so the inline cut carries a 160px mark. The STACKED
+    // cut keeps the master: its hero renders at 72px tall and gets asked for at
+    // full size by og-image style consumers.
+    const markInlineB64 = (
+      await png(mark)
+        .resize(160, Math.round((160 * SQUARE.mark.h) / SQUARE.mark.w), { kernel: 'lanczos3' })
+        .png({ compressionLevel: 9 })
+        .toBuffer()
+    ).toString('base64');
+    writeText(
+      join(extDir, 'lockup-inline.svg'),
+      svgInline(markInlineB64, wordLightB64, wordDarkB64),
+    );
+    writeText(
+      P('public', 'brand', 'computercaller-lockup-official-inline.svg'),
+      svgInline(markInlineB64, wordLightB64, wordDarkB64),
+    );
 
-  // --- extension action icons, FROM THE MARK -------------------------------
-  // PIXEL-S2 (b), Dennis 2026-09-17 13:26: "Use the same logo from the header
-  // as the official one for extension, the one that doesnt contain the
-  // computercaller text in the icon."
-  //
-  // These used to come from marketing/store/app-icon-512.png, which is the
-  // LAUNCHER icon: mark plus "ComputerCaller" set inside the tile. At 16px that
-  // wordmark is ~2px tall — an unreadable smudge under the mark that still
-  // costs the mark a third of its height. The header now shows the bare mark
-  // (deliverable (a)) and so does the toolbar, off the same cut.
-  //
-  // `contain` on a square canvas, not `cover`: the mark is 1.936:1, so it lands
-  // full-width and vertically centred with transparent bands above and below.
-  // Cropping it to fill the square would cut the monitor and the phone out of a
-  // mark whose whole subject is the two of them talking to each other — i.e. it
-  // would be redrawing the logo, which is the thing PIXEL-O exists to stop.
-  const markIconBuf = await png(mark).png({ compressionLevel: 9 }).toBuffer();
-  for (const size of [16, 32, 48, 128]) {
-    await writePngFrom(markIconBuf, join(extDir, `icon${size}.png`), size);
+    // --- extension action icons, FROM THE MARK -------------------------------
+    // PIXEL-S2 (b), Dennis 2026-09-17 13:26: "Use the same logo from the header
+    // as the official one for extension, the one that doesnt contain the
+    // computercaller text in the icon."
+    //
+    // These used to come from marketing/store/app-icon-512.png, which is the
+    // LAUNCHER icon: mark plus "ComputerCaller" set inside the tile. At 16px that
+    // wordmark is ~2px tall — an unreadable smudge under the mark that still
+    // costs the mark a third of its height. The header now shows the bare mark
+    // (deliverable (a)) and so does the toolbar, off the same cut.
+    //
+    // `contain` on a square canvas, not `cover`: the mark is 1.936:1, so it lands
+    // full-width and vertically centred with transparent bands above and below.
+    // Cropping it to fill the square would cut the monitor and the phone out of a
+    // mark whose whole subject is the two of them talking to each other — i.e. it
+    // would be redrawing the logo, which is the thing PIXEL-O exists to stop.
+    const markIconBuf = await png(mark).png({ compressionLevel: 9 }).toBuffer();
+    for (const size of [16, 32, 48, 128]) {
+      await writePngFrom(markIconBuf, join(extDir, `icon${size}.png`), size);
+    }
   }
 
   // --- Android ------------------------------------------------------------
@@ -461,70 +573,53 @@ async function main() {
   // 618, 132dp*3 = 396 vs 393); only xxxhdpi upscales, by ~1.3x, and Android
   // would have done that itself from xxhdpi anyway.
   for (const [density, factor] of DENSITIES) {
-    const lw = Math.round(200 * factor);
-    await writePng(
-      { data: (await png(wordLight).raw().toBuffer()) as Buffer, width: wordLight.width, height: wordLight.height },
-      join(androidRes, `drawable-${density}`, 'cc_wordmark.png'),
-      lw,
-      Math.max(1, Math.round((lw * SQUARE.wordmark.h) / SQUARE.wordmark.w)),
-    );
-    // Night: the app has a values-night theme, and #0e2d55 on its dark ground
-    // is invisible. A PNG cannot be re-inked by a theme attribute, so the dark
-    // cut ships as a -night qualified resource and Android does the switching.
-    await writePng(
-      { data: (await png(wordDark).raw().toBuffer()) as Buffer, width: wordDark.width, height: wordDark.height },
-      join(androidRes, `drawable-night-${density}`, 'cc_wordmark.png'),
-      lw,
-      Math.max(1, Math.round((lw * SQUARE.wordmark.h) / SQUARE.wordmark.w)),
-    );
-    const mw = Math.round(132 * factor);
-    await writePng(
-      mark,
-      join(androidRes, `drawable-${density}`, 'cc_mark.png'),
-      mw,
-      Math.round((mw * SQUARE.mark.h) / SQUARE.mark.w),
-    );
-    const sw = Math.round(24 * factor);
-    await writePng(
-      silhouette(mark),
-      join(androidRes, `drawable-${density}`, 'ic_stat_cc.png'),
-      sw,
-      Math.max(1, Math.round((sw * SQUARE.mark.h) / SQUARE.mark.w)),
-    );
-    // Launcher: legacy square + round, straight from the store icon.
-    for (const name of ['ic_launcher', 'ic_launcher_round']) {
-      await writePngFrom(SRC_APPICON, join(androidRes, `mipmap-${density}`, `${name}.png`), Math.round(48 * factor));
+    if (!LAUNCHER_ONLY) {
+      const lw = Math.round(200 * factor);
+      await writePng(
+        { data: (await png(wordLight).raw().toBuffer()) as Buffer, width: wordLight.width, height: wordLight.height },
+        join(androidRes, `drawable-${density}`, 'cc_wordmark.png'),
+        lw,
+        Math.max(1, Math.round((lw * SQUARE.wordmark.h) / SQUARE.wordmark.w)),
+      );
+      // Night: the app has a values-night theme, and #0e2d55 on its dark ground
+      // is invisible. A PNG cannot be re-inked by a theme attribute, so the dark
+      // cut ships as a -night qualified resource and Android does the switching.
+      await writePng(
+        { data: (await png(wordDark).raw().toBuffer()) as Buffer, width: wordDark.width, height: wordDark.height },
+        join(androidRes, `drawable-night-${density}`, 'cc_wordmark.png'),
+        lw,
+        Math.max(1, Math.round((lw * SQUARE.wordmark.h) / SQUARE.wordmark.w)),
+      );
+      const mw = Math.round(132 * factor);
+      await writePng(
+        mark,
+        join(androidRes, `drawable-${density}`, 'cc_mark.png'),
+        mw,
+        Math.round((mw * SQUARE.mark.h) / SQUARE.mark.w),
+      );
+      const sw = Math.round(24 * factor);
+      await writePng(
+        silhouette(mark),
+        join(androidRes, `drawable-${density}`, 'ic_stat_cc.png'),
+        sw,
+        Math.max(1, Math.round((sw * SQUARE.mark.h) / SQUARE.mark.w)),
+      );
     }
-    // Adaptive-icon foreground: the MARK alone on transparency, inside the
-    // 66/108 safe zone. Not the store icon — that carries its own pale-blue
-    // ground, and a square of it composited over the adaptive background layer
-    // would show as a mismatched tile inside the launcher's circle mask. The
-    // wordmark is dropped here for the same reason every launcher icon drops
-    // its wordmark: at 48dp it is four illegible pixels tall.
-    const fg = Math.round(108 * factor);
-    const safe = fg * (66 / 108);
-    // The safe zone is a CIRCLE of diameter `safe`, not a square: a 1.936:1 box
-    // whose width equals the diameter has its corners outside it, and the
-    // launcher's round mask clips the monitor's left edge. 0.888 is the widest
-    // box of this aspect that inscribes in that circle (w/D = a/sqrt(a^2+1)).
-    const markW = Math.round(safe * 0.888);
-    const markH = Math.round((markW * SQUARE.mark.h) / SQUARE.mark.w);
-    const file = join(androidRes, `mipmap-${density}`, 'ic_launcher_foreground.png');
-    mkdirSync(dirname(file), { recursive: true });
-    await sharp({
-      create: { width: fg, height: fg, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
-    })
-      .composite([
-        {
-          input: await png(mark).resize(markW, markH, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer(),
-          left: Math.round((fg - markW) / 2),
-          top: Math.round((fg - markH) / 2),
-        },
-      ])
-      .png({ compressionLevel: 9 })
-      .toFile(file);
-    note(file);
+    // Launcher (ICON-REVERT-ORIGINAL, see launcherForeground): adaptive
+    // foreground = the mark alone on transparency; ic_launcher/_round = the same
+    // composition flattened on white, for hosts that ignore adaptive icons.
+    writeBuf(
+      join(androidRes, `mipmap-${density}`, 'ic_launcher_foreground.png'),
+      await sharp(await launcherForeground(mark, factor)).png({ compressionLevel: 9 }).toBuffer(),
+    );
+    const legacy = Math.round(48 * factor);
+    writeBuf(join(androidRes, `mipmap-${density}`, 'ic_launcher.png'), await launcherFlat(mark, legacy, 'square'));
+    writeBuf(join(androidRes, `mipmap-${density}`, 'ic_launcher_round.png'), await launcherFlat(mark, legacy, 'circle'));
   }
+
+  // The Play listing icon is not a repo asset (marketing/store/app-icon-512.png
+  // is the web/store artwork); it is written only on request, for upload.
+  if (PLAY_ICON_OUT) writeBuf(PLAY_ICON_OUT, await launcherFlat(mark, 512, 'square'));
 
   // eslint-disable-next-line no-console
   console.log(`build-brand-lockup: wrote ${written.length} files\n  ` + written.join('\n  '));

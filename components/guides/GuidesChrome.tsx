@@ -20,8 +20,8 @@ export function GuidesHeader() {
           <Image
             src="/brand/computercaller-icon-transparent.png"
             alt="ComputerCaller"
-            width={512}
-            height={512}
+            width={396}
+            height={317}
             priority
             className="h-14 w-auto"
           />
@@ -51,8 +51,8 @@ export function GuidesFooter() {
           <Image
             src="/brand/computercaller-icon-transparent.png"
             alt=""
-            width={512}
-            height={512}
+            width={396}
+            height={317}
             className="h-7 w-auto"
           />
           <span className="text-sm text-slate-600">
