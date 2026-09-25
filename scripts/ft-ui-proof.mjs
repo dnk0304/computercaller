@@ -782,9 +782,9 @@ try {
       .then(() => true).catch(() => false);
     check('web: the trial lock renders on /app phone mode', there);
     if (there) {
-      // The Dial slot carries the FULL sentence; the thread header's icon-only
-      // variant carries it as an accessible name. At least one must be visible
-      // text on this surface, which is the (c) requirement.
+      // The Dial slot carries the FULL sentence as visible text, which is the
+      // (c) requirement. (The chat-header icon-only slot was removed: it sent
+      // to the user's own phone, which read as "attach to this SMS".)
       const withText = page.locator('[data-cc-ft-action="tier-lock"]:not([title])').first();
       const visibleCopy = (await withText.count())
         ? (await withText.innerText()).trim() : '';
