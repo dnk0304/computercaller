@@ -608,6 +608,14 @@ const MIN_CHECKS_OVERRIDE = {
   // invokes is a green test over dead code, which is exactly how a relay ships
   // a gate it never consults. Measured at the commit that adds it: 98.
   'relay:e2e-resume-phone-restart-contract.test.mjs': 100,
+  // T-E2E-ACCOUNT-PREF step 1 (RULE 30). tests/e2e-pref-contract.test.mjs drives
+  // the REAL lib/e2ePref-core.js over tests/e2e-pref-vectors.json (41 rows, the
+  // file the step-2 Kotlin twin reads), the Security M2/M3/m1 refusal ordering,
+  // server.js source pins for the push-BEFORE-reset order and the limiter bypass,
+  // and CONTROLS that must go red. Auto-discovered by the tests/e2e-*.test.mjs
+  // sweep, so what it needs here is the FLOOR. Measured at the commit that adds
+  // it: 184.
+  'relay:e2e-pref-contract.test.mjs': 184,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job

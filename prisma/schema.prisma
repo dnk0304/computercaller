@@ -77,6 +77,21 @@ model User {
   // (no NOT NULL, no default, no data loss). Never trust the stored value —
   // always run it through parseLayoutPrefs (null-on-invalid → power fallback).
   layoutPrefs         Json?
+  // Per-ACCOUNT Encrypted-mode setting (2026-09-25, dispatch forge/e2e-account-
+  // pref-api; DESIGN-E2E-ACCOUNT-PREF REV 2 §2). ADDITIVE, non-breaking: three
+  // nullable columns and one Int with a default, so Coolify's pre-deploy
+  // `prisma db push` adds them cleanly (no NOT NULL without a default, no data
+  // loss) and every existing row resolves to E2E_PREF_DEFAULT until the user
+  // chooses. Only lib/e2ePref-core.js writes these (one conditional UPDATE per
+  // write); never trust them raw — always run them through resolveE2ePref.
+  //   e2ePref          — null = never chose (resolves to the env default).
+  //   e2ePrefRev       — server-assigned, +1 on every accepted write/seed.
+  //   e2ePrefUpdatedAt — server (DB) clock, never the client's.
+  //   e2ePrefUpdatedBy — web | ext | phone | seed | admin (allowlisted in code).
+  e2ePref             Boolean?
+  e2ePrefRev          Int                  @default(0)
+  e2ePrefUpdatedAt    DateTime?
+  e2ePrefUpdatedBy    String?
   // IP tracking + same-IP abuse flagging (2026-07-03, dispatch forge/trial-lock
   // -and-admin-dashboard). ALL nullable/additive — Coolify's pre-deploy
   // `prisma db push` adds them cleanly with zero data loss (no NOT NULL without

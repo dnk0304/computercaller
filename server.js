@@ -62,6 +62,11 @@ const {
   resumeGateVerdict,
   leaveActiveHonouredDuringHold,
 } = require('./lib/resumeGate-core.js');
+// T-E2E-ACCOUNT-PREF step 1. The per-account Encrypted-mode setting: resolution,
+// the ONE write path (shared with app/api/prefs/e2e via lib/e2ePref.ts), the
+// shared limiter.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
+const { setE2ePref: setE2ePrefCore, seedE2ePref: seedE2ePrefCore, resolveE2ePref, e2ePrefEnv, e2ePrefFrame, redactUserId } = require('./lib/e2ePref-core.js');
 
 // Bundle A (2026-05-28) — Phase 4 security review fix (H7).
 // Every server.js log site that previously included the raw phoneToken (and
@@ -240,6 +245,11 @@ const LEGACY_RESUME_TEARDOWN = process.env.LEGACY_RESUME_TEARDOWN === '1';
  * Flipping it mid-incident must not drop anyone who is already connected.
  */
 const E2E_PAIRING_ENABLED = process.env.E2E_PAIRING_ENABLED === '1';
+// T-E2E-ACCOUNT-PREF: the per-account pref's `effective` (preference AND this
+// switch) reads THIS boot-time value, published read-only for lib/e2ePref-core
+// (isE2ePairingEnabled) in this process. One predicate, one read, no second
+// copy that could disagree with the refusal below about whether the brake is on.
+globalThis.__e2ePairingEnabled = E2E_PAIRING_ENABLED;
 // Say which way the switch is set, once, at boot. D1-PLAN §2 step 5 verifies
 // the deploy by reading this line out of the relay log — a switch whose state
 // you cannot observe from outside the process is not operable during an
@@ -990,6 +1000,126 @@ function startRelay(httpServer) {
 
   // eslint-disable-next-line no-undef
   globalThis.__resetRelayRoom = resetRelayRoomForUser;
+
+  // ── Per-account Encrypted-mode setting (T-E2E-ACCOUNT-PREF step 1) ─────────
+  //
+  // DESIGN-E2E-ACCOUNT-PREF REV 2 §4. Two single-process handles, same pattern
+  // as __resetRelayRoom: lib/e2ePref-core.js calls them after a write, whether
+  // the write came from a Route Handler (web/ext) or from the phone's own socket
+  // below.
+
+  /** Every OPEN socket in `room` authenticated as `userId` (Security m3), once. */
+  function e2ePrefRecipients(room, userId) {
+    const out = new Set();
+    const consider = (ws) => {
+      if (ws && ws.userId === userId && ws.readyState === WebSocket.OPEN) out.add(ws);
+    };
+    for (const ws of room.lobby) consider(ws);
+    consider(room.active.browser);
+    consider(room.active.phone);
+    if (room.pendingPairing) consider(room.pendingPairing.browserWs);
+    return out;
+  }
+
+  async function loadE2ePrefTarget(userId) {
+    const user = await db.user.findUnique({
+      where: { id: userId },
+      select: { phoneToken: true, e2ePref: true, e2ePrefRev: true, e2ePrefUpdatedAt: true, e2ePrefUpdatedBy: true },
+    });
+    if (!user) return null;
+    return { phoneToken: user.phoneToken, resolved: resolveE2ePref(user, e2ePrefEnv()) };
+  }
+
+  /** Send the account's current E2E_PREF to every socket of that account. */
+  function sendE2ePrefToRoom(target, userId) {
+    if (!target || !target.phoneToken) return 0;
+    const room = rooms.get(target.phoneToken);
+    if (!room) return 0;
+    const frame = e2ePrefFrame(target.resolved);
+    let n = 0;
+    for (const ws of e2ePrefRecipients(room, userId)) if (safeSend(ws, frame)) n += 1;
+    return n;
+  }
+
+  /** __pushE2ePref: resolve the row, push to every socket. Used by seed. */
+  async function pushE2ePrefForUser(userId) {
+    return sendE2ePrefToRoom(await loadE2ePrefTarget(userId), userId);
+  }
+
+  /**
+   * __applyE2ePrefChange: the forced lobby reset (REV 2). ORDER IS THE CONTRACT:
+   * E2E_PREF to every socket FIRST, then doResetRoom — which queues
+   * PAIRING_TERMINATED + ROOM_RESET and closes phone 1000 / browser 4010. ws
+   * writes frames in order and the close frame after them, so every socket
+   * (the phone that sent SET_E2E_PREF included) holds the new rev before its
+   * close. Deliberately NOT through resetRateLimiter: the 5 s user-reset limiter
+   * must not be able to swallow a pref reset (the pref write limiter already
+   * governed this write). Throws on a DB failure so the caller reports it.
+   */
+  async function applyE2ePrefChangeForUser(userId) {
+    const target = await loadE2ePrefTarget(userId);
+    if (!target || !target.phoneToken) return null;
+    sendE2ePrefToRoom(target, userId);
+    const result = doResetRoom(target.phoneToken, 'e2e-pref');
+    console.log(`[e2e-pref] reset user=${redactUserId(userId)} closed=${result ? result.closed : 0}`);
+    return result;
+  }
+
+  /** On-connect push: this one socket gets the account's current value. */
+  function sendE2ePrefOnConnect(ws) {
+    loadE2ePrefTarget(ws.userId)
+      .then((target) => {
+        if (target) safeSend(ws, e2ePrefFrame(target.resolved));
+      })
+      .catch((e) => {
+        console.error(`[e2e-pref] on-connect push failed user=${redactUserId(ws.userId)}: ${e.message}`);
+      });
+  }
+
+  globalThis.__pushE2ePref = pushE2ePrefForUser;
+  globalThis.__applyE2ePrefChange = applyE2ePrefChangeForUser;
+
+  /**
+   * Phone-socket writes: SET_E2E_PREF:{value} / SEED_E2E_PREF:{value}. The same
+   * lib write function as HTTP, source 'phone'. On an accepted change the reset
+   * above pushes E2E_PREF to this phone before closing it; on a no-op / seed the
+   * phone gets an E2E_PREF reply; on a refusal it gets
+   * E2E_PREF_REFUSED:{op,reason[,retryAfterMs]} and nothing was saved.
+   */
+  async function handlePhoneE2ePrefFrame(ws, msg, token) {
+    const isSeed = msg.startsWith('SEED_E2E_PREF:');
+    const op = isSeed ? 'seed' : 'set';
+    let value = null;
+    try {
+      const body = JSON.parse(msg.substring(msg.indexOf(':') + 1));
+      if (body && typeof body === 'object' && !Array.isArray(body)
+        && Object.keys(body).length === 1 && typeof body.value === 'string') value = body.value;
+    } catch { /* malformed -> refused below */ }
+    if (value !== 'on' && value !== 'off') {
+      console.log(`[Relay][${redactToken(token)}] ${isSeed ? 'SEED' : 'SET'}_E2E_PREF refused: invalid body`);
+      safeSend(ws, `E2E_PREF_REFUSED:${JSON.stringify({ op, reason: 'invalid_value' })}`);
+      return;
+    }
+    try {
+      if (isSeed) {
+        const out = await seedE2ePrefCore(db, ws.userId, value, 'phone');
+        if (!out.applied) safeSend(ws, e2ePrefFrame(out.resolved));
+      } else {
+        const out = await setE2ePrefCore(db, ws.userId, value, 'phone');
+        if (!out.changed) safeSend(ws, e2ePrefFrame(out.resolved));
+      }
+    } catch (e) {
+      const reason = e && typeof e.code === 'string' ? e.code : 'error';
+      const payload = { op, reason };
+      if (e && typeof e.retryAfterMs === 'number') payload.retryAfterMs = e.retryAfterMs;
+      if (reason === 'reset_failed' || reason === 'push_failed' || reason === 'error') {
+        console.error(`[e2e-pref] phone ${op} failed user=${redactUserId(ws.userId)}: ${e && e.message}`);
+      } else {
+        console.log(`[Relay][${redactToken(token)}] ${isSeed ? 'SEED' : 'SET'}_E2E_PREF refused: ${reason}`);
+      }
+      safeSend(ws, `E2E_PREF_REFUSED:${JSON.stringify(payload)}`);
+    }
+  }
 
   function getRoom(token) {
     let room = rooms.get(token);
@@ -3392,6 +3522,8 @@ function startRelay(httpServer) {
       // exposing infra naming (container/host names show up in support pings
       // and bug reports). Kept the frame for backward-compat with APK <=v29.
       safeSend(ws, `HELLO:${JSON.stringify({ hostname: 'computercaller' })}`);
+      // T-E2E-ACCOUNT-PREF: the account's Encrypted-mode value, every connect.
+      sendE2ePrefOnConnect(ws);
 
       if (!phoneResumed) {
         // 2. Tell every browser in the lobby a phone just showed up. Drives
@@ -3524,6 +3656,16 @@ function startRelay(httpServer) {
           } catch (e) {
             console.error(`[Relay][${redactToken(token)}] LEAVE_ACTIVE handler crashed: ${e.message}`);
           }
+          return;
+        }
+
+        // T-E2E-ACCOUNT-PREF: the phone writes the account setting over this
+        // socket (no phone HTTP surface). Control plane: never mirrored to
+        // listeners, never forwarded to the browser.
+        if (msg.startsWith('SET_E2E_PREF:') || msg.startsWith('SEED_E2E_PREF:')) {
+          handlePhoneE2ePrefFrame(ws, msg, token).catch((e) => {
+            console.error(`[Relay][${redactToken(token)}] E2E_PREF frame handler crashed: ${e.message}`);
+          });
           return;
         }
 
@@ -3769,6 +3911,9 @@ function startRelay(httpServer) {
     // Sent unconditionally (outside the tryAutoResume branch above): a listener
     // is never promoted by tryAutoResume, so it must be told either way.
     if (ws.listener) broadcastPairState(room);
+    // T-E2E-ACCOUNT-PREF: the account's Encrypted-mode value, every connect
+    // (interactive browsers and listeners alike).
+    sendE2ePrefOnConnect(ws);
 
     ws.on('message', async (data) => {
       // F-C: inbound traffic is liveness proof. Reset before the body runs.
@@ -3786,9 +3931,20 @@ function startRelay(httpServer) {
       // LEAVE_ACTIVE, or the data plane — a listener must never mutate room
       // state. missedPongs was already reset above, so its liveness still counts.
       if (ws.listener) {
+        if (msg.startsWith('SET_E2E_PREF:') || msg.startsWith('SEED_E2E_PREF:')) {
+          console.log(`[Relay][${redactToken(token)}] E2E_PREF write from a listener — ignored (browsers write over HTTP)`);
+        }
         return;
       }
       rlog(`[Relay][${redactToken(token)}] Browser -> ${frameLabel(msg)}`);
+
+      // T-E2E-ACCOUNT-PREF: browsers write the account setting over HTTP
+      // (PUT /api/prefs/e2e), never over the socket. Dropped HERE so the frame
+      // can never reach the data plane and be forwarded to the phone.
+      if (msg.startsWith('SET_E2E_PREF:') || msg.startsWith('SEED_E2E_PREF:')) {
+        console.log(`[Relay][${redactToken(token)}] E2E_PREF write from a browser socket — ignored (browsers write over HTTP)`);
+        return;
+      }
 
       // Control plane — pairing kickoff.
       if (msg.startsWith('BROWSER_REQUEST_PAIRING:')) {

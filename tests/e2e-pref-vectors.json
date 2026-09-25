@@ -1,0 +1,799 @@
+{
+  "$comment": [
+    "T-E2E-ACCOUNT-PREF step 1 \u2014 the per-ACCOUNT Encrypted-mode setting. RESUME-PROTOCOL RULE 30.",
+    "DESIGN-E2E-ACCOUNT-PREF.md REV 2 \u00a73 (resolution), \u00a74 (write / no-op / forced reset), \u00a77 (seed).",
+    "",
+    "LANGUAGE-NEUTRAL. Consumers: tests/e2e-pref-contract.test.mjs (node, the pure functions of",
+    "lib/e2ePref-core.js), scripts/e2e-pref-relay-proof.mjs (the SAME change/seed rows against the real",
+    "conditional UPDATE in a real Postgres), and \u2014 step 2 \u2014 the Kotlin twin on the android lane.",
+    "",
+    "row.e2ePref: null = the account never chose (resolves to defaultOn). rev = e2ePrefRev before the op.",
+    "resolve.expect: preference = e2ePref ?? defaultOn; effective = preference AND masterEnabled;",
+    "  pausedByServer = preference on AND master off (the brake lowers, never raises).",
+    "change.expect: changed = the RESOLVED preference moves (master is irrelevant: master=0 still resets);",
+    "  revBump 1 and reset true exactly when changed; a no-op writes nothing (storedAfter = row.e2ePref,",
+    "  so a null row that re-confirms the default STAYS null).",
+    "seed.expect: 'on' only; applies only on a null row; bumps rev when applied (Security M3); never resets.",
+    "Rows named in Ken's brief carry named:true; the rest complete the grid."
+  ],
+  "resolve": [
+    {
+      "id": "R-null-master1-defaultOn",
+      "row": {
+        "e2ePref": null,
+        "rev": 4
+      },
+      "masterEnabled": true,
+      "defaultOn": true,
+      "expect": {
+        "preference": "on",
+        "effective": "on",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-null-master1-defaultOff",
+      "row": {
+        "e2ePref": null,
+        "rev": 4
+      },
+      "masterEnabled": true,
+      "defaultOn": false,
+      "expect": {
+        "preference": "off",
+        "effective": "off",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-null-master0-defaultOn",
+      "row": {
+        "e2ePref": null,
+        "rev": 4
+      },
+      "masterEnabled": false,
+      "defaultOn": true,
+      "expect": {
+        "preference": "on",
+        "effective": "off",
+        "pausedByServer": true,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-null-master0-defaultOff",
+      "row": {
+        "e2ePref": null,
+        "rev": 4
+      },
+      "masterEnabled": false,
+      "defaultOn": false,
+      "expect": {
+        "preference": "off",
+        "effective": "off",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-true-master1-defaultOn",
+      "row": {
+        "e2ePref": true,
+        "rev": 4
+      },
+      "masterEnabled": true,
+      "defaultOn": true,
+      "expect": {
+        "preference": "on",
+        "effective": "on",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-true-master1-defaultOff",
+      "row": {
+        "e2ePref": true,
+        "rev": 4
+      },
+      "masterEnabled": true,
+      "defaultOn": false,
+      "expect": {
+        "preference": "on",
+        "effective": "on",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-true-master0-defaultOn",
+      "row": {
+        "e2ePref": true,
+        "rev": 4
+      },
+      "masterEnabled": false,
+      "defaultOn": true,
+      "expect": {
+        "preference": "on",
+        "effective": "off",
+        "pausedByServer": true,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-true-master0-defaultOff",
+      "row": {
+        "e2ePref": true,
+        "rev": 4
+      },
+      "masterEnabled": false,
+      "defaultOn": false,
+      "expect": {
+        "preference": "on",
+        "effective": "off",
+        "pausedByServer": true,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-false-master1-defaultOn",
+      "row": {
+        "e2ePref": false,
+        "rev": 4
+      },
+      "masterEnabled": true,
+      "defaultOn": true,
+      "expect": {
+        "preference": "off",
+        "effective": "off",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-false-master1-defaultOff",
+      "row": {
+        "e2ePref": false,
+        "rev": 4
+      },
+      "masterEnabled": true,
+      "defaultOn": false,
+      "expect": {
+        "preference": "off",
+        "effective": "off",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-false-master0-defaultOn",
+      "row": {
+        "e2ePref": false,
+        "rev": 4
+      },
+      "masterEnabled": false,
+      "defaultOn": true,
+      "expect": {
+        "preference": "off",
+        "effective": "off",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    },
+    {
+      "id": "R-false-master0-defaultOff",
+      "row": {
+        "e2ePref": false,
+        "rev": 4
+      },
+      "masterEnabled": false,
+      "defaultOn": false,
+      "expect": {
+        "preference": "off",
+        "effective": "off",
+        "pausedByServer": false,
+        "rev": 4
+      }
+    }
+  ],
+  "seed": [
+    {
+      "id": "S-null-applied",
+      "row": {
+        "e2ePref": null,
+        "rev": 0
+      },
+      "defaultOn": false,
+      "value": "on",
+      "expect": {
+        "refused": false,
+        "applied": true,
+        "revBump": 1,
+        "reset": false,
+        "after": {
+          "preference": "on"
+        }
+      }
+    },
+    {
+      "id": "S-null-defaultOn-applied",
+      "row": {
+        "e2ePref": null,
+        "rev": 0
+      },
+      "defaultOn": true,
+      "value": "on",
+      "expect": {
+        "refused": false,
+        "applied": true,
+        "revBump": 1,
+        "reset": false,
+        "after": {
+          "preference": "on"
+        }
+      }
+    },
+    {
+      "id": "S-true-not-applied",
+      "row": {
+        "e2ePref": true,
+        "rev": 2
+      },
+      "defaultOn": false,
+      "value": "on",
+      "expect": {
+        "refused": false,
+        "applied": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "on"
+        }
+      }
+    },
+    {
+      "id": "S-false-not-applied",
+      "row": {
+        "e2ePref": false,
+        "rev": 2
+      },
+      "defaultOn": false,
+      "value": "on",
+      "expect": {
+        "refused": false,
+        "applied": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "off"
+        }
+      }
+    },
+    {
+      "id": "S-off-refused",
+      "row": {
+        "e2ePref": null,
+        "rev": 0
+      },
+      "defaultOn": false,
+      "value": "off",
+      "expect": {
+        "refused": true,
+        "applied": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "off"
+        }
+      }
+    }
+  ],
+  "change": [
+    {
+      "id": "C-null-defaultOff-write-off-NOOP",
+      "named": true,
+      "row": {
+        "e2ePref": null,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": true,
+      "value": "off",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": null
+        }
+      }
+    },
+    {
+      "id": "C-null-write-on-CHANGE",
+      "named": true,
+      "row": {
+        "e2ePref": null,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": true,
+      "value": "on",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "on",
+          "effective": "on",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-null-defaultOff-master0-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": null,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": false,
+      "value": "off",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": null
+        }
+      }
+    },
+    {
+      "id": "C-null-defaultOff-master0-write-on",
+      "named": false,
+      "row": {
+        "e2ePref": null,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": false,
+      "value": "on",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "on",
+          "effective": "off",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-null-defaultOn-master1-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": null,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": true,
+      "value": "off",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-null-defaultOn-master1-write-on",
+      "named": false,
+      "row": {
+        "e2ePref": null,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": true,
+      "value": "on",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "on",
+          "effective": "on",
+          "storedAfter": null
+        }
+      }
+    },
+    {
+      "id": "C-null-defaultOn-master0-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": null,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": false,
+      "value": "off",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-null-defaultOn-master0-write-on",
+      "named": false,
+      "row": {
+        "e2ePref": null,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": false,
+      "value": "on",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "on",
+          "effective": "off",
+          "storedAfter": null
+        }
+      }
+    },
+    {
+      "id": "C-true-write-off-CHANGE",
+      "named": true,
+      "row": {
+        "e2ePref": true,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": true,
+      "value": "off",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-true-write-on-NOOP",
+      "named": true,
+      "row": {
+        "e2ePref": true,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": true,
+      "value": "on",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "on",
+          "effective": "on",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-true-defaultOff-master0-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": true,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": false,
+      "value": "off",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-true-defaultOff-master0-write-on",
+      "named": false,
+      "row": {
+        "e2ePref": true,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": false,
+      "value": "on",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "on",
+          "effective": "off",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-true-defaultOn-master1-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": true,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": true,
+      "value": "off",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-true-defaultOn-master1-write-on",
+      "named": false,
+      "row": {
+        "e2ePref": true,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": true,
+      "value": "on",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "on",
+          "effective": "on",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-true-defaultOn-master0-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": true,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": false,
+      "value": "off",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-true-defaultOn-master0-write-on",
+      "named": false,
+      "row": {
+        "e2ePref": true,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": false,
+      "value": "on",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "on",
+          "effective": "off",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-false-defaultOff-master1-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": false,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": true,
+      "value": "off",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-false-write-on-CHANGE",
+      "named": true,
+      "row": {
+        "e2ePref": false,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": true,
+      "value": "on",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "on",
+          "effective": "on",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-false-defaultOff-master0-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": false,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": false,
+      "value": "off",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-master0-false-write-on-CHANGE-effective-unchanged",
+      "named": true,
+      "row": {
+        "e2ePref": false,
+        "rev": 7
+      },
+      "defaultOn": false,
+      "masterEnabled": false,
+      "value": "on",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "on",
+          "effective": "off",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-false-defaultOn-master1-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": false,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": true,
+      "value": "off",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-false-defaultOn-master1-write-on",
+      "named": false,
+      "row": {
+        "e2ePref": false,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": true,
+      "value": "on",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "on",
+          "effective": "on",
+          "storedAfter": true
+        }
+      }
+    },
+    {
+      "id": "C-false-defaultOn-master0-write-off",
+      "named": false,
+      "row": {
+        "e2ePref": false,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": false,
+      "value": "off",
+      "expect": {
+        "changed": false,
+        "revBump": 0,
+        "reset": false,
+        "after": {
+          "preference": "off",
+          "effective": "off",
+          "storedAfter": false
+        }
+      }
+    },
+    {
+      "id": "C-false-defaultOn-master0-write-on",
+      "named": false,
+      "row": {
+        "e2ePref": false,
+        "rev": 7
+      },
+      "defaultOn": true,
+      "masterEnabled": false,
+      "value": "on",
+      "expect": {
+        "changed": true,
+        "revBump": 1,
+        "reset": true,
+        "after": {
+          "preference": "on",
+          "effective": "off",
+          "storedAfter": true
+        }
+      }
+    }
+  ]
+}
