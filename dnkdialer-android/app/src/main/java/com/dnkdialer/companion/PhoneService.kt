@@ -4727,6 +4727,12 @@ class PhoneService : Service() {
                     fileTransferStartedMs = 0L
                     notifier.dismissProgress()
                 }
+
+                // vc69 (FT incident 2): the offer died unanswered, so its
+                // Accept/Reject prompt must not outlive it.
+                override fun onOfferWithdrawn(id: String, reason: String) {
+                    notifier.dismissOffer()
+                }
             },
         )
         fileTransferHandler = manager
@@ -4935,6 +4941,10 @@ class PhoneService : Service() {
                     // session — defensive; usually nothing is pending
                     // by the time TERMINATED arrives.
                     clearAllPendingPairings("pairing terminated: $reason")
+                    // vc69 (FT incident 2): an unanswered file offer from the
+                    // computer that just left is dead relay-side; holding it
+                    // would answer the next pair's first offer BUSY.
+                    fileTransferHandler?.dropPendingOffer(FileTransfer.Reason.CANCELLED)
                 }
                 /**
                  * §13.8 names RESET_ROOM alongside PAIRING_TERMINATED as an
@@ -4963,6 +4973,9 @@ class PhoneService : Service() {
                     E2eSettings.clearPeerAdvertisement(this, "RESET_ROOM")
                     acceptedE2eOffer = null
                     clearAllPendingPairings("room reset")
+                    // vc69 (FT incident 2): same as PAIRING_TERMINATED - the
+                    // room an unanswered offer lived in is gone.
+                    fileTransferHandler?.dropPendingOffer(FileTransfer.Reason.CANCELLED)
                 }
                 // ------------------------------------------------------
                 "MAKE_CALL" -> {
