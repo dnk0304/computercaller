@@ -70,6 +70,7 @@ class DnkNotificationListenerService : NotificationListenerService() {
 
         // Failure lines are logged once per package per process.
         private val iconFailureLogged = NotificationIconPipeline.OncePerKey()
+        private val iconSuccessLogged = NotificationIconPipeline.OncePerKey()
 
         // Callback set by PhoneService so it can forward intercepted notifications.
         // Includes the full set of fields the web client needs to render and
@@ -294,6 +295,11 @@ class DnkNotificationListenerService : NotificationListenerService() {
                     renderCapped(pm.getApplicationIcon(pkg))
                 },
             ),
+            onSuccess = { source, b64 ->
+                if (iconSuccessLogged.first(pkg)) {
+                    android.util.Log.i(TAG, NotificationIconPipeline.successLine(pkg, source, b64))
+                }
+            },
         ) { source, cause ->
             if (iconFailureLogged.first(pkg)) {
                 android.util.Log.w(TAG, NotificationIconPipeline.failureLine(pkg, source, cause))
@@ -431,13 +437,17 @@ internal object NotificationIconPipeline {
      */
     fun resolve(
         sources: List<Pair<Source, () -> String?>>,
+        onSuccess: (Source, String) -> Unit = { _, _ -> },
         onFailure: (Source, Throwable) -> Unit,
     ): String? {
         var lastFailure: Pair<Source, Throwable>? = null
         for ((source, load) in sources) {
             try {
                 val icon = load()
-                if (icon != null) return icon
+                if (icon != null) {
+                    onSuccess(source, icon)
+                    return icon
+                }
             } catch (t: Throwable) {
                 lastFailure = source to t
             }
@@ -445,6 +455,10 @@ internal object NotificationIconPipeline {
         lastFailure?.let { (source, cause) -> onFailure(source, cause) }
         return null
     }
+
+    /** Once-per-package proof line: which source won and the encoded size sent. */
+    fun successLine(packageName: String, source: Source, base64: String): String =
+        "Captured icon pkg=$packageName source=${source.label} bytes=${base64.length}"
 
     fun failureLine(packageName: String, source: Source, cause: Throwable): String =
         "Failed to capture icon pkg=$packageName source=${source.label} cause=${cause.javaClass.simpleName}"

@@ -84,6 +84,17 @@ class NotificationIconPipelineTest {
         assertEquals("fromPm", icon)
     }
 
+    @Test
+    fun success_callback_reports_the_winning_source_once() {
+        val wins = mutableListOf<String>()
+        val icon = NotificationIconPipeline.resolve(
+            listOf(Source.EXTRAS to { null }, Source.PM to { "ABCD" }),
+            onSuccess = { s, b64 -> wins += NotificationIconPipeline.successLine("com.discord", s, b64) },
+        ) { _, _ -> fail("an icon was produced") }
+        assertEquals("ABCD", icon)
+        assertEquals(listOf("Captured icon pkg=com.discord source=pm bytes=4"), wins)
+    }
+
     // Stand-in for PackageManager.NameNotFoundException (not loadable on the JVM).
     private class NameNotFoundException : Exception()
 
