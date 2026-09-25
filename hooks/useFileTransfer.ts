@@ -40,6 +40,9 @@ import {
 } from '@/lib/fileTransfer/quotaMirror.ts';
 import type { PickVerdict, QuotaMirror } from '@/lib/fileTransfer/quotaMirror.ts';
 import type { FileTransport, TransferProgress } from '@/lib/fileTransfer/types.ts';
+import { planRetry, retryModeFor } from '@/lib/fileTransfer/retry.ts';
+import type { OutgoingRecord, RetryMode } from '@/lib/fileTransfer/retry.ts';
+import { ftFailureCopy } from '@/components/fileTransfer/ftCopy';
 
 /** What usePhoneBridge must supply. */
 export interface FileTransferBridge {
@@ -78,6 +81,9 @@ export interface FileTransferError {
   copy: FailureCopy;
 }
 
+/** What a `retry()` call did — the UI acts on 'repick' by opening the picker. */
+export type FileRetryOutcome = 'sent' | 'changed' | 'repick' | 'unavailable';
+
 export interface FileTransferApi {
   /** An inbound offer awaiting the user. FT-3b renders the Accept dialog. */
   pendingOffer: FileOffer | null;
@@ -102,8 +108,25 @@ export interface FileTransferApi {
    */
   acceptOffer(): Promise<void>;
   rejectOffer(): void;
+  /**
+   * Cancel whatever is live (sends the existing FILE_FAILED `cancelled` frame
+   * for a live transfer) AND clear local state — the error banner and the
+   * retained outgoing File — so the sender is never left without an exit.
+   */
   cancel(): void;
+  /** Clears the banner and drops the retained outgoing File. */
   dismissError(): void;
+  /**
+   * FT-RETRY-1. What the failure banner may offer for the CURRENT error:
+   * 'resend' (Try again re-offers the same File), 'repick' (the File no longer
+   * reads — show "Pick the file again"), or 'none'.
+   */
+  retryMode: RetryMode;
+  /**
+   * Re-offer the failed send under a new transfer id. With `replacement` (the
+   * user re-picked after 'repick'), send that File with the original `from`.
+   */
+  retry(replacement?: File): Promise<FileRetryOutcome>;
 
   /**
    * The last completed RECEIVE, while its handle is still held. FT-3b renders
@@ -158,6 +181,15 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
    * The handle never leaves this hook: what FT-3b sees is `{id, name, canOpen}`.
    */
   const [held, setHeld] = useState<{ id: string; name: string; handle: SaveFileHandle | null } | null>(null);
+  /**
+   * FT-RETRY-1. The File of the send this hook started, kept until the send
+   * completes, is cancelled, or its failure is dismissed — so "Try again" has
+   * something to resend. Like `held`, a live capability over a user's file, so
+   * it is dropped the moment nothing can use it. `repickId` marks the error
+   * whose retry found the File unreadable.
+   */
+  const [outgoing, setOutgoing] = useState<OutgoingRecord | null>(null);
+  const [repickId, setRepickId] = useState<string | null>(null);
 
   const releaseHandle = useCallback(() => {
     setHeld((h) => (h && h.handle ? { ...h, handle: null } : h));
@@ -205,8 +237,14 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
   // the thing that makes a component unsafe to re-run.
   const [sender] = useState<FileSender>(() => createFileSender(transport, {
     onProgress: setProgress,
-    onFailed,
+    onFailed: (id, reason) => {
+      // Tag the retained File with the id that failed, so only THIS failure
+      // can offer to resend it (the receiver also reports foreign-id failures).
+      setOutgoing((o) => (o ? { ...o, failedId: id } : o));
+      onFailed(id, reason);
+    },
     onDone: (p) => {
+      setOutgoing(null);
       // Charge the MIRROR only on a completed send, matching the server's
       // commit-at-FILE_DONE rule. A failed transfer must not appear to have
       // burned quota the relay never charged.
@@ -273,8 +311,36 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
 
   const sendFile = useCallback(async (file: File, from: string) => {
     setError(null);
+    setRepickId(null);
+    setOutgoing({ file, from, size: file.size, failedId: null });
     await sender.send(file, from);
   }, [sender]);
+
+  const retryMode = retryModeFor(error, outgoing, repickId, (r) => ftFailureCopy(r).action);
+
+  const retry = useCallback(async (replacement?: File): Promise<FileRetryOutcome> => {
+    if (!outgoing || sender.busy) return 'unavailable';
+    if (replacement) {
+      await sendFile(replacement, outgoing.from);
+      return 'sent';
+    }
+    if (!error || retryMode === 'none') return 'unavailable';
+    const failedId = error.id;
+    const plan = await planRetry(outgoing);
+    if (plan === 'repick') {
+      setRepickId(failedId);
+      return 'repick';
+    }
+    if (plan === 'changed') {
+      // Honest: the file moved again. Same copy as the relay's refusal; the new
+      // size is the baseline, so Try again succeeds once the file is stable.
+      setOutgoing({ ...outgoing, size: outgoing.file.size });
+      setError({ id: failedId, reason: 'size_mismatch', copy: failureCopy('size_mismatch') });
+      return 'changed';
+    }
+    await sendFile(outgoing.file as File, outgoing.from);
+    return 'sent';
+  }, [outgoing, sender, error, retryMode, sendFile]);
 
   const acceptOffer = useCallback(async () => {
     const offer = receiver.pendingOffer;
@@ -293,9 +359,18 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
   const cancel = useCallback(() => {
     sender.cancel();
     receiver.cancel();
+    setError(null);
+    setOutgoing(null);
+    setRepickId(null);
   }, [sender, receiver]);
 
-  const dismissError = useCallback(() => setError(null), []);
+  const dismissError = useCallback(() => {
+    setError(null);
+    setRepickId(null);
+    // Only drop the File when no send is live — a dismissal must not strand a
+    // running transfer's retry record.
+    if (!sender.busy) setOutgoing(null);
+  }, [sender]);
 
   const checkPick = useCallback(
     (size: number, subscribed: boolean) => previewPick(size, mirror, subscribed),
@@ -310,6 +385,7 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
     pendingOffer, progress, error, supported, busy, completed,
     remainingBytesToday: remainingToday(mirror),
     checkPick, sendFile, acceptOffer, rejectOffer, cancel, dismissError,
+    retryMode, retry,
     openReceived, dismissCompleted,
     handleFrame, noteReconnect,
   };
