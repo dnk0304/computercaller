@@ -457,16 +457,33 @@ const BYSTANDER = 'user-bystander';   // the second account; see the B8 note abo
     };
     const liveSrc = stripCalls(
       SERVER_SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, ''));
-    const live = liveSrc.split(/\r?\n/).filter((l) => l.includes('E2E_PAIRING_ENABLED'));
+    // T-E2E-ACCOUNT-PREF: the ONE sanctioned extra mention is the read-only
+    // publication of the boot value for lib/e2ePref-core (the per-account pref's
+    // `effective` must use the SAME predicate, not a second copy). It is pinned
+    // to its exact text and to exactly one occurrence, then excluded, so every
+    // OTHER mention is still counted against the two (control below).
+    const PUBLISH = 'globalThis.__e2ePairingEnabled = E2E_PAIRING_ENABLED;';
+    const allLive = liveSrc.split(/\r?\n/).filter((l) => l.includes('E2E_PAIRING_ENABLED'));
+    c('the boot value is published read-only EXACTLY once, verbatim',
+      allLive.filter((l) => l.trim() === PUBLISH).length === 1,
+      JSON.stringify(allLive.map((l) => l.trim())));
+    const live = allLive.filter((l) => l.trim() !== PUBLISH);
     c('the flag has exactly TWO live mentions: the definition and the ONE gate',
       live.length === 2, `found ${live.length}: ${JSON.stringify(live.map((l) => l.trim()))}`);
     // CONTROL: a planted third live mention must be counted. Without this the
     // rewrite above could have stripped the flag itself and scored a serene 2.
     const planted = stripCalls(
       `${liveSrc}${'\n'}if (!E2E_PAIRING_ENABLED) e2eBlock.mode = 0;${'\n'}`)
-      .split(/\r?\n/).filter((l) => l.includes('E2E_PAIRING_ENABLED'));
+      .split(/\r?\n/).filter((l) => l.includes('E2E_PAIRING_ENABLED') && l.trim() !== PUBLISH);
     c('CONTROL: a third live mention is seen (the counter is not stuck on two)',
       planted.length === 3, `planted count ${planted.length}`);
+    // CONTROL: the exemption is exact-text only. A publication that DOES
+    // something with the flag (here: a downgrade dressed as a publish) is not
+    // the sanctioned line and must be counted as a third mention.
+    const disguised = `${liveSrc}${'\n'}globalThis.__e2ePairingEnabled = E2E_PAIRING_ENABLED || (e2eBlock.mode = 0);${'\n'}`
+      .split(/\r?\n/).filter((l) => l.includes('E2E_PAIRING_ENABLED') && l.trim() !== PUBLISH);
+    c('CONTROL: a non-verbatim publication is NOT exempted',
+      disguised.length === 3, `disguised count ${disguised.length}`);
   }
   c('the forwarded payload attaches the block verbatim, with no kill-switch branch',
     /if \(e2eBlock\) forwardPayload\.e2e = e2eBlock;/.test(SERVER_SRC));
