@@ -220,11 +220,16 @@ async function main() {
         await settle(400);
         browser.close();
         await settle(800);
-        // The phone comes back FIRST, healthy, and waits (no browser to pair with).
-        const phone2 = await open('/relay/phone', `&session=${encodeURIComponent(KID)}`);
-        await settle(600);
+        // ORDER MATTERS, and getting it wrong is a harness race rather than a
+        // product fact: whoever arrives SECOND is the join that runs
+        // tryAutoResume, and the frame goes to the sockets it finds at that
+        // moment. With the phone second, the browser is already in the lobby
+        // and is a socket the relay can actually reach.
         const browser2 = await open('/relay');
-        const r = await waitFor(browser2, 'PAIRING_ACTIVE', 15_000).catch(() => null);
+        await settle(600);
+        const r2seen = waitFor(browser2, 'PAIRING_ACTIVE', 15_000).catch(() => null);
+        const phone2 = await open('/relay/phone', `&session=${encodeURIComponent(KID)}`);
+        const r = await r2seen;
         const payload = r ? JSON.parse(r.slice('PAIRING_ACTIVE:'.length)) : {};
         check('C2  the browser gets a resumed PAIRING_ACTIVE', payload.resumed === true,
           r ? r.slice(0, 160) : 'no PAIRING_ACTIVE within 15 s');
@@ -249,10 +254,14 @@ async function main() {
         await settle(400);
         browser.close();
         await settle(800);
-        const phone2 = await open('/relay/phone', '&session=0');   // force-stopped
-        await settle(600);
+        // Browser first, for the reason spelled out in C: the phone's join is
+        // the one that runs the gate, and the browser must already be a socket
+        // the relay can reach when it does.
         const browser2 = await open('/relay');
-        const t = await waitFor(browser2, 'PAIRING_TERMINATED', 15_000).catch(() => null);
+        await settle(600);
+        const tSeen = waitFor(browser2, 'PAIRING_TERMINATED', 15_000).catch(() => null);
+        const phone2 = await open('/relay/phone', '&session=0');   // force-stopped
+        const t = await tSeen;
         check("D2  the restarted phone is refused even though the LAST close was the browser's", !!t,
           'no PAIRING_TERMINATED — a session-less phone was resumed into a sealed pair');
         check('D3  ...with reason=phone_restarted',

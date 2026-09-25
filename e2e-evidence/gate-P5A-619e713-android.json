@@ -1,0 +1,117 @@
+{
+  "phase": "P5A",
+  "label": null,
+  "harnessMode": "sequential",
+  "note": null,
+  "sha": "619e71311c3c4116d16d4c7f7a9344e10000a811",
+  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "scopeBase": {
+    "sha": "f781a6114cac585f0484d3bbb369bb06cdb69965",
+    "kind": "merge-base",
+    "ref": "origin/e2e/integration",
+    "integrationTip": "f781a6114cac585f0484d3bbb369bb06cdb69965",
+    "fellBackToBaseSha": false,
+    "reason": null
+  },
+  "utc": "2026-09-25T00:26:10.031Z",
+  "lane": "android",
+  "mode": "full",
+  "env": {
+    "node": "v24.12.0",
+    "bun": "1.3.11",
+    "chrome": "C:\\Users\\D\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe"
+  },
+  "steps": [
+    {
+      "name": "git-identity-clean-base-ancestry",
+      "cmd": "git rev-parse HEAD && git status --porcelain && git merge-base --is-ancestor BASE_SHA HEAD",
+      "exit": 0,
+      "ms": 72,
+      "counts": {
+        "dirtyPaths": 0,
+        "baseIsAncestor": true
+      }
+    },
+    {
+      "name": "scope-diff-vs-base",
+      "cmd": "git diff --name-only f781a61..HEAD",
+      "exit": 1,
+      "ms": 41,
+      "counts": {
+        "changed": 11,
+        "android": 1,
+        "nonAndroid": 10,
+        "offLane": 10,
+        "scopeBase": "f781a6114cac585f0484d3bbb369bb06cdb69965",
+        "scopeBaseKind": "merge-base"
+      }
+    },
+    {
+      "name": "android:java-home",
+      "cmd": "resolveJavaHome()",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "missing": 0
+      },
+      "javaHome": "C:/PROGRA~1/Android/ANDROI~1/jbr"
+    },
+    {
+      "name": "android:assembleDebug",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\resume-phone-restart\\dnkdialer-android\\gradlew.bat\" :app:assembleDebug",
+      "exit": 0,
+      "ms": 246236,
+      "counts": null
+    },
+    {
+      "name": "android:lint",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\resume-phone-restart\\dnkdialer-android\\gradlew.bat\" :app:lintDebug --continue && node tools/lint-manifest.mjs --check  (cwd dnkdialer-android)",
+      "exit": 0,
+      "ms": 186174,
+      "counts": {
+        "issues": 0,
+        "reportFresh": 1,
+        "gradleExit": 0
+      }
+    },
+    {
+      "name": "android:never-signs-release",
+      "cmd": "(assertion: no assembleRelease/bundleRelease in this tool)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "releaseTasks": 0
+      }
+    },
+    {
+      "name": "android:gradle-stop",
+      "cmd": "\"C:/Users/D/worktrees/computercaller/resume-phone-restart/dnkdialer-android/gradlew.bat\" --stop",
+      "exit": 0,
+      "ms": 2378,
+      "counts": {
+        "javaBefore": 2,
+        "javaAfter": 1
+      }
+    },
+    {
+      "name": "baseline-parity",
+      "cmd": "diff vs C:/Users/D/worktrees/computercaller/resume-phone-restart/e2e-evidence/BASELINE-harness.json",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "reference": 16,
+        "comparable": 0,
+        "regressed": 0,
+        "why": "lane=android runs no web-lane steps; nothing in the reference is comparable"
+      }
+    }
+  ],
+  "harnessPass": [],
+  "baselineDiff": [],
+  "ms": 438721,
+  "failedStep": "scope-diff-vs-base",
+  "produced": [
+    "e2e-evidence/gate-P5A-619e713.json"
+  ],
+  "result": "FAIL"
+}
