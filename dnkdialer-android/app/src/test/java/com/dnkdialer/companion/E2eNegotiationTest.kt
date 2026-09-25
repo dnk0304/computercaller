@@ -144,8 +144,9 @@ class E2eNegotiationTest {
     fun `local ON with no peer block ABORTS with the specified copy`() {
         val d = E2eNegotiation.decide(localEnabled = true, offer = E2eNegotiation.parsePeerOffer(null))
         assertTrue(d is E2eNegotiation.Decision.Abort)
+        // vc69 S3: row 3 names the fix, not "try again".
         assertEquals(
-            "Couldn't set up encrypted pairing — try again",
+            "Update your computer to use Encrypted mode",
             (d as E2eNegotiation.Decision.Abort).userMessage
         )
         assertTrue("the log reason must be diagnosable", d.logReason.contains("peer offered nothing"))

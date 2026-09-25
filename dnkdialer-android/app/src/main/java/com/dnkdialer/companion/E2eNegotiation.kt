@@ -107,6 +107,14 @@ object E2eNegotiation {
     const val ABORT_MESSAGE = "Couldn't set up encrypted pairing — try again"
 
     /**
+     * vc69 (T-E2E-ACCOUNT-PREF, Security S3) — matrix row 3: this phone is ON
+     * (now usually because the ACCOUNT is ON) and the computer sent no `e2e`
+     * block at all, i.e. it predates the feature. "Try again" would loop the
+     * user on a refusal that can only be fixed by updating the computer.
+     */
+    const val ABORT_UPDATE_COMPUTER_MESSAGE = "Update your computer to use Encrypted mode"
+
+    /**
      * vc67 — what the phone says when the SAS deadline ran out.
      *
      * Deliberately NOT [ABORT_MESSAGE]: nothing failed and nobody refused, the
@@ -211,7 +219,7 @@ object E2eNegotiation {
             E2eSettings.EffectiveMode.ABORT -> {
                 latch?.latch(DowngradeLatch.RefusalReason.PEER_OFFERED_NOTHING)
                 Decision.Abort(
-                    ABORT_MESSAGE,
+                    ABORT_UPDATE_COMPUTER_MESSAGE,
                     "local mode ON but peer offered nothing: ${offer.absentReason ?: "absent"}"
                 )
             }

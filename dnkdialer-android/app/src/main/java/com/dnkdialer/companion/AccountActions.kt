@@ -118,6 +118,15 @@ object AccountActions {
             android.util.Log.e("AccountActions", "E2E sign-out threw — continuing", e)
         }
 
+        // vc69 M1: this account's mirror, last-rev and latch go with it. Its
+        // own try, so a throw in the E2E teardown above cannot skip it; keyed
+        // by TokenStore's userId, so it MUST run before TokenStore.clear().
+        try {
+            E2eAccountPrefController.onSignOut(activity)
+        } catch (e: Exception) {
+            android.util.Log.e("AccountActions", "account-pref wipe threw — continuing", e)
+        }
+
         try {
             TokenStore.clear(activity)
             android.util.Log.d("AccountActions", "TokenStore cleared")

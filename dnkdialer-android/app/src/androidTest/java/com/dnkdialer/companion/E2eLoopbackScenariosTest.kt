@@ -192,7 +192,7 @@ class E2eLoopbackScenariosTest {
             latch = latch,
         )
         assertTrue("a mode-ON device must ABORT, never silently downgrade", d is E2eNegotiation.Decision.Abort)
-        assertEquals(E2eNegotiation.ABORT_MESSAGE, (d as E2eNegotiation.Decision.Abort).userMessage)
+        assertEquals(E2eNegotiation.ABORT_UPDATE_COMPUTER_MESSAGE, (d as E2eNegotiation.Decision.Abort).userMessage)
         assertTrue("the refusal must latch for the life of the pair", latch.isLatched)
 
         // The attrition attack: retry with a weaker offer, and even with the
