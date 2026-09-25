@@ -504,7 +504,7 @@ dependencies {
     // this version, transitively via androidx lifecycle 2.6.1; declared so the
     // compile does not depend on a transitive edge. Pinned to that version on
     // purpose so no new version enters the tree.
-    //noinspection GradleDependency
+    //noinspection GradleDependency,NewerVersionAvailable
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
     testImplementation("junit:junit:4.13.2")

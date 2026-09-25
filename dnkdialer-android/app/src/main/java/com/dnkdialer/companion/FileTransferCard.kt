@@ -2,9 +2,9 @@ package com.dnkdialer.companion
 
 import android.app.Activity
 import android.content.Intent
-import android.net.Uri
 import android.view.View
 import android.widget.TextView
+import androidx.core.net.toUri
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
@@ -188,7 +188,7 @@ class FileTransferCard(private val activity: Activity) {
 
     /** Same intent as the "Received" notification's tap. */
     private fun openReceived(uri: String?) {
-        val u = Uri.parse(uri ?: return)
+        val u = (uri ?: return).toUri()
         try {
             activity.startActivity(
                 Intent(Intent.ACTION_VIEW).apply {
