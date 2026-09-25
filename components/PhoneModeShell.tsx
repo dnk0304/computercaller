@@ -99,6 +99,7 @@ import { useTemplates } from '@/hooks/useTemplates';
 import { ChipScroller } from '@/components/ChipScroller';
 import { AppIcon } from '@/components/AppIcon';
 import { cleanNotificationTitle } from '@/lib/notificationTitle';
+import { isUnreadAlert } from '@/lib/notificationMerge';
 
 import {
   useThreadReadState,
@@ -2312,7 +2313,7 @@ function ExtBellView() {
   // them. Backfill (the phone replaying its shade on sync) never counts, the
   // same rule as Messages' baseline: history is not news.
   const [unreadIds, setUnreadIds] = useState<Set<string>>(
-    () => new Set(items.filter(n => !n.read && !n.backfill).map(n => n.id)),
+    () => new Set(items.filter(isUnreadAlert).map(n => n.id)),
   );
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
 
@@ -2322,7 +2323,7 @@ function ExtBellView() {
   const [seenItems, setSeenItems] = useState(items);
   if (items !== seenItems) {
     setSeenItems(items);
-    const fresh = items.filter(n => !n.read && !n.backfill && !unreadIds.has(n.id));
+    const fresh = items.filter(n => isUnreadAlert(n) && !unreadIds.has(n.id));
     if (fresh.length) {
       const next = new Set(unreadIds);
       fresh.forEach(n => next.add(n.id));
@@ -2647,7 +2648,8 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
   const { current, setTab, push } = usePhoneMode();
   const isExt = surface === 'extension';
   const { phoneNotifications } = useNotifications();
-  const unreadCount = phoneNotifications.filter(n => !n.read).length;
+  // Same rule as the in-list dot (isUnreadAlert): backfill is never unread.
+  const unreadCount = phoneNotifications.filter(isUnreadAlert).length;
 
   // ---------- Deep links from extension notifications ----------------------
   // background.js opens the surface at #tab=texts&thread=<id> (or #tab=alerts)
