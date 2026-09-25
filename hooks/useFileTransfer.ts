@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import {
   coerceFileFrame, isFileFrameType,
 } from '@/lib/fileTransfer/frames.ts';
-import type { FileFrameType, FileOffer } from '@/lib/fileTransfer/frames.ts';
+import type { FileFrame, FileFrameType, FileOffer } from '@/lib/fileTransfer/frames.ts';
 import { createQueueController } from '@/lib/fileTransfer/queueController.ts';
 import type { QueueController } from '@/lib/fileTransfer/queueController.ts';
 import { loadQueue, saveQueue } from '@/lib/fileTransfer/queueStore.ts';
@@ -31,6 +31,7 @@ import { browserDelivery, canReceiveFiles } from '@/lib/fileTransfer/fallbackSin
 import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
 import type { SaveFileHandle } from '@/lib/fileTransfer/fsAccess.ts';
 import { decideRelayAbort } from '@/lib/fileTransfer/relayAbort.ts';
+import { routeInboundFrame } from '@/lib/fileTransfer/routeInboundFrame.ts';
 import {
   HANDLE_RETENTION_MS, openReceivedFile,
 } from '@/lib/fileTransfer/openReceived.ts';
@@ -317,6 +318,14 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
   );
 
   const handleFrame = useCallback((type: string, payload: unknown) => {
+    // #16d: one delivery point for both paths below. A FILE_FAILED for our own
+    // live send reaches the sender only (see routeInboundFrame). The route is
+    // decided BEFORE delivery: a failed sender clears its liveId.
+    const deliver = (frame: FileFrame): void => {
+      const route = routeInboundFrame(frame, sender.liveId);
+      if (route.toSender) sender.handleFrame(frame);
+      if (route.toReceiver) receiver.handleFrame(frame);
+    };
     if (!isFileFrameType(type)) return;
     // ── FT-A1.1 MUST A1.1-M9, the LIVENESS clause ─────────────────────────
     // useE2e admitted this frame on shape + reason subset alone; this hook is
@@ -333,15 +342,14 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
       // Re-built from the two scalars, so the mark itself never reaches a state
       // machine and the frame can only ever mean "abort the transfer you named".
       const abort = coerceFileFrame('FILE_FAILED', { id: relay.id, reason: relay.reason });
-      if (abort) { sender.handleFrame(abort); receiver.handleFrame(abort); }
+      if (abort) deliver(abort);
       return;
     }
     const frame = coerceFileFrame(type, payload);
     // A malformed frame is dropped, never guessed at. The peer is not trusted
     // to have sent the field types it claims.
     if (!frame) return;
-    sender.handleFrame(frame);
-    receiver.handleFrame(frame);
+    deliver(frame);
   }, [sender, receiver]);
 
   const noteReconnect = useCallback(() => {
