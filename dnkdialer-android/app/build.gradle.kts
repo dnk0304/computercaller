@@ -570,4 +570,9 @@ tasks.withType<Test>().configureEach {
     inputs.file(layout.projectDirectory.file("../../tests/ft-progress-card-vectors.json"))
         .withPropertyName("ftProgressCardVectors")
         .withPathSensitivity(PathSensitivity.RELATIVE)
+
+    // FILE-QUEUE — same reason for FileTransferQueueVectorsTest's file.
+    inputs.file(layout.projectDirectory.file("../../tests/ft-queue-vectors.json"))
+        .withPropertyName("ftQueueVectors")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }

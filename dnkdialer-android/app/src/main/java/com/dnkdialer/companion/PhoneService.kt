@@ -17,6 +17,8 @@ import android.content.pm.PackageManager
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import android.annotation.SuppressLint
@@ -120,6 +122,19 @@ class PhoneService : Service() {
         @JvmStatic
         val fileTransferUi: kotlinx.coroutines.flow.StateFlow<FileTransferUi>
             get() = fileTransferUiModel.state
+
+        /**
+         * FILE-QUEUE — the phone's send queue, owned beside [fileTransferHandler]
+         * and fed the same listener events. Null while the service is down;
+         * the card's rows read [FileTransferUiModel.queue], not this.
+         */
+        @Volatile
+        @JvmStatic
+        var fileTransferQueue: FileTransferQueue? = null
+            private set
+
+        internal const val FT_QUEUE_PREFS = "ft_queue"
+        internal const val FT_QUEUE_KEY = "queue_v1"
 
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dnk_dialer_service"
@@ -4275,6 +4290,7 @@ class PhoneService : Service() {
                 try {
                     if (connected) fileTransferHandler?.onReconnected()
                     else fileTransferHandler?.onDisconnected()
+                    if (connected) fileTransferQueue?.onLinkUp()
                 } catch (e: Exception) {
                     android.util.Log.w("PhoneService", "file-transfer link change: ${e.message}")
                 }
@@ -4798,6 +4814,7 @@ class PhoneService : Service() {
                     if (fileTransferStartedMs == 0L) fileTransferStartedMs = System.currentTimeMillis()
                     notifier.showProgress(name, sent, total, outgoing, fileTransferStartedMs)
                     fileTransferUiModel.onProgress(id, name, sent, total, outgoing)
+                    fileTransferQueue?.onProgress(id, name, sent, total, outgoing)
                 }
 
                 override fun onOfferReceived(id: String, name: String, size: Long, mime: String?) {
@@ -4831,6 +4848,7 @@ class PhoneService : Service() {
                     notifier.dismissOffer()
                     notifier.showComplete(name, uri, outgoing)
                     holdTerminalCard(fileTransferUiModel.onComplete(id, name, uri?.toString(), outgoing))
+                    fileTransferQueue?.onComplete(id, name, uri?.toString(), outgoing)
                 }
 
                 override fun onFailed(
@@ -4840,6 +4858,10 @@ class PhoneService : Service() {
                     notifier.dismissOffer()
                     notifier.showFailed(name, reason, outgoing)
                     holdTerminalCard(fileTransferUiModel.onFailed(id, name, reason, outgoing))
+                    // FILE-QUEUE: after the card/notification, so a queue that
+                    // offers the next file straight away paints over this
+                    // result with the next one's progress, not the reverse.
+                    fileTransferQueue?.onFailed(id, name, reason, outgoing)
                     // (d) quota / tier / too_large are decisions the user must
                     // understand, not background noise - surface the dialog too
                     // when the app is in front and the reason is a refusal
@@ -4866,6 +4888,7 @@ class PhoneService : Service() {
                     fileTransferStartedMs = 0L
                     notifier.dismissProgress()
                     fileTransferUiModel.onIdle()
+                    fileTransferQueue?.onIdle()
                 }
 
                 // vc69 (FT incident 2): the offer died unanswered, so its
@@ -4873,10 +4896,13 @@ class PhoneService : Service() {
                 override fun onOfferWithdrawn(id: String, reason: String) {
                     notifier.dismissOffer()
                     fileTransferUiModel.onOfferWithdrawn(id)
+                    // The slot the offer held is free: the queue may proceed.
+                    fileTransferQueue?.onIdle()
                 }
             },
         )
         fileTransferHandler = manager
+        setUpFileTransferQueue(manager)
 
         val receiver = FileTransferActionReceiver()
         val filter = android.content.IntentFilter().apply {
@@ -4901,6 +4927,7 @@ class PhoneService : Service() {
             override fun run() {
                 try {
                     fileTransferHandler?.tick()
+                    fileTransferQueue?.tick()
                 } catch (e: Exception) {
                     android.util.Log.w("PhoneService", "file-transfer tick: ${e.message}")
                 }
@@ -4935,6 +4962,43 @@ class PhoneService : Service() {
         )
     }
 
+    /**
+     * FILE-QUEUE — build the queue over [manager], restore it from the last
+     * process (sending -> failed, queued without a grant -> needs-file), and
+     * persist every change. Metadata + URI only; never file bytes.
+     */
+    private fun setUpFileTransferQueue(manager: FileTransferManager) {
+        val prefs = applicationContext.getSharedPreferences(FT_QUEUE_PREFS, Context.MODE_PRIVATE)
+        var lastSaved: String? = null
+        lateinit var queue: FileTransferQueue
+        queue = FileTransferQueue(
+            sender = object : FileTransferQueue.Sender {
+                override val isBusy: Boolean get() = manager.isBusy
+                override val isConnected: Boolean get() = client?.isOpen == true
+                override fun start(uri: String) = manager.startSend(uri.toUri())
+                override fun cancelActive() = manager.cancel()
+                override fun canRead(uri: String): Boolean = try {
+                    contentResolver.openInputStream(uri.toUri())?.use { true } ?: false
+                } catch (e: Exception) {
+                    false
+                }
+            },
+            onChange = { snap ->
+                // Called under the queue's lock, in order. The 5 s ticker
+                // re-pumps through here too: an unchanged snapshot is neither
+                // re-published nor re-written, so it is not a 5 s disk write.
+                val json = queue.encodeSnapshot(snap)
+                if (json != lastSaved) {
+                    lastSaved = json
+                    fileTransferUiModel.onQueue(snap)
+                    prefs.edit { putString(FT_QUEUE_KEY, json) }
+                }
+            },
+        )
+        queue.restore(prefs.getString(FT_QUEUE_KEY, null))
+        fileTransferQueue = queue
+    }
+
     private fun tearDownFileTransfer() {
         fileTransferTickRunnable?.let { fileTransferTicker.removeCallbacks(it) }
         fileTransferTickRunnable = null
@@ -4949,6 +5013,7 @@ class PhoneService : Service() {
         fileTransferReceiver = null
         fileTransferNotifier?.dismissProgress()
         fileTransferNotifier = null
+        fileTransferQueue = null
         fileTransferUiModel.reset()
         // Last: an Activity that reads this after teardown must find null.
         fileTransferHandler = null

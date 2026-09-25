@@ -1,5 +1,6 @@
 package com.dnkdialer.companion
 
+import com.dnkdialer.companion.FileTransferQueue.State as QState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +51,28 @@ sealed class FileTransferUi {
     ) : FileTransferUi()
 }
 
+/** FILE-QUEUE — a button on a queue row (ADDENDUM 2 state table). */
+enum class QueueRowAction { REMOVE, CANCEL, RETRY, REPICK, OPEN, CLEAR }
+
+/**
+ * FILE-QUEUE — one row under the active card. The in-flight transfer
+ * (sending / receiving) is NOT a row: the card above already draws it, with
+ * its own Cancel. Everything else is: queued, offering, done, failed,
+ * needs-file.
+ */
+data class QueueRowUi(
+    val key: String,
+    val name: String,
+    val size: Long,
+    val outgoing: Boolean,
+    val state: FileTransferQueue.State,
+    /** [FileTransfer.Reason] for a failed row (copy via failureCopy). */
+    val reason: String?,
+    /** The received document, for OPEN. */
+    val resultUri: String?,
+    val actions: List<QueueRowAction>,
+)
+
 /**
  * vc69 — the in-app card's state, fed by the SAME [FileTransferManager.Listener]
  * events that drive [FileTransferNotifier]. PhoneService forwards every event
@@ -91,6 +114,14 @@ class FileTransferUiModel(private val clock: () -> Long = { System.currentTimeMi
 
     private val _state = MutableStateFlow<FileTransferUi>(FileTransferUi.Idle)
     val state: StateFlow<FileTransferUi> = _state.asStateFlow()
+
+    /** FILE-QUEUE: the rows under the active card, in queue order. */
+    private val _queue = MutableStateFlow<List<QueueRowUi>>(emptyList())
+    val queue: StateFlow<List<QueueRowUi>> = _queue.asStateFlow()
+
+    /** FILE-QUEUE: the reason the queue is paused, or null when it is running. */
+    private val _queuePaused = MutableStateFlow<String?>(null)
+    val queuePaused: StateFlow<String?> = _queuePaused.asStateFlow()
 
     private var lastProgressEmitMs = 0L
     private var terminalToken = 0L
@@ -164,10 +195,50 @@ class FileTransferUiModel(private val clock: () -> Long = { System.currentTimeMi
         return true
     }
 
+    /** FILE-QUEUE: publish the queue's snapshot as rows + paused banner. */
+    @Synchronized
+    fun onQueue(snapshot: FileTransferQueue.Snapshot) {
+        _queue.value = rowsOf(snapshot.items)
+        _queuePaused.value = snapshot.paused?.reason
+    }
+
     /** Service teardown: nothing the card showed is true any more. */
     @Synchronized
     fun reset() {
         lastProgressEmitMs = 0L
         _state.value = FileTransferUi.Idle
+        _queue.value = emptyList()
+        _queuePaused.value = null
+    }
+}
+
+/**
+ * FILE-QUEUE — queue items -> rows. Pure; pinned by
+ * `tests/ft-queue-vectors.json` (`rows` section).
+ *
+ * Hidden: the in-flight sending / receiving item (the card draws it) and an
+ * item whose Remove is waiting for its cancel to land.
+ */
+fun rowsOf(items: List<FileTransferQueue.Item>): List<QueueRowUi> {
+    return items.filter {
+        !it.removing && it.state != QState.SENDING && it.state != QState.RECEIVING
+    }.map {
+        val actions = when (it.state) {
+            QState.QUEUED -> listOf(QueueRowAction.REMOVE)
+            QState.OFFERING -> listOf(QueueRowAction.CANCEL)
+            QState.DONE ->
+                if (!it.outgoing && it.resultUri != null) listOf(QueueRowAction.OPEN, QueueRowAction.CLEAR)
+                else listOf(QueueRowAction.CLEAR)
+            QState.FAILED ->
+                if (it.outgoing) listOf(QueueRowAction.RETRY, QueueRowAction.REMOVE)
+                else listOf(QueueRowAction.REMOVE)
+            QState.NEEDS_FILE -> listOf(QueueRowAction.REPICK, QueueRowAction.REMOVE)
+            QState.SENDING, QState.RECEIVING -> listOf(QueueRowAction.CANCEL)
+        }
+        QueueRowUi(
+            key = it.key, name = it.name, size = it.size, outgoing = it.outgoing,
+            state = it.state, reason = if (it.state == QState.FAILED) it.reason else null,
+            resultUri = it.resultUri, actions = actions,
+        )
     }
 }

@@ -1,0 +1,469 @@
+{
+  "version": 1,
+  "$comment": [
+    "FILE-QUEUE (Ken ADDENDUM 2, 2026-09-25) - the phone's local send queue. RULE 30 vectors.",
+    "",
+    "Consumer: dnkdialer-android/app/src/test/.../FileTransferQueueVectorsTest.kt -> FileTransferQueue + rowsOf().",
+    "Every scenario runs ONE fresh queue over a fake Sender (busy / connected / readable are scripted) on a",
+    "scripted clock `t` (ms). Keys are minted k1, k2, ... in enqueue order; steps name items by `name`.",
+    "After EVERY step the whole queue is pinned, written out by hand:",
+    "  items   - in order, 'name:state' or 'name:failed:reason' (a Remove-pending item is 'name:state:removing')",
+    "  paused  - null or 'kind:reason'",
+    "  starts  - CUMULATIVE list of uris handed to Sender.start (so a start that must NOT happen is visible)",
+    "  cancels - cumulative Sender.cancelActive calls",
+    "  retries - optional {name: busyRetries}",
+    "",
+    "Events: enqueue{files:[{uri,name,size,persistable?}]}; set{busy?,connected?,readable?{uri:bool}};",
+    "  progress/complete/failed{id,name,out,...} - the FileTransferManager.Listener events PhoneService forwards;",
+    "  idle; remove/cancel/retry{name}; repick{name,file}; resume; linkUp; tick.",
+    "`restore` scenarios start from a persisted blob (`persisted`) instead of an empty queue.",
+    "`classify` pins every FileTransfer.Reason (plus an unknown one) to its scheduler class.",
+    "`rows` pins the queue -> card-row mapping (hidden in-flight rows, actions per the ADDENDUM 2 state table)."
+  ],
+  "constants": { "maxBusyRetries": 3, "busyRetryDelayMs": 5000, "maxDoneRows": 20 },
+  "classify": [
+    { "reason": "busy", "class": "BUSY" },
+    { "reason": "connection_lost", "class": "LINK" },
+    { "reason": "timeout", "class": "LINK" },
+    { "reason": "relay_backpressure", "class": "LINK" },
+    { "reason": "tier", "class": "ACCOUNT" },
+    { "reason": "quota", "class": "ACCOUNT" },
+    { "reason": "size_mismatch", "class": "PER_FILE" },
+    { "reason": "hash_mismatch", "class": "PER_FILE" },
+    { "reason": "too_large", "class": "PER_FILE" },
+    { "reason": "cancelled", "class": "PER_FILE" },
+    { "reason": "oom", "class": "PER_FILE" },
+    { "reason": "something_new", "class": "LINK" }
+  ],
+  "scenarios": [
+    {
+      "id": "three_files_sent_in_order",
+      "rule": "strictly one in flight; the next is offered only after the current one is terminal",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 100 },
+            { "uri": "u:b", "name": "b.jpg", "size": 200 },
+            { "uri": "u:c", "name": "c.jpg", "size": 300 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 10, "ev": "progress", "id": "t1", "name": "a.jpg", "sent": 50, "total": 100, "out": true,
+          "expect": { "items": ["a.jpg:sending", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 20, "ev": "idle",
+          "expect": { "items": ["a.jpg:sending", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 21, "ev": "complete", "id": "t1", "name": "a.jpg", "out": true,
+          "expect": { "items": ["a.jpg:done", "b.jpg:offering", "c.jpg:queued"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 0 } },
+        { "t": 30, "ev": "progress", "id": "t2", "name": "b.jpg", "sent": 200, "total": 200, "out": true,
+          "expect": { "items": ["a.jpg:done", "b.jpg:sending", "c.jpg:queued"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 0 } },
+        { "t": 31, "ev": "complete", "id": "t2", "name": "b.jpg", "out": true,
+          "expect": { "items": ["a.jpg:done", "b.jpg:done", "c.jpg:offering"], "paused": null, "starts": ["u:a", "u:b", "u:c"], "cancels": 0 } },
+        { "t": 40, "ev": "complete", "id": "t3", "name": "c.jpg", "out": true,
+          "expect": { "items": ["a.jpg:done", "b.jpg:done", "c.jpg:done"], "paused": null, "starts": ["u:a", "u:b", "u:c"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "waits_while_manager_busy",
+      "rule": "next offers only when !isBusy (an incoming transfer or a pending offer holds the slot)",
+      "steps": [
+        { "t": 0, "ev": "set", "busy": true,
+          "expect": { "items": [], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 1, "ev": "enqueue", "files": [ { "uri": "u:a", "name": "a.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:queued"], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 2, "ev": "tick",
+          "expect": { "items": ["a.jpg:queued"], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 3, "ev": "set", "busy": false,
+          "expect": { "items": ["a.jpg:queued"], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 4, "ev": "idle",
+          "expect": { "items": ["a.jpg:offering"], "paused": null, "starts": ["u:a"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "incoming_transfer_is_session_history",
+      "rule": "receiver shows its active transfer + history; an incoming result does not touch outgoing items",
+      "steps": [
+        { "t": 0, "ev": "set", "busy": true,
+          "expect": { "items": [], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 1, "ev": "progress", "id": "in1", "name": "report.pdf", "sent": 10, "total": 1000, "out": false,
+          "expect": { "items": ["report.pdf:receiving"], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 2, "ev": "enqueue", "files": [ { "uri": "u:a", "name": "a.jpg", "size": 1 } ],
+          "expect": { "items": ["report.pdf:receiving", "a.jpg:queued"], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 3, "ev": "set", "busy": false,
+          "expect": { "items": ["report.pdf:receiving", "a.jpg:queued"], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 4, "ev": "complete", "id": "in1", "name": "report.pdf", "uri": "content://doc/report.pdf", "out": false,
+          "expect": { "items": ["report.pdf:done", "a.jpg:offering"], "paused": null, "starts": ["u:a"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "incoming_failure_after_start_is_history_declined_is_not",
+      "rule": "only a receive that started becomes a row",
+      "steps": [
+        { "t": 0, "ev": "failed", "id": "in0", "name": "never.bin", "reason": "cancelled", "out": false,
+          "expect": { "items": [], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 1, "ev": "progress", "id": "in1", "name": "x.bin", "sent": 1, "total": 10, "out": false,
+          "expect": { "items": ["x.bin:receiving"], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 2, "ev": "failed", "id": "in1", "name": "x.bin", "reason": "hash_mismatch", "out": false,
+          "expect": { "items": ["x.bin:failed:hash_mismatch"], "paused": null, "starts": [], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "busy_requeues_max_three_then_fails",
+      "rule": "busy -> back to queued (same position), re-offered after the back-off once idle; the 4th busy fails it and the queue continues",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1000, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "busy", "out": true,
+          "expect": { "items": ["a.jpg:queued", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0, "retries": { "a.jpg": 1 } } },
+        { "t": 5999, "ev": "tick",
+          "expect": { "items": ["a.jpg:queued", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 6000, "ev": "tick",
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a", "u:a"], "cancels": 0, "retries": { "a.jpg": 1 } } },
+        { "t": 7000, "ev": "failed", "id": "t2", "name": "a.jpg", "reason": "busy", "out": true,
+          "expect": { "items": ["a.jpg:queued", "b.jpg:queued"], "paused": null, "starts": ["u:a", "u:a"], "cancels": 0, "retries": { "a.jpg": 2 } } },
+        { "t": 12000, "ev": "tick",
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a", "u:a", "u:a"], "cancels": 0 } },
+        { "t": 13000, "ev": "failed", "id": "t3", "name": "a.jpg", "reason": "busy", "out": true,
+          "expect": { "items": ["a.jpg:queued", "b.jpg:queued"], "paused": null, "starts": ["u:a", "u:a", "u:a"], "cancels": 0, "retries": { "a.jpg": 3 } } },
+        { "t": 18000, "ev": "tick",
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a", "u:a", "u:a", "u:a"], "cancels": 0 } },
+        { "t": 19000, "ev": "failed", "id": "t4", "name": "a.jpg", "reason": "busy", "out": true,
+          "expect": { "items": ["a.jpg:failed:busy", "b.jpg:offering"], "paused": null, "starts": ["u:a", "u:a", "u:a", "u:a", "u:b"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "busy_backoff_holds_the_line",
+      "rule": "strict FIFO: an item waiting out its busy back-off keeps the head; a later item is NOT offered past it",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [ { "uri": "u:a", "name": "a.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 100, "ev": "failed", "id": "", "name": "a.jpg", "reason": "busy", "out": true,
+          "expect": { "items": ["a.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0, "retries": { "a.jpg": 1 } } },
+        { "t": 200, "ev": "enqueue", "files": [ { "uri": "u:b", "name": "b.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:queued", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 5099, "ev": "tick",
+          "expect": { "items": ["a.jpg:queued", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 5100, "ev": "tick",
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a", "u:a"], "cancels": 0 } },
+        { "t": 5200, "ev": "complete", "id": "t2", "name": "a.jpg", "out": true,
+          "expect": { "items": ["a.jpg:done", "b.jpg:offering"], "paused": null, "starts": ["u:a", "u:a", "u:b"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "link_failure_pauses_no_cascade",
+      "rule": "connection_lost -> item failed + queue PAUSED(link); the rest stay queued; reconnect lifts a link pause",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 },
+            { "uri": "u:c", "name": "c.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "progress", "id": "t1", "name": "a.jpg", "sent": 0, "total": 1, "out": true,
+          "expect": { "items": ["a.jpg:sending", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 2, "ev": "set", "connected": false,
+          "expect": { "items": ["a.jpg:sending", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 3, "ev": "idle",
+          "expect": { "items": ["a.jpg:sending", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 4, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "connection_lost", "out": true,
+          "expect": { "items": ["a.jpg:failed:connection_lost", "b.jpg:queued", "c.jpg:queued"], "paused": "link:connection_lost", "starts": ["u:a"], "cancels": 0 } },
+        { "t": 5, "ev": "tick",
+          "expect": { "items": ["a.jpg:failed:connection_lost", "b.jpg:queued", "c.jpg:queued"], "paused": "link:connection_lost", "starts": ["u:a"], "cancels": 0 } },
+        { "t": 6, "ev": "set", "connected": true,
+          "expect": { "items": ["a.jpg:failed:connection_lost", "b.jpg:queued", "c.jpg:queued"], "paused": "link:connection_lost", "starts": ["u:a"], "cancels": 0 } },
+        { "t": 7, "ev": "linkUp",
+          "expect": { "items": ["a.jpg:failed:connection_lost", "b.jpg:offering", "c.jpg:queued"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "timeout_is_link_level_resume_button",
+      "rule": "timeout -> failed + PAUSED(link); Resume lifts it",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "timeout", "out": true,
+          "expect": { "items": ["a.jpg:failed:timeout", "b.jpg:queued"], "paused": "link:timeout", "starts": ["u:a"], "cancels": 0 } },
+        { "t": 2, "ev": "resume",
+          "expect": { "items": ["a.jpg:failed:timeout", "b.jpg:offering"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "tier_pauses_account_no_auto_resume",
+      "rule": "tier -> failed + PAUSED(account); a reconnect does NOT lift it; Resume does",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "tier", "out": true,
+          "expect": { "items": ["a.jpg:failed:tier", "b.jpg:queued"], "paused": "account:tier", "starts": ["u:a"], "cancels": 0 } },
+        { "t": 2, "ev": "linkUp",
+          "expect": { "items": ["a.jpg:failed:tier", "b.jpg:queued"], "paused": "account:tier", "starts": ["u:a"], "cancels": 0 } },
+        { "t": 3, "ev": "tick",
+          "expect": { "items": ["a.jpg:failed:tier", "b.jpg:queued"], "paused": "account:tier", "starts": ["u:a"], "cancels": 0 } },
+        { "t": 4, "ev": "resume",
+          "expect": { "items": ["a.jpg:failed:tier", "b.jpg:offering"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "quota_pauses_account",
+      "rule": "quota -> failed + PAUSED(account)",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "failed", "id": "", "name": "a.jpg", "reason": "quota", "out": true,
+          "expect": { "items": ["a.jpg:failed:quota", "b.jpg:queued"], "paused": "account:quota", "starts": ["u:a"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "per_file_failures_continue",
+      "rule": "hash_mismatch / too_large / size_mismatch / oom -> item failed, queue continues",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.iso", "size": 2000000000 },
+            { "uri": "u:c", "name": "c.jpg", "size": 1 },
+            { "uri": "u:d", "name": "d.jpg", "size": 1 },
+            { "uri": "u:e", "name": "e.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.iso:queued", "c.jpg:queued", "d.jpg:queued", "e.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "hash_mismatch", "out": true,
+          "expect": { "items": ["a.jpg:failed:hash_mismatch", "b.iso:offering", "c.jpg:queued", "d.jpg:queued", "e.jpg:queued"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 0 } },
+        { "t": 2, "ev": "failed", "id": "", "name": "b.iso", "reason": "too_large", "out": true,
+          "expect": { "items": ["a.jpg:failed:hash_mismatch", "b.iso:failed:too_large", "c.jpg:offering", "d.jpg:queued", "e.jpg:queued"], "paused": null, "starts": ["u:a", "u:b", "u:c"], "cancels": 0 } },
+        { "t": 3, "ev": "failed", "id": "t3", "name": "c.jpg", "reason": "size_mismatch", "out": true,
+          "expect": { "items": ["a.jpg:failed:hash_mismatch", "b.iso:failed:too_large", "c.jpg:failed:size_mismatch", "d.jpg:offering", "e.jpg:queued"], "paused": null, "starts": ["u:a", "u:b", "u:c", "u:d"], "cancels": 0 } },
+        { "t": 4, "ev": "failed", "id": "t4", "name": "d.jpg", "reason": "oom", "out": true,
+          "expect": { "items": ["a.jpg:failed:hash_mismatch", "b.iso:failed:too_large", "c.jpg:failed:size_mismatch", "d.jpg:failed:oom", "e.jpg:offering"], "paused": null, "starts": ["u:a", "u:b", "u:c", "u:d", "u:e"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "cancel_active_next_proceeds",
+      "rule": "Cancel on the active item = the existing cancel path; cancelled is per-file, so the next is offered; the row stays failed with Retry",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "progress", "id": "t1", "name": "a.jpg", "sent": 0, "total": 1, "out": true,
+          "expect": { "items": ["a.jpg:sending", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 2, "ev": "cancel", "name": "a.jpg",
+          "expect": { "items": ["a.jpg:sending", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 1 } },
+        { "t": 3, "ev": "cancel", "name": "b.jpg",
+          "expect": { "items": ["a.jpg:sending", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 1 } },
+        { "t": 4, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "cancelled", "out": true,
+          "expect": { "items": ["a.jpg:failed:cancelled", "b.jpg:offering"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 1 } }
+      ]
+    },
+    {
+      "id": "remove_queued_and_terminal_rows",
+      "rule": "Remove on a queued / failed / done row deletes it without touching the manager",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 },
+            { "uri": "u:c", "name": "c.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "remove", "name": "b.jpg",
+          "expect": { "items": ["a.jpg:offering", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 2, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "hash_mismatch", "out": true,
+          "expect": { "items": ["a.jpg:failed:hash_mismatch", "c.jpg:offering"], "paused": null, "starts": ["u:a", "u:c"], "cancels": 0 } },
+        { "t": 3, "ev": "remove", "name": "a.jpg",
+          "expect": { "items": ["c.jpg:offering"], "paused": null, "starts": ["u:a", "u:c"], "cancels": 0 } },
+        { "t": 4, "ev": "complete", "id": "t2", "name": "c.jpg", "out": true,
+          "expect": { "items": ["c.jpg:done"], "paused": null, "starts": ["u:a", "u:c"], "cancels": 0 } },
+        { "t": 5, "ev": "remove", "name": "c.jpg",
+          "expect": { "items": [], "paused": null, "starts": ["u:a", "u:c"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "remove_active_cancels_and_drops_the_row",
+      "rule": "Remove on the in-flight item = cancel; the row goes on its terminal event (never shown as failed)",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "remove", "name": "a.jpg",
+          "expect": { "items": ["a.jpg:offering:removing", "b.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 1 } },
+        { "t": 2, "ev": "failed", "id": "", "name": "a.jpg", "reason": "cancelled", "out": true,
+          "expect": { "items": ["b.jpg:offering"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 1 } }
+      ]
+    },
+    {
+      "id": "retry_goes_to_the_tail_and_lifts_a_pause",
+      "rule": "Retry re-enqueues at the TAIL, resets busy retries, and (explicit user action) lifts a pause",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [
+            { "uri": "u:a", "name": "a.jpg", "size": 1 },
+            { "uri": "u:b", "name": "b.jpg", "size": 1 },
+            { "uri": "u:c", "name": "c.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering", "b.jpg:queued", "c.jpg:queued"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "connection_lost", "out": true,
+          "expect": { "items": ["a.jpg:failed:connection_lost", "b.jpg:queued", "c.jpg:queued"], "paused": "link:connection_lost", "starts": ["u:a"], "cancels": 0 } },
+        { "t": 2, "ev": "retry", "name": "a.jpg",
+          "expect": { "items": ["b.jpg:offering", "c.jpg:queued", "a.jpg:queued"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 0 } },
+        { "t": 3, "ev": "retry", "name": "c.jpg",
+          "expect": { "items": ["b.jpg:offering", "c.jpg:queued", "a.jpg:queued"], "paused": null, "starts": ["u:a", "u:b"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "retry_unreadable_needs_file_then_repick",
+      "rule": "Retry on a file we can no longer open -> needs-file; Re-pick puts the new file at the tail as queued",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [ { "uri": "u:a", "name": "a.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "failed", "id": "t1", "name": "a.jpg", "reason": "cancelled", "out": true,
+          "expect": { "items": ["a.jpg:failed:cancelled"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 2, "ev": "set", "readable": { "u:a": false },
+          "expect": { "items": ["a.jpg:failed:cancelled"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 3, "ev": "retry", "name": "a.jpg",
+          "expect": { "items": ["a.jpg:needs-file"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 4, "ev": "repick", "name": "a.jpg", "file": { "uri": "u:a2", "name": "a.jpg", "size": 1, "persistable": true },
+          "expect": { "items": ["a.jpg:offering"], "paused": null, "starts": ["u:a", "u:a2"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "not_connected_pauses_without_failing",
+      "rule": "an item due while the socket is down is not offered and not failed: the queue pauses(link) and the reconnect resumes it",
+      "steps": [
+        { "t": 0, "ev": "set", "connected": false,
+          "expect": { "items": [], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 1, "ev": "enqueue", "files": [ { "uri": "u:a", "name": "a.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:queued"], "paused": "link:connection_lost", "starts": [], "cancels": 0 } },
+        { "t": 2, "ev": "set", "connected": true,
+          "expect": { "items": ["a.jpg:queued"], "paused": "link:connection_lost", "starts": [], "cancels": 0 } },
+        { "t": 3, "ev": "linkUp",
+          "expect": { "items": ["a.jpg:offering"], "paused": null, "starts": ["u:a"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "stale_event_for_an_earlier_transfer_is_ignored",
+      "rule": "an outgoing event whose id is not the in-flight transfer's must not land on it",
+      "steps": [
+        { "t": 0, "ev": "enqueue", "files": [ { "uri": "u:a", "name": "a.jpg", "size": 1 } ],
+          "expect": { "items": ["a.jpg:offering"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 1, "ev": "progress", "id": "t9", "name": "a.jpg", "sent": 0, "total": 1, "out": true,
+          "expect": { "items": ["a.jpg:sending"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 2, "ev": "failed", "id": "t8", "name": "old.jpg", "reason": "timeout", "out": true,
+          "expect": { "items": ["a.jpg:sending"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 3, "ev": "complete", "id": "t8", "name": "old.jpg", "out": true,
+          "expect": { "items": ["a.jpg:sending"], "paused": null, "starts": ["u:a"], "cancels": 0 } },
+        { "t": 4, "ev": "complete", "id": "t9", "name": "a.jpg", "out": true,
+          "expect": { "items": ["a.jpg:done"], "paused": null, "starts": ["u:a"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "outgoing_event_with_nothing_in_flight_is_ignored",
+      "rule": "the queue only owns sends it started",
+      "steps": [
+        { "t": 0, "ev": "failed", "id": "", "name": "x.jpg", "reason": "connection_lost", "out": true,
+          "expect": { "items": [], "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 1, "ev": "complete", "id": "z", "name": "x.jpg", "out": true,
+          "expect": { "items": [], "paused": null, "starts": [], "cancels": 0 } }
+      ]
+    }
+  ],
+  "restore": [
+    {
+      "id": "restart_mid_queue",
+      "rule": "offering/sending/receiving -> failed(connection_lost); queued with a persisted readable grant stays queued (and is offered); queued without one -> needs-file; terminal rows and the pause survive",
+      "connected": true,
+      "busy": true,
+      "readable": { "u:q1": true, "u:q2": true, "u:q3": false },
+      "persisted": {
+        "v": 1,
+        "items": [
+          { "key": "p1", "uri": "u:s", "name": "sending.mp4", "size": 9, "dir": "out", "state": "sending", "transferId": "t1", "persistable": true },
+          { "key": "p2", "uri": "u:q1", "name": "grant.jpg", "size": 1, "dir": "out", "state": "queued", "persistable": true },
+          { "key": "p3", "uri": "u:q2", "name": "share.jpg", "size": 1, "dir": "out", "state": "queued", "persistable": false },
+          { "key": "p4", "uri": "u:q3", "name": "gone.jpg", "size": 1, "dir": "out", "state": "queued", "persistable": true },
+          { "key": "p5", "name": "in.pdf", "size": 5, "dir": "in", "state": "receiving", "transferId": "in1" },
+          { "key": "p6", "uri": "u:d", "name": "old.jpg", "size": 1, "dir": "out", "state": "done", "persistable": true },
+          { "key": "p7", "uri": "u:f", "name": "bad.jpg", "size": 1, "dir": "out", "state": "failed", "reason": "hash_mismatch" },
+          { "key": "p8", "uri": "u:o", "name": "offer.jpg", "size": 1, "dir": "out", "state": "offering", "persistable": true },
+          { "key": "p9", "uri": "u:r", "name": "removed.jpg", "size": 1, "dir": "out", "state": "offering", "removing": true }
+        ]
+      },
+      "expect": {
+        "items": ["sending.mp4:failed:connection_lost", "grant.jpg:queued", "share.jpg:needs-file", "gone.jpg:needs-file",
+                  "in.pdf:failed:connection_lost", "old.jpg:done", "bad.jpg:failed:hash_mismatch", "offer.jpg:failed:connection_lost"],
+        "paused": null, "starts": [], "cancels": 0
+      },
+      "then": [
+        { "t": 1, "ev": "set", "busy": false,
+          "expect": { "items": ["sending.mp4:failed:connection_lost", "grant.jpg:queued", "share.jpg:needs-file", "gone.jpg:needs-file",
+                  "in.pdf:failed:connection_lost", "old.jpg:done", "bad.jpg:failed:hash_mismatch", "offer.jpg:failed:connection_lost"],
+                  "paused": null, "starts": [], "cancels": 0 } },
+        { "t": 2, "ev": "idle",
+          "expect": { "items": ["sending.mp4:failed:connection_lost", "grant.jpg:offering", "share.jpg:needs-file", "gone.jpg:needs-file",
+                  "in.pdf:failed:connection_lost", "old.jpg:done", "bad.jpg:failed:hash_mismatch", "offer.jpg:failed:connection_lost"],
+                  "paused": null, "starts": ["u:q1"], "cancels": 0 } }
+      ]
+    },
+    {
+      "id": "restart_keeps_an_account_pause",
+      "rule": "a pause is persisted: a tier pause is still a pause after a restart",
+      "connected": true,
+      "busy": false,
+      "readable": { "u:q": true },
+      "persisted": {
+        "v": 1,
+        "paused": { "kind": "account", "reason": "tier" },
+        "items": [
+          { "key": "p1", "uri": "u:f", "name": "a.jpg", "size": 1, "dir": "out", "state": "failed", "reason": "tier" },
+          { "key": "p2", "uri": "u:q", "name": "b.jpg", "size": 1, "dir": "out", "state": "queued", "persistable": true }
+        ]
+      },
+      "expect": { "items": ["a.jpg:failed:tier", "b.jpg:queued"], "paused": "account:tier", "starts": [], "cancels": 0 }
+    },
+    {
+      "id": "corrupt_blob_restores_empty",
+      "rule": "a corrupt or foreign-version blob is an empty queue, never a crash",
+      "connected": true,
+      "busy": false,
+      "readable": {},
+      "persistedRaw": "{\"v\":99,\"items\":[{\"key\":\"x\"",
+      "expect": { "items": [], "paused": null, "starts": [], "cancels": 0 }
+    }
+  ],
+  "rows": [
+    {
+      "id": "mixed_states",
+      "rule": "the in-flight sending/receiving item is the card, not a row; actions per the ADDENDUM 2 state table",
+      "items": [
+        { "name": "sending.mp4", "dir": "out", "state": "sending" },
+        { "name": "q1.jpg", "dir": "out", "state": "queued" },
+        { "name": "q2.jpg", "dir": "out", "state": "queued" },
+        { "name": "bad.jpg", "dir": "out", "state": "failed", "reason": "hash_mismatch" },
+        { "name": "gone.jpg", "dir": "out", "state": "needs-file" }
+      ],
+      "expect": [
+        { "name": "q1.jpg", "state": "queued", "reason": null, "actions": ["REMOVE"] },
+        { "name": "q2.jpg", "state": "queued", "reason": null, "actions": ["REMOVE"] },
+        { "name": "bad.jpg", "state": "failed", "reason": "hash_mismatch", "actions": ["RETRY", "REMOVE"] },
+        { "name": "gone.jpg", "state": "needs-file", "reason": null, "actions": ["REPICK", "REMOVE"] }
+      ]
+    },
+    {
+      "id": "offering_done_incoming_removing",
+      "rule": "offering -> Cancel; outgoing done -> Clear; incoming done with a document -> Open + Clear; incoming failed -> Remove only; a Remove-pending row is hidden; receiving is the card",
+      "items": [
+        { "name": "o.jpg", "dir": "out", "state": "offering" },
+        { "name": "d.jpg", "dir": "out", "state": "done" },
+        { "name": "in.pdf", "dir": "in", "state": "done", "resultUri": "content://doc/in.pdf" },
+        { "name": "in2.pdf", "dir": "in", "state": "done" },
+        { "name": "inf.pdf", "dir": "in", "state": "failed", "reason": "timeout" },
+        { "name": "r.jpg", "dir": "out", "state": "offering", "removing": true },
+        { "name": "rx.bin", "dir": "in", "state": "receiving" }
+      ],
+      "expect": [
+        { "name": "o.jpg", "state": "offering", "reason": null, "actions": ["CANCEL"] },
+        { "name": "d.jpg", "state": "done", "reason": null, "actions": ["CLEAR"] },
+        { "name": "in.pdf", "state": "done", "reason": null, "actions": ["OPEN", "CLEAR"] },
+        { "name": "in2.pdf", "state": "done", "reason": null, "actions": ["CLEAR"] },
+        { "name": "inf.pdf", "state": "failed", "reason": "timeout", "actions": ["REMOVE"] }
+      ]
+    }
+  ]
+}
