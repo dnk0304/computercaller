@@ -1894,6 +1894,11 @@ if (WEB) {
     // Its read-and-CLEAR is the assertion that matters: a reason left behind
     // labels the user's next manual sign-in as a timeout.
     ['ext-signout-reason', 'tests/ext-signout-reason.test.ts', true],
+    // ALERT-ICONS. The app-icon store behind the Alerts cards and toast: the
+    // 60-app LRU, the 24 KB skip, storage that throws, and the sign-out clear
+    // (the icon list is the list of apps on the user's phone). Also pins the
+    // letter tile's white-on-fill contrast >= 4.5:1.
+    ['notif-icon-store', 'tests/notif-icon-store.test.ts', true],
     // GATE-JAVA-HOME. tools/lib/java-home.mjs decides whether the android
     // lane runs at all. Named explicitly (the sweep matches only
     // tests/e2e-*.test.mjs) because its silent-failure mode is the one this

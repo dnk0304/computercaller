@@ -97,6 +97,7 @@ import {
 } from '@/hooks';
 import { useTemplates } from '@/hooks/useTemplates';
 import { ChipScroller } from '@/components/ChipScroller';
+import { AppIcon } from '@/components/AppIcon';
 
 import {
   useThreadReadState,
@@ -2193,8 +2194,8 @@ function BellView() {
 // A SEPARATE VIEW, not a prop on BellView. The /app render is a hard gate on
 // this dispatch, and the surest way to keep it is for the dashboard to render
 // a function this one cannot reach — the same construction ExtDialerView uses.
-// Everything shared lives in the helpers above (getNotificationIcon, appGlyph,
-// formatRelative) rather than being copied.
+// Everything shared lives in the helpers above (AppIcon, formatRelative)
+// rather than being copied.
 //
 // Layering (ART-DIRECTION §3.1): an L1 toolbar band holding the search field,
 // then cards at L3 floating on the L2 content ground. No wrapping list card —
@@ -2454,7 +2455,6 @@ function ExtBellView() {
         ) : (
           filtered.map((n) => {
             const isReplying = replyingId === n.id;
-            const iconB64 = getNotificationIcon(n.packageName);
             const isUnread = unreadIds.has(n.id);
             return (
               <article
@@ -2463,18 +2463,7 @@ function ExtBellView() {
                 data-cc-unread={isUnread ? '1' : undefined}
               >
                 <div className="cc-note-head">
-                  {iconB64 ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={`data:image/png;base64,${iconB64}`}
-                      alt=""
-                      className="cc-note-icon"
-                    />
-                  ) : (
-                    <span className="cc-note-icon cc-note-glyph" aria-hidden="true">
-                      {appGlyph(n.packageName)}
-                    </span>
-                  )}
+                  <AppIcon packageName={n.packageName} appName={n.appName} className="cc-note-icon" />
                   {/* App name and age on one meta line, the title below it —
                       the reference's order, and the one that lets a stack of
                       cards be scanned by app without reading the titles. */}
@@ -2570,6 +2559,12 @@ interface NotificationToastProps {
   notif: ToastNotif;
   onDismiss: () => void;
   onOpen: () => void;
+  /**
+   * Extension surface: draw the app's real icon (or its letter tile) through
+   * the shared <AppIcon>, the same mark as the Alerts card. /app keeps its
+   * emoji glyph — the dashboard's render is out of this lane's scope.
+   */
+  isExt?: boolean;
 }
 
 /**
@@ -2581,7 +2576,7 @@ interface NotificationToastProps {
  * CallModal; the actual code uses z-50, so the toast sits one tier below
  * to guarantee a ringing call always wins paint order.
  */
-const NotificationToast = React.memo(function NotificationToast({ notif, onDismiss, onOpen }: NotificationToastProps) {
+const NotificationToast = React.memo(function NotificationToast({ notif, onDismiss, onOpen, isExt = false }: NotificationToastProps) {
   return (
     <div
       role="alert"
@@ -2589,9 +2584,13 @@ const NotificationToast = React.memo(function NotificationToast({ notif, onDismi
       className="pointer-events-none fixed inset-x-2 top-2 z-40 animate-in slide-in-from-top-3 fade-in duration-200"
     >
       <div className="pointer-events-auto mx-auto flex w-full max-w-md items-start gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-lg shadow-slate-900/10">
-        <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-base" aria-hidden="true">
-          {appGlyph(notif.packageName)}
-        </div>
+        {isExt ? (
+          <AppIcon packageName={notif.packageName} appName={notif.appName} className="cc-toast-icon" />
+        ) : (
+          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-base" aria-hidden="true">
+            {appGlyph(notif.packageName)}
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-semibold text-slate-800">
             {notif.appName} · {notif.title}
@@ -2913,6 +2912,7 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
           }}
           onDismiss={() => setToastId(null)}
           onOpen={() => { setToastId(null); setTab('bell'); }}
+          isExt={isExt}
         />
       )}
     </div>
