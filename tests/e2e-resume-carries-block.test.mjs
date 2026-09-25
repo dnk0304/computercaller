@@ -309,8 +309,20 @@ for (const reason of ['user_left', 'resume_expired', 'something_else']) {
     /e2e: reason === 'socket_closed' \? priorE2e : null \}/.test(src));
   check('the resume path re-sends the stashed object itself',
     /const e2eResume = room\.active\.e2e \? \{ e2e: room\.active\.e2e \} : \{\};/.test(src));
+  // T-RESUME-PHONE-RESTART-DESYNC. The phone's payload now spreads `phoneMark`,
+  // which is `resumeMark` with `peerSession` destructured OUT: peerSession is
+  // the PAGE's re-verification input and the phone has no use for a report
+  // about itself. The e2e block half — which is ALL this suite is about — is
+  // unchanged and still the same stash object on both sends, so the count
+  // control stays at 2 and only the phone-side marker name moves.
   check('BOTH resume sends carry it',
-    (src.match(/\.\.\.e2eResume, \.\.\.resumeMark/g) || []).length === 2);
+    (src.match(/\.\.\.e2eResume, \.\.\.(resumeMark|phoneMark)/g) || []).length === 2);
+  // ...and the split is real, not a rename: the browser gets resumeMark, the
+  // phone gets the stripped copy. Pinned so peerSession cannot quietly start
+  // travelling to the phone, or stop travelling to the browser.
+  check('the BROWSER send carries the full marker and the PHONE send the stripped one',
+    /\.\.\.e2eResume, \.\.\.resumeMark \}\)\}`\);/.test(src)
+    && /const phoneMark = \{ resumed: resumeMark\.resumed, held: resumeMark\.held, gapMs: resumeMark\.gapMs \};/.test(src));
   check('the resume path never rebuilds a block',
     !/kid:\s*/.test(src.slice(src.indexOf('const e2eResume'), src.indexOf('const e2eResume') + 800)));
 }

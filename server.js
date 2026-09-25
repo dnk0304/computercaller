@@ -1603,7 +1603,7 @@ function startRelay(httpServer) {
     // PAGE's re-verification input and nothing else, so it is stripped here
     // rather than travelling as noise the APK has to learn to ignore.
     if (!survivorPhone) {
-      const { peerSession: _peerSession, ...phoneMark } = resumeMark;
+      const phoneMark = { resumed: resumeMark.resumed, held: resumeMark.held, gapMs: resumeMark.gapMs };
       safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', ...e2eResume, ...phoneMark })}`);
     }
     console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, heldFor=${gapMs}ms, droppedRole=${claim.droppedRole}, panelHold=${claim.panelHold === true}, survivorHeld=${held}, gate=${gate.reason}, peerSession=${returningPhoneSession ? (returningPhoneSession.present ? 'present' : 'absent') : 'not-reported'})`);
