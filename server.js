@@ -3118,11 +3118,13 @@ function startRelay(httpServer) {
     // lib/resumeGate-core.js for why silence is treated as "no session".
     //
     // T-RELEASE-LOG-TOKEN INVENTORY (Security C2, ack 2026-09-25). The phone's
-    // /relay/phone dial URL carries THREE pieces of query-string material, and
-    // any logging of that URL — on the relay OR in Android logcat — exposes all
-    // three: `?token=<phoneToken>` (the long-lived BEARER — the actual severity
-    // of that ticket), `?deviceName=` where sent, and now `?session=<kid>`. The
-    // kid is a PUBLIC label, not key material: kdf.mjs derives traffic keys from
+    // /relay/phone dial URL carries exactly TWO pieces of query-string material
+    // — verified against the Kotlin dial site, PhoneService.kt:4180-4207 — and
+    // any logging of that URL, on the relay OR in Android logcat, exposes both:
+    // `?token=<phoneToken>` (the long-lived BEARER, and the whole severity of
+    // that ticket) and, new in vc68, `?session=<kid>`. Nothing else: the device
+    // label arrives in a DEVICE_INFO FRAME, not the URL. The kid is a PUBLIC
+    // label, not key material: kdf.mjs derives traffic keys from
     // {pairingId, sessionKey, context} and never from the kid, the relay already
     // holds it (room.active.e2e.kid) and already re-sends it inside every
     // PAIRING_ACTIVE, and it rides on every sealed envelope. It is listed here
