@@ -84,7 +84,7 @@ function eq(name, actual, expected) {
 // ── 1. the relay gate, every row ────────────────────────────────────────────
 for (const row of VECTORS.relayRows) {
   const v = resumeGateVerdict({
-    droppedRole: row.droppedRole,
+    phoneReturning: row.phoneReturning,
     roomKid: row.roomKid,
     phoneSession: row.phoneSession,
   });
@@ -118,10 +118,10 @@ for (const row of VECTORS.relayRows.filter((r) => r.expect.action === 'terminate
   eq('parser: a non-string (array param) is UNDECLARED', readPhoneSessionParam(['a', 'b']).declared, false);
   // And the parser feeds the gate: the end-to-end shape, absent -> terminate.
   eq('parser -> gate: an undeclared phone on a sealed pair terminates',
-    resumeGateVerdict({ droppedRole: 'phone', roomKid: 'k1', phoneSession: readPhoneSessionParam(undefined) }).action,
+    resumeGateVerdict({ phoneReturning: true, roomKid: 'k1', phoneSession: readPhoneSessionParam(undefined) }).action,
     'terminate');
   eq('parser -> gate: the SAME kid on a sealed pair resumes',
-    resumeGateVerdict({ droppedRole: 'phone', roomKid: 'k1', phoneSession: readPhoneSessionParam('k1') }).action,
+    resumeGateVerdict({ phoneReturning: true, roomKid: 'k1', phoneSession: readPhoneSessionParam('k1') }).action,
     'resume');
 }
 
@@ -157,7 +157,7 @@ for (const row of VECTORS.terminatedReasonRows) {
     preFixRelay().action, 'resume');
   check('CONTROL: ...and the SHIPPED predicate disagrees with it there',
     resumeGateVerdict({
-      droppedRole: prodRelayRow.droppedRole,
+      phoneReturning: prodRelayRow.phoneReturning,
       roomKid: prodRelayRow.roomKid,
       phoneSession: prodRelayRow.phoneSession,
     }).action !== preFixRelay().action);
@@ -165,7 +165,7 @@ for (const row of VECTORS.terminatedReasonRows) {
   // "terminate always", which passes the prod row for the wrong reason.
   const blip = VECTORS.relayRows.find((r) => r.name === 'phone-dropped-session-intact-same-kid-resumes');
   check('CONTROL: the shipped predicate AGREES with the pre-fix one on a genuine blip',
-    resumeGateVerdict({ droppedRole: blip.droppedRole, roomKid: blip.roomKid, phoneSession: blip.phoneSession }).action
+    resumeGateVerdict({ phoneReturning: blip.phoneReturning, roomKid: blip.roomKid, phoneSession: blip.phoneSession }).action
       === preFixRelay().action);
 
   /** What the LEAVE_ACTIVE branch did before: strict identity with active.phone. */
@@ -261,7 +261,22 @@ for (const row of VECTORS.terminatedReasonRows) {
   check('tryAutoResume consults the gate', /resumeGateVerdict\(\{/.test(SRC));
   check('...reading the kid off the stashed block',
     /roomKid: room\.active\.e2e \? room\.active\.e2e\.kid : null/.test(SRC));
+  // The gate must key on whether the PHONE RETURNED, not on the claim's
+  // droppedRole: when both sides drop, droppedRole records only the LAST close,
+  // so a restarted phone under a browser-dropped claim would walk straight
+  // through. Proven live in scripts/e2e-resume-phone-restart-proof.mjs (D).
+  check('...and keyed on phoneReturning, not on claim.droppedRole',
+    /phoneReturning: !survivorPhone,/.test(SRC));
   check('...and terminating with the gate reason', /terminateActivePair\(room, gate\.reason\)/.test(SRC));
+  // ...and when BOTH sides had already dropped there is no active slot left,
+  // so terminateActivePair's `if (!browser && !phone) return;` guard would tell
+  // NOBODY. The returning browser is a live socket in hand and is told
+  // directly, or it sits in the lobby silently refused — the original wedge in
+  // a different hat. Proven live by scripts/e2e-resume-phone-restart-proof.mjs
+  // (D2/D3); pinned here so the branch cannot be deleted as "unreachable".
+  check('...and telling a returning browser directly when no active slot is left',
+    /if \(room\.active\.browser \|\| room\.active\.phone\) \{/.test(SRC)
+    && /safeSend\(browserWs, `PAIRING_TERMINATED:/.test(SRC));
   check('the LEAVE_ACTIVE branch consults the hold predicate',
     /leaveActiveHonouredDuringHold\(\{/.test(SRC));
   check('the ignored log line still exists for the rows that deserve it',

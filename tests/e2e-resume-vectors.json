@@ -8,16 +8,16 @@
   "relayRows": [
     {
       "name": "browser-dropped-resumes",
-      "why": "The unchanged path, and the reason this whole gate is keyed on droppedRole. A browser reload/panel close is the COMMON resume and the phone never went anywhere, so its session is by definition still the pair's. A fix that broke this would turn every side-panel close into a re-pair.",
-      "droppedRole": "browser",
+      "why": "The unchanged path, and the reason this gate is keyed on whether the PHONE returned rather than on the claim's droppedRole. A browser reload or panel close is the COMMON resume and the phone never left room.active, so its session is by construction still the pair's. A fix that broke this would turn every side-panel close into a re-pair.",
+      "phoneReturning": false,
       "roomKid": "kid-pair-A1",
       "phoneSession": { "declared": false, "present": false, "kid": null },
-      "expect": { "action": "resume", "reason": "browser-dropped" }
+      "expect": { "action": "resume", "reason": "phone-survived" }
     },
     {
       "name": "phone-dropped-session-intact-same-kid-resumes",
       "why": "A genuine blip: doze, Wi-Fi/cell handoff, the java-websocket 15 s ping timeout. The process lived, so e2eSession lived, and the phone names the pair's kid. This MUST still resume or the fix costs every user a re-pair on every cellular hiccup - a worse product than the bug.",
-      "droppedRole": "phone",
+      "phoneReturning": true,
       "roomKid": "kid-pair-A1",
       "phoneSession": { "declared": true, "present": true, "kid": "kid-pair-A1" },
       "expect": { "action": "resume", "reason": "session-intact" }
@@ -25,7 +25,7 @@
     {
       "name": "phone-dropped-session-absent-terminates",
       "why": "THE PROD ROW. Force-stop -> fresh process -> e2eSession is null -> the phone declares session=0 and rejoins within milliseconds. Resuming here re-sends sealed key material to a peer that cannot open it and leaves the web sealed-expecting over a plaintext phone.",
-      "droppedRole": "phone",
+      "phoneReturning": true,
       "roomKid": "kid-pair-A1",
       "phoneSession": { "declared": true, "present": false, "kid": null },
       "expect": { "action": "terminate", "reason": "phone_restarted" }
@@ -33,7 +33,7 @@
     {
       "name": "phone-dropped-different-kid-terminates",
       "why": "The phone holds A session, just not THIS one - it re-paired elsewhere, or a second handset on the same account answered. Byte-identical block, different SK: the same desync as the absent row, reached by a path a presence boolean alone would have waved through. This is why the declaration carries the kid and not a bit.",
-      "droppedRole": "phone",
+      "phoneReturning": true,
       "roomKid": "kid-pair-A1",
       "phoneSession": { "declared": true, "present": true, "kid": "kid-pair-B2" },
       "expect": { "action": "terminate", "reason": "phone_restarted" }
@@ -41,7 +41,7 @@
     {
       "name": "phone-dropped-undeclared-terminates",
       "why": "An APK that predates ?session= (every build up to and including vc67). Silence is not evidence of a session, and treating it as one reproduces the incident exactly. Deploy-ordering consequence stated in the resume: until vc68 ships, a SEALED pair whose phone blips re-pairs instead of resuming. Plaintext pairs are untouched (see the row below).",
-      "droppedRole": "phone",
+      "phoneReturning": true,
       "roomKid": "kid-pair-A1",
       "phoneSession": { "declared": false, "present": false, "kid": null },
       "expect": { "action": "terminate", "reason": "phone_restarted" }
@@ -49,7 +49,7 @@
     {
       "name": "phone-dropped-plaintext-pair-resumes",
       "why": "No e2e block is stashed, so there is no session to have lost and nothing the resume can desync. Without this row the gate would break resume for every plaintext pair on every older APK - a regression far wider than the bug, affecting users who never turned Encrypted mode on.",
-      "droppedRole": "phone",
+      "phoneReturning": true,
       "roomKid": null,
       "phoneSession": { "declared": false, "present": false, "kid": null },
       "expect": { "action": "resume", "reason": "plaintext-pair" }

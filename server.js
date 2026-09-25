@@ -1492,13 +1492,13 @@ function startRelay(httpServer) {
     // means a code two people compared, and new key material must be compared
     // again.
     const gate = resumeGateVerdict({
-      droppedRole: claim.droppedRole,
+      phoneReturning: !survivorPhone,
       roomKid: room.active.e2e ? room.active.e2e.kid : null,
       phoneSession: phoneWs.phoneSession,
     });
     if (gate.action === 'terminate') {
       console.log(
-        `[Relay][${redactToken(room.token)}] resume REFUSED (droppedRole=${claim.droppedRole},`
+        `[Relay][${redactToken(room.token)}] resume REFUSED (droppedRole=${claim.droppedRole}, phoneReturning=true,`
         + ` reason=${gate.reason}, detail=${gate.detail}) — terminating the held pair`,
       );
       // Clear the claim FIRST. terminateActivePair's non-socket_closed path
@@ -1507,12 +1507,34 @@ function startRelay(httpServer) {
       // over a pair we have just declared dead is exactly the wedge we are
       // removing.
       room.resumable = null;
-      // Full teardown: drops room.active.e2e, empties the frame buffer, sends
-      // PAIRING_TERMINATED:{reason:'phone_restarted'} to the survivor browser
-      // and returns it to the lobby with a fresh LOBBY_STATUS. The returning
-      // phone is still sitting in room.lobby and gets its LOBBY_STATUS from the
-      // join path below, because we return false.
-      terminateActivePair(room, gate.reason);
+      // TWO shapes reach here and only one of them has an active slot left.
+      //
+      //  (1) A SURVIVOR is still held (the ordinary force-stop: the browser
+      //      never went away). terminateActivePair does the whole job — drops
+      //      room.active.e2e, empties the frame buffer, sends
+      //      PAIRING_TERMINATED:{reason:'phone_restarted'} and returns the
+      //      survivor to the lobby with a fresh LOBBY_STATUS.
+      //
+      //  (2) BOTH sides had already dropped and are back in the lobby (phone
+      //      restarted, then the browser reloaded). room.active holds nothing,
+      //      so terminateActivePair's `if (!browser && !phone) return;` guard
+      //      fires and it tells NOBODY — the browser would sit in the lobby
+      //      having been silently refused, which is the original wedge wearing
+      //      a different hat. The returning browser is a live socket we are
+      //      holding right here, so it is told directly.
+      //
+      // The returning PHONE needs nothing either way: it is still in room.lobby
+      // and the join path below sends it LOBBY_STATUS, because we return false.
+      if (room.active.browser || room.active.phone) {
+        terminateActivePair(room, gate.reason);
+      } else {
+        room.active = { browser: null, phone: null, e2e: null };
+        room.frameBuffer = [];
+        ftAbort(room, 'connection_lost', { notify: false });
+        safeSend(browserWs, `PAIRING_TERMINATED:${JSON.stringify({ reason: gate.reason })}`);
+        const { phones } = countLobby(room);
+        safeSend(browserWs, `LOBBY_STATUS:${JSON.stringify({ phonePresent: phones > 0, alreadyActive: false })}`);
+      }
       return false;
     }
 

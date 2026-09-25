@@ -607,7 +607,7 @@ const MIN_CHECKS_OVERRIDE = {
   // actually CALLED at the two sites that had the bug — a pure function nobody
   // invokes is a green test over dead code, which is exactly how a relay ships
   // a gate it never consults. Measured at the commit that adds it: 98.
-  'relay:e2e-resume-phone-restart-contract.test.mjs': 98,
+  'relay:e2e-resume-phone-restart-contract.test.mjs': 100,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job
