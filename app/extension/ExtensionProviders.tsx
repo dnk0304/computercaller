@@ -29,6 +29,7 @@ import { UpgradeModalProvider } from '@/hooks/upgradeModalContext';
 import { SyncSetupPanel } from '@/components/SyncSetupPanel';
 import { IdleTimeoutGuard } from '@/components/IdleTimeoutGuard';
 import { ExtPointerFocus } from '@/components/ExtPointerFocus';
+import { KickedSessionGate } from '@/components/KickedSessionGate';
 import { requestSignOut } from '@/lib/extensionBridge';
 import { writeExtSignOutReason } from '@/lib/extensionSignOutReason';
 
@@ -43,18 +44,26 @@ export function ExtensionProviders({ children }: { children: React.ReactNode }) 
                 frame in the pop-out, which pushed the composer and the Recent
                 list below the fold. minHeight:0 lets the flex children scroll
                 instead of growing — the root cause behind AC-2. */}
-            <div
-              style={{
-                width: '100%',
-                height: '100%',
-                minHeight: 0,
-                overflow: 'hidden',
-                display: 'flex',
-                flexDirection: 'column',
-              }}
-            >
-              {children}
-            </div>
+            {/* EXT/WEB DUAL SESSION (Option A, Dennis 2026-09-25): the SAME
+                gate /app mounts. A sign-in on the web app (or anywhere else)
+                now kicks this frame's relay socket too, and without the gate
+                the surface just froze. surface="extension" swaps the button's
+                /auth/login navigation — impossible from a frame the shell owns
+                — for the shell's embedded sign-in. */}
+            <KickedSessionGate surface="extension">
+              <div
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  minHeight: 0,
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column',
+                }}
+              >
+                {children}
+              </div>
+            </KickedSessionGate>
             {/* EXT-UI-8 item 3 — renders nothing; owns the two document
                 listeners that tell the stylesheet a pointer, not the keyboard,
                 put the caret in a field. Mounted here so it covers every

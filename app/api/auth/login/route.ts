@@ -170,9 +170,11 @@ export async function POST(req: NextRequest) {
     // Wrapped in try/catch so a relay hiccup never breaks login. The lazy
     // sessionVersion check still enforces the kick on the next request.
     try {
-      const supersede = (globalThis as { __supersedeWebSessions?: (userId: string) => number }).__supersedeWebSessions;
+      const supersede = (globalThis as { __supersedeWebSessions?: (userId: string, opts?: { sessionVersion?: number; reason?: 'superseded' | 'signed_out' }) => number }).__supersedeWebSessions;
       if (typeof supersede === 'function') {
-        supersede(user.id);
+        // EXT/WEB DUAL SESSION: name the version this login bumped TO, so the
+        // relay keeps any extension listener already minted at it.
+        supersede(user.id, { sessionVersion: bumped.sessionVersion, reason: 'superseded' });
       }
     } catch (err) {
       console.error('[Auth] supersedeWebSessions failed (lazy check still in force):', err);

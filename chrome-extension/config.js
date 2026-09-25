@@ -57,6 +57,11 @@ const CC = {
   LOGOUT_URL: 'https://computercaller.com/api/auth/logout',
   // chrome.storage.local key holding the durable ext-session JWT.
   TOKEN_KEY: 'ext_token',
+  // EXT/WEB DUAL SESSION (2026-09-25): chrome.storage.local record the worker
+  // writes when the relay kicks this extension's session (another sign-in, or
+  // a sign-out elsewhere) and the shell reads to show the kicked card. Must
+  // equal KICKED_KEY in session-kick.js (pinned by ext-web-dual-session test).
+  KICKED_KEY: 'cc_kicked',
 };
 
 // Make available to the service worker (importScripts) and window pages alike.

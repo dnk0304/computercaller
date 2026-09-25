@@ -838,6 +838,84 @@ function startRelay(httpServer) {
     if (set.size === 0) userIdToWebSockets.delete(userId);
   }
 
+  // EXT/WEB DUAL SESSION (2026-09-25, Option A — Dennis: "user should pick if
+  // he works in webapp or extension"). ONE surface at a time, made SYMMETRIC.
+  // Extension sign-in already kicked the web tab through the index above; the
+  // reverse was silent because the extension's background-SW listener was
+  // never indexed. It is now — in its OWN set, so nothing that walks
+  // userIdToWebSockets (the SERVER_RESTART drain, the web contract) changes.
+  //
+  // Each listener carries the sessionVersion its relay ticket was minted at
+  // (ws.sessionVer, stamped by /api/auth/relay-ticket/extension). A supersede
+  // that names the version it just bumped TO kicks only listeners minted
+  // BELOW it, so the fresh listener of the session that caused the bump
+  // survives. A supersede that names no version kicks every listener — every
+  // caller bumps before it calls, and no ticket at the new version can exist
+  // before the bumping request has answered.
+  //
+  // listenerSupersedeSeq closes the admission race: a listener whose ticket
+  // was checked against the DB BEFORE a bump, but which is indexed AFTER the
+  // kick ran, would otherwise slip in stale. Admission snapshots the counter
+  // at its DB read and refuses the socket if it moved.
+  const userIdToListenerSockets = new Map();
+  const listenerSupersedeSeq = new Map();
+
+  function indexListenerSocket(userId, ws) {
+    if (!userId || !ws) return;
+    let set = userIdToListenerSockets.get(userId);
+    if (!set) {
+      set = new Set();
+      userIdToListenerSockets.set(userId, set);
+    }
+    set.add(ws);
+  }
+  function unindexListenerSocket(userId, ws) {
+    if (!userId) return;
+    const set = userIdToListenerSockets.get(userId);
+    if (!set) return;
+    set.delete(ws);
+    if (set.size === 0) userIdToListenerSockets.delete(userId);
+  }
+  function listenerSupersedeCount(userId) {
+    return listenerSupersedeSeq.get(userId) || 0;
+  }
+
+  /**
+   * Kick the extension listeners of `userId` that belong to an older session.
+   * Frame first, then close — the same order as the web contract, with the
+   * listener's own reason vocabulary:
+   *   1. `SESSION_SUPERSEDED:{"reason":"superseded"|"signed_out"}`
+   *   2. ws.close(4001, "session_superseded")
+   * @param {string} userId
+   * @param {{sessionVersion?: number, reason?: string}} [opts]
+   * @returns {number} listeners kicked
+   */
+  function supersedeListenerSessions(userId, opts) {
+    if (!userId) return 0;
+    listenerSupersedeSeq.set(userId, listenerSupersedeCount(userId) + 1);
+    const set = userIdToListenerSockets.get(userId);
+    if (!set || set.size === 0) return 0;
+    const newVer = opts && typeof opts.sessionVersion === 'number' ? opts.sessionVersion : null;
+    const reason = opts && opts.reason === 'signed_out' ? 'signed_out' : 'superseded';
+    const frame = `SESSION_SUPERSEDED:${JSON.stringify({ reason })}`;
+    let kicked = 0;
+    for (const ws of Array.from(set)) {
+      // Survivor rule: only a listener that PROVES it was minted at (or
+      // above) the version this bump produced is kept. Unknown = kicked.
+      if (newVer !== null && typeof ws.sessionVer === 'number' && ws.sessionVer >= newVer) continue;
+      try {
+        if (ws.readyState === WebSocket.OPEN) safeSend(ws, frame);
+        try { ws.close(4001, 'session_superseded'); } catch (_) {}
+        unindexListenerSocket(userId, ws);
+        kicked += 1;
+      } catch (err) {
+        console.error(`[Relay] supersedeListenerSessions: failed to kick listener for user=${userId}: ${err.message}`);
+      }
+    }
+    console.log(`[Relay] supersedeListenerSessions(${userId}, reason=${reason}, ver=${newVer ?? '-'}) → kicked ${kicked} listener(s)`);
+    return kicked;
+  }
+
   /**
    * Kick every open WEB browser WS for the given userId. Sends the contract
    * frame FIRST (so the client has a reason even if the close race is lost),
@@ -848,8 +926,14 @@ function startRelay(httpServer) {
    * Wire contract (WIRE-CONTRACT.md §1):
    *   1. `SESSION_SUPERSEDED:{"reason":"signed_in_elsewhere"}`
    *   2. ws.close(4001, "session_superseded")
+   *
+   * EXT/WEB DUAL SESSION: the extension listeners go too, through
+   * supersedeListenerSessions (their own set, their own reason). Called FIRST
+   * and unconditionally, so a user with no open web tab still kicks the
+   * extension. `opts` is optional: callers that predate it kick every listener.
    */
-  function supersedeWebSessions(userId) {
+  function supersedeWebSessions(userId, opts) {
+    supersedeListenerSessions(userId, opts);
     const set = userIdToWebSockets.get(userId);
     if (!set || set.size === 0) return 0;
     const payload = JSON.stringify({ reason: 'signed_in_elsewhere' });
@@ -3343,12 +3427,24 @@ function startRelay(httpServer) {
       return null;
     }
     if (!claims.userId || typeof claims.userId !== 'string') return null;
+    // EXT/WEB DUAL SESSION: snapshot the listener-supersede counter BEFORE the
+    // DB read, and hand back the ticket's stamped sessionVersion next to the
+    // row's current one. Only the listener path reads these (admission, below).
+    const supersedeSeqAtRead = listenerSupersedeCount(claims.userId);
     try {
       const user = await db.user.findUnique({
         where: { id: claims.userId },
-        select: { id: true, phoneToken: true },
+        select: { id: true, phoneToken: true, sessionVersion: true },
       });
-      return user ? { userId: user.id, phoneToken: user.phoneToken } : null;
+      return user
+        ? {
+          userId: user.id,
+          phoneToken: user.phoneToken,
+          ticketVer: typeof claims.ver === 'number' ? claims.ver : null,
+          currentVer: typeof user.sessionVersion === 'number' ? user.sessionVersion : null,
+          supersedeSeqAtRead,
+        }
+        : null;
     } catch (err) {
       console.error(`[Relay] Ticket user lookup failed: ${err.message}`);
       return null;
@@ -3374,6 +3470,9 @@ function startRelay(httpServer) {
     let userId;
     let phoneToken;
     let authVia;
+    // EXT/WEB DUAL SESSION: the resolved ticket (sessionVersion facts), kept
+    // for the listener admission check below. Null on every other path.
+    let ticketFacts = null;
     if (legacyToken) {
       authVia = 'legacy-token';
       const resolvedUserId = await validateToken(legacyToken);
@@ -3391,6 +3490,7 @@ function startRelay(httpServer) {
         authVia = 'relay-ticket';
         userId = resolved.userId;
         phoneToken = resolved.phoneToken;
+        ticketFacts = resolved;
       } else {
         // Bundle C (2026-05-28) — v30 APK fallback. The Android client sends
         // its long-lived phoneToken via `Authorization: Bearer <phoneToken>`
@@ -3466,6 +3566,29 @@ function startRelay(httpServer) {
     // session (popup/tab) remains the one true indexed session.
     if (authVia === 'relay-ticket' && !isListener) {
       indexWebSocket(userId, ws);
+    }
+    // EXT/WEB DUAL SESSION (Option A): the listener IS now indexed — in its
+    // OWN set (userIdToListenerSockets), never in userIdToWebSockets, so it
+    // still neither triggers nor rides the web kill switch; it is only kicked
+    // BY it. Admission refuses a listener that is already stale: a ticket
+    // stamped below the account's current sessionVersion (minted just before
+    // a sign-in elsewhere), or one whose DB read raced a supersede that ran
+    // while this handler was awaiting. Refused the SAME way a live kick
+    // looks — frame, then 4001 — so the extension has one code path.
+    if (authVia === 'relay-ticket' && isListener) {
+      const f = ticketFacts || {};
+      const verStale = typeof f.ticketVer === 'number' && typeof f.currentVer === 'number'
+        && f.ticketVer !== f.currentVer;
+      const raced = typeof f.supersedeSeqAtRead === 'number'
+        && listenerSupersedeCount(userId) !== f.supersedeSeqAtRead;
+      if (verStale || raced) {
+        console.log(`[Relay] Refusing stale listener user=${userId} (ticketVer=${f.ticketVer ?? '-'} currentVer=${f.currentVer ?? '-'} raced=${raced})`);
+        try { safeSend(ws, `SESSION_SUPERSEDED:${JSON.stringify({ reason: 'superseded' })}`); } catch (_) {}
+        try { ws.close(4001, 'session_superseded'); } catch (_) {}
+        return;
+      }
+      ws.sessionVer = typeof f.ticketVer === 'number' ? f.ticketVer : null;
+      indexListenerSocket(userId, ws);
     }
     console.log(`[Relay] Connection authed user=${userId} via ${authVia} room=${redactToken(token)}`);
 
@@ -4094,6 +4217,8 @@ function startRelay(httpServer) {
       // F-A: scrub the userId → ws index so the next supersede call doesn't
       // try to re-kick a half-closed socket.
       if (ws.authVia === 'relay-ticket') unindexWebSocket(ws.userId, ws);
+      // EXT/WEB DUAL SESSION: same scrub for the listener index.
+      if (ws.listener) unindexListenerSocket(ws.userId, ws);
       room.lobby.delete(ws);
       const wasActive = (ws === room.active.browser);
       const wasPendingBrowser = !!room.pendingPairing && room.pendingPairing.browserWs === ws;

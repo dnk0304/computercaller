@@ -61,6 +61,9 @@ type OutboundType =
   | 'ready'
   | 'open-popout'
   | 'sign-out'
+  // EXT/WEB DUAL SESSION (2026-09-25): the kicked card's "Sign back in here".
+  // The shell swaps this frame for its embedded sign-in; no auth state moves.
+  | 'sign-back-in'
   // Badge dot / panel plumbing (2026-09-15, forge/ext-badge-sidepanel).
   // `dock` is the inverse of `open-popout`; `tab-viewed` is the read receipt
   // that zeroes one unread counter in the service worker.
@@ -123,6 +126,15 @@ export function requestDock(): void {
  */
 export function notifyTabViewed(tab: ExtensionTab): void {
   postToShell('tab-viewed', { tab });
+}
+
+/**
+ * "Sign back in here" on the extension's kicked card (EXT/WEB DUAL SESSION,
+ * Option A). This frame cannot navigate — the shell owns it — so it asks the
+ * shell to put its embedded /extension/login up in this frame's place.
+ */
+export function requestSignBackIn(): void {
+  postToShell('sign-back-in');
 }
 
 /** Sign out — re-triggers shell.js's signOut(); we own no auth state here. */

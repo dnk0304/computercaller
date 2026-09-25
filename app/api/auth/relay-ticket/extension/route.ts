@@ -72,6 +72,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401, headers });
   }
   const userId = claims.userId;
+  // EXT/WEB DUAL SESSION: the sessionVersion this ticket is minted at. The
+  // relay stamps it on the listener socket so a later supersede can tell the
+  // fresh listener of the session that caused a bump (kept) from an older one
+  // (kicked), and so admission can refuse a ticket that went stale in flight.
+  let sessionVersion: number;
 
   // ── sessionVersion kill switch (same as validateSessionToken) ─────────────
   try {
@@ -83,6 +88,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401, headers });
     }
     const tokenVer = typeof claims.ver === 'number' ? claims.ver : 0;
+    sessionVersion = user.sessionVersion;
     if (tokenVer !== user.sessionVersion) {
       // Signed in elsewhere since the handoff → 409 so the extension re-runs the
       // handoff flow (mirrors the browser mint's 401-vs-409 discipline).
@@ -107,7 +113,7 @@ export async function POST(req: NextRequest) {
 
   // ── Mint — IDENTICAL to the browser + m2m paths so the relay accepts it ────
   const ticket = jwt.sign(
-    { userId, purpose: 'relay-ticket' },
+    { userId, purpose: 'relay-ticket', ver: sessionVersion },
     getJwtSecret(),
     { algorithm: 'HS256', expiresIn: '30s' },
   );
