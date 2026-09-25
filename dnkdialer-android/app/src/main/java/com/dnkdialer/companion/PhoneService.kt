@@ -4183,6 +4183,33 @@ class PhoneService : Service() {
         clientRelayUrl = relayUrl
         lastRelayUrlAttempt = relayUrl
 
+        // T-RESUME-PHONE-RESTART-DESYNC (relay: lib/resumeGate-core.js).
+        //
+        // The relay re-forms a dropped pair silently and re-sends the SAME
+        // sealed e2e block. It could prove the SOCKET was continuous and never
+        // that the SESSION was — so a force-stopped app, whose in-memory
+        // [e2eSession] is gone, rejoined in 13 ms and was resumed into a pair
+        // it could not read a byte of. The computer went on saying "Encrypted",
+        // this phone said "Not encrypted", and inbound SMS vanished for 180 s.
+        //
+        // So the phone DECLARES the session it holds, by kid. Computed HERE, at
+        // dial time, and deliberately NOT baked into [clientRelayUrl]: the lobby
+        // reconnect redials the stored URL, so a session bit captured when that
+        // URL was first built would be the boot-time answer forever — exactly
+        // backwards, since a blip (session alive) is the common case and a
+        // restart (session gone) is the rare one.
+        //
+        // "0" is an explicit "I hold no session", which the relay tells apart
+        // from an APK that never sends the parameter at all.
+        val sessionKid = e2eSession?.kid
+        val dialUrl = relayUrl +
+            (if (relayUrl.contains("?")) "&" else "?") +
+            "session=" + java.net.URLEncoder.encode(sessionKid ?: "0", "UTF-8")
+        android.util.Log.d(
+            "PhoneService",
+            "Relay dial declares session=" + (if (sessionKid != null) "present" else "none"),
+        )
+
         // We're about to dial — clear the last failure and announce
         // CONNECTING. MainActivity uses this to flip its status dot to
         // the slate-blue "Connecting…" state.
@@ -4206,7 +4233,7 @@ class PhoneService : Service() {
         // no session and no latch the gate is a pass-through, so installing it
         // unconditionally costs nothing and removes the ordering question.
         client = PhoneClient(
-            java.net.URI(relayUrl),
+            java.net.URI(dialUrl),
             { command, payload -> handleCommand(command, payload, true) },
             { connected ->
                 isClientConnected = connected
