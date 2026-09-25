@@ -110,13 +110,19 @@ object E2eAccountPrefController {
             val lg = legacy(ctx)
             val step = E2eAccountPref.onPush(state(ctx) ?: E2eAccountPref.State(), push, lg, nowMs)
             if (step.dropped) {
-                DiagLog.d(TAG, "E2E_PREF rev=${push.rev} dropped (<= lastRev)")
+                if (step.dropReason == E2eAccountPref.DropReason.EQUAL_REV_MISMATCH) {
+                    // Same rev, different preference/source: not an honest server frame.
+                    DiagLog.w(TAG, "E2E_PREF rev=${push.rev} dropped (equal rev, preference/source mismatch)")
+                } else {
+                    DiagLog.d(TAG, "E2E_PREF rev=${push.rev} dropped (${step.dropReason})")
+                }
                 return
             }
             save(ctx, uid, step.state)
             DiagLog.d(
                 TAG,
-                "E2E_PREF rev=${push.rev} eff=${push.effective} paused=${push.pausedByServer} " +
+                "E2E_PREF rev=${push.rev}${if (step.masterOnly) " (equal rev, master switch)" else ""} " +
+                    "eff=${step.state.mirror?.effective} paused=${step.state.mirror?.pausedByServer} " +
                     "-> advertised=${E2eAccountPref.advertisedOn(step.state, lg)} " +
                     "latched=${step.state.pendingDowngrade != null}",
             )

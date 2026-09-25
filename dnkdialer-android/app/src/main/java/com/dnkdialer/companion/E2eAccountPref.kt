@@ -153,7 +153,8 @@ object E2eAccountPref {
      *
      * @property advertised what the phone advertises at Accept. Null = nothing
      *   decided for this account yet (see [advertisedOn] for the fallback).
-     * @property lastRev highest rev applied; pushes at or below it are dropped.
+     * @property lastRev highest rev applied; pushes below it are dropped, pushes
+     *   AT it may only move effective / pausedByServer ([onPush]).
      * @property mirror the last accepted push (drives the Settings switch).
      */
     data class State(
@@ -185,7 +186,28 @@ object E2eAccountPref {
         object MarkLegacyConsumed : Effect { override fun toString() = "MarkLegacyConsumed" }
     }
 
-    data class Step(val state: State, val effects: List<Effect>, val dropped: Boolean = false)
+    /** Why a push was dropped (the controller logs [EQUAL_REV_MISMATCH] as a warning). */
+    enum class DropReason {
+        /** rev < lastRev: replay, or an older write overtaken in flight. */
+        STALE,
+        /** rev == lastRev and nothing moved: the server repeating itself. */
+        DUPLICATE,
+        /**
+         * rev == lastRev but preference / updatedBy / neverChosen differ from
+         * the mirror (or there is no mirror to compare). An honest server bumps
+         * rev on every preference write, so this is not an honest frame.
+         */
+        EQUAL_REV_MISMATCH,
+    }
+
+    data class Step(
+        val state: State,
+        val effects: List<Effect>,
+        val dropped: Boolean = false,
+        val dropReason: DropReason? = null,
+        /** Applied at an unchanged rev: only effective / pausedByServer moved. */
+        val masterOnly: Boolean = false,
+    )
 
     /**
      * The value advertised at Accept. Before any push for this account the
@@ -207,11 +229,21 @@ object E2eAccountPref {
 
     // ----------------------------------------------------------------- events
 
-    /** An `E2E_PREF` push arrived. */
+    /**
+     * An `E2E_PREF` push arrived.
+     *
+     *   rev <  lastRev -> dropped ([DropReason.STALE]).
+     *   rev == lastRev -> [onEqualRevPush]: only `effective` / `pausedByServer`
+     *                     may move (the server's master switch flips them WITHOUT
+     *                     a rev bump — lib/e2ePref-core.js resolveE2ePref; web twin
+     *                     lib/e2eAccountPref-core.ts applyIncoming).
+     *   rev >  lastRev -> the full path below.
+     */
     @JvmStatic
     fun onPush(s: State, push: Resolved, legacy: Legacy, nowMs: Long): Step {
-        // §4 / M1: a rev this account has already seen is replay or reorder.
-        if (push.rev <= s.lastRev) return Step(s, emptyList(), dropped = true)
+        // §4 / M1: an older rev is replay or reorder.
+        if (push.rev < s.lastRev) return Step(s, emptyList(), dropped = true, dropReason = DropReason.STALE)
+        if (push.rev == s.lastRev) return onEqualRevPush(s, push, legacy)
 
         val effects = ArrayList<Effect>(3)
         val curAdv = advertisedOn(s, legacy)
@@ -270,6 +302,54 @@ object E2eAccountPref {
         )
         effects += Effect.ShowPrompt
         return Step(st, effects)
+    }
+
+    /**
+     * Equal-rev push: the admin master switch flipped (the rev is the USER's
+     * preference rev and does not move). Applies ONLY `effective` and
+     * `pausedByServer`, and only when `preference`, `updatedBy` (the source)
+     * and `neverChosen` equal the stored mirror; otherwise the frame is
+     * dropped. No own-write matching, no seed, no MarkLegacyConsumed, no
+     * notice: nothing here is a preference write.
+     *
+     * B1 is unchanged: a RAISE applies at once; a LOWER while this phone
+     * advertises ON latches and asks the user — only a tap lowers it.
+     */
+    private fun onEqualRevPush(s: State, push: Resolved, legacy: Legacy): Step {
+        val m = s.mirror
+        if (m == null || m.rev != push.rev || m.preference != push.preference ||
+            m.updatedBy != push.updatedBy || m.neverChosen != push.neverChosen
+        ) {
+            return Step(s, emptyList(), dropped = true, dropReason = DropReason.EQUAL_REV_MISMATCH)
+        }
+        if (m.effective == push.effective && m.pausedByServer == push.pausedByServer) {
+            return Step(s, emptyList(), dropped = true, dropReason = DropReason.DUPLICATE)
+        }
+        // Re-derived from the PINNED preference (§3: effective is ON only under
+        // preference ON; the brake lowers, never raises).
+        val eff = m.preference && push.effective
+        val mirror = m.copy(effective = eff, pausedByServer = m.preference && !eff)
+        var st = s.copy(mirror = mirror)
+        val effects = ArrayList<Effect>(1)
+        if (eff) {
+            st = st.copy(advertised = true, pendingDowngrade = null)
+            if (s.pendingDowngrade != null) effects += Effect.ClearPrompt
+            return Step(st, effects, masterOnly = true)
+        }
+        if (!advertisedOn(s, legacy)) {
+            return Step(st.copy(advertised = false), effects, masterOnly = true)
+        }
+        st = st.copy(
+            advertised = true,
+            pendingDowngrade = PendingDowngrade(
+                m.rev,
+                m.updatedBy,
+                m.updatedAt,
+                if (mirror.pausedByServer) DowngradeKind.PAUSED else DowngradeKind.PREF_OFF,
+            ),
+        )
+        effects += Effect.ShowPrompt
+        return Step(st, effects, masterOnly = true)
     }
 
     /** [Keep off] / [Continue without code check]: lower locally, write nothing. */

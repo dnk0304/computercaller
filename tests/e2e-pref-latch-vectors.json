@@ -7,7 +7,8 @@
     "steps: push (an E2E_PREF body) | pushRaw (a body string, parsed strictly) | userSet on|off (Settings switch after confirm) | keepOff | keepCodeCheck | turnBackOn | refused {op,reason,retryAfterMs?} | signIn <id> | signOut (wipes the current id) | restart (every record re-read from its encoded form) | assert {...}. at = ms clock.",
     "expect/assert: advertised = value used at Accept; prompt = null|PREF_OFF|PAUSED; sent = every frame sent so far as TYPE:value; lastRev (-1 = none, null = no account); pendingOwnWrite on|off|null; notice on|null (one-time raise notice); toasts KIND[:retryAfterMs]; legacyConsumed; users.<id>.exists/advertised/lastRev; peerOffAtAccept = E2eSettings.effectiveMode(advertised, peer OFF).",
     "updatedBy is NEVER an input to the latch: L02 and L16 carry updatedBy=phone with no own write and must latch.",
-    "Rows L01-L14 are Ken brief rows 1-14 in order; L15 = the E2E_PREF_REFUSED row; L16 = the hostile-server row; the rest complete the grid."
+    "Rows L01-L14 are Ken brief rows 1-14 in order; L15 = the E2E_PREF_REFUSED row; L16 = the hostile-server row; the rest complete the grid.",
+    "L27-L31 = the equal-rev rule (Ken ruling 2026-09-25; web twin lib/e2eAccountPref-core.ts applyIncoming). The admin master switch changes effective/pausedByServer WITHOUT bumping rev. rev < lastRev -> dropped. rev == lastRev -> ONLY effective/pausedByServer may move, and only when preference/updatedBy/neverChosen equal the mirror (else dropped); a repeat with nothing moved is dropped. B1 unchanged: a lowered effective still latches and needs the tap; a raise applies at once with no notice (not a preference write). mirror = {preference,effective,pausedByServer} of the stored mirror after the steps."
   ],
   "vectors": [
     {
@@ -1321,6 +1322,320 @@
         "prompt": null,
         "sent": [],
         "lastRev": null
+      }
+    },
+    {
+      "legacy": {
+        "userSetOn": false,
+        "consumed": false
+      },
+      "userId": "A",
+      "id": "L27-equal-rev-master-flip-on-to-paused-latches",
+      "users": {
+        "A": {
+          "advertised": true,
+          "lastRev": 4,
+          "mirror": {
+            "preference": "on",
+            "effective": "on",
+            "pausedByServer": false,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          }
+        }
+      },
+      "note": "Admin turns the master switch OFF: same rev 4, effective off, pausedByServer true. Applied (not dropped), and B1 latches it: the phone keeps advertising ON and shows the paused prompt. The identical frame again is a duplicate.",
+      "steps": [
+        {
+          "at": 1000,
+          "push": {
+            "preference": "on",
+            "effective": "off",
+            "pausedByServer": true,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          },
+          "expectDropped": false
+        },
+        {
+          "assert": {
+            "advertised": true,
+            "prompt": "PAUSED",
+            "lastRev": 4,
+            "mirror": {
+              "preference": "on",
+              "effective": "off",
+              "pausedByServer": true
+            }
+          }
+        },
+        {
+          "at": 1100,
+          "push": {
+            "preference": "on",
+            "effective": "off",
+            "pausedByServer": true,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          },
+          "expectDropped": true
+        }
+      ],
+      "expect": {
+        "advertised": true,
+        "prompt": "PAUSED",
+        "sent": [],
+        "lastRev": 4,
+        "notice": null,
+        "peerOffAtAccept": "ENCRYPTED_VERIFIED",
+        "mirror": {
+          "preference": "on",
+          "effective": "off",
+          "pausedByServer": true
+        }
+      }
+    },
+    {
+      "legacy": {
+        "userSetOn": false,
+        "consumed": false
+      },
+      "userId": "A",
+      "id": "L28-equal-rev-master-flip-paused-to-on-clears-latch",
+      "users": {
+        "A": {
+          "advertised": true,
+          "lastRev": 4,
+          "mirror": {
+            "preference": "on",
+            "effective": "off",
+            "pausedByServer": true,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          },
+          "pendingDowngrade": {
+            "rev": 4,
+            "updatedBy": "web",
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "kind": "PAUSED"
+          }
+        }
+      },
+      "note": "Admin turns the master switch back ON at the same rev while the paused prompt is pending: applied at once, prompt cleared, no notice.",
+      "steps": [
+        {
+          "at": 1000,
+          "push": {
+            "preference": "on",
+            "effective": "on",
+            "pausedByServer": false,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          },
+          "expectDropped": false
+        }
+      ],
+      "expect": {
+        "advertised": true,
+        "prompt": null,
+        "sent": [],
+        "lastRev": 4,
+        "notice": null,
+        "mirror": {
+          "preference": "on",
+          "effective": "on",
+          "pausedByServer": false
+        }
+      }
+    },
+    {
+      "legacy": {
+        "userSetOn": false,
+        "consumed": false
+      },
+      "userId": "A",
+      "id": "L29-equal-rev-master-flip-paused-to-on-after-continue-without",
+      "users": {
+        "A": {
+          "advertised": true,
+          "lastRev": 4,
+          "mirror": {
+            "preference": "on",
+            "effective": "on",
+            "pausedByServer": false,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          }
+        }
+      },
+      "note": "Pause at rev 4, the user taps Continue without code check (advertised OFF), then the master switch comes back ON at rev 4: the raise applies at once (advertised ON), no notice.",
+      "steps": [
+        {
+          "at": 1000,
+          "push": {
+            "preference": "on",
+            "effective": "off",
+            "pausedByServer": true,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          },
+          "expectDropped": false
+        },
+        {
+          "keepOff": true
+        },
+        {
+          "assert": {
+            "advertised": false,
+            "prompt": null,
+            "mirror": {
+              "preference": "on",
+              "effective": "off",
+              "pausedByServer": true
+            }
+          }
+        },
+        {
+          "at": 1200,
+          "push": {
+            "preference": "on",
+            "effective": "on",
+            "pausedByServer": false,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          },
+          "expectDropped": false
+        }
+      ],
+      "expect": {
+        "advertised": true,
+        "prompt": null,
+        "sent": [],
+        "lastRev": 4,
+        "notice": null,
+        "mirror": {
+          "preference": "on",
+          "effective": "on",
+          "pausedByServer": false
+        }
+      }
+    },
+    {
+      "legacy": {
+        "userSetOn": false,
+        "consumed": false
+      },
+      "userId": "A",
+      "id": "L30-equal-rev-preference-mismatch-dropped",
+      "users": {
+        "A": {
+          "advertised": false,
+          "lastRev": 4,
+          "mirror": {
+            "preference": "off",
+            "effective": "off",
+            "pausedByServer": false,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          }
+        }
+      },
+      "note": "Same rev 4 but preference on (a raise smuggled without a rev bump): dropped, mirror untouched. (Preference off at an equal rev over an ON mirror is L10 step 0.)",
+      "steps": [
+        {
+          "at": 1000,
+          "push": {
+            "preference": "on",
+            "effective": "on",
+            "pausedByServer": false,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          },
+          "expectDropped": true
+        },
+        {
+          "assert": {
+            "advertised": false,
+            "prompt": null,
+            "lastRev": 4,
+            "mirror": {
+              "preference": "off",
+              "effective": "off",
+              "pausedByServer": false
+            }
+          }
+        }
+      ],
+      "expect": {
+        "advertised": false,
+        "prompt": null,
+        "sent": [],
+        "lastRev": 4,
+        "notice": null,
+        "mirror": {
+          "preference": "off",
+          "effective": "off",
+          "pausedByServer": false
+        }
+      }
+    },
+    {
+      "legacy": {
+        "userSetOn": false,
+        "consumed": false
+      },
+      "userId": "A",
+      "id": "L31-lower-rev-master-flip-dropped",
+      "users": {
+        "A": {
+          "advertised": true,
+          "lastRev": 4,
+          "mirror": {
+            "preference": "on",
+            "effective": "on",
+            "pausedByServer": false,
+            "rev": 4,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          }
+        }
+      },
+      "note": "A master-switch pause carried at rev 3 (< lastRev 4) is stale: dropped, no prompt, mirror untouched.",
+      "steps": [
+        {
+          "at": 1000,
+          "push": {
+            "preference": "on",
+            "effective": "off",
+            "pausedByServer": true,
+            "rev": 3,
+            "updatedAt": "2026-09-25T12:00:00.000Z",
+            "updatedBy": "web"
+          },
+          "expectDropped": true
+        }
+      ],
+      "expect": {
+        "advertised": true,
+        "prompt": null,
+        "sent": [],
+        "lastRev": 4,
+        "notice": null,
+        "mirror": {
+          "preference": "on",
+          "effective": "on",
+          "pausedByServer": false
+        }
       }
     }
   ]

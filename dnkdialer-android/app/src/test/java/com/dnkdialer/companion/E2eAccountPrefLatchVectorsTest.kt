@@ -36,7 +36,7 @@ class E2eAccountPrefLatchVectorsTest {
         assertEquals("vector file version", 1, root.get("version").asInt)
         val v = root.getAsJsonArray("vectors").map { it.asJsonObject }
         // A vectors test whose file lost its rows passes vacuously.
-        assertEquals("latch vector count", 26, v.size)
+        assertEquals("latch vector count", 31, v.size)
         val named = v.filter { it.get("named")?.asBoolean == true }.map { it.get("row").asInt }
         assertEquals("Ken's 14 rows + refused row + hostile row", (1..16).toList(), named)
         return v
@@ -150,6 +150,13 @@ class E2eAccountPrefLatchVectorsTest {
         e.get("notice")?.let {
             assertEquals("$where notice", it.strOrNull(), s?.notice?.let { n -> if (n.on) "on" else "off" })
         }
+        e.getAsJsonObject("mirror")?.let { m ->
+            assertNotNull("$where mirror", s?.mirror)
+            fun oo(b: Boolean) = if (b) "on" else "off"
+            assertEquals("$where mirror.preference", m.get("preference").asString, oo(s!!.mirror!!.preference))
+            assertEquals("$where mirror.effective", m.get("effective").asString, oo(s.mirror!!.effective))
+            assertEquals("$where mirror.pausedByServer", m.get("pausedByServer").asBoolean, s.mirror!!.pausedByServer)
+        }
         e.get("legacyConsumed")?.let { assertEquals("$where legacyConsumed", it.asBoolean, d.consumed) }
         e.get("peerOffAtAccept")?.let {
             assertEquals(
@@ -196,6 +203,44 @@ class E2eAccountPrefLatchVectorsTest {
                 assertTrue("by=$by still ON", E2eAccountPref.advertisedOn(step.state, lg))
             }
         }
+    }
+
+    /**
+     * Equal-rev rule, the Android-only half (the shared vectors cover the rest):
+     * at an unchanged rev a push whose SOURCE (updatedBy) or neverChosen differs
+     * from the mirror is dropped as a mismatch even when only the master fields
+     * would move; the controller logs that one as a warning.
+     */
+    @Test
+    fun equal_rev_source_or_neverChosen_mismatch_is_dropped() {
+        val lg = E2eAccountPref.Legacy(false, false)
+        val t = "2026-09-25T12:00:00.000Z"
+        val on = E2eAccountPref.State(
+            advertised = true, lastRev = 4,
+            mirror = E2eAccountPref.Resolved(true, true, false, 4, t, "web"),
+        )
+        for (by in listOf("ext", "phone", "seed", null, "WEB")) {
+            val step = E2eAccountPref.onPush(on, E2eAccountPref.Resolved(true, false, true, 4, t, by), lg, 1000)
+            assertTrue("by=$by dropped", step.dropped)
+            assertEquals("by=$by reason", E2eAccountPref.DropReason.EQUAL_REV_MISMATCH, step.dropReason)
+            assertEquals("by=$by state untouched", on, step.state)
+        }
+        // rev 0: the mirror never chose (updatedBy null); a push naming a writer at rev 0 is not the same row.
+        val never = E2eAccountPref.State(
+            advertised = false, lastRev = 0,
+            mirror = E2eAccountPref.Resolved(false, false, false, 0, null, null),
+        )
+        val s2 = E2eAccountPref.onPush(never, E2eAccountPref.Resolved(false, false, false, 0, t, "web"), lg, 1000)
+        assertEquals(E2eAccountPref.DropReason.EQUAL_REV_MISMATCH, s2.dropReason)
+        // Same source, master flip: applied, masterOnly, updatedAt kept from the mirror.
+        val ok = E2eAccountPref.onPush(on, E2eAccountPref.Resolved(true, false, true, 4, "2027-01-01T00:00:00.000Z", "web"), lg, 1000)
+        assertFalse(ok.dropped)
+        assertTrue(ok.masterOnly)
+        assertEquals(t, ok.state.mirror!!.updatedAt)
+        assertTrue(E2eAccountPref.promptVisible(ok.state))
+        assertFalse(ok.effects.any { it is E2eAccountPref.Effect.MarkLegacyConsumed || it is E2eAccountPref.Effect.ShowNotice })
+        val c = src("E2eAccountPrefController.kt").substringAfter("fun onPushFrame(").substringBefore("fun onRefusedFrame(")
+        assertTrue(c.contains("E2eAccountPref.DropReason.EQUAL_REV_MISMATCH") && c.contains("DiagLog.w(TAG, \"E2E_PREF rev=") && c.contains("dropped (equal rev, preference/source mismatch)"))
     }
 
     @Test
