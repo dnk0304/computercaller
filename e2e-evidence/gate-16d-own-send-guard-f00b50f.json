@@ -1,0 +1,21 @@
+{
+  "gate": "targeted (Ken-ruled) for #16d own-send guard",
+  "tree": "f00b50fc26c5b8309ad64fa78a8ef5b0f47dd47e",
+  "base": "99a565b + 64e5437 (merge 3479f85)",
+  "release": "GATE PASS 9/9 f00b50f (targeted on 99a565b)",
+  "steps": {
+    "tsc-noEmit": {"errors": 0},
+    "lint": {"errors": 34, "warnings": 74, "problems": 108, "vsP5A_323dcf8": "identical, grown 0; touched files 0 problems"},
+    "harness:ft-ui-proof": {"passed": 180, "total": 180, "floor": 113},
+    "e2e-ft-suites": {"chunk-seq-contract": "41/41", "ext-receive": "38/38", "hint-contract": "161/161", "idb": "31/31", "queue": "172/172", "relay-abort": "221/221", "sw-routing": "41/41", "sw-union": "44/44", "tier-entitlement-refetch": "54/54", "web-core": "188/188", "web-retry": "58/58", "web-transfer": "50/50"},
+    "new:e2e-ft-routing": {"passed": 33, "total": 33},
+    "relay:ft-relay": {"passed": 298, "total": 298, "db": "local ccpix postgres"},
+    "harness:e2e-ui-proof": {"passed": 371, "total": 371, "attempts": 3, "note": "attempts 1-2 ran with the ambient shell env (not the gate's scrubbed env) and hung in ext-idle-proof awaitServiceWorker (327/327 and 349/349 at the hang, 0 FAIL); attempt 3 with the gate's scrubbed harness env: 371/371"}
+  },
+  "plantRed": {
+    "hookRevertedToUnroutedDelivery": "e2e-ft-routing 30/33 (3 wiring reds)",
+    "routeRuleReturnsBoth": "e2e-ft-routing 20/33 (13 reds: lastFailure direction receive, retryMode none, Try again unavailable, busy banner)",
+    "restored": "33/33"
+  },
+  "carried": "rest of P5A from 99a565b (128/129, sole red = the pin 64e5437 fixes)"
+}
