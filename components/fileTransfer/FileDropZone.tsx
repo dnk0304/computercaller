@@ -38,13 +38,14 @@ export interface FileDropZoneProps {
   enabled: boolean;
   /** Why it is refused, when `enabled` is false. Rendered in the overlay. */
   disabledReason?: string;
-  onFile: (file: File) => void;
+  /** FILE-QUEUE-WEB: every dropped file, in drop order; each is queued. */
+  onFiles: (files: File[]) => void;
   children: React.ReactNode;
   className?: string;
 }
 
 export function FileDropZone({
-  enabled, disabledReason, onFile, children, className,
+  enabled, disabledReason, onFiles, children, className,
 }: FileDropZoneProps) {
   const [dragging, setDragging] = useState(false);
   const depth = useRef(0);
@@ -92,11 +93,11 @@ export function FileDropZone({
     depth.current = 0;
     setDragging(false);
     if (!enabled) return;
-    // One transfer per room by rule, so one file. Taking [0] rather than
-    // silently dropping a multi-file selection on the floor.
-    const file = e.dataTransfer.files?.[0];
-    if (file) onFile(file);
-  }, [enabled, onFile]);
+    // FILE-QUEUE-WEB: the relay still moves one file at a time, but the queue
+    // takes all of them and walks them in order.
+    const files = Array.from(e.dataTransfer.files ?? []);
+    if (files.length) onFiles(files);
+  }, [enabled, onFiles]);
 
   return (
     <div
@@ -122,7 +123,7 @@ export function FileDropZone({
         >
           <Upload className="h-6 w-6" aria-hidden="true" />
           <p className="px-4 text-center text-[13px] font-medium">
-            {enabled ? 'Drop a file to send it to your phone' : disabledReason ?? 'Cannot send right now'}
+            {enabled ? 'Drop files to send them to your phone' : disabledReason ?? 'Cannot send right now'}
           </p>
         </div>
       )}

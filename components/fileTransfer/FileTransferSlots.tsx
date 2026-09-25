@@ -32,7 +32,6 @@ const FT_SENDER_LABEL = 'Computer';
 
 /** The reason the drop is refused, mirroring the trial lock. */
 const FT_DROP_LOCKED = FT_TIER_LOCK_COPY;
-const FT_DROP_BUSY = 'A transfer is already running';
 
 function useFileTransferSlot() {
   const phone = usePhone() as unknown as { fileTransfer?: FileTransferApi };
@@ -57,10 +56,15 @@ export function SendFileSlot({
 }) {
   const { ft, subscribed, onUpgrade } = useFileTransferSlot();
   const onPick = useCallback(
-    (file: File) => { void ft?.sendFile(file, FT_SENDER_LABEL); },
+    (files: File[]) => { ft?.enqueue(files, FT_SENDER_LABEL); },
     [ft],
   );
   if (!ft) return null;
+  // FILE-QUEUE-WEB: outgoing rows waiting or moving, for the header badge.
+  const queueCount = headerIcon
+    ? ft.queue.items.filter((it) => it.direction === 'send'
+      && (it.state === 'queued' || it.state === 'offering' || it.state === 'sending')).length
+    : 0;
 
   // OUTBOUND only, and only while it is actually moving. A receive is the other
   // party's doing and already has its own surfaces (the accept dialog, the
@@ -76,13 +80,16 @@ export function SendFileSlot({
   return (
     <SendFileControl
       subscribed={subscribed}
-      busy={ft.busy}
+      /* FILE-QUEUE-WEB: never disabled while busy — a pick during a transfer
+         is queued behind it, which is the point of the queue. */
+      busy={false}
       onPick={onPick}
       onUpgrade={onUpgrade}
       compact={compact}
       iconOnly={iconOnly}
       headerIcon={headerIcon}
       sendPercent={sendPercent}
+      queueCount={queueCount}
     />
   );
 }
@@ -95,18 +102,19 @@ export function FileDropTarget({
   className?: string;
 }) {
   const { ft, subscribed } = useFileTransferSlot();
-  const onFile = useCallback(
-    (file: File) => { void ft?.sendFile(file, FT_SENDER_LABEL); },
+  const onFiles = useCallback(
+    (files: File[]) => { ft?.enqueue(files, FT_SENDER_LABEL); },
     [ft],
   );
   if (!ft) return <>{children}</>;
 
-  const enabled = subscribed && !ft.busy;
+  // A drop during a transfer is queued, so only the trial lock refuses it.
+  const enabled = subscribed;
   return (
     <FileDropZone
       enabled={enabled}
-      disabledReason={!subscribed ? FT_DROP_LOCKED : FT_DROP_BUSY}
-      onFile={onFile}
+      disabledReason={FT_DROP_LOCKED}
+      onFiles={onFiles}
       className={className}
     >
       {children}

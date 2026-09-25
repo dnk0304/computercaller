@@ -282,45 +282,75 @@ let presencePort = null;
  * and "never heard" must not both push.
  */
 let swRegisteredSeen;
-try {
-  presencePort = chrome.runtime.connect({ name: 'cc-presence' });
-  presencePort.onMessage.addListener((msg) => {
-    if (msg && msg.type === 'unread' && msg.unread) {
-      unread = msg.unread;
-      sendHello();
-      return;
-    }
-    // T-SW-KEY-STALE-AFTER-REGISTER (push half). background.js withholds `pub`
-    // until `swRegistered` (INC-0923 B-1, correct and kept), and registration
-    // lands a few SECONDS after the page mounts. The page asks once on mount,
-    // gets the honest `{deviceId:null, pub:null}`, and until now nothing ever
-    // told it the answer had changed: the first pairing after a sign-in went
-    // out `swBridge=none` and the extension was absent from that pair's
-    // transcript until the user re-paired.
-    //
-    // `broadcastE2eStatus()` already fires on the registration success path
-    // (background.js:461/:537) over this very port. It reached the header and
-    // stopped. So the false->true EDGE — and only that edge — now also pushes
-    // a fresh key, unsolicited and with no `rid`: the page's `e2e-pubkey`
-    // listener (hooks/useE2e.ts) already accepts unsolicited emissions and
-    // updates `swRef` with no reload.
-    //
-    // The edge, not the level: `e2e-status` is re-broadcast on other occasions
-    // and a push on every one of them would be a postMessage storm on a
-    // channel whose consumer re-renders. `undefined -> true` counts (a surface
-    // that opened after registration already gets the key on `ready`; this arm
-    // is the cheap, idempotent belt).
-    //
-    // This goes to the APP frame only: `sendE2ePubKey` posts to `frame`, and
-    // the login frame's verb set stays disjoint (see the inbound handler).
-    if (msg && msg.type === 'e2e-status') {
-      const was = swRegisteredSeen;
-      swRegisteredSeen = msg.registered === true;
-      if (swRegisteredSeen && was !== true) sendE2ePubKey();
-    }
-  });
-  presencePort.onDisconnect.addListener(() => { presencePort = null; });
-} catch {}
+/**
+ * Open (or re-open) the presence port. ALERTS-BADGE (2026-09-25): this used to
+ * run once at load, and an MV3 worker restart — which disconnects every port —
+ * left the shell with no port for the rest of the panel's life. Two things then
+ * went wrong at once: the worker saw no surface and counted alerts behind an
+ * open panel, and its `unread` broadcasts (including the zero after a visit to
+ * Alerts) never reached this shell. The cached `unread` below stayed at 1, the
+ * page's badge is max(own count, this cache) and is forced to 0 only on Alerts:
+ * Dennis's phantom "1" on Texts and Dial.
+ *
+ * Re-opened LAZILY, from reportTabViewed, never from onDisconnect: reconnecting
+ * on disconnect would wake an idle worker every time Chrome retires it, a
+ * keep-alive loop nobody asked for. A tab change is the moment the counts
+ * matter, and the worker's onConnect hands the newcomer fresh counts at once.
+ */
+function connectPresence() {
+  try {
+    const port = chrome.runtime.connect({ name: 'cc-presence' });
+    port.onMessage.addListener(onPresenceMessage);
+    port.onDisconnect.addListener(() => { if (presencePort === port) presencePort = null; });
+    presencePort = port;
+  } catch {
+    presencePort = null;
+  }
+  return presencePort;
+}
+
+/** Take a counts record from the worker and hand it to the app frame. */
+function receiveUnread(next) {
+  if (!next || typeof next !== 'object') return;
+  unread = next;
+  sendHello();
+}
+
+function onPresenceMessage(msg) {
+  if (msg && msg.type === 'unread' && msg.unread) {
+    receiveUnread(msg.unread);
+    return;
+  }
+  // T-SW-KEY-STALE-AFTER-REGISTER (push half). background.js withholds `pub`
+  // until `swRegistered` (INC-0923 B-1, correct and kept), and registration
+  // lands a few SECONDS after the page mounts. The page asks once on mount,
+  // gets the honest `{deviceId:null, pub:null}`, and until now nothing ever
+  // told it the answer had changed: the first pairing after a sign-in went
+  // out `swBridge=none` and the extension was absent from that pair's
+  // transcript until the user re-paired.
+  //
+  // `broadcastE2eStatus()` already fires on the registration success path
+  // (background.js:461/:537) over this very port. It reached the header and
+  // stopped. So the false->true EDGE — and only that edge — now also pushes
+  // a fresh key, unsolicited and with no `rid`: the page's `e2e-pubkey`
+  // listener (hooks/useE2e.ts) already accepts unsolicited emissions and
+  // updates `swRef` with no reload.
+  //
+  // The edge, not the level: `e2e-status` is re-broadcast on other occasions
+  // and a push on every one of them would be a postMessage storm on a
+  // channel whose consumer re-renders. `undefined -> true` counts (a surface
+  // that opened after registration already gets the key on `ready`; this arm
+  // is the cheap, idempotent belt).
+  //
+  // This goes to the APP frame only: `sendE2ePubKey` posts to `frame`, and
+  // the login frame's verb set stays disjoint (see the inbound handler).
+  if (msg && msg.type === 'e2e-status') {
+    const was = swRegisteredSeen;
+    swRegisteredSeen = msg.registered === true;
+    if (swRegisteredSeen && was !== true) sendE2ePubKey();
+  }
+}
+connectPresence();
 
 const frame = document.getElementById('cc-frame');
 const overlay = document.getElementById('cc-signin');
@@ -853,11 +883,21 @@ function receiveFileDownload(data) {
  */
 function reportTabViewed(tab) {
   if (typeof tab !== 'string' || !tab) return;
-  if (presencePort) {
-    try { presencePort.postMessage({ type: 'tab-viewed', tab }); return; } catch {}
+  // Port lost (SW recycled)? Re-open it first: that restores presence and the
+  // worker's onConnect pushes fresh counts to this shell.
+  const port = presencePort || connectPresence();
+  if (port) {
+    try { port.postMessage({ type: 'tab-viewed', tab }); return; } catch {}
   }
-  // Port lost (SW recycled). One-shot fallback so a view is never silently lost.
-  try { chrome.runtime.sendMessage({ type: 'tab-viewed', tab }); } catch {}
+  // Last resort. The worker answers with the counts AFTER the clear; applying
+  // them is what keeps this shell's cache from going stale (it used to discard
+  // the reply, which is how a cleared alert kept its "1" on every other tab).
+  try {
+    chrome.runtime.sendMessage({ type: 'tab-viewed', tab }, (res) => {
+      void chrome.runtime.lastError;
+      if (res && res.ok) receiveUnread(res.unread);
+    });
+  } catch {}
 }
 
 // ---- Inbound from the hosted app -------------------------------------------

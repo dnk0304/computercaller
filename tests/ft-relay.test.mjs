@@ -32,6 +32,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import nodeCrypto from 'node:crypto';
+// FT-METER-1: the REAL seal path, so the sealed-stream arms (PART 13) meter
+// what an encrypted client actually puts on the wire.
+import { seal as sealAead, DIR_P2C } from '../lib/e2e/kdf.mjs';
+import { encodeEnvelope } from '../lib/e2e/session.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER_SRC = readFileSync(join(ROOT, 'server.js'), 'utf8');
@@ -131,11 +135,14 @@ const FT_CONSTS = [
   'FT_DEST_BACKPRESSURE_BYTES',
   'FT_STALL_MS', 'FT_OFFER_TTL_MS', 'FT_SWEEP_MS', 'FT_WIRE_OVERHEAD_FACTOR',
   'FT_TIERS_ALLOWED', 'FT_RELAY_OWNED_REASONS', 'FT_WIRE_B64_FACTOR',
+  // FT-METER-1 — the sealed-mode pair.
+  'FT_WIRE_B64_FACTOR_SEALED', 'FT_WIRE_OVERHEAD_FACTOR_SEALED', 'FT_CHUNK_WIRE_BYTES_SEALED',
 ];
 const FT_FNS = [
   'frameType', 'frameLabel', 'isFileFrame', 'utcDayKey',
   'ftCountDrop', 'ftParse', 'ftSocketForRole', 'ftPeerSocket', 'ftFailedFrame',
   'ftOfferMetadata', 'ftFrameId', 'ftWireCeiling', 'ftRawFromWire',
+  'ftRequireMode', 'ftIsSealedBody',
   'ftAbort', 'ftReserveQuota', 'ftSettleQuota', 'ftHandleOffer',
   'handleFileFrame',
 ];
@@ -399,7 +406,7 @@ console.log('\nFT-A1 — envelope hint ft:{id,size}, fail-closed, and the wire m
     await new Promise((r) => setImmediate(r));
     check('L2: a lowered hint is admitted by the relay (catching it is the receiver job)', !!room.transfer);
     check('L2: but the ceiling shrinks with it — tampering DOWN never buys headroom',
-      R.ftWireCeiling(1024) < R.ftWireCeiling(L.ftSize));
+      R.ftWireCeiling(1024, true) < R.ftWireCeiling(L.ftSize, true));
   }
 
   // L3 — the hint is stripped or malformed. FAIL CLOSED. This is the hole that
@@ -526,12 +533,14 @@ console.log('\nFT-A1 — envelope hint ft:{id,size}, fail-closed, and the wire m
     const R = buildRelay({ db: DB_ALWAYS_OK });
     const raw = 100 * 1024 * 1024;
     check('the ceiling is in WIRE bytes and exceeds the RAW hint by the base64 factor',
-      R.ftWireCeiling(raw) > raw * 1.3 && R.ftWireCeiling(raw) < raw * 1.5, String(R.ftWireCeiling(raw)));
+      R.ftWireCeiling(raw, false) > raw * 1.3 && R.ftWireCeiling(raw, false) < raw * 1.5, String(R.ftWireCeiling(raw, false)));
     check('the ceiling is capped at the 1 GiB per-file limit in the SAME units',
-      R.ftWireCeiling(R.FT_MAX_FILE_BYTES) === R.ftWireCeiling(R.FT_MAX_FILE_BYTES * 2));
+      R.ftWireCeiling(R.FT_MAX_FILE_BYTES, false) === R.ftWireCeiling(R.FT_MAX_FILE_BYTES * 2, false)
+      && R.ftWireCeiling(R.FT_MAX_FILE_BYTES, true) === R.ftWireCeiling(R.FT_MAX_FILE_BYTES * 2, true));
     check('ftRawFromWire never exceeds the per-file cap and is zero at zero',
-      R.ftRawFromWire(0) === 0
-      && R.ftRawFromWire(Number.MAX_SAFE_INTEGER) === R.FT_MAX_FILE_BYTES);
+      R.ftRawFromWire(0, false) === 0 && R.ftRawFromWire(0, true) === 0
+      && R.ftRawFromWire(Number.MAX_SAFE_INTEGER, false) === R.FT_MAX_FILE_BYTES
+      && R.ftRawFromWire(Number.MAX_SAFE_INTEGER, true) === R.FT_MAX_FILE_BYTES);
   }
 }
 
@@ -659,7 +668,7 @@ console.log('\nFT-A1.1 — relay-minted refusals, origin mark, and the charge fa
     // number that IS the abuse control.
     const raw = 100 * 1024 * 1024;
     const honestWire = Math.ceil(raw * 4 / 3);
-    const charged = R.ftRawFromWire(honestWire);
+    const charged = R.ftRawFromWire(honestWire, false);
     check('M12: an honest transfer is charged at least what it actually moved',
       charged >= raw, `charged ${charged} for ${raw}`);
     const wouldHaveBeen = Math.ceil(honestWire / R.FT_WIRE_OVERHEAD_FACTOR);
@@ -667,7 +676,7 @@ console.log('\nFT-A1.1 — relay-minted refusals, origin mark, and the charge fa
       wouldHaveBeen < raw && (raw - wouldHaveBeen) / raw > 0.03,
       `${wouldHaveBeen} vs ${raw}`);
     check('M12: the CEILING still errs generous — it keeps 1.40 plus a chunk',
-      R.ftWireCeiling(raw) > honestWire);
+      R.ftWireCeiling(raw, false) > honestWire);
   }
 }
 
@@ -1122,7 +1131,7 @@ try {
   // transfer opened at 23:59:50 and failed at 00:00:10 must settle yesterday.
   // bytesForwarded 0 = nothing was metered = the reservation is fully released,
   // which is the FILE_FAILED-before-any-chunk case.
-  const recAcrossMidnight = { senderUserId: userId, quotaDay: D1, size: GiB, bytesForwarded: 0, quotaSettled: false };
+  const recAcrossMidnight = { senderUserId: userId, quotaDay: D1, size: GiB, bytesForwarded: 0, quotaSettled: false, sealed: false };
   R.ftSettleQuota(recAcrossMidnight);
   await new Promise((r) => setTimeout(r, 250));
   check('a failure with nothing metered fully refunds the day it charged', (await readBytes(D1)) === BigInt(GiB));
@@ -1141,7 +1150,7 @@ try {
     // ceiling's generous 1.40 — using the ceiling factor here would model a
     // stream that never happens and make the charge look 5 % too high.
     const wire700 = Math.ceil(700 * 1024 * 1024 * 4 / 3);
-    const liar = { senderUserId: userId, quotaDay: D2, size: 1024, bytesForwarded: wire700, quotaSettled: false };
+    const liar = { senderUserId: userId, quotaDay: D2, size: 1024, bytesForwarded: wire700, quotaSettled: false, sealed: false };
     const before = await readBytes(D2);
     R.ftSettleQuota(liar);
     await new Promise((r) => setTimeout(r, 250));
@@ -1159,7 +1168,7 @@ try {
   }
 
   // The floor: a refund must never drive a counter negative.
-  const recHuge = { senderUserId: userId, quotaDay: D2, size: 8 * GiB, bytesForwarded: 0, quotaSettled: false };
+  const recHuge = { senderUserId: userId, quotaDay: D2, size: 8 * GiB, bytesForwarded: 0, quotaSettled: false, sealed: false };
   R.ftSettleQuota(recHuge);
   await new Promise((r) => setTimeout(r, 250));
   check('an over-large refund floors at zero, never negative', (await readBytes(D2)) === 0n);
@@ -1310,7 +1319,7 @@ console.log('\nPART 12 — FT-A1.2 no-receiver TTL sweep (relay-owned)');
   const settles = db.execs.filter((e) => /"FileQuota" SET "bytes"/.test(e.sql));
   const fullRefund = settles.length === 1
     && /GREATEST/.test(settles[0].sql) && settles[0].args[2] === String(SIZE);
-  const rec = { senderUserId: 'u1', quotaDay: '2026-09-18', size: SIZE, bytesForwarded: R.ftWireCeiling(1024 * 1024), quotaSettled: false };
+  const rec = { senderUserId: 'u1', quotaDay: '2026-09-18', size: SIZE, bytesForwarded: R.ftWireCeiling(1024 * 1024, false), quotaSettled: false, sealed: false };
   R.ftSettleQuota(rec);
   R.ftSettleQuota(rec);                               // idempotence: no double refund
   const partial = db.execs.filter((e) => /"FileQuota" SET "bytes"/.test(e.sql)).length === 2
@@ -1358,6 +1367,342 @@ console.log('\nPART 12 — FT-A1.2 no-receiver TTL sweep (relay-owned)');
     accepted && A.room.transfer === null && O.room.transfer !== null
     && payloadOf(lastOf(A.phone, 'FILE_FAILED'))?.reason === 'timeout',
     `accepted=${accepted} acceptedRec=${A.room.transfer} offeredRec=${!!O.room.transfer}`);
+}
+
+// ── PART 13 — FT-METER-1: the meter is ENCRYPTION-AWARE ────────────────────
+//
+// Encrypted FILE_CHUNK = 87 559 B on the wire per 49 152 raw (1.781x: `data` is
+// base64'd, then the sealed payload is base64'd AGAIN). The meter judged it on
+// the plaintext 1.40, so every encrypted file over ~170 KB aborted
+// `size_mismatch` (prod 2026-09-25 id 4482bd32), and the settle inverted on 4/3
+// charged it ~34 % too much. THIS CASE WAS NOT IN THE GATE — every stream test
+// above is plaintext or a fake `c: 'A'.repeat(600)`. So every honest stream
+// below goes through the REAL seal path (lib/e2e/kdf.mjs seal + session.mjs
+// encodeEnvelope, AES-GCM, one seal per chunk) into the REAL handleFileFrame.
+console.log('\nPART 13 — FT-METER-1: encryption-aware ceiling, charge and mode binding');
+{
+  const subtle = globalThis.crypto.subtle;
+  const sender = {
+    direction: DIR_P2C,
+    sessionPrefix: randomBytes(4),
+    key: await subtle.importKey('raw', randomBytes(32), { name: 'AES-GCM' }, false, ['encrypt']),
+  };
+  // Android's newKid(): 16 random bytes, base64url — 22 chars.
+  const KID = randomBytes(16).toString('base64url');
+  const te = new TextEncoder();
+  let sSeq = 0;
+  const realSeal = async (frameType, obj) => {
+    const s = sSeq++;
+    const ct = await sealAead({ sender, frameType, kid: KID, seq: BigInt(s), pairEpoch: 1n, plaintext: te.encode(JSON.stringify(obj)) }, subtle);
+    return `${frameType}:${JSON.stringify(encodeEnvelope({ kid: KID, seq: s, ciphertext: ct }))}`;
+  };
+  const RAW = 48 * 1024;
+  const FULL_B64 = randomBytes(RAW).toString('base64');
+  const MiB = 1024 * 1024;
+  const mkRecordingDbP13 = () => {
+    const execs = [];
+    return {
+      execs,
+      $queryRawUnsafe: async () => [{ used: 1n }],
+      $executeRawUnsafe: async (sql, ...args) => { execs.push({ sql, args }); return 1; },
+    };
+  };
+
+  /** A receiver that COUNTS chunks instead of keeping them — 500 MiB to 1 GiB
+   *  of wire strings retained in `sent` would OOM the runner. Every other frame
+   *  is kept, so lastOf/countOf still work for the control frames. */
+  const mkSinkWs = () => {
+    const ws = mkWs();
+    ws.chunks = 0; ws.chunkBytes = 0;
+    const sent = [];
+    sent.push = function push(m) {
+      if (String(m).startsWith('FILE_CHUNK:')) { ws.chunks++; ws.chunkBytes += Buffer.byteLength(m, 'utf8'); return this.length; }
+      return Array.prototype.push.call(this, String(m));
+    };
+    ws.sent = sent;
+    return ws;
+  };
+
+  /** Offer (sealed = real seal + ft hint, as the web/SW/phone send it) → accept. */
+  async function arm({ sealed, size, db = DB_ALWAYS_OK }) {
+    const R = buildRelay({ db });
+    const phone = mkWs(); const browser = mkSinkWs();
+    const room = mkRoom(phone, browser);
+    const id = newId();
+    const offerBody = { id, name: 'clip.mp4', size, mime: 'video/mp4', sha256: sha(), from: 'phone' };
+    let offer;
+    if (sealed) {
+      const f = await realSeal('FILE_OFFER', offerBody);
+      const env = JSON.parse(f.slice('FILE_OFFER:'.length));
+      offer = `FILE_OFFER:${JSON.stringify({ ...env, ft: { id, size } })}`;
+    } else {
+      offer = `FILE_OFFER:${JSON.stringify(offerBody)}`;
+    }
+    R.handleFileFrame(room, phone, offer, 'phone', room.token);
+    await new Promise((r) => setImmediate(r));
+    const accept = sealed ? await realSeal('FILE_ACCEPT', { id }) : `FILE_ACCEPT:${JSON.stringify({ id })}`;
+    R.handleFileFrame(room, browser, accept, 'browser', room.token);
+    return { R, room, phone, browser, id, rec: room.transfer };
+  }
+
+  /** One chunk frame in the given mode, carrying `len` raw bytes. */
+  const chunkFrame = async (sealed, id, seq, n, len) => {
+    const data = len === RAW ? FULL_B64 : randomBytes(len).toString('base64');
+    const body = { id, seq, n, data };
+    return sealed ? realSeal('FILE_CHUNK', body) : `FILE_CHUNK:${JSON.stringify(body)}`;
+  };
+
+  /**
+   * Stream an HONEST file of `size` raw bytes, every chunk sealed for real in
+   * the sealed mode. Seals are produced 16 at a time (webcrypto runs on the
+   * threadpool) but fed to the relay strictly in seq order.
+   */
+  async function streamHonest(T, sealed, size) {
+    const n = Math.ceil(size / RAW);
+    let seq = 0;
+    let firstAbortSeq = -1;
+    while (seq < n && T.room.transfer) {
+      const batch = [];
+      for (let k = 0; k < 16 && seq + k < n; k++) {
+        const q = seq + k;
+        batch.push(chunkFrame(sealed, T.id, q, n, Math.min(RAW, size - q * RAW)));
+      }
+      const frames = await Promise.all(batch);
+      for (const f of frames) {
+        if (!T.room.transfer) break;
+        T.R.handleFileFrame(T.room, T.phone, f, 'phone', T.room.token);
+        if (!T.room.transfer && firstAbortSeq < 0) firstAbortSeq = seq;
+        seq++;
+      }
+    }
+    return { n, firstAbortSeq };
+  }
+  const done = async (T, sealed) => T.R.handleFileFrame(T.room, T.phone,
+    sealed ? await realSeal('FILE_DONE', { id: T.id, sha256: sha() }) : `FILE_DONE:${JSON.stringify({ id: T.id, sha256: sha() })}`,
+    'phone', T.room.token);
+  const label = (sealed) => (sealed ? 'SEALED' : 'plaintext');
+
+  // (0) the measured ratios the constants were set from — re-measured HERE on
+  // the real seal path, so a seal-format change that moves them goes red in the
+  // gate rather than as a field abort.
+  {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const fullSealed = Buffer.byteLength(await chunkFrame(true, newId(), 21845, 21846, RAW), 'utf8');
+    const fullPlain = Buffer.byteLength(await chunkFrame(false, newId(), 21845, 21846, RAW), 'utf8');
+    const ratioS = fullSealed / RAW; const ratioP = fullPlain / RAW;
+    console.log(`       measured: sealed full chunk ${fullSealed} B = ${ratioS.toFixed(5)}x, plaintext ${fullPlain} B = ${ratioP.toFixed(5)}x`);
+    check('M: a real sealed full chunk is ~1.78x raw (double base64), NOT the plaintext ~1.33x',
+      ratioS > 1.777 && ratioS < 1.79 && ratioP < 1.34, `${ratioS.toFixed(5)} / ${ratioP.toFixed(5)}`);
+    check('M: the sealed ceiling factor is the measured ratio + <= 4 %',
+      R.FT_WIRE_OVERHEAD_FACTOR_SEALED > ratioS && R.FT_WIRE_OVERHEAD_FACTOR_SEALED <= ratioS * 1.04,
+      `${R.FT_WIRE_OVERHEAD_FACTOR_SEALED} vs ${ratioS}`);
+    // The worst envelope decodeEnvelope admits: kid 128 chars, s = 2^32 - 1,
+    // around a ciphertext the size of a real full chunk's.
+    const realC = JSON.parse((await chunkFrame(true, newId(), 21845, 21846, RAW)).slice('FILE_CHUNK:'.length)).c;
+    const worst = Buffer.byteLength(`FILE_CHUNK:${JSON.stringify({ e: 1, kid: 'k'.repeat(128), s: 2 ** 32 - 1, c: realC })}`, 'utf8');
+    check('M: even the WORST-envelope sealed full chunk is under the factor', worst / RAW < R.FT_WIRE_OVERHEAD_FACTOR_SEALED, String(worst / RAW));
+    check('M: the sealed one-chunk slack exceeds a worst-case sealed chunk (the plaintext slack does NOT cover a sealed one)',
+      R.FT_CHUNK_WIRE_BYTES_SEALED > worst && R.FT_CHUNK_WIRE_BYTES < fullSealed,
+      `${R.FT_CHUNK_WIRE_BYTES_SEALED} / ${R.FT_CHUNK_WIRE_BYTES} vs ${worst}`);
+    check('M: the sealed charge floor is 16/9 and a real sealed chunk is above it (never under-charged)',
+      Math.abs(R.FT_WIRE_B64_FACTOR_SEALED - 16 / 9) < 1e-12 && ratioS >= R.FT_WIRE_B64_FACTOR_SEALED);
+    check('M: the plaintext pair is UNCHANGED (1.40 / 4/3 / 66 600)',
+      R.FT_WIRE_OVERHEAD_FACTOR === 1.40 && Math.abs(R.FT_WIRE_B64_FACTOR - 4 / 3) < 1e-12 && R.FT_CHUNK_WIRE_BYTES === 66600);
+  }
+
+  // (1) no silent plaintext default — every conversion must be told the mode.
+  {
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const throws = (f) => { try { f(); return false; } catch (e) { return e instanceof TypeError; } };
+    check('no default: ftWireCeiling without a mode THROWS', throws(() => R.ftWireCeiling(1024)));
+    check('no default: ftRawFromWire without a mode THROWS', throws(() => R.ftRawFromWire(1024)));
+    check('no default: a truthy non-boolean mode THROWS', throws(() => R.ftWireCeiling(1024, 1)));
+    const src = stripComments(SERVER_SRC);
+    const calls = [...src.matchAll(/\b(ftWireCeiling|ftRawFromWire)\(([^)]*)\)/g)]
+      .filter((m) => !/^\s*(size|wireBytes),\s*sealed\s*$/.test(m[2]));   // the two definitions
+    check('every server.js call site passes rec.sealed (scan of the real, comment-stripped source)',
+      calls.length === 2 && calls.every((m) => /,\s*rec\.sealed\s*$/.test(m[2])),
+      calls.map((m) => m[0]).join(' | '));
+    check('rec.sealed is set from the OBSERVED offer mode', /sealed:\s*meta\.sealed/.test(src));
+  }
+
+  // (2) the ~170 KB BOUNDARY. On the old meter the first sealed file to die was
+  // just over 170 KB — assert both sides of it, in both modes.
+  for (const sealed of [true, false]) {
+    for (const size of [150 * 1024, 170 * 1024, 175 * 1024, 200 * 1024, 1 * MiB]) {
+      const T = await arm({ sealed, size });
+      await streamHonest(T, sealed, size);
+      const alive = !!T.room.transfer;
+      await done(T, sealed);
+      check(`boundary ${label(sealed)} ${size / 1024} KiB completes (no size_mismatch)`,
+        alive && T.room.transfer === null && !!lastOf(T.browser, 'FILE_DONE') && countOf(T.browser, 'FILE_FAILED') === 0,
+        `alive=${alive} failed=${payloadOf(lastOf(T.browser, 'FILE_FAILED'))?.reason}`);
+    }
+  }
+  {
+    // POSITIVE CONTROL: the same real sealed 175 KiB stream on the OLD plaintext
+    // ceiling aborts — proves the boundary arm above is capable of going red.
+    const R = buildRelay({ db: DB_ALWAYS_OK });
+    const size = 175 * 1024; const n = Math.ceil(size / RAW);
+    let wire = 0;
+    for (let q = 0; q < n; q++) wire += Buffer.byteLength(await chunkFrame(true, newId(), q, n, Math.min(RAW, size - q * RAW)), 'utf8');
+    check('control: a real sealed 175 KiB stream EXCEEDS the plaintext ceiling (the prod bug) and fits the sealed one',
+      wire > R.ftWireCeiling(size, false) && wire <= R.ftWireCeiling(size, true),
+      `wire=${wire} plain=${R.ftWireCeiling(size, false)} sealed=${R.ftWireCeiling(size, true)}`);
+  }
+
+  // (3) 500 MiB, both modes — the case whose absence let this ship.
+  for (const sealed of [true, false]) {
+    const size = 500 * MiB;
+    const db = mkRecordingDbP13();
+    const T = await arm({ sealed, size, db });
+    const t0 = Date.now();
+    const { n } = await streamHonest(T, sealed, size);
+    const alive = !!T.room.transfer;
+    await done(T, sealed);
+    await new Promise((r) => setImmediate(r));
+    check(`${label(sealed)} 500 MiB stable file completes: all ${n} chunks forwarded, FILE_DONE, no FILE_FAILED`,
+      alive && T.room.transfer === null && T.browser.chunks === n && !!lastOf(T.browser, 'FILE_DONE')
+      && countOf(T.browser, 'FILE_FAILED') === 0,
+      `alive=${alive} chunks=${T.browser.chunks}/${n} failed=${payloadOf(lastOf(T.browser, 'FILE_FAILED'))?.reason}`);
+    // Never under. Over by at most the per-chunk envelope ({id,seq,n} JSON, GCM
+    // tag, {e,kid,s}) in raw-equivalent — measured ~102 B/chunk sealed, ~63 B
+    // plaintext — so the bound is 128 B per chunk plus one chunk. At 10 MiB that
+    // is inside one chunk (7 below); at 500 MiB it is ~0.2 %, NOT +33 %.
+    check(`${label(sealed)} 500 MiB: charged never under 500 MiB, over only by per-chunk envelope (<= 128 B/chunk + 1 chunk)`,
+      T.rec.settledRaw >= size && T.rec.settledRaw <= size + n * 128 + RAW,
+      `settledRaw=${T.rec.settledRaw} (+${T.rec.settledRaw - size}, bound +${n * 128 + RAW})`);
+    console.log(`       ${label(sealed)} 500 MiB: wire=${T.rec.bytesForwarded} (${(T.rec.bytesForwarded / size).toFixed(5)}x) ceiling=${T.R.ftWireCeiling(size, sealed)} charged=${T.rec.settledRaw} ${Date.now() - t0}ms`);
+  }
+
+  // (4) 1 GiB at the hard cap, both modes: completes. Then the cap in the SAME
+  // per-mode units — 1 GiB + 1 chunk is refused at the offer, and a stream that
+  // keeps going past its 1 GiB hint aborts at the per-mode ceiling.
+  for (const sealed of [true, false]) {
+    const R0 = buildRelay({ db: DB_ALWAYS_OK });
+    const size = R0.FT_MAX_FILE_BYTES;
+    const T = await arm({ sealed, size });
+    const { n } = await streamHonest(T, sealed, size);
+    const alive = !!T.room.transfer;
+    const wire = T.rec.bytesForwarded;
+    await done(T, sealed);
+    check(`${label(sealed)} 1 GiB (exactly the cap) completes: ${n} chunks, FILE_DONE`,
+      alive && T.room.transfer === null && T.browser.chunks === n && !!lastOf(T.browser, 'FILE_DONE'),
+      `alive=${alive} chunks=${T.browser.chunks}/${n} wire=${wire} cap=${R0.ftWireCeiling(size, sealed)}`);
+    check(`${label(sealed)} 1 GiB: the hard cap uses the per-mode factor and slack`,
+      R0.ftWireCeiling(size, sealed) === Math.ceil(size * (sealed ? R0.FT_WIRE_OVERHEAD_FACTOR_SEALED : R0.FT_WIRE_OVERHEAD_FACTOR))
+        + (sealed ? R0.FT_CHUNK_WIRE_BYTES_SEALED : R0.FT_CHUNK_WIRE_BYTES)
+      && R0.ftWireCeiling(size * 2, sealed) === R0.ftWireCeiling(size, sealed));
+    if (sealed) {
+      check('SEALED 1 GiB: its real wire is over the OLD plaintext hard cap (it would have died there too)',
+        wire > R0.ftWireCeiling(size, false), `${wire} vs ${R0.ftWireCeiling(size, false)}`);
+    }
+    console.log(`       ${label(sealed)} 1 GiB: wire=${wire} ceiling=${R0.ftWireCeiling(size, sealed)} headroom=${R0.ftWireCeiling(size, sealed) - wire}`);
+
+    // 1 GiB + 1 chunk at the offer: refused, never armed, never forwarded.
+    {
+      const R = buildRelay({ db: DB_ALWAYS_OK });
+      const phone = mkWs(); const browser = mkWs();
+      const room = mkRoom(phone, browser);
+      const id = newId(); const over = size + RAW;
+      const body = { id, name: 'big.bin', size: over, mime: 'application/octet-stream', sha256: sha(), from: 'phone' };
+      let offer;
+      if (sealed) {
+        const env = JSON.parse((await realSeal('FILE_OFFER', body)).slice('FILE_OFFER:'.length));
+        offer = `FILE_OFFER:${JSON.stringify({ ...env, ft: { id, size: over } })}`;
+      } else offer = `FILE_OFFER:${JSON.stringify(body)}`;
+      R.handleFileFrame(room, phone, offer, 'phone', room.token);
+      await new Promise((r) => setImmediate(r));
+      const reason = payloadOf(lastOf(phone, 'FILE_FAILED'))?.reason;
+      check(`${label(sealed)} 1 GiB + 1 chunk is REFUSED at the offer (${sealed ? 'size_mismatch: hint over cap' : 'too_large'})`,
+        room.transfer === null && countOf(browser, 'FILE_OFFER') === 0 && reason === (sealed ? 'size_mismatch' : 'too_large'),
+        String(reason));
+    }
+    // A 1 GiB hint that keeps streaming full chunks past 1 GiB: the lying
+    // sender replays one real frame (the relay does not and must not dedupe
+    // content), so this arm costs one seal, not 22 000.
+    {
+      const T2 = await arm({ sealed, size });
+      const frame = await chunkFrame(sealed, T2.id, 0, 21846, RAW);
+      const fw = Buffer.byteLength(frame, 'utf8');
+      const ceiling = T2.R.ftWireCeiling(size, sealed);
+      let sent = 0;
+      while (T2.room.transfer && sent < 30000) { T2.R.handleFileFrame(T2.room, T2.phone, frame, 'phone', T2.room.token); sent++; }
+      const forwardedWire = T2.browser.chunkBytes;
+      const rawMoved = T2.browser.chunks * RAW;
+      check(`${label(sealed)} stream past a 1 GiB hint ABORTS size_mismatch at the per-mode ceiling, to the chunk`,
+        T2.room.transfer === null && payloadOf(lastOf(T2.browser, 'FILE_FAILED'))?.reason === 'size_mismatch'
+        && forwardedWire <= ceiling && forwardedWire + fw > ceiling,
+        `forwarded=${forwardedWire} ceiling=${ceiling} chunks=${T2.browser.chunks}`);
+      console.log(`       ${label(sealed)} past-1GiB: ${T2.browser.chunks} chunks, raw moved ${rawMoved} = +${((rawMoved / size - 1) * 100).toFixed(2)} % over the hint before abort`);
+    }
+  }
+
+  // (5) L5, both modes: hint 1 KiB, stream 10 MiB → aborts within a chunk.
+  for (const sealed of [true, false]) {
+    const T = await arm({ sealed, size: 1024 });
+    const { n, firstAbortSeq } = await streamHonest(T, sealed, 10 * MiB);
+    check(`L5 ${label(sealed)}: hint 1 KiB, stream 10 MiB → aborted size_mismatch within 2 chunks`,
+      T.room.transfer === null && T.browser.chunks <= 2 && firstAbortSeq >= 0 && firstAbortSeq < 2
+      && payloadOf(lastOf(T.phone, 'FILE_FAILED'))?.reason === 'size_mismatch',
+      `forwarded=${T.browser.chunks} of ${n} abortAt=${firstAbortSeq}`);
+    check(`L5 ${label(sealed)}: the metered bytes are still CHARGED (not refunded to 1 KiB)`,
+      T.rec.settledRaw >= T.browser.chunks * RAW, `settledRaw=${T.rec.settledRaw}`);
+  }
+
+  // (6) MODE BINDING — a chunk whose mode differs from the offer's is refused
+  // before it is metered or forwarded, and the transfer aborts size_mismatch.
+  for (const sealed of [true, false]) {
+    const T = await arm({ sealed, size: 10 * MiB });
+    // One honest chunk first, so the abort is provably about the SWITCH.
+    T.R.handleFileFrame(T.room, T.phone, await chunkFrame(sealed, T.id, 0, 214, RAW), 'phone', T.room.token);
+    const okFirst = T.browser.chunks === 1 && !!T.room.transfer;
+    const before = T.rec.bytesForwarded;
+    const wrong = await chunkFrame(!sealed, T.id, 1, 214, RAW);
+    T.R.handleFileFrame(T.room, T.phone, wrong, 'phone', T.room.token);
+    check(`mode binding: ${sealed ? 'an UNSEALED chunk on a SEALED' : 'a SEALED chunk on a PLAINTEXT'} transfer aborts size_mismatch, relay-marked`,
+      okFirst && T.room.transfer === null
+      && payloadOf(lastOf(T.phone, 'FILE_FAILED'))?.reason === 'size_mismatch'
+      && payloadOf(lastOf(T.browser, 'FILE_FAILED'))?.relay === true,
+      `okFirst=${okFirst} rec=${!!T.room.transfer} reason=${payloadOf(lastOf(T.phone, 'FILE_FAILED'))?.reason}`);
+    check(`mode binding (${label(sealed)}): the wrong-mode chunk was NOT forwarded and NOT metered`,
+      T.browser.chunks === 1 && T.rec.bytesForwarded === before);
+    check(`mode binding (${label(sealed)}): counted as mode_mismatch`,
+      T.R.ftDropCounts.get(T.room.token)?.get('FILE_CHUNK/mode_mismatch') === 1);
+    check(`mode binding (${label(sealed)}): the mismatch and abort log lines carry sealed=${sealed}`,
+      T.R.logs.some((l) => l.includes('mode mismatch') && l.includes(`sealed=${sealed}`))
+      && T.R.logs.some((l) => l.includes('aborted') && l.includes(`sealed=${sealed}`)));
+  }
+  {
+    // The over-ceiling abort line names the mode too.
+    const T = await arm({ sealed: true, size: 1024 });
+    await streamHonest(T, true, 1 * MiB);
+    check('the over-ceiling abort log line carries sealed=true',
+      T.R.logs.some((l) => l.includes('over metered ceiling') && l.includes('sealed=true')));
+  }
+
+  // (7) QUOTA: sealed 10 MiB settles within one chunk of 10 MiB — not 13.4 MiB.
+  for (const sealed of [true, false]) {
+    const size = 10 * MiB;
+    const db = mkRecordingDbP13();
+    const T = await arm({ sealed, size, db });
+    await streamHonest(T, sealed, size);
+    await done(T, sealed);
+    await new Promise((r) => setImmediate(r));
+    const oldCharge = Math.min(Math.ceil(T.rec.bytesForwarded / (4 / 3)), T.R.FT_MAX_FILE_BYTES);
+    check(`quota ${label(sealed)} 10 MiB: settles within one chunk of 10 MiB, never under`,
+      T.rec.settledRaw >= size && T.rec.settledRaw - size <= RAW, `settledRaw=${T.rec.settledRaw} (+${T.rec.settledRaw - size})`);
+    if (sealed) {
+      check('quota SEALED 10 MiB: the old 4/3 inversion would have charged ~13.4 MiB (+33 %) — the bug is real',
+        oldCharge > size * 1.3, `${oldCharge}`);
+      console.log(`       SEALED 10 MiB: charged ${T.rec.settledRaw} (+${T.rec.settledRaw - size} B); old inversion ${oldCharge} (+${((oldCharge / size - 1) * 100).toFixed(1)} %)`);
+    }
+    // The settle actually applied = charged - reserved, as one UPDATE.
+    const upd = db.execs.filter((e) => /"FileQuota" SET "bytes"/.test(e.sql));
+    check(`quota ${label(sealed)} 10 MiB: exactly one settle UPDATE, delta = charged - reserved`,
+      upd.length === 1 && upd[0].args[2] === String(Math.abs(T.rec.settledRaw - size)),
+      `n=${upd.length} delta=${upd[0]?.args[2]}`);
+  }
 }
 
 console.log(`\n${fail === 0 ? 'OK' : 'FAIL'} ft-relay: ${pass} passed, ${fail} failed`);

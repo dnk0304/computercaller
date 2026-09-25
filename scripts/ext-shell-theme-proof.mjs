@@ -205,7 +205,9 @@ for (const [name, os_, choice, expected] of COMBOS) {
     // the 1520063 values (#18181b dark / #f1f1f2 light) on Dennis's explicit
     // preference; this assertion exists to prove the shell FOLLOWED the
     // attribute, not to freeze a particular grey, and the count is unchanged.
-    expected === 'dark' ? live.token === '#18181b' : live.token === '#f1f1f2',
+    // EXT-WHITE-BG (f465598, Dennis 2026-09-25): light L2 — and shell.css
+    // --cc-page in lockstep — is now crisp #ffffff; dark is unchanged.
+    expected === 'dark' ? live.token === '#18181b' : live.token === '#ffffff',
     `--cc-page ${live.token}, --cc-ink ${live.ink}, color-scheme ${live.colorScheme}`,
   );
 

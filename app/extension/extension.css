@@ -32,7 +32,8 @@
 html:has(.cc-ext), body:has(.cc-ext) {
   height: 100%;
   margin: 0;
-  background: #fafafa;
+  /* Dennis 2026-09-25: white ground in light, matching Chrome's own panel. */
+  background: #ffffff;
   overscroll-behavior: none;
 }
 html[data-cc-theme=dark]:has(.cc-ext),
@@ -40,16 +41,21 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 .cc-ext {
   /* ---- surfaces (light) ---- */
-  --cc-page: #fafafa;
+  --cc-page: #ffffff;
   --cc-card: #ffffff;
   --cc-zebra: #f5f5f5;
-  --cc-field: #f2f2f2;
+  /* EXT-WHITE-BG: the inset-control tint on a white ground. Capped at #f7f7f8
+     (Dennis: crisp white, no heavy greys); fields carry --cc-field-bd too. */
+  --cc-field: #f7f7f8;
+  --cc-field-bd: #8e8e93;
   --cc-hair: #e5e5e5;
   --cc-ink: #171717;
   --cc-sec: #525252;
   /* R-CH restored it with the ladder it was derived from: 4.20:1 on the
-     restored L2 #f1f1f2, 4.43:1 on L1, 4.74:1 on a white card. */
-  --cc-mut: #737373;
+     restored L2 #f1f1f2, 4.43:1 on L1, 4.74:1 on a white card.
+     EXT-WHITE-BG: #6b6b70 = 5.30:1 on white, 4.95:1 on the #f7f7f8 field tint
+     (placeholders sit there, and #737373 was 4.43:1 on it). */
+  --cc-mut: #6b6b70;
   --cc-chip-bd: #d4d4d4;
 
   /* ---- brand (identical in both themes) ---- */
@@ -68,13 +74,20 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      copy is a background pretending to be a surface. The bubble therefore gets
      its own pair of tokens and stops answering to the remap at all.
 
+     Dennis 2026-09-25: "same shade but green instead" (extension only). The
+     fills keep the blue's saturation and lightness (hsl 211,100%,91% / 81%)
+     and move the hue to 140: clearly green, not mint or teal, and in the
+     family of the brand gradient's #35c977 without competing with it. Scoped
+     to these `.cc-ext` tokens only, so /app's Phone Mode copy keeps the blue
+     `var()` fallback on `.cc-bubble-out`.
+
      Measured (WCAG 2.x relative luminance, ink on fill):
-       light  #0b1220 on #cfe6ff = 14.64:1
-       dark   #0b1220 on #9cc8ff = 10.81:1
+       light  #0b1220 on #cfffdf = 16.96:1
+       dark   #0b1220 on #9cffbd = 15.56:1
      Both clear AA (4.5:1) with an order of magnitude to spare, and clear AAA
      (7:1) as well, so the bubble stays legible at the 0.8x density this panel
      runs and at the Small type step. */
-  --cc-bubble-out: #cfe6ff;
+  --cc-bubble-out: #cfffdf;
   --cc-bubble-out-ink: #0b1220;
 
   /* ---- search highlight (EXT-SEARCH / FEATURE-SPEC-MSG-SEARCH 1) ----
@@ -152,13 +165,11 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-wordmark-1: #fafafa;
   --cc-wordmark-2: #5fb0e8;
 
-  /* Outgoing bubble, dark. A LIGHTER blue than light mode, not a darker one:
+  /* Outgoing bubble, dark. A LIGHTER green than light mode, not a darker one:
      the ink stays the same near-black in both themes (spec default), so the
      fill has to carry enough luminance to hold it at 4.5:1 — it measures
-     10.81:1. See the résumé for the one judgement call flagged for Dennis:
-     black-on-light-blue is bright against a #0b0b0d panel, and a dark-only
-     alternative is offered there rather than chosen here. */
-  --cc-bubble-out: #9cc8ff;
+     15.56:1. Same hue move as the light block (211 -> 140, S/L unchanged). */
+  --cc-bubble-out: #9cffbd;
   --cc-bubble-out-ink: #0b1220;
 
   /* Search highlight, dark. A dark ochre with white ink rather than the light
@@ -538,7 +549,7 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   /* Only inside this query. Below the cap there are no gutters, and a ground
      that did not match the shell exactly would ring the iframe with a hairline
      of the wrong grey — the B2 seam, reappearing. */
-  html:has(.cc-ext), body:has(.cc-ext) { background: #f0f0f0; }
+  html:has(.cc-ext), body:has(.cc-ext) { background: #ffffff; }
 }
 @media (min-width: 620px) {
   :where([data-cc-theme=dark]) html:has(.cc-ext), :where([data-cc-theme=dark]) body:has(.cc-ext) { background: #050507; }
@@ -1011,9 +1022,13 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      the step is large (bar #3c3c3c L* 25.32 -> L0 #0b0b0d L* 3.07 = 22.25 dL*).
      That asymmetry is the accepted consequence of the surface Dennis asked
      for. */
+  /* R-WB (Dennis, Discord 2026-09-25 11:38Z): "i want the background to be a
+     nice crisp white, so it almost looks like a part of the chrome browser
+     itself in light mode." L1 and L2 light are now #ffffff; separation is
+     hairlines only. Do not "restore" the band or the grey. Dark unchanged. */
   --cc-l0: #ffffff;
-  --cc-l1: #f7f7f8;
-  --cc-l2: #f1f1f2;
+  --cc-l1: #ffffff;
+  --cc-l2: #ffffff;
   --cc-l3: #ffffff;
   /* Card outlines and band boundaries are the same hairline in light: at these
      lightnesses one value reads correctly against both L2 and L1. R-CH restored
@@ -1021,8 +1036,10 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      1.04:1 on L1, 1.16:1 around a white card — faint, and exactly what shipped.
      ORIGINAL EXT-FRAME-2 NOTE, kept for history: darkened
      with the ladder — #dcdcde on the new L2 is 1.07:1, i.e. gone. Now 1.34:1
-     on L2, 1.41:1 on L1, 1.72:1 around a white card. */
-  --cc-hair-card: #dcdcde;
+     on L2, 1.41:1 on L1, 1.72:1 around a white card.
+     R-WB: on an all-white ladder the outline is the card's only edge, so it
+     steps to #d4d4d8 = 1.48:1 on white. */
+  --cc-hair-card: #d4d4d8;
   /* The composer resize grip. A non-text control, so it is held at the 3:1
      WCAG 1.4.11 floor against the band it sits on rather than at a hairline's
      1.3:1 — a grab handle you cannot see is not an affordance. Measured
@@ -1088,6 +1105,41 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      grey band that the body inks no longer cleared; with L0 back on #0b0b0d
      the header is just another dark surface and the body ink --cc-mut #8a8a8a
      paints on it at 5.70:1. One ink, one token, as pre-9edc664. */
+}
+
+/* --- R-WB light-only boundaries (EXT-WHITE-BG, 2026-09-25) ----------------
+   With every light surface white, inset controls need their own edge. Gated
+   off dark by the html attribute, so the dark render is untouched.
+     text inputs (search, composer pill,     #f7f7f8 fill + #8e8e93 border
+       reply)
+                                             = 3.26:1 on white, 3.05:1 on fill
+     dial keys                               #f7f7f8 fill + --cc-hair-card
+     incoming bubble                         --cc-hair-card outline, white fill
+     muted ink (timestamps, key letters,     --cc-mut #6b6b70 = 5.30:1; was
+       placeholders)                         slate-400 #94a3b8 = 2.56:1
+   ------------------------------------------------------------------------- */
+:where(html:not([data-cc-theme=dark])) .cc-ext .cc-field:not(:focus),
+:where(html:not([data-cc-theme=dark])) .cc-ext .cc-note-reply-field:not(:focus),
+:where(html:not([data-cc-theme=dark])) .cc-ext textarea:not(:focus):not(.bg-transparent) {
+  background-color: var(--cc-field);
+  border-color: var(--cc-field-bd);
+}
+/* The thread composer's textarea is a transparent, square child of a rounded
+   pill; tinting the textarea painted a square box inside the pill. The fill and
+   edge belong on the pill itself. */
+:where(html:not([data-cc-theme=dark])) .cc-ext .cc-band-head .bg-slate-50:not(:focus-within) {
+  background-color: var(--cc-field);
+  border-color: var(--cc-field-bd);
+}
+:where(html:not([data-cc-theme=dark])) .cc-ext input::placeholder,
+:where(html:not([data-cc-theme=dark])) .cc-ext textarea::placeholder,
+:where(html:not([data-cc-theme=dark])) .cc-ext .text-slate-400 { color: var(--cc-mut); }
+:where(html:not([data-cc-theme=dark])) .cc-ext .grid-cols-3 > button.rounded-full {
+  background-color: var(--cc-field);
+  border-color: var(--cc-hair-card);
+}
+:where(html:not([data-cc-theme=dark])) .cc-ext .cc-thread-scroll .border-slate-200.bg-white {
+  border-color: var(--cc-hair-card);
 }
 
 /* --- L0: the header band ------------------------------------------------- */
@@ -1369,20 +1421,9 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   gap: 6px;
   min-width: 0;
 }
-.cc-ext .cc-note-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  border-radius: var(--r-pill);
-  object-fit: cover;
-}
-.cc-ext .cc-note-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--cc-field);
-  line-height: 1;
-}
+/* The app mark itself is <AppIcon> — see the ALERT-ICONS block at the end of
+   this file. The card only says how big it is. */
+.cc-ext .cc-note-icon { --cc-app-icon: 20px; }
 .cc-ext .cc-note-app {
   min-width: 0;
   flex: 1 1 auto;
@@ -1582,7 +1623,8 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    BELOW L0 in each theme, or the capped column reads as a light box floating
    on a lighter one. */
 @media (min-width: 620px) {
-  html:has(.cc-ext), body:has(.cc-ext) { background: #e6e6e8; }
+  /* R-WB: white gutters in light; the column's border-inline is the edge. */
+  html:has(.cc-ext), body:has(.cc-ext) { background: #ffffff; }
   :where([data-cc-theme=dark]) html:has(.cc-ext),
   :where([data-cc-theme=dark]) body:has(.cc-ext) { background: #050507; }
 }
@@ -1841,7 +1883,6 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 .cc-ext .cc-auth-foot { font-size: var(--cc-t-105); }
 
 /* Alerts cards */
-.cc-ext .cc-note-glyph { font-size: var(--cc-t-10); }
 .cc-ext .cc-note-app { font-size: var(--cc-t-105); font-weight: var(--cc-w-3); }
 .cc-ext .cc-note-time { font-size: var(--cc-t-105); }
 .cc-ext .cc-note-title { font-size: var(--cc-t-125); font-weight: var(--cc-w-3); }
@@ -2293,3 +2334,67 @@ html[data-cc-theme=dark]:has(.cc-ext) .cc-ft-panel [data-cc-ft-unsupported] {
   outline-offset: -2px;
   border-radius: 2px;
 }
+
+/* ---- ALERT-ICONS (2026-09-25): the app mark on cards and the toast --------
+   One component, <AppIcon>, three states: the phone's real launcher icon, a
+   messenger SVG we already ship, or a letter tile. All three sit in the same
+   box so a card never shifts when its logo arrives and replaces the tile.
+
+   Rounded square, not a circle. A launcher icon is designed for a squircle
+   mask; a circle crops the corners of every square logo, which is what the
+   old 16px `object-fit: cover` circle did. 22% is the Android adaptive-icon
+   corner, and `contain` means a logo is shrunk to fit, never cut.
+
+   Size is a custom property the caller sets (card 20px, toast 24px): 20px is
+   the smallest a real logo stays recognisable at this panel's 0.8x density,
+   and it lines the tile up with the card's 10.5px meta line without growing
+   the head row. The toast is a two-line banner, so it takes the next step. */
+.cc-ext .cc-app-icon {
+  --cc-app-icon-size: var(--cc-app-icon, 20px);
+  width: var(--cc-app-icon-size);
+  height: var(--cc-app-icon-size);
+  flex-shrink: 0;
+  border-radius: 22%;
+  object-fit: contain;
+}
+/* Letter tile. The fill is inline (hashed from the package, lib/appTile.ts);
+   the letter is always white, and every fill is asserted >= 4.5:1 against it
+   in tests/notif-icon-store.test.ts, so it holds in light and dark alike —
+   the letter sits on the tile, not on the panel. */
+.cc-ext .cc-app-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: calc(var(--cc-app-icon-size) * .55);
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+.cc-ext .cc-toast-icon { --cc-app-icon: 24px; margin-top: 1px; }
+
+/* ===========================================================================
+   FILE-QUEUE-WEB — the Transfers strip on the .cc-ext ladder. Only the tokens
+   move; the geometry is globals.css's. Dark values are measured on --cc-l1
+   #131316 (the strip) and the sheet #18181b, AAA like the light set:
+     ink #fafafa 17.8:1 · sec #d4d4d4 12.5:1 · fail #fecdd3 13.2:1 ·
+     pause #fde68a 14.9:1 (all on #131316; on #18181b sec 12.0, fail 12.6)
+   =========================================================================== */
+.cc-ext .cc-ftq {
+  --ftq-bg: var(--cc-l1);
+  --ftq-sheet: var(--cc-l2);
+  --ftq-hair: var(--cc-hair);
+  --ftq-ring: var(--cc-ring);
+}
+.cc-ext .cc-ftq-fill { background: var(--cc-grad); }
+:where([data-cc-theme=dark]) .cc-ext .cc-ftq {
+  --ftq-ink: #fafafa;
+  --ftq-sec: #d4d4d4;
+  --ftq-fail: #fecdd3;
+  --ftq-pause: #fde68a;
+  --ftq-track: #3f3f46;
+  --ftq-hover: rgba(255, 255, 255, 0.07);
+  --ftq-chip: #3f3f46;
+}
+/* Header queue badge, dark: #0b0b0d on #93c5fd is 10.9:1. */
+:where([data-cc-theme=dark]) .cc-ext .cc-ft-header-count { background: #93c5fd; color: #0b0b0d; }
