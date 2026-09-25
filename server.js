@@ -1121,6 +1121,25 @@ function startRelay(httpServer) {
     }
   }
 
+  /**
+   * Security C1. E2E_PREF and E2E_PREF_REFUSED are RELAY-MINTED: only the
+   * safeSend calls above ever author them. A peer that sends the same bytes
+   * over its own socket is impersonating the relay (a forged `rev` poisons the
+   * phone's lastRev until sign-out), so both socket handlers drop them before
+   * any forward, mirror, buffer or resume passthrough.
+   *
+   * Exact, case-sensitive prefix on the raw frame. Every client (Android
+   * PhoneClient, web usePhoneBridge, extension SW splitFrame) takes the type as
+   * the text before the FIRST ':' with no trim and no case folding, and
+   * dispatches on exact equality — so "starts with E2E_PREF:" is exactly "a
+   * client would read this as E2E_PREF". tests/e2e-pref-relay-owned-frames.json
+   * pins this list.
+   */
+  const RELAY_OWNED_PREF_FRAME_PREFIXES = ['E2E_PREF:', 'E2E_PREF_REFUSED:'];
+  function isRelayOwnedPrefFrame(msg) {
+    return typeof msg === 'string' && RELAY_OWNED_PREF_FRAME_PREFIXES.some((p) => msg.startsWith(p));
+  }
+
   function getRoom(token) {
     let room = rooms.get(token);
     if (!room) {
@@ -3668,6 +3687,13 @@ function startRelay(httpServer) {
           });
           return;
         }
+        // Security C1: E2E_PREF / E2E_PREF_REFUSED are relay-minted. One from a
+        // phone is forged — dropped before the listener mirror, the data plane,
+        // the resume passthrough and the resume buffer below.
+        if (isRelayOwnedPrefFrame(msg)) {
+          rlog(`[Relay][${redactToken(token)}] relay-owned frame from a phone socket — dropped: ${frameLabel(msg)}`);
+          return;
+        }
 
         // FILE TRANSFER (FT-1). Handled BEFORE the listener mirror and before
         // the active-pair data plane, by the same function the browser branch
@@ -3943,6 +3969,13 @@ function startRelay(httpServer) {
       // can never reach the data plane and be forwarded to the phone.
       if (msg.startsWith('SET_E2E_PREF:') || msg.startsWith('SEED_E2E_PREF:')) {
         console.log(`[Relay][${redactToken(token)}] E2E_PREF write from a browser socket — ignored (browsers write over HTTP)`);
+        return;
+      }
+      // Security C1: E2E_PREF / E2E_PREF_REFUSED are relay-minted. One from a
+      // browser is forged — dropped before the data plane and the resume
+      // passthrough can hand it to the phone.
+      if (isRelayOwnedPrefFrame(msg)) {
+        rlog(`[Relay][${redactToken(token)}] relay-owned frame from a browser socket — dropped: ${frameLabel(msg)}`);
         return;
       }
 
