@@ -133,7 +133,9 @@ function rig() {
   check('peer: lastFailure names our row and transfer', lf?.itemId === 'q1' && lf?.transferId === o?.id, lf);
   check('peer: the row is failed', r.ctl.getState().items.find((x) => x.id === 'q1')?.state === 'failed');
   check('peer: banner offers a real retry (resend, not dismiss-only)', r.retryMode() === 'resend', r.retryMode());
-  const out = await r.ctl.retry(lf?.itemId ?? 'q1');
+  // The banner's Try again is the hook's retry(): target = lastFailure.itemId, none -> 'unavailable'.
+  const target = r.ctl.getState().lastFailure?.itemId ?? null;
+  const out = target ? await r.ctl.retry(target) : 'unavailable';
   await flush();
   check('peer: Try again retries the row', out === 'sent', out);
   const o2 = r.offers()[1];
