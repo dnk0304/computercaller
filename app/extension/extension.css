@@ -68,13 +68,20 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      copy is a background pretending to be a surface. The bubble therefore gets
      its own pair of tokens and stops answering to the remap at all.
 
+     Dennis 2026-09-25: "same shade but green instead" (extension only). The
+     fills keep the blue's saturation and lightness (hsl 211,100%,91% / 81%)
+     and move the hue to 140: clearly green, not mint or teal, and in the
+     family of the brand gradient's #35c977 without competing with it. Scoped
+     to these `.cc-ext` tokens only, so /app's Phone Mode copy keeps the blue
+     `var()` fallback on `.cc-bubble-out`.
+
      Measured (WCAG 2.x relative luminance, ink on fill):
-       light  #0b1220 on #cfe6ff = 14.64:1
-       dark   #0b1220 on #9cc8ff = 10.81:1
+       light  #0b1220 on #cfffdf = 16.96:1
+       dark   #0b1220 on #9cffbd = 15.56:1
      Both clear AA (4.5:1) with an order of magnitude to spare, and clear AAA
      (7:1) as well, so the bubble stays legible at the 0.8x density this panel
      runs and at the Small type step. */
-  --cc-bubble-out: #cfe6ff;
+  --cc-bubble-out: #cfffdf;
   --cc-bubble-out-ink: #0b1220;
 
   /* ---- search highlight (EXT-SEARCH / FEATURE-SPEC-MSG-SEARCH 1) ----
@@ -152,13 +159,11 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-wordmark-1: #fafafa;
   --cc-wordmark-2: #5fb0e8;
 
-  /* Outgoing bubble, dark. A LIGHTER blue than light mode, not a darker one:
+  /* Outgoing bubble, dark. A LIGHTER green than light mode, not a darker one:
      the ink stays the same near-black in both themes (spec default), so the
      fill has to carry enough luminance to hold it at 4.5:1 — it measures
-     10.81:1. See the résumé for the one judgement call flagged for Dennis:
-     black-on-light-blue is bright against a #0b0b0d panel, and a dark-only
-     alternative is offered there rather than chosen here. */
-  --cc-bubble-out: #9cc8ff;
+     15.56:1. Same hue move as the light block (211 -> 140, S/L unchanged). */
+  --cc-bubble-out: #9cffbd;
   --cc-bubble-out-ink: #0b1220;
 
   /* Search highlight, dark. A dark ochre with white ink rather than the light
