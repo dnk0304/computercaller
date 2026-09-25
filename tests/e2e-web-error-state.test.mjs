@@ -272,15 +272,27 @@ check('usePhoneBridge exposes the dismiss to the UI',
  * unreviewed site still fires this, and so does either of these two vanishing.
  */
 {
-  const sites = (bridge.match(/e2eRef\.current\.onPairEnded\(\)/g) || []).length;
+  // T-RESUME-PHONE-RESTART-DESYNC widened the signature: onPairEnded now takes
+  // an OPTIONAL relay reason, and the PAIRING_TERMINATED site passes it so
+  // 'phone_restarted' can reach the user as its own sentence. The count control
+  // is what matters and it is unchanged — a third, unreviewed site still fires
+  // this, and so does either of these two vanishing — so the pattern is widened
+  // to "called with anything" rather than the count being relaxed.
+  const CALL = /e2eRef\.current\.onPairEnded\(/g;
+  const sites = (bridge.match(CALL) || []).length;
   eq('onPairEnded has exactly TWO reviewed call sites', sites, 2);
+  // ...and the empty-parens form must not silently come back at the terminated
+  // site: dropping the argument there is exactly how the new copy would go
+  // missing while every count above stayed green.
+  check('the PAIRING_TERMINATED site passes the relay reason',
+    /onPairEnded\(\(payload as Record<string, unknown>\)\?\.reason\)/.test(bridge));
   {
     const i = bridge.indexOf("case 'PAIRING_TERMINATED': {");
     const body = bridge.slice(i, bridge.indexOf(`\n      }`, i));
     check('the PAIRING_TERMINATED case actually sliced',
       body.includes('setLobbyState') && body.length > 200, `${body.length} chars`);
     check('site 1: the PAIRING_TERMINATED frame tells the e2e half',
-      body.includes('e2eRef.current.onPairEnded()'));
+      body.includes('e2eRef.current.onPairEnded('));
   }
   {
     const i = bridge.indexOf('const leaveActive = useCallback');

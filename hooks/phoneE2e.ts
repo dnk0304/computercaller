@@ -43,6 +43,21 @@ export type E2eState =
   | 'error';
 
 export type E2eError =
+  /**
+   * T-RESUME-PHONE-RESTART-DESYNC. The relay RESUMED this pair, but the peer
+   * that came back is not holding the session this page is holding — the phone
+   * process restarted, so its in-memory E2eSession is gone while ours (and the
+   * re-sent block) is not.
+   *
+   * Its own code rather than 're-pair-needed' because the two blame different
+   * machines: re-pair-needed means THIS browser's key record went away, and
+   * saying that here would send the user to inspect a computer that is fine.
+   * It is also not 'e2e-setup-failed' — nothing failed to be set up; a session
+   * that WAS set up stopped existing on one side, and a page that kept
+   * decrypt-expecting state over that silently drops every inbound message the
+   * phone now sends in the clear.
+   */
+  | 'e2e-resume-session-lost'
   | 'e2e-setup-failed'
   | 'e2e-key-mismatch'
   | 'e2e-unavailable'
@@ -999,6 +1014,97 @@ export function viewAfterPairEndedDuringSas(v: E2eView): E2eView {
     effective: v.effective,
     state: 'error',
     error: 'e2e-sas-unconfirmed',
+    peer: { supports: 'unknown', kind: v.peer.kind },
+  };
+}
+
+/**
+ * ── T-RESUME-PHONE-RESTART-DESYNC — the page's own re-verification ──────────
+ *
+ * A `PAIRING_ACTIVE` with `resumed:true` is the relay saying "this is the SAME
+ * pair, nobody re-accepted, here is the SAME block". On 2026-09-25 that claim
+ * was true of the PAIR and false of the PEER: the phone had been force-stopped,
+ * came back as a fresh process with no `e2eSession`, and the relay re-formed
+ * the pair 13 ms later. This page kept its session, kept saying "Encrypted.
+ * Confirm the code…", and silently dropped the plaintext SMS the phone then
+ * sent, because a sealed-expecting reader treats plaintext as noise.
+ *
+ * lib/resumeGate-core.js now refuses that resume at the relay. This function is
+ * the page holding a fact of its own, for the same reason A3 refuses to take
+ * `userId` off the wire: a page whose session lifetime is entirely the relay's
+ * decision has delegated the property it exists to protect.
+ *
+ * The rule is narrow on purpose, because the expensive mistake here is the
+ * FALSE POSITIVE — tearing down a healthy verified pair on a field we merely
+ * failed to receive:
+ *
+ *   not a resume                -> 'ok'   (a fresh Accept re-derives everything)
+ *   we hold no session/kid      -> 'ok'   (nothing to be out of step with)
+ *   peerSession absent          -> 'ok'   (NOT CHECKABLE: an older relay, or a
+ *                                          surviving phone whose declaration
+ *                                          would be stale — see server.js)
+ *   peerSession.present false   -> 'lost' (the phone said it has no session)
+ *   peerSession.kid !== our kid -> 'lost' (it holds a DIFFERENT session)
+ *   same kid                    -> 'ok'
+ *
+ * Pure, and it reads `unknown` rather than a typed payload because the caller's
+ * input is a relay frame — i.e. a value another party chose, whose shape must
+ * be proven here rather than asserted at the boundary.
+ */
+export type ResumedPeerVerdict = 'ok' | 'lost';
+
+export function resumedPeerSessionVerdict(a: {
+  /** `payload.resumed === true` — the relay's continuation claim. */
+  resumed: boolean;
+  /** The kid of the session THIS page currently holds, or null if it holds none. */
+  ourKid: string | null;
+  /** `payload.peerSession`, unvalidated, straight off the frame. */
+  peerSession: unknown;
+}): ResumedPeerVerdict {
+  if (!a.resumed) return 'ok';
+  if (!a.ourKid) return 'ok';
+  const p = a.peerSession;
+  if (typeof p !== 'object' || p === null) return 'ok';
+  const rec = p as Record<string, unknown>;
+  // `present` must be a real boolean. A truthy string or a missing field is a
+  // frame we do not understand, and "do not understand" is the not-checkable
+  // row, never the teardown row.
+  if (typeof rec.present !== 'boolean') return 'ok';
+  if (rec.present === false) return 'lost';
+  return typeof rec.kid === 'string' && rec.kid === a.ourKid ? 'ok' : 'lost';
+}
+
+/**
+ * The relay's `PAIRING_TERMINATED` reason, mapped to the error this page shows.
+ *
+ * Only ONE reason gets its own code. Every other teardown reason keeps the
+ * existing behaviour exactly — `onPairEnded`'s SAS-pending rule decides between
+ * the plain teardown and 'e2e-sas-unconfirmed', and neither is overridden here.
+ * Returning `null` means "nothing special about this reason", which is the
+ * answer for 'user_left', 'socket_closed', 'resume_expired' and anything a
+ * future relay invents.
+ */
+export function pairEndedErrorForReason(reason: unknown): E2eError | null {
+  return reason === 'phone_restarted' ? 'e2e-resume-session-lost' : null;
+}
+
+/**
+ * The view a pair-end with a NAMED reason produces.
+ *
+ * Distinct from {@link viewAfterPairEndedDuringSas} in what it outranks: an
+ * error already on screen still wins (the P5a sticky-error rule), but a PENDING
+ * SAS does not. "Your phone restarted" is a more specific and more actionable
+ * statement than "the pair ended before the codes were confirmed", and both
+ * describe the same event here.
+ */
+export function viewAfterPairEndedWithError(v: E2eView, error: E2eError): E2eView {
+  if (v.state === 'error') return viewAfterPairEnded(v);
+  return {
+    ...E2E_VIEW_INITIAL,
+    mode: v.mode,
+    effective: v.effective,
+    state: 'error',
+    error,
     peer: { supports: 'unknown', kind: v.peer.kind },
   };
 }

@@ -1736,7 +1736,11 @@ export function usePhoneBridge() {
         // onPairEnded is the existing, tested teardown (it is what Disconnect
         // already calls) and it decides the copy from whether a SAS was
         // pending; nothing new is implemented here.
-        e2eRef.current.onPairEnded();
+        // T-RESUME-PHONE-RESTART-DESYNC: the reason travels. The relay's new
+        // 'phone_restarted' is the one value that changes what the user is
+        // told ("Your phone restarted"); every other reason lands on the
+        // existing teardown rule unchanged.
+        e2eRef.current.onPairEnded((payload as Record<string, unknown>)?.reason);
         if (pairingTimerRef.current) {
           clearTimeout(pairingTimerRef.current);
           pairingTimerRef.current = null;

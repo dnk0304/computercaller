@@ -131,8 +131,25 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * "cleaned up" a year later by someone who reads `autoComplete` on a field
  * nothing autofills as dead code. These five pin it so the regression cannot
  * happen silently, and they cost no browser.
+ *
+ * T-RESUME-PHONE-RESTART-DESYNC (2026-09-25) RE-MEASURED it 291 -> 371 at this
+ * tip, and the attribution is split because only part of it is this lane's.
+ *
+ * EIGHT are: the copy product in scripts/lib/e2e-ui-cases.mjs is
+ * `E2E_STATES.length * (E2E_ERRORS.length + 1) * 2`, and this lane adds ONE
+ * error code ('e2e-resume-session-lost'), i.e. 4 x 1 x 2 per pass over the two
+ * surfaces. They run unconditionally, like every other arm counted above.
+ *
+ * The other SEVENTY-TWO are PRE-EXISTING drift: the number has not been
+ * re-measured since EXT-UI-COMPOSER, and several lanes have added arms without
+ * moving it. That is exactly the state a floor must not be left in — at 291 a
+ * truncated run that stops at 300 prints a cheerful N/N and the floor waves it
+ * through, which is the T-GATE-TEXTSIZE-P5A failure verbatim. So the floor is
+ * what the tip measures, never less: 371, measured on gate-P5A-eca4b73 (web,
+ * 371/371, leaked 0). A lane that finds it shy of 371 has a truncation to
+ * explain, not a floor to lower.
  */
-export const MIN_CHECKS = 291;
+export const MIN_CHECKS = 371;
 
 const results = [];
 const check = (name, pass, detail = '') => {

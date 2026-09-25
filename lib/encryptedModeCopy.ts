@@ -46,6 +46,7 @@ export const E2E_ERRORS = [
   'e2e-epoch-replayed',
   'e2e-sw-key-unavailable',
   'e2e-sas-unconfirmed',
+  'e2e-resume-session-lost',
 ] as const;
 export type E2eErrorName = (typeof E2E_ERRORS)[number];
 
@@ -408,6 +409,19 @@ function errorIndicator(error: E2eErrorName | undefined): EncryptionIndicator {
         label: 'Code not confirmed',
         detail: 'Your phone ended the pairing before both codes were confirmed. If the codes on the two screens were different, do not pair from this computer again.',
       };
+    // T-RESUME-PHONE-RESTART-DESYNC. The pair was RESUMED by the relay, but the
+    // peer that came back is not holding the session this page is holding — it
+    // restarted. Its own branch, and deliberately not `re-pair-needed`: nothing
+    // about THIS browser's keys changed, and telling the user their computer
+    // cleared its keys would send them looking in the wrong place.
+    //
+    // The words name the device that actually did something ("Your phone
+    // restarted") and the one action that can fix it. It does NOT say
+    // "disconnected": the relay connection is fine and reconnecting fixes
+    // nothing — only a fresh pairing mints key material both sides hold, and on
+    // a verified pair that means a NEW code to compare.
+    case 'e2e-resume-session-lost':
+      return { ...base, label: 'Not encrypted — pair again', detail: 'Your phone restarted, so the encrypted session ended on that side. Pair again.' };
     case 'e2e-setup-failed':
     default:
       return { ...base, label: 'Pairing refused', detail: `${ABORT_SETUP_FAILED}.` };

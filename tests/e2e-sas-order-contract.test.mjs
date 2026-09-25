@@ -189,8 +189,15 @@ const row = (id) => {
   const tcBody = tc.slice(0, tc.indexOf('\n      }'));
   check('the PAIRING_TERMINATED case actually sliced',
     tcBody.includes('setLobbyState') && tcBody.length > 200, `${tcBody.length} chars`);
+  // T-RESUME-PHONE-RESTART-DESYNC widened the signature: onPairEnded now takes
+  // the relay's OPTIONAL PAIRING_TERMINATED reason, so 'phone_restarted' can
+  // reach the user as its own sentence. What this suite cares about — that the
+  // frame tells the e2e half AT ALL — is unchanged, and the argument is pinned
+  // rather than merely tolerated.
   check('PAIRING_TERMINATED tells the e2e half the pair ended',
-    /e2eRef\.current\.onPairEnded\(\)/.test(tcBody));
+    /e2eRef\.current\.onPairEnded\(/.test(tcBody));
+  check('...and hands it the relay reason',
+    /onPairEnded\(\(payload as Record<string, unknown>\)\?\.reason\)/.test(tcBody));
 }
 
 // ── 4. the copy ─────────────────────────────────────────────────────────────

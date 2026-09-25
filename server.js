@@ -53,6 +53,15 @@ const { resetRoom: resetRoomCore, createResetRateLimiter } = require('./lib/room
 // tests/e2e-passthrough.test.mjs exercises it rather than a mirror of it.
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plain-Node server (matches the require block above); keeps the eslint baseline unchanged.
 const { validateE2eBlock, e2eRequestKeys, e2eAcceptKeys } = require('./lib/e2eBlock-core.js');
+// T-RESUME-PHONE-RESTART-DESYNC. The resume-eligibility predicate and the
+// LEAVE_ACTIVE-during-hold predicate live in their own module so the contract
+// test drives the REAL rule rather than a mirror of it. See the file header for
+// the prod incident that produced them.
+const {
+  readPhoneSessionParam,
+  resumeGateVerdict,
+  leaveActiveHonouredDuringHold,
+} = require('./lib/resumeGate-core.js');
 
 // Bundle A (2026-05-28) — Phase 4 security review fix (H7).
 // Every server.js log site that previously included the raw phoneToken (and
@@ -1463,6 +1472,72 @@ function startRelay(httpServer) {
     // keep the claim armed and fall through to the normal lobby flow.
     if (!phoneWs || !browserWs) return false;
 
+    // ── T-RESUME-PHONE-RESTART-DESYNC ────────────────────────────────────────
+    // Both roles are back and everything ABOVE this line says "resume". The one
+    // thing none of it proves is that the returning PHONE still holds the E2E
+    // session this resume is about to re-send it (P1(b) re-sends the SAME block
+    // — same kid, same bytes — precisely because a resume mints nothing).
+    //
+    // A force-stopped app is a fresh process with `e2eSession = null`, and it
+    // rejoins the lobby in milliseconds, so every guard here read as a blip. It
+    // resumed into a pair it could not decrypt, the web stayed sealed-expecting
+    // and silently dropped the phone's plaintext SMS_RECEIVED, and the phone's
+    // own Disconnect was ignored for the full 180 s.
+    //
+    // So the phone must SAY it still holds the session, and name it. The gate
+    // is pure and lives in lib/resumeGate-core.js with the whole rule table.
+    // A terminate here is not a failure mode — it is the honest outcome: both
+    // sides to the lobby, the browser told WHY, and the user re-pairs with a
+    // fresh SAS. There is deliberately no silent re-handshake: a verified pair
+    // means a code two people compared, and new key material must be compared
+    // again.
+    const gate = resumeGateVerdict({
+      phoneReturning: !survivorPhone,
+      roomKid: room.active.e2e ? room.active.e2e.kid : null,
+      phoneSession: phoneWs.phoneSession,
+    });
+    if (gate.action === 'terminate') {
+      console.log(
+        `[Relay][${redactToken(room.token)}] resume REFUSED (droppedRole=${claim.droppedRole}, phoneReturning=true,`
+        + ` reason=${gate.reason}, detail=${gate.detail}) — terminating the held pair`,
+      );
+      // Clear the claim FIRST. terminateActivePair's non-socket_closed path
+      // does this too, but doing it here means the claim is gone before any
+      // frame this call sends can re-enter a resume path — a re-armed claim
+      // over a pair we have just declared dead is exactly the wedge we are
+      // removing.
+      room.resumable = null;
+      // TWO shapes reach here and only one of them has an active slot left.
+      //
+      //  (1) A SURVIVOR is still held (the ordinary force-stop: the browser
+      //      never went away). terminateActivePair does the whole job — drops
+      //      room.active.e2e, empties the frame buffer, sends
+      //      PAIRING_TERMINATED:{reason:'phone_restarted'} and returns the
+      //      survivor to the lobby with a fresh LOBBY_STATUS.
+      //
+      //  (2) BOTH sides had already dropped and are back in the lobby (phone
+      //      restarted, then the browser reloaded). room.active holds nothing,
+      //      so terminateActivePair's `if (!browser && !phone) return;` guard
+      //      fires and it tells NOBODY — the browser would sit in the lobby
+      //      having been silently refused, which is the original wedge wearing
+      //      a different hat. The returning browser is a live socket we are
+      //      holding right here, so it is told directly.
+      //
+      // The returning PHONE needs nothing either way: it is still in room.lobby
+      // and the join path below sends it LOBBY_STATUS, because we return false.
+      if (room.active.browser || room.active.phone) {
+        terminateActivePair(room, gate.reason);
+      } else {
+        room.active = { browser: null, phone: null, e2e: null };
+        room.frameBuffer = [];
+        ftAbort(room, 'connection_lost', { notify: false });
+        safeSend(browserWs, `PAIRING_TERMINATED:${JSON.stringify({ reason: gate.reason })}`);
+        const { phones } = countLobby(room);
+        safeSend(browserWs, `LOBBY_STATUS:${JSON.stringify({ phonePresent: phones > 0, alreadyActive: false })}`);
+      }
+      return false;
+    }
+
     room.lobby.delete(phoneWs);
     room.lobby.delete(browserWs);
     room.active.browser = browserWs;
@@ -1499,6 +1574,22 @@ function startRelay(httpServer) {
     // does NOT set these: a genuine first connect must stay a first connect.
     const gapMs = Date.now() - (claim.heldSince ?? claim.droppedAt);
     const resumeMark = { resumed: true, held, gapMs };
+    // T-RESUME-PHONE-RESTART-DESYNC — what the page needs to re-verify the peer
+    // for itself. The gate above already refuses the bad rows, so this is
+    // defence in depth, and it is worth having for the reason A3 gives about
+    // `userId`: a page that trusts the relay's verdict and holds no fact of its
+    // own has delegated its session lifetime to the relay.
+    //
+    // Sent ONLY when the phone is the side that RETURNED, and only when that
+    // phone declared something. A SURVIVING phone's declaration is from its own
+    // join — which for a pair formed after that join is stale by construction —
+    // so reporting it would be worse than saying nothing. Absent therefore
+    // means "not checkable here", never "no session": the page treats an absent
+    // field as a non-event, exactly as it treats a relay that predates it.
+    const returningPhoneSession = (!survivorPhone && phoneWs.phoneSession && phoneWs.phoneSession.declared)
+      ? { present: !!phoneWs.phoneSession.present, kid: phoneWs.phoneSession.kid }
+      : null;
+    if (returningPhoneSession) resumeMark.peerSession = returningPhoneSession;
     // P1(b) — the SAME e2e block, same kid, same bytes. This is a resume, not a
     // re-pair: no new Accept happened, so no new key material exists, and the
     // returning socket has none of its own. Minting or omitting a block here
@@ -1508,8 +1599,14 @@ function startRelay(httpServer) {
     // (tests/e2e-resume-carries-block.test.mjs asserts it as bytes).
     const e2eResume = room.active.e2e ? { e2e: room.active.e2e } : {};
     if (!survivorBrowser) safeSend(browserWs, `PAIRING_ACTIVE:${JSON.stringify({ deviceName, ...e2eResume, ...resumeMark })}`);
-    if (!survivorPhone) safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', ...e2eResume, ...resumeMark })}`);
-    console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, heldFor=${gapMs}ms, droppedRole=${claim.droppedRole}, panelHold=${claim.panelHold === true}, survivorHeld=${held})`);
+    // The phone is not told about its own declaration — peerSession is the
+    // PAGE's re-verification input and nothing else, so it is stripped here
+    // rather than travelling as noise the APK has to learn to ignore.
+    if (!survivorPhone) {
+      const phoneMark = { resumed: resumeMark.resumed, held: resumeMark.held, gapMs: resumeMark.gapMs };
+      safeSend(phoneWs, `PAIRING_ACTIVE:${JSON.stringify({ ua: id.ua ?? 'unknown', ip: id.ip ?? 'unknown', ...e2eResume, ...phoneMark })}`);
+    }
+    console.log(`[Relay][${redactToken(room.token)}] auto-resumed pair after socket_closed (gap=${Date.now() - claim.droppedAt}ms, heldFor=${gapMs}ms, droppedRole=${claim.droppedRole}, panelHold=${claim.panelHold === true}, survivorHeld=${held}, gate=${gate.reason}, peerSession=${returningPhoneSession ? (returningPhoneSession.present ? 'present' : 'absent') : 'not-reported'})`);
 
     // Fix 2: replay phone→browser frames buffered during the blip, in order,
     // to the now-active browser. Discard entries older than RESUME_WINDOW_MS
@@ -3012,6 +3109,31 @@ function startRelay(httpServer) {
     // receives phone→browser frames. See the browser-path role assignment below.
     const rawRole = parsed.query?.role;
     const isListener = (typeof rawRole === 'string' && rawRole.trim().toLowerCase() === 'listener');
+    // T-RESUME-PHONE-RESTART-DESYNC. `?session=<kid>` — the PHONE's declaration
+    // that it still holds an E2E session for this room, and WHICH one. Read
+    // here rather than from a later frame because tryAutoResume runs at
+    // lobby-JOIN time, synchronously, before the phone has sent a single
+    // message: a bit that arrives after the resume decision is a bit that
+    // cannot inform it. Absent on every APK shipped before vc68; see
+    // lib/resumeGate-core.js for why silence is treated as "no session".
+    //
+    // T-RELEASE-LOG-TOKEN INVENTORY (Security C2, ack 2026-09-25). The phone's
+    // /relay/phone dial URL carries exactly TWO pieces of query-string material
+    // — verified against the Kotlin dial site, PhoneService.kt:4180-4207 — and
+    // any logging of that URL, on the relay OR in Android logcat, exposes both:
+    // `?token=<phoneToken>` (the long-lived BEARER, and the whole severity of
+    // that ticket) and, new in vc68, `?session=<kid>`. Nothing else: the device
+    // label arrives in a DEVICE_INFO FRAME, not the URL. The kid is a PUBLIC
+    // label, not key material: kdf.mjs derives traffic keys from
+    // {pairingId, sessionKey, context} and never from the kid, the relay already
+    // holds it (room.active.e2e.kid) and already re-sends it inside every
+    // PAIRING_ACTIVE, and it rides on every sealed envelope. It is listed here
+    // so the inventory is COMPLETE, not because it raises that ticket's
+    // severity. It is deliberately never written to a relay log: the refusal log
+    // prints gate.reason/gate.detail (fixed strings) and the resume log prints
+    // peerSession=present|absent|not-reported. Keep it that way — and note the
+    // parser now charset-pins the value anyway (Security MINOR 1).
+    const phoneSession = readPhoneSessionParam(parsed.query?.session);
     // P1(c) — a listener may declare WHICH device it is (`?deviceId=…`). It is
     // the only way the relay can hand a listener its OWN key wrap and nobody
     // else's: PAIR_STATE is the listener's only pairing frame, and the wraps
@@ -3030,7 +3152,7 @@ function startRelay(httpServer) {
       && /^[A-Za-z0-9_-]{1,128}$/.test(rawDeviceId.trim()))
       ? rawDeviceId.trim()
       : null;
-    return { pathname, legacyToken, ticket, isListener, listenerDeviceId };
+    return { pathname, legacyToken, ticket, isListener, listenerDeviceId, phoneSession };
   }
 
   /**
@@ -3113,7 +3235,7 @@ function startRelay(httpServer) {
       if (err && err.code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH') ws.overMaxPayload = true;
     });
 
-    const { pathname, legacyToken, ticket, isListener, listenerDeviceId } = parseConnection(req);
+    const { pathname, legacyToken, ticket, isListener, listenerDeviceId, phoneSession } = parseConnection(req);
 
     // Auth gate. Both paths produce a (userId, phoneToken) pair — the
     // phoneToken serves as the relay room key in either case so legacy
@@ -3237,6 +3359,12 @@ function startRelay(httpServer) {
       // stronger proof of liveness than a pong).
       ws.missedPongs = 0;
       ws.deviceName = null;
+      // T-RESUME-PHONE-RESTART-DESYNC. Stashed BEFORE room.lobby.add, because
+      // tryAutoResume finds this socket by walking room.lobby and reads the
+      // declaration off it. Set on every phone socket, including the ones that
+      // declared nothing — the shape is uniform so the gate never has to guess
+      // whether a missing field means "old APK" or "we forgot to set it".
+      ws.phoneSession = phoneSession;
       room.lobby.add(ws);
 
       const lobbyCounts = countLobby(room);
@@ -3344,8 +3472,52 @@ function startRelay(httpServer) {
         // flips back to the lobby state.
         if (msg.startsWith('LEAVE_ACTIVE:')) {
           try {
-            if (ws === room.active.phone) {
+            // T-RESUME-PHONE-RESTART-DESYNC. During a SURVIVOR HOLD the phone
+            // is, by definition, not in room.active.phone — it is the side that
+            // dropped. The strict `ws === room.active.phone` test therefore
+            // turned the user's own Disconnect into
+            // "LEAVE_ACTIVE from non-active phone — ignored" for the full 180 s
+            // of the hold, which is the three minutes of nothing Dennis saw.
+            //
+            // A held pair is still this room's pair and the phone is still a
+            // party to it, so the Disconnect is HONOURED and tears the hold
+            // down. The ignored branch keeps exactly its original job: a phone
+            // that is in no active pair and no live hold cannot end one.
+            const claim = room.resumable;
+            const claimLive = !!claim && Date.now() <= claim.expiresAt;
+            // Security MINOR 4 (ack 2026-09-25): the hold branch must honour
+            // only the phone the hold is ABOUT. There is no stable phone
+            // deviceId on this wire (`?deviceId=` is listener-only and
+            // ws.deviceName is self-declared), and the sender is a NEW socket
+            // from the redial, so the sound discriminator is cardinality: the
+            // sender is honoured only when it is the SOLE phone socket in the
+            // room — the only candidate tryAutoResume could pick. A second
+            // same-account handset in the lobby makes the room ambiguous and
+            // is refused. See lib/resumeGate-core.js for the full reasoning.
+            let roomPhoneCount = 0;
+            for (const s of room.lobby) {
+              if (s.role === 'phone' && s.readyState === WebSocket.OPEN) roomPhoneCount += 1;
+            }
+            if (room.active.phone && room.active.phone.readyState === WebSocket.OPEN
+              && !room.lobby.has(room.active.phone)) roomPhoneCount += 1;
+            const senderIsSoleRoomPhone = roomPhoneCount === 1
+              && ws.readyState === WebSocket.OPEN;
+            const honoured = leaveActiveHonouredDuringHold({
+              isActivePhone: ws === room.active.phone,
+              claimLive,
+              claimDroppedRole: claim ? claim.droppedRole : null,
+              survivorPresent: !!(room.active.browser || room.active.phone),
+              senderIsSoleRoomPhone,
+            });
+            if (honoured) {
+              if (ws !== room.active.phone) {
+                console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from a phone under a survivor hold — HONOURED (droppedRole=${claim.droppedRole})`);
+              }
               terminateActivePair(room, 'user_left');
+            } else if (claimLive && claim.droppedRole === 'phone' && !senderIsSoleRoomPhone) {
+              // The MINOR-4 refusal, logged distinctly from the historical one:
+              // this phone would have torn down a hold it may not be a party to.
+              console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE under a phone-dropped hold from one of ${roomPhoneCount} phone sockets — ignored (sender not identifiable as the held phone)`);
             } else {
               console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active phone — ignored`);
             }

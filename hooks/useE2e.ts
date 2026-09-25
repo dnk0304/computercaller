@@ -88,6 +88,9 @@ import {
   viewAfterErrorDismissed,
   viewAfterPairEnded,
   viewAfterPairEndedDuringSas,
+  viewAfterPairEndedWithError,
+  resumedPeerSessionVerdict,
+  pairEndedErrorForReason,
   viewAfterSasConfirmed,
   withRelayAbortAccepted,
   writeEncryptedMode,
@@ -323,7 +326,7 @@ export interface E2eApi {
   /** Sign-out wipes SK and keeps the device key. */
   onSignOut(): void;
   /** A new pair / new epoch: drop the session so the next accept rebuilds it. */
-  onPairEnded(): void;
+  onPairEnded(reason?: unknown): void;
   /**
    * The explicit user act that clears `state:'error'`. Nothing the relay or the
    * network can cause clears it — see the table in hooks/phoneE2e.ts.
@@ -367,6 +370,16 @@ export function useE2e(emailProp?: string | null): E2eApi {
   // only. Never in state that could be serialised into a devtools snapshot, and
   // never in storage (the brief, and §13.10's "SK lives only in memory").
   const sessionRef = useRef<ComputerSession | null>(null);
+  /**
+   * T-RESUME-PHONE-RESTART-DESYNC. The kid of the session in `sessionRef`.
+   *
+   * A ref rather than a read of `view.debug.kid` because this is a CONTROL
+   * input, and a control that reads its fact out of a diagnostics field is one
+   * refactor away from reading `undefined` and silently passing. Written and
+   * cleared in lockstep with `sessionRef` — every site that nulls one nulls the
+   * other.
+   */
+  const kidRef = useRef<string | null>(null);
   const keyRef = useRef<WebDeviceKey | null>(null);
   const swRef = useRef<SwKeyResult>({ status: 'unknown', recipient: null, pairingId: null });
   /**
@@ -472,6 +485,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
   const fail = useCallback((error: E2eError, detail?: string) => {
     if (detail) console.warn(`[E2E] ${error} — ${detail}`);
     sessionRef.current = null;
+    kidRef.current = null;
     setView((v) => ({ ...v, state: 'error', error, mode: v.mode }));
   }, []);
 
@@ -524,6 +538,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
    */
   const revokeLocalPair = useCallback(async (reason?: string): Promise<boolean> => {
     sessionRef.current = null;
+    kidRef.current = null;
     refuseUnsealRef.current = true;
     pinnedPhoneKeyRef.current = null;
     latchedRef.current = false;
@@ -554,6 +569,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     const outcome = outcomeForRevocationVerdict(await fetchRevocationVerdict());
     if (!outcome.teardown) return false;
     sessionRef.current = null;
+    kidRef.current = null;
     refuseUnsealRef.current = true;
     fail(outcome.error ?? 're-pair-needed', outcome.detail);
     return true;
@@ -730,6 +746,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     }
     if (resolved.action === 'refuse') {
       sessionRef.current = null;
+      kidRef.current = null;
       refuseUnsealRef.current = true;
       fail(resolved.error, resolved.detail);
       return true;
@@ -744,6 +761,47 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // epoch floor. `resumed` is set by the RELAY, so clearing the refusal on a
     // resume would mean a relay-position party could lift a revocation refusal
     // simply by causing a reconnect. Only a fresh pairing clears it.
+    // ── T-RESUME-PHONE-RESTART-DESYNC ────────────────────────────────────────
+    // A resume is the relay's claim that this is the SAME pair. On 2026-09-25
+    // that claim was true of the pair and false of the PEER: the phone had been
+    // force-stopped, its in-memory E2eSession was gone, and the relay re-formed
+    // the pair 13 ms later and re-sent the SAME block. This page kept the
+    // session, kept saying "Encrypted. Confirm the code…", and dropped every
+    // plaintext SMS_RECEIVED the phone then sent — a sealed-expecting reader
+    // reads plaintext as noise. Nothing on this screen was false enough for the
+    // user to distrust it, and nothing arrived for three minutes.
+    //
+    // The relay now refuses that resume (lib/resumeGate-core.js), and this is
+    // the page keeping a fact of its own. It runs BEFORE the session is
+    // replaced — `kidRef` still holds the kid we are being asked to continue —
+    // and before any decrypt-expecting state is re-published.
+    //
+    // It is NOT a silent re-handshake: the page leaves the pair (`return true`
+    // -> leaveActive) and the user pairs again by hand, because a verified pair
+    // is a code two people compared and new key material must be compared
+    // again.
+    if (resumedPeerSessionVerdict({
+      resumed: payload.resumed === true,
+      ourKid: kidRef.current,
+      peerSession: payload.peerSession,
+    }) === 'lost') {
+      console.warn(
+        '[E2E] e2e-resume-session-lost — the relay resumed this pair but the phone'
+        + ' does not hold the session we do (it restarted). Leaving the pair.',
+      );
+      sessionRef.current = null;
+      kidRef.current = null;
+      latchedRef.current = false;
+      sealedLatchedRef.current = false;
+      // The digits go with the session. A confirmation carried past this point
+      // would approve a code against key material only one side still holds.
+      sasPendingRef.current = false;
+      confirmedSasRef.current = null;
+      currentSasRef.current = null;
+      setView((v) => viewAfterPairEndedWithError(v, 'e2e-resume-session-lost'));
+      return true;
+    }
+
     const isFreshPairing = payload.resumed !== true;
     if (isFreshPairing) {
       refuseUnsealRef.current = false;
@@ -780,6 +838,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     if (pinnedPhoneKeyRef.current && !verdict.live) {
       const outcome = outcomeForRevocationVerdict(verdict);
       sessionRef.current = null;
+      kidRef.current = null;
       refuseUnsealRef.current = true;
       fail(outcome.error ?? 're-pair-needed', outcome.detail);
       return true;
@@ -962,6 +1021,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
       });
       sessionKey.fill(0);
       sessionRef.current = session;
+      kidRef.current = block.kid;
 
       // B9: the SAS covers the FULL key set — epk plus every recipKey, the SW's
       // included. A code over a subset would leave the digits unchanged on the
@@ -1240,6 +1300,7 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // SK goes; the device key stays. Re-registering a key on every sign-in
     // would churn DeviceKey rows and break the C-2 pin for the other side.
     sessionRef.current = null;
+    kidRef.current = null;
     latchedRef.current = false;
     sealedLatchedRef.current = false;
     sasPendingRef.current = false;
@@ -1275,8 +1336,15 @@ export function useE2e(emailProp?: string | null): E2eApi {
     keyRef.current = null;
   }, []);
 
-  const onPairEnded = useCallback(() => {
+  /**
+   * T-RESUME-PHONE-RESTART-DESYNC. `reason` is the relay's PAIRING_TERMINATED
+   * reason, forwarded verbatim and OPTIONAL — every existing caller that passes
+   * nothing keeps exactly its old behaviour. Only 'phone_restarted' changes the
+   * outcome; see pairEndedErrorForReason.
+   */
+  const onPairEnded = useCallback((reason?: unknown) => {
     sessionRef.current = null;
+    kidRef.current = null;
     latchedRef.current = false;
     sealedLatchedRef.current = false;
     // The pair is gone, so there is nothing left to block; the CONFIRMATION
@@ -1298,6 +1366,11 @@ export function useE2e(emailProp?: string | null): E2eApi {
     // meant the error was erased by the teardown it had itself caused, and the
     // user saw nothing at all. viewAfterPairEnded carries the rule and its
     // table; this line must stay a call to it. See hooks/phoneE2e.ts.
+    // A NAMED reason outranks the SAS-pending rule: "Your phone restarted" is
+    // both more specific and more actionable than "the pair ended before the
+    // codes were confirmed", and on this teardown they describe one event.
+    const named = pairEndedErrorForReason(reason);
+    if (named) { setView((v) => viewAfterPairEndedWithError(v, named)); return; }
     setView(endedMidSas ? viewAfterPairEndedDuringSas : viewAfterPairEnded);
   }, []);
 
