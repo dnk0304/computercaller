@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -66,6 +67,12 @@ class FileTransferActivity : AppCompatActivity() {
         const val ACTION_SHOW_OFFER = "com.dnkdialer.companion.FT_SHOW_OFFER"
         const val ACTION_SHOW_MESSAGE = "com.dnkdialer.companion.FT_SHOW_MESSAGE"
 
+        /** FILE-QUEUE: pick the file again for a needs-file / failed row. */
+        const val ACTION_REPICK = "com.dnkdialer.companion.FT_REPICK"
+
+        /** The queue row [ACTION_REPICK] is for. */
+        const val EXTRA_QUEUE_KEY = "queue_key"
+
         /** Skip the confirm dialog and go straight to the picker. */
         const val EXTRA_AUTO_ACCEPT = "auto_accept"
 
@@ -108,16 +115,18 @@ class FileTransferActivity : AppCompatActivity() {
     private fun dispatch(intent: Intent?) {
         when (intent?.action) {
             Intent.ACTION_SEND -> handleShare(
-                intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                listOfNotNull(intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
             )
-            Intent.ACTION_SEND_MULTIPLE -> {
-                // One transfer at a time (spec §2). Taking the first and
-                // saying so is better than silently dropping the rest.
-                val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                if ((uris?.size ?: 0) > 1) toast(getString(R.string.ft_one_at_a_time))
-                handleShare(uris?.firstOrNull())
+            // FILE-QUEUE: every shared file is queued, in the order given.
+            // The manager still sends one at a time; the queue feeds it.
+            Intent.ACTION_SEND_MULTIPLE -> handleShare(
+                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty().filterNotNull()
+            )
+            ACTION_PICK_FILE -> openSourcePicker(multiple = true)
+            ACTION_REPICK -> {
+                repickKey = intent.getStringExtra(EXTRA_QUEUE_KEY)
+                if (repickKey == null) finish() else openSourcePicker(multiple = false)
             }
-            ACTION_PICK_FILE -> openSourcePicker()
             ACTION_SHOW_OFFER -> showOffer(intent.getBooleanExtra(EXTRA_AUTO_ACCEPT, false))
             ACTION_SHOW_MESSAGE -> showMessage(intent.getStringExtra(EXTRA_REASON))
             else -> finish()
@@ -126,17 +135,34 @@ class FileTransferActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- send
 
-    private fun handleShare(uri: Uri?) {
-        if (uri == null) {
-            toast(getString(R.string.ft_no_file)); finish(); return
-        }
-        confirmAndSend(uri)
+    /** Set while an [ACTION_REPICK] picker is open. Survives recreation via [onSaveInstanceState]. */
+    private var repickKey: String? = null
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        repickKey?.let { outState.putString(EXTRA_QUEUE_KEY, it) }
     }
 
-    private fun openSourcePicker() {
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+        repickKey = savedInstanceState.getString(EXTRA_QUEUE_KEY)
+    }
+
+    private fun handleShare(uris: List<Uri>) {
+        if (uris.isEmpty()) {
+            toast(getString(R.string.ft_no_file)); finish(); return
+        }
+        // A share grant may not be persistable; try anyway, and record
+        // whether it took so a restart can tell queued from needs-file.
+        confirmAndSend(uris.map { it to persist(it, write = false) })
+    }
+
+    private fun openSourcePicker(multiple: Boolean) {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
+            // FILE-QUEUE: pick several at once; they queue in pick order.
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple)
             // FLAG_GRANT_PERSISTABLE_URI_PERMISSION is what lets a resume
             // re-open the source after the app was killed mid-transfer. Without
             // it the grant dies with the task and a 1 GB resume has nothing to
@@ -158,10 +184,24 @@ class FileTransferActivity : AppCompatActivity() {
      * (d) The 1 GB cap is enforced by the server; this refusal is the mirror,
      * worded identically, so a user who hits it on the phone and a user who
      * hits it on the relay are told the same thing.
+     *
+     * FILE-QUEUE: one confirm for the whole batch ("N files, X total"), then
+     * every file goes into the queue. A single file keeps its own dialog and
+     * the local over-1-GB refusal; in a batch an over-cap file is queued and
+     * fails `too_large` on its own row, which fails that file only.
      */
-    private fun confirmAndSend(uri: Uri) {
-        val (name, size) = queryMeta(uri)
-        if (size > FileTransfer.MAX_FILE_BYTES) {
+    private fun confirmAndSend(picked: List<Pair<Uri, Boolean>>) {
+        val files = picked.map { (uri, persistable) ->
+            val m = queryMeta(uri)
+            FileTransferQueue.NewFile(
+                uri = uri.toString(),
+                name = FileTransfer.sanitizeName(m.name),
+                size = m.size,
+                lastModified = m.lastModified,
+                persistable = persistable,
+            )
+        }
+        if (files.size == 1 && files[0].size > FileTransfer.MAX_FILE_BYTES) {
             AlertDialog.Builder(this)
                 .setTitle(R.string.ft_too_large_title)
                 .setMessage(getString(R.string.ft_fail_too_large))
@@ -170,20 +210,26 @@ class FileTransferActivity : AppCompatActivity() {
                 .show()
             return
         }
-        val svc = PhoneService.fileTransferHandler
-        if (svc == null) {
+        val queue = PhoneService.fileTransferQueue
+        if (queue == null) {
             toast(getString(R.string.ft_not_connected)); finish(); return
         }
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.ft_send_title, FileTransfer.sanitizeName(name)))
-            .setMessage(
-                getString(
-                    R.string.ft_send_body,
-                    if (size >= 0) FileTransfer.humanSize(size) else "",
+        val builder = AlertDialog.Builder(this)
+        if (files.size == 1) {
+            val f = files[0]
+            builder.setTitle(getString(R.string.ft_send_title, f.name))
+                .setMessage(
+                    getString(R.string.ft_send_body, if (f.size >= 0) FileTransfer.humanSize(f.size) else "")
                 )
-            )
+        } else {
+            val total = files.sumOf { maxOf(it.size, 0L) }
+            builder.setTitle(
+                resources.getQuantityString(R.plurals.ft_send_multi_title, files.size, files.size)
+            ).setMessage(getString(R.string.ft_send_multi_body, FileTransfer.humanSize(total)))
+        }
+        builder
             .setPositiveButton(R.string.ft_send) { _, _ ->
-                svc.startSend(uri)
+                queue.enqueue(files)
                 toast(getString(R.string.ft_send_started))
                 finish()
             }
@@ -262,10 +308,32 @@ class FileTransferActivity : AppCompatActivity() {
     }
 
     private fun onSourcePicked(r: ActivityResult) {
-        val uri = r.data?.data
-        if (r.resultCode != Activity.RESULT_OK || uri == null) { finish(); return }
-        persist(uri, write = false)
-        confirmAndSend(uri)
+        val data = r.data
+        // EXTRA_ALLOW_MULTIPLE: several picks arrive as clipData, one as data.
+        val uris = ArrayList<Uri>()
+        data?.clipData?.let { c -> for (k in 0 until c.itemCount) c.getItemAt(k).uri?.let(uris::add) }
+        if (uris.isEmpty()) data?.data?.let(uris::add)
+        if (r.resultCode != Activity.RESULT_OK || uris.isEmpty()) { finish(); return }
+        val key = repickKey
+        if (key != null) {
+            // Re-pick: the user already confirmed this send once.
+            val uri = uris[0]
+            val persistable = persist(uri, write = false)
+            val m = queryMeta(uri)
+            val queue = PhoneService.fileTransferQueue
+            if (queue == null) {
+                toast(getString(R.string.ft_not_connected))
+            } else {
+                queue.repick(
+                    key,
+                    FileTransferQueue.NewFile(
+                        uri.toString(), FileTransfer.sanitizeName(m.name), m.size, m.lastModified, persistable,
+                    ),
+                )
+            }
+            finish(); return
+        }
+        confirmAndSend(uris.map { it to persist(it, write = false) })
     }
 
     private fun onDestinationPicked(r: ActivityResult) {
@@ -284,22 +352,31 @@ class FileTransferActivity : AppCompatActivity() {
         finish()
     }
 
-    /** Hold the grant across process death so a resume can re-open the document. */
-    private fun persist(uri: Uri, write: Boolean) {
-        try {
+    /**
+     * Hold the grant across process death so a resume can re-open the document.
+     * @return true if the grant is now persisted (FILE-QUEUE: a queued row
+     * that survives a restart as queued rather than needs-file).
+     */
+    private fun persist(uri: Uri, write: Boolean): Boolean {
+        return try {
             var flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
             if (write) flags = flags or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             contentResolver.takePersistableUriPermission(uri, flags)
+            true
         } catch (e: Exception) {
             // Not fatal: the transfer works for as long as this task lives.
             // Only a resume after a process death needs the persisted grant.
             android.util.Log.w("FileTransfer", "no persistable grant: ${e.message}")
+            false
         }
     }
 
-    private fun queryMeta(uri: Uri): Pair<String?, Long> {
+    private class Meta(val name: String?, val size: Long, val lastModified: Long)
+
+    private fun queryMeta(uri: Uri): Meta {
         var name: String? = null
         var size = -1L
+        var modified = 0L
         try {
             contentResolver.query(uri, null, null, null, null)?.use { c ->
                 if (c.moveToFirst()) {
@@ -307,12 +384,14 @@ class FileTransferActivity : AppCompatActivity() {
                     if (ni >= 0 && !c.isNull(ni)) name = c.getString(ni)
                     val si = c.getColumnIndex(OpenableColumns.SIZE)
                     if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
+                    val mi = c.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    if (mi >= 0 && !c.isNull(mi)) modified = c.getLong(mi)
                 }
             }
         } catch (e: Exception) {
             android.util.Log.w("FileTransfer", "meta query failed: ${e.message}")
         }
-        return name to size
+        return Meta(name, size, modified)
     }
 
     private fun toast(msg: String) =

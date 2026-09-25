@@ -639,7 +639,6 @@
     <string name="ft_send_body">%1$s will be sent to your computer. Files up to 1 GB.</string>
     <string name="ft_send_started">Sending — your computer will be asked to accept it.</string>
     <string name="ft_receive_started">Receiving…</string>
-    <string name="ft_one_at_a_time">One file at a time — sending the first one.</string>
     <string name="ft_no_file">No file to send.</string>
     <string name="ft_no_picker">No file picker is available on this phone.</string>
     <string name="ft_not_connected">Connect to your computer first.</string>
@@ -702,4 +701,27 @@
     <string name="ft_card_percent">%1$d%%</string>
     <string name="ft_card_open">Open</string>
     <string name="ft_card_offer_heading">Your computer wants to send a file</string>
+
+    <!-- FILE-QUEUE (Ken ADDENDUM 2) — the queue rows under the transfer card.
+         Offering / done / failed rows reuse ft_send_started, ft_sent /
+         ft_received, ft_send_failed + failureCopy, ft_card_open and
+         row_send_file_title ("Send a file" = the Add-file row), so a row and
+         the notification describe a result in the same words. -->
+    <string name="ft_queue_queued">Queued · %1$s</string>
+    <string name="ft_queue_paused">Paused</string>
+    <string name="ft_queue_resume">Resume</string>
+    <string name="ft_queue_needs_file">File no longer available — pick it again</string>
+    <plurals name="ft_queue_count">
+        <item quantity="one">%d queued</item>
+        <item quantity="other">%d queued</item>
+    </plurals>
+    <plurals name="ft_send_multi_title">
+        <item quantity="one">Send %d file?</item>
+        <item quantity="other">Send %d files?</item>
+    </plurals>
+    <string name="ft_send_multi_body">%1$s in total will be sent to your computer, one after another. Files up to 1 GB each.</string>
+    <string name="ft_queue_remove">Remove</string>
+    <string name="ft_queue_retry">Retry</string>
+    <string name="ft_queue_repick">Pick again</string>
+    <string name="ft_queue_clear">Clear</string>
 </resources>
