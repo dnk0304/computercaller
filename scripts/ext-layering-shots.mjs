@@ -46,6 +46,20 @@ const OUT = path.join(
 fs.mkdirSync(OUT, { recursive: true });
 
 const results = [];
+// Colour helpers for the light-ladder hairline check (computed-style rgb/rgba).
+const rgb = (c) => (String(c).match(/[\d.]+/g) || []).map(Number);
+const alpha = (c) => { const v = rgb(c); return v.length >= 4 ? v[3] : (v.length === 3 ? 1 : 0); };
+const relLum = (c) => {
+  const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  const [r, g, b] = rgb(c);
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+};
+const contrast = (a, b) => {
+  if (!a || !b) return 0;
+  const [x, y] = [relLum(a), relLum(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+};
+
 const check = (name, pass, detail = '') => {
   results.push({ name, pass, detail });
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
@@ -144,6 +158,15 @@ const MEASURE_LADDER = `
 (() => {
   const bg = (el) => el ? getComputedStyle(el).backgroundColor : null;
   const q = (s) => document.querySelector(s);
+  const edge = (el, side) => {
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    return {
+      width: parseFloat(cs['border' + side + 'Width']) || 0,
+      style: cs['border' + side + 'Style'],
+      color: cs['border' + side + 'Color'],
+    };
+  };
   return {
     L0_header: bg(q('.cc-ext-header')),
     L1_tabs:   bg(q('[role="tablist"]')),
@@ -151,6 +174,11 @@ const MEASURE_LADDER = `
     L2_ground: bg(q('.cc-msg-view, .cc-dial-column')),
     L3_card:   bg(q('.cc-note-card, .cc-list')),
     hairline:  q('[role="tablist"]') ? getComputedStyle(q('[role="tablist"]')).borderBottomColor : null,
+    // EXT-WHITE-BG: in light every surface is #fff, so the boundaries are the
+    // ONLY thing separating the layers. Read each one's rule off the live DOM.
+    edge_L0_L1: edge(q('.cc-ext-header'), 'Bottom'),
+    edge_L1_L2: edge(q('[role="tablist"]'), 'Bottom'),
+    edge_L2_L3: edge(q('.cc-note-card, .cc-list'), 'Top'),
     wordmark_in_header: !!q('.cc-ext-header svg[data-cc-lockup], .cc-ext-header .cc-lockup'),
   };
 })()
@@ -228,14 +256,37 @@ try {
         if (width === 400) {
           const ladder = await p.evaluate(MEASURE_LADDER);
           console.log(`  ladder ${theme}: ` + JSON.stringify(ladder));
-          // ADJACENT-distinct, not all-distinct: in light the ladder runs
-          // white → grey → grey and then RETURNS to white at L3, which is the
-          // point (the card is the surface furthest from its ground). L0 and
-          // L3 sharing a value there is the design, not a collision — they are
-          // never adjacent.
           const steps = [ladder.L0_header, ladder.L1_tabs, ladder.L2_ground, ladder.L3_card];
-          const adjacentOk = steps.every((v, i) => i === 0 || v !== steps[i - 1]);
-          check(`${theme}: every adjacent pair in the L0→L3 ladder differs`, adjacentOk, steps.join(' | '));
+          if (theme === 'dark') {
+            // ADJACENT-distinct, not all-distinct: L0 and L3 may share a value;
+            // they are never adjacent. Dark still layers by surface lightness.
+            const adjacentOk = steps.every((v, i) => i === 0 || v !== steps[i - 1]);
+            check(`${theme}: every adjacent pair in the L0→L3 ladder differs`, adjacentOk, steps.join(' | '));
+          } else {
+            // EXT-WHITE-BG (f465598, Dennis 2026-09-25 "a nice crisp white"):
+            // light L0–L3 are ALL #ffffff by design, so a graded-grey ladder is
+            // now the regression, not the pass. What layers the panel instead is
+            // a hairline at every boundary — header rule (L0|L1), tab-strip rule
+            // (L1|L2), card outline (L2|L3). Each must exist (solid, non-zero width) and
+            // be visible against BOTH surfaces it separates (>= 1.15:1; the
+            // tokens are #e5e5e5 = 1.26:1 and card #d4d4d8 = 1.48:1 on white).
+            // Fails if the grey returns OR if any boundary goes invisible.
+            const WHITE = 'rgb(255, 255, 255)';
+            const allWhite = steps.every((v) => v === WHITE);
+            const bounds = [
+              ['L0|L1', ladder.edge_L0_L1, ladder.L0_header, ladder.L1_tabs],
+              ['L1|L2', ladder.edge_L1_L2, ladder.L1_tabs, ladder.L2_ground],
+              ['L2|L3', ladder.edge_L2_L3, ladder.L2_ground, ladder.L3_card],
+            ];
+            const edgeInfo = bounds.map(([name, e, a, b]) => {
+              const ok = !!e && e.width > 0 && e.style === 'solid' && alpha(e.color) > 0 &&
+                contrast(e.color, a) >= 1.15 && contrast(e.color, b) >= 1.15;
+              return { name, ok, txt: e ? `${name} ${e.width}px ${e.color} ${contrast(e.color, a).toFixed(2)}:1` : `${name} MISSING` };
+            });
+            check(`${theme}: L0→L3 is the all-white ground, layered by a visible hairline at every boundary`,
+              allWhite && edgeInfo.every((x) => x.ok),
+              `${allWhite ? 'all #fff' : 'NOT all white: ' + steps.join(' | ')}; ` + edgeInfo.map((x) => (x.ok ? '' : 'BAD ') + x.txt).join(' · '));
+          }
           check(`${theme}: no wordmark inside the panel header`, ladder.wordmark_in_header === false);
         }
         await p.close();
