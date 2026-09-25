@@ -15,7 +15,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import androidx.test.espresso.intent.Intents
+import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
+import androidx.test.espresso.intent.matcher.IntentMatchers.hasComponent
+import androidx.test.espresso.intent.matcher.IntentMatchers.hasExtra
+import org.hamcrest.Matchers.allOf
 import java.io.File
+import java.io.RandomAccessFile
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 
@@ -192,6 +199,148 @@ class FileTransferCardUiTest {
             } finally {
                 FileTransferActionReceiver.handler = previousHandler
                 acker.shutdownNow()
+            }
+        }
+    }
+
+    /**
+     * FT incident 2, item 2: an offer that arrived while NO Activity was in
+     * front (so the in-app dialog never opened) must still be answerable
+     * in-app: open the app, the card shows Accept, Accept fires the
+     * notification's own Accept intent, and the transfer then runs on the card.
+     *
+     * The save picker is a system UI this test cannot drive, so the Accept
+     * intent is stubbed and asserted, and the picker's result is delivered
+     * the way FileTransferActivity delivers it - acceptOffer(uri) on the
+     * manager. Everything after that is the real receive path.
+     */
+    @Test(timeout = 120_000)
+    fun an_offer_that_arrived_backgrounded_shows_accept_when_the_app_is_opened() {
+        val size = 2L * 1024 * 1024 + 77
+        val src = File(dir, "src-offer.bin")
+        val md = MessageDigest.getInstance("SHA-256")
+        src.outputStream().buffered().use { out ->
+            for (i in 0 until size.toInt()) {
+                val b = (i * 31 % 251)
+                out.write(b)
+                md.update(b.toByte())
+            }
+        }
+        val sha = FileTransfer.hex(md.digest())
+        val id = "b".repeat(32)
+        val peer = Peer()
+        val mgr = FileTransferManager(
+            context = ctx,
+            send = { t, p -> peer.record(t, p) },
+            isOpen = { true },
+            queuedBytes = { 0L },
+            listener = Forwarder(model),
+        )
+
+        // Backgrounded: no Activity of ours exists when the offer lands.
+        mgr.onFrame(
+            FileTransfer.OFFER,
+            mapOf(
+                "id" to id, "name" to "report.pdf", "size" to size,
+                "mime" to "application/pdf", "sha256" to sha, "from" to "browser",
+            ),
+        )
+        assertTrue(mgr.isBusy)
+        assertEquals(FileTransferUi.Offer(id, "report.pdf", size), model.state.value)
+
+        Intents.init()
+        try {
+            Intents.intending(hasComponent(FileTransferActivity::class.java.name))
+                .respondWith(android.app.Instrumentation.ActivityResult(android.app.Activity.RESULT_OK, null))
+
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                instr.waitForIdleSync()
+                scenario.onActivity { a ->
+                    assertEquals(View.VISIBLE, a.findViewById<View>(R.id.ftCard).visibility)
+                    assertEquals(
+                        ctx.getString(R.string.ft_card_offer_heading),
+                        a.findViewById<TextView>(R.id.ftCardHeading).text.toString(),
+                    )
+                    assertEquals("report.pdf", a.findViewById<TextView>(R.id.ftCardName).text.toString())
+                    assertEquals(
+                        FileTransfer.humanSize(size),
+                        a.findViewById<TextView>(R.id.ftCardBytes).text.toString(),
+                    )
+                    assertEquals(
+                        ctx.getString(R.string.ft_offer_trust),
+                        a.findViewById<TextView>(R.id.ftCardMessage).text.toString(),
+                    )
+                    val accept = a.findViewById<TextView>(R.id.ftCardPrimary)
+                    assertEquals(View.VISIBLE, accept.visibility)
+                    assertEquals(ctx.getString(R.string.ft_accept), accept.text.toString())
+                    assertEquals(
+                        ctx.getString(R.string.ft_reject),
+                        a.findViewById<TextView>(R.id.ftCardSecondary).text.toString(),
+                    )
+                    accept.performClick()
+                }
+                instr.waitForIdleSync()
+                Intents.intended(
+                    allOf(
+                        hasComponent(FileTransferActivity::class.java.name),
+                        hasAction(FileTransferActivity.ACTION_SHOW_OFFER),
+                        hasExtra(FileTransferActivity.EXTRA_AUTO_ACCEPT, true),
+                    )
+                )
+
+                // The picker's answer, delivered as FileTransferActivity does.
+                val part = File(dir, FileTransfer.partNameFor("report.pdf"))
+                mgr.acceptOffer(Uri.fromFile(part))
+                assertNotNull("FILE_ACCEPT must go out", waitFor { peer.last(FileTransfer.ACCEPT) })
+                val running = waitFor { model.state.value as? FileTransferUi.Running }
+                assertNotNull("the accepted offer must become the running receive", running)
+                assertFalse(running!!.outgoing)
+                instr.waitForIdleSync()
+                scenario.onActivity { a ->
+                    assertEquals(
+                        ctx.getString(R.string.ft_card_from_computer),
+                        a.findViewById<TextView>(R.id.ftCardHeading).text.toString(),
+                    )
+                }
+
+                feedChunks(mgr, src, size, id)
+                mgr.onFrame(FileTransfer.DONE, mapOf("id" to id, "sha256" to sha))
+                val done = waitFor { model.state.value as? FileTransferUi.Done }
+                assertNotNull("the receive must finish on the card", done)
+                assertEquals("report.pdf", done!!.name)
+                instr.waitForIdleSync()
+                scenario.onActivity { a ->
+                    assertEquals(
+                        ctx.getString(R.string.ft_received, "report.pdf"),
+                        a.findViewById<TextView>(R.id.ftCardName).text.toString(),
+                    )
+                    assertEquals(View.VISIBLE, a.findViewById<View>(R.id.ftCardPrimary).visibility)
+                    assertEquals(
+                        ctx.getString(R.string.ft_card_open),
+                        a.findViewById<TextView>(R.id.ftCardPrimary).text.toString(),
+                    )
+                }
+            }
+        } finally {
+            Intents.release()
+        }
+    }
+
+    private fun feedChunks(mgr: FileTransferManager, src: File, size: Long, id: String) {
+        val n = FileTransfer.chunkCount(size)
+        RandomAccessFile(src, "r").use { raf ->
+            val buf = ByteArray(FileTransfer.CHUNK_RAW_BYTES)
+            for (seq in 0 until n) {
+                val want = FileTransfer.lengthOf(seq, size)
+                raf.seek(FileTransfer.offsetOf(seq))
+                raf.readFully(buf, 0, want)
+                mgr.onFrame(
+                    FileTransfer.CHUNK,
+                    mapOf(
+                        "id" to id, "seq" to seq, "n" to n,
+                        "data" to android.util.Base64.encodeToString(buf, 0, want, android.util.Base64.NO_WRAP),
+                    ),
+                )
             }
         }
     }

@@ -16,7 +16,8 @@ import java.io.File
  * fresh [FileTransferUiModel] on a scripted clock and checks the published
  * [FileTransferUi] after EVERY step: progress -> percent + byte labels,
  * the ~5/s throttle (and that the final 100 % is never throttled), and the
- * terminal Done / Failed states with their hold tokens.
+ * terminal Done / Failed states with their hold tokens, and (FT incident 2)
+ * the pending offer exposed in the flow until it is answered or withdrawn.
  *
  * Run: `gradlew.bat testDebugUnitTest --tests '*FileTransferUiVectors*'`
  */
@@ -46,7 +47,7 @@ class FileTransferUiVectorsTest {
     fun every_step_of_every_scenario_matches() {
         val scenarios = root().getAsJsonArray("scenarios").map { it.asJsonObject }
         // A vectors test whose file lost its rows passes vacuously.
-        assertTrue("expected at least 10 scenarios, got ${scenarios.size}", scenarios.size >= 10)
+        assertTrue("expected at least 14 scenarios, got ${scenarios.size}", scenarios.size >= 14)
         var steps = 0
         val kindsSeen = HashSet<String>()
         for (sc in scenarios) {
@@ -73,6 +74,8 @@ class FileTransferUiVectorsTest {
                         s.str("id")!!, s.str("name"), s.str("reason")!!, s.get("out").asBoolean,
                     )
                     "idle" -> model.onIdle()
+                    "offer" -> model.onOffer(s.str("id")!!, s.str("name")!!, s.get("size").asLong)
+                    "withdrawn" -> model.onOfferWithdrawn(s.str("id")!!)
                     "dismiss" -> {
                         val from = s.get("tokenFrom").asInt
                         val token = tokens[from] ?: throw AssertionError("$where: step $from issued no token")
@@ -86,10 +89,10 @@ class FileTransferUiVectorsTest {
                 steps++
             }
         }
-        assertTrue("expected at least 30 checked steps, got $steps", steps >= 30)
+        assertTrue("expected at least 43 checked steps, got $steps", steps >= 43)
         assertEquals(
-            "the file must exercise every card state this commit draws",
-            setOf("Idle", "Running", "Done", "Failed"), kindsSeen,
+            "the file must exercise every card state the card draws",
+            setOf("Idle", "Offer", "Running", "Done", "Failed"), kindsSeen,
         )
     }
 

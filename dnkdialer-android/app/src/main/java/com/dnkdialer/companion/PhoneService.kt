@@ -4689,6 +4689,11 @@ class PhoneService : Service() {
 
                 override fun onOfferReceived(id: String, name: String, size: Long, mime: String?) {
                     notifier.showOffer(id, name, size)
+                    // vc69 (FT incident 2, item 2): the card's Offer face. Held
+                    // in the StateFlow, so opening the app at ANY point while
+                    // the offer is live shows Accept - not only when the app
+                    // happened to be in front when the offer arrived.
+                    fileTransferUiModel.onOffer(id, name, size)
                     // The in-app dialog too, when an Activity is in front. The
                     // notification always fires; this is the second surface,
                     // the same shape as the pairing prompt.
@@ -4754,6 +4759,7 @@ class PhoneService : Service() {
                 // Accept/Reject prompt must not outlive it.
                 override fun onOfferWithdrawn(id: String, reason: String) {
                     notifier.dismissOffer()
+                    fileTransferUiModel.onOfferWithdrawn(id)
                 }
             },
         )
@@ -4801,7 +4807,18 @@ class PhoneService : Service() {
      */
     private fun holdTerminalCard(token: Long) {
         fileTransferTicker.postDelayed(
-            { fileTransferUiModel.dismissTerminal(token) },
+            {
+                if (fileTransferUiModel.dismissTerminal(token)) {
+                    // A result card can cover a still-pending offer (a send
+                    // refused BUSY while the offer waits). When the result
+                    // goes, the offer - pendingOfferInfo(), the manager's own
+                    // record - comes back, so Accept is never unreachable
+                    // in-app while the offer is live.
+                    fileTransferHandler?.pendingOfferInfo()?.let { (id, name, size) ->
+                        fileTransferUiModel.onOffer(id, name, size)
+                    }
+                }
+            },
             FileTransferUiModel.TERMINAL_HOLD_MS,
         )
     }

@@ -701,4 +701,5 @@
     <string name="ft_card_from_computer">Receiving from your computer</string>
     <string name="ft_card_percent">%1$d%%</string>
     <string name="ft_card_open">Open</string>
+    <string name="ft_card_offer_heading">Your computer wants to send a file</string>
 </resources>

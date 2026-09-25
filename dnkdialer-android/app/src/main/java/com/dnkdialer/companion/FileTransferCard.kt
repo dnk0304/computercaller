@@ -149,9 +149,38 @@ class FileTransferCard(private val activity: Activity) {
             }
 
             is FileTransferUi.Offer -> {
-                // Rendered by the pending-offer face (FT incident 2, item 2).
-                card.visibility = View.GONE
-                return
+                // FT incident 2, item 2: Accept reachable in-app whenever the
+                // offer is live. Same name + size + trust line the offer
+                // notification shows before a byte is written - that is the
+                // protection (we do not scan files), so it is not optional.
+                heading.setText(R.string.ft_card_offer_heading)
+                percent.visibility = View.GONE
+                name.text = ui.name
+                progress.visibility = View.GONE
+                bytes.text = FileTransfer.humanSize(ui.size)
+                bytes.visibility = View.VISIBLE
+                message.setText(R.string.ft_offer_trust)
+                message.visibility = View.VISIBLE
+                actions.visibility = View.VISIBLE
+                secondary.setText(R.string.ft_reject)
+                secondary.visibility = View.VISIBLE
+                secondary.setOnClickListener {
+                    it.isEnabled = false
+                    // The notification's Reject lands in this same handler.
+                    FileTransferActionReceiver.handler?.invoke(false)
+                }
+                primary.setText(R.string.ft_accept)
+                primary.visibility = View.VISIBLE
+                primary.setOnClickListener {
+                    // Exactly the notification's Accept intent: the save
+                    // picker opens straight away, FILE_ACCEPT follows it.
+                    activity.startActivity(
+                        Intent(activity, FileTransferActivity::class.java).apply {
+                            action = FileTransferActivity.ACTION_SHOW_OFFER
+                            putExtra(FileTransferActivity.EXTRA_AUTO_ACCEPT, true)
+                        }
+                    )
+                }
             }
         }
         card.visibility = View.VISIBLE
