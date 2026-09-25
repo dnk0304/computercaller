@@ -66,6 +66,7 @@ const {
   resumeGateVerdict,
   leaveActiveHonouredDuringHold,
   MAX_KID_LEN,
+  KID_CHARSET,
 } = require('../lib/resumeGate-core.js');
 
 const VECTORS = JSON.parse(readFileSync(join(ROOT, 'tests', 'e2e-resume-vectors.json'), 'utf8'));
@@ -115,6 +116,41 @@ for (const row of VECTORS.relayRows.filter((r) => r.expect.action === 'terminate
   // Attacker-controlled and headed for a log line.
   const huge = readPhoneSessionParam('k'.repeat(MAX_KID_LEN + 1));
   check('parser: an over-long kid is refused as an absence, never echoed', huge.present === false && huge.kid === null);
+  // Security MINOR 1 (ack 2026-09-25): charset-pinned, same shape as the
+  // sibling ?deviceId= read in parseConnection. Not an error - a declared
+  // absence, so a malformed label can never close an authenticated socket.
+  for (const bad of ['kid with spaces', 'kid\nA1', 'kid"A1', 'kid;drop', 'kid/A1', 'kid+A1', 'kid=A1', '../etc']) {
+    const p2 = readPhoneSessionParam(bad);
+    check(`parser: ${JSON.stringify(bad)} fails the charset and is a DECLARED absence`,
+      p2.declared === true && p2.present === false && p2.kid === null);
+  }
+  check('parser: a real base64url kid still survives the charset pin',
+    readPhoneSessionParam('aB9_-xyz').kid === 'aB9_-xyz');
+  eq('parser: the charset pin is the SAME regex shape as ?deviceId=',
+    String(KID_CHARSET), '/^[A-Za-z0-9_-]+$/');
+  // CONTROL: the pin can actually reject - an unpinned parser would have
+  // reported these as PRESENT, so pin the disagreement rather than the pass.
+  const preFixParser = (raw) => {
+    if (typeof raw !== 'string') return { declared: false, present: false, kid: null };
+    const t = raw.trim();
+    if (['0', 'false', 'none', 'null', 'undefined', ''].includes(t.toLowerCase())) return { declared: true, present: false, kid: null };
+    if (t.length > MAX_KID_LEN) return { declared: true, present: false, kid: null };
+    return { declared: true, present: true, kid: t };
+  };
+  eq('CONTROL: the PRE-FIX parser reported a newline kid as PRESENT', preFixParser('kid\nA1').present, true);
+  eq('CONTROL: ...and the SHIPPED parser refuses it', readPhoneSessionParam('kid\nA1').present, false);
+  // ...and the charset-refused value still terminates at the gate.
+  eq('parser -> gate: a charset-refused declaration terminates on a sealed pair',
+    resumeGateVerdict({ phoneReturning: true, roomKid: 'k1', phoneSession: readPhoneSessionParam('kid A1') }).action,
+    'terminate');
+}
+
+// -- 2b. the ?session= parser, driven from the VECTOR FILE -------------------
+for (const row of VECTORS.parserRows) {
+  const got = readPhoneSessionParam(row.raw === null ? undefined : row.raw);
+  eq(`parser[${row.name}] declared`, got.declared, row.expect.declared);
+  eq(`parser[${row.name}] present`, got.present, row.expect.present);
+  eq(`parser[${row.name}] kid`, got.kid, row.expect.kid);
   eq('parser: a non-string (array param) is UNDECLARED', readPhoneSessionParam(['a', 'b']).declared, false);
   // And the parser feeds the gate: the end-to-end shape, absent -> terminate.
   eq('parser -> gate: an undeclared phone on a sealed pair terminates',
@@ -132,8 +168,15 @@ for (const row of VECTORS.leaveActiveRows) {
     claimLive: row.claimLive,
     claimDroppedRole: row.claimDroppedRole,
     survivorPresent: row.survivorPresent,
+    senderIsSoleRoomPhone: row.senderIsSoleRoomPhone,
   }), row.expect);
 }
+// The omitted-field default must FAIL CLOSED: an un-plumbed call site loses the
+// hold fix (one more Disconnect tap) rather than silently keeping MINOR 4 open.
+eq('leaveActive: an omitted senderIsSoleRoomPhone is refused, not assumed',
+  leaveActiveHonouredDuringHold({
+    isActivePhone: false, claimLive: true, claimDroppedRole: 'phone', survivorPresent: true,
+  }), false);
 
 // ── 4. the page's own re-verification + the terminated reason ───────────────
 for (const row of VECTORS.webRows) {
@@ -178,7 +221,33 @@ for (const row of VECTORS.terminatedReasonRows) {
     claimLive: prodLeaveRow.claimLive,
     claimDroppedRole: prodLeaveRow.claimDroppedRole,
     survivorPresent: prodLeaveRow.survivorPresent,
+    senderIsSoleRoomPhone: prodLeaveRow.senderIsSoleRoomPhone,
   }) === true);
+
+  /** What the hold branch did BEFORE Security MINOR 4: claim shape only. */
+  const preMinor4 = (r) => r.isActivePhone
+    || !!(r.claimLive && r.claimDroppedRole === 'phone' && r.survivorPresent);
+  const secondPhone = VECTORS.leaveActiveRows
+    .find((r) => r.name === 'leave-active-during-hold-from-a-second-same-account-phone-ignored');
+  check('CONTROL: the vector file carries the MINOR-4 second-phone row', !!secondPhone);
+  eq('CONTROL: the PRE-MINOR-4 predicate HONOURS a stranger handset (i.e. reproduces the hole)',
+    preMinor4(secondPhone), true);
+  eq('CONTROL: ...and the SHIPPED predicate refuses it',
+    leaveActiveHonouredDuringHold({
+      isActivePhone: secondPhone.isActivePhone,
+      claimLive: secondPhone.claimLive,
+      claimDroppedRole: secondPhone.claimDroppedRole,
+      survivorPresent: secondPhone.survivorPresent,
+      senderIsSoleRoomPhone: secondPhone.senderIsSoleRoomPhone,
+    }), false);
+  // ...and it did not tighten into "refuse every hold": the prod row still
+  // passes above, and the ORDINARY Disconnect must not become conditional on
+  // there being no second handset in the room.
+  eq('CONTROL: the tightening does not touch the ordinary live-pair Disconnect',
+    leaveActiveHonouredDuringHold({
+      isActivePhone: true, claimLive: false, claimDroppedRole: null,
+      survivorPresent: true, senderIsSoleRoomPhone: false,
+    }), true);
   // ...and it did not simply become "honour everything".
   const stranger = VECTORS.leaveActiveRows.find((r) => r.name === 'leave-active-with-no-pair-and-no-claim-ignored');
   check('CONTROL: the shipped test still refuses a phone in no pair and no hold',
@@ -187,6 +256,7 @@ for (const row of VECTORS.terminatedReasonRows) {
       claimLive: stranger.claimLive,
       claimDroppedRole: stranger.claimDroppedRole,
       survivorPresent: stranger.survivorPresent,
+      senderIsSoleRoomPhone: stranger.senderIsSoleRoomPhone,
     }) === false);
 
   /** What the page did before: a resume was just a resume. */
@@ -281,6 +351,18 @@ for (const row of VECTORS.terminatedReasonRows) {
     /leaveActiveHonouredDuringHold\(\{/.test(SRC));
   check('the ignored log line still exists for the rows that deserve it',
     SRC.includes('LEAVE_ACTIVE from non-active phone — ignored'));
+  // Security MINOR 4: the sender-identity fact must actually be COMPUTED and
+  // PASSED, or the predicate's new parameter is undefined and the hold fix is
+  // silently off. The refusal is logged distinctly from the historical one, or
+  // the rollout cannot tell a stranger handset from an ordinary lobby phone.
+  check('the LEAVE_ACTIVE call site computes the sender-identity fact',
+    /senderIsSoleRoomPhone = roomPhoneCount === 1/.test(SRC));
+  check('...and passes it to the predicate', /\n\s+senderIsSoleRoomPhone,\n\s+\}\);/.test(SRC));
+  check('...and logs the MINOR-4 refusal distinctly',
+    SRC.includes('sender not identifiable as the held phone'));
+  // Security C2: the ?session= read carries the T-RELEASE-LOG-TOKEN inventory.
+  check('the ?session= read documents the dial URL query-string inventory',
+    SRC.includes('T-RELEASE-LOG-TOKEN INVENTORY'));
   // The resumed frame must carry the page's re-verification input.
   check('the resume marker carries peerSession', /resumeMark\.peerSession = returningPhoneSession/.test(SRC));
 }
@@ -290,6 +372,7 @@ for (const row of VECTORS.terminatedReasonRows) {
   const all = [
     ...VECTORS.relayRows, ...VECTORS.leaveActiveRows,
     ...VECTORS.webRows, ...VECTORS.terminatedReasonRows,
+    ...VECTORS.parserRows,
   ];
   const names = all.map((r) => r.name);
   eq('row names are unique', new Set(names).size, names.length);
@@ -304,6 +387,9 @@ for (const row of VECTORS.terminatedReasonRows) {
     'phone-dropped-different-kid-terminates',
     'leave-active-during-survivor-hold-honoured',
     'web-resumed-kid-mismatch-lost',
+    // Amendment 1 (Security MINORs 1 and 4), transcribed from the ack.
+    'parser-charset-violation-is-a-declared-absence',
+    'leave-active-during-hold-from-a-second-same-account-phone-ignored',
   ]) {
     check(`the vector file still carries ${required}`, names.includes(required));
   }

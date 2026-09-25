@@ -3116,6 +3116,21 @@ function startRelay(httpServer) {
     // message: a bit that arrives after the resume decision is a bit that
     // cannot inform it. Absent on every APK shipped before vc68; see
     // lib/resumeGate-core.js for why silence is treated as "no session".
+    //
+    // T-RELEASE-LOG-TOKEN INVENTORY (Security C2, ack 2026-09-25). The phone's
+    // /relay/phone dial URL carries THREE pieces of query-string material, and
+    // any logging of that URL — on the relay OR in Android logcat — exposes all
+    // three: `?token=<phoneToken>` (the long-lived BEARER — the actual severity
+    // of that ticket), `?deviceName=` where sent, and now `?session=<kid>`. The
+    // kid is a PUBLIC label, not key material: kdf.mjs derives traffic keys from
+    // {pairingId, sessionKey, context} and never from the kid, the relay already
+    // holds it (room.active.e2e.kid) and already re-sends it inside every
+    // PAIRING_ACTIVE, and it rides on every sealed envelope. It is listed here
+    // so the inventory is COMPLETE, not because it raises that ticket's
+    // severity. It is deliberately never written to a relay log: the refusal log
+    // prints gate.reason/gate.detail (fixed strings) and the resume log prints
+    // peerSession=present|absent|not-reported. Keep it that way — and note the
+    // parser now charset-pins the value anyway (Security MINOR 1).
     const phoneSession = readPhoneSessionParam(parsed.query?.session);
     // P1(c) — a listener may declare WHICH device it is (`?deviceId=…`). It is
     // the only way the relay can hand a listener its OWN key wrap and nobody
@@ -3468,17 +3483,39 @@ function startRelay(httpServer) {
             // that is in no active pair and no live hold cannot end one.
             const claim = room.resumable;
             const claimLive = !!claim && Date.now() <= claim.expiresAt;
+            // Security MINOR 4 (ack 2026-09-25): the hold branch must honour
+            // only the phone the hold is ABOUT. There is no stable phone
+            // deviceId on this wire (`?deviceId=` is listener-only and
+            // ws.deviceName is self-declared), and the sender is a NEW socket
+            // from the redial, so the sound discriminator is cardinality: the
+            // sender is honoured only when it is the SOLE phone socket in the
+            // room — the only candidate tryAutoResume could pick. A second
+            // same-account handset in the lobby makes the room ambiguous and
+            // is refused. See lib/resumeGate-core.js for the full reasoning.
+            let roomPhoneCount = 0;
+            for (const s of room.lobby) {
+              if (s.role === 'phone' && s.readyState === WebSocket.OPEN) roomPhoneCount += 1;
+            }
+            if (room.active.phone && room.active.phone.readyState === WebSocket.OPEN
+              && !room.lobby.has(room.active.phone)) roomPhoneCount += 1;
+            const senderIsSoleRoomPhone = roomPhoneCount === 1
+              && ws.readyState === WebSocket.OPEN;
             const honoured = leaveActiveHonouredDuringHold({
               isActivePhone: ws === room.active.phone,
               claimLive,
               claimDroppedRole: claim ? claim.droppedRole : null,
               survivorPresent: !!(room.active.browser || room.active.phone),
+              senderIsSoleRoomPhone,
             });
             if (honoured) {
               if (ws !== room.active.phone) {
                 console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from a phone under a survivor hold — HONOURED (droppedRole=${claim.droppedRole})`);
               }
               terminateActivePair(room, 'user_left');
+            } else if (claimLive && claim.droppedRole === 'phone' && !senderIsSoleRoomPhone) {
+              // The MINOR-4 refusal, logged distinctly from the historical one:
+              // this phone would have torn down a hold it may not be a party to.
+              console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE under a phone-dropped hold from one of ${roomPhoneCount} phone sockets — ignored (sender not identifiable as the held phone)`);
             } else {
               console.log(`[Relay][${redactToken(token)}] LEAVE_ACTIVE from non-active phone — ignored`);
             }

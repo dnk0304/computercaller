@@ -58,11 +58,12 @@
   "leaveActiveRows": [
     {
       "name": "leave-active-from-the-active-phone-honoured",
-      "why": "The ordinary Disconnect on a fully live pair. Unchanged behaviour, pinned so the hold fix cannot be mistaken for the whole rule.",
+      "why": "The ordinary Disconnect on a fully live pair. Unchanged behaviour, pinned so the hold fix cannot be mistaken for the whole rule. senderIsSoleRoomPhone is FALSE here on purpose: the ordinary Disconnect on a LIVE pair must not become conditional on there being no second handset in the lobby, so the first branch has to answer before the cardinality test is ever consulted.",
       "isActivePhone": true,
       "claimLive": false,
       "claimDroppedRole": null,
       "survivorPresent": true,
+      "senderIsSoleRoomPhone": false,
       "expect": true
     },
     {
@@ -72,6 +73,7 @@
       "claimLive": true,
       "claimDroppedRole": "phone",
       "survivorPresent": true,
+      "senderIsSoleRoomPhone": true,
       "expect": true
     },
     {
@@ -81,6 +83,17 @@
       "claimLive": true,
       "claimDroppedRole": "browser",
       "survivorPresent": true,
+      "senderIsSoleRoomPhone": true,
+      "expect": false
+    },
+    {
+      "name": "leave-active-during-hold-from-a-second-same-account-phone-ignored",
+      "why": "Security MINOR 4 (ack 2026-09-25). The hold branch originally tested the CLAIM's shape and never the SENDER, so a second handset of the same account sitting in the lobby - never a party to the pair - could end the hold with a Disconnect the user never pressed. Same-account only and the fail direction is a teardown, which is why it was a MINOR and not a block; it is still a Disconnect nobody asked for. With two phone sockets in the room the sender is not identifiable as the held phone, so it is refused.",
+      "isActivePhone": false,
+      "claimLive": true,
+      "claimDroppedRole": "phone",
+      "survivorPresent": true,
+      "senderIsSoleRoomPhone": false,
       "expect": false
     },
     {
@@ -90,6 +103,7 @@
       "claimLive": false,
       "claimDroppedRole": null,
       "survivorPresent": false,
+      "senderIsSoleRoomPhone": true,
       "expect": false
     },
     {
@@ -99,7 +113,40 @@
       "claimLive": false,
       "claimDroppedRole": "phone",
       "survivorPresent": true,
+      "senderIsSoleRoomPhone": true,
       "expect": false
+    }
+  ],
+  "parserRows": [
+    {
+      "name": "parser-absent-param-is-undeclared",
+      "why": "No ?session= at all - every APK shipped before vc68. Undeclared is NOT the same operational fact as a declared absence, and a parser that collapsed the two would make the vc68 rollout impossible to time from the relay logs.",
+      "raw": null,
+      "expect": { "declared": false, "present": false, "kid": null }
+    },
+    {
+      "name": "parser-declared-absence-terminates",
+      "why": "THE PROD SHAPE. A fresh process says so in as many words: force-stop wipes PhoneService.e2eSession, the dial sends session=0, and the gate must refuse to resume it rather than re-send sealed key material the phone cannot open.",
+      "raw": "0",
+      "expect": { "declared": true, "present": false, "kid": null }
+    },
+    {
+      "name": "parser-base64url-kid-is-present",
+      "why": "The happy shape. E2eAccept.newKid() is E2eKeyEncoding.toBase64Url(SecureRandom bytes), so a real kid is base64url and MUST survive the charset pin intact - a pin that rejected real kids would turn every genuine blip into a re-pair, the exact failure this lane exists to avoid.",
+      "raw": "kid-pair_A1",
+      "expect": { "declared": true, "present": true, "kid": "kid-pair_A1" }
+    },
+    {
+      "name": "parser-charset-violation-is-a-declared-absence",
+      "why": "Security MINOR 1 (ack 2026-09-25). The sibling ?deviceId= read in parseConnection pins /^[A-Za-z0-9_-]{1,128}$/ and this one did not, so 'the kid can never be interesting in a log line' rested on every current call site rather than on the parser. A value carrying a newline, a quote or a space is not a kid: it is treated as a DECLARED absence - the same outcome as the length cap, and deliberately never an error, because closing an already-authenticated socket over a malformed PUBLIC label would hand any client a hard disconnect. declared stays TRUE because garbage is not silence: an old APK sends nothing at all.",
+      "raw": "kid A1\n\"",
+      "expect": { "declared": true, "present": false, "kid": null }
+    },
+    {
+      "name": "parser-over-long-kid-is-a-declared-absence",
+      "why": "The value is attacker-controlled and the relay carries it into PAIRING_ACTIVE, so it is bounded at MAX_KID_LEN and never echoed back. Pinned alongside the charset row because the two caps are one rule: nothing the phone types gets to be unbounded or unconstrained relay-side.",
+      "raw": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "expect": { "declared": true, "present": false, "kid": null }
     }
   ],
   "webRows": [
