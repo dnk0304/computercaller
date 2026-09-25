@@ -32,7 +32,8 @@
 html:has(.cc-ext), body:has(.cc-ext) {
   height: 100%;
   margin: 0;
-  background: #fafafa;
+  /* Dennis 2026-09-25: white ground in light, matching Chrome's own panel. */
+  background: #ffffff;
   overscroll-behavior: none;
 }
 html[data-cc-theme=dark]:has(.cc-ext),
@@ -40,16 +41,21 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
 .cc-ext {
   /* ---- surfaces (light) ---- */
-  --cc-page: #fafafa;
+  --cc-page: #ffffff;
   --cc-card: #ffffff;
   --cc-zebra: #f5f5f5;
-  --cc-field: #f2f2f2;
+  /* EXT-WHITE-BG: the inset-control tint on a white ground. Capped at #f7f7f8
+     (Dennis: crisp white, no heavy greys); fields carry --cc-field-bd too. */
+  --cc-field: #f7f7f8;
+  --cc-field-bd: #8e8e93;
   --cc-hair: #e5e5e5;
   --cc-ink: #171717;
   --cc-sec: #525252;
   /* R-CH restored it with the ladder it was derived from: 4.20:1 on the
-     restored L2 #f1f1f2, 4.43:1 on L1, 4.74:1 on a white card. */
-  --cc-mut: #737373;
+     restored L2 #f1f1f2, 4.43:1 on L1, 4.74:1 on a white card.
+     EXT-WHITE-BG: #6b6b70 = 5.30:1 on white, 4.95:1 on the #f7f7f8 field tint
+     (placeholders sit there, and #737373 was 4.43:1 on it). */
+  --cc-mut: #6b6b70;
   --cc-chip-bd: #d4d4d4;
 
   /* ---- brand (identical in both themes) ---- */
@@ -543,7 +549,7 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   /* Only inside this query. Below the cap there are no gutters, and a ground
      that did not match the shell exactly would ring the iframe with a hairline
      of the wrong grey — the B2 seam, reappearing. */
-  html:has(.cc-ext), body:has(.cc-ext) { background: #f0f0f0; }
+  html:has(.cc-ext), body:has(.cc-ext) { background: #ffffff; }
 }
 @media (min-width: 620px) {
   :where([data-cc-theme=dark]) html:has(.cc-ext), :where([data-cc-theme=dark]) body:has(.cc-ext) { background: #050507; }
@@ -1016,9 +1022,13 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      the step is large (bar #3c3c3c L* 25.32 -> L0 #0b0b0d L* 3.07 = 22.25 dL*).
      That asymmetry is the accepted consequence of the surface Dennis asked
      for. */
+  /* R-WB (Dennis, Discord 2026-09-25 11:38Z): "i want the background to be a
+     nice crisp white, so it almost looks like a part of the chrome browser
+     itself in light mode." L1 and L2 light are now #ffffff; separation is
+     hairlines only. Do not "restore" the band or the grey. Dark unchanged. */
   --cc-l0: #ffffff;
-  --cc-l1: #f7f7f8;
-  --cc-l2: #f1f1f2;
+  --cc-l1: #ffffff;
+  --cc-l2: #ffffff;
   --cc-l3: #ffffff;
   /* Card outlines and band boundaries are the same hairline in light: at these
      lightnesses one value reads correctly against both L2 and L1. R-CH restored
@@ -1026,8 +1036,10 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      1.04:1 on L1, 1.16:1 around a white card — faint, and exactly what shipped.
      ORIGINAL EXT-FRAME-2 NOTE, kept for history: darkened
      with the ladder — #dcdcde on the new L2 is 1.07:1, i.e. gone. Now 1.34:1
-     on L2, 1.41:1 on L1, 1.72:1 around a white card. */
-  --cc-hair-card: #dcdcde;
+     on L2, 1.41:1 on L1, 1.72:1 around a white card.
+     R-WB: on an all-white ladder the outline is the card's only edge, so it
+     steps to #d4d4d8 = 1.48:1 on white. */
+  --cc-hair-card: #d4d4d8;
   /* The composer resize grip. A non-text control, so it is held at the 3:1
      WCAG 1.4.11 floor against the band it sits on rather than at a hairline's
      1.3:1 — a grab handle you cannot see is not an affordance. Measured
@@ -1093,6 +1105,41 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
      grey band that the body inks no longer cleared; with L0 back on #0b0b0d
      the header is just another dark surface and the body ink --cc-mut #8a8a8a
      paints on it at 5.70:1. One ink, one token, as pre-9edc664. */
+}
+
+/* --- R-WB light-only boundaries (EXT-WHITE-BG, 2026-09-25) ----------------
+   With every light surface white, inset controls need their own edge. Gated
+   off dark by the html attribute, so the dark render is untouched.
+     text inputs (search, composer pill,     #f7f7f8 fill + #8e8e93 border
+       reply)
+                                             = 3.26:1 on white, 3.05:1 on fill
+     dial keys                               #f7f7f8 fill + --cc-hair-card
+     incoming bubble                         --cc-hair-card outline, white fill
+     muted ink (timestamps, key letters,     --cc-mut #6b6b70 = 5.30:1; was
+       placeholders)                         slate-400 #94a3b8 = 2.56:1
+   ------------------------------------------------------------------------- */
+:where(html:not([data-cc-theme=dark])) .cc-ext .cc-field:not(:focus),
+:where(html:not([data-cc-theme=dark])) .cc-ext .cc-note-reply-field:not(:focus),
+:where(html:not([data-cc-theme=dark])) .cc-ext textarea:not(:focus):not(.bg-transparent) {
+  background-color: var(--cc-field);
+  border-color: var(--cc-field-bd);
+}
+/* The thread composer's textarea is a transparent, square child of a rounded
+   pill; tinting the textarea painted a square box inside the pill. The fill and
+   edge belong on the pill itself. */
+:where(html:not([data-cc-theme=dark])) .cc-ext .cc-band-head .bg-slate-50:not(:focus-within) {
+  background-color: var(--cc-field);
+  border-color: var(--cc-field-bd);
+}
+:where(html:not([data-cc-theme=dark])) .cc-ext input::placeholder,
+:where(html:not([data-cc-theme=dark])) .cc-ext textarea::placeholder,
+:where(html:not([data-cc-theme=dark])) .cc-ext .text-slate-400 { color: var(--cc-mut); }
+:where(html:not([data-cc-theme=dark])) .cc-ext .grid-cols-3 > button.rounded-full {
+  background-color: var(--cc-field);
+  border-color: var(--cc-hair-card);
+}
+:where(html:not([data-cc-theme=dark])) .cc-ext .cc-thread-scroll .border-slate-200.bg-white {
+  border-color: var(--cc-hair-card);
 }
 
 /* --- L0: the header band ------------------------------------------------- */
@@ -1587,7 +1634,8 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    BELOW L0 in each theme, or the capped column reads as a light box floating
    on a lighter one. */
 @media (min-width: 620px) {
-  html:has(.cc-ext), body:has(.cc-ext) { background: #e6e6e8; }
+  /* R-WB: white gutters in light; the column's border-inline is the edge. */
+  html:has(.cc-ext), body:has(.cc-ext) { background: #ffffff; }
   :where([data-cc-theme=dark]) html:has(.cc-ext),
   :where([data-cc-theme=dark]) body:has(.cc-ext) { background: #050507; }
 }
