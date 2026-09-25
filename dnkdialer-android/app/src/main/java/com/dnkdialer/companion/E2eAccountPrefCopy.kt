@@ -45,7 +45,7 @@ object E2eAccountPrefCopy {
     fun toastText(ctx: Context, t: E2eAccountPref.Effect.Toast): String = when (t.kind) {
         E2eAccountPref.ToastKind.FAILED -> ctx.getString(R.string.e2e_pref_toast_failed)
         E2eAccountPref.ToastKind.RATE_LIMITED -> rateLimitedSeconds(t.retryAfterMs)
-            ?.let { ctx.getString(R.string.e2e_pref_toast_rate_limited_s, it) }
+            ?.let { ctx.resources.getQuantityString(R.plurals.e2e_pref_toast_rate_limited_s, it, it) }
             ?: ctx.getString(R.string.e2e_pref_toast_rate_limited)
     }
 

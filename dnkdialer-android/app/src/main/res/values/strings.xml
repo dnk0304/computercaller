@@ -533,7 +533,10 @@
     <string name="e2e_pref_notif_title">Encrypted mode changed</string>
     <string name="e2e_pref_notice_on">Encrypted mode was turned on from %1$s at %2$s.</string>
     <string name="e2e_pref_toast_rate_limited">Too many changes, try again in a minute.</string>
-    <string name="e2e_pref_toast_rate_limited_s">Too many changes, try again in %1$d seconds.</string>
+    <plurals name="e2e_pref_toast_rate_limited_s">
+        <item quantity="one">Too many changes, try again in %1$d second.</item>
+        <item quantity="other">Too many changes, try again in %1$d seconds.</item>
+    </plurals>
     <string name="e2e_pref_toast_failed">Could not apply, try again.</string>
     <string name="e2e_pref_src_web">your computer</string>
     <string name="e2e_pref_src_ext">the extension</string>
