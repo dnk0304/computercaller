@@ -79,12 +79,13 @@ export const Sidebar = ({ activeTab, setActiveTab, isAdmin = false }: SidebarPro
               WEB-HEADER-WORDMARK (Dennis 2026-09-25, "In sidebar, keep the
               sentences on 2 rows"): expanded now shows the mark beside the
               wordmark split onto two rows, COMPUTER over CALLER, both rows the
-              same width (~160px total, fits the ~200px row). The header's brand
-              block is gone, so this is the page's one brand name. */}
+              same width. Half size since 2026-09-26 (12px mark, 64px rows, ~90px
+              total). The header's brand block is gone, so this is the page's
+              one brand name. */}
           {collapsed ? (
             <CcMark size={20} title="ComputerCaller" className="flex-shrink-0" />
           ) : (
-            <SidebarLockup size={24} className="flex-shrink-0" />
+            <SidebarLockup size={12} className="flex-shrink-0" />
           )}
         </div>
         {!collapsed && (

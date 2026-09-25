@@ -12,6 +12,9 @@ import { STACKED_WORD_CUT, brandSrc, brandSrcSet } from '@/lib/brand/wordmark';
  * sized by the same width, so CALLER matches COMPUTER's width by construction
  * and, scaled uniformly, stands ~1.5x taller (the V1 Dennis picked).
  *
+ * Half size (Dennis 2026-09-26, "like half that size"): rows 64px, mark 12px,
+ * gaps halved with them so the lockup keeps its proportions.
+ *
  * Deliberately NOT a CcLockup layout: CcLockup is shared with the extension
  * header (PhoneModeHeader), which must stay byte-identical. Light only — /app
  * has no dark variant (globals.css D4), so there is no tone switch here.
@@ -24,17 +27,17 @@ export interface SidebarLockupProps {
   className?: string;
 }
 
-export function SidebarLockup({ size = 24, wordWidth = 128, className }: SidebarLockupProps) {
+export function SidebarLockup({ size = 12, wordWidth = 64, className }: SidebarLockupProps) {
   const rows = [STACKED_WORD_CUT.computer, STACKED_WORD_CUT.caller];
   return (
     <span
       role="img"
       aria-label="ComputerCaller"
       className={className}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, lineHeight: 0 }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: 0 }}
     >
       <CcMark size={size} />
-      <span style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {rows.map((cut) => (
           // eslint-disable-next-line @next/next/no-img-element
           <img
