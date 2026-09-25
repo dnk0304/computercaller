@@ -381,8 +381,10 @@ android {
         // vc64 (2026-09-24, Ken cut, R-DE): FT picker fix (noHistory dropped), first-sign-in
         // auto-dial (PhoneServiceStartPolicy), mode-0 status broadcast. Icon unchanged (Dennis:
         // "forget the logo"). Pilot CAMERA/ZXing cleanup deferred to vc65.
-        versionCode = 68
-        versionName = "1.0.44"
+        // vc69 (2026-09-25, Ken cut): launcher icon B, alert icons, file progress card + pending-offer
+        // fixes, file queue, E2E account-pref (B1 latch, R2/R3, equal-rev). Base release/17.
+        versionCode = 69
+        versionName = "1.0.45"
 
         // Google OAuth WEB client ID (NOT the Android client). Credential
         // Manager's GetGoogleIdOption.serverClientId must be the web client
