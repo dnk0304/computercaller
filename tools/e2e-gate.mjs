@@ -771,6 +771,10 @@ const MIN_CHECKS_OVERRIDE = {
   // cheerful N/N. Measured at the commit that adds it: 333 checks over 280
   // files (app=72 components=82 hooks=23 lib=93 chrome-extension=10).
   'unit:copy-banned-words': 333,
+  // WE-0. tests/apple-pay-domain-file.test.mjs, measured 28 at the commit that
+  // adds it. Plant-proven red for: legacy `/:path*` www source, an unescaped
+  // lookahead dot, a trailing newline on the file, a non-text/plain header.
+  'unit:apple-pay-domain': 28,
   // GATE-TOOLING-1 (3), T-GATE-TEXTSIZE-P5A (ruling R-CD). The 200% text-size
   // proof, joining P5A. Not in the parity baseline — it has never run under a
   // gate before — so the floor is declared here. Measured 110 checks at base
@@ -1978,6 +1982,15 @@ if (WEB) {
     // (rule 17). ONLY e2e-gate.mjs change made by QR-PURGE; declared in the
     // résumé.
     ['copy-banned-words', 'tests/copy-no-banned-words.test.mjs', true],
+    // WE-0 (2026-09-25). Apple Pay domain verification: the association file's
+    // bytes, its binary .gitattributes guard, its text/plain header entry and
+    // the www->apex redirect's /.well-known exclusion (through Next's own
+    // matcher, with a legacy-source CONTROL). Nothing at runtime fails loudly if
+    // any of these regress — Apple/Whop's re-check does, weeks later. Named
+    // explicitly because the sweep above matches only tests/e2e-*.test.mjs.
+    // Node-only — no browser, no database (rule 17). ONLY e2e-gate.mjs change
+    // made by WE-0; declared in the résumé.
+    ['apple-pay-domain', 'tests/apple-pay-domain-file.test.mjs', true],
   ];
   // The one unit suite that needs a database, named for the same reason
   // DB_BACKED names devicekey-authz above: explicit beats widening the scrub.

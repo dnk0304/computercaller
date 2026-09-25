@@ -144,10 +144,16 @@ const nextConfig: NextConfig = {
       // it's better for cookies/SEO). Host-scoped: only fires for www requests,
       // so apex traffic — including the WSS relay upgrade and /api/webhooks/whop,
       // which already run on the apex — is untouched.
+      //
+      // WE-0 (2026-09-25): EXCEPT /.well-known/*. Apple Pay domain verification
+      // fetches /.well-known/apple-developer-merchantid-domain-association and
+      // does not follow redirects, so www must serve that path itself (200)
+      // rather than 308 to the apex. The negative lookahead excludes ONLY paths
+      // beginning `.well-known/`; every other www path still 308s to the apex.
       {
-        source: '/:path*',
+        source: '/:path((?!\\.well-known/).*)',
         has: [{ type: 'host', value: 'www.computercaller.com' }],
-        destination: 'https://computercaller.com/:path*',
+        destination: 'https://computercaller.com/:path',
         permanent: true,
       },
     ];
@@ -207,6 +213,17 @@ const nextConfig: NextConfig = {
         // Referrer-Policy key it wins on /auth/set-password.
         source: '/auth/set-password',
         headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
+      },
+      {
+        // WE-0 (2026-09-25): Apple Pay domain-association file (served from
+        // public/.well-known/, byte-identical — see .gitattributes). Explicit
+        // text/plain: without it Next serves an extension-less file as
+        // application/octet-stream. Global SECURITY_HEADERS still apply.
+        source: '/.well-known/apple-developer-merchantid-domain-association',
+        headers: [
+          { key: 'Content-Type', value: 'text/plain' },
+          { key: 'Cache-Control', value: 'public, max-age=3600' },
+        ],
       },
       {
         // GSC fix (2026-08-21): Google indexed woff2 font URLs under
