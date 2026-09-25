@@ -1,0 +1,159 @@
+{
+  "phase": "ANDROID-FIX",
+  "label": "vc69-cut",
+  "harnessMode": "sequential",
+  "note": null,
+  "sha": "307e28aea3d26904cd7d1ba2e6e20f1de0f66b0e",
+  "baseSha": "445138a6c58c12b2848cb4c24371b0d443e51c27",
+  "scopeBase": {
+    "sha": "dc0f0c551ebf92f7270ea938676224aa939f128b",
+    "kind": "merge-base",
+    "ref": "origin/e2e/integration",
+    "integrationTip": "dc0f0c551ebf92f7270ea938676224aa939f128b",
+    "fellBackToBaseSha": false,
+    "reason": null
+  },
+  "utc": "2026-09-25T16:21:11.769Z",
+  "lane": "android",
+  "mode": "full",
+  "env": {
+    "node": "v24.12.0",
+    "bun": "1.3.11",
+    "chrome": "C:\\Users\\D\\AppData\\Local\\ms-playwright\\chromium-1208\\chrome-win64\\chrome.exe"
+  },
+  "steps": [
+    {
+      "name": "git-identity-clean-base-ancestry",
+      "cmd": "git rev-parse HEAD && git status --porcelain && git merge-base --is-ancestor BASE_SHA HEAD",
+      "exit": 0,
+      "ms": 302,
+      "counts": {
+        "dirtyPaths": 0,
+        "baseIsAncestor": true
+      }
+    },
+    {
+      "name": "scope-diff-vs-base",
+      "cmd": "git diff --name-only dc0f0c5..HEAD",
+      "exit": 1,
+      "ms": 155,
+      "counts": {
+        "changed": 92,
+        "android": 73,
+        "nonAndroid": 19,
+        "offLane": 19,
+        "scopeBase": "dc0f0c551ebf92f7270ea938676224aa939f128b",
+        "scopeBaseKind": "merge-base"
+      }
+    },
+    {
+      "name": "android:java-home",
+      "cmd": "resolveJavaHome()",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "missing": 0
+      },
+      "javaHome": "C:/PROGRA~1/Android/ANDROI~1/jbr"
+    },
+    {
+      "name": "android:assembleDebug",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\vc69\\dnkdialer-android\\gradlew.bat\" :app:assembleDebug",
+      "exit": 0,
+      "ms": 216863,
+      "counts": null
+    },
+    {
+      "name": "android:lint",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\vc69\\dnkdialer-android\\gradlew.bat\" :app:lintDebug --continue && node tools/lint-manifest.mjs --check  (cwd dnkdialer-android)",
+      "exit": 0,
+      "ms": 218132,
+      "counts": {
+        "issues": 0,
+        "reportFresh": 1,
+        "gradleExit": 0
+      }
+    },
+    {
+      "name": "android:SasVectorsTest",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\vc69\\dnkdialer-android\\gradlew.bat\" :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.dnkdialer.companion.E2eSasVectorsTest",
+      "exit": 0,
+      "ms": 179222,
+      "counts": {
+        "passed": 7,
+        "total": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "files": 1
+      }
+    },
+    {
+      "name": "android:testDebugUnitTest",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\vc69\\dnkdialer-android\\gradlew.bat\" :app:testDebugUnitTest",
+      "exit": 0,
+      "ms": 32140,
+      "counts": {
+        "passed": 461,
+        "total": 461,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "files": 46
+      }
+    },
+    {
+      "name": "android:instrumented-A5",
+      "cmd": "\"C:\\Users\\D\\worktrees\\computercaller\\vc69\\dnkdialer-android\\gradlew.bat\" :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.dnkdialer.companion.E2eForwardJumpVectorsTest,com.dnkdialer.companion.E2eForwardJumpObservabilityTest,com.dnkdialer.companion.E2eModeVectorMBackCompatTest",
+      "exit": 0,
+      "ms": 20892,
+      "counts": {
+        "passed": 8,
+        "total": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "files": 1
+      }
+    },
+    {
+      "name": "android:never-signs-release",
+      "cmd": "(assertion: no assembleRelease/bundleRelease in this tool)",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "releaseTasks": 0
+      }
+    },
+    {
+      "name": "android:gradle-stop",
+      "cmd": "\"C:/Users/D/worktrees/computercaller/vc69/dnkdialer-android/gradlew.bat\" --stop",
+      "exit": 0,
+      "ms": 1967,
+      "counts": {
+        "javaBefore": 2,
+        "javaAfter": 2
+      }
+    },
+    {
+      "name": "baseline-parity",
+      "cmd": "diff vs C:/Users/D/worktrees/computercaller/vc69/e2e-evidence/BASELINE-harness.json",
+      "exit": 0,
+      "ms": 0,
+      "counts": {
+        "reference": 16,
+        "comparable": 0,
+        "regressed": 0,
+        "why": "lane=android runs no web-lane steps; nothing in the reference is comparable"
+      }
+    }
+  ],
+  "harnessPass": [],
+  "baselineDiff": [],
+  "ms": 677366,
+  "failedStep": "scope-diff-vs-base",
+  "produced": [
+    "e2e-evidence/gate-ANDROID-FIX-307e28a-vc69-cut.json"
+  ],
+  "result": "FAIL"
+}
