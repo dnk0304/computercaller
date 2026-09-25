@@ -54,6 +54,37 @@ object E2eAccountPrefCopy {
         E2eAccountPref.DowngradeKind.PAUSED -> ctx.getString(R.string.e2e_pref_prompt_paused)
     }
 
+    /** What a latch-prompt button does. Pure, so the layout decision is JVM-tested. */
+    enum class PromptAction(@StringRes val labelRes: Int) {
+        KEEP_CODE_CHECK(R.string.e2e_pref_prompt_keep_check),
+        CONTINUE_WITHOUT(R.string.e2e_pref_prompt_continue_without),
+        KEEP_OFF(R.string.e2e_pref_prompt_keep_off),
+        TURN_BACK_ON(R.string.e2e_pref_prompt_turn_back_on),
+    }
+
+    /**
+     * Which action sits on which button of the latch prompt card.
+     * [primaryFilled] = the primary button carries the filled brand pill.
+     *
+     * Security review R2 (c7c290f): on PAUSED the safe choice, "Keep code
+     * check", is the PRIMARY (filled) button and "Continue without code
+     * check" is the outline secondary — a reflex tap keeps the check on.
+     * PREF_OFF is unchanged (both outline).
+     */
+    data class PromptButtons(
+        val primary: PromptAction,
+        val secondary: PromptAction,
+        val primaryFilled: Boolean,
+    )
+
+    @JvmStatic
+    fun promptButtons(kind: E2eAccountPref.DowngradeKind): PromptButtons = when (kind) {
+        E2eAccountPref.DowngradeKind.PAUSED ->
+            PromptButtons(PromptAction.KEEP_CODE_CHECK, PromptAction.CONTINUE_WITHOUT, primaryFilled = true)
+        E2eAccountPref.DowngradeKind.PREF_OFF ->
+            PromptButtons(PromptAction.TURN_BACK_ON, PromptAction.KEEP_OFF, primaryFilled = false)
+    }
+
     fun noticeText(ctx: Context, n: E2eAccountPref.Notice): String =
         ctx.getString(R.string.e2e_pref_notice_on, source(ctx, n.updatedBy), time(n.updatedAt) ?: "--:--")
 

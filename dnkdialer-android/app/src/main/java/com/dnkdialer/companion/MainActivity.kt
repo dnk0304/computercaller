@@ -1283,21 +1283,41 @@ class MainActivity : AppCompatActivity() {
         if (pending == null) {
             card.visibility = View.GONE
         } else {
-            val paused = pending.kind == E2eAccountPref.DowngradeKind.PAUSED
             findViewById<TextView>(R.id.homeE2ePrefPromptText).text =
                 E2eAccountPrefCopy.promptText(this, pending)
             val secondary = findViewById<Button>(R.id.homeE2ePrefPromptSecondary)
             val primary = findViewById<Button>(R.id.homeE2ePrefPromptPrimary)
-            if (paused) {
-                secondary.setText(R.string.e2e_pref_prompt_keep_check)
-                primary.setText(R.string.e2e_pref_prompt_continue_without)
-                secondary.setOnClickListener { E2eAccountPrefController.keepCodeCheck(this); forceAcctRepaint() }
-                primary.setOnClickListener { E2eAccountPrefController.keepOff(this); forceAcctRepaint() }
-            } else {
-                secondary.setText(R.string.e2e_pref_prompt_keep_off)
-                primary.setText(R.string.e2e_pref_prompt_turn_back_on)
-                secondary.setOnClickListener { E2eAccountPrefController.keepOff(this); forceAcctRepaint() }
-                primary.setOnClickListener {
+            // Security review R2: the layout decision is E2eAccountPrefCopy.promptButtons
+            // (JVM-tested) — on PAUSED "Keep code check" is the filled primary.
+            val layout = E2eAccountPrefCopy.promptButtons(pending.kind)
+            bindPromptButton(secondary, layout.secondary, filled = false)
+            bindPromptButton(primary, layout.primary, filled = layout.primaryFilled)
+            card.visibility = View.VISIBLE
+        }
+        val notice = findViewById<TextView>(R.id.homeE2ePrefNotice) ?: return
+        E2eAccountPrefController.takeNotice(this)?.let {
+            notice.text = E2eAccountPrefCopy.noticeText(this, it)
+            notice.visibility = View.VISIBLE
+        }
+    }
+
+    private fun bindPromptButton(b: Button, action: E2eAccountPrefCopy.PromptAction, filled: Boolean) {
+        // Security review R3 (tapjacking): an overlay must not be able to
+        // click through onto these choices. Also set in activity_main.xml;
+        // set here too so no future re-inflation or style can drop it.
+        b.filterTouchesWhenObscured = true
+        b.setText(action.labelRes)
+        b.setBackgroundResource(if (filled) R.drawable.bg_pill_brand else R.drawable.bg_pill_outline)
+        b.setTextColor(
+            if (filled) android.graphics.Color.WHITE
+            else androidx.core.content.ContextCompat.getColor(this, R.color.text_primary)
+        )
+        b.setOnClickListener {
+            when (action) {
+                E2eAccountPrefCopy.PromptAction.KEEP_CODE_CHECK -> E2eAccountPrefController.keepCodeCheck(this)
+                E2eAccountPrefCopy.PromptAction.CONTINUE_WITHOUT,
+                E2eAccountPrefCopy.PromptAction.KEEP_OFF -> E2eAccountPrefController.keepOff(this)
+                E2eAccountPrefCopy.PromptAction.TURN_BACK_ON ->
                     // The tap IS the confirmation (design §12) — no second dialog.
                     when (E2eAccountPrefController.turnBackOn(this)) {
                         E2eAccountPrefController.Result.SENT -> Unit
@@ -1305,15 +1325,8 @@ class MainActivity : AppCompatActivity() {
                             Toast.makeText(this, R.string.e2e_pref_offline, Toast.LENGTH_LONG).show()
                         else -> Toast.makeText(this, R.string.e2e_pref_toast_failed, Toast.LENGTH_LONG).show()
                     }
-                    forceAcctRepaint()
-                }
             }
-            card.visibility = View.VISIBLE
-        }
-        val notice = findViewById<TextView>(R.id.homeE2ePrefNotice) ?: return
-        E2eAccountPrefController.takeNotice(this)?.let {
-            notice.text = E2eAccountPrefCopy.noticeText(this, it)
-            notice.visibility = View.VISIBLE
+            forceAcctRepaint()
         }
     }
 
