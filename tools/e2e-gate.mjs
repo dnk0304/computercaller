@@ -576,6 +576,9 @@ const MIN_CHECKS_OVERRIDE = {
   // BASELINE-harness.json), so deleting those arms would have gone green.
   // Measured at the commit that adds them: 298 assertions.
   'relay:ft-relay': 298,
+  // PREP17-B. relay-e2e-pref-frame-filter: every owned-frames vector plus its
+  // controls. Measured at the commit that adds it: 171 assertions.
+  'relay:relay-e2e-pref-frame-filter': 171,
   // T-FT-EXT-NO-SAVE-PICKER. tests/e2e-ft-ext-receive.test.mjs drives the REAL
   // sender and receiver against each other with picker=null (the extension
   // surface) and asserts the DELIVERED BYTES hash to the source file, plus the
@@ -1846,7 +1849,13 @@ if (WEB) {
     // because the `tests/e2e-*.test.mjs` sweep below does not match it, and a
     // security gate the gate never runs is a security gate that stops being
     // true.
-    'ft-relay'];
+    'ft-relay',
+    // PREP17-B (2026-09-25). The relay's e2ePref owned-frames filter over
+    // tests/e2e-pref-relay-owned-frames.json (which peer may send/receive each
+    // E2E_PREF_* frame). Named explicitly because the tests/e2e-*.test.mjs sweep
+    // does not match relay-*; a relay authz filter the gate never runs stops
+    // being true. Node-only, no database.
+    'relay-e2e-pref-frame-filter'];
   /** Delivered by a lane AFTER BASE_SHA. Only --baseline may excuse them. */
   const P0_NEW = new Set(['session-superseded', 'devicekey-authz', 'ft-relay']);
   /**
