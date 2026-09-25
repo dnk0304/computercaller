@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 
 import { usePhone } from '@/hooks';
 import { useUpgrade } from '@/hooks/upgradeModalContext';
@@ -85,6 +85,24 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
   const onDecline = useCallback(() => { ft?.rejectOffer(); }, [ft]);
   const onCancel = useCallback(() => { ft?.cancel(); }, [ft]);
   const onDismissError = useCallback(() => { ft?.dismissError(); }, [ft]);
+  /*
+   * FT-RETRY-1. "Try again" used to be wired to onDismissError — it cleared
+   * the banner and did nothing else. It now re-offers the retained File under a
+   * new id. When that File no longer reads, the banner switches to "Pick the
+   * file again" AND the picker is opened from this same click: the probe is a
+   * one-byte read, well inside the browser's user-activation window. A
+   * RECEIVE failure has no File on this side to resend, so it keeps the old
+   * clear-the-banner behaviour (retryMode 'none').
+   */
+  const repickInputRef = useRef<HTMLInputElement>(null);
+  const onRetry = useCallback(() => {
+    if (!ft) return;
+    if (ft.retryMode === 'none') { ft.dismissError(); return; }
+    void ft.retry().then((outcome) => {
+      if (outcome === 'repick') repickInputRef.current?.click();
+    });
+  }, [ft]);
+  const onRepick = useCallback((file: File) => { void ft?.retry(file); }, [ft]);
   const onDismissCompleted = useCallback(() => { ft?.dismissCompleted(); }, [ft]);
   const completedId = ft?.completed?.id ?? null;
   // Bound to the id so the handler cannot outlive the transfer it names.
@@ -115,7 +133,10 @@ export function FileTransferLayer({ compact = false }: FileTransferLayerProps) {
       <FileTransferError
         reason={error?.reason ?? null}
         onDismiss={onDismissError}
-        onRetry={onDismissError}
+        onRetry={onRetry}
+        repick={ft.retryMode === 'repick'}
+        onRepick={onRepick}
+        repickInputRef={repickInputRef}
       />
 
       <FileTransferProgress progress={progress} onCancel={onCancel} compact={compact} />

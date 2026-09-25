@@ -85,8 +85,9 @@ const STOPPED = 'The transfer was stopped:';
  * Actions are assigned by whether retrying could plausibly succeed, not by how
  * the message feels. `relay_backpressure`, `timeout` and `connection_lost` are
  * transient, so they offer a retry. `size_mismatch` offers one because the
- * named fix IS to send it again. `busy` does not: the remedy is to wait, and a
- * retry button that will refuse again is a trap. `quota`, `tier` and
+ * named fix IS to send it again. `busy` offers one too (FT-RETRY-1): the phone
+ * may free up, and a banner with no way forward left the sender stranded
+ * (incident 2) — a retry that refuses again just says so again. `quota`, `tier` and
  * `too_large` do not, because nothing the user can do in this banner changes
  * the outcome — and for `tier` specifically, an Upgrade here is the steering
  * surface M10 and the Play ruling both keep off failure copy.
@@ -107,6 +108,7 @@ const RELAY_OWNED_COPY: Record<string, FailureCopy> = {
   },
   busy: {
     message: `${STOPPED} another transfer is already running.`,
+    action: 'retry',
   },
   relay_backpressure: {
     message: `${STOPPED} the connection could not keep up.`,
@@ -155,3 +157,14 @@ export const FT_OFFER_TRUST = 'Only accept files from people you trust.';
 export const FT_OFFER_NO_SCAN = 'Files are not scanned for viruses.';
 export const FT_OFFER_ACCEPT = 'Accept';
 export const FT_OFFER_DECLINE = 'Decline';
+
+/** The failure banner's retry button. */
+export const FT_RETRY_ACTION = 'Try again';
+
+/**
+ * FT-RETRY-1. Shown when Try again finds the picked File no longer readable
+ * (changed or moved on disk, or the handle went stale). Retry never silently
+ * does nothing: it says why and opens the picker.
+ */
+export const FT_REPICK_MESSAGE = "The file can't be read anymore — it may have been changed or moved.";
+export const FT_REPICK_ACTION = 'Pick the file again';
