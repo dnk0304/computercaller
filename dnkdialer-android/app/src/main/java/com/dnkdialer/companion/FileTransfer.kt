@@ -509,6 +509,16 @@ object FileTransfer {
         return ((totalBytes - sentBytes) / bytesPerMs / 1000.0).toLong()
     }
 
+    /**
+     * Whole percent for a progress bar, 0..100; 0 when the total is unknown.
+     *
+     * ONE formula for both surfaces that draw transfer progress - the ongoing
+     * notification and the in-app card - so the two can never show different
+     * numbers for the same `onProgress` event.
+     */
+    fun percent(sentBytes: Long, totalBytes: Long): Int =
+        if (totalBytes > 0) ((sentBytes * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
+
     // -------------------------------------------------- accept destination
 
     /**

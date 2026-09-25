@@ -103,6 +103,24 @@ class PhoneService : Service() {
         var fileTransferHandler: FileTransferManager? = null
             private set
 
+        /**
+         * vc69 — the in-app transfer card's state. Written ONLY from the
+         * FileTransferManager.Listener in [setUpFileTransfer], beside the
+         * notification calls for the same events, so the card and the
+         * notification are two renderings of one stream.
+         *
+         * Process-scoped (not per service instance) so an Activity can
+         * observe it before the service binds and after it is recreated;
+         * [tearDownFileTransfer] resets it so a dead service leaves no card.
+         */
+        @JvmStatic
+        internal val fileTransferUiModel = FileTransferUiModel()
+
+        /** Read-only view for the UI. */
+        @JvmStatic
+        val fileTransferUi: kotlinx.coroutines.flow.StateFlow<FileTransferUi>
+            get() = fileTransferUiModel.state
+
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "dnk_dialer_service"
 
@@ -4779,10 +4797,16 @@ class PhoneService : Service() {
                 ) {
                     if (fileTransferStartedMs == 0L) fileTransferStartedMs = System.currentTimeMillis()
                     notifier.showProgress(name, sent, total, outgoing, fileTransferStartedMs)
+                    fileTransferUiModel.onProgress(id, name, sent, total, outgoing)
                 }
 
                 override fun onOfferReceived(id: String, name: String, size: Long, mime: String?) {
                     notifier.showOffer(id, name, size)
+                    // vc69 (FT incident 2, item 2): the card's Offer face. Held
+                    // in the StateFlow, so opening the app at ANY point while
+                    // the offer is live shows Accept - not only when the app
+                    // happened to be in front when the offer arrived.
+                    fileTransferUiModel.onOffer(id, name, size)
                     // The in-app dialog too, when an Activity is in front. The
                     // notification always fires; this is the second surface,
                     // the same shape as the pairing prompt.
@@ -4806,6 +4830,7 @@ class PhoneService : Service() {
                     notifier.dismissProgress()
                     notifier.dismissOffer()
                     notifier.showComplete(name, uri, outgoing)
+                    holdTerminalCard(fileTransferUiModel.onComplete(id, name, uri?.toString(), outgoing))
                 }
 
                 override fun onFailed(
@@ -4814,6 +4839,7 @@ class PhoneService : Service() {
                     notifier.dismissProgress()
                     notifier.dismissOffer()
                     notifier.showFailed(name, reason, outgoing)
+                    holdTerminalCard(fileTransferUiModel.onFailed(id, name, reason, outgoing))
                     // (d) quota / tier / too_large are decisions the user must
                     // understand, not background noise - surface the dialog too
                     // when the app is in front and the reason is a refusal
@@ -4839,6 +4865,14 @@ class PhoneService : Service() {
                 override fun onIdle() {
                     fileTransferStartedMs = 0L
                     notifier.dismissProgress()
+                    fileTransferUiModel.onIdle()
+                }
+
+                // vc69 (FT incident 2): the offer died unanswered, so its
+                // Accept/Reject prompt must not outlive it.
+                override fun onOfferWithdrawn(id: String, reason: String) {
+                    notifier.dismissOffer()
+                    fileTransferUiModel.onOfferWithdrawn(id)
                 }
             },
         )
@@ -4877,9 +4911,35 @@ class PhoneService : Service() {
         fileTransferTicker.postDelayed(tick, 5_000L)
     }
 
+    /**
+     * vc69 — the card shows Done / Failed for [FileTransferUiModel.TERMINAL_HOLD_MS]
+     * and then hides itself. The token makes a timer from an earlier transfer
+     * a no-op against a later one. Posted on the ticker's main-looper Handler,
+     * which is removed with the service.
+     */
+    private fun holdTerminalCard(token: Long) {
+        fileTransferTicker.postDelayed(
+            {
+                if (fileTransferUiModel.dismissTerminal(token)) {
+                    // A result card can cover a still-pending offer (a send
+                    // refused BUSY while the offer waits). When the result
+                    // goes, the offer - pendingOfferInfo(), the manager's own
+                    // record - comes back, so Accept is never unreachable
+                    // in-app while the offer is live.
+                    fileTransferHandler?.pendingOfferInfo()?.let { (id, name, size) ->
+                        fileTransferUiModel.onOffer(id, name, size)
+                    }
+                }
+            },
+            FileTransferUiModel.TERMINAL_HOLD_MS,
+        )
+    }
+
     private fun tearDownFileTransfer() {
         fileTransferTickRunnable?.let { fileTransferTicker.removeCallbacks(it) }
         fileTransferTickRunnable = null
+        // Also drops any pending terminal-card hold timers.
+        fileTransferTicker.removeCallbacksAndMessages(null)
         FileTransferActionReceiver.handler = null
         try {
             fileTransferReceiver?.let { unregisterReceiver(it) }
@@ -4889,6 +4949,7 @@ class PhoneService : Service() {
         fileTransferReceiver = null
         fileTransferNotifier?.dismissProgress()
         fileTransferNotifier = null
+        fileTransferUiModel.reset()
         // Last: an Activity that reads this after teardown must find null.
         fileTransferHandler = null
     }
@@ -5047,6 +5108,10 @@ class PhoneService : Service() {
                     // session — defensive; usually nothing is pending
                     // by the time TERMINATED arrives.
                     clearAllPendingPairings("pairing terminated: $reason")
+                    // vc69 (FT incident 2): an unanswered file offer from the
+                    // computer that just left is dead relay-side; holding it
+                    // would answer the next pair's first offer BUSY.
+                    fileTransferHandler?.dropPendingOffer(FileTransfer.Reason.CANCELLED)
                 }
                 /**
                  * §13.8 names RESET_ROOM alongside PAIRING_TERMINATED as an
@@ -5075,6 +5140,9 @@ class PhoneService : Service() {
                     E2eSettings.clearPeerAdvertisement(this, "RESET_ROOM")
                     acceptedE2eOffer = null
                     clearAllPendingPairings("room reset")
+                    // vc69 (FT incident 2): same as PAIRING_TERMINATED - the
+                    // room an unanswered offer lived in is gone.
+                    fileTransferHandler?.dropPendingOffer(FileTransfer.Reason.CANCELLED)
                 }
                 // ------------------------------------------------------
                 "MAKE_CALL" -> {

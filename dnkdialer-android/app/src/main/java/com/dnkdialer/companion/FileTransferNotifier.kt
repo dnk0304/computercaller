@@ -151,7 +151,7 @@ class FileTransferNotifier(private val context: Context) {
             Intent(FileTransferActionReceiver.ACTION_CANCEL).setPackage(context.packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val pct = if (total > 0) ((sent * 100) / total).toInt().coerceIn(0, 100) else 0
+        val pct = FileTransfer.percent(sent, total)
         val eta = FileTransfer.etaSeconds(sent, total, System.currentTimeMillis() - startedMs)
         val sub = if (eta != null) {
             context.getString(

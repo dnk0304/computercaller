@@ -482,6 +482,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * vc69 — the in-app file-transfer card, observing PhoneService's
+     * StateFlow between onStart and onStop. See [FileTransferCard].
+     */
+    private val fileTransferCard = FileTransferCard(this)
+
+    override fun onStart() {
+        super.onStart()
+        fileTransferCard.start()
+    }
+
+    override fun onStop() {
+        fileTransferCard.stop()
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -550,6 +566,9 @@ class MainActivity : AppCompatActivity() {
         mainPaneInitialized = true
         inPermissionsRequiredPane = false
         setContentView(R.layout.activity_main)
+        // vc69 — a fresh tree has a fresh (hidden) transfer card; draw the
+        // current state into it now rather than waiting for the next event.
+        fileTransferCard.refresh()
 
         // API 35 edge-to-edge: stop the decor from fitting system windows so
         // the surface_base background fills behind the bars, then pad the

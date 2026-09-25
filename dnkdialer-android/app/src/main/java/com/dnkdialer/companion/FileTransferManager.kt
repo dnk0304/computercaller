@@ -73,6 +73,15 @@ class FileTransferManager(
 
         /** Nothing is running; tear down any ongoing notification. */
         fun onIdle()
+
+        /**
+         * vc69 (FT incident 2) — the offer we were holding died before we
+         * answered it: the sender cancelled, the relay minted a FILE_FAILED
+         * for it, or the socket / room it arrived on is gone. Tear down its
+         * prompt; there is nothing left to accept. Default no-op so a test
+         * listener need not care.
+         */
+        fun onOfferWithdrawn(id: String, reason: String) {}
     }
 
     // ------------------------------------------------------------ the slot
@@ -421,9 +430,26 @@ class FileTransferManager(
                 val out = FileOutputStream(pfd.fileDescriptor)
                 out.channel.truncate(0)
                 r.out = out
-                synchronized(lock) {
-                    active = r
-                    pendingOffer = null
+                // vc69 (FT incident 2) — the offer may have been withdrawn
+                // (FILE_FAILED from the sender or relay, socket drop) while the
+                // user was in the save picker. Accepting it now would send a
+                // FILE_ACCEPT for an id the relay has already freed and park
+                // us in `active` until the stall timeout. Check and claim
+                // under the lock, so a withdrawal cannot land in between.
+                val stillOffered = synchronized(lock) {
+                    if (pendingOffer?.id != offer.id) {
+                        false
+                    } else {
+                        active = r
+                        pendingOffer = null
+                        true
+                    }
+                }
+                if (!stillOffered) {
+                    closeReceive(r)
+                    deleteDoc(partUri)
+                    DiagLog.d("FileTransfer", "accept dropped: offer ${offer.id} was withdrawn")
+                    return@execute
                 }
                 touch()
                 send(FileTransfer.ACCEPT, mapOf("id" to offer.id))
@@ -620,11 +646,22 @@ class FileTransferManager(
                 // latch, so honouring a plaintext one cannot become a
                 // downgrade. The .part deletion below is part of aborting the
                 // transfer, not a change to pairing state.
-                val a = active ?: return
-                if (p["id"] as? String != a.id) return
+                val fid = p["id"] as? String ?: return
                 val reason = (p["reason"] as? String)?.takeIf { it in FileTransfer.Reason.ALL }
                     ?: FileTransfer.Reason.CONNECTION_LOST
-                fail(a, reason, a is Active.Send)
+                val a = active
+                if (a != null && fid == a.id) {
+                    fail(a, reason, a is Active.Send)
+                    return
+                }
+                // vc69 (FT incident 2, offer 518aa1bc) — a FILE_FAILED for
+                // the offer we are still HOLDING (sender cancelled before we
+                // answered, or relay-minted) used to fall through here, so
+                // `pendingOffer` - and with it `isBusy` - stayed set until
+                // the 60 s expiry and the next offer was answered BUSY. Same
+                // FT-A1.1 bound as above: it clears this one offer and
+                // touches nothing else.
+                withdrawPendingOffer(fid, reason)
             }
         }
     }
@@ -763,9 +800,37 @@ class FileTransferManager(
         }
     }
 
-    /** The socket went away. A send waits it out; a receive keeps its .part. */
+    /**
+     * The socket went away. A send waits it out; a receive keeps its .part.
+     *
+     * A PENDING offer does not survive it (vc69, FT incident 2): the relay
+     * frees the offer's slot with the socket, so the offer is dead relay-side
+     * and holding it here only makes us answer the next real offer BUSY.
+     */
     fun onDisconnected() {
+        dropPendingOffer(FileTransfer.Reason.CONNECTION_LOST)
         synchronized(lock) { lock.notifyAll() }
+    }
+
+    /**
+     * Forget an unanswered offer whose room is gone (PAIRING_TERMINATED,
+     * RESET_ROOM, socket drop). No frame is sent: there is no longer a peer
+     * or a relay slot to tell.
+     */
+    fun dropPendingOffer(reason: String) {
+        val o = pendingOffer ?: return
+        withdrawPendingOffer(o.id, reason)
+    }
+
+    /** Clear [pendingOffer] iff it is still [id]. @return true if it was. */
+    private fun withdrawPendingOffer(id: String, reason: String): Boolean {
+        val o = synchronized(lock) {
+            pendingOffer?.takeIf { it.id == id }?.also { pendingOffer = null }
+        } ?: return false
+        DiagLog.counter("ft.offer.withdrawn")
+        DiagLog.d("FileTransfer", "pending offer withdrawn id=${o.id} reason=$reason")
+        listener.onOfferWithdrawn(o.id, reason)
+        return true
     }
 
     /** User pressed Cancel. */

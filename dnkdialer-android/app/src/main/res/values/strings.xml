@@ -692,4 +692,14 @@
     <string name="ft_fail_size_mismatch">File changed during transfer — try again</string>
 
     <string name="ft_share_label">Send to computer</string>
+
+    <!-- vc69 — the in-app transfer card on Home. Byte counts reuse
+         ft_progress_plain and the terminal lines reuse ft_sent / ft_received /
+         ft_send_failed / ft_receive_failed + the ft_fail_* copy, so the card and
+         the notification say the same thing about the same transfer. -->
+    <string name="ft_card_to_computer">Sending to your computer</string>
+    <string name="ft_card_from_computer">Receiving from your computer</string>
+    <string name="ft_card_percent">%1$d%%</string>
+    <string name="ft_card_open">Open</string>
+    <string name="ft_card_offer_heading">Your computer wants to send a file</string>
 </resources>

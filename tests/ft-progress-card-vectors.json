@@ -1,0 +1,183 @@
+{
+  "version": 1,
+  "$comment": [
+    "vc69 - the in-app file-transfer card (Dennis 2026-09-25: the notification progress bar, inside the app).",
+    "",
+    "Consumer: dnkdialer-android/app/src/test/.../FileTransferUiVectorsTest.kt -> FileTransferUiModel.",
+    "Each scenario replays FileTransferManager.Listener events, in order, at clock time `t` (ms), into ONE",
+    "fresh model, and after EVERY step pins the StateFlow value the card draws. The expected cells are",
+    "written out by hand (percent, byte labels, terminal kind) rather than derived, so a wrong formula in",
+    "the model cannot be agreed with by the same formula in the test.",
+    "",
+    "Events: progress{id,name,sent,total,out} -> `published` says whether it passed the ~5/s throttle;",
+    "        complete{id,name,uri,out} / failed{id,name,reason,out} -> return a hold token;",
+    "        idle; dismiss{tokenFrom: step index whose token to use} -> `dismissed`;",
+    "        offer{id,name,size}; withdrawn{id} (FT incident 2: FILE_FAILED for the pending id, socket drop,",
+    "        room reset) - the pending-offer face the card shows with Accept whenever the app is opened.",
+    "Labels are FileTransfer.humanSize of the published sent/total (what ft_progress_plain renders).",
+    "Percent is FileTransfer.percent: floor(sent*100/total) clamped 0..100, 0 when total <= 0 - the",
+    "same function FileTransferNotifier.showProgress uses."
+  ],
+  "constants": { "minProgressIntervalMs": 200, "terminalHoldMs": 6000 },
+  "scenarios": [
+    {
+      "id": "outgoing_percent_and_bytes",
+      "steps": [
+        { "t": 0, "ev": "progress", "id": "a", "name": "holiday.mp4", "sent": 0, "total": 452984832, "out": true,
+          "published": true,
+          "expect": { "kind": "Running", "id": "a", "name": "holiday.mp4", "out": true, "sent": 0, "total": 452984832,
+                      "percent": 0, "sentLabel": "0 B", "totalLabel": "432 MB" } },
+        { "t": 250, "ev": "progress", "id": "a", "name": "holiday.mp4", "sent": 222298112, "total": 452984832, "out": true,
+          "published": true,
+          "expect": { "kind": "Running", "id": "a", "name": "holiday.mp4", "out": true, "sent": 222298112, "total": 452984832,
+                      "percent": 49, "sentLabel": "212 MB", "totalLabel": "432 MB" } },
+        { "t": 300, "ev": "progress", "id": "a", "name": "holiday.mp4", "sent": 452984832, "total": 452984832, "out": true,
+          "published": true,
+          "expect": { "kind": "Running", "id": "a", "name": "holiday.mp4", "out": true, "sent": 452984832, "total": 452984832,
+                      "percent": 100, "sentLabel": "432 MB", "totalLabel": "432 MB" } }
+      ]
+    },
+    {
+      "id": "incoming_direction_and_small_sizes",
+      "steps": [
+        { "t": 0, "ev": "progress", "id": "r", "name": "scan.pdf", "sent": 0, "total": 1572864, "out": false,
+          "published": true,
+          "expect": { "kind": "Running", "id": "r", "name": "scan.pdf", "out": false, "sent": 0, "total": 1572864,
+                      "percent": 0, "sentLabel": "0 B", "totalLabel": "1.5 MB" } },
+        { "t": 1000, "ev": "progress", "id": "r", "name": "scan.pdf", "sent": 512000, "total": 1572864, "out": false,
+          "published": true,
+          "expect": { "kind": "Running", "id": "r", "name": "scan.pdf", "out": false, "sent": 512000, "total": 1572864,
+                      "percent": 32, "sentLabel": "500 KB", "totalLabel": "1.5 MB" } }
+      ]
+    },
+    {
+      "id": "throttle_caps_updates_but_never_the_last_one",
+      "steps": [
+        { "t": 1000, "ev": "progress", "id": "a", "name": "f.bin", "sent": 0, "total": 1000, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "a", "sent": 0, "total": 1000, "percent": 0 } },
+        { "t": 1100, "ev": "progress", "id": "a", "name": "f.bin", "sent": 100, "total": 1000, "out": true,
+          "published": false, "expect": { "kind": "Running", "id": "a", "sent": 0, "total": 1000, "percent": 0 } },
+        { "t": 1199, "ev": "progress", "id": "a", "name": "f.bin", "sent": 150, "total": 1000, "out": true,
+          "published": false, "expect": { "kind": "Running", "id": "a", "sent": 0, "total": 1000, "percent": 0 } },
+        { "t": 1200, "ev": "progress", "id": "a", "name": "f.bin", "sent": 200, "total": 1000, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "a", "sent": 200, "total": 1000, "percent": 20 } },
+        { "t": 1210, "ev": "progress", "id": "a", "name": "f.bin", "sent": 1000, "total": 1000, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "a", "sent": 1000, "total": 1000, "percent": 100 } }
+      ]
+    },
+    {
+      "id": "a_new_transfer_is_never_throttled",
+      "steps": [
+        { "t": 0, "ev": "progress", "id": "a", "name": "one.txt", "sent": 10, "total": 100, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "a", "percent": 10 } },
+        { "t": 50, "ev": "progress", "id": "b", "name": "two.txt", "sent": 5, "total": 100, "out": false,
+          "published": true, "expect": { "kind": "Running", "id": "b", "name": "two.txt", "out": false, "percent": 5 } }
+      ]
+    },
+    {
+      "id": "percent_edges",
+      "steps": [
+        { "t": 0, "ev": "progress", "id": "z", "name": "empty.txt", "sent": 0, "total": 0, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "z", "percent": 0, "sentLabel": "0 B", "totalLabel": "0 B" } },
+        { "t": 500, "ev": "progress", "id": "y", "name": "odd.bin", "sent": 1, "total": 3, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "y", "percent": 33 } },
+        { "t": 1000, "ev": "progress", "id": "y", "name": "odd.bin", "sent": 5, "total": 3, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "y", "percent": 100 } }
+      ]
+    },
+    {
+      "id": "incoming_done_holds_through_idle_then_dismisses",
+      "steps": [
+        { "t": 0, "ev": "progress", "id": "r", "name": "photo.jpg", "sent": 4096, "total": 4096, "out": false,
+          "published": true, "expect": { "kind": "Running", "id": "r", "percent": 100 } },
+        { "t": 10, "ev": "idle", "expect": { "kind": "Idle" } },
+        { "t": 11, "ev": "complete", "id": "r", "name": "photo.jpg", "uri": "content://docs/photo.jpg", "out": false,
+          "expect": { "kind": "Done", "id": "r", "name": "photo.jpg", "out": false, "uri": "content://docs/photo.jpg" } },
+        { "t": 12, "ev": "idle",
+          "expect": { "kind": "Done", "id": "r", "name": "photo.jpg", "out": false, "uri": "content://docs/photo.jpg" } },
+        { "t": 6011, "ev": "dismiss", "tokenFrom": 2, "dismissed": true, "expect": { "kind": "Idle" } }
+      ]
+    },
+    {
+      "id": "outgoing_done_has_no_uri",
+      "steps": [
+        { "t": 0, "ev": "complete", "id": "s", "name": "notes.txt", "uri": null, "out": true,
+          "expect": { "kind": "Done", "id": "s", "name": "notes.txt", "out": true, "uri": null } }
+      ]
+    },
+    {
+      "id": "failed_carries_reason_and_a_stale_hold_cannot_hide_a_later_result",
+      "steps": [
+        { "t": 0, "ev": "failed", "id": "a", "name": "big.iso", "reason": "quota", "out": true,
+          "expect": { "kind": "Failed", "id": "a", "name": "big.iso", "out": true, "reason": "quota" } },
+        { "t": 100, "ev": "failed", "id": "", "name": null, "reason": "cancelled", "out": true,
+          "expect": { "kind": "Failed", "id": "", "name": null, "out": true, "reason": "cancelled" } },
+        { "t": 6000, "ev": "dismiss", "tokenFrom": 0, "dismissed": false,
+          "expect": { "kind": "Failed", "id": "", "reason": "cancelled" } },
+        { "t": 6100, "ev": "dismiss", "tokenFrom": 1, "dismissed": true, "expect": { "kind": "Idle" } },
+        { "t": 6200, "ev": "dismiss", "tokenFrom": 1, "dismissed": false, "expect": { "kind": "Idle" } }
+      ]
+    },
+    {
+      "id": "a_new_transfer_replaces_a_held_result",
+      "steps": [
+        { "t": 0, "ev": "failed", "id": "a", "name": "x.bin", "reason": "timeout", "out": false,
+          "expect": { "kind": "Failed", "id": "a", "reason": "timeout" } },
+        { "t": 1000, "ev": "progress", "id": "b", "name": "y.bin", "sent": 0, "total": 10, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "b", "percent": 0 } },
+        { "t": 6000, "ev": "dismiss", "tokenFrom": 0, "dismissed": false,
+          "expect": { "kind": "Running", "id": "b" } }
+      ]
+    },
+    {
+      "id": "pending_offer_is_in_the_flow_until_answered",
+      "steps": [
+        { "t": 0, "ev": "offer", "id": "o1", "name": "holiday.jpg", "size": 4404019,
+          "expect": { "kind": "Offer", "id": "o1", "name": "holiday.jpg", "size": 4404019 } },
+        { "t": 100, "ev": "withdrawn", "id": "someone-else",
+          "expect": { "kind": "Offer", "id": "o1", "name": "holiday.jpg", "size": 4404019 } },
+        { "t": 200, "ev": "withdrawn", "id": "o1", "expect": { "kind": "Idle" } }
+      ]
+    },
+    {
+      "id": "offer_declined_or_expired_clears",
+      "steps": [
+        { "t": 0, "ev": "offer", "id": "o2", "name": "a.zip", "size": 10,
+          "expect": { "kind": "Offer", "id": "o2" } },
+        { "t": 60000, "ev": "idle", "expect": { "kind": "Idle" } }
+      ]
+    },
+    {
+      "id": "offer_accepted_becomes_the_running_receive",
+      "steps": [
+        { "t": 0, "ev": "offer", "id": "o3", "name": "scan.pdf", "size": 1572864,
+          "expect": { "kind": "Offer", "id": "o3", "size": 1572864 } },
+        { "t": 5000, "ev": "progress", "id": "o3", "name": "scan.pdf", "sent": 0, "total": 1572864, "out": false,
+          "published": true, "expect": { "kind": "Running", "id": "o3", "out": false, "percent": 0, "totalLabel": "1.5 MB" } },
+        { "t": 5001, "ev": "withdrawn", "id": "o3",
+          "expect": { "kind": "Running", "id": "o3" } }
+      ]
+    },
+    {
+      "id": "a_new_offer_replaces_a_held_result",
+      "steps": [
+        { "t": 0, "ev": "complete", "id": "r", "name": "old.jpg", "uri": "content://docs/old.jpg", "out": false,
+          "expect": { "kind": "Done", "id": "r" } },
+        { "t": 1000, "ev": "offer", "id": "o4", "name": "new.jpg", "size": 2048,
+          "expect": { "kind": "Offer", "id": "o4", "name": "new.jpg", "size": 2048 } },
+        { "t": 6000, "ev": "dismiss", "tokenFrom": 0, "dismissed": false,
+          "expect": { "kind": "Offer", "id": "o4" } }
+      ]
+    },
+    {
+      "id": "cancel_mid_transfer",
+      "steps": [
+        { "t": 0, "ev": "progress", "id": "c", "name": "movie.mkv", "sent": 1048576, "total": 10485760, "out": true,
+          "published": true, "expect": { "kind": "Running", "id": "c", "percent": 10, "sentLabel": "1.0 MB", "totalLabel": "10.0 MB" } },
+        { "t": 400, "ev": "idle", "expect": { "kind": "Idle" } },
+        { "t": 401, "ev": "failed", "id": "c", "name": "movie.mkv", "reason": "cancelled", "out": true,
+          "expect": { "kind": "Failed", "id": "c", "name": "movie.mkv", "out": true, "reason": "cancelled" } }
+      ]
+    }
+  ]
+}
