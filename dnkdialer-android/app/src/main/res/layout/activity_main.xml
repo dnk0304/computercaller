@@ -674,6 +674,11 @@
             </FrameLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- ==================== FILE TRANSFER (vc69) ====================
+             Progress / result / pending offer for the one file transfer,
+             under the hero so it never displaces the pairing faces. -->
+        <include layout="@layout/view_file_transfer_card" />
+
         <!-- ==================== REJOIN ====================
              Dennis's hard requirement for v56: whenever this phone is NOT in
              the lobby, getting back in is one obvious tap from Home. This is

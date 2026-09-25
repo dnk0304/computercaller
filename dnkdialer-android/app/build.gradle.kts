@@ -499,6 +499,14 @@ dependencies {
     implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
+    // vc69 — the in-app file-transfer card observes a StateFlow held by
+    // PhoneService (FileTransferUiModel). Already on the classpath at exactly
+    // this version, transitively via androidx lifecycle 2.6.1; declared so the
+    // compile does not depend on a transitive edge. Pinned to that version on
+    // purpose so no new version enters the tree.
+    //noinspection GradleDependency
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
@@ -542,5 +550,12 @@ tasks.withType<Test>().configureEach {
     // RELATIVE sensitivity so the cache still hits when the worktree moves.
     inputs.dir(layout.projectDirectory.dir("src/main/res"))
         .withPropertyName("resourcesReadByCopyTests")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+
+    // vc69 — FileTransferUiVectorsTest reads a vector file from OUTSIDE this
+    // module. Undeclared, an edit to that file alone leaves the test task
+    // UP-TO-DATE and the gate reports green over rows nobody ran.
+    inputs.file(layout.projectDirectory.file("../../tests/ft-progress-card-vectors.json"))
+        .withPropertyName("ftProgressCardVectors")
         .withPathSensitivity(PathSensitivity.RELATIVE)
 }
