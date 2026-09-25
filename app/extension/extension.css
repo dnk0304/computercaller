@@ -1417,11 +1417,25 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 }
 .cc-ext .cc-note-dismiss:hover { background: var(--cc-field); color: var(--cc-ink); }
 
+/* Unread (EXT-ALERTS-UNREAD). The Messages language: stronger title, body in
+   full ink, plus an 8px dot in the unread token. A dot, not a numbered chip --
+   one card is one item, so a "1" would be noise. It sits before the age, so
+   the dismiss x keeps its position whether or not the dot is there. */
+.cc-ext .cc-note-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--cc-unread);
+}
+
 .cc-ext .cc-note-title {
   margin: 3px 0 0;
   line-height: 1.3;
   color: var(--cc-ink);
 }
+.cc-ext .cc-note-card.is-unread .cc-note-title { font-weight: var(--cc-w-5); }
+.cc-ext .cc-note-card.is-unread .cc-note-body { color: var(--cc-ink); }
 .cc-ext .cc-note-body {
   margin: 2px 0 0;
   line-height: 1.45;
@@ -1432,6 +1446,42 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
+}
+/* Tap to expand (Dennis 09:33Z): the full text, line breaks kept, long URLs
+   wrapped instead of overflowing the card. */
+.cc-ext .cc-note-body.is-expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+  white-space: pre-wrap;
+}
+/* Only a body that is actually cut off gets the pointer. */
+.cc-ext .cc-note-text.is-expandable { cursor: pointer; }
+.cc-ext .cc-note-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 3px 0 0 -3px;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--cc-sec);
+  font-family: inherit;
+  font-size: var(--cc-t-11);
+  line-height: 1.3;
+  cursor: pointer;
+}
+.cc-ext .cc-note-more:hover { color: var(--cc-ink); }
+.cc-ext .cc-note-more-chev {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.15s ease-out;
+}
+.cc-ext .cc-note-more-chev.is-up { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) {
+  .cc-ext .cc-note-more-chev { transition: none; }
 }
 
 .cc-ext .cc-note-actions {
@@ -1494,6 +1544,35 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 /* The Alerts search field, like every field on this surface, sits one step
    above its band rather than carrying a border of its own. */
 .cc-ext .cc-alerts .cc-field { background: var(--cc-field); }
+
+/* Clear all (EXT-ALERTS-UNREAD). Was plain grey text Dennis did not read as a
+   control. Now an outlined pill at the field's 28px height, the same
+   vocabulary as the card's Reply action. Always present, disabled on an empty
+   list so it can still be found. */
+.cc-ext .cc-alerts-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--cc-chip-bd);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--cc-ink);
+  font-family: inherit;
+  font-size: var(--cc-t-115, 11.5px);
+  font-weight: var(--cc-w-3, 700);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.12s ease-out;
+}
+.cc-ext .cc-alerts-clear:hover:not(:disabled) { background: var(--cc-field); }
+.cc-ext .cc-alerts-clear:disabled {
+  color: var(--cc-mut);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 
 /* ===========================================================================
    Consequences of the ladder on rules written before it existed.

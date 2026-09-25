@@ -48,6 +48,8 @@ import {
   Delete,
   FileText,
   Grid3x3,
+  Trash2,
+  ChevronDown,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { PhoneModeHeader } from '@/components/PhoneModeHeader';
@@ -2198,6 +2200,97 @@ function BellView() {
 // then cards at L3 floating on the L2 content ground. No wrapping list card —
 // a card on a card is a level the ladder does not have.
 
+// ---------- NoteText (Alerts card title + body, tap to expand) --------------
+//
+// The body is clamped at three lines by .cc-note-body. Whether it actually IS
+// cut off depends on the text and the panel width, so it is measured, not
+// guessed from a character count: only a clamped body gets the toggle, the
+// pointer cursor and the "Show more" hint. A short alert stays inert.
+//
+// The hint is the real control (a <button> with aria-expanded/aria-controls),
+// so Tab reaches it and Enter/Space toggles it. Clicking the title/body area is
+// the pointer shortcut to the same action -- mouse-only by design, because the
+// keyboard already has the button and a second tab stop on the same card would
+// just be noise.
+
+interface NoteTextProps {
+  id: string;
+  title: string;
+  body: string;
+  expanded: boolean;
+  onToggle: (id: string) => void;
+  /** Any click on the text area counts as "looked at it" -- clears the dot. */
+  onSeen: (id: string) => void;
+}
+
+function NoteText({ id, title, body, expanded, onToggle, onSeen }: NoteTextProps) {
+  const bodyRef = useRef<HTMLParagraphElement>(null);
+  const [clamped, setClamped] = useState(false);
+
+  // Measure only while collapsed: expanded has no clamp, so scrollHeight equals
+  // clientHeight there and would wrongly report "fits". The last collapsed
+  // verdict is kept until the card collapses again.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el || expanded) return;
+    const measure = () => setClamped(el.scrollHeight > el.clientHeight + 1);
+    // ResizeObserver reports once on observe, so it is also the first
+    // measurement; it then re-measures when the panel is resized.
+    if (typeof ResizeObserver === 'undefined') {
+      const raf = requestAnimationFrame(measure);
+      return () => cancelAnimationFrame(raf);
+    }
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [body, expanded]);
+
+  const bodyId = `cc-note-body-${id}`;
+  const expandable = clamped || expanded;
+
+  return (
+    <>
+      <div
+        className={clsx('cc-note-text', expandable && 'is-expandable')}
+        onClick={() => {
+          onSeen(id);
+          if (!expandable) return;
+          // A drag to select text is reading, not a request to toggle.
+          const sel = window.getSelection();
+          if (sel && sel.toString().length > 0) return;
+          onToggle(id);
+        }}
+      >
+        {title && <p className="cc-note-title">{title}</p>}
+        {body && (
+          <p
+            ref={bodyRef}
+            id={bodyId}
+            className={clsx('cc-note-body', expanded && 'is-expanded')}
+          >
+            {body}
+          </p>
+        )}
+      </div>
+      {body && expandable && (
+        <button
+          type="button"
+          className="cc-note-more"
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          onClick={() => { onSeen(id); onToggle(id); }}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+          <ChevronDown
+            className={clsx('cc-note-more-chev', expanded && 'is-up')}
+            aria-hidden="true"
+          />
+        </button>
+      )}
+    </>
+  );
+}
+
 function ExtBellView() {
   const {
     phoneNotifications,
@@ -2208,9 +2301,75 @@ function ExtBellView() {
   } = useNotifications();
   const items = phoneNotifications;
 
+  // Unread marker, per visit. `n.read` flips the moment this tab renders (the
+  // effect below marks everything read so the tab badge clears), so a dot
+  // driven by n.read would vanish on first paint. Instead the ids that were
+  // unread when the user ARRIVED are snapshotted here, before markAll runs,
+  // and stay dotted for this visit. The next mount takes a new snapshot in
+  // which they are already read -- so leaving the tab and coming back clears
+  // them. Backfill (the phone replaying its shade on sync) never counts, the
+  // same rule as Messages' baseline: history is not news.
+  const [unreadIds, setUnreadIds] = useState<Set<string>>(
+    () => new Set(items.filter(n => !n.read && !n.backfill).map(n => n.id)),
+  );
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+
+  // Alerts that arrive while the tab is open are new and unseen too. They are
+  // added to the snapshot during render (React's "adjust state when a prop
+  // changes" pattern), which is before the effect below marks them read.
+  const [seenItems, setSeenItems] = useState(items);
+  if (items !== seenItems) {
+    setSeenItems(items);
+    const fresh = items.filter(n => !n.read && !n.backfill && !unreadIds.has(n.id));
+    if (fresh.length) {
+      const next = new Set(unreadIds);
+      fresh.forEach(n => next.add(n.id));
+      setUnreadIds(next);
+    }
+  }
+
   useEffect(() => {
     if (items.some(n => !n.read)) markAllNotificationsRead();
   }, [items, markAllNotificationsRead]);
+
+  const dropIds = useCallback((ids: string[]) => {
+    const prune = (prev: Set<string>) => {
+      if (!ids.some(id => prev.has(id))) return prev;
+      const next = new Set(prev);
+      ids.forEach(id => next.delete(id));
+      return next;
+    };
+    setUnreadIds(prune);
+    setExpandedIds(prune);
+  }, []);
+
+  // A dismissed alert's ids are dropped from both sets along with the card.
+  const dismiss = useCallback((id: string) => {
+    dropIds([id]);
+    clearNotification(id);
+  }, [dropIds, clearNotification]);
+
+  const clearAll = useCallback(() => {
+    dropIds(items.map(n => n.id));
+    clearAllNotifications();
+  }, [dropIds, items, clearAllNotifications]);
+
+  const markSeen = useCallback((id: string) => {
+    setUnreadIds(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
 
   const [replyingId, setReplyingId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState('');
@@ -2268,15 +2427,20 @@ function ExtBellView() {
             </button>
           )}
         </div>
-        {items.length > 0 && (
-          <button
-            type="button"
-            onClick={clearAllNotifications}
-            className="flex-shrink-0 px-1 text-[11.5px] font-medium text-slate-500 transition-colors hover:text-slate-800 focus:outline-none focus-visible:underline"
-          >
-            Clear all
-          </button>
-        )}
+        {/* Always rendered so it can be found; disabled on an empty list.
+            It clears these on the phone too (clearAllNotifications sends a
+            dismiss per item), which the tooltip says out loud. */}
+        <button
+          type="button"
+          onClick={clearAll}
+          disabled={items.length === 0}
+          aria-label="Clear all notifications"
+          title="Clears these on your phone too"
+          className="cc-alerts-clear"
+        >
+          <Trash2 className="h-3 w-3" aria-hidden="true" />
+          Clear all
+        </button>
       </div>
 
       <div className="cc-alerts-list min-h-0 flex-1 overflow-y-auto">
@@ -2291,8 +2455,13 @@ function ExtBellView() {
           filtered.map((n) => {
             const isReplying = replyingId === n.id;
             const iconB64 = getNotificationIcon(n.packageName);
+            const isUnread = unreadIds.has(n.id);
             return (
-              <article key={n.id} className="cc-note-card">
+              <article
+                key={n.id}
+                className={clsx('cc-note-card', isUnread && 'is-unread')}
+                data-cc-unread={isUnread ? '1' : undefined}
+              >
                 <div className="cc-note-head">
                   {iconB64 ? (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -2310,18 +2479,31 @@ function ExtBellView() {
                       the reference's order, and the one that lets a stack of
                       cards be scanned by app without reading the titles. */}
                   <p className="cc-note-app">{n.appName}</p>
+                  {/* Before the age, so the dismiss x never moves. Not
+                      colour-only: the hidden text reads "Unread". */}
+                  {isUnread && (
+                    <span className="cc-note-dot">
+                      <span className="sr-only">Unread</span>
+                    </span>
+                  )}
                   <span className="cc-note-time">{formatRelative(n.timestamp, now)}</span>
                   <button
                     type="button"
-                    onClick={() => clearNotification(n.id)}
+                    onClick={() => dismiss(n.id)}
                     className="cc-note-dismiss"
                     aria-label={`Dismiss notification from ${n.appName}`}
                   >
                     <X className="h-3 w-3" aria-hidden="true" />
                   </button>
                 </div>
-                {n.title && <p className="cc-note-title">{n.title}</p>}
-                {n.body && <p className="cc-note-body">{n.body}</p>}
+                <NoteText
+                  id={n.id}
+                  title={n.title}
+                  body={n.body}
+                  expanded={expandedIds.has(n.id)}
+                  onToggle={toggleExpanded}
+                  onSeen={markSeen}
+                />
                 {n.hasReply && (
                   <div className="cc-note-actions">
                     {isReplying ? (
