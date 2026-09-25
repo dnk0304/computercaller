@@ -2,8 +2,8 @@
 
 MV3 extension: a toolbar popup that iframes the hosted Phone Mode surface
 (`https://computercaller.com/extension`) plus a background service worker that
-holds a **receive-only** relay WebSocket so incoming calls/SMS fire desktop
-notifications even when the popup is closed.
+holds a **receive-only** relay WebSocket so incoming calls/SMS bump the toolbar
+badge even when the popup is closed. It raises no OS/desktop notifications.
 
 ## Architecture (iframe-hybrid)
 
@@ -20,7 +20,7 @@ notifications even when the popup is closed.
 - `background.js` — the service worker. Opens `wss://computercaller.com/relay?ticket=…&role=listener`
   (a passive listener the relay keeps out of pairing + the single-session kill
   switch) and maps `CALL_INCOMING` / `CALL_WAITING` / `SMS_RECEIVED` /
-  `PHONE_NOTIFICATION` → `chrome.notifications`. Calls/SMS are SENT by the iframe
+  `PHONE_NOTIFICATION` → toolbar badge counts (no OS toasts). Calls/SMS are SENT by the iframe
   over its own connection — the SW never sends, so there are no mic/telephony
   permissions here (the phone does the calling).
 - `config.js` — shared origins/routes.
@@ -82,7 +82,7 @@ and writes the web, extension and Android copies in one pass.
   `#cc-shell-header .cc-lockup`.
 - `lockup.svg` — the official STACKED composition, for the signed-out hero.
 - `mark.svg` — the mark alone.
-- `icon16/32/48/128.png` — the toolbar/notification/side-panel-title icons, cut
+- `icon16/32/48/128.png` — the toolbar/side-panel-title icons, cut
   from `marketing/store/app-icon-512.png`. Chrome also draws `icon16` in the
   side panel's own title bar, which is why it had to change with the rest.
 

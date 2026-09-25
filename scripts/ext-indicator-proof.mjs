@@ -170,9 +170,15 @@ try {
   check('an OPEN surface suppresses counting (it is the read receipt)',
     counts.open.newSms === 2, JSON.stringify(counts.open));
 
-  // ---- 6. notification buttons + deep links --------------------------------
+  // ---- 6. NO OS notifications (EXT-NO-NOTIFS, 2026-09-25) -----------------
+  // The "notifications" permission was removed, so the API must be absent, and
+  // a counting stub planted in its place must see ZERO create() calls while the
+  // same frames still bump the badge counters.
   const notifs = await drive(async () => {
-    await chrome.storage.session.set({ cc_notif_links: {} });
+    const apiAbsent = typeof chrome.notifications === 'undefined';
+    let creates = 0;
+    chrome.notifications = { create() { creates += 1; }, clear() {}, getAll(cb) { if (cb) cb({}); return Promise.resolve({}); } };
+    await chrome.storage.session.set({ cc_unread: { missedCalls: 0, newSms: 0, alerts: 0 } });
     presenceCount = 0;
     handleFrame('SMS_RECEIVED:' + JSON.stringify({
       from: '+4790000001', body: 'deep link me', threadId: 'thread-42',
@@ -181,28 +187,23 @@ try {
       title: 'WhatsApp', body: 'yo', hasReply: true,
     }));
     handleFrame('PHONE_NOTIFICATION:' + JSON.stringify({ title: 'Battery low', body: '5%' }));
-    await new Promise((r) => setTimeout(r, 600));
-    const all = await chrome.notifications.getAll();
-    const links = (await chrome.storage.session.get('cc_notif_links')).cc_notif_links;
-    return { ids: Object.keys(all), links };
+    // The serialize() queue drains asynchronously; poll (<=5 s) rather than
+    // trusting a fixed sleep.
+    let unread = {};
+    for (let i = 0; i < 50; i += 1) {
+      unread = (await chrome.storage.session.get('cc_unread')).cc_unread || {};
+      if (unread.newSms === 1 && unread.alerts === 2) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const helpersGone = typeof rememberLink === 'undefined' && typeof takeLink === 'undefined';
+    delete chrome.notifications;
+    return { apiAbsent, creates, unread, helpersGone };
   });
-  const smsLink = Object.entries(notifs.links).find(([k]) => k.startsWith('cc-sms:'));
-  check('SMS notification carries a thread deep link',
-    !!smsLink && smsLink[1] === '#tab=texts&thread=thread-42',
-    JSON.stringify(smsLink));
-  check('alert notification deep-links to the alerts tab',
-    Object.entries(notifs.links).some(([k, v]) => k.startsWith('cc-notif:') && v === '#tab=alerts'),
-    JSON.stringify(notifs.links));
-
-  // takeLink must be single-use, or a second click reopens a stale thread.
-  const twice = await drive(async () => {
-    const id = Object.keys((await chrome.storage.session.get('cc_notif_links')).cc_notif_links)[0];
-    const a = await takeLink(id);
-    const b = await takeLink(id);
-    return { a, b };
-  });
-  check('a deep link is consumed exactly once', !!twice.a && twice.b === '', JSON.stringify(twice));
-
+  check('chrome.notifications is undefined in the SW (permission removed)', notifs.apiAbsent, JSON.stringify(notifs));
+  check('SMS + 2 phone alerts raise ZERO OS toasts', notifs.creates === 0, JSON.stringify(notifs));
+  check('…while the badge counters still count them (newSms 1, alerts 2)',
+    !!notifs.unread && notifs.unread.newSms === 1 && notifs.unread.alerts === 2, JSON.stringify(notifs.unread));
+  check('deep-link helpers rememberLink/takeLink are gone', notifs.helpersGone, JSON.stringify(notifs));
   // ---- 7. sign-out resets everything ---------------------------------------
   const out = await drive(async () => {
     const page = { type: 'signed-out' };
