@@ -41,7 +41,7 @@ import { mintSecret, seedEntitledUser, removeUser } from './lib/relay-auth.mjs';
 import { killTree } from './lib/reap.mjs';
 import {
   makeAdb, PKG, sleep, until, assertPhoneTrustStore, uiDump, nodeCenter, tap, clearAnr,
-  setPhoneEncryptedMode, readPhoneEncryptedMode, logcatClear, logcatDump,
+  resetPhoneE2ePrefsToLegacy, readPhoneAccountPref, parsePhoneAccountPref, logcatClear, logcatDump,
   phoneArmedLine, refusedForwardJumpLine, writeRedactedRelayLog,
 } from './lib/phone-peer.mjs';
 import {
@@ -100,13 +100,22 @@ const S4A_ONLY = !!ONLY && ONLY.has('4a');
 // the two RENDERED surfaces) and R1-c3 (zero plaintext phone frames while ON).
 // Raising the floor is the point: if any of them silently stops running, the
 // run cannot pass by quietly reporting fewer checks.
-const MIN_CHECKS = 28;
+// T-E2E-ACCOUNT-PREF raises it 28 -> 39 for the checks the account-preference
+// setup adds on the floor's own path: PRE-schema (1); S1's ensureModeOn now
+// asserts the PUT AND the phone's per-account record, not one local read-back
+// (+1); the S2 legacy seed row (3); and every S2 cell now asserts its PUT and
+// the phone's record (3 cells x 2 = 6).
+const MIN_CHECKS = 39;
 
 /**
  * Scenarios this harness does NOT run, each with the reason it cannot be run
  * honestly here. Carried into the artefact verbatim.
  */
 const STOPPED_SCENARIOS = [
+  ['2 row 9 phone-OFF/web-ON',
+    'NOT CONSTRUCTIBLE under the account preference (T-E2E-ACCOUNT-PREF, web 30dbc82 / Android fa06a11). Both sides now read ONE account value, and the phone applies a RAISE immediately (E2eAccountPref.onPush: effective ON -> advertised=true, never latched), so there is no honest setup that leaves the phone OFF while the web is ON. The old row was built from two independent LOCAL switches, which no longer decide the mode. Not faked here.'],
+  ['2c server master switch OFF + account pref ON -> pausedByServer',
+    'PENDING — the row is: relay booted with E2E_PAIRING_ENABLED off, account preference ON, and `pausedByServer=true` must reach the web (GET /api/prefs/e2e + the rendered switch) AND the phone (acct_pref:<userId>.mirror.pausedByServer). It depends on the equal-rev ruling and stays PENDING until the Android mirror in DISPATCH-BRIEF-FORGE-ANDROID-E2EPREF-EQUAL-REV.md lands. It also needs its own relay boot (the master switch is read once at server start). Not faked.', 'PENDING'],
   ['3 resume / RESET_ROOM',
     'NOT RUN — needs a surviving pair across a page reload and a SW restart. Every pairing in this run is torn down by the reload itself (logcat: "E2E torn down (PAIRING_TERMINATED: user_left)"), so same-kid resume cannot be observed until the harness keeps one pair alive across the reload rather than re-pairing per scenario.'],
   ['4 F1 revocation live / F2 forward-jump live',
@@ -1051,7 +1060,7 @@ function writeArtefacts(relayLogPath) {
     serial: SERIAL,
     relayLogRedacted: red,
     findings,
-    stopped: STOPPED_SCENARIOS.map(([scenario, why]) => ({ scenario, status: 'STOP — NOT RUN', why })),
+    stopped: STOPPED_SCENARIOS.map(([scenario, why, status]) => ({ scenario, status: status || 'STOP — NOT RUN', why })),
     tables,
     checks: results,
   }, null, 2), 'utf8');
@@ -1061,7 +1070,7 @@ function writeArtefacts(relayLogPath) {
   for (const s of scope) L.push(`- ${s}`);
   L.push('', '## SCENARIOS NOT RUN (declared STOP — neither passes nor failures)', '');
   L.push('| scenario | status | why |', '| --- | --- | --- |');
-  for (const [s, why] of STOPPED_SCENARIOS) L.push(`| ${s} | STOP — NOT RUN | ${String(why).replace(/\|/g, '\\|')} |`);
+  for (const [s, why, status] of STOPPED_SCENARIOS) L.push(`| ${s} | ${status || 'STOP — NOT RUN'} | ${String(why).replace(/\|/g, '\\|')} |`);
   if (findings.length) {
     L.push('', '## FINDINGS for Security (A6) — recorded, NOT patched', '');
     L.push('| id | what | evidence |', '| --- | --- | --- |');
@@ -1155,6 +1164,16 @@ async function main() {
       const { PrismaClient } = await import('@prisma/client');
       const bcrypt = (await import('bcryptjs')).default;
       db = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+      // T-E2E-ACCOUNT-PREF: the account preference lives in User.e2ePref*
+      // (migration 20260925120000_add_e2e_pref). A harness DB that predates it
+      // fails every /api/prefs/e2e call AND unrelated routes, so a run against
+      // it would report product reds that are only a stale schema. Fail loud
+      // here instead: `npx prisma db push` against DATABASE_URL first.
+      const prefCols = await db.$queryRaw`SELECT column_name FROM information_schema.columns WHERE table_name = 'User' AND column_name IN ('e2ePref', 'e2ePrefRev', 'e2ePrefUpdatedAt', 'e2ePrefUpdatedBy')`;
+      if (!check('PRE-schema the harness DB carries the account-preference columns (User.e2ePref*)',
+        prefCols.length === 4, `found ${prefCols.map((c) => c.column_name).join(',') || 'none'} — run npx prisma db push against the harness DATABASE_URL`)) {
+        throw new Error('harness DB lacks the e2ePref columns — run `npx prisma db push` on it first');
+      }
       user = await seedEntitledUser(db, { email });
       // apk-login needs a real bcrypt hash; seedEntitledUser deliberately does
       // not set one (it exists for the bearer path, not the UI path).
@@ -1265,17 +1284,111 @@ async function main() {
        * each scenario establishes its own precondition rather than inheriting
        * one, and so a `--only=` subset measures the same thing a full run does.
        */
-      const ensureModeOn = async (label) => {
-        setPhoneEncryptedMode(adb, true);
-        const readBack = readPhoneEncryptedMode(adb) === true;
-        check(`${label}-pref  the phone's local encrypted-mode setting reads back ON from disk`,
-          readBack, 'computercaller_e2e_prefs/encrypted_mode=true');
-        await page.evaluate((e) => localStorage.setItem(`cc:e2e:${e}`, 'on'), row.email.toLowerCase());
+      /*
+       * T-E2E-ACCOUNT-PREF (web 30dbc82 / Android fa06a11): Encrypted mode is an
+       * ACCOUNT value now. The old setup wrote two LOCAL switches (the phone's
+       * computercaller_e2e_prefs/encrypted_mode and the page's `cc:e2e:<email>`
+       * localStorage key); neither decides the mode any more, so a run built on
+       * them tests the wrong control and its greens and reds mean nothing.
+       *
+       * The mode is set the way a user sets it: PUT /api/prefs/e2e from the
+       * REAL page with its own session cookie (same-origin, so the CSRF pin is
+       * satisfied, not bypassed). A change resets both sides' lobbies; the
+       * phone learns the value from the relay's on-connect E2E_PREF push. The
+       * read-back is the phone's own per-account record `acct_pref:<userId>`
+       * (lastRev, mirror.effective), read from DISK and keyed by the SEEDED
+       * user's id — never the legacy `encrypted_mode` switch.
+       */
+      const accountPrefCall = (method, value) => page.evaluate(async ({ m, v }) => {
+        const init = { method: m, credentials: 'same-origin', headers: {} };
+        if (m !== 'GET') {
+          init.headers['content-type'] = 'application/json';
+          init.body = JSON.stringify({ value: v });
+        }
+        const r = await fetch('/api/prefs/e2e', init);
+        let body = null;
+        try { body = await r.json(); } catch { /* status is the evidence */ }
+        return { status: r.status, body };
+      }, { m: method, v: value ?? null });
+
+      /** Poll the phone's record until `done(rec)` or the budget runs out. */
+      const awaitPhoneRecord = async (done, ms = 30_000) => {
+        let rec = readPhoneAccountPref(adb, row.id);
+        for (const t0 = Date.now(); !done(rec) && Date.now() - t0 < ms;) {
+          await sleep(1000);
+          rec = readPhoneAccountPref(adb, row.id);
+        }
+        return rec;
+      };
+      const recSummary = (rec) => (rec.present
+        ? (rec.ok
+          ? `acct_pref:${row.id} lastRev=${rec.lastRev} advertised=${rec.advertised} mirror.effective=${rec.mirror?.effective} mirror.pausedByServer=${rec.mirror?.pausedByServer} pendingDowngrade=${rec.pendingDowngrade?.kind ?? '-'} seedAttempted=${rec.seedAttempted}`
+          : `acct_pref:${row.id} UNPARSEABLE`)
+        : `NO acct_pref:${row.id} record (legacy encrypted_mode=${rec.legacy.encryptedMode} user_set_v2=${rec.legacy.userSet}) — is the APK vc69+ (fa06a11)?`);
+
+      /**
+       * Set the ACCOUNT preference to `value` and wait for the phone to hold it.
+       * Two checks: the server accepted the write and resolves to `value`; the
+       * phone's per-account record carries that rev and that effective value.
+       */
+      const applyAccountPref = async (label, value) => {
+        const put = await accountPrefCall('PUT', value);
+        const resolved = put.body?.resolved ?? null;
+        check(`${label}-put   PUT /api/prefs/e2e {"value":"${value}"} from the page's own session is accepted and resolves to ${value}`,
+          put.status === 200 && resolved?.preference === value,
+          `status=${put.status} changed=${put.body?.changed} resolved=${JSON.stringify(resolved)}`);
         await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
         adb('shell', `monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
         await sleep(8000);
-        return readBack;
+        const holds = (rec) => !!resolved && rec.present && rec.ok
+          && rec.lastRev >= resolved.rev && rec.mirror?.effective === resolved.effective;
+        const rec = await awaitPhoneRecord(holds);
+        const pass = check(`${label}-pref  the phone's per-account record acct_pref:<userId> holds the account value (lastRev >= rev ${resolved?.rev}, mirror.effective=${resolved?.effective})`,
+          holds(rec), recSummary(rec));
+        return { pass, put, resolved, rec };
       };
+
+      const ensureModeOn = async (label) => (await applyAccountPref(label, 'on')).pass;
+
+      // ── SCENARIO 2 (legacy row) — the vc68-compat SEED path ──────────────
+      //
+      // Kept deliberately (T-E2E-ACCOUNT-PREF): a phone with NO per-account
+      // record for this account advertises the legacy local switch, and when
+      // the account never chose and a human set that switch ON, it SEEDS the
+      // account ON once (E2eAccountPref.onPush §7 -> SEED_E2E_PREF). The seed
+      // only applies while the account's row never chose, so this row runs
+      // FIRST — before scenario 1 writes the account value — whenever
+      // scenario 2 is selected. No pairing here: it proves the seed path, and
+      // the pairings that follow run at the value it produced.
+      if (!ONLY || ONLY.has('2')) {
+        // The seeded user is this run's own row in the scratch DB; put it back
+        // to "never chose" so a leftover value cannot pre-empt the seed.
+        await db.user.update({
+          where: { id: row.id },
+          data: { e2ePref: null, e2ePrefRev: 0, e2ePrefUpdatedAt: null, e2ePrefUpdatedBy: null },
+        });
+        const before = await accountPrefCall('GET');
+        const legacyFile = parsePhoneAccountPref(resetPhoneE2ePrefsToLegacy(adb, true), row.id);
+        check('S2-legacy-file the phone holds ONLY the legacy switch (encrypted_mode=true, user_set_v2=true) and NO acct_pref record for this account',
+          !legacyFile.present && legacyFile.legacy.encryptedMode === true && legacyFile.legacy.userSet === true,
+          recSummary(legacyFile));
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+        adb('shell', `monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
+        await sleep(8000);
+        const seeded = await awaitPhoneRecord((r) => r.present && r.ok && r.seedAttempted && r.lastRev >= 1);
+        check('S2-legacy-seed the phone advertised its legacy switch (no per-account record) and SEEDED the never-chosen account ON',
+          seeded.present && seeded.ok && seeded.seedAttempted === true && seeded.advertised === true,
+          `before: rev=${before.body?.resolved?.rev} updatedBy=${before.body?.resolved?.updatedBy} | ${recSummary(seeded)}`);
+        const after = await accountPrefCall('GET');
+        const ra = after.body?.resolved ?? null;
+        check('S2-legacy-server the account now reads ON on the server, written by the seed (rev >= 1)',
+          after.status === 200 && ra?.preference === 'on' && ra?.rev >= 1,
+          `status=${after.status} resolved=${JSON.stringify(ra)}`);
+        emit('S2-legacy — the vc68-compat seed path', 'The phone had no per-account record and its legacy switch ON; the account had never chosen. No pairing: the row proves the seed, not a mode.', [
+          { field: 'phone acct_pref record after connect', phone: recSummary(seeded), page: null, sw: null, match: seeded.seedAttempted === true },
+          { field: 'server account value after the seed', phone: null, page: JSON.stringify(ra), sw: null, match: ra?.preference === 'on' },
+        ]);
+      }
 
       // ── SCENARIO 1 — ON/ON ───────────────────────────────────────────────
       if (!ONLY || ONLY.has('1')) {
@@ -1570,20 +1683,35 @@ async function main() {
       // ── SCENARIO 2 — mixed mode, the P2.2 §13.2 cells ────────────────────
       if (!ONLY || ONLY.has('2')) {
         const cells = [];
-        for (const [phoneOn, webOn, cellName] of [[true, false, 'row 8 phone-ON/web-OFF'], [false, true, 'row 9 phone-OFF/web-ON'], [false, false, 'row 4 OFF/OFF']]) {
-          setPhoneEncryptedMode(adb, phoneOn);
-          await page.evaluate(({ e, v }) => localStorage.setItem(`cc:e2e:${e}`, v), { e: row.email.toLowerCase(), v: webOn ? 'on' : 'off' });
-          await page.reload({ waitUntil: 'domcontentloaded' });
-          adb('shell', `monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`);
-          await sleep(8000);
+        /*
+         * The cells are now built from the ACCOUNT value (see applyAccountPref),
+         * in this order, because each depends on the one before:
+         *   on-on  account ON — both sides follow it.
+         *   row 8  account set OFF while the phone advertises ON: the phone's
+         *          B1 downgrade latch holds ON until a human answers its
+         *          prompt (E2eAccountPref.onPush, PREF_OFF), so the live
+         *          phone-ON/web-OFF cell is the PRODUCT'S own state, not two
+         *          switches written by the harness.
+         *   row 4  account OFF with the phone's record reset (legacy switch
+         *          OFF): a phone that never held ON for this account.
+         * Row 9 (phone-OFF/web-ON) is not constructible — see STOPPED_SCENARIOS.
+         */
+        for (const [cellValue, freshPhone, cellName] of [
+          ['on', false, 'row on-on (account ON, both sides follow)'],
+          ['off', false, 'row 8 phone-ON/web-OFF (account set OFF, phone B1 latch holds ON)'],
+          ['off', true, 'row 4 OFF/OFF (account OFF, phone record reset, legacy OFF)'],
+        ]) {
+          if (freshPhone) resetPhoneE2ePrefsToLegacy(adb, false);
+          const applied = await applyAccountPref(`S2-${cellName.split(' ')[1]}`, cellValue);
 
           const r = await pairOnce(page, adb, { label: `S2-${cellName.split(' ')[1]}` });
           const advert = /Pairing request \S+ forwarded to phone \([^)]*e2e=(\S+?)\)/g;
           const all = [...relay.readLog().matchAll(advert)].map((m) => m[1]);
           const cell = {
             row: cellName,
-            phonePref: readPhoneEncryptedMode(adb),
-            webPref: webOn,
+            phoneAdvertised: applied.rec.present && applied.rec.ok ? applied.rec.advertised : null,
+            phoneRecord: recSummary(applied.rec),
+            accountEffective: applied.resolved?.effective ?? null,
             browserAdvert: all[all.length - 1] ?? null,
             phoneArmed: r?.armed?.line ?? null,
             phoneMode: r?.armed?.mode ?? null,
@@ -1598,11 +1726,11 @@ async function main() {
         }
 
         emit('S2 — mixed mode (P2.2 §13.2 rows 4/8/9)',
-          'Each row is a separate REAL pairing with the two local settings written before Accept. Row 4 (OFF/OFF) must SEAL as "Encrypted, unverified" and never fall back to plaintext.',
+          'Each row is a separate REAL pairing; the mode comes from the ACCOUNT preference (PUT /api/prefs/e2e with the page session), which the phone receives as E2E_PREF on connect and keeps at acct_pref:<userId>. Row 4 (OFF/OFF) must SEAL as "Encrypted, unverified" and never fall back to plaintext. Row 9 is not constructible under an account value (see SCENARIOS NOT RUN).',
           cells.map((c) => ({
             field: c.row,
-            phone: `${c.phoneMode ?? 'not armed'} verified=${c.phoneVerified} sas=${c.phoneSas ?? '-'}`,
-            page: `chip=${c.pageChip ?? '-'} sas=${c.pageSas ?? '-'}`,
+            phone: `${c.phoneMode ?? 'not armed'} verified=${c.phoneVerified} sas=${c.phoneSas ?? '-'} advertised=${c.phoneAdvertised} [${c.phoneRecord}]`,
+            page: `account.effective=${c.accountEffective ?? '-'} chip=${c.pageChip ?? '-'} sas=${c.pageSas ?? '-'}`,
             sw: 'ABSENT — listener, no SAS impl',
             match: null,
           })));

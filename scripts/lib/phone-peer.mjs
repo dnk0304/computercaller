@@ -144,6 +144,97 @@ export function readPhoneEncryptedMode(adb) {
   return m ? m[1] === 'true' : null;
 }
 
+/**
+ * T-E2E-ACCOUNT-PREF (vc69, forge/e2e-account-pref-android fa06a11): the phone's
+ * Encrypted mode is the ACCOUNT value now, pushed by the relay as E2E_PREF on
+ * connect and kept per account at `acct_pref:<userId>` in the SAME
+ * computercaller_e2e_prefs file (E2eAccountPrefController.kt). The legacy
+ * `encrypted_mode` switch above is only read for an account with no record yet
+ * (the vc68-compat seed path), so a harness that writes it and reads it back is
+ * measuring a control the phone no longer decides with.
+ *
+ * Reset the phone's e2e prefs file to the LEGACY state: ONLY the device switch,
+ * marked as a human choice (`encrypted_mode_user_set_v2`). Without that marker
+ * vc69's migrateLegacyEncryptedModePref resets an ON switch to OFF at boot and
+ * E2eAccountPref.Legacy.userSetOn is false, so an ON write would silently
+ * test OFF. The whole file is replaced on purpose: every `acct_pref:<userId>`
+ * record and `acct_pref_legacy_seed_consumed` go with it, which is exactly the
+ * "no per-account record for this account" precondition the legacy rows need.
+ * Force-stopped for the same in-process cache reason as setPhoneEncryptedMode.
+ */
+export function resetPhoneE2ePrefsToLegacy(adb, on) {
+  const file = `/data/data/${PKG}/shared_prefs/computercaller_e2e_prefs.xml`;
+  const v = on ? 'true' : 'false';
+  const xml = '<?xml version=\'1.0\' encoding=\'utf-8\' standalone=\'yes\' ?>\n'
+    + '<map>\n'
+    + `    <boolean name="encrypted_mode" value="${v}" />\n`
+    + '    <boolean name="encrypted_mode_user_set_v2" value="true" />\n'
+    + '</map>\n';
+  adb('shell', `am force-stop ${PKG}`);
+  adb('shell', `mkdir -p /data/data/${PKG}/shared_prefs`);
+  adb('shell', `cat > ${file} <<'XEOF'\n${xml}XEOF`);
+  adb('shell', `chown $(stat -c '%u:%g' /data/data/${PKG}) ${file}`);
+  return adb.sh(`cat ${file}`);
+}
+
+const XML_ENTITIES = { quot: '"', amp: '&', lt: '<', gt: '>', apos: "'" };
+function xmlUnescape(s) {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|quot|amp|lt|gt|apos);/gi, (_, e) => {
+    if (e[0] === '#') return String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10));
+    return XML_ENTITIES[e.toLowerCase()];
+  });
+}
+
+/**
+ * Pure: the phone's per-account record for `userId`, parsed out of the
+ * computercaller_e2e_prefs XML (E2eAccountPref.encode: v, advertised?,
+ * lastRev, mirror{preference,effective,pausedByServer,rev,...},
+ * pendingDowngrade?, seedAttempted, notice?). Returns:
+ *   { present:false }                       no record for this account
+ *   { present:true, ok:false, raw }         a record we cannot parse
+ *   { present:true, ok:true, ...fields }    the decoded record
+ * plus `legacy` = { encryptedMode, userSet, seedConsumed } from the same file.
+ * Keyed by the SEEDED user's id, never by anything the phone reports.
+ */
+export function parsePhoneAccountPref(xml, userId) {
+  const text = String(xml ?? '');
+  const bool = (name) => {
+    const m = new RegExp(`<boolean name="${name}" value="(true|false)"`).exec(text);
+    return m ? m[1] === 'true' : null;
+  };
+  const legacy = {
+    encryptedMode: bool('encrypted_mode'),
+    userSet: bool('encrypted_mode_user_set_v2'),
+    seedConsumed: bool('acct_pref_legacy_seed_consumed'),
+  };
+  const key = `acct_pref:${userId}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp(`<string name="${key}">([\\s\\S]*?)</string>`).exec(text);
+  if (!m) return { present: false, legacy };
+  const raw = xmlUnescape(m[1]);
+  try {
+    const o = JSON.parse(raw);
+    return {
+      present: true,
+      ok: Number.isInteger(o.lastRev),
+      v: o.v,
+      advertised: typeof o.advertised === 'boolean' ? o.advertised : null,
+      lastRev: o.lastRev,
+      mirror: o.mirror ?? null,
+      pendingDowngrade: o.pendingDowngrade ?? null,
+      seedAttempted: o.seedAttempted === true,
+      legacy,
+      raw,
+    };
+  } catch {
+    return { present: true, ok: false, raw, legacy };
+  }
+}
+
+/** Read the per-account record back from DISK — never from what we intended. */
+export function readPhoneAccountPref(adb, userId) {
+  return parsePhoneAccountPref(adb.sh(`cat /data/data/${PKG}/shared_prefs/computercaller_e2e_prefs.xml`), userId);
+}
+
 // ── logcat evidence ─────────────────────────────────────────────────────────
 
 export const E2E_TAGS = ['PhoneService:V', 'E2eDedupe:V', 'E2eSeqStore:V', 'E2eLifecycle:V', 'MainActivity:V', '*:S'];
