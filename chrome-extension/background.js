@@ -1385,6 +1385,26 @@ function pendingFileOfferForTest() {
  * host_permissions for https://computercaller.com/*, which makes this a
  * privileged fetch rather than a third-party one.
  */
+/**
+ * #18 Fix C (T-SW-REGISTER-ON-TYPED-SIGNIN). A sign-in must re-register the
+ * SW key, because the sign-out before it CLEARED the registration (see the
+ * 'signed-out' handler: clearDeviceKeyRegistered + swRegistered=false) and the
+ * key is withheld from the pairing advert until it is live again (INC-0923
+ * B-1). The only sign-in that registered was the retired 'auth-updated'
+ * message, which nothing sends any more; the typed, cookie and Google paths
+ * all land here and in runGoogleSignIn, and registered nothing. The one ladder
+ * that could catch it ran from `surface-open` BEFORE the user signed in, found
+ * no token and gave up. Prod 2026-09-26 08:16:12Z / 08:22:43Z: panel sign-out
+ * (page_unload + listener close 1005), sign-in 9 s later, and every encrypted
+ * pair after it advertised `recipients=1` - the extension SW could not open a
+ * sealed PHONE_NOTIFICATION. Registration success broadcasts e2e-status, and
+ * shell.js pushes the key to the page on that edge, so the page's advert
+ * carries the SW key from the next pairing on.
+ */
+function registerAfterSignIn(why) {
+  registerDeviceKeyWithRetry(why).catch(() => {});
+}
+
 async function mintTokenFromCookie() {
   try {
     const res = await fetch(self.CC.EXT_TOKEN_URL, {
@@ -1403,6 +1423,7 @@ async function mintTokenFromCookie() {
     signedIn = true;
     refreshIndicator();
     reconnectAttempts = 0;
+    registerAfterSignIn('sign-in-cookie');
     connect();
     return true;
   } catch (e) {
@@ -1432,6 +1453,7 @@ async function runGoogleSignIn() {
     signedIn = true;
     refreshIndicator();
     reconnectAttempts = 0;
+    registerAfterSignIn('sign-in-google');
     connect();
     return true;
   } catch (e) {
