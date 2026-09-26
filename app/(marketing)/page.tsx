@@ -551,7 +551,7 @@ export default function LandingPage() {
               'Available on Google Play',
               'Runs on Android 8.0+',
               'Pair in under 2 minutes',
-              'Your data never leaves your devices',
+              'Messages are never stored',
             ].map((item, i) => (
               <li key={item} className="inline-flex items-center gap-2.5">
                 {i > 0 && (
@@ -612,8 +612,8 @@ export default function LandingPage() {
             </span>
             <p className="text-sm leading-relaxed text-slate-600">
               <span className="font-semibold text-slate-900">Private by default.</span>{' '}
-              Your data never leaves your devices — we don&apos;t store your
-              calls, messages, or contacts on our servers.
+              Your messages pass through our server only to reach your
+              computer — they are never stored.
             </p>
           </div>
 

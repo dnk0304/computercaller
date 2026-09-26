@@ -30,7 +30,7 @@
  * instance at its root.
  */
 
-import type { PlanTierId } from '@/lib/pricing';
+import { TRIAL_DAYS, type PlanTierId } from '@/lib/pricing';
 import React, { useEffect, useId, useRef } from 'react';
 import Link from 'next/link';
 import { X } from 'lucide-react';
@@ -202,7 +202,9 @@ export function SignupModal({ open, onClose, triggerRef, planTier }: SignupModal
           Create your account
         </h2>
         <p className="mt-1.5 text-sm text-slate-500">
-          7-day free trial. Cancel anytime.
+          Start your {TRIAL_DAYS}-day free trial.
+          <br />
+          Cancel anytime.
         </p>
 
         {/* Google sign-up — the ONLY registration path (2026-07-06). Real <a>,

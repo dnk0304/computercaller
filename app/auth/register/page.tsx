@@ -23,6 +23,16 @@ import Image from 'next/image';
 import { AuthBackdrop } from '@/components/AuthBackdrop';
 import { MIN_PASSWORD } from '@/lib/passwordPolicy';
 import { TRIAL_DAYS } from '@/lib/pricing';
+import { OFFICIAL, WORDMARK_CUT, brandSrc, brandSrcSet } from '@/lib/brand/wordmark';
+
+/**
+ * Wordmark under the mark (Dennis 2026-09-26, signup item 4): the official
+ * one-line "COMPUTER CALLER" cut — the same artwork SidebarLockup splits into
+ * rows — centred beneath the mark. Light cut only: /auth has no dark variant.
+ * 144px wide puts the cap height at ~10px, the smallest size at which the
+ * artwork's letterforms stay crisp.
+ */
+const SIGNUP_WORDMARK_W = 144;
 
 function GoogleGlyph({ className = 'w-5 h-5' }: { className?: string }) {
   return (
@@ -105,7 +115,7 @@ export default function RegisterPage() {
     <div className="relative min-h-screen bg-slate-50 flex items-center justify-center px-4 py-12">
       <AuthBackdrop />
       <div className="w-full max-w-md">
-        <Link href="/" className="flex items-center justify-center mb-10" aria-label="ComputerCaller — home">
+        <Link href="/" className="flex flex-col items-center justify-center gap-3 mb-10" aria-label="ComputerCaller — home">
           <Image
             src="/brand/computercaller-icon-transparent.png"
             alt="ComputerCaller"
@@ -113,6 +123,19 @@ export default function RegisterPage() {
             height={317}
             priority
             className="h-14 w-auto"
+          />
+          {/* eslint-disable-next-line @next/next/no-img-element -- srcSet brand cuts, same as CcLockup */}
+          <img
+            src={brandSrc(WORDMARK_CUT.light)}
+            srcSet={brandSrcSet(WORDMARK_CUT.light)}
+            width={SIGNUP_WORDMARK_W}
+            height={Math.round(SIGNUP_WORDMARK_W / OFFICIAL.wordmark.aspect)}
+            alt=""
+            decoding="async"
+            draggable={false}
+            data-signup-wordmark
+            className="block h-auto"
+            style={{ width: SIGNUP_WORDMARK_W }}
           />
         </Link>
 
@@ -142,10 +165,11 @@ export default function RegisterPage() {
             </>
           ) : (
             <>
-              <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">Create your account</h1>
-              <p className="mt-1.5 text-slate-500 text-sm">
-                Start your {TRIAL_DAYS}-day free trial. A card is required to start — cancel anytime
-                before day {TRIAL_DAYS} and you’re not charged.
+              <h1 className="text-center text-2xl font-semibold text-slate-900 tracking-tight">Create your account</h1>
+              <p className="mt-1.5 text-center text-slate-500 text-sm">
+                Start your {TRIAL_DAYS}-day free trial.
+                <br />
+                Cancel anytime.
               </p>
 
               <a
