@@ -193,9 +193,10 @@ export async function GET(req: NextRequest) {
     // See /api/auth/login for the full rationale. Phone APK sockets are NOT
     // affected (index only holds relay-ticket-authed connections).
     try {
-      const supersede = (globalThis as { __supersedeWebSessions?: (userId: string) => number }).__supersedeWebSessions;
+      const supersede = (globalThis as { __supersedeWebSessions?: (userId: string, opts?: { sessionVersion?: number; reason?: 'superseded' | 'signed_out' }) => number }).__supersedeWebSessions;
       if (typeof supersede === 'function') {
-        supersede(user.id);
+        // EXT/WEB DUAL SESSION: see /api/auth/login.
+        supersede(user.id, { sessionVersion: bumped.sessionVersion, reason: 'superseded' });
       }
     } catch (err) {
       console.error('[Auth] supersedeWebSessions failed (lazy check still in force):', err);

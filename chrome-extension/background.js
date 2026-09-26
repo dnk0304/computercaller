@@ -29,6 +29,14 @@ import './config.js';
 // P5a-SW (a): the pure "what does a null token mean" rule. See that file's
 // header for why a null is not automatically a sign-out.
 import { tokenAbsenceVerdict } from './auth-absence.js';
+// EXT/WEB DUAL SESSION: the pure kick rules (which close is terminal, which
+// reason a frame carries, whether a kick still describes the stored session).
+import {
+  KICKED_KEY,
+  kickReasonFromFrame,
+  isKickClose,
+  shouldHonourKick,
+} from './session-kick.js';
 import {
   loadOrCreateDeviceKey,
   publicIdentity,
@@ -250,7 +258,57 @@ function storeToken(token) {
   tokenRevoked = false;   // a fresh token supersedes any earlier revocation
   return new Promise((resolve) =>
     chrome.storage.local.set({ [self.CC.TOKEN_KEY]: token }, resolve),
-  );
+  ).then(clearKicked);   // a fresh sign-in HERE ends the kicked state
+}
+
+// ── Session kick (EXT/WEB DUAL SESSION, Option A — Dennis 2026-09-25) ────────
+/**
+ * One surface at a time, symmetric. A sign-in anywhere else (the web app,
+ * another device) or a sign-out anywhere (m2) makes the relay send this
+ * worker's listener SESSION_SUPERSEDED + close 4001. That is TERMINAL: the
+ * token is dead server-side, reconnecting would only mint a 409, and silently
+ * re-handing-off from a shared cookie is exactly the asymmetry this removes.
+ *
+ * The reason from the frame is remembered until the close lands (the frame
+ * comes first, by contract; the close alone means 'superseded').
+ */
+let pendingKickReason = null;
+
+function clearKicked() {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.remove(KICKED_KEY, () => resolve()); } catch { resolve(); }
+  });
+}
+
+/**
+ * Record the kick and drop this worker's session — the same local teardown an
+ * explicit sign-out does. Serialised with the 'signed-out' handler, and gated
+ * on the token that was kicked still being the stored one, so neither a newer
+ * sign-in nor the extension's OWN sign-out (which removes the token first) can
+ * be overwritten by a kick that arrives late.
+ * @param {string|null} usedToken the token the kicked socket / ticket came from
+ * @param {'superseded'|'signed_out'} reason
+ * @returns {Promise<boolean>} true when the kick was honoured
+ */
+function handleSessionKick(usedToken, reason) {
+  return serialize(async () => {
+    const current = await getToken();
+    if (!shouldHonourKick(current, usedToken)) {
+      trace('kick-ignored', { reason, newer: !!current });
+      // A newer session owns storage; make sure IT has a socket.
+      if (current) connect();
+      return false;
+    }
+    await clearToken();
+    await new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ [KICKED_KEY]: { reason, at: Date.now() } }, () => resolve());
+      } catch { resolve(); }
+    });
+    trace('kicked', { reason });
+    dropLocalSession();
+    return true;
+  });
 }
 
 // ── E2E: this worker's device key (P3 (a)) ──────────────────────────────────
@@ -1471,9 +1529,17 @@ async function mintTicket(token) {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: '{}',
   });
-  if (res.status === 401 || res.status === 409) {
-    // Token invalid or session superseded — drop it; the user must re-run the
-    // handoff from the popup. Returning null stops the reconnect loop cleanly.
+  if (res.status === 409) {
+    // EXT/WEB DUAL SESSION: session superseded while this worker was not
+    // listening (evicted when the kick went out). Same outcome as a live kick:
+    // the kicked card, not a silent sign-out.
+    await handleSessionKick(token, 'superseded');
+    return null;
+  }
+  if (res.status === 401) {
+    // Token invalid — drop it; the user must re-run the handoff from the
+    // popup. Returning null stops the reconnect loop cleanly. (409 is handled
+    // above as a session kick.)
     await clearToken();
     // P5a-SW (a): a 401/409 from the token endpoint is one of the only two
     // authoritative revocations. Recording it is what lets the keepalive path
@@ -1530,6 +1596,7 @@ async function connect() {
       openedAt = Date.now();
       connecting = false;
       wsOpen = true;
+      pendingKickReason = null;   // a reason belongs to the socket it arrived on
       trace('ws-open', { attempts: reconnectAttempts });
       // Pairing facts stay false until the relay tells us otherwise — the
       // PAIR_STATE frame the relay sends on listener join arrives within a
@@ -1562,6 +1629,14 @@ async function connect() {
       if (wasCurrent) ws = null;
       connecting = false;
       if (wasCurrent) { clearRelayFacts(); refreshIndicator(); }
+      // EXT/WEB DUAL SESSION: 4001 is terminal — record it, never reconnect.
+      if (isKickClose(ev)) {
+        const reason = pendingKickReason || 'superseded';
+        pendingKickReason = null;
+        openedAt = 0;
+        handleSessionKick(token, reason).catch(() => {});
+        return;
+      }
       if (openedAt && dwell >= MIN_OPEN_DWELL_MS) reconnectAttempts = 0; // stable → reset
       // Reset lobby (dispatch FORGE-J, 2026-09-15). 4010 `room_reset` is the
       // relay deliberately emptying this user's room, so the listener must come
@@ -1984,6 +2059,8 @@ function handleFrame(msg) {
   // processed whether or not a surface is open, and they raise no notification.
   // FORGE-O: authoritative. Handled first so it wins over any weaker inference.
   if (type === 'PAIR_STATE') { notePairState(data); return; }
+  // EXT/WEB DUAL SESSION: the reason travels ahead of the 4001 close.
+  if (type === 'SESSION_SUPERSEDED') { pendingKickReason = kickReasonFromFrame(data); return; }
   if (type === 'LOBBY_STATUS') {
     // FORGE-O: presence ONLY. This frame says nothing about pairing —
     // `alreadyActive` means "some pair exists in this room", which for a
@@ -2416,6 +2493,54 @@ function installPanelBehavior() {
 chrome.action.onClicked.addListener(() => openPopout());
 
 // ── Messages from popup (auth updated, request pop-out) ──────────────────────
+/**
+ * Everything a sign-out drops locally — shared by the 'signed-out' message
+ * (explicit sign-out) and handleSessionKick() (the relay ended this session).
+ * The token itself is removed by the caller before this runs.
+ */
+function dropLocalSession() {
+  // §13.8: sign-out drops SK. storage.session is cleared explicitly rather
+  // than left to browser exit — a second user signing in on the same profile
+  // must not inherit the first one's key material.
+  dropSessionState().catch(() => {});
+  // A4.1: the pairingId pin goes with it. It is NOT cleared on an abort —
+  // there the pin is the one thing that was right — but a sign-out ends the
+  // pairing, and a pin outliving it would refuse the next one.
+  clearOwnPairingId().catch(() => {});
+  // INC-0923 B-1: the registry row is scoped to the ACCOUNT that registered
+  // it, so a sign-out ends this key's claim to be registered. The flag goes,
+  // not the key — the key is this install's, the claim is the account's — so
+  // a different user signing in on the same profile re-registers before the
+  // key may be advertised, instead of inheriting a "verified" state granted
+  // to somebody else.
+  clearDeviceKeyRegistered().catch(() => {});
+  swRegistered = false;
+  deviceKeyRegisterError = 'signed-out';
+  broadcastE2eStatus();
+  clearAborted();
+  // A3-M2: the epoch floor is cleared ONLY by an explicit user action, and
+  // signing out is one. Nothing arriving on the wire may ever reach this.
+  localUserId().then((uid) => clearEpochFloors(uid)).catch(() => {});
+  cachedUserId = null;
+  try { ws && ws.close(); } catch (_) {}
+  // P5a-SW (a): the other authoritative revocation. Without this the
+  // keepalive path would keep the pre-sign-out paint alive on its next null.
+  markTokenRevoked();
+  signedIn = false;
+  clearRelayFacts();
+  refreshIndicator();
+  try { chrome.storage.session.set({ [UNREAD_KEY]: { ...UNREAD_ZERO }, [ALERT_KEYS]: [] }); } catch (_) {}
+  // BAT-A1 MUST-3 / §13.8: the battery reading goes with the counters. It is
+  // another user's device telemetry the moment a different account signs in
+  // on this profile, and a stale "47%" under a new user's phone name is a
+  // small lie told confidently.
+  clearBattery();
+  // Signing out clears the counts, so it must clear the number on the icon
+  // too — a stale "3" on a signed-out extension is a lie about someone's
+  // messages.
+  paintBadge(UNREAD_ZERO);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'auth-updated') {
     reconnectAttempts = 0;
@@ -2544,46 +2669,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     openPopout(typeof message.hash === 'string' ? message.hash : '');
     sendResponse?.({ ok: true });
   } else if (message?.type === 'signed-out') {
-    // §13.8: sign-out drops SK. storage.session is cleared explicitly rather
-    // than left to browser exit — a second user signing in on the same profile
-    // must not inherit the first one's key material.
-    dropSessionState().catch(() => {});
-    // A4.1: the pairingId pin goes with it. It is NOT cleared on an abort —
-    // there the pin is the one thing that was right — but a sign-out ends the
-    // pairing, and a pin outliving it would refuse the next one.
-    clearOwnPairingId().catch(() => {});
-    // INC-0923 B-1: the registry row is scoped to the ACCOUNT that registered
-    // it, so a sign-out ends this key's claim to be registered. The flag goes,
-    // not the key — the key is this install's, the claim is the account's — so
-    // a different user signing in on the same profile re-registers before the
-    // key may be advertised, instead of inheriting a "verified" state granted
-    // to somebody else.
-    clearDeviceKeyRegistered().catch(() => {});
-    swRegistered = false;
-    deviceKeyRegisterError = 'signed-out';
-    broadcastE2eStatus();
-    clearAborted();
-    // A3-M2: the epoch floor is cleared ONLY by an explicit user action, and
-    // signing out is one. Nothing arriving on the wire may ever reach this.
-    localUserId().then((uid) => clearEpochFloors(uid)).catch(() => {});
-    cachedUserId = null;
-    try { ws && ws.close(); } catch (_) {}
-    // P5a-SW (a): the other authoritative revocation. Without this the
-    // keepalive path would keep the pre-sign-out paint alive on its next null.
-    markTokenRevoked();
-    signedIn = false;
-    clearRelayFacts();
-    refreshIndicator();
-    try { chrome.storage.session.set({ [UNREAD_KEY]: { ...UNREAD_ZERO }, [ALERT_KEYS]: [] }); } catch (_) {}
-    // BAT-A1 MUST-3 / §13.8: the battery reading goes with the counters. It is
-    // another user's device telemetry the moment a different account signs in
-    // on this profile, and a stale "47%" under a new user's phone name is a
-    // small lie told confidently.
-    clearBattery();
-    // Signing out clears the counts, so it must clear the number on the icon
-    // too — a stale "3" on a signed-out extension is a lie about someone's
-    // messages.
-    paintBadge(UNREAD_ZERO);
+    // EXT/WEB DUAL SESSION: the local teardown moved into dropLocalSession()
+    // so a relay kick performs EXACTLY the same one. An explicit sign-out also
+    // retires any kick record — serialised behind a kick that may be landing
+    // right now (this extension's own logout kicks its own listener).
+    dropLocalSession();
+    serialize(clearKicked).catch(() => {});
     sendResponse?.({ ok: true });
   }
   return true;
@@ -2698,6 +2789,9 @@ Object.assign(self, {
   pendingOfferForTest,
   FILE_PASSTHROUGH_MSG,
   e2eStateForTest: () => ({ mode: e2eMode, why: e2eWhy, kid: e2eKid, deviceId: swDeviceId }),
+  // EXT/WEB DUAL SESSION: the kick path, driven by tests/ext-web-dual-session.
+  handleSessionKick,
+  mintTicket,
 });
 
 // ── Keepalive / reconnect backstop ───────────────────────────────────────────

@@ -40,7 +40,7 @@
  *      Chrome does not kill when the popup closes.
  *
  * postMessage contract with app/../lib/extensionBridge.ts:
- *   app   → shell : { source:'cc-ext', type:'ready' | 'open-popout' | 'sign-out' }
+ *   app   → shell : { source:'cc-ext', type:'ready' | 'open-popout' | 'sign-out' | 'sign-back-in' }
  *   app   → shell : { source:'cc-ext', type:'theme', theme:'light'|'dark' }
  *   app   → shell : { source:'cc-ext', type:'size',  size:'small'|'medium'|'large' }
  *   login → shell : { source:'cc-ext', type:'login-ready' | 'signed-in' | 'google-sign-in' }
@@ -358,6 +358,9 @@ const shellHeader = document.getElementById('cc-shell-header');
 const signinBtn = document.getElementById('cc-signin-btn');
 const signinMsg = document.getElementById('cc-signin-msg');
 const signinBody = document.getElementById('cc-signin-body');
+const signinTitle = document.getElementById('cc-signin-title');
+/** The fallback's own heading, restored whenever the kicked card leaves. */
+const TITLE_SIGNIN = signinTitle ? signinTitle.textContent : '';
 const loginFrame = document.getElementById('cc-login-frame');
 
 const NS = 'cc-ext';
@@ -391,6 +394,12 @@ const COPY_SIGNIN =
   'Sign in and your phone does the calling — you do the typing.';
 const COPY_ERROR =
   "Couldn't reach ComputerCaller. Check your connection, then try again.";
+// EXT/WEB DUAL SESSION (Option A, Dennis 2026-09-25): the SAME card the web
+// app shows (components/KickedSessionGate.tsx) — same heading, same single
+// CTA — with the body naming this surface.
+const TITLE_KICKED = "You're now signed in on another device.";
+const COPY_KICKED =
+  'ComputerCaller allows one browser at a time. To use the extension again, sign back in here.';
 
 /**
  * How long the boot skeleton stands in for the signed-out gate before the
@@ -404,7 +413,8 @@ const COPY_ERROR =
  */
 const BOOT_SKELETON_MS = 1100;
 
-/** overlay: null = hidden, 'anon' = sign-in gate, 'error' = retry state. */
+/** overlay: null = hidden, 'anon' = sign-in gate, 'error' = retry state,
+ *  'kicked' = signed in on another device (EXT/WEB DUAL SESSION). */
 let overlayState = null;
 /** Pending BOOT_SKELETON_MS timer, so leaving 'anon' can cancel it. */
 let bootTimer = null;
@@ -419,8 +429,14 @@ function showOverlay(state, message) {
   // signed in, the hosted app's header is the one and only header.
   if (shellHeader) shellHeader.style.display = state ? 'flex' : 'none';
   if (!state) { unloadLoginFrame(); return; }
-  if (signinBody) signinBody.textContent = state === 'error' ? COPY_ERROR : COPY_SIGNIN;
-  if (signinBtn) signinBtn.textContent = state === 'error' ? 'Try again' : 'Sign in';
+  const kicked = state === 'kicked';
+  if (signinTitle) signinTitle.textContent = kicked ? TITLE_KICKED : TITLE_SIGNIN;
+  if (signinBody) {
+    signinBody.textContent = kicked ? COPY_KICKED : state === 'error' ? COPY_ERROR : COPY_SIGNIN;
+  }
+  if (signinBtn) {
+    signinBtn.textContent = kicked ? 'Sign back in here' : state === 'error' ? 'Try again' : 'Sign in';
+  }
   if (signinMsg) signinMsg.textContent = message || '';
   if (state === 'anon') {
     // Skeleton first, fallback second, real form third — see shell.css. The
@@ -432,6 +448,7 @@ function showOverlay(state, message) {
   } else {
     // 'error' is "we never reached the server" — framing a page from that same
     // unreachable server would only stack a second failure on top of it.
+    // 'kicked' shows the static card; its button is what loads the login.
     unloadLoginFrame();
     if (signinBtn) signinBtn.focus();
   }
@@ -503,6 +520,49 @@ function sendHello() {
   } catch {}
 }
 
+// ---- Session kick (EXT/WEB DUAL SESSION, Option A) --------------------------
+// The background worker writes self.CC.KICKED_KEY when the relay ends this
+// extension's session (a sign-in on the web app / another device, or a
+// sign-out anywhere). It OUTRANKS the cookie probe: the web app and the
+// extension share this profile's cookie jar, so a web sign-in makes the probe
+// say 'authed' — which is precisely the silent both-signed-in state Option A
+// forbids. Mirror of kickedView() in session-kick.js (pinned by test).
+function kickedViewOf(record) {
+  if (!record || typeof record !== 'object') return null;
+  return record.reason === 'signed_out' ? 'anon' : 'kicked';
+}
+
+function readKicked() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(self.CC.KICKED_KEY, (o) => resolve((o && o[self.CC.KICKED_KEY]) || null));
+    } catch { resolve(null); }
+  });
+}
+
+/** This surface just signed in: the kick no longer describes it. */
+function clearKickedRecord() {
+  try { chrome.storage.local.remove(self.CC.KICKED_KEY); } catch {}
+}
+
+/** Swap whatever is showing for the view a kick record asks for. */
+function applyKickedView(view) {
+  if (!view) return false;
+  clearFrame();
+  currentEmail = null;
+  showOverlay(view);
+  return true;
+}
+
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[self.CC.KICKED_KEY]) return;
+    // Removal = a sign-in here cleared it; the sign-in path already swapped
+    // the surface, so there is nothing to undo.
+    applyKickedView(kickedViewOf(changes[self.CC.KICKED_KEY].newValue));
+  });
+} catch {}
+
 /**
  * The single auth probe. Returns a discriminated state — NEVER a bare boolean,
  * so "the server said no" and "we never reached the server" stay distinct.
@@ -559,6 +619,7 @@ async function completeSignIn() {
   } catch {
     // The SW was asleep or the channel closed. Non-fatal — see (1) above.
   }
+  clearKickedRecord();
   showOverlay(null);
   loadFrame();
   const s = await probeSession();
@@ -593,6 +654,7 @@ async function startGoogleSignIn() {
     if (signinMsg) signinMsg.textContent = 'Google sign-in was cancelled. Try again.';
     return;
   }
+  clearKickedRecord();
   showOverlay(null);
   loadFrame();
   const s = await probeSession();
@@ -634,6 +696,7 @@ async function startPasswordWindowSignIn() {
   }
   if (btn) { btn.disabled = false; btn.textContent = label; }
   if (!ok) return;          // Cancelled or timed out; the inline form is still there.
+  clearKickedRecord();
   showOverlay(null);
   loadFrame();
   const s = await probeSession();
@@ -978,6 +1041,13 @@ window.addEventListener('message', (event) => {
     reportTabViewed(data.tab);
   } else if (data.type === 'sign-out') {
     signOut();
+  } else if (data.type === 'sign-back-in') {
+    // EXT/WEB DUAL SESSION: the hosted app's KickedSessionGate button. Drop
+    // the kicked surface and put the embedded sign-in up — nothing else.
+    // Signing in there is what supersedes the other surface.
+    clearFrame();
+    currentEmail = null;
+    showOverlay('anon');
   } else if (data.type === 'theme') {
     // Posted by lib/extensionTheme.ts: once from the blocking boot script on
     // every /extension load, and again on every toggle. Already resolved to
@@ -991,6 +1061,8 @@ window.addEventListener('message', (event) => {
 });
 
 async function init() {
+  // A kick outranks the cookie — see kickedViewOf().
+  if (applyKickedView(kickedViewOf(await readKicked()))) return;
   const session = await probeSession();
   if (session.state === 'authed') {
     currentEmail = session.email;
@@ -1017,6 +1089,8 @@ if (signinBtn) {
     // the signed-out state (this button is only reachable while the login
     // frame has NOT reported ready, i.e. it failed to load).
     if (overlayState === 'error') { init(); return; }
+    // 'kicked': "Sign back in here" → the embedded sign-in, on this surface.
+    if (overlayState === 'kicked') { showOverlay('anon'); return; }
     if (signinMsg) signinMsg.textContent = 'Loading sign-in…';
     if (loginFrame) loginFrame.removeAttribute('src');
     beginBoot();

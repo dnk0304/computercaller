@@ -3,6 +3,17 @@
 import React from 'react';
 import { Smartphone } from 'lucide-react';
 import { usePhone } from '@/hooks';
+import { requestSignBackIn } from '@/lib/extensionBridge';
+
+/**
+ * Which surface the gate is mounted on (EXT/WEB DUAL SESSION, Option A —
+ * Dennis 2026-09-25: one surface at a time, newest sign-in wins, symmetric).
+ *   'web'       → /app. "Sign back in here" goes to /auth/login.
+ *   'extension' → the /extension frame inside the Chrome extension. This page
+ *                 cannot navigate (the shell owns the frame), so the button asks
+ *                 the shell for its embedded sign-in instead.
+ */
+export type KickedSurface = 'web' | 'extension';
 
 /**
  * KickedSessionGate — friendly full-screen card shown when the current
@@ -24,7 +35,13 @@ import { usePhone } from '@/hooks';
  * Phone connection is UNAFFECTED. The kick is web-only — the user's phone
  * keeps running, mirroring notifications, etc. for the new session.
  */
-export function KickedSessionGate({ children }: { children: React.ReactNode }) {
+export function KickedSessionGate({
+  children,
+  surface = 'web',
+}: {
+  children: React.ReactNode;
+  surface?: KickedSurface;
+}) {
   // Defensive read — Forge's parallel work adds `kickedReason` to the bridge
   // return; until that commit lands, an undefined cast keeps tsc quiet and
   // the gate renders nothing (children pass through) so we never block the
@@ -38,8 +55,11 @@ export function KickedSessionGate({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
   }
 
-  return <SignedInElsewhereCard />;
+  return <SignedInElsewhereCard surface={surface} />;
 }
+
+const SIGN_BACK_IN_CLASS =
+  'mt-2 inline-flex items-center justify-center px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2';
 
 /**
  * The card itself. Slate / blue palette. Single CTA routes to /auth/login —
@@ -47,7 +67,8 @@ export function KickedSessionGate({ children }: { children: React.ReactNode }) {
  * by the same mechanism that just kicked us). Full-bleed background so it
  * suppresses the whole app tree visually.
  */
-function SignedInElsewhereCard() {
+function SignedInElsewhereCard({ surface }: { surface: KickedSurface }) {
+  const isExtension = surface === 'extension';
   // Plain anchor (not useRouter().push) — clicking should fully reload the
   // route so PhoneProvider re-mounts with a fresh ticket on the new session.
   // A soft client-side push would keep this gate component alive in memory
@@ -75,16 +96,24 @@ function SignedInElsewhereCard() {
             id="kicked-body"
             className="text-sm text-slate-500 leading-relaxed"
           >
-            ComputerCaller allows one browser at a time. To use this tab again,
-            sign back in here.
+            {isExtension
+              ? 'ComputerCaller allows one browser at a time. To use the extension again, sign back in here.'
+              : 'ComputerCaller allows one browser at a time. To use this tab again, sign back in here.'}
           </p>
         </div>
-        <a
-          href="/auth/login"
-          className="mt-2 inline-flex items-center justify-center px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2"
-        >
-          Sign back in here
-        </a>
+        {isExtension ? (
+          <button
+            type="button"
+            onClick={requestSignBackIn}
+            className={SIGN_BACK_IN_CLASS}
+          >
+            Sign back in here
+          </button>
+        ) : (
+          <a href="/auth/login" className={SIGN_BACK_IN_CLASS}>
+            Sign back in here
+          </a>
+        )}
       </div>
     </div>
   );

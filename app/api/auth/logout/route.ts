@@ -41,14 +41,17 @@ export async function POST(req: NextRequest) {
   // access. No valid session (absent, forged, already superseded) = no bump;
   // the cookies are still cleared and the response is still 200.
   let revokeFailed = false;
+  let bumpedTo: number | null = null;
   const token = req.cookies.get('auth_token')?.value;
   const session = token ? await validateSessionToken(token) : null;
   if (session?.userId) {
     try {
-      await db.user.update({
+      const bumped = await db.user.update({
         where: { id: session.userId },
         data: { sessionVersion: { increment: 1 } },
+        select: { sessionVersion: true },
       });
+      bumpedTo = bumped.sessionVersion;
     } catch (err) {
       // Loud, not silent: the caller believes every session just ended. The
       // cookies below are still cleared, so THIS device is signed out either
@@ -60,9 +63,18 @@ export async function POST(req: NextRequest) {
       // Instant flip for open browser tabs (same as login/change-password);
       // the lazy sessionVersion check enforces it regardless.
       try {
-        const supersede = (globalThis as { __supersedeWebSessions?: (userId: string) => number })
-          .__supersedeWebSessions;
-        if (typeof supersede === 'function') supersede(session.userId);
+        const supersede = (globalThis as {
+          __supersedeWebSessions?: (
+            userId: string,
+            opts?: { sessionVersion?: number; reason?: 'superseded' | 'signed_out' },
+          ) => number;
+        }).__supersedeWebSessions;
+        // EXT/WEB DUAL SESSION: the extension's listener hears WHY — a sign-out
+        // lands it on the plain sign-in gate, not the "signed in on another
+        // device" card. Web tabs keep their unchanged wire frame.
+        if (typeof supersede === 'function') {
+          supersede(session.userId, { sessionVersion: bumpedTo ?? undefined, reason: 'signed_out' });
+        }
       } catch (err) {
         console.error('[Logout] supersedeWebSessions failed (lazy check still in force):', err);
       }
