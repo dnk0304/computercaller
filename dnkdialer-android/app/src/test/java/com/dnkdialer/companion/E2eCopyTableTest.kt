@@ -283,8 +283,10 @@ class E2eCopyTableTest {
         assertEquals("Couldn't switch this connection.", strings["home_e2e_switch_failed"])
         assertEquals("Retry", strings["home_e2e_switch_retry"])
         val sub = strings.getValue("row_encrypted_mode_sub")
+        // vc70 ADDENDUM rev 5: Pilot COPY-REVIEW-PHONE-STATUS replacement ("proves
+        // no one is in the middle" over-claimed; the code only helps if compared).
         assertEquals(
-            "Always encrypted in transit. On adds a one-time code check that proves no one is in the middle.",
+            "Always encrypted. Turn on to also match a code on both screens, so you know it's really your computer.",
             sub
         )
         assertFalse("the old subtitle implied OFF = unscrambled", sub.contains("Scramble", true))

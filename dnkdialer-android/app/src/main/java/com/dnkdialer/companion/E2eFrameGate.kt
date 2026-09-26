@@ -159,6 +159,15 @@ class E2eFrameGate(
     var lastDropReason: String? = null
         private set
 
+    /**
+     * vc70 T4 — machine-readable twin of [lastDropReason] for DiagLog:
+     * `sas_pending` | `latched_no_session` | `seal_failed`. Never carries an
+     * exception message (that is prose and may echo payload-derived text).
+     */
+    @Volatile
+    var lastDropCode: String? = null
+        private set
+
     /** Set when §13.5's 3-failures-in-10s threshold asks for a re-pair. */
     @Volatile
     var repairRequested: Boolean = false
@@ -187,6 +196,7 @@ class E2eFrameGate(
         if (sasPendingProvider()) {
             droppedOutbound++
             lastDropReason = "sas pending — the code is not confirmed on this device"
+            lastDropCode = "sas_pending"
             return null
         }
 
@@ -195,6 +205,7 @@ class E2eFrameGate(
             if (!latchedProvider()) return json // this pair is in the clear
             droppedOutbound++
             lastDropReason = "latched ON with no session"
+            lastDropCode = "latched_no_session"
             return null
         }
 
@@ -219,6 +230,7 @@ class E2eFrameGate(
             // count. A failure to seal is loud, unlike a failure to open.
             droppedOutbound++
             lastDropReason = "seal failed (${e.javaClass.simpleName}: ${e.message})"
+            lastDropCode = "seal_failed"
             null
         }
     }

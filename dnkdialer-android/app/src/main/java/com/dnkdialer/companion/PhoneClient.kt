@@ -57,7 +57,35 @@ class PhoneClient(
     @Volatile
     var frameGate: E2eFrameGate? = null
 
+    /**
+     * vc70 P4 — wall-clock ms of the last sign of life on THIS socket: open,
+     * any inbound frame, a ping or a pong. [RelayDialPolicy] refuses to tear
+     * down an OPEN socket whose life is fresh. 0 = never.
+     */
+    @Volatile
+    var lastAliveAtMs: Long = 0L
+        private set
+
+    /** vc70 P1 — the network this socket was opened on, set by PhoneService at open. */
+    @Volatile
+    var boundNetwork: android.net.Network? = null
+
+    private fun markAlive() {
+        lastAliveAtMs = System.currentTimeMillis()
+    }
+
+    override fun onWebsocketPong(conn: org.java_websocket.WebSocket?, f: org.java_websocket.framing.Framedata?) {
+        super.onWebsocketPong(conn, f)
+        markAlive()
+    }
+
+    override fun onWebsocketPing(conn: org.java_websocket.WebSocket?, f: org.java_websocket.framing.Framedata?) {
+        super.onWebsocketPing(conn, f)
+        markAlive()
+    }
+
     override fun onOpen(handshake: ServerHandshake?) {
+        markAlive()
         android.util.Log.d("PhoneClient", "Connected to relay: $uri")
         // vc63 — host only. The full relay URL carries the phone token in the
         // query string on the legacy path, so the URL itself is a credential.
@@ -70,6 +98,7 @@ class PhoneClient(
     }
 
     override fun onMessage(message: String) {
+        markAlive()
         try {
             val colonIndex = message.indexOf(':')
             if (colonIndex == -1) return
@@ -175,6 +204,10 @@ class PhoneClient(
                     "DROPPED outbound $type — ${gate.lastDropReason} " +
                         "(total ${gate.droppedOutbound}). NOT sent in the clear."
                 )
+                // vc70 T4: visible in DiagExport, not just logcat — a frame the
+                // gate refuses (e.g. a backfill sent while the SAS is pending)
+                // must never be a silent loss.
+                ForwardDiag.gateDrop(type, gate.lastDropCode ?: "unknown")
                 return
             }
         }

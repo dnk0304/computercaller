@@ -40,26 +40,27 @@ class NotificationBackfillTest {
         )
     }
 
+    /**
+     * vc70 item 7: the filter is a noise DENYLIST now. Only the noise
+     * categories drop; everything else — promo, email, no category at all —
+     * forwards on any package. (The old allowlist tests pinned the bug.)
+     */
     @Test
-    fun the_allowed_categories_pass_and_others_do_not() {
-        for (c in NotificationBackfill.ALLOWED_CATEGORIES) {
-            assertTrue(c, NotificationBackfill.isForwardable("com.example.app", c, 0, false))
+    fun only_the_noise_categories_drop() {
+        for (c in NotificationBackfill.NOISE_CATEGORIES.keys) {
+            assertFalse(c, NotificationBackfill.isForwardable("com.example.app", c, 0, false))
         }
-        for (c in listOf(Notification.CATEGORY_PROMO, Notification.CATEGORY_SYSTEM, null)) {
-            assertFalse(
-                "category $c must not pass on an unlisted package",
+        for (c in listOf(Notification.CATEGORY_PROMO, Notification.CATEGORY_EMAIL, null)) {
+            assertTrue(
+                "category $c must forward on an unlisted package",
                 NotificationBackfill.isForwardable("com.example.app", c, 0, false)
             )
         }
     }
 
-    /** The allowlist exists for apps that post messages with no category set. */
+    /** Ongoing outranks everything, including a messaging category. */
     @Test
-    fun an_allowlisted_package_bypasses_the_category_filter() {
-        for (p in NotificationBackfill.ALWAYS_ALLOW_PACKAGES) {
-            assertTrue(p, NotificationBackfill.isForwardable(p, null, 0, false))
-        }
-        // …but not the ongoing exclusion, which outranks it.
+    fun ongoing_outranks_a_messaging_category() {
         assertFalse(
             NotificationBackfill.isForwardable("com.whatsapp", null, ONGOING, false)
         )

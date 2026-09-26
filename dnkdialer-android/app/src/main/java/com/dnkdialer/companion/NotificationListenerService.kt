@@ -72,6 +72,11 @@ class DnkNotificationListenerService : NotificationListenerService() {
         private val iconFailureLogged = NotificationIconPipeline.OncePerKey()
         private val iconSuccessLogged = NotificationIconPipeline.OncePerKey()
 
+        // vc70 T2: app label per package, for the null-title fallback and the
+        // appName field. Labels do not change under a running listener, and the
+        // lookup is a binder call, so it is done once per package.
+        private val labelCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
         // Callback set by PhoneService so it can forward intercepted notifications.
         // Includes the full set of fields the web client needs to render and
         // optionally reply: app name, package, title, body, RemoteInput presence,
@@ -155,29 +160,44 @@ class DnkNotificationListenerService : NotificationListenerService() {
      * other.
      */
     private fun buildPayload(sbn: StatusBarNotification, backfill: Boolean): Payload? {
-        val pkg = sbn.packageName ?: return null
-        val notification = sbn.notification ?: return null
-        val extras: Bundle = notification.extras ?: return null
+        // vc70 T4: every refusal below is counted and logged (reason + package
+        // hash). A silent `return null` here is how a bank alert went missing.
+        val pkg = sbn.packageName
+        val notification = sbn.notification
+        val extras: Bundle? = notification?.extras
+        if (pkg == null) {
+            ForwardDiag.notifDrop(NotificationBackfill.DropReason.NO_PACKAGE, null, backfill)
+            return null
+        }
+        if (notification == null || extras == null) {
+            ForwardDiag.notifDrop(NotificationBackfill.DropReason.MALFORMED, pkg, backfill)
+            return null
+        }
 
-        if (!NotificationBackfill.isForwardable(
+        NotificationBackfill.dropReason(
+            NotificationBackfill.Facts(
                 packageName = pkg,
                 category = notification.category,
                 flags = notification.flags,
                 isSelf = pkg == packageName,
             )
-        ) {
+        )?.let { reason ->
+            ForwardDiag.notifDrop(reason, pkg, backfill)
             return null
         }
 
-        val title = extractTitle(extras) ?: return null
         val body = extractBody(extras)
-        if (title.isBlank() && body.isBlank()) return null // skip empty
+        // vc70 T2: a null/blank title is NOT a reason to drop — fall back to the
+        // app label, then the package name. Only title AND body empty drops.
+        val title = NotificationBackfill.resolveTitle(extractTitle(extras), body, pkg) {
+            appLabel(pkg, extras)
+        }
+        if (title == null) {
+            ForwardDiag.notifDrop(NotificationBackfill.DropReason.EMPTY, pkg, backfill)
+            return null
+        }
 
-        val appName = try {
-            packageManager.getApplicationLabel(
-                packageManager.getApplicationInfo(pkg, 0)
-            ).toString()
-        } catch (e: Exception) { pkg }
+        val appName = appLabel(pkg, extras) ?: pkg
 
         // Detect if the notification carries a reply RemoteInput action.
         var hasReply = false
@@ -307,6 +327,27 @@ class DnkNotificationListenerService : NotificationListenerService() {
         }
         if (icon != null) iconCache.put(key, icon)
         return icon
+    }
+
+    /**
+     * The app's user-visible label, cached per package, or null.
+     *
+     * The ApplicationInfo stamped into the notification's extras is tried
+     * first: loading a label from it does not depend on package visibility,
+     * so no <queries> entry and no QUERY_ALL_PACKAGES is needed (same reason
+     * as [captureAppIcon]). `getApplicationInfo(pkg)` is the fallback.
+     */
+    private fun appLabel(pkg: String, extras: Bundle): String? {
+        labelCache[pkg]?.let { return it }
+        val pm = packageManager
+        val label = try {
+            val ai = extrasAppInfo(extras) ?: pm.getApplicationInfo(pkg, 0)
+            pm.getApplicationLabel(ai).toString().takeIf { it.isNotBlank() }
+        } catch (t: Throwable) {
+            null
+        }
+        if (label != null) labelCache[pkg] = label
+        return label
     }
 
     private fun extrasAppInfo(extras: Bundle): android.content.pm.ApplicationInfo? {

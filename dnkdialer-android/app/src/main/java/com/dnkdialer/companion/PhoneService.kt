@@ -26,6 +26,9 @@ import android.annotation.SuppressLint
 class PhoneService : Service() {
 
     companion object {
+        /** vc70 P1: collapse a burst of network callbacks into one decision. */
+        const val NET_REDIAL_DEBOUNCE_MS = 1_000L
+
         /**
          * T-PHONE-FIRST-SIGNIN-NO-AUTODIAL: true between onStartCommand and
          * onDestroy. This is the ONLY authoritative "the service has been
@@ -281,6 +284,32 @@ class PhoneService : Service() {
     // re-dial target is the lobby WebSocket; pairing requires fresh
     // explicit user Accept.
     private val reconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    // ---------------------------------------------- vc70 P4 + P1 (dial guard)
+
+    /** Serialises the dial decision + client swap (main thread, timers, P1). */
+    private val dialLock = Any()
+
+    /** Wall-clock ms of the last connect() this service started. */
+    @Volatile
+    private var dialStartedAtMs: Long = 0L
+
+    /** P1: the platform reported the socket's own network lost. */
+    @Volatile
+    private var boundNetworkLost: Boolean = false
+
+    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+    /** P1: one re-dial decision ~1 s after a burst of network callbacks. */
+    private val netRedialDebouncer = NetRedialDebouncer(
+        delayMs = NET_REDIAL_DEBOUNCE_MS,
+        schedule = { delay, task ->
+            val r = Runnable { task() }
+            reconnectHandler.postDelayed(r, delay)
+            NetRedialDebouncer.Cancel { reconnectHandler.removeCallbacks(r) }
+        },
+        fire = { lost -> onNetworkSettled(lost) },
+    )
     private var reconnectRunnable: Runnable? = null
 
     /** FT-2 — notifications + the transfer state machine. Built in onCreate. */
@@ -423,6 +452,12 @@ class PhoneService : Service() {
      */
     @Volatile
     private var acceptedPairKey: String? = null
+
+    /**
+     * vc70 NOTIF-FORWARDING T3 — backfill timing + single-flight per pair.
+     * See [BackfillGate] for the rule and why PAIRING_ACTIVE alone was wrong.
+     */
+    private val backfillGate = BackfillGate()
 
     /**
      * Single worker for the Accept handshake. The (e) pin is a blocking HTTPS
@@ -2568,9 +2603,11 @@ class PhoneService : Service() {
             else -> {
                 val relayUrl = "wss://computercaller.com/relay/phone?token=${java.net.URLEncoder.encode(phoneToken, "UTF-8")}"
                 android.util.Log.d("PhoneService", "Auto-dialing relay (token=${phoneToken.take(8)}…)")
-                connectToRelay(relayUrl)
+                connectToRelay(relayUrl, trigger = "start_bridge")
             }
         }
+        // vc70 P1: idempotent; unregistered in onDestroy.
+        registerNetworkCallback()
 
         // Disconnect-from-lobby (v25, 2026-05-26): keep the
         // foreground notification copy honest when the user is in
@@ -3278,6 +3315,10 @@ class PhoneService : Service() {
             e2eSasConfirmedThisPair = sas == E2eSasGate.Verdict.MATCHED
             DiagLog.d("PhoneService", "e2e sas confirmed — data plane open")
             broadcastE2eState()
+            // vc70 T3 (item 3): the backfill PAIRING_ACTIVE deferred while the
+            // gate was shut. Only a pair that HAD a code check deferred one;
+            // a no-code pair already ran it on ACTIVE.
+            if (prepared.modeOn) backfillNotifications(BackfillGate.Trigger.SAS_CONFIRM)
         } catch (e: RuntimeException) {
             // E2eAccept.AcceptException (oversized block, no recipients),
             // E2eSeqStore.CounterUnsafeException (the counter cannot be proved
@@ -3586,24 +3627,56 @@ class PhoneService : Service() {
      * those on the thread that just handled PAIRING_ACTIVE would jank the
      * moment the pair goes live.
      */
-    private fun backfillNotifications(reason: String) {
+    private fun backfillNotifications(trigger: BackfillGate.Trigger) {
+        val reason = trigger.key
         val listener = DnkNotificationListenerService.getInstance()
         if (listener == null) {
             android.util.Log.w("PhoneService", "backfill ($reason): listener not connected")
+            ForwardDiag.line("backfill skip trigger=$reason cause=listener_not_connected")
             return
         }
+        // vc70 T3: the pair's identity, hashed (the pairing id is an HKDF salt
+        // and a relay room address — never logged raw).
+        val epoch = acceptedPairKey?.let { Redact.hash6(it) } ?: "none"
+        when (backfillGate.request(trigger, epoch, e2eSasPending, System.currentTimeMillis())) {
+            BackfillGate.Decision.DEFER_SAS_PENDING -> {
+                // The gate is shut until the code is confirmed; every frame sent
+                // now would be dropped. The SAS-confirm edge runs it instead.
+                DiagLog.counter("backfill.defer_sas")
+                ForwardDiag.line("backfill deferred trigger=$reason cause=sas_pending epoch=$epoch")
+                return
+            }
+            BackfillGate.Decision.SKIP_DUPE -> {
+                DiagLog.counter("backfill.skip_dupe")
+                ForwardDiag.line("backfill_skipped_dupe trigger=$reason epoch=$epoch")
+                return
+            }
+            BackfillGate.Decision.RUN -> {
+                DiagLog.counter("backfill.run")
+                ForwardDiag.line("backfill start trigger=$reason epoch=$epoch")
+            }
+        }
         kotlin.concurrent.thread(name = "notif-backfill") {
-            val payloads = listener.activeNotificationPayloads()
-            android.util.Log.i(
-                "PhoneService",
-                "backfill ($reason): ${payloads.size} notification(s), newest first, cap " +
-                    NotificationBackfill.CAP
-            )
-            val emit = DnkNotificationListenerService.onMessageNotification
-            // Newest first out of the selector; emitted in that order so the
-            // web's merge sees the same ordering the phone decided rather than
-            // re-deriving it from arrival time.
-            for (p in payloads) emit?.invoke(p)
+            var sent = 0
+            try {
+                val payloads = listener.activeNotificationPayloads()
+                android.util.Log.i(
+                    "PhoneService",
+                    "backfill ($reason): ${payloads.size} notification(s), newest first, cap " +
+                        NotificationBackfill.CAP
+                )
+                val emit = DnkNotificationListenerService.onMessageNotification
+                // Newest first out of the selector; emitted in that order so the
+                // web's merge sees the same ordering the phone decided rather than
+                // re-deriving it from arrival time.
+                for (p in payloads) {
+                    emit?.invoke(p)
+                    sent++
+                }
+            } finally {
+                ForwardDiag.line("backfill finish trigger=$reason count=$sent epoch=$epoch")
+                backfillGate.finished(epoch, System.currentTimeMillis())
+            }
         }
     }
 
@@ -3899,6 +3972,7 @@ class PhoneService : Service() {
                     "timestamp" to timestamp
                 )
                 if (icon != null) data["icon"] = icon  // only include if available
+                ForwardDiag.notifForwarded()
                 if (n.backfill) {
                     // P4 (i) — the shape Forge-T froze on the web side, and it
                     // is byte-for-byte: {type:'PHONE_NOTIFICATION',
@@ -4319,7 +4393,49 @@ class PhoneService : Service() {
         }, 3_000L)
     }
 
-    fun connectToRelay(relayUrl: String) {
+    /**
+     * Dial the relay, unless [RelayDialPolicy] says the current socket must
+     * be kept (vc70 P4): an OPEN socket with fresh life to the same URL is
+     * never torn down, and a dial already in flight is never doubled.
+     *
+     * @param trigger our own call-site label, for DiagLog only.
+     * @param networkLost P1: the socket's network is gone; dial even if the
+     *        library still reports it open.
+     * @return the decision taken.
+     */
+    fun connectToRelay(
+        relayUrl: String,
+        trigger: String = "direct",
+        networkLost: Boolean = false,
+    ): RelayDialPolicy.Decision = synchronized(dialLock) {
+        val c = client
+        val now = System.currentTimeMillis()
+        val decision = RelayDialPolicy.decide(
+            RelayDialPolicy.State(
+                hasClient = c != null,
+                sameUrl = c != null && clientRelayUrl == relayUrl,
+                isOpen = c?.isOpen == true,
+                isConnecting = c != null && !c.isOpen && !c.isClosing && !c.isClosed,
+                lastAliveAtMs = c?.lastAliveAtMs ?: 0L,
+                dialStartedAtMs = dialStartedAtMs,
+                nowMs = now,
+                connectTimeoutMs = connectTimeoutMs,
+                boundNetworkLost = networkLost,
+            )
+        )
+        if (decision != RelayDialPolicy.Decision.DIAL) {
+            android.util.Log.d("PhoneService", "connectToRelay skipped: ${decision.key} (trigger=$trigger)")
+            DiagLog.counter(decision.key)
+            DiagLog.d("PhoneService", "${decision.key} trigger=$trigger")
+            return@synchronized decision
+        }
+        dialStartedAtMs = now
+        boundNetworkLost = false
+        dialNow(relayUrl)
+        decision
+    }
+
+    private fun dialNow(relayUrl: String) {
         android.util.Log.d("PhoneService", "Connecting to relay: $relayUrl")
         clientRelayUrl = relayUrl
         lastRelayUrlAttempt = relayUrl
@@ -4408,6 +4524,13 @@ class PhoneService : Service() {
                     // (No backoff counter to reset in v18 — fixed 5s
                     // delay is stateless.)
                     cancelConnectTimeout()
+                    // vc70 P1: remember which network this socket rides, so a
+                    // later onLost for THAT network forces a re-dial.
+                    try {
+                        client?.takeIf { it.isOpen }?.boundNetwork =
+                            getSystemService(android.net.ConnectivityManager::class.java)?.activeNetwork
+                    } catch (_: Exception) {
+                    }
                     setRelayPhase(RelayPhase.OPEN)
                 } else {
                     if (relayPhase != RelayPhase.FAILED) {
@@ -4501,6 +4624,60 @@ class PhoneService : Service() {
         connectTimeoutHandler.postDelayed(timeoutRunnable, connectTimeoutMs)
     }
 
+    // ------------------------------------------------ vc70 P1 (network change)
+
+    /**
+     * Listen for default-network changes (wifi <-> cellular, wifi off/on) so a
+     * dead socket is re-dialed within ~1 s instead of waiting for the ping
+     * timeout plus the 5 s lobby timer. ACCESS_NETWORK_STATE is already
+     * declared; no manifest change.
+     */
+    private fun registerNetworkCallback() {
+        if (netCallback != null) return
+        val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                netRedialDebouncer.onEvent(lost = false)
+            }
+
+            override fun onLost(network: android.net.Network) {
+                if (client?.boundNetwork == network) boundNetworkLost = true
+                netRedialDebouncer.onEvent(lost = true)
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(cb)
+            netCallback = cb
+        } catch (e: Exception) {
+            // SecurityException / TooManyRequestsException: the relay still
+            // recovers through the ping timeout and the lobby timer.
+            DiagLog.w("PhoneService", "net callback register failed cls=${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        netRedialDebouncer.cancel()
+        val cb = netCallback ?: return
+        netCallback = null
+        try {
+            getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(cb)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** The debounced end of a network-callback burst (main thread). */
+    private fun onNetworkSettled(lost: Boolean) {
+        val url = clientRelayUrl ?: return // signed out / user disconnected
+        if (TokenStore.isUserStayedDisconnected(this)) return
+        // 4401 = token rejected; a new network does not fix a bad token.
+        if (lastConnectionError?.first == 4401) return
+        val decision = connectToRelay(url, trigger = "net", networkLost = boundNetworkLost)
+        if (decision == RelayDialPolicy.Decision.DIAL) {
+            DiagLog.counter("net_redial")
+            DiagLog.d("PhoneService", "net_redial lostEvent=$lost")
+        }
+    }
+
     /**
      * Round 5 — cancel any scheduled connect-timeout watchdog.
      *
@@ -4574,7 +4751,7 @@ class PhoneService : Service() {
                 return@Runnable
             }
             android.util.Log.d("PhoneService", "Lobby reconnect firing")
-            connectToRelay(url)
+            connectToRelay(url, trigger = "lobby_timer")
         }
         reconnectRunnable = task
         reconnectHandler.postDelayed(task, lobbyReconnectDelayMs)
@@ -5261,7 +5438,11 @@ class PhoneService : Service() {
                     // P4 (i): the shade as it stands right now. Dennis: "when
                     // we sync phone, it should fetch all notifications that
                     // currently are visible on the phone as well."
-                    backfillNotifications("PAIRING_ACTIVE")
+                    // vc70 T3: on an encrypted pair whose code is still
+                    // pending this DEFERS (the gate would drop every frame);
+                    // the SAS-confirm edge runs it. Plain pairs run here.
+                    ForwardDiag.line("PAIRING_ACTIVE edge sasPending=$e2eSasPending")
+                    backfillNotifications(BackfillGate.Trigger.ACTIVE)
                 }
                 "PAIRING_TERMINATED" -> {
                     val reason = (payload?.get("reason") as? String).orEmpty()
@@ -5638,7 +5819,7 @@ class PhoneService : Service() {
                  * behaviour exactly.
                  */
                 "GET_NOTIFICATIONS" -> {
-                    backfillNotifications("GET_NOTIFICATIONS")
+                    backfillNotifications(BackfillGate.Trigger.WEB_REQUEST)
                 }
                 "PING" -> {
                     android.util.Log.d("PhoneService", "PING received, sending PONG")
@@ -6031,6 +6212,10 @@ class PhoneService : Service() {
         // service death mid-transfer is exactly the case resume exists for,
         // and the .part plus its resume record must survive it.
         tearDownFileTransfer()
+
+        // vc70 P1: no network callback may outlive the service (it would dial
+        // from a dead instance).
+        unregisterNetworkCallback()
 
         super.onDestroy()
 

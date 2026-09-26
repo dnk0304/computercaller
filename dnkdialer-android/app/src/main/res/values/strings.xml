@@ -462,7 +462,7 @@
          ALWAYS encrypted in transit; the switch only adds the code check. The
          old "Scramble messages and call details in transit" implied OFF meant
          unscrambled. Draft: Pixel/Pilot review the final words before the cut. -->
-    <string name="row_encrypted_mode_sub">Always encrypted in transit. On adds a one-time code check that proves no one is in the middle.</string>
+    <string name="row_encrypted_mode_sub">Always encrypted. Turn on to also match a code on both screens, so you know it\'s really your computer.</string>
     <!-- Shown while no computer has advertised support. "Waiting", not
          "unsupported": we have not heard, and that is not evidence of absence. -->
     <string name="settings_encrypted_mode_waiting">Waiting for a computer that supports encrypted mode.</string>

@@ -13,8 +13,8 @@ import android.app.Notification
  * builder — one serializer, not two.* Two copies of a notification filter drift
  * within a release, and they drift silently, because the symptom is a
  * notification that appears on one path and not the other and nobody can say
- * which behaviour was intended. So the category/package rule and the
- * ongoing-exclusion live HERE, and `onNotificationPosted`,
+ * which behaviour was intended. So the noise denylist (vc70 item 7) lives
+ * HERE, and `onNotificationPosted`,
  * `onNotificationRemoved` and the backfill sweep all call [isForwardable].
  *
  * Everything in this file is pure: no Context, no framework lookup, no
@@ -34,55 +34,115 @@ object NotificationBackfill {
     const val CAP = 50
 
     /**
-     * Categories forwarded to the web client. Anything outside this set is
-     * dropped unless the package is in [ALWAYS_ALLOW_PACKAGES] — keeps the
-     * strip focused on communication and silences the long tail of
-     * system/promo/transactional noise.
-     */
-    val ALLOWED_CATEGORIES: Set<String> = setOf(
-        Notification.CATEGORY_MESSAGE,   // WhatsApp, Telegram, SMS, RCS, Discord, Messenger
-        Notification.CATEGORY_SOCIAL,    // Instagram, Twitter/X, Snapchat, LinkedIn
-        Notification.CATEGORY_EMAIL,     // Gmail, Outlook
-        Notification.CATEGORY_CALL,      // Call notifications from any app
-    )
-
-    /**
-     * Packages that post messaging-style notifications without setting a
-     * CATEGORY_* value. Bypasses the category filter.
-     */
-    val ALWAYS_ALLOW_PACKAGES: Set<String> = setOf(
-        "com.whatsapp",
-        "org.telegram.messenger",
-        "com.viber.voip",
-        "com.discord",
-        "com.facebook.orca",                  // Messenger
-        "com.instagram.android",              // Instagram DMs
-        "com.google.android.apps.messaging",  // Google Messages (SMS/RCS)
-        "com.samsung.android.messaging",      // Samsung Messages
-    )
-
-    /**
-     * The whole filter, in one place.
+     * vc70 item 7 — the forwarding filter is a NOISE DENYLIST.
      *
-     * @param flags `notification.flags`; FLAG_ONGOING_EVENT is excluded.
-     *        Ongoing notifications are progress bars, media players, navigation
-     *        and foreground-service stickies — state displays, not events. On
-     *        the LIVE path forwarding them spams the client on every progress
-     *        tick; on the BACKFILL path they are exactly the entries that would
-     *        make a freshly-paired shade look like junk, since they are the
-     *        ones that are always present.
-     * @param isSelf true for our own package, which is never forwarded.
+     * It used to be an allowlist (4 categories + 8 packages). A bank alert
+     * carries no category and its package was on no list, so it was dropped
+     * silently — which contradicted the mirror's own promise ("forward EVERY
+     * notification", PhoneService) and nothing on the phone said why. Now
+     * everything forwards unless it is one of the few shapes that are state
+     * displays or plumbing rather than events.
      */
+    val NOISE_CATEGORIES: Map<String, DropReason> = mapOf(
+        Notification.CATEGORY_PROGRESS to DropReason.CATEGORY_PROGRESS,
+        Notification.CATEGORY_TRANSPORT to DropReason.CATEGORY_TRANSPORT,
+        Notification.CATEGORY_SERVICE to DropReason.CATEGORY_SERVICE,
+        Notification.CATEGORY_SYSTEM to DropReason.CATEGORY_SYSTEM,
+    )
+
+    /**
+     * Why a notification was not forwarded. [key] is the DiagLog counter
+     * suffix (`notif.drop.<key>`) — an enum name, never notification content.
+     */
+    enum class DropReason(val key: String) {
+        NO_PACKAGE("no_package"),
+        OWN_PACKAGE("own_pkg"),
+        ONGOING("ongoing"),
+        GROUP_SUMMARY("group_summary"),
+        CATEGORY_PROGRESS("category_progress"),
+        CATEGORY_TRANSPORT("category_transport"),
+        CATEGORY_SERVICE("category_service"),
+        CATEGORY_SYSTEM("category_system"),
+        /** No title AND no body — nothing to show. Logged, never silent. */
+        EMPTY("empty"),
+        /** The platform handed us an sbn with no Notification / extras. */
+        MALFORMED("malformed"),
+    }
+
+    /** The only facts the filter reads. No Android types, so it runs on the JVM. */
+    data class Facts(
+        val packageName: String?,
+        val category: String?,
+        val flags: Int,
+        val isSelf: Boolean,
+    )
+
+    /**
+     * The whole filter, in one place: null = forward, else the drop reason.
+     *
+     * Drop = own package | FLAG_ONGOING_EVENT | FLAG_GROUP_SUMMARY | category in
+     * [NOISE_CATEGORIES]. Everything else forwards, including no category and
+     * packages nobody has heard of.
+     *
+     * Ongoing: progress bars, media players, navigation and foreground-service
+     * stickies — on the live path they spam every tick; on the backfill they
+     * are the entries that are always present. Group summary: the bundle
+     * header an app posts NEXT TO the real child notification; forwarding it
+     * put a second card beside every grouped message.
+     */
+    @JvmStatic
+    fun dropReason(f: Facts): DropReason? {
+        if (f.packageName == null) return DropReason.NO_PACKAGE
+        if (f.isSelf) return DropReason.OWN_PACKAGE
+        if (f.flags and Notification.FLAG_ONGOING_EVENT != 0) return DropReason.ONGOING
+        if (f.flags and Notification.FLAG_GROUP_SUMMARY != 0) return DropReason.GROUP_SUMMARY
+        return f.category?.let { NOISE_CATEGORIES[it] }
+    }
+
+    /** Boolean form of [dropReason]; the signature the RULE 30 vectors pin. */
     @JvmStatic
     fun isForwardable(
         packageName: String?,
         category: String?,
         flags: Int,
         isSelf: Boolean,
-    ): Boolean {
-        if (packageName == null || isSelf) return false
-        if (flags and Notification.FLAG_ONGOING_EVENT != 0) return false
-        return category in ALLOWED_CATEGORIES || packageName in ALWAYS_ALLOW_PACKAGES
+    ): Boolean = dropReason(Facts(packageName, category, flags, isSelf)) == null
+
+    /**
+     * T2 — the title a forwarded notification is shown under. A null or blank
+     * title is never a reason to drop (a bank alert may carry only a body):
+     * fall back to the app label, then to the package name. Returns null only
+     * when title AND body are both empty — the caller drops that as [DropReason.EMPTY].
+     */
+    @JvmStatic
+    fun resolveTitle(
+        rawTitle: String?,
+        body: String,
+        packageName: String,
+        appLabel: () -> String?,
+    ): String? {
+        if (!rawTitle.isNullOrBlank()) return rawTitle
+        if (body.isBlank()) return null
+        val label = try { appLabel() } catch (t: Throwable) { null }
+        return if (label.isNullOrBlank()) packageName else label
+    }
+
+    /**
+     * SHA-256(packageName), first 8 hex, printed as `xxxx_xxxx`. The package
+     * name itself is never logged (a bank's package is a fact about the user).
+     *
+     * Why the underscore: [Redact] rewrites any run of 7+ digits into
+     * `num:<hash>`, and 8 hex characters are all-digit or hold a 7-digit run
+     * for ~5 % of packages. Splitting at 4 keeps every digit run under 7, so
+     * the handle Ken matches against survives the export for every package.
+     */
+    @JvmStatic
+    fun pkgHash(packageName: String): String {
+        val d = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(packageName.toByteArray(Charsets.UTF_8))
+        val hex = StringBuilder(8)
+        for (i in 0 until 4) hex.append(String.format("%02x", d[i]))
+        return hex.substring(0, 4) + "_" + hex.substring(4, 8)
     }
 
     /**
