@@ -208,6 +208,65 @@ eq('mode on but state unencrypted is NOT sealed', pairTruth(V({ mode: 'on', stat
   check('SAS: a surface mounted mid-pair is not stuck hidden (primed settled)', sasScreenApplies(first, pend, true, true));
 }
 
+// ── 9b. Forge's arm-18 sequence (deploy/18 gate, 2026-09-26) ────────────────
+// Sealed mode-0 pair -> E2E_PREF push rev2 on the LIVE pair -> PAIRING_TERMINATED
+// (onPairEnded publishes a fresh initial view) -> PAIRING_ACTIVE for the next
+// pair (lobby active before the async accept) -> accept publishes. The gate's
+// red was NOT this tracker: its second pair reused pairEpoch 1n, useE2e's
+// epoch floor refused it (e2e-epoch-replayed), no pair ever came up, and
+// "Switching…" was the truth. These vectors pin both outcomes.
+{
+  const walk = (acceptView) => {
+    let t = initialSwitchTrack();
+    const out = [];
+    const oldPair = M1_OFF();
+    const initAfterEnd = MODE0();
+    const seq = [
+      { prefSig: '1|off|0', writePhase: 'idle', pairActive: true, view: oldPair },
+      { prefSig: '2|on|0', writePhase: 'idle', pairActive: true, view: oldPair },
+      { prefSig: '2|on|0', writePhase: 'idle', pairActive: false, view: initAfterEnd },
+      { prefSig: '2|on|0', writePhase: 'idle', pairActive: true, view: initAfterEnd },
+      { prefSig: '2|on|0', writePhase: 'idle', pairActive: true, view: acceptView },
+    ];
+    let idem = true;
+    seq.forEach((inp, i) => {
+      const once = nextSwitchTrack(t, { ...inp, now: 1000 + i });
+      if (!sameTrack(once, nextSwitchTrack(once, { ...inp, now: 1000 + i }))) idem = false;
+      t = once;
+      out.push({ key: connectionTruth(t, inp.view, inp.pairActive)?.key ?? null, sas: sasScreenApplies(t, inp.view, inp.pairActive, sasIsBlocking(inp.view)) });
+    });
+    return { t, out, idem };
+  };
+  const on = walk(M1_ON_PENDING());
+  eq('arm18 mode=1: no-code-check, switching x3, then the new pair label',
+    on.out.map((o) => o.key), ['no-code-check', 'switching', 'switching', 'switching', 'no-code-check']);
+  check('arm18 mode=1: SAS screen applies once the new sealed pair publishes', on.out[4].sas);
+  check('arm18 mode=1: SAS never applies while switching', on.out.slice(1, 4).every((o) => !o.sas));
+  check('arm18 mode=1: switch ended, track idempotent at every step', !on.t.switching && on.idem);
+  const off = walk(MODE0());
+  eq('arm18 mode=0: the new unsealed pair resolves to "Standard (TLS)"', off.out[4].key, 'standard');
+  check('arm18 mode=0: no SAS screen on an unsealed pair', !off.out[4].sas);
+  check('arm18 mode=0: idempotent', off.idem);
+
+  // The gate's actual run: the replayed-epoch pair is refused. The lobby may
+  // blink active, the accept fails with state:error, the pair is abandoned.
+  let t = initialSwitchTrack();
+  const oldPair = M1_OFF();
+  const init = MODE0();
+  t = nextSwitchTrack(t, { prefSig: '1|off|0', writePhase: 'idle', pairActive: true, view: oldPair, now: 0 });
+  t = nextSwitchTrack(t, { prefSig: '2|on|0', writePhase: 'idle', pairActive: true, view: oldPair, now: 10 });
+  t = nextSwitchTrack(t, { prefSig: '2|on|0', writePhase: 'idle', pairActive: false, view: init, now: 20 });
+  const refused = ERR();
+  t = nextSwitchTrack(t, { prefSig: '2|on|0', writePhase: 'idle', pairActive: false, view: refused, now: 30 });
+  eq('refused next pair (epoch replay): still "Switching…" - no new pair exists', connectionTruth(t, refused, false)?.key, 'switching');
+  check('refused next pair: no SAS screen', !sasScreenApplies(t, refused, false, true));
+  t = nextSwitchTrack(t, { prefSig: '2|on|0', writePhase: 'idle', pairActive: false, view: refused, now: 10 + SWITCH_MAX_MS - 1 });
+  check('refused next pair: switching until just before the 30 s cap', t.switching);
+  t = nextSwitchTrack(t, { prefSig: '2|on|0', writePhase: 'idle', pairActive: false, view: refused, now: 10 + SWITCH_MAX_MS + 1 });
+  check('refused next pair: the 30 s give-up still fires', !t.switching);
+  eq('...and then it is not ours to say (no pair)', connectionTruth(t, refused, false), null);
+}
+
 // ── 10. copy + wiring pins ──────────────────────────────────────────────────
 check('setting description: no longer "Scrambles"', !/Scrambl/i.test(SETTING_DESCRIPTION), SETTING_DESCRIPTION);
 check('setting description: always encrypted + one-time code', /always encrypted/i.test(SETTING_DESCRIPTION) && /one-time code/i.test(SETTING_DESCRIPTION));
