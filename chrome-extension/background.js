@@ -2657,7 +2657,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     refreshIndicator();
     try { chrome.storage.session.set({ [UNREAD_KEY]: { ...UNREAD_ZERO }, [ALERT_KEYS]: [] }); } catch (_) {}
     // Item 8: the account's read marks go at the identity boundary too.
-    try { chrome.storage.session.remove(ALERT_READ); } catch (_) {}
+    try { chrome.storage.session.remove(ALERT_READ); } catch { /* best effort */ }
     // BAT-A1 MUST-3 / §13.8: the battery reading goes with the counters. It is
     // another user's device telemetry the moment a different account signs in
     // on this profile, and a stale "47%" under a new user's phone name is a
