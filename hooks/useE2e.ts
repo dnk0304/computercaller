@@ -74,7 +74,6 @@ import {
   type DeviceKeyForAccept,
   E2E_VIEW_INITIAL,
   readAcceptBlock,
-  readEncryptedMode,
   readSwKey,
   sasCoverage,
   swKeyGuardVerdict,
@@ -93,7 +92,6 @@ import {
   pairEndedErrorForReason,
   viewAfterSasConfirmed,
   withRelayAbortAccepted,
-  writeEncryptedMode,
   type E2eError,
   type E2eView,
   type LocalMode,
@@ -101,6 +99,8 @@ import {
   type RevocationVerdict,
   type SwKeyResult,
 } from './phoneE2e';
+import { useAccountE2ePref, wipeAccountPrefOnSignOut } from '@/lib/e2eAccountPref';
+import { advertisedMode } from '@/lib/e2eAccountPref-core';
 import {
   isMalformedRelayMark, isRelayMintedAbort,
 } from '@/lib/fileTransfer/relayAbort.ts';
@@ -284,8 +284,13 @@ export async function fetchSessionUserId(signal?: AbortSignal): Promise<string |
 export interface E2eApi {
   /** The view-model P5a renders. Stable shape; see E2eView. */
   e2e: E2eView;
+  /**
+   * T-E2E-ACCOUNT-PREF step 3: what this computer ADVERTISES — the account's
+   * resolved `effective` (lib/e2eAccountPref.ts), no longer a local switch.
+   * Read-only here; the account value is changed through the confirm flow in
+   * components/EncryptedModeToggle.tsx, which resets both sides.
+   */
   localMode: LocalMode;
-  setLocalMode(mode: LocalMode): void;
   /** (b) — the `e2e` block for BROWSER_REQUEST_PAIRING, or null to pair in the clear. */
   buildRequestE2e(): Promise<RequestBlock | null>;
   /** (c)+(d) — returns true when the caller must LEAVE_ACTIVE and abandon the pair. */
@@ -340,31 +345,29 @@ export interface E2eApi {
 }
 
 /**
- * `email` is optional: when the caller does not have it (usePhoneBridge does
- * not), the hook reads it once from /api/auth/me — the same probe useIsAdmin
- * uses. It is needed only to key the per-device setting per account, which
- * matters because a shared browser profile is the normal case for this product
- * and one person's choice of encrypted mode must not follow the next person
- * into the same popup (the lib/extensionTheme.ts precedent).
+ * The Encrypted-mode input is the ACCOUNT value (T-E2E-ACCOUNT-PREF step 3):
+ * `localMode` is the resolved `effective` from lib/e2eAccountPref.ts — the
+ * mirror before the first authoritative value, the server's after. The old
+ * per-device, email-keyed switch is read once more by that store for the seed
+ * migration and is otherwise gone; there is no second source of truth here.
  */
-export function useE2e(emailProp?: string | null): E2eApi {
+export function useE2e(): E2eApi {
   const [view, setView] = useState<E2eView>(E2E_VIEW_INITIAL);
-  const [localMode, setLocalModeState] = useState<LocalMode>('off');
-  const [fetchedEmail, setFetchedEmail] = useState<string | null>(null);
-  const email = emailProp ?? fetchedEmail;
+  const accountPref = useAccountE2ePref();
+  const localMode: LocalMode = advertisedMode(accountPref.mirror);
 
-  useEffect(() => {
-    if (emailProp !== undefined && emailProp !== null) return undefined;
-    const controller = new AbortController();
-    fetch('/api/auth/me', { signal: controller.signal, credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.user?.email) setFetchedEmail(String(d.user.email)); })
-      .catch(() => {
-        // Signed out, offline, or aborted. The setting falls back to the anon
-        // key, which defaults OFF — the safe direction.
-      });
-    return () => controller.abort();
-  }, [emailProp]);
+  // Turning Encrypted mode OFF is one of the explicit user acts that clears a
+  // showing error (unchanged from P2): the user has answered the refusal by
+  // deciding not to ask for encryption. With the account setting the act is
+  // the confirmed write, so it is observed as the advertised mode dropping to
+  // OFF. Turning it ON does NOT clear — the previous refusal is still the last
+  // thing that happened. "Adjust state during render", not an effect.
+  const [prevLocalMode, setPrevLocalMode] = useState<LocalMode>(localMode);
+  if (prevLocalMode !== localMode) {
+    const mode = localMode;
+    setPrevLocalMode(mode);
+    if (mode === 'off') setView(viewAfterErrorDismissed);
+  }
 
   // SK and everything derived from it live in a ref — module/closure memory
   // only. Never in state that could be serialised into a devtools snapshot, and
@@ -436,25 +439,6 @@ export function useE2e(emailProp?: string | null): E2eApi {
   /** One store instance for the life of the hook, so the floor write and the
    *  key read cannot end up on two different IndexedDB handles. */
   const keyStoreRef = useRef<WebKeyStore>(indexedDbWebKeyStore());
-
-  useEffect(() => {
-    setLocalModeState(readEncryptedMode(email));
-  }, [email]);
-
-  const setLocalMode = useCallback((mode: LocalMode) => {
-    // The setting is a REQUEST for the next pairing, not a switch on the
-    // current one: C-1 latches effective mode for the life of a pair, so
-    // turning it off mid-pair must not downgrade live traffic. `view.mode`
-    // therefore only ever changes at an accept.
-    writeEncryptedMode(email, mode);
-    setLocalModeState(mode);
-    // Turning encrypted mode OFF is one of the explicit user acts that clears a
-    // showing error: the user has answered the refusal by deciding not to ask
-    // for encryption, and leaving the banner up would be arguing with them.
-    // Turning it ON does NOT clear — the previous refusal is still the last
-    // thing that happened, and the next accept will clear it or repeat it.
-    if (mode === 'off') setView(viewAfterErrorDismissed);
-  }, [email]);
 
   // ── the extension bridge: P3 emits, P2 consumes (agreed via Ken) ─────────
   //
@@ -1334,6 +1318,12 @@ export function useE2e(emailProp?: string | null): E2eApi {
       void clearEpochFloors({ store: keyStoreRef.current, key }).catch(() => {});
     }
     keyRef.current = null;
+
+    // Security M1 (T-E2E-ACCOUNT-PREF): the account's Encrypted-mode mirror,
+    // its last rev and the legacy local switch go with the session, so the
+    // next account signed in on this profile inherits neither the mode nor a
+    // rev that would make its own pushes look stale.
+    wipeAccountPrefOnSignOut();
   }, []);
 
   /**
@@ -1408,11 +1398,11 @@ export function useE2e(emailProp?: string | null): E2eApi {
   }, []);
 
   return useMemo(() => ({
-    e2e: view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
+    e2e: view, localMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
     dismissError, recheckPinnedKey, revokeLocalPair, noteRelayAbortAccepted,
     confirmSas,
-  }), [view, localMode, setLocalMode, buildRequestE2e, onPairingActive,
+  }), [view, localMode, buildRequestE2e, onPairingActive,
     onE2eUnavailable, sealOutbound, openInbound, onSignOut, onPairEnded,
     dismissError, recheckPinnedKey, revokeLocalPair, noteRelayAbortAccepted,
     confirmSas]);

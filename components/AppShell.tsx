@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { EncryptionChip, EncryptionBanner } from '@/components/EncryptionStatus';
+import { EncryptedModeNotice } from '@/components/EncryptedModeNotice';
 import { SasConfirmDialog } from '@/components/SasConfirmDialog';
 import { PhoneStatusButton } from '@/components/PhoneStatusButton';
 import { ProfileMenu } from '@/components/ProfileMenu';
@@ -264,6 +265,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             affect where it paints — it is mounted here so the dashboard gets
             the blocking step too, not only Phone Mode. */}
         <EncryptionBanner />
+        {/* T-E2E-ACCOUNT-PREF: the one-time "changed from <device>" notice. */}
+        <EncryptedModeNotice />
         <SasConfirmDialog />
 
         {/* Incoming-call queue band (Pixel, 2026-06-11). Sits BETWEEN the

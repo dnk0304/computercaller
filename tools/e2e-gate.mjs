@@ -628,6 +628,14 @@ const MIN_CHECKS_OVERRIDE = {
   // sweep, so what it needs here is the FLOOR. Measured at the commit that adds
   // it: 184.
   'relay:e2e-pref-contract.test.mjs': 184,
+  // T-E2E-ACCOUNT-PREF step 3 (web + extension). tests/e2e-account-pref-web.test.mjs
+  // drives the REAL lib/e2eAccountPref-core.ts: M1 mirror keying + sign-out wipe
+  // + sign-in sweep, the rev drop (incl. the equal-rev master-switch case), the
+  // notice rules, seed-once, the write status map, the §8 LOCKED copy, and
+  // source pins over the binders (E2E_PREF routing, ext write header-only).
+  // Planted red: rev<= drop (8 fails), seed on local OFF (3), shared mirror
+  // key (10). Measured at the commit that adds it: 129.
+  'relay:e2e-account-pref-web.test.mjs': 129,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job
