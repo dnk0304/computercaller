@@ -25,6 +25,8 @@ import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 import { useE2e } from './useE2e';
 // P2.3 (a)+(b): the ORDER of a revoking teardown, pure and node-testable.
 import { runRevokingTeardown } from '@/lib/e2e/signOutEverywhere';
+// T-E2E-ACCOUNT-PREF step 3: the account Encrypted-mode store (pushes + 4010).
+import { applyE2ePrefPush, noteRelayRoomReset } from '@/lib/e2eAccountPref';
 import { clearThreadReadStateForCurrentUser } from '@/hooks/useThreadReadState';
 import { setNotificationIcon, clearNotificationIcons } from '@/lib/notifIconStore';
 import { useFileTransfer } from './useFileTransfer';
@@ -1394,6 +1396,17 @@ export function usePhoneBridge() {
         } else {
           console.log('[PhoneBridge] RESET_ROOM acked — close 4010 imminent');
         }
+        break;
+      }
+      // T-E2E-ACCOUNT-PREF step 3. The account's resolved Encrypted-mode value,
+      // pushed by the relay on every connect and after every accepted write
+      // (DESIGN §4). All of the rules — the rev drop, the notice, the mirror —
+      // live in lib/e2eAccountPref; this case only hands the payload over.
+      // E2E_PREF_REFUSED is a PHONE-socket frame and is deliberately not
+      // handled: if one ever reached a browser it falls to the default branch
+      // like any unknown frame.
+      case 'E2E_PREF': {
+        applyE2ePrefPush(payload);
         break;
       }
       case 'ROOM_RESET': {
@@ -3195,6 +3208,10 @@ export function usePhoneBridge() {
         // the user sees "Waiting for phone…" briefly, then Connect.
         if (code === RESET_CLOSE_CODE || reason === 'room_reset') {
           console.log('[PhoneBridge] Close 4010 (room_reset) — reconnecting immediately, backoff not penalised.');
+          // An Encrypted-mode change resets the room on purpose (DESIGN §4). The
+          // account store keeps "Reconnecting in <mode>…" up until the
+          // on-connect E2E_PREF of the NEXT socket arrives.
+          noteRelayRoomReset();
           reconnectDelayRef.current = RECONNECT_BASE_MS;
           setLobbyState('lobby');
           setLastBrowserRequest(null);
@@ -5042,11 +5059,12 @@ export function usePhoneBridge() {
     setSim,
 
     // E2E-P2 (g). The encrypted-mode view-model P5a's brief is written from,
-    // plus the per-device setting. `e2e.state` is the single thing the UI
-    // switches on; `e2e.debug` is for diagnostics and never for the user.
+    // plus the advertised mode (T-E2E-ACCOUNT-PREF: the ACCOUNT value; it is
+    // changed only through the confirm flow, so there is no setter here).
+    // `e2e.state` is the single thing the UI switches on; `e2e.debug` is for
+    // diagnostics and never for the user.
     e2e: e2eApi.e2e,
     e2eLocalMode: e2eApi.localMode,
-    setE2eLocalMode: e2eApi.setLocalMode,
     // E2E-P2.1: the explicit user act that clears a sticky encryption error.
     dismissE2eError: e2eApi.dismissError,
     // E2E-P6.1c (2a) / SPEC 12.2. The blocking short-code answer.

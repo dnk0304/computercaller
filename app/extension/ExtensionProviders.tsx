@@ -31,6 +31,7 @@ import { IdleTimeoutGuard } from '@/components/IdleTimeoutGuard';
 import { ExtPointerFocus } from '@/components/ExtPointerFocus';
 import { KickedSessionGate } from '@/components/KickedSessionGate';
 import { requestSignOut } from '@/lib/extensionBridge';
+import { wipeAccountPrefOnSignOut } from '@/lib/e2eAccountPref';
 import { writeExtSignOutReason } from '@/lib/extensionSignOutReason';
 
 export function ExtensionProviders({ children }: { children: React.ReactNode }) {
@@ -96,6 +97,10 @@ export function ExtensionProviders({ children }: { children: React.ReactNode }) 
             <IdleTimeoutGuard
               onLogout={() => {
                 writeExtSignOutReason('idle');
+                // Security M1 — also run by signOutEverywhere's onSignOut
+                // before this; idempotent, and kept here so the idle path
+                // does not depend on that ordering.
+                wipeAccountPrefOnSignOut();
                 requestSignOut();
               }}
             />

@@ -157,7 +157,6 @@ const check = (name, pass, detail = '') => {
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
 };
 
-const EMAIL = process.env.CC_SHOT_EMAIL || 'dennis.kotlenko@gmail.com';
 
 // ---------------------------------------------------------------------------
 // B3 (INC-0923) — the sign-in markup cannot regress silently.
@@ -262,20 +261,39 @@ async function open({ route, width = 1280, height = 800, theme = 'light', mode =
   await page.route('**/api/auth/relay-ticket', (r) => r.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({ ticket: 'stub-ticket' }),
   }));
+  /*
+   * T-E2E-ACCOUNT-PREF step 3: Encrypted mode is an ACCOUNT value now, read
+   * from GET /api/prefs/e2e (lib/e2eAccountPref.ts). Served here per context,
+   * the same way the relay ticket is, so each case runs at the mode it names
+   * WITHOUT writing the shared test account's row — a real PUT/seed would
+   * leak one case's mode into the next run. Writes are refused (503) so a stray
+   * one is loud rather than silently persisted.
+   */
+  await page.route('**/api/prefs/e2e**', (r) => {
+    if (r.request().method() !== 'GET') {
+      return r.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"relay_unavailable"}' });
+    }
+    return r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ resolved: {
+        preference: mode, effective: mode, pausedByServer: false, rev: 1, updatedAt: null, updatedBy: null,
+      } }),
+    });
+  });
 
   // Seeded BEFORE any bundle runs. The key shape is phoneE2e.ts's
   // encryptedModeKey(): per-account, lower-cased — seeding the wrong key would
   // silently test the default instead of the setting, and pass.
   await page.addInitScript(
-    ({ m, e, t, z }) => {
+    ({ t, z }) => {
       try {
-        localStorage.setItem(`cc:e2e:${e.toLowerCase()}`, m);
         localStorage.setItem('cc_theme_last', t);
       } catch { /* blocked site data — the product must cope, so may the harness */ }
       document.documentElement.setAttribute('data-cc-theme', t);
       if (z !== 1) document.documentElement.style.zoom = String(z);
     },
-    { m: mode, e: EMAIL, t: theme, z: zoom },
+    { t: theme, z: zoom },
   );
   await page.addInitScript(makeBridgeStub(holdPairing));
   /*
@@ -288,7 +306,8 @@ async function open({ route, width = 1280, height = 800, theme = 'light', mode =
    * response cannot be missed.
    */
   page.__meResolved = false;
-  page.on('response', (r) => { if (r.url().includes('/api/auth/me')) page.__meResolved = true; });
+  // The account value (GET /api/prefs/e2e) is what the advert now waits on.
+  page.on('response', (r) => { if (r.url().includes('/api/prefs/e2e')) page.__meResolved = true; });
   // Keep the product's OWN e2e log lines. When a pairing is refused, the reason
   // is in the page console and nowhere else — the abort path then resets the
   // view (see the (c) banner arm), so the DOM cannot be asked afterwards. A
@@ -405,12 +424,13 @@ try {
     await ctx.close();
   }
 
-  // Persistence: the setting is read back from storage, per account.
+  // The switch renders the ACCOUNT value (T-E2E-ACCOUNT-PREF step 3).
   {
     const { ctx, page } = await open({ route: '/app/settings', mode: 'on' });
     const sw = page.locator('[data-cc-e2e-toggle="row"]').getByRole('switch');
     await appears(sw);
-    check('(a) a stored ON setting is read back and rendered ON',
+    for (let i = 0; i < 50 && (await sw.getAttribute('aria-checked')) !== 'true'; i++) await page.waitForTimeout(100);
+    check('(a) an account value of ON is rendered ON',
       (await sw.getAttribute('aria-checked')) === 'true');
     await ctx.close();
   }
