@@ -286,7 +286,7 @@ class E2eCopyTableTest {
         // vc70 ADDENDUM rev 5: Pilot COPY-REVIEW-PHONE-STATUS replacement ("proves
         // no one is in the middle" over-claimed; the code only helps if compared).
         assertEquals(
-            "Always encrypted. Turn on to also match a code on both screens, so you know it's really your computer.",
+            "Always encrypted in transit. Turn on to also match a code on both screens, so you know it's really your computer.",
             sub
         )
         assertFalse("the old subtitle implied OFF = unscrambled", sub.contains("Scramble", true))
