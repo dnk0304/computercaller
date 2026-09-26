@@ -59,6 +59,7 @@ import {
   sasSpokenLabel,
   encryptionIndicator,
 } from '../lib/encryptedModeCopy.ts';
+import { CONN_TRUTH_LABELS } from '../lib/connectionTruth.ts';
 
 const DEV = process.env.DEV_URL || 'http://localhost:3123';
 
@@ -148,8 +149,11 @@ fs.mkdirSync(SHOTS, { recursive: true });
  * what the tip measures, never less: 371, measured on gate-P5A-eca4b73 (web,
  * 371/371, leaked 0). A lane that finds it shy of 371 has a truncation to
  * explain, not a floor to lower.
+ *
+ * #18 CONN-STATUS (2026-09-26) raised it 371 -> 391 by exactly the 20 its arm
+ * adds: 10 per surface (/app, /extension), all unconditional.
  */
-export const MIN_CHECKS = 371;
+export const MIN_CHECKS = 391;
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -986,8 +990,12 @@ try {
     check('(b0) the /app header renders the encryption chip for this pair', chipThere, why);
     const chipLabel = chipThere ? await chip.getAttribute('data-cc-e2e-label') : null;
     const chipTone = chipThere ? await chip.getAttribute('data-cc-e2e-chip') : null;
-    check('(b0) the header says "Encrypted, unverified" — sealed, and honest about it',
-      chipLabel === unverified.label, `${String(chipLabel)} | ${why}`);
+    // #18 CONN-STATUS: with a live pair the chip names the CURRENT pair
+    // (lib/connectionTruth.ts). A sealed pair nobody verified is "Encrypted, no
+    // code check" — same truth as the old "Encrypted, unverified", in the words
+    // the phone uses.
+    check('(b0) the header says "Encrypted, no code check" — sealed, and honest about it',
+      chipLabel === CONN_TRUTH_LABELS['no-code-check'], `${String(chipLabel)} | ${why} | pre-#18 label ${unverified.label}`);
     check('(b0) the padlock is drawn: this pair IS encrypted',
       chipThere && chipTone !== 'plain', `${String(chipTone)} | ${why}`);
 
@@ -1036,6 +1044,87 @@ try {
       (await page.locator('[data-cc-sas-open="true"]').count()) === 0);
     await shot(page, 'b0-app-sas-mode0-unverified-1280');
     await ctx.close();
+  }
+
+  // ═══ (18) CONN-STATUS — the header says what the CURRENT pair is ═════════
+  //
+  // Dennis 2026-09-26: no forced sign-out on a TLS<->encrypted switch; every
+  // surface shows the current pair truthfully. Walked on BOTH surfaces with
+  // the real hook: an unsealed pair ("Standard (TLS)"), a sealed 0/0 pair
+  // ("Encrypted, no code check"), an E2E_PREF push at a new rev ("Switching…
+  // reconnecting", held through the teardown), then a fresh mode-ON pair that
+  // resolves to the new mode ("Encrypted, codes checked" once the code is
+  // answered). Every check runs unconditionally: 10 per surface.
+  console.log('\n-- (18) connection status: current pair, switch, resolve --');
+  async function truthOf(page) {
+    const chip = page.locator('[data-cc-e2e-chip]').first();
+    if (!(await appears(chip, 15_000))) return { key: 'ABSENT', label: 'ABSENT', live: null };
+    return {
+      key: await chip.getAttribute('data-cc-conn-truth'),
+      label: await chip.getAttribute('data-cc-e2e-label'),
+      live: await chip.getAttribute('aria-live'),
+    };
+  }
+  for (const surf of [
+    { tag: 'app', route: '/app', width: 1280, height: 900 },
+    { tag: 'ext', route: '/extension', width: 400, height: 640 },
+  ]) {
+    // 1. unsealed pair: the stub auto-pairs with no e2e block at mode OFF.
+    {
+      const { ctx, page } = await open({ route: surf.route, width: surf.width, height: surf.height, mode: 'off' });
+      await settle(page, 2500);
+      const t = await truthOf(page);
+      check(`(18) [${surf.tag}] an unsealed pair reads "Standard (TLS)"`,
+        t.label === CONN_TRUTH_LABELS.standard, JSON.stringify(t));
+      check(`(18) [${surf.tag}] and never "Encrypted"`, !/^Encrypted/.test(String(t.label)), String(t.label));
+      await shot(page, `18-${surf.tag}-standard-tls-${surf.width}`);
+      await ctx.close();
+    }
+    // 2-4. sealed 0/0 -> push -> teardown -> fresh mode-ON pair.
+    {
+      const { ctx, page } = await open({ route: surf.route, width: surf.width, height: surf.height, mode: 'off', holdPairing: true });
+      await pairForReal(page, `pair-18-${surf.tag}-a`, { modeOn: false });
+      const a = await truthOf(page);
+      check(`(18) [${surf.tag}] a sealed pair with no code check says so`,
+        a.label === CONN_TRUTH_LABELS['no-code-check'], JSON.stringify(a));
+      await shot(page, `18-${surf.tag}-no-code-check-${surf.width}`);
+
+      await page.evaluate(() => window.__ccSend('E2E_PREF:' + JSON.stringify({
+        preference: 'on', effective: 'on', pausedByServer: false, rev: 2,
+        updatedAt: '2026-09-26T10:00:00Z', updatedBy: 'phone',
+      })));
+      await settle(page, 700);
+      const b = await truthOf(page);
+      check(`(18) [${surf.tag}] a pref push at a new rev reads "Switching… reconnecting"`,
+        b.label === CONN_TRUTH_LABELS.switching, JSON.stringify(b));
+      check(`(18) [${surf.tag}] the pill announces transitions politely`, b.live === 'polite', String(b.live));
+      await shot(page, `18-${surf.tag}-switching-${surf.width}`);
+
+      await page.evaluate(() => window.__ccSend('PAIRING_TERMINATED:' + JSON.stringify({ reason: 'room_reset' })));
+      await settle(page, 700);
+      const c = await truthOf(page);
+      check(`(18) [${surf.tag}] still "Switching…" while disconnected mid-switch`,
+        c.label === CONN_TRUTH_LABELS.switching, JSON.stringify(c));
+
+      const { req, built } = await pairForReal(page, `pair-18-${surf.tag}-b`, { modeOn: true });
+      check(`(18) [${surf.tag}] the next request advertises the NEW mode (ON)`,
+        req?.e2e?.mode === 1, req?.e2e ? `mode=${req.e2e.mode}` : 'no e2e block');
+      const d = await truthOf(page);
+      check(`(18) [${surf.tag}] the new pair resolves out of "Switching…" to its own label (code pending)`,
+        d.label === CONN_TRUTH_LABELS['no-code-check'], JSON.stringify(d));
+      const dialog = page.locator('[data-cc-sas-open="true"]');
+      const opened = built ? await appears(dialog, 8_000) : false;
+      check(`(18) [${surf.tag}] the code screen applies to the new mode-ON pair`, opened);
+      if (opened) {
+        await dialog.locator('[data-cc-sas-action="confirm"]').click({ timeout: 5000 }).catch(() => {});
+        await settle(page, 900);
+      }
+      const e = await truthOf(page);
+      check(`(18) [${surf.tag}] once the code is answered: "Encrypted, codes checked"`,
+        e.label === CONN_TRUTH_LABELS['codes-checked'], JSON.stringify(e));
+      await shot(page, `18-${surf.tag}-codes-checked-${surf.width}`);
+      await ctx.close();
+    }
   }
 
   // ═══ (c) the non-dismissable banner, on a REAL error state ═══════════════
