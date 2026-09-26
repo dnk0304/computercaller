@@ -48,6 +48,13 @@ object E2eAccountPrefController {
     @Volatile
     var promptListener: ((Boolean) -> Unit)? = null
 
+    /**
+     * vc70 item 10 (T2) — Home: the relay refused a SET_E2E_PREF, so the
+     * forced reset never happened. Called on the socket thread.
+     */
+    @Volatile
+    var setRefusedListener: (() -> Unit)? = null
+
     private val lock = Any()
 
     private fun prefs(ctx: Context) =
@@ -144,6 +151,7 @@ object E2eAccountPrefController {
             DiagLog.w(TAG, "E2E_PREF_REFUSED op=$op reason=$reason")
             run(ctx, step.effects)
         }
+        if (op == "set") setRefusedListener?.invoke()
     }
 
     // ------------------------------------------------------------ user acts

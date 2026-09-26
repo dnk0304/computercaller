@@ -156,42 +156,11 @@ class E2eModeRowCopyTest {
         )
     }
 
-    @Test
-    fun the_next_connection_caveat_appears_exactly_when_intent_and_fact_differ() {
-        // ON promises "encrypted, and you'll confirm a code" — so a live pair
-        // that is merely sealed, or not sealed at all, disagrees with it.
-        assertTrue(
-            E2eModeRowCopy.switchAgreesWithLiveMode(
-                true, E2eStatusCopy.State.ENCRYPTED_VERIFIED
-            )
-        )
-        assertFalse(
-            "switch ON over an unverified pair must carry the caveat",
-            E2eModeRowCopy.switchAgreesWithLiveMode(
-                true, E2eStatusCopy.State.ENCRYPTED_UNVERIFIED
-            )
-        )
-        assertFalse(
-            E2eModeRowCopy.switchAgreesWithLiveMode(true, E2eStatusCopy.State.PLAINTEXT)
-        )
-
-        // OFF over today's normal pair (the browser advertises mode 0, so the
-        // pair is ENCRYPTED_UNVERIFIED) is exactly what the user asked for.
-        assertTrue(
-            E2eModeRowCopy.switchAgreesWithLiveMode(
-                false, E2eStatusCopy.State.ENCRYPTED_UNVERIFIED
-            )
-        )
-        assertTrue(
-            E2eModeRowCopy.switchAgreesWithLiveMode(false, E2eStatusCopy.State.PLAINTEXT)
-        )
-        assertFalse(
-            "switch OFF over a verified pair must say the switch is about next time",
-            E2eModeRowCopy.switchAgreesWithLiveMode(
-                false, E2eStatusCopy.State.ENCRYPTED_VERIFIED
-            )
-        )
-    }
+    // vc70 item 10: `the_next_connection_caveat_appears_exactly_when_intent_and_fact_differ`
+    // is gone with the caveat (home_e2e_next_only). Since the vc69 switch
+    // resets the pair it described a "next connection" that no longer exists;
+    // the replacement behaviour (Switching… reconnecting, then the live truth)
+    // is pinned by PhoneStatusVectorsTest over tests/phone-status-vectors.json.
 
     @Test
     fun the_live_line_is_never_derived_from_the_switch() {

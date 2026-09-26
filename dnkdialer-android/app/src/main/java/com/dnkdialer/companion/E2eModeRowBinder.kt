@@ -23,20 +23,20 @@ import com.google.android.material.switchmaterial.SwitchMaterial
  * SettingsActivity carried before this refactor, moved in with the painter so
  * a third caller cannot forget it.
  *
- * ## Rule 2 — no new pairing behaviour
+ * ## Rule 2 — the switch resets the connection (vc69 account pref)
  *
- * Flipping persists the preference and says it applies to the next
- * connection. It does NOT disconnect, re-pair, or raise a SAS: the mode of a
- * live pair is latched at Accept (E2E-SPEC-v1.0 §13.1) and a mode that could
- * flip mid-pair would be a downgrade channel. That is today's Settings
- * behaviour, unchanged.
+ * A confirmed flip sends SET_E2E_PREF; the relay saves it and resets the room,
+ * so the pair re-forms under the new mode. The mode of a live pair is still
+ * latched at Accept (E2E-SPEC-v1.0 §13.1) — the reset is what moves it.
  *
  * ## Rule 3 — the live pair's mode sits next to the switch
  *
  * [livePairMode] is the honest-state input. When a pair is active the reason
- * line leads with what that pair ACTUALLY is, and adds the next-connection
- * caveat whenever the switch disagrees with it. Null means "no active pair",
- * and then the line is the capability copy Settings has always shown.
+ * line leads with what that pair ACTUALLY is; while a flip is reconnecting
+ * ([switching]) it says "Switching… reconnecting". Null means "no active
+ * pair", and then the line is the capability copy Settings has always shown.
+ * vc70 item 10: the vc63 "The switch applies to your next connection" caveat
+ * is gone — since the vc69 reset it was false.
  *
  * @param title  dimmed with the row; may be null where the caller has no
  *               separate title view.
@@ -59,6 +59,12 @@ class E2eModeRowBinder(
      * disagree.
      */
     var livePairMode: E2eStatusCopy.State? = null
+
+    /**
+     * vc70 item 10 — a flip made during a pair is reconnecting
+     * ([PhoneConnStatus.Label.SWITCHING]). Home only; Settings leaves it false.
+     */
+    var switching: Boolean = false
 
     /** Guards [toggle] so a repaint from the store cannot be read as a tap. */
     private var suppressCallback = false
@@ -162,25 +168,24 @@ class E2eModeRowBinder(
     ): String {
         val live = livePairMode
         val parts = ArrayList<String>(6)
-        if (live != null) parts.add(ctx.getString(E2eModeRowCopy.liveModeLine(live)))
+        if (switching) {
+            parts.add(ctx.getString(R.string.home_e2e_now_switching))
+        } else if (live != null) {
+            parts.add(ctx.getString(E2eModeRowCopy.liveModeLine(live)))
+        }
         val mirror = st?.mirror
         // vc69: "On, paused by ComputerCaller", never a plain "Off" (design §3).
         if (mirror?.pausedByServer == true) parts.add(ctx.getString(R.string.e2e_pref_paused))
         // B1: the account says lower, this phone has not agreed yet.
         if (st?.pendingDowngrade != null) parts.add(ctx.getString(R.string.e2e_pref_latched_line))
         if (!online) parts.add(ctx.getString(R.string.e2e_pref_offline))
-        if (live == null || !enabled) parts.add(ctx.getString(copy.reasonRes))
+        if ((live == null && !switching) || !enabled) parts.add(ctx.getString(copy.reasonRes))
         // INC-0924. Appended AFTER the capability reason, never instead of it:
         // an ON value on an inoperable control is said in words.
         if (!enabled && copy.checked) {
             parts.add(ctx.getString(R.string.settings_encrypted_mode_on_while_disabled))
         }
         mirror?.let { m -> E2eAccountPrefCopy.changedByLine(ctx, m)?.let { parts.add(it) } }
-        if (live != null && enabled &&
-            !E2eModeRowCopy.switchAgreesWithLiveMode(copy.checked, live)
-        ) {
-            parts.add(ctx.getString(R.string.home_e2e_next_only))
-        }
         return parts.joinToString(" ")
     }
 
@@ -191,11 +196,10 @@ class E2eModeRowBinder(
      * concludes the flip encrypted the session they are in.
      */
     private fun afterFlipText(checked: Boolean): String {
-        val live = livePairMode
-        val flip = ctx.getString(E2eModeRowCopy.afterFlipLine(checked))
-        return if (live == null) flip else {
-            ctx.getString(E2eModeRowCopy.liveModeLine(live)) + " " + flip
-        }
+        // vc70 item 10: a flip during a pair resets it, so the line is the
+        // transient, not a promise about "your next connection".
+        if (livePairMode != null) return ctx.getString(R.string.home_e2e_now_switching)
+        return ctx.getString(E2eModeRowCopy.afterFlipLine(checked))
     }
 
     /**

@@ -170,37 +170,36 @@ class HomeComputerCardUiTest {
                 "the live pair's ACTUAL mode must sit next to the switch: '$text'",
                 text.contains(ctx.getString(R.string.home_e2e_now_unverified))
             )
+            // vc70 item 10: "unverified" is now said as "no code check".
             assertTrue(
-                "'unverified' must survive into the rendered line: '$text'",
-                text.lowercase().contains("unverified")
+                "'no code check' must survive into the rendered line: '$text'",
+                text.lowercase().contains("no code check")
             )
-            // Switch OFF agrees with an unverified pair, so no caveat yet.
-            assertFalse(
-                "no caveat when the switch and the pair agree: '$text'",
-                text.contains(ctx.getString(R.string.home_e2e_next_only))
-            )
+            assertFalse("never 'verified' for a pair nobody checked: '$text'", text.contains("verified", true))
             CopyRules.assertNoEndToEndClaim(activity.window.decorView)
         }
     }
 
+    /**
+     * vc70 item 10 (T2) — replaces `the_switch_says_it_applies_to_the_next_
+     * connection_when_it_disagrees`. Since the vc69 switch resets the pair,
+     * the "applies to your next connection" caveat was false and is gone: a
+     * disagreeing switch states the live truth and nothing else.
+     */
     @Test
-    fun the_switch_says_it_applies_to_the_next_connection_when_it_disagrees() {
+    fun a_disagreeing_switch_states_the_live_truth_without_a_next_connection_caveat() {
         seedPeerSupported()
         E2eSettings.setEncryptedModeEnabled(ctx, true)
         onHome { activity, toggle, reason ->
             activity.refreshEncryptedModeRowForTest(E2eStatusCopy.State.ENCRYPTED_UNVERIFIED)
-            assertTrue(toggle.isChecked)
             val text = reason.text.toString()
-            // This is INC-0923's surface: the user has asked for encryption
-            // and is sitting in a pair that does not have it. Both facts, in
-            // that order, or the switch reads as having changed this session.
             assertTrue(
                 "the live mode must still be stated: '$text'",
                 text.contains(ctx.getString(R.string.home_e2e_now_unverified))
             )
-            assertTrue(
-                "a disagreeing switch must name the NEXT connection: '$text'",
-                text.contains(ctx.getString(R.string.home_e2e_next_only))
+            assertFalse(
+                "no 'next connection' caveat (vc70 item 10): '$text'",
+                text.contains("next connection", true)
             )
             // The a11y description carries the whole line, so a TalkBack user
             // reaching the switch is not told a shorter, friendlier story.

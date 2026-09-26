@@ -27,9 +27,10 @@ import androidx.annotation.StringRes
  *  * [forState] — capability + stored preference -> what the control looks
  *    like and why it is or is not operable. This is the not-paired answer and
  *    is what Settings has always shown.
- *  * [liveModeLine] + [switchAgreesWithLiveMode] — what the CURRENT pair
- *    actually is, and whether it disagrees with the switch. Shown only while
- *    a pair is active, because "this connection" is meaningless without one.
+ *  * [liveModeLine] — what the CURRENT pair actually is. Shown only while a
+ *    pair is active, because "this connection" is meaningless without one.
+ *    (vc70 item 10 removed `switchAgreesWithLiveMode`: it fed the vc63 "next
+ *    connection" caveat, false since the vc69 switch resets the pair.)
  *
  * Never the words "end-to-end" for an unverified pair (§12.6); the strings
  * are pinned by [E2eCopyTableTest].
@@ -128,19 +129,4 @@ object E2eModeRowCopy {
         E2eStatusCopy.State.ENCRYPTED_UNVERIFIED -> R.string.home_e2e_now_unverified
         E2eStatusCopy.State.PLAINTEXT -> R.string.home_e2e_now_plaintext
     }
-
-    /**
-     * True when the switch's intent already matches the live pair, i.e. there
-     * is nothing to warn about.
-     *
-     * The switch ON means "encrypted AND verified on the next connection" —
-     * that is what [E2eSettings.effectiveMode] produces from a local ON, and
-     * it is what the on-next-pair copy promises ("you'll confirm a code").
-     * So ENCRYPTED_VERIFIED is the only live mode an ON switch agrees with,
-     * and the two unverified/plaintext modes are the only ones an OFF switch
-     * agrees with. Anything else earns the next-connection caveat.
-     */
-    @JvmStatic
-    fun switchAgreesWithLiveMode(switchOn: Boolean, mode: E2eStatusCopy.State): Boolean =
-        switchOn == (mode == E2eStatusCopy.State.ENCRYPTED_VERIFIED)
 }

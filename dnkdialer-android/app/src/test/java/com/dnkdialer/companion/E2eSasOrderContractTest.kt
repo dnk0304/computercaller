@@ -348,9 +348,12 @@ class E2eSasOrderContractTest {
         val body = src.substring(fnStart, fnEnd)
         assertTrue("currentE2eState did not slice (got ${body.length} chars)", body.length > 120)
         assertTrue(
+            // vc70 item 10 (T1): the pin verdict was replaced by "this pair's
+            // codes were confirmed" (a pinned key is not a code check — V1 in
+            // tests/phone-status-vectors.json). The F-1 window guard is KEPT.
             "Security F-1: currentE2eState must report UNVERIFIED while the phone's own " +
-                "SAS dialog is unanswered — verified = e2eVerified && !e2eSasPending",
-            body.contains("verified = e2eVerified && !e2eSasPending"),
+                "SAS dialog is unanswered — e2eSasConfirmedThisPair && !e2eSasPending",
+            body.contains("sasConfirmedThisPair = e2eSasConfirmedThisPair && !e2eSasPending"),
         )
     }
 

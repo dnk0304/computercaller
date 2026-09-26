@@ -160,13 +160,15 @@ class E2eKeyChangeUiTest {
         // Three frozen words (P5a parity, R-AH), not two: sealed-but-unverified
         // means nobody confirmed a code, and calling it plain "Encrypted"
         // claims a verification that did not happen.
-        assertTrue(encrypted.contains("Encrypted", true))
-        assertTrue(unverified.contains("Encrypted, unverified", true))
+        // vc70 item 10: the three words are now "codes checked" / "no code
+        // check" / "Standard (TLS)".
+        assertTrue(encrypted.contains("Encrypted, codes checked", true))
+        assertTrue(unverified.contains("Encrypted, no code check", true))
         assertFalse("unverified must not read as plain Encrypted", encrypted == unverified)
         assertTrue(
             "the unencrypted state must be NAMED — a bare \"Connected\" is what " +
                 "users read as safe",
-            plaintext.contains("Not encrypted", true)
+            plaintext.contains("Standard (TLS)", true)
         )
         assertFalse("the two states must not share a string", encrypted == plaintext)
 

@@ -204,6 +204,19 @@ class MainActivity : AppCompatActivity() {
     private var hasPaintedModeRow = false
 
     /**
+     * vc70 item 10 (PHONE-STATUS) — the one owner of what Home says about the
+     * connection: the live label, the "Switching… reconnecting" transient, the
+     * reset-failed footer, the per-pair refusal and which code screen may stay
+     * up. Pure; fed on the 2 s tick from the bound service. Pinned by
+     * tests/phone-status-vectors.json.
+     */
+    private val connStatus = PhoneConnStatus()
+
+    /** The (switching, footer) the row was last painted for. */
+    private var lastPaintedSwitching = false
+    private var lastPaintedFooter = false
+
+    /**
      * vc69 — the account-pref facts the row and the B1 prompt card were last
      * painted for (online + the persisted record). A push, a refusal or a
      * relay open/close changes it; an idle 2 s tick does not.
@@ -435,7 +448,7 @@ class MainActivity : AppCompatActivity() {
                 PhoneService.ACTION_PAIRING_E2E_REFUSED -> {
                     val message = intent.getStringExtra(PhoneService.EXTRA_E2E_MESSAGE)
                         ?: E2eNegotiation.ABORT_MESSAGE
-                    showE2eRefusal(message)
+                    showE2eRefusal(message, intent.getStringExtra(PhoneService.EXTRA_PAIRING_ID))
                 }
             }
         }
@@ -730,8 +743,27 @@ class MainActivity : AppCompatActivity() {
             findViewById(R.id.homeEncryptedModeSub),
             findViewById(R.id.homeEncryptedModeReason),
         ).apply {
-            bind { checked -> DiagLog.d("MainActivity", "e2e.toggle.home ${if (checked) "on" else "off"}") }
+            bind { checked ->
+                DiagLog.d("MainActivity", "e2e.toggle.home ${if (checked) "on" else "off"}")
+                // vc70 item 10 (T1) — the flip resets the pair; say so until
+                // the next new pair is active.
+                connStatus.onSwitchSent(
+                    checked,
+                    phoneService?.getActivePairKey(),
+                    android.os.SystemClock.elapsedRealtime(),
+                )
+                updateStatus()
+            }
             refresh()
+        }
+        findViewById<View>(R.id.homeE2eSwitchRetry)?.setOnClickListener { retryModeSwitch() }
+        // vc70 item 10 (T2) — the relay refused the pref write: the reset
+        // never happened, so the footer, not "Switching…".
+        E2eAccountPrefController.setRefusedListener = {
+            handler.post {
+                connStatus.onSwitchWriteRefused()
+                updateStatus()
+            }
         }
 
         // Initial visual: idle. Real state arrives once the service binds.
@@ -1178,8 +1210,16 @@ class MainActivity : AppCompatActivity() {
             // wider blast radius; the flag-based approach lets us land
             // a tight UX fix without touching the protocol.)
             val pairActive = phoneService?.getIsPairActive() ?: false
+            // vc70 item 10 — one observation per tick, read from the bound
+            // service on this same tick.
+            val view = observeConnStatus()
 
             val (text, conn) = when {
+                // T1 — a flip made during a pair is reconnecting. Said until
+                // the next NEW pair is active (or the reset failed), whatever
+                // the socket or the old pair is doing in between.
+                view?.label == PhoneConnStatus.Label.SWITCHING ->
+                    getString(R.string.status_switching) to ConnState.CONNECTING
                 // Relay open + active pair → the actual "Connected" state.
                 // Pre-v19 this branch was gated on browserCount which the
                 // relay no longer populates, so the UI never reached it
@@ -1214,7 +1254,9 @@ class MainActivity : AppCompatActivity() {
                     // sealed pair. The broadcast is still sent (it makes the
                     // line right immediately); this makes it right REGARDLESS.
                     phoneService?.currentE2eState()?.let { e2eState = it }
-                    getString(E2eStatusCopy.statusLine(e2eState)) to ConnState.LIVE
+                    // vc70 item 10: the label is the LIVE truth — "codes
+                    // checked" only when this pair's SAS was confirmed.
+                    getString(PhoneConnStatus.statusLine(PhoneConnStatus.labelFor(e2eState))) to ConnState.LIVE
                 }
                 // Relay open + no active pair → LOBBY. Phone is sitting
                 // waiting for a browser to send a pairing request that
@@ -1240,6 +1282,7 @@ class MainActivity : AppCompatActivity() {
             // is how the row and the status line end up contradicting each
             // other about the connection the user is looking at.
             paintEncryptedModeRow(if (pairActive) e2eState else null)
+            view?.let { applyConnStatusView(it) }
 
             reconnectButton.visibility = View.GONE
             // Dispatch #34 — Disconnect button is visible iff there's an
@@ -1282,13 +1325,105 @@ class MainActivity : AppCompatActivity() {
         val binder = encryptedModeBinder ?: return
         val acctSig = E2eAccountPrefController.isOnline().toString() + "|" +
             (E2eAccountPrefController.state(this)?.let { E2eAccountPref.encode(it) } ?: "-")
-        if (hasPaintedModeRow && lastPaintedLiveMode == live && lastPaintedAcctSig == acctSig) return
+        val switching = connStatus.isSwitching
+        val footer = connStatus.currentFailure != null
+        if (hasPaintedModeRow && lastPaintedLiveMode == live && lastPaintedAcctSig == acctSig &&
+            lastPaintedSwitching == switching && lastPaintedFooter == footer
+        ) return
         hasPaintedModeRow = true
         lastPaintedLiveMode = live
         lastPaintedAcctSig = acctSig
+        lastPaintedSwitching = switching
+        lastPaintedFooter = footer
         binder.livePairMode = live
+        binder.switching = switching
         binder.refresh()
+        paintSwitchFailedFooter(footer)
         paintE2ePrefPrompt()
+    }
+
+    /**
+     * vc70 item 10 — feed the status machine one tick of facts from the bound
+     * service. Null when no service is bound (nothing to observe).
+     */
+    private fun observeConnStatus(): PhoneConnStatus.View? {
+        val svc = phoneService ?: return null
+        val obs = PhoneConnStatus.Obs(
+            nowMs = android.os.SystemClock.elapsedRealtime(),
+            socketOpen = E2eAccountPrefController.isOnline(),
+            pairActive = svc.getIsPairActive(),
+            pairKey = svc.getActivePairKey(),
+            e2e = svc.currentE2eState(),
+            pendingSasPairingId = svc.pendingSasPairingId(),
+        )
+        return connStatus.observe(obs)
+    }
+
+    /**
+     * vc70 item 10 — apply what the machine decided that the status line and
+     * the row do not already paint: the per-pair refusal (T3) and the code
+     * screen of a pair that ended (T4).
+     */
+    private fun applyConnStatusView(view: PhoneConnStatus.View) {
+        // T4 — never a code screen for a dead pair.
+        val onScreen = sasPairingId
+        if (onScreen != null && view.sasPairingId != onScreen) {
+            DiagLog.d("MainActivity", "code screen dismissed: its pair ended")
+            hideSasConfirm()
+        }
+        // T3 — the refusal stays while no NEW pair is active, and goes when one is.
+        val error = findViewById<TextView>(R.id.connectionErrorText) ?: return
+        val refusal = view.refusal
+        val shown = shownRefusal
+        if (refusal == null && shown != null) {
+            if (error.text?.toString() == shown) error.visibility = View.GONE
+            shownRefusal = null
+        } else if (refusal != null && (error.visibility != View.VISIBLE || error.text?.toString() != refusal)) {
+            error.text = refusal
+            error.visibility = View.VISIBLE
+            shownRefusal = refusal
+        }
+    }
+
+    /** The refusal text currently painted into connectionErrorText, or null. */
+    private var shownRefusal: String? = null
+
+    /** vc70 item 10 (T2) — "Couldn't switch this connection." + Retry, or nothing. */
+    private fun paintSwitchFailedFooter(show: Boolean) {
+        val footer = findViewById<View>(R.id.homeE2eSwitchFailed) ?: return
+        footer.visibility = if (show) View.VISIBLE else View.GONE
+        if (show) {
+            findViewById<TextView>(R.id.homeE2eSwitchFailedText)
+                ?.announceForAccessibility(getString(R.string.home_e2e_switch_failed))
+        }
+    }
+
+    /**
+     * vc70 item 10 (T2) — Retry: re-run the pref write, and, when the reset
+     * failed to end the pre-flip pair, end it from this side (LEAVE_ACTIVE).
+     */
+    private fun retryModeSwitch() {
+        val svc = phoneService
+        val obs = PhoneConnStatus.Obs(
+            nowMs = android.os.SystemClock.elapsedRealtime(),
+            socketOpen = E2eAccountPrefController.isOnline(),
+            pairActive = svc?.getIsPairActive() ?: false,
+            pairKey = svc?.getActivePairKey(),
+            e2e = svc?.currentE2eState() ?: E2eStatusCopy.State.PLAINTEXT,
+            pendingSasPairingId = svc?.pendingSasPairingId(),
+        )
+        val plan = connStatus.retryPlan(obs) ?: return
+        when (E2eAccountPrefController.requestSet(this, plan.on)) {
+            E2eAccountPrefController.Result.SENT -> {
+                if (plan.leaveOldPair) svc?.leaveActivePairForModeSwitch()
+                connStatus.onRetrySent(android.os.SystemClock.elapsedRealtime())
+                DiagLog.d("MainActivity", "e2e switch retry sent leaveOldPair=${plan.leaveOldPair}")
+            }
+            E2eAccountPrefController.Result.OFFLINE ->
+                Toast.makeText(this, R.string.e2e_pref_offline, Toast.LENGTH_LONG).show()
+            else -> Toast.makeText(this, R.string.e2e_pref_toast_failed, Toast.LENGTH_LONG).show()
+        }
+        updateStatus()
     }
 
     /**
@@ -1369,6 +1504,54 @@ class MainActivity : AppCompatActivity() {
     internal fun refreshEncryptedModeRowForTest(live: E2eStatusCopy.State? = null) {
         hasPaintedModeRow = false
         paintEncryptedModeRow(live)
+    }
+
+    /**
+     * vc70 item 10 — drive the PRODUCTION status machine and paint through the
+     * PRODUCTION views, for the instrumented proof. Same reasoning as
+     * [refreshEncryptedModeRowForTest]: a fixture has no bound service or real
+     * computer, so the facts a tick would read are supplied; nothing in the
+     * app calls this. Returns the view the machine produced.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun driveConnStatusForTest(
+        obs: PhoneConnStatus.Obs,
+        event: (PhoneConnStatus) -> Unit = {},
+    ): PhoneConnStatus.View {
+        // The fixture owns the status line for the duration: no 2 s tick and
+        // no relay-phase edge repainting it from a service that has no real
+        // pair (the fixture token is refused by the live relay).
+        stopStatusUpdates()
+        phoneService?.onRelayPhaseChanged = null
+        event(connStatus)
+        val view = connStatus.observe(obs)
+        paintHero(
+            when (view.label) {
+                null -> ConnState.WAITING
+                PhoneConnStatus.Label.SWITCHING -> ConnState.CONNECTING
+                else -> ConnState.LIVE
+            },
+            pairActive = obs.pairActive && view.label != PhoneConnStatus.Label.SWITCHING,
+            callInProgress = false,
+        )
+        statusText.text = when {
+            view.label != null -> getString(PhoneConnStatus.statusLine(view.label))
+            else -> getString(R.string.pair_lobby_status)
+        }
+        setStatusVisual(
+            when (view.label) {
+                null -> ConnState.WAITING
+                PhoneConnStatus.Label.SWITCHING -> ConnState.CONNECTING
+                else -> ConnState.LIVE
+            }
+        )
+        hasPaintedModeRow = false
+        paintEncryptedModeRow(if (obs.pairActive && view.label != PhoneConnStatus.Label.SWITCHING) obs.e2e else null)
+        // The fixture's refused-token diagnostics are not part of the replay.
+        connectionTargetText.visibility = View.GONE
+        if (view.refusal == null) connectionErrorText.visibility = View.GONE
+        applyConnStatusView(view)
+        return view
     }
 
     /**
@@ -1657,7 +1840,11 @@ class MainActivity : AppCompatActivity() {
 
         when (phase) {
             PhoneService.RelayPhase.CONNECTING -> {
-                statusText.text = getString(R.string.status_connecting_relay)
+                // vc70 item 10: the reset's own re-dial is part of the switch.
+                statusText.text = getString(
+                    if (connStatus.isSwitching) R.string.status_switching
+                    else R.string.status_connecting_relay
+                )
                 setStatusVisual(ConnState.CONNECTING)
                 renderConnectionDiagnostics(phase, targetUrl, null)
             }
@@ -1716,8 +1903,19 @@ class MainActivity : AppCompatActivity() {
         if (!error.isNullOrBlank()) {
             connectionErrorText.text = error
             connectionErrorText.visibility = View.VISIBLE
+            shownRefusal = null
         } else {
-            connectionErrorText.visibility = View.GONE
+            // vc70 item 10 (T3): a refusal belongs to its pair, not to the
+            // socket — it stays until a NEW pair is active. A relay-phase
+            // edge used to be the only thing that cleared it (and the wrong one).
+            val refusal = connStatus.currentRefusal
+            if (refusal != null) {
+                connectionErrorText.text = refusal
+                connectionErrorText.visibility = View.VISIBLE
+                shownRefusal = refusal
+            } else {
+                connectionErrorText.visibility = View.GONE
+            }
         }
     }
 
@@ -2555,6 +2753,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         sasPairingId = pairingId
+        connStatus.onSasShown(pairingId)
         // M-A6-5 / SPEC §13.3 R-BK: the VISIBLE code is ungrouped and identical
         // to what the page dialog shows, so the two surfaces are one exact
         // string compare. The SPOKEN description spells the same digits out
@@ -2597,6 +2796,7 @@ class MainActivity : AppCompatActivity() {
         heroSasFace.visibility = View.GONE
         heroDefaultFace.visibility = View.VISIBLE
         sasPairingId = null
+        connStatus.onSasHidden()
         sasBackCallback?.isEnabled = false
     }
 
@@ -2635,7 +2835,7 @@ class MainActivity : AppCompatActivity() {
             // service's refusal broadcast to make the round trip. A user who
             // taps "Doesn't match" and sees nothing change assumes the tap
             // missed and tries again — and retrying is what an attacker needs.
-            showE2eRefusal(getString(R.string.e2e_sas_refused))
+            showE2eRefusal(getString(R.string.e2e_sas_refused), id)
         }
         android.util.Log.d("MainActivity", "SAS verdict for $id: matched=$matched")
     }
@@ -2718,11 +2918,14 @@ class MainActivity : AppCompatActivity() {
         android.util.Log.d("MainActivity", "Key-change verdict for $id: trusted=$trusted")
     }
 
-    private fun showE2eRefusal(message: String) {
+    private fun showE2eRefusal(message: String, pairingId: String?) {
         hideSasConfirm()
+        // vc70 item 10 (T3): the refusal is owned by the pairing it refused.
+        connStatus.onRefused(pairingId, message)
         val error = findViewById<TextView>(R.id.connectionErrorText)
         error.text = message
         error.visibility = View.VISIBLE
+        shownRefusal = message
         error.announceForAccessibility(message)
     }
 
@@ -2845,6 +3048,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopStatusUpdates()
+        E2eAccountPrefController.setRefusedListener = null
         // Drop the pulse animator so its update listener can't fire
         // on a destroyed view (no observed leak, but the listener
         // holds a strong ref to statusDotRing).

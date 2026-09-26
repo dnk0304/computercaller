@@ -1,0 +1,263 @@
+{
+  "$comment": [
+    "vc70 item 10 (PHONE-STATUS) — RULE 30 vectors for what the phone's Home screen says about the connection.",
+    "",
+    "Consumer: dnkdialer-android/app/src/test/java/com/dnkdialer/companion/PhoneStatusVectorsTest.kt",
+    "  drives PhoneConnStatus (pure state machine) step by step; each step applies its `event` (if any),",
+    "  then observes `obs`, then checks `expect`. The live e2e state of an obs is",
+    "  PhoneConnStatus.liveState(session, sasConfirmed) — the SAME function PhoneService.currentE2eState calls.",
+    "  `keyPinVerified` is carried to document the base bug: on 307e28a the phone used it as 'verified'.",
+    "",
+    "Android-only: the web/extension twin is Pixel's #18 conn-status lane (same three words).",
+    "",
+    "Dennis 2026-09-26 08:21-08:23Z: switch OFF -> forced reset 08:21:19 -> web re-paired asking for codes (stale",
+    "mode1, web bug fixed in #18) -> codes refused 08:22:39 -> second re-pair, no code check, keys -> ACTIVE",
+    "08:23:04. The phone then showed 'Connected · Encrypted', 'This connection: Encrypted, verified', the red",
+    "refusal from the DEAD pair, and 'The switch applies to your next connection'. V1-V3 are that screen.",
+    "",
+    "Labels: CODES_CHECKED (SAS confirmed on THIS pair), NO_CODE_CHECK (keys, no SAS on this pair),",
+    "STANDARD_TLS (no keys, legacy mode0), SWITCHING (flip during a pair, until the next NEW active pair),",
+    "null (no pair, not switching: the lobby copy). Reset-failure timeout: 60000 ms (PhoneConnStatus.RESET_TIMEOUT_MS)."
+  ],
+  "version": 1,
+  "resetTimeoutMs": 60000,
+  "labelKeys": {
+    "CODES_CHECKED": { "status": "status_connected_encrypted", "row": "home_e2e_now_verified" },
+    "NO_CODE_CHECK": { "status": "status_connected_encrypted_unverified", "row": "home_e2e_now_unverified" },
+    "STANDARD_TLS": { "status": "status_connected_unencrypted", "row": "home_e2e_now_plaintext" },
+    "SWITCHING": { "status": "status_switching", "row": "home_e2e_now_switching" }
+  },
+  "scenarios": [
+    {
+      "id": "V1",
+      "label": "pinned-key pair, no SAS (switch OFF) -> 'Encrypted, no code check' — RED on 307e28a, which said verified",
+      "steps": [
+        {
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "V1-control-codes-checked",
+      "label": "control: SAS confirmed on THIS pair -> 'codes checked' (a rule that always said 'no code check' fails here)",
+      "steps": [
+        {
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "CODES_CHECKED", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "V1-control-tls",
+      "label": "control: legacy mode0 pair, no keys -> 'Standard (TLS)'",
+      "steps": [
+        {
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "P1", "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "STANDARD_TLS", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "V2",
+      "label": "switch flip OFF -> 'Switching… reconnecting' through the reset -> new ACTIVE pair -> 'no code check', no footer, no stale refusal",
+      "steps": [
+        {
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "CODES_CHECKED", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "event": { "type": "switchSent", "on": false, "activePairKey": "P1" },
+          "obs": { "t": 1000, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "note": "relay reset: phone socket closed 1000",
+          "obs": { "t": 1500, "socket": false, "pairActive": false, "pairKey": null, "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "note": "back in the lobby",
+          "obs": { "t": 7000, "socket": true, "pairActive": false, "pairKey": "P1", "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "note": "new pair, switch OFF: keys exchanged, pinned key, no SAS",
+          "obs": { "t": 12000, "socket": true, "pairActive": true, "pairKey": "P2", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "V2-resume-is-not-a-new-pair",
+      "label": "a relay auto-resume re-sends PAIRING_ACTIVE for the SAME pair: still switching",
+      "steps": [
+        {
+          "event": { "type": "switchSent", "on": false, "activePairKey": "P1" },
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "obs": { "t": 4000, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "V2-no-pair-no-transient",
+      "label": "a flip with nothing paired has nothing to reconnect: no transient, and never a 'Couldn't switch' footer",
+      "steps": [
+        {
+          "event": { "type": "switchSent", "on": true, "activePairKey": null },
+          "obs": { "t": 0, "socket": true, "pairActive": false, "pairKey": null, "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": null, "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "obs": { "t": 120000, "socket": true, "pairActive": false, "pairKey": null, "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": null, "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "V3",
+      "label": "SAS refused on pair N -> error shown; new ACTIVE pair N+1 -> error cleared, pair-N code screen gone (Dennis 08:22:39 -> 08:23:04)",
+      "steps": [
+        {
+          "event": { "type": "sasShown", "pairingId": "N" },
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "N", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": "N" },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": "N" }
+        },
+        {
+          "event": { "type": "refused", "pairingId": "N", "message": "Connection refused. The codes didn't match." },
+          "note": "pair N still reported active for a tick (LEAVE_ACTIVE in flight): the refusal must NOT clear",
+          "obs": { "t": 500, "socket": true, "pairActive": true, "pairKey": "N", "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "STANDARD_TLS", "footer": false, "refusal": "Connection refused. The codes didn't match.", "sas": null }
+        },
+        {
+          "note": "no pair: the refusal stays",
+          "obs": { "t": 3000, "socket": true, "pairActive": false, "pairKey": "N", "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": null, "footer": false, "refusal": "Connection refused. The codes didn't match.", "sas": null }
+        },
+        {
+          "note": "new ACTIVE pair N+1",
+          "obs": { "t": 25000, "socket": true, "pairActive": true, "pairKey": "N+1", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "V3-sas-screen-dies-with-its-pair",
+      "label": "the code screen goes when its pair ends without a refusal (terminate / reset: the gate is released)",
+      "steps": [
+        {
+          "event": { "type": "sasShown", "pairingId": "N" },
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "N", "session": true, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": "N" },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": "N" }
+        },
+        {
+          "obs": { "t": 2000, "socket": true, "pairActive": false, "pairKey": "N", "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": null, "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "V3-sas-screen-dies-on-socket-close",
+      "label": "socket close: the gate may still be waiting, but the pair is dead — no code screen",
+      "steps": [
+        {
+          "event": { "type": "sasShown", "pairingId": "N" },
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "N", "session": true, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": "N" },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": "N" }
+        },
+        {
+          "obs": { "t": 1000, "socket": false, "pairActive": false, "pairKey": "N", "session": true, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": "N" },
+          "expect": { "label": null, "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "R1-reset-timeout-footer-and-retry",
+      "label": "reset failure (no new pair within 60 s) -> footer + Retry; Retry (pref write + LEAVE_ACTIVE of the stuck pair) -> footer gone",
+      "steps": [
+        {
+          "event": { "type": "switchSent", "on": false, "activePairKey": "P1" },
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "obs": { "t": 59999, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "obs": { "t": 60000, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "CODES_CHECKED", "footer": true, "refusal": null, "sas": null, "retryPlan": { "on": false, "leaveOldPair": true } }
+        },
+        {
+          "event": { "type": "retrySent" },
+          "obs": { "t": 61000, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null, "retryPlan": null }
+        },
+        {
+          "obs": { "t": 70000, "socket": true, "pairActive": true, "pairKey": "P2", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "R2-write-refused-footer-and-retry",
+      "label": "reset failure (E2E_PREF_REFUSED op=set) -> footer at once; Retry = pref write only (no LEAVE: the write must land first)",
+      "steps": [
+        {
+          "event": { "type": "switchSent", "on": true, "activePairKey": "P1" },
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "event": { "type": "writeRefused" },
+          "obs": { "t": 300, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "NO_CODE_CHECK", "footer": true, "refusal": null, "sas": null, "retryPlan": { "on": true, "leaveOldPair": false } }
+        },
+        {
+          "event": { "type": "retrySent" },
+          "obs": { "t": 5000, "socket": true, "pairActive": true, "pairKey": "P1", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "obs": { "t": 15000, "socket": true, "pairActive": true, "pairKey": "P2", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "CODES_CHECKED", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    },
+    {
+      "id": "DENNIS-0821",
+      "label": "Dennis's 08:21-08:23Z sequence end to end: final state NOT verified, NO footer, NO red error",
+      "steps": [
+        {
+          "obs": { "t": 0, "socket": true, "pairActive": true, "pairKey": "A", "session": true, "keyPinVerified": true, "sasConfirmed": true, "pendingSas": null },
+          "expect": { "label": "CODES_CHECKED", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "event": { "type": "switchSent", "on": false, "activePairKey": "A" },
+          "obs": { "t": 1000, "socket": false, "pairActive": false, "pairKey": "A", "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "SWITCHING", "footer": false, "refusal": null, "sas": null }
+        },
+        {
+          "event": { "type": "sasShown", "pairingId": "B" },
+          "note": "web re-paired with stale mode1 (web bug, #18): codes asked",
+          "obs": { "t": 20000, "socket": true, "pairActive": true, "pairKey": "B", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": "B" },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": "B" }
+        },
+        {
+          "event": { "type": "refused", "pairingId": "B", "message": "Connection refused. The codes didn't match." },
+          "obs": { "t": 80000, "socket": true, "pairActive": false, "pairKey": "B", "session": false, "keyPinVerified": false, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": null, "footer": false, "refusal": "Connection refused. The codes didn't match.", "sas": null }
+        },
+        {
+          "note": "second re-pair, mode0 with keys -> ACTIVE (08:23:04)",
+          "obs": { "t": 105000, "socket": true, "pairActive": true, "pairKey": "C", "session": true, "keyPinVerified": true, "sasConfirmed": false, "pendingSas": null },
+          "expect": { "label": "NO_CODE_CHECK", "footer": false, "refusal": null, "sas": null }
+        }
+      ]
+    }
+  ]
+}

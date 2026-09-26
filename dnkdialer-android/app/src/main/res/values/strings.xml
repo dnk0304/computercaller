@@ -458,7 +458,11 @@
          store listing carrying it is a compliance problem as well as an
          untrue one. Describe what it does, not what it is. -->
     <string name="row_encrypted_mode_title">Encrypted mode</string>
-    <string name="row_encrypted_mode_sub">Scramble messages and call details in transit</string>
+    <!-- vc70 item 10 (T5, Dennis 2026-09-26 09:37Z option a): the connection is
+         ALWAYS encrypted in transit; the switch only adds the code check. The
+         old "Scramble messages and call details in transit" implied OFF meant
+         unscrambled. Draft: Pixel/Pilot review the final words before the cut. -->
+    <string name="row_encrypted_mode_sub">Always encrypted in transit. On adds a one-time code check that proves no one is in the middle.</string>
     <!-- Shown while no computer has advertised support. "Waiting", not
          "unsupported": we have not heard, and that is not evidence of absence. -->
     <string name="settings_encrypted_mode_waiting">Waiting for a computer that supports encrypted mode.</string>
@@ -477,8 +481,11 @@
          switch describes the NEXT connection. Saying "next time you connect"
          is the difference between a setting the user trusts and one they
          re-toggle because nothing visibly happened. -->
-    <string name="settings_encrypted_mode_on_next_pair">On. Your next connection will be encrypted, and you\'ll confirm a code on both devices.</string>
-    <string name="settings_encrypted_mode_off_next_pair">Off. Your next connection won\'t be encrypted unless your computer asks for it.</string>
+    <!-- vc70 item 10 (T5): shown after a flip made with NOTHING paired (a flip
+         during a pair shows "Switching… reconnecting" instead). OFF is still
+         encrypted: "won't be encrypted" was false under option (a). -->
+    <string name="settings_encrypted_mode_on_next_pair">On. Next time you connect, you\'ll check a code on both devices.</string>
+    <string name="settings_encrypted_mode_off_next_pair">Off. Still encrypted next time you connect, with no code check.</string>
     <!-- TalkBack description for the switch: title, then the reason line, so a
          greyed control explains itself without the user hunting for the text
          underneath it. %1$s = row title, %2$s = the reason/state line. -->
@@ -501,13 +508,21 @@
          "end-to-end" for an unverified pair (SPEC 12.6): "unverified" means
          nobody confirmed a code, and claiming otherwise is the one thing the
          SAS exists to make honest. -->
-    <string name="home_e2e_now_verified">This connection: Encrypted, verified</string>
-    <string name="home_e2e_now_unverified">This connection: Encrypted, unverified</string>
-    <string name="home_e2e_now_plaintext">This connection: Not encrypted</string>
-    <!-- Appended only when the switch and the live pair disagree. A user who
-         flips the switch mid-call must not read the flip as having changed
-         the session they are in — the mode is latched at Accept (13.1). -->
-    <string name="home_e2e_next_only">The switch applies to your next connection.</string>
+    <!-- vc70 item 10 (T1): the words are the LIVE pair's truth. "codes
+         checked" = the SAS was confirmed on THIS pair (switch ON); "no code
+         check" = keys exchanged, nobody compared codes (switch OFF, or a key
+         pinned from an earlier pair); "Standard (TLS)" = a legacy pair with no
+         keys (same word as web/ext). home_e2e_next_only is GONE: the switch
+         resets the connection now, so "applies to your next connection" was
+         false. -->
+    <string name="home_e2e_now_verified">This connection: Encrypted, codes checked</string>
+    <string name="home_e2e_now_unverified">This connection: Encrypted, no code check</string>
+    <string name="home_e2e_now_plaintext">This connection: Standard (TLS)</string>
+    <string name="home_e2e_now_switching">This connection: Switching… reconnecting</string>
+    <!-- vc70 item 10 (T2): the ONLY footer. The forced reset genuinely failed
+         (pref write refused, or no new pair within 60 s). Retry re-runs it. -->
+    <string name="home_e2e_switch_failed">Couldn\'t switch this connection.</string>
+    <string name="home_e2e_switch_retry">Retry</string>
 
     <!-- ==================== vc69 — T-E2E-ACCOUNT-PREF step 2 ====================
          Encrypted mode is now an ACCOUNT setting (DESIGN-E2E-ACCOUNT-PREF REV 3).
@@ -595,11 +610,15 @@
          OWN word, not a synonym for verified: nobody confirmed a code, and a
          pair that says "Encrypted" flat when no one checked is claiming a
          verification that did not happen. -->
-    <string name="status_connected_encrypted">Connected · Encrypted</string>
-    <string name="status_connected_encrypted_unverified">Connected · Encrypted, unverified</string>
-    <string name="status_connected_unencrypted">Connected · Not encrypted</string>
-    <string name="notif_ongoing_connected_encrypted">Connected to your computer · Encrypted</string>
-    <string name="notif_ongoing_connected_encrypted_unverified">Connected to your computer · Encrypted, unverified</string>
+    <!-- vc70 item 10 (T1): same three words as home_e2e_now_*, plus the
+         switch transient. The shade uses the same words so the two cannot
+         disagree. -->
+    <string name="status_connected_encrypted">Connected · Encrypted, codes checked</string>
+    <string name="status_connected_encrypted_unverified">Connected · Encrypted, no code check</string>
+    <string name="status_connected_unencrypted">Connected · Standard (TLS)</string>
+    <string name="status_switching">Switching… reconnecting</string>
+    <string name="notif_ongoing_connected_encrypted">Connected to your computer · Encrypted, codes checked</string>
+    <string name="notif_ongoing_connected_encrypted_unverified">Connected to your computer · Encrypted, no code check</string>
 
     <string name="row_stay_disconnected_title">Stay disconnected</string>
     <string name="row_stay_disconnected_sub">Don\'t reconnect on restart</string>

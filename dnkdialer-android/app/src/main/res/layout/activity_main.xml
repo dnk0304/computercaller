@@ -945,6 +945,46 @@
             android:textColor="@color/text_tertiary"
             android:lineSpacingMultiplier="1.45" />
 
+        <!-- vc70 item 10 (T2). The ONLY footer under the row: the forced reset
+             genuinely failed (pref write refused, or no new pair within 60 s).
+             A successful switch shows nothing here. -->
+        <LinearLayout
+            android:id="@+id/homeE2eSwitchFailed"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_8"
+            android:layout_marginStart="2dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/homeE2eSwitchFailedText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/home_e2e_switch_failed"
+                android:textSize="@dimen/cc_text_meta"
+                android:textColor="@color/dot_failed"
+                android:lineSpacingMultiplier="1.45" />
+
+            <androidx.appcompat.widget.AppCompatButton
+                android:id="@+id/homeE2eSwitchRetry"
+                android:filterTouchesWhenObscured="true"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/cc_touch_min"
+                android:minWidth="@dimen/cc_touch_min"
+                android:paddingStart="@dimen/space_12"
+                android:paddingEnd="@dimen/space_12"
+                android:text="@string/home_e2e_switch_retry"
+                android:textSize="@dimen/cc_text_button"
+                android:textAllCaps="false"
+                android:textColor="@color/accent_blue"
+                android:fontFamily="sans-serif-medium"
+                android:background="@null"
+                android:stateListAnimator="@null" />
+        </LinearLayout>
+
         <!-- vc69 T-E2E-ACCOUNT-PREF. The one-time "turned on from X" notice
              (design §8) — shown once, then consumed. -->
         <TextView

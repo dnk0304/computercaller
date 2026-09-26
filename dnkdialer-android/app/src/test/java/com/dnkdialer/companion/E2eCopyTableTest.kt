@@ -65,7 +65,12 @@ class E2eCopyTableTest {
         "home_e2e_now_verified",
         "home_e2e_now_unverified",
         "home_e2e_now_plaintext",
-        "home_e2e_next_only",
+        // vc70 item 10 — home_e2e_next_only removed; the transient and the
+        // reset-failed footer added.
+        "home_e2e_now_switching",
+        "home_e2e_switch_failed",
+        "home_e2e_switch_retry",
+        "status_switching",
     )
 
     @Test
@@ -160,16 +165,21 @@ class E2eCopyTableTest {
 
     @Test
     fun the_three_frozen_state_words_are_present_and_distinct() {
-        // P5a parity (Ken R-AH): "Encrypted" / "Encrypted, unverified" /
-        // "Not encrypted". THREE words, not two — sealed-but-unverified means
-        // nobody confirmed a code, and calling that plain "Encrypted" claims a
-        // verification that did not happen.
+        // THREE words, not two — sealed-but-unverified means nobody confirmed
+        // a code, and calling that plain "Encrypted" claims a verification
+        // that did not happen. vc70 item 10 (Dennis 2026-09-26, option a)
+        // renamed them to what the user can check: "codes checked" / "no code
+        // check" / "Standard (TLS)". Pinned EXACT: the words are a locked set.
         val verified = strings.getValue("status_connected_encrypted")
         val unverified = strings.getValue("status_connected_encrypted_unverified")
         val plaintext = strings.getValue("status_connected_unencrypted")
-        assertTrue(verified.contains("Encrypted", true))
-        assertTrue(unverified.contains("Encrypted, unverified", true))
-        assertTrue(plaintext.contains("Not encrypted", true))
+        assertEquals("Connected · Encrypted, codes checked", verified)
+        assertEquals("Connected · Encrypted, no code check", unverified)
+        assertEquals("Connected · Standard (TLS)", plaintext)
+        assertEquals("Switching… reconnecting", strings.getValue("status_switching"))
+        for (s in listOf(verified, unverified, plaintext)) {
+            assertFalse("no 'verified' word may remain in the status set: '$s'", s.contains("verified", true))
+        }
         assertEquals("the three states must be three strings", 3, setOf(verified, unverified, plaintext).size)
         // The shade must agree with the line, or the user has a contradiction
         // they cannot resolve from the surface they see when the app is closed.
@@ -178,7 +188,11 @@ class E2eCopyTableTest {
         )
         assertTrue(
             strings.getValue("notif_ongoing_connected_encrypted_unverified")
-                .contains("Encrypted, unverified", true)
+                .contains("Encrypted, no code check", true)
+        )
+        assertTrue(
+            strings.getValue("notif_ongoing_connected_encrypted")
+                .contains("Encrypted, codes checked", true)
         )
     }
 
@@ -234,16 +248,19 @@ class E2eCopyTableTest {
      */
     @Test
     fun the_live_unverified_line_keeps_saying_unverified() {
+        // vc70 item 10: "unverified" became "no code check" — the same fact
+        // in the words of the thing the user can do about it.
         val unverified = strings["home_e2e_now_unverified"].orEmpty()
-        assertTrue(
-            "home_e2e_now_unverified must name the unverified state: '$unverified'",
-            unverified.lowercase().contains("unverified")
+        assertEquals("This connection: Encrypted, no code check", unverified)
+        assertEquals(
+            "This connection: Encrypted, codes checked",
+            strings["home_e2e_now_verified"].orEmpty()
         )
         val plaintext = strings["home_e2e_now_plaintext"].orEmpty()
-        assertTrue(
-            "home_e2e_now_plaintext must spell out that it is NOT encrypted — " +
-                "the absence of a word is not a signal: '$plaintext'",
-            plaintext.lowercase().contains("not encrypted")
+        assertEquals("This connection: Standard (TLS)", plaintext)
+        assertEquals(
+            "This connection: Switching… reconnecting",
+            strings["home_e2e_now_switching"].orEmpty()
         )
         // Three distinct sentences, so the row can never render two modes the
         // same way.
@@ -254,17 +271,29 @@ class E2eCopyTableTest {
     }
 
     /**
-     * The caveat must be about the NEXT connection, not this one. A caveat
-     * that merely said "saved" would leave the user believing the flip
-     * changed the session they are looking at — SPEC §13.1 latches the mode
-     * at Accept, so it cannot have.
+     * vc70 item 10 (T2/T5) — the vc63 "The switch applies to your next
+     * connection" caveat is GONE (the vc69 switch resets the pair, so it was
+     * false), the reset-failed footer exists, and the switch copy says the
+     * connection is always encrypted — OFF only drops the code check
+     * (Dennis 2026-09-26 09:37Z, option a).
      */
     @Test
-    fun the_switch_caveat_points_at_the_next_connection() {
-        val caveat = strings["home_e2e_next_only"].orEmpty().lowercase()
-        assertTrue(
-            "home_e2e_next_only must say 'next': '$caveat'",
-            caveat.contains("next")
+    fun the_switch_copy_is_the_locked_vc70_set() {
+        assertFalse("home_e2e_next_only must be deleted", strings.containsKey("home_e2e_next_only"))
+        assertEquals("Couldn't switch this connection.", strings["home_e2e_switch_failed"])
+        assertEquals("Retry", strings["home_e2e_switch_retry"])
+        val sub = strings.getValue("row_encrypted_mode_sub")
+        assertEquals(
+            "Always encrypted in transit. On adds a one-time code check that proves no one is in the middle.",
+            sub
+        )
+        assertFalse("the old subtitle implied OFF = unscrambled", sub.contains("Scramble", true))
+        val off = strings.getValue("settings_encrypted_mode_off_next_pair")
+        assertFalse("OFF is still encrypted under option (a): '$off'", off.contains("won't be encrypted", true))
+        assertEquals("Off. Still encrypted next time you connect, with no code check.", off)
+        assertEquals(
+            "On. Next time you connect, you'll check a code on both devices.",
+            strings.getValue("settings_encrypted_mode_on_next_pair")
         )
     }
 

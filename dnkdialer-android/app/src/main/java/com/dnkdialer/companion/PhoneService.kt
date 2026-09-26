@@ -405,6 +405,26 @@ class PhoneService : Service() {
     private var e2eSasPending: Boolean = false
 
     /**
+     * vc70 item 10 (T1) — true only once the user answered MATCH on THIS
+     * pair's codes. The status label's "codes checked" reads this, never
+     * [e2eVerified]: against a TOFU-pinned key that is already true on a pair
+     * where no code was shown (switch OFF), which is what put "verified" on
+     * Dennis's screen at 08:23Z. Cleared at arm time and by [tearDownE2e].
+     */
+    @Volatile
+    private var e2eSasConfirmedThisPair: Boolean = false
+
+    /**
+     * vc70 item 10 — the pairing id of the last ACCEPT_PAIRING this phone
+     * sent, i.e. the identity of the pair that is (or was) active. What makes
+     * "a NEW active pair" decidable for the Home status machine
+     * ([PhoneConnStatus]); a relay auto-resume re-sends PAIRING_ACTIVE for the
+     * SAME pair without a new ACCEPT, so it does not change this.
+     */
+    @Volatile
+    private var acceptedPairKey: String? = null
+
+    /**
      * Single worker for the Accept handshake. The (e) pin is a blocking HTTPS
      * call and the Accept path is reached from a BroadcastReceiver — i.e. the
      * main thread. Single-threaded so two Accepts cannot race to install a
@@ -756,6 +776,22 @@ class PhoneService : Service() {
 
     /** Public read-only accessor for MainActivity's status polling loop. */
     fun getIsPairActive(): Boolean = isPairActive
+
+    /** vc70 item 10 — the active pair's identity (its accepted pairing id), or null. */
+    fun getActivePairKey(): String? = if (isPairActive) acceptedPairKey else null
+
+    /** vc70 item 10 (T4) — the pairing id the SAS gate is waiting on, or null. */
+    fun pendingSasPairingId(): String? = pendingSasGate?.pairingId
+
+    /**
+     * vc70 item 10 (T2) — Retry after a mode switch whose forced reset left
+     * the pre-flip pair standing. The existing phone-side teardown; the relay
+     * answers it with PAIRING_TERMINATED and the computer re-pairs under the
+     * stored preference.
+     */
+    fun leaveActivePairForModeSwitch() {
+        leaveActivePair("e2e mode switch retry")
+    }
 
     // -----------------------------------------------------------------------
     // 2-mode BT audio routing (dispatch 2026-05-25).
@@ -2854,6 +2890,7 @@ class PhoneService : Service() {
         if (block != null) body["e2e"] = block
         try {
             client?.sendResponse(type, body)
+            if (type == "ACCEPT_PAIRING") acceptedPairKey = pairingId
             android.util.Log.d("PhoneService", "$type sent for pairingId=$pairingId")
             // vc63 — ACCEPT vs DECLINE and whether an e2e block rode along.
             // The pairingId is HASHED, not logged: it is the HKDF salt
@@ -3159,6 +3196,7 @@ class PhoneService : Service() {
             // instant it lands, and a gate armed one statement later would
             // have let that first frame through.
             e2eSasPending = prepared.modeOn
+            e2eSasConfirmedThisPair = false
             android.util.Log.i(
                 "PhoneService",
                 "E2E armed kid=${prepared.session.kid} epoch=$epoch mode=" +
@@ -3234,6 +3272,10 @@ class PhoneService : Service() {
             // Verified. Open the data plane — this is the only statement that
             // may clear the flag on a pair that is staying up.
             e2eSasPending = false
+            // vc70 item 10: only a MATCH on THIS pair earns "codes checked".
+            // NOT_REQUIRED (switch OFF, pinned key) reaches here too and stays
+            // "no code check".
+            e2eSasConfirmedThisPair = sas == E2eSasGate.Verdict.MATCHED
             DiagLog.d("PhoneService", "e2e sas confirmed — data plane open")
             broadcastE2eState()
         } catch (e: RuntimeException) {
@@ -3375,8 +3417,8 @@ class PhoneService : Service() {
      * its next tick instead of inheriting a missed edge.
      */
     fun currentE2eState(): E2eStatusCopy.State =
-        E2eStatusCopy.stateOf(
-            encrypted = e2eSession != null,
+        PhoneConnStatus.liveState(
+            sessionPresent = e2eSession != null,
             // INC-0924 / Security F-1 (C1). `e2eVerified` is the KEY-PIN
             // verdict alone, and against a TOFU-pinned peer it is already
             // true when the ACCEPT leaves — one line before broadcastE2eState
@@ -3387,7 +3429,13 @@ class PhoneService : Service() {
             // thing that defeats this SAS. So the window is UNVERIFIED on both
             // surfaces: the flag flips at the broadcast below the gate, and
             // tearDownE2e clears both.
-            verified = e2eVerified && !e2eSasPending,
+            //
+            // vc70 item 10 (T1): and even after the window, the key pin is not
+            // a code check. A switch-OFF pair against a pinned key had
+            // e2eVerified=true and no SAS at all, and the line said
+            // "verified". The rule now lives in PhoneConnStatus.liveState and
+            // is pinned by tests/phone-status-vectors.json V1.
+            sasConfirmedThisPair = e2eSasConfirmedThisPair && !e2eSasPending,
         )
 
     /** Push [currentE2eState] to the foreground UI. Idempotent. */
@@ -3508,6 +3556,7 @@ class PhoneService : Service() {
         e2eSession = null
         e2eLatchedOn = false
         e2eVerified = false
+        e2eSasConfirmedThisPair = false
         // INC-0924. Cleared with the session, never before it: the flag is a
         // CLOSED gate, and a pair torn down mid-SAS must not leave the next
         // one inheriting an open one. There is nothing left to protect once
