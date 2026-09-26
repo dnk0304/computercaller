@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   requireSameOrigin,
+  validateSessionToken,
   authCookieClearOptions,
   idleCookieClearOptions,
   IDLE_COOKIE_NAME,
 } from '@/lib/auth';
+import { db } from '@/lib/db';
 import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
 
 export async function POST(req: NextRequest) {
@@ -25,7 +27,54 @@ export async function POST(req: NextRequest) {
     if (!csrf.ok) return NextResponse.json({ error: 'CSRF check failed' }, { status: 403 });
   }
 
-  const response = NextResponse.json({ message: 'Logged out' });
+  // SECURITY-DESIGN-READ m2 (2026-09-25, Option 1 — Dennis): sign-out must
+  // revoke the extension token. ext-session tokens are stateless and stamped
+  // with User.sessionVersion, so clearing cookies alone left a copied token
+  // live. Bumping sessionVersion here — the same revocation the credential
+  // routes use (account/change-password) — kills EVERY web session and EVERY
+  // ext-session token of this account, wherever sign-out was pressed. The
+  // phone is untouched: its phoneToken bearer never carried `ver`.
+  //
+  // Identity is the cookie's signature + CURRENT sessionVersion
+  // (validateSessionToken), deliberately NOT the idle check: an idle-expired
+  // cookie still proves who the caller is, and this write only ever REMOVES
+  // access. No valid session (absent, forged, already superseded) = no bump;
+  // the cookies are still cleared and the response is still 200.
+  let revokeFailed = false;
+  const token = req.cookies.get('auth_token')?.value;
+  const session = token ? await validateSessionToken(token) : null;
+  if (session?.userId) {
+    try {
+      await db.user.update({
+        where: { id: session.userId },
+        data: { sessionVersion: { increment: 1 } },
+      });
+    } catch (err) {
+      // Loud, not silent: the caller believes every session just ended. The
+      // cookies below are still cleared, so THIS device is signed out either
+      // way; the non-2xx tells anything that reads it that the rest are not.
+      revokeFailed = true;
+      console.error('[Logout] sessionVersion bump failed — other sessions NOT revoked:', err);
+    }
+    if (!revokeFailed) {
+      // Instant flip for open browser tabs (same as login/change-password);
+      // the lazy sessionVersion check enforces it regardless.
+      try {
+        const supersede = (globalThis as { __supersedeWebSessions?: (userId: string) => number })
+          .__supersedeWebSessions;
+        if (typeof supersede === 'function') supersede(session.userId);
+      } catch (err) {
+        console.error('[Logout] supersedeWebSessions failed (lazy check still in force):', err);
+      }
+    }
+  }
+
+  const response = revokeFailed
+    ? NextResponse.json(
+        { error: 'Signed out on this device, but other sessions could not be revoked' },
+        { status: 500 },
+      )
+    : NextResponse.json({ message: 'Logged out' });
   // Clear with the SET attributes (SameSite=None; Secure in prod) — a bare
   // { maxAge: 0, path: '/' } is a Lax, non-Secure cookie write, which a browser
   // discards outright when the request is cross-site (the extension case), so
