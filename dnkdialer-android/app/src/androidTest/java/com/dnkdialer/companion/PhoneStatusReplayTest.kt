@@ -47,7 +47,6 @@ class PhoneStatusReplayTest {
     fun signIn() {
         TokenStore.save(ctx, "vc70-status-fixture-not-a-real-token", "dennis@example.com")
         E2eSettings.setEncryptedModeEnabled(ctx, false)
-        dir().listFiles { f -> f.name.startsWith("status-") || f.name.startsWith("top-") }?.forEach { it.delete() }
     }
 
     @After
@@ -114,15 +113,16 @@ class PhoneStatusReplayTest {
                 }
             }
         }
-        assertEquals("10 captures (5 states x 2 themes)", 10, shots("status-").size)
+        assertEquals("10 captures (5 states x 2 themes)", 10, shots("status-").count { Regex("status-[1-5]-.*").matches(it.name) })
     }
 
     @Test
     fun code_screen_goes_when_its_pair_ends_without_a_refusal() {
         ActivityScenario.launch(MainActivity::class.java).use { sc ->
             settle()
-            sendSasRequired("N", "12345")
             drive(sc, obs(0, active = true, key = "N", session = true, pendingSas = "N"))
+            sendSasRequired("N", "12345")
+            drive(sc, obs(100, active = true, key = "N", session = true, pendingSas = "N"))
             sc.onActivity { a -> assertEquals(View.VISIBLE, a.findViewById<View>(R.id.homeHeroSas).visibility) }
             // Pair terminated / room reset: the gate was released, no refusal broadcast.
             drive(sc, obs(2_000, active = false, key = "N", session = false))
@@ -181,24 +181,15 @@ class PhoneStatusReplayTest {
     ) {
         drive(sc, o, event)
         sc.onActivity { a ->
-            // Status line and row both in frame: scroll so the row sits at the bottom.
-            val scroller = a.findViewById<View>(R.id.mainContentContainer).parent as android.widget.ScrollView
-            scroller.scrollTo(0, 0)
             check(a)
-        }
-        settle()
-        capture("status-$name-top.png")
-        sc.onActivity { a ->
-            val reason = a.findViewById<View>(R.id.homeEncryptedModeReason)
-            val footer = a.findViewById<View>(R.id.homeE2eSwitchFailed)
-            val bottom = if (footer.visibility == View.VISIBLE) footer.bottom else reason.bottom
-            val scroller = a.findViewById<View>(R.id.mainContentContainer).parent as android.widget.ScrollView
-            val pad = (24 * a.resources.displayMetrics.density).toInt()
-            scroller.scrollTo(0, maxOf(0, bottom - scroller.height + pad))
+            // The status line, the row and the footer must all be in the frame.
+            for (id in listOf(R.id.statusText, R.id.homeEncryptedModeReason)) {
+                val r = android.graphics.Rect()
+                assertTrue("view $id is not in the window", a.findViewById<View>(id).getGlobalVisibleRect(r) && r.height() > 0)
+            }
         }
         settle()
         capture("status-$name.png")
-        File(dir(), "status-$name-top.png").renameTo(File(dir(), "top-$name.png"))
     }
 
     private fun sendSasRequired(pairingId: String, digits: String) {

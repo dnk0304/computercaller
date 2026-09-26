@@ -1128,6 +1128,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateStatus() {
+        if (statusFrozenForTest) return
         android.util.Log.d("MainActivity", "updateStatus - serviceBound: $serviceBound, phoneService: ${phoneService != null}")
 
         // Disconnect-from-lobby (v25, 2026-05-26): keep the toggle button
@@ -1513,6 +1514,14 @@ class MainActivity : AppCompatActivity() {
      * computer, so the facts a tick would read are supplied; nothing in the
      * app calls this. Returns the view the machine produced.
      */
+    /**
+     * Set by [driveConnStatusForTest] only: the fixture owns the status line,
+     * so [updateStatus] and relay-phase edges (a service that binds late and
+     * dials the live relay with a fixture token) must not repaint it.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal var statusFrozenForTest = false
+
     @androidx.annotation.VisibleForTesting
     internal fun driveConnStatusForTest(
         obs: PhoneConnStatus.Obs,
@@ -1521,8 +1530,8 @@ class MainActivity : AppCompatActivity() {
         // The fixture owns the status line for the duration: no 2 s tick and
         // no relay-phase edge repainting it from a service that has no real
         // pair (the fixture token is refused by the live relay).
+        statusFrozenForTest = true
         stopStatusUpdates()
-        phoneService?.onRelayPhaseChanged = null
         event(connStatus)
         val view = connStatus.observe(obs)
         paintHero(
@@ -1820,6 +1829,7 @@ class MainActivity : AppCompatActivity() {
      *      target-URL line + failure-reason line below the status row.
      */
     private fun handleRelayPhaseChanged(phase: PhoneService.RelayPhase) {
+        if (statusFrozenForTest) return
         android.util.Log.d("MainActivity", "Relay phase: $phase")
         latestRelayPhase = phase
         val service = phoneService
