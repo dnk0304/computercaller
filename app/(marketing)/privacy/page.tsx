@@ -49,7 +49,7 @@ export default function PrivacyPage() {
 
       <main className="max-w-3xl mx-auto px-6 py-16">
         <h1 className="text-4xl font-semibold tracking-tight">Privacy Policy</h1>
-        <p className="mt-2 text-sm text-slate-500">Last updated: 24 May 2026</p>
+        <p className="mt-2 text-sm text-slate-500">Last updated: 26 September 2026</p>
 
         <div className="mt-10 space-y-8 text-slate-700 leading-relaxed">
           <section>
@@ -120,9 +120,11 @@ export default function PrivacyPage() {
                 storage, not on our servers.
               </li>
               <li>
-                <strong>Notifications.</strong> Messaging app notifications are
-                mirrored from your phone to your browser in real time. We do not
-                read, retain, or analyze their contents.
+                <strong>Notifications.</strong> Notifications from the apps on
+                your phone are shown in your browser in real time. This can
+                include messages, sign-in codes, and alerts from any app. They
+                pass through our relay to reach your browser. We don&apos;t read,
+                keep, or analyze their contents.
               </li>
             </ul>
           </section>
@@ -178,13 +180,15 @@ export default function PrivacyPage() {
                 dashboard.
               </li>
               <li>
-                <strong>Notification access.</strong> Optional. Lets you see and
-                interact with messaging app notifications from your browser.
+                <strong>Notification access.</strong> Optional. Lets you see
+                notifications from the apps on your phone in your browser, and
+                reply to or dismiss them.
               </li>
             </ul>
             <p className="mt-3">
-              All permission data stays on your phone or moves directly to your
-              own browser tab. It does not get stored on our servers.
+              All permission data stays on your phone or passes through our
+              relay to your own browser tab. We don&apos;t keep that content on
+              our servers.
             </p>
           </section>
 
