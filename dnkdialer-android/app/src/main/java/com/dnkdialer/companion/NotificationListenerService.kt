@@ -180,6 +180,8 @@ class DnkNotificationListenerService : NotificationListenerService() {
                 category = notification.category,
                 flags = notification.flags,
                 isSelf = pkg == packageName,
+                sameUser = sbn.user == android.os.Process.myUserHandle(),
+                visibility = notification.visibility,
             )
         )?.let { reason ->
             ForwardDiag.notifDrop(reason, pkg, backfill)
@@ -423,12 +425,16 @@ class DnkNotificationListenerService : NotificationListenerService() {
         // The SAME predicate the post path used, so a removal is forwarded for
         // exactly the notifications that were forwarded — including backfilled
         // ones, since the shade is the source for both.
-        if (!NotificationBackfill.isForwardable(
-                packageName = pkg,
-                category = notification.category,
-                flags = notification.flags,
-                isSelf = pkg == packageName,
-            )
+        if (NotificationBackfill.dropReason(
+                NotificationBackfill.Facts(
+                    packageName = pkg,
+                    category = notification.category,
+                    flags = notification.flags,
+                    isSelf = pkg == packageName,
+                    sameUser = sbn.user == android.os.Process.myUserHandle(),
+                    visibility = notification.visibility,
+                )
+            ) != null
         ) {
             return
         }

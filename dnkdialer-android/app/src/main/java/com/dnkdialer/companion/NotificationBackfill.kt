@@ -56,6 +56,19 @@ object NotificationBackfill {
      */
     enum class DropReason(val key: String) {
         NO_PACKAGE("no_package"),
+        /**
+         * vc70 sec C2a — posted by ANOTHER user profile (work profile, a second
+         * user). The listener sees those too; the owner of this pairing did not
+         * choose to mirror their employer's profile to a computer.
+         */
+        OTHER_PROFILE("other_profile"),
+        /**
+         * vc70 sec C2b — `VISIBILITY_SECRET`: the app asked for this to be
+         * hidden even on a locked screen. A second screen is no more private
+         * than the lock screen, so honour it. (`VISIBILITY_PRIVATE` is NOT
+         * secret — it only hides the content on the lock screen — and forwards.)
+         */
+        SECRET("secret"),
         OWN_PACKAGE("own_pkg"),
         ONGOING("ongoing"),
         GROUP_SUMMARY("group_summary"),
@@ -75,12 +88,16 @@ object NotificationBackfill {
         val category: String?,
         val flags: Int,
         val isSelf: Boolean,
+        /** `sbn.user == Process.myUserHandle()`. Defaulted so old callers stay own-profile. */
+        val sameUser: Boolean = true,
+        /** `notification.visibility`; the platform default is `VISIBILITY_PRIVATE`. */
+        val visibility: Int = Notification.VISIBILITY_PRIVATE,
     )
 
     /**
      * The whole filter, in one place: null = forward, else the drop reason.
      *
-     * Drop = own package | FLAG_ONGOING_EVENT | FLAG_GROUP_SUMMARY | category in
+     * Drop = another user profile | VISIBILITY_SECRET | own package | FLAG_ONGOING_EVENT | FLAG_GROUP_SUMMARY | category in
      * [NOISE_CATEGORIES]. Everything else forwards, including no category and
      * packages nobody has heard of.
      *
@@ -93,13 +110,20 @@ object NotificationBackfill {
     @JvmStatic
     fun dropReason(f: Facts): DropReason? {
         if (f.packageName == null) return DropReason.NO_PACKAGE
+        if (!f.sameUser) return DropReason.OTHER_PROFILE
+        if (f.visibility == Notification.VISIBILITY_SECRET) return DropReason.SECRET
         if (f.isSelf) return DropReason.OWN_PACKAGE
         if (f.flags and Notification.FLAG_ONGOING_EVENT != 0) return DropReason.ONGOING
         if (f.flags and Notification.FLAG_GROUP_SUMMARY != 0) return DropReason.GROUP_SUMMARY
         return f.category?.let { NOISE_CATEGORIES[it] }
     }
 
-    /** Boolean form of [dropReason]; the signature the RULE 30 vectors pin. */
+    /**
+     * Boolean form of [dropReason]; the signature the RULE 30 vectors pin (the
+     * pre-denylist code 307e28a had it too, so the vectors file still compiles
+     * there). Own profile, non-secret: the production paths call [dropReason]
+     * with the full [Facts].
+     */
     @JvmStatic
     fun isForwardable(
         packageName: String?,

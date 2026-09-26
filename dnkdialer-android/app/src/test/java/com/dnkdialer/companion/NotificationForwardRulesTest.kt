@@ -26,6 +26,54 @@ class NotificationForwardRulesTest {
         assertNull(reason("no.bank.mobile", null))
     }
 
+    // ---------------------------------------------- sec C2 profile + secret
+
+    private fun facts(sameUser: Boolean = true, visibility: Int = Notification.VISIBILITY_PRIVATE) =
+        NotificationBackfill.Facts("no.bank.mobile", null, 0, false, sameUser, visibility)
+
+    @Test
+    fun work_profile_bank_alert_drops_as_other_profile() {
+        assertEquals(
+            NotificationBackfill.DropReason.OTHER_PROFILE,
+            NotificationBackfill.dropReason(facts(sameUser = false)),
+        )
+    }
+
+    @Test
+    fun own_profile_bank_alert_forwards() {
+        assertNull(NotificationBackfill.dropReason(facts(sameUser = true)))
+    }
+
+    @Test
+    fun visibility_secret_drops_as_secret() {
+        assertEquals(
+            NotificationBackfill.DropReason.SECRET,
+            NotificationBackfill.dropReason(facts(visibility = Notification.VISIBILITY_SECRET)),
+        )
+    }
+
+    /** Lockscreen-PRIVATE hides the content on the lock screen only; it is not secret. */
+    @Test
+    fun visibility_private_and_public_forward() {
+        assertNull(NotificationBackfill.dropReason(facts(visibility = Notification.VISIBILITY_PRIVATE)))
+        assertNull(NotificationBackfill.dropReason(facts(visibility = Notification.VISIBILITY_PUBLIC)))
+    }
+
+    @Test
+    fun new_reasons_log_under_their_own_keys() {
+        assertEquals("other_profile", NotificationBackfill.DropReason.OTHER_PROFILE.key)
+        assertEquals("secret", NotificationBackfill.DropReason.SECRET.key)
+    }
+
+    /** The 4-arg vectors signature stays own-profile/non-secret: old behaviour unchanged. */
+    @Test
+    fun facts_defaults_are_own_profile_and_private() {
+        val f = NotificationBackfill.Facts("no.bank.mobile", null, 0, false)
+        assertTrue(f.sameUser)
+        assertEquals(Notification.VISIBILITY_PRIVATE, f.visibility)
+        assertTrue(NotificationBackfill.isForwardable("no.bank.mobile", null, 0, false))
+    }
+
     @Test
     fun counter_keys_are_unique_snake_case() {
         val keys = NotificationBackfill.DropReason.values().map { it.key }.toSet()
