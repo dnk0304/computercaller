@@ -647,6 +647,13 @@ const MIN_CHECKS_OVERRIDE = {
   'relay:e2e-sas-confirm-backfill.test.mjs': 36,
   'relay:e2e-pref-reconnect-mode.test.mjs': 27,
   'relay:e2e-ext-signin-sw-recipient.test.mjs': 24,
+  // #18 CONN-STATUS (Pixel). tests/e2e-conn-truth.test.mjs drives the REAL
+  // lib/connectionTruth.ts: the four current-pair states, pref-ON + mode0
+  // never reads "Encrypted", the settle rule, switch start/end edges,
+  // idempotency and the SAS-screen gate, with a planted pref-driven control.
+  // Auto-discovered by the e2e-* sweep; the floor is what it needs here.
+  // Measured at the commit that adds it: 58.
+  'relay:e2e-conn-truth.test.mjs': 58,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job

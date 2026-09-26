@@ -1,9 +1,11 @@
 'use client';
 
 import React from 'react';
-import { Lock, LockOpen, ShieldAlert } from 'lucide-react';
+import { Lock, LockOpen, RefreshCw, Shield, ShieldAlert } from 'lucide-react';
 
 import { usePhone } from '@/hooks';
+import { useConnectionTruth } from '@/hooks/useConnectionTruth';
+import type { ConnTruth } from '@/lib/connectionTruth';
 import {
   encryptionIndicator,
   type PeerSupport,
@@ -77,15 +79,24 @@ const toneInk: Record<EncryptionIndicator['tone'], string> = {
  */
 export function EncryptionChip({ compact = false }: { compact?: boolean }) {
   const data = useIndicator();
+  const { truth } = useConnectionTruth();
   if (!data) return null;
   const { indicator } = data;
 
   // Error states are the banner's job — a 40px chip cannot carry a reason, and
   // a chip that said "Pairing refused" with no explanation is worse than one
   // that stays quiet while a banner says it properly one row below.
-  if (indicator.banner) return null;
+  // "Switching…" still shows: a pref change is the one transition that may
+  // pass through a teardown, and saying so beats a silent gap.
+  if (indicator.banner && truth?.key !== 'switching') return null;
 
-  const Glyph = indicator.lock ? Lock : LockOpen;
+  // #18 CONN-STATUS. While a pair is live (or a switch is in flight) the chip
+  // says what the CURRENT pair is — lib/connectionTruth.ts. With no pair it
+  // keeps the pre-existing copy.
+  const shown: { label: string; detail: string; tone: EncryptionIndicator['tone'] } = truth
+    ? { label: truth.label, detail: truth.detail, tone: truth.tone }
+    : indicator;
+  const glyph = truth ? truthGlyph(truth) : indicator.lock ? 'lock' : 'open';
 
   return (
     <span
@@ -94,19 +105,48 @@ export function EncryptionChip({ compact = false }: { compact?: boolean }) {
       // connection pill and rendered as "Not encry…". A truncated security
       // label is worse than no label — "Not encry…" and "Encrypted" share a
       // prefix at a glance. The pill beside it already truncates a device NAME,
-      // which is the right thing to sacrifice first; these three words are not.
-      className={`cc-e2e-surface inline-flex flex-shrink-0 items-center gap-1 whitespace-nowrap ${toneInk[indicator.tone]}`}
-      data-cc-e2e-chip={indicator.tone}
-      data-cc-e2e-label={indicator.label}
-      title={indicator.detail}
+      // which is the right thing to sacrifice first; these words are not.
+      //
+      // aria-live polite: a switch walks Encrypted -> Switching -> new mode,
+      // and a screen-reader user should hear each step without losing focus.
+      aria-live="polite"
+      aria-atomic="true"
+      className={`cc-e2e-surface inline-flex flex-shrink-0 items-center gap-1 whitespace-nowrap ${toneInk[shown.tone]}`}
+      data-cc-e2e-chip={shown.tone}
+      data-cc-e2e-label={shown.label}
+      data-cc-conn-truth={truth?.key ?? ''}
+      title={shown.detail}
     >
-      <Glyph className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+      <ChipGlyph kind={glyph} />
       {!compact && (
-        <span className="text-[11px] font-medium">{indicator.label}</span>
+        <span className="text-[11px] font-medium">{shown.label}</span>
       )}
-      <span className="sr-only">{indicator.detail}</span>
+      <span className="sr-only">{compact ? `${shown.label}. ${shown.detail}` : shown.detail}</span>
     </span>
   );
+}
+
+/**
+ * The glyph for a current-pair state. The lock is kept for the two sealed
+ * states only; TLS gets a plain shield (protected in transit, not an open
+ * padlock — that would read as "unprotected", which TLS is not); a switch gets
+ * a static arrows glyph (no spin: the words carry the progress).
+ */
+type GlyphKind = 'lock' | 'open' | 'shield' | 'switching';
+
+function truthGlyph(truth: ConnTruth): GlyphKind {
+  if (truth.lock) return 'lock';
+  return truth.key === 'switching' ? 'switching' : 'shield';
+}
+
+function ChipGlyph({ kind }: { kind: GlyphKind }) {
+  const cls = 'h-3.5 w-3.5 flex-shrink-0';
+  switch (kind) {
+    case 'lock': return <Lock className={cls} aria-hidden="true" />;
+    case 'shield': return <Shield className={cls} aria-hidden="true" />;
+    case 'switching': return <RefreshCw className={cls} aria-hidden="true" />;
+    default: return <LockOpen className={cls} aria-hidden="true" />;
+  }
 }
 
 /**
