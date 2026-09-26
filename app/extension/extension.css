@@ -39,7 +39,9 @@ html:has(.cc-ext), body:has(.cc-ext) {
 html[data-cc-theme=dark]:has(.cc-ext),
 html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 
-.cc-ext {
+.cc-ext,
+:where(html:has(.cc-ext)) .cc-ft-surface,
+:where(html:has(.cc-ext)) .cc-ft-toast {
   /* ---- surfaces (light) ---- */
   --cc-page: #ffffff;
   --cc-card: #ffffff;
@@ -146,7 +148,9 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
    rendered by the server, which cannot know the preference, so gating on it
    would flash a white panel at every dark-mode user on every open.
    --------------------------------------------------------------------------- */
-:where([data-cc-theme=dark]) .cc-ext {
+:where([data-cc-theme=dark]) .cc-ext,
+:where(html[data-cc-theme=dark]:has(.cc-ext)) .cc-ft-surface,
+:where(html[data-cc-theme=dark]:has(.cc-ext)) .cc-ft-toast {
   --cc-page: #0b0b0d;
   --cc-card: #18181b;
   --cc-zebra: #141417;
@@ -1004,7 +1008,9 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
        after it, so these win. --cc-page and --cc-card are kept as ALIASES
        rather than retired: every card, field and ground rule already written
        against them inherits the ladder without being touched. --- */
-.cc-ext {
+.cc-ext,
+:where(html:has(.cc-ext)) .cc-ft-surface,
+:where(html:has(.cc-ext)) .cc-ft-toast {
   /* L0 is the header surface, and there is NO BAND: in light it is white.
 
      R-CJ (Dennis, Discord 2026-09-22 18:05Z, verbatim): "i also asked to revert
@@ -1068,7 +1074,9 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
   --cc-zebra: #f5f5f6;
 }
 
-:where([data-cc-theme=dark]) .cc-ext {
+:where([data-cc-theme=dark]) .cc-ext,
+:where(html[data-cc-theme=dark]:has(.cc-ext)) .cc-ft-surface,
+:where(html[data-cc-theme=dark]:has(.cc-ext)) .cc-ft-toast {
   /* R-CJ: no band. L0 goes back to the pre-9edc664 near-black #0b0b0d, which
      is DARKER than every body surface — see the R-CJ note in the light block
      above for the ruling and for why both the UI-HEADER band and the
@@ -2202,6 +2210,14 @@ html[data-cc-theme=dark] body:has(.cc-ext) { background: #0b0b0d; }
 }
 
 /* --- Portalled: the dialog and the toast --------------------------------- */
+/* EXT-ACCEPT-DIALOG (A). Both surfaces are portalled to <body>, i.e. OUTSIDE
+   .cc-ext, where every --cc-* token used to be undefined. `background:
+   var(--cc-card)` then computed to transparent (invalid-at-computed-value),
+   which is the see-through dark dialog. The surface and ladder token blocks
+   (base + dark, and the EXT-FRAME-2 ladder + dark) now also scope onto
+   .cc-ft-surface / .cc-ft-toast, at the same (0,1,0) specificity via :where(),
+   so the dark block still wins by order exactly as it does for .cc-ext. One
+   source of truth: no hex is duplicated here. */
 html:has(.cc-ext) .cc-ft-panel,
 html:has(.cc-ext) .cc-ft-toast > div {
   border-radius: var(--r-card);

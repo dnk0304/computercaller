@@ -406,6 +406,23 @@ export function useFileTransfer(slot: FileTransferBridgeSlot): FileTransferApi {
     if (!offer) return;
     queueCtl.dismissFailure();
     await receiver.receiveToDisk(offer);
+    /*
+     * EXT-ACCEPT-DIALOG. The dialog used to stay up until onDone/onFailed,
+     * i.e. for the whole transfer, because nothing cleared this state on the
+     * accept path. receiveToDisk resolves once the picker has answered and the
+     * receiver has either sent FILE_ACCEPT (state 'receiving') or given the
+     * offer up (picker cancelled, permission refused) — in every one of those
+     * the receiver no longer holds the offer as pending, so the question is
+     * answered and the dialog closes. Progress lives in the Transfers strip.
+     * Keyed by id so a newer offer that arrived meanwhile is never cleared, and
+     * a throw above (a transfer already running) leaves the dialog up with the
+     * offer still answerable.
+     */
+    if (receiver.pendingOffer?.id === offer.id) return;
+    setPendingOffer((cur) => (cur?.id === offer.id ? null : cur));
+    // Picker cancelled / permission refused: no transfer started, so the
+    // outgoing queue must not stay parked behind an offer that is gone.
+    if (receiver.liveId === null) queueCtl.noteIncomingOffer(false);
   }, [receiver, queueCtl]);
 
   const rejectOffer = useCallback(() => {
