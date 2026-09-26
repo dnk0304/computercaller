@@ -162,7 +162,7 @@
     <string name="perm_why_notifications">Show incoming-call alerts on your phone.</string>
 
     <string name="perm_name_notif_listener">Notification access</string>
-    <string name="perm_why_notif_listener">Mirror messaging app notifications to the web app.</string>
+    <string name="perm_why_notif_listener">Reads all your notifications (except ongoing and system ones) to show them on your computer.</string>
 
     <string name="perm_name_phone">Phone</string>
     <string name="perm_why_phone">Place calls dialed from the web app.</string>
