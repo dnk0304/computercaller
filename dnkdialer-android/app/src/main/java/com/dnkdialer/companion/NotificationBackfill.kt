@@ -152,8 +152,11 @@ object NotificationBackfill {
     }
 
     /**
-     * SHA-256(packageName), first 8 hex, printed as `xxxx_xxxx`. The package
-     * name itself is never logged (a bank's package is a fact about the user).
+     * HMAC-SHA256(key, packageName), first 8 hex, printed as `xxxx_xxxx`. The
+     * package name itself is never logged (a bank's package is a fact about
+     * the user), and since vc70 sec C4 the handle is keyed with a random
+     * per-install secret ([PkgHashKey]): stable within an install, not
+     * reversible by hashing a public package list. Pure — the key is passed in.
      *
      * Why the underscore: [Redact] rewrites any run of 7+ digits into
      * `num:<hash>`, and 8 hex characters are all-digit or hold a 7-digit run
@@ -161,9 +164,10 @@ object NotificationBackfill {
      * the handle Ken matches against survives the export for every package.
      */
     @JvmStatic
-    fun pkgHash(packageName: String): String {
-        val d = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(packageName.toByteArray(Charsets.UTF_8))
+    fun pkgHash(packageName: String, key: ByteArray): String {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+        val d = mac.doFinal(packageName.toByteArray(Charsets.UTF_8))
         val hex = StringBuilder(8)
         for (i in 0 until 4) hex.append(String.format("%02x", d[i]))
         return hex.substring(0, 4) + "_" + hex.substring(4, 8)

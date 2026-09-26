@@ -112,22 +112,57 @@ class NotificationForwardRulesTest {
 
     // ---------------------------------------------------------- T4 hygiene
 
+    // sec C4: fixed test keys; production uses 32 random bytes per install (PkgHashKey).
+    private val keyA = ByteArray(32) { it.toByte() }
+    private val keyB = ByteArray(32) { (it + 1).toByte() }
+
+    private fun split(d: ByteArray): String {
+        val hex = d.take(4).joinToString("") { String.format("%02x", it) }
+        return hex.substring(0, 4) + "_" + hex.substring(4)
+    }
+
     @Test
     fun pkg_hash_is_8_hex_split_and_never_names_the_package() {
-        val h = NotificationBackfill.pkgHash("no.dnb.mobilbank")
+        val h = NotificationBackfill.pkgHash("no.dnb.mobilbank", keyA)
         assertTrue(h, h.matches(Regex("[0-9a-f]{4}_[0-9a-f]{4}")))
         assertFalse(h.contains("dnb"))
-        assertEquals(h, NotificationBackfill.pkgHash("no.dnb.mobilbank"))
-        val d = java.security.MessageDigest.getInstance("SHA-256").digest("com.whatsapp".toByteArray())
-        val hex = d.take(4).joinToString("") { String.format("%02x", it) }
-        assertEquals(hex.substring(0, 4) + "_" + hex.substring(4), NotificationBackfill.pkgHash("com.whatsapp"))
+    }
+
+    @Test
+    fun pkg_hash_is_deterministic_under_the_same_key() {
+        assertEquals(
+            NotificationBackfill.pkgHash("no.dnb.mobilbank", keyA),
+            NotificationBackfill.pkgHash("no.dnb.mobilbank", keyA.copyOf()),
+        )
+    }
+
+    /** Pinned to an independent HMAC-SHA256, and NOT the old unsalted SHA-256. */
+    @Test
+    fun pkg_hash_is_hmac_sha256_not_the_unsalted_digest() {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(keyA, "HmacSHA256"))
+        val expected = split(mac.doFinal("com.whatsapp".toByteArray()))
+        assertEquals(expected, NotificationBackfill.pkgHash("com.whatsapp", keyA))
+        val unsalted = split(java.security.MessageDigest.getInstance("SHA-256").digest("com.whatsapp".toByteArray()))
+        assertFalse(unsalted == NotificationBackfill.pkgHash("com.whatsapp", keyA))
+    }
+
+    /** Another install (another key) gets unrelated handles: no cross-install dictionary. */
+    @Test
+    fun pkg_hash_differs_under_another_key() {
+        var same = 0
+        for (i in 0 until 200) {
+            val p = "com.example.app$i"
+            if (NotificationBackfill.pkgHash(p, keyA) == NotificationBackfill.pkgHash(p, keyB)) same++
+        }
+        assertEquals(0, same)
     }
 
     /** The redactor eats 7+ digit runs; the split keeps every handle intact. */
     @Test
     fun pkg_hash_survives_the_redactor_for_every_package() {
         for (i in 0 until 5000) {
-            val h = NotificationBackfill.pkgHash("com.example.app$i")
+            val h = NotificationBackfill.pkgHash("com.example.app$i", keyA)
             assertEquals(h, Redact.line(h))
         }
     }

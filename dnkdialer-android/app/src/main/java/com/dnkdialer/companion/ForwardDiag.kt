@@ -7,7 +7,7 @@ package com.dnkdialer.companion
  * and a backfill that ran too early were all logcat-only (or not logged at
  * all), so Dennis's DiagExport could not say why a bank alert never reached the
  * computer. Every line here is METADATA: a reason enum, a frame type, a count,
- * a trigger name and an 8-hex package hash. Never a package name, title or body
+ * a trigger name and an 8-hex keyed package hash. Never a package name, title or body
  * (SPEC-PLAIN-PRIVACY-9).
  *
  * Counters always increment; the per-event LINES are rate-limited (20/min per
@@ -28,10 +28,17 @@ object ForwardDiag {
         if (dropLines.getOrPut(reason) { DiagRateLimiter() }.tryAcquire()) {
             DiagLog.d(
                 TAG,
-                "notif drop reason=${reason.key} pkg=${pkg?.let { NotificationBackfill.pkgHash(it) } ?: "none"} " +
+                "notif drop reason=${reason.key} pkg=${pkgHandle(pkg)} " +
                     "path=${if (backfill) "backfill" else "live"}",
             )
         }
+    }
+
+    /** Keyed handle; "nokey" (never an unsalted hash) if [PkgHashKey] is not ready. */
+    private fun pkgHandle(pkg: String?): String {
+        if (pkg == null) return "none"
+        val key = PkgHashKey.get() ?: return "nokey"
+        return NotificationBackfill.pkgHash(pkg, key)
     }
 
     fun notifForwarded() = DiagLog.counter("notif.fwd")

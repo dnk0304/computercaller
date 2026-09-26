@@ -76,6 +76,8 @@ class CompanionApp : Application() {
         // at start (not only at export time) means an app that is never
         // exported from still cannot accumulate logs past a day.
         DiagLog.init(this)
+        // vc70 sec C4: per-install HMAC key for the DiagLog package handle.
+        PkgHashKey.init(this)
         DiagExport.pruneExports(this)
 
         AppCompatDelegate.setDefaultNightMode(NIGHT_MODE)
