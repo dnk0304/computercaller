@@ -1,0 +1,45 @@
+{
+  "note": "#18 fold: full P5A gate ran on 2de52f1 (gate-P5A-2de52f1-deploy18.json, FAIL 132/140). Every red was ruled (Ken 2026-09-26) and re-run on 538ecc9 (product identical to 2de52f1; commits after it are test/harness only + Pixel test-only ede782e). Counts only, no output.",
+  "sha": "538ecc9",
+  "productBuildSha": "2de52f1",
+  "rulings": {
+    "lint": "pass-by-ruling T-LINT-18: server.js no-require-imports 8->9 (T-LINT-17) + no-unused-vars 14->17 (36928b1 catch(_){} x3); tests/ext-web-dual-session.test.mjs lint-only cleanup (0 msgs, 71/71 before+after)",
+    "e2e-ext-signin-sw-recipient": "pin moved: teardown via dropLocalSession() (36928b1)",
+    "e2e-sas-confirm-backfill": "pin moved: item 8 backfill = unread, no double count",
+    "soak-rig": "pin moved: validateTicket return shape (36928b1); lookup + null-if-absent kept",
+    "bridge-origin-pin": "(5c) test-config: rewrite all '@/lib' aliases; chrome-extension '@/' imports = 0",
+    "ext-badge-counter-proof": "section 17 harness bug fixed; plant-proved both directions",
+    "e2e-ui-proof": "A = harness defect (pairForReal replayed pairEpoch 1 -> correct e2e-epoch-replayed refusal), B = (c) copy pin -> 'Standard (TLS)', C = idle cookies re-minted per theme (m2 sessionVersion bump)",
+    "ext-backfill-unread-proof": "no-toast check excludes Next route announcer (empty role=alert)",
+    "baseline-parity": "derived from ext-badge-counter-proof"
+  },
+  "rerun": {
+    "relay:e2e-ext-signin-sw-recipient": "24/24",
+    "relay:e2e-sas-confirm-backfill": "36/36",
+    "unit:soak-rig": "82/82",
+    "unit:bridge-origin-pin": "13/13",
+    "ext-web-dual-session": "71/71",
+    "harness:ext-badge-counter-proof": "80/80",
+    "harness:e2e-ui-proof": "391/391 (minChecks 391)",
+    "relay:e2e-conn-truth": "70/70 (58 + ede782e vectors)"
+  },
+  "standalone": {
+    "alert-unread": "42/42",
+    "logout-revokes-ext-token": "34/34",
+    "e2e-legacy-switch-migration-proof (item 2)": "34/34",
+    "ext-backfill-unread-proof (item 8 timeline)": "16/16",
+    "ext-alerts-badge-phantom-proof": "14/14 (headed)",
+    "ft-accept-dialog-proof": "37/37",
+    "ft-ui-proof": "180/180"
+  },
+  "gateGreenOnFirstRun": {
+    "relay:relay-e2e-pref-frame-filter": "171/171",
+    "relay:e2e-ft-accept-dialog": "21/21",
+    "relay:e2e-ft-routing": "33/33",
+    "relay:e2e-pref-reconnect-mode": "27/27",
+    "relay:e2e-account-pref-web": "129/129"
+  },
+  "notRun": { "P6 e2e-p61b-phone-crossimpl": "DEFERRED-TO-VC70 (Ken plan; needs rooted emulator lane)" },
+  "prismaDiff": "none",
+  "extensionManifest": "1.0.2"
+}
