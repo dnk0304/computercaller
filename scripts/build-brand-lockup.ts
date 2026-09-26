@@ -67,6 +67,9 @@
  *        rewrites only the Android launcher icons (adaptive foreground + the
  *        legacy square/round), and optionally the 512 px Play listing icon to
  *        <out.png>; every other cut is left untouched.
+ *      bun scripts/build-brand-lockup.ts --wordmark-split-only
+ *        writes only the stacked sidebar word cuts (cc-wordmark-computer,
+ *        cc-wordmark-caller).
  *      (sharp comes in with Next.js; this is a manual build tool, its outputs
  *       are committed, so it is not wired into `next build`.)
  */
@@ -328,6 +331,7 @@ function writeText(file: string, body: string) {
 
 const ARGS = process.argv.slice(2);
 const LAUNCHER_ONLY = ARGS.includes('--launcher-only');
+const SPLIT_ONLY = ARGS.includes('--wordmark-split-only');
 const PLAY_ICON_OUT = ARGS.find((a) => a.startsWith('--play-icon='))?.slice('--play-icon='.length);
 
 /**
@@ -429,6 +433,106 @@ function writeBuf(file: string, buf: Buffer) {
   note(file);
 }
 
+
+/* ------------------------------------------------------- stacked word cuts */
+
+/**
+ * WEB-HEADER-WORDMARK (Dennis 2026-09-25): the /app sidebar stacks the
+ * wordmark on two rows, COMPUTER over CALLER. The artwork only has it on one line, so
+ * these cuts SPLIT the keyed wordmark at the word gap. Nothing is redrawn:
+ * every pixel is the artwork's; only where the pieces sit changes.
+ */
+
+/**
+ * Letter columns [start, end] (inclusive). The key leaves faint ground residue
+ * (alpha <= ~30) across the whole strip, so a column counts as ink only above
+ * INK_ALPHA; otherwise a residue speck becomes a "letter". Where two letters
+ * touch (C and A in CALLER do, through antialiasing), the widest run is split
+ * at its thinnest column until the run count matches the letters expected.
+ */
+const INK_ALPHA = 40;
+function letterRuns(raw: Raw, from: number, to: number, letters: number): Array<[number, number]> {
+  const colSum = (col: number) => {
+    let n = 0;
+    for (let row = 0; row < raw.height; row++) n += raw.data[(row * raw.width + col) * 4 + 3];
+    return n;
+  };
+  const isInk = (col: number) => {
+    for (let row = 0; row < raw.height; row++) {
+      if (raw.data[(row * raw.width + col) * 4 + 3] > INK_ALPHA) return true;
+    }
+    return false;
+  };
+  const runs: Array<[number, number]> = [];
+  let start = -1;
+  for (let col = from; col <= to; col++) {
+    const ink = isInk(col);
+    if (ink && start < 0) start = col;
+    if (!ink && start >= 0) {
+      runs.push([start, col - 1]);
+      start = -1;
+    }
+  }
+  if (start >= 0) runs.push([start, to]);
+  while (runs.length < letters) {
+    let wi = 0;
+    runs.forEach((r, i) => {
+      if (r[1] - r[0] > runs[wi][1] - runs[wi][0]) wi = i;
+    });
+    const [a, b] = runs[wi];
+    // Thinnest column in the middle half — never shave a letter's own edge.
+    let cut = a + Math.floor((b - a) / 4);
+    for (let col = cut; col <= b - Math.floor((b - a) / 4); col++) {
+      if (colSum(col) < colSum(cut)) cut = col;
+    }
+    runs.splice(wi, 1, [a, cut - 1], [cut + 1, b]);
+  }
+  if (runs.length !== letters) {
+    throw new Error(`expected ${letters} letters, found ${runs.length}: ${JSON.stringify(runs)}`);
+  }
+  return runs;
+}
+
+function crop(raw: Raw, x0: number, x1: number): Raw {
+  const w = x1 - x0 + 1;
+  const out = Buffer.alloc(w * raw.height * 4);
+  for (let row = 0; row < raw.height; row++) {
+    raw.data.copy(out, row * w * 4, (row * raw.width + x0) * 4, (row * raw.width + x1 + 1) * 4);
+  }
+  return { data: out, width: w, height: raw.height };
+}
+
+/**
+ * COMPUTER and CALLER as separate cuts, each trimmed to its own ink box.
+ * The sidebar scales CALLER up to COMPUTER's width (uniform scale).
+ */
+function splitWords(word: Raw): { computer: Raw; caller: Raw } {
+  const split = SQUARE.wordSplit - SQUARE.wordmark.x;
+  const first = letterRuns(word, 0, split - 1, 'COMPUTER'.length);
+  const second = letterRuns(word, split, word.width - 1, 'CALLER'.length);
+  const computer = crop(word, first[0][0], first[first.length - 1][1]);
+  const caller = crop(word, second[0][0], second[second.length - 1][1]);
+  return { computer, caller };
+}
+
+async function writeSplitCuts(wordLight: Raw) {
+  const outDir = P('public', 'brand', 'official');
+  const cuts = splitWords(wordLight);
+  for (const [name, raw] of [
+    ['cc-wordmark-computer', cuts.computer],
+    ['cc-wordmark-caller', cuts.caller],
+  ] as const) {
+    for (const scale of [1, 2, 3] as const) {
+      const suffix = scale === 1 ? '' : `@${scale}x`;
+      // 3x is native; 1x/2x downscale from it.
+      const w = Math.round((raw.width * scale) / 3);
+      const h = Math.max(1, Math.round((raw.height * scale) / 3));
+      await writePng(raw, join(outDir, `${name}${suffix}.png`), w, h);
+    }
+    console.log(`  ${name}: ${raw.width}x${raw.height} native`);
+  }
+}
+
 /* --------------------------------------------------------------------- main */
 
 /** 1x display widths. 3x lands exactly on the artwork's native pixels. */
@@ -440,6 +544,13 @@ async function main() {
   const squareRaw = await readRaw(SRC_LOCKUP);
   const wordLight = keyWordmark(squareRaw, INK.light);
   const wordDark = keyWordmark(squareRaw, INK.dark);
+
+  // Light only: the /app sidebar is light-only by design (globals.css D4).
+  if (!LAUNCHER_ONLY) await writeSplitCuts(wordLight);
+  if (SPLIT_ONLY) {
+    console.log(`build-brand-lockup: wrote ${written.length} files\n  ` + written.join('\n  '));
+    return;
+  }
 
   if (!LAUNCHER_ONLY) {
     const outDir = P('public', 'brand', 'official');

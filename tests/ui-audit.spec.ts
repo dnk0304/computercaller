@@ -36,18 +36,21 @@ test.describe('ComputerCaller UI Audit', () => {
 
     // Click each sidebar tab and verify content loads
     const tabs = [
-      { label: 'Dialer Only', headerText: 'dialer' },
-      { label: 'Messages Only', headerText: 'messages' },
-      { label: 'Contacts', headerText: 'contacts' },
-      { label: 'Settings', headerText: 'settings' },
-      { label: 'Dashboard', headerText: 'dashboard' },
+      { label: 'Dialer Only' },
+      { label: 'Messages Only' },
+      { label: 'Contacts' },
+      { label: 'Settings' },
+      { label: 'Dashboard' },
     ];
 
+    // The header carries no title (Dennis 2026-09-25, WEB-HEADER-WORDMARK):
+    // the brand lives in the sidebar lockup, so the active tab is read off the
+    // nav button's own active state instead of a header h2.
+    await expect(page.locator('header h2')).toHaveCount(0);
     for (const tab of tabs) {
-      await page.locator(`nav button span:has-text("${tab.label}")`).click();
-      // Header should update
-      const header = page.locator('header h2');
-      await expect(header).toHaveText(tab.headerText, { ignoreCase: true });
+      const button = page.locator('nav button', { has: page.locator(`span:has-text("${tab.label}")`) });
+      await button.click();
+      await expect(button).toHaveClass(/bg-blue-50/);
     }
   });
 
