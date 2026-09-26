@@ -778,6 +778,11 @@ try {
    * devicekeys route, same settle budget — or "no dialog appeared" would be a
    * claim about the harness, not about the product.
    */
+  // #18 fold: every scripted accept gets a FRESH, higher pairEpoch. A second pair
+  // on the SAME page (arm 18: pair a -> switch -> pair b) at a repeated epoch is
+  // correctly refused by the epoch floor (A3-M2, e2e-epoch-replayed); the old
+  // hardcoded 1n only ever worked because every other arm pairs once per context.
+  let nextPairEpoch = 1n;
   async function pairForReal(page, pairingId, { modeOn = true } = {}) {
     /*
      * WAIT FOR THE HOOK TO KNOW WHICH ACCOUNT IT IS, and do not race it.
@@ -812,7 +817,7 @@ try {
     const built = await scriptedPhoneAccept({
       recipients: req.e2e.recips,
       pairingId,
-      pairEpoch: 1n,
+      pairEpoch: nextPairEpoch++,
       modeOn,
       userId: dbUser.id,
       phoneDeviceId: 'dev-phone-p5a',

@@ -122,7 +122,10 @@ try {
   await replayShade(p);
   const b0 = await alertsBadge(p);
   check('connect, 5 in the shade: Alerts tab badge 5 (on Dial)', b0 === 5, b0);
-  check('backfill raises no toast', (await p.locator('[role="alert"]').count()) === 0);
+  // #18 fold: Next's own route announcer (DIV#__next-route-announcer__, role=alert,
+  // empty, inside NEXT-ROUTE-ANNOUNCER) is framework a11y plumbing, not a toast.
+  const alertTexts = await p.locator('[role="alert"]:not(#__next-route-announcer__)').evaluateAll((els) => els.map((e) => e.tagName + '#' + e.id + ' host=' + (e.getRootNode().host ? e.getRootNode().host.tagName : '-') + ' live=' + e.getAttribute('aria-live') + ' | ' + (e.textContent || '').trim().slice(0, 80)));
+  check('backfill raises no toast', alertTexts.length === 0, alertTexts.length ? alertTexts : '');
   await goTab(p, 'Alerts');
   check('on Alerts: 5 cards, 5 dots — visiting the tab reads nothing', (await cards(p)) === 5 && (await dots(p)) === 5,
     { cards: await cards(p), dots: await dots(p) });
