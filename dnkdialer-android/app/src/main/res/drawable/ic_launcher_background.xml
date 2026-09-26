@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive launcher background: light brand blue (Dennis, 2026-09-25, Vinci option 2).
+     A soft TL->BR fade #F9FCFD -> #D5EAFD -> #BAD5FA. The ramp runs across the 72dp
+     visible viewport (18..90 of the 108dp layer), not the whole layer, so the visible
+     icon shows the full fade; tileMode clamp holds the end colours in the parallax
+     margin. A <vector> rather than <shape>: a shape gradient always spans the full
+     108dp layer, which would leave only the middle two-thirds of the ramp visible. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="18"
+                android:startY="18"
+                android:endX="90"
+                android:endY="90"
+                android:startColor="#FFF9FCFD"
+                android:centerColor="#FFD5EAFD"
+                android:endColor="#FFBAD5FA"
+                android:tileMode="clamp" />
+        </aapt:attr>
+    </path>
+</vector>

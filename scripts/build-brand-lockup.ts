@@ -333,9 +333,9 @@ const PLAY_ICON_OUT = ARGS.find((a) => a.startsWith('--play-icon='))?.slice('--p
 /**
  * ICON-REVERT-ORIGINAL (Dennis 2026-09-25, variant B "viewport-max").
  *
- * The launcher is the original mark alone on WHITE (colors.xml
- * ic_launcher_background #FFFFFF; it was the artwork's pale blue #C6E9FB until
- * the ring rollout), enlarged as far as a launcher shows anything: the mark's
+ * The launcher is the original mark alone on the light-brand-blue ground (see
+ * GROUND below; it was white #FFFFFF until 2026-09-25, and the artwork's pale
+ * blue #C6E9FB before the ring rollout), enlarged as far as a launcher shows anything: the mark's
  * farthest opaque pixel lands 35.5 dp from the centre of the 108 dp canvas,
  * 0.5 dp inside the 72 dp visible viewport.
  *
@@ -352,7 +352,71 @@ const PLAY_ICON_OUT = ARGS.find((a) => a.startsWith('--play-icon='))?.slice('--p
  * mask cuts, and the radius bounds them.
  */
 const LAUNCHER_REACH_DP = 35.5;
-const LAUNCHER_BG = { r: 255, g: 255, b: 255, alpha: 1 };
+
+/**
+ * ICON-LIGHTBLUE (Dennis 2026-09-25, Vinci option 2 "light brand blue").
+ *
+ * Every icon ground is a soft top-left -> bottom-right fade through three
+ * stops. On Android it ships as a vector (res/drawable/ic_launcher_background.xml:
+ * linear gradient (18,18) -> (90,90) over the 108 dp layer, tileMode clamp), so
+ * the rasters below reproduce exactly that geometry: t is the projection on the
+ * diagonal, clamped outside [t0, t1]. A full-bleed tile (Play, extension, web)
+ * runs the ramp corner to corner (t0 = 0, t1 = 1).
+ *
+ * Computed per pixel rather than drawn through an SVG so the ramp is exact and
+ * independent of the rasteriser. The fade is linear between stops, so sampling
+ * at pixel centres equals the area average: no supersampling needed.
+ */
+const GROUND: ReadonlyArray<RGB> = [
+  [0xf9, 0xfc, 0xfd],
+  [0xd5, 0xea, 0xfd],
+  [0xba, 0xd5, 0xfa],
+];
+
+function ground(n: number, t0 = 0, t1 = 1): Raw {
+  const data = Buffer.alloc(n * n * 4);
+  for (let py = 0; py < n; py++) {
+    for (let px = 0; px < n; px++) {
+      let t = (px + 0.5 + (py + 0.5)) / (2 * n);
+      t = Math.min(1, Math.max(0, (t - t0) / (t1 - t0)));
+      const [a, b, u] = t < 0.5 ? [GROUND[0], GROUND[1], t / 0.5] : [GROUND[1], GROUND[2], (t - 0.5) / 0.5];
+      const o = (py * n + px) * 4;
+      for (let c = 0; c < 3; c++) data[o + c] = Math.round(a[c] + (b[c] - a[c]) * u);
+      data[o + 3] = 255;
+    }
+  }
+  return { data, width: n, height: n };
+}
+
+/** The adaptive background layer at n px: the ramp spans the 72 dp viewport (18..90 of 108). */
+const launcherGround = (n: number) => ground(n, 18 / 108, 90 / 108);
+
+/**
+ * A full-bleed square icon: the ramp corner to corner, the mark centred at
+ * `frac` of the width. Composed at 4x and Lanczos-reduced, like the approved
+ * stage-1 renders (0.80 for Play and apple-touch, 0.90 for extension/web).
+ */
+async function groundTile(mark: Raw, s: number, frac: number): Promise<Raw> {
+  const S = s * 4;
+  const w = Math.floor(S * frac);
+  const h = Math.floor((w * mark.height) / mark.width);
+  const layers = w
+    ? [
+        {
+          input: await png(mark).resize(w, h, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer(),
+          left: Math.floor((S - w) / 2),
+          top: Math.floor((S - h) / 2),
+        },
+      ]
+    : [];
+  const big = await png(ground(S)).composite(layers).png().toBuffer();
+  const { data } = await sharp(big)
+    .resize(s, s, { kernel: 'lanczos3' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data, width: s, height: s };
+}
 
 /** Farthest alpha>0 pixel (its outer corner) from the image centre, in px. */
 function farRadius(raw: Raw): number {
@@ -401,16 +465,16 @@ async function launcherForeground(mark: Raw, ppd: number): Promise<Buffer> {
 
 /**
  * The adaptive icon flattened the way a launcher shows it: foreground over the
- * white background, cropped to the central 72 dp viewport, `px` square. For the
- * legacy mipmaps (minSdk 26, so only non-adaptive hosts ever read these) and
- * the Play listing icon. `circle` masks to a circle with transparent corners;
- * `square` is opaque RGB.
+ * light-blue background layer, cropped to the central 72 dp viewport, `px`
+ * square. For the legacy mipmaps (minSdk 26, so only non-adaptive hosts ever
+ * read these). `circle` masks to a circle with transparent corners; `square` is
+ * opaque RGB.
  */
 async function launcherFlat(mark: Raw, px: number, shape: 'square' | 'circle'): Promise<Buffer> {
   const ppd = px / 72;
   const n = Math.round(108 * ppd);
   const off = Math.round(18 * ppd);
-  const full = await sharp({ create: { width: n, height: n, channels: 4, background: LAUNCHER_BG } })
+  const full = await png(launcherGround(n))
     .composite([{ input: await launcherForeground(mark, ppd), left: 0, top: 0 }])
     .png()
     .toBuffer();
@@ -607,7 +671,8 @@ async function main() {
     }
     // Launcher (ICON-REVERT-ORIGINAL, see launcherForeground): adaptive
     // foreground = the mark alone on transparency; ic_launcher/_round = the same
-    // composition flattened on white, for hosts that ignore adaptive icons.
+    // composition flattened on the light-blue ground, for hosts that ignore
+    // adaptive icons.
     writeBuf(
       join(androidRes, `mipmap-${density}`, 'ic_launcher_foreground.png'),
       await sharp(await launcherForeground(mark, factor)).png({ compressionLevel: 9 }).toBuffer(),
@@ -619,7 +684,11 @@ async function main() {
 
   // The Play listing icon is not a repo asset (marketing/store/app-icon-512.png
   // is the web/store artwork); it is written only on request, for upload.
-  if (PLAY_ICON_OUT) writeBuf(PLAY_ICON_OUT, await launcherFlat(mark, 512, 'square'));
+  // 512x512 opaque and full-bleed (Play applies its own mask): the light-blue
+  // ground corner to corner, the mark at 0.80 of the width.
+  if (PLAY_ICON_OUT) {
+    writeBuf(PLAY_ICON_OUT, await png(await groundTile(mark, 512, 0.8)).removeAlpha().png({ compressionLevel: 9 }).toBuffer());
+  }
 
   // eslint-disable-next-line no-console
   console.log(`build-brand-lockup: wrote ${written.length} files\n  ` + written.join('\n  '));

@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- PIXEL-O, 2026-09-16. The launcher icon had no adaptive layers at all: five
-     density buckets of flat ic_launcher.png, which Android 8+ shrinks into a
-     white circle rather than masking. The foreground is the official mark on
-     transparency inside the 66/108 safe zone; the background is the artwork's
-     own pale-blue ground as a flat fill, because the launcher parallaxes and
-     masks these layers and a gradient would shear against the mask. -->
+<!-- PIXEL-O, 2026-09-16; background updated 2026-09-25. Adaptive layers: the
+     foreground is the official mark on transparency (variant B, 35.5dp reach);
+     the background is a vector gradient (drawable/ic_launcher_background.xml),
+     light brand blue, a soft ~40-luma-level fade across the 72dp viewport. A strong
+     gradient would visibly shear against the mask under parallax; this one is
+     low-contrast enough not to: a 6dp parallax shift moves any pixel by at most
+     6 levels (stage-1 clip check, 2026-09-25). -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/ic_launcher_background" />
+    <background android:drawable="@drawable/ic_launcher_background" />
     <foreground android:drawable="@mipmap/ic_launcher_foreground" />
     <monochrome android:drawable="@drawable/ic_stat_cc" />
 </adaptive-icon>
