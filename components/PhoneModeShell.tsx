@@ -100,6 +100,7 @@ import { ChipScroller } from '@/components/ChipScroller';
 import { AppIcon } from '@/components/AppIcon';
 import { cleanNotificationTitle } from '@/lib/notificationTitle';
 import { isUnreadAlert } from '@/lib/notificationMerge';
+import { useAlertsBadgeSync } from '@/hooks/useAlertsBadgeSync';
 
 import {
   useThreadReadState,
@@ -2293,54 +2294,31 @@ function ExtBellView() {
     phoneNotifications,
     sendNotificationReply,
     clearNotification,
-    markAllNotificationsRead,
+    markNotificationRead,
     clearAllNotifications,
   } = useNotifications();
   const items = phoneNotifications;
 
-  // Unread marker, per visit. `n.read` flips the moment this tab renders (the
-  // effect below marks everything read so the tab badge clears), so a dot
-  // driven by n.read would vanish on first paint. Instead the ids that were
-  // unread when the user ARRIVED are snapshotted here, before markAll runs,
-  // and stay dotted for this visit. The next mount takes a new snapshot in
-  // which they are already read -- so leaving the tab and coming back clears
-  // them. Backfill (the phone replaying its shade on sync) never counts, the
-  // same rule as Messages' baseline: history is not news.
-  const [unreadIds, setUnreadIds] = useState<Set<string>>(
-    () => new Set(items.filter(isUnreadAlert).map(n => n.id)),
-  );
+  // Unread marker (item 8, Dennis 2026-09-26). The dot is `isUnreadAlert` on
+  // the card itself, the SAME predicate the tab badge and the extension badge
+  // count, so the three cannot disagree (the phantom "1", d8c7aa4). Visiting
+  // this tab no longer reads everything: an alert stays unread -- backfilled
+  // ones included -- until the user opens it (tap on its text) or dismisses
+  // it. Both are persisted per account (usePhoneBridge), so leaving the tab,
+  // closing the panel or reconnecting does not bring a read alert back.
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
 
-  // Alerts that arrive while the tab is open are new and unseen too. They are
-  // added to the snapshot during render (React's "adjust state when a prop
-  // changes" pattern), which is before the effect below marks them read.
-  const [seenItems, setSeenItems] = useState(items);
-  if (items !== seenItems) {
-    setSeenItems(items);
-    const fresh = items.filter(n => isUnreadAlert(n) && !unreadIds.has(n.id));
-    if (fresh.length) {
-      const next = new Set(unreadIds);
-      fresh.forEach(n => next.add(n.id));
-      setUnreadIds(next);
-    }
-  }
-
-  useEffect(() => {
-    if (items.some(n => !n.read)) markAllNotificationsRead();
-  }, [items, markAllNotificationsRead]);
-
   const dropIds = useCallback((ids: string[]) => {
-    const prune = (prev: Set<string>) => {
+    setExpandedIds(prev => {
       if (!ids.some(id => prev.has(id))) return prev;
       const next = new Set(prev);
       ids.forEach(id => next.delete(id));
       return next;
-    };
-    setUnreadIds(prune);
-    setExpandedIds(prune);
+    });
   }, []);
 
-  // A dismissed alert's ids are dropped from both sets along with the card.
+  // A dismissed alert's ids are dropped along with the card. Dismissing is
+  // also reading: clearNotification records the read mark.
   const dismiss = useCallback((id: string) => {
     dropIds([id]);
     clearNotification(id);
@@ -2351,14 +2329,7 @@ function ExtBellView() {
     clearAllNotifications();
   }, [dropIds, items, clearAllNotifications]);
 
-  const markSeen = useCallback((id: string) => {
-    setUnreadIds(prev => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-  }, []);
+  const markSeen = markNotificationRead;
 
   const toggleExpanded = useCallback((id: string) => {
     setExpandedIds(prev => {
@@ -2453,7 +2424,7 @@ function ExtBellView() {
         ) : (
           filtered.map((n) => {
             const isReplying = replyingId === n.id;
-            const isUnread = unreadIds.has(n.id);
+            const isUnread = isUnreadAlert(n);
             return (
               <article
                 key={n.id}
@@ -2642,8 +2613,18 @@ export function PhoneModeShell({ surface = 'app' }: PhoneModeShellProps = {}) {
   const { current, setTab, push } = usePhoneMode();
   const isExt = surface === 'extension';
   const { phoneNotifications } = useNotifications();
-  // Same rule as the in-list dot (isUnreadAlert): backfill is never unread.
+  // Same rule as the in-list dot (isUnreadAlert). Item 8: backfilled alerts
+  // count until opened or dismissed.
   const unreadCount = phoneNotifications.filter(isUnreadAlert).length;
+  // ...and the extension's toolbar badge is the size of the same set.
+  const { isConnected: phoneConnected } = usePhone();
+  const alertsUserId = useSessionUserId();
+  useAlertsBadgeSync({
+    enabled: isExt,
+    notifications: phoneNotifications,
+    userId: alertsUserId,
+    connected: phoneConnected,
+  });
 
   // ---------- Deep links from extension notifications ----------------------
   // background.js opens the surface at #tab=texts&thread=<id> (or #tab=alerts)

@@ -285,7 +285,9 @@ console.log('\nPART 5 — ALERTS-BADGE: one unread definition, re-posts stay rea
 
 {
   check('live unread card is unread', isUnreadAlert(notif()));
-  check('backfill card is NOT unread (seen on the phone)', !isUnreadAlert(notif({ backfill: true })));
+  // Item 8 (Dennis 2026-09-26) reverses fa69f8b/d8c7aa4: a replayed card is
+  // unread until opened or dismissed (tests/alert-unread.test.ts).
+  check('backfill card IS unread (item 8)', isUnreadAlert(notif({ backfill: true })));
   check('read card is not unread', !isUnreadAlert(notif({ read: true })));
 
   // The phantom candidate: an identical live re-post of a card already read.

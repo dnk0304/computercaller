@@ -17,7 +17,9 @@ import { reduceBattery } from './phoneTypes';
 import { findContactByNumber, conversationKey } from '@/lib/normalizeNumber';
 import { isPlaceholderAddress, evictHealedPlaceholders } from '@/lib/messagePlaceholders';
 import { normalizePayload } from '@/lib/normalizePayload';
-import { applyNotifEvents, type NotifEvent } from '@/lib/notificationMerge';
+import { applyNotifEvents, applyReadMarks, readMarkOf, type NotifEvent } from '@/lib/notificationMerge';
+import { clearAllReadMarks, loadReadMarks, mergeReadMarks, saveReadMarks } from '@/lib/alertReadStore';
+import type { AlertRecord } from '@/lib/alertUnread.mjs';
 import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 // E2E-P2: encrypted mode. All of it lives in useE2e/phoneE2e/lib/e2e — the
 // footprint HERE is five call sites, deliberately, so the Monday rebase of
@@ -25,7 +27,7 @@ import type { LobbyState, LobbyRejectedReason } from '@/lib/lobbyState';
 import { useE2e } from './useE2e';
 // P2.3 (a)+(b): the ORDER of a revoking teardown, pure and node-testable.
 import { runRevokingTeardown } from '@/lib/e2e/signOutEverywhere';
-import { clearThreadReadStateForCurrentUser } from '@/hooks/useThreadReadState';
+import { clearThreadReadStateForCurrentUser, useSessionUserId } from '@/hooks/useThreadReadState';
 import { setNotificationIcon, clearNotificationIcons } from '@/lib/notifIconStore';
 import { useFileTransfer } from './useFileTransfer';
 import type { FileTransferBridgeSlot } from './useFileTransfer';
@@ -811,6 +813,29 @@ export function usePhoneBridge() {
   // Notification event buffer — flushed to React state every 200ms to batch
   // re-renders instead of re-rendering on every WebSocket notification event.
   const notifPendingRef = useRef<NotifEvent[]>([]);
+
+  // Item 8 (2026-09-26): alerts the user has READ, persisted per account
+  // (lib/alertReadStore.ts). The phone replays its whole shade as backfill on
+  // every sync and the extension panel is a new page on every open, so read
+  // state held only in the list would reset and replayed alerts would light up
+  // again. Every flush re-applies these marks; every read path records one.
+  const sessionUserId = useSessionUserId();
+  const alertUserIdRef = useRef<string | null>(null);
+  const readMarksRef = useRef<AlertRecord[]>([]);
+  useEffect(() => {
+    alertUserIdRef.current = sessionUserId;
+    if (!sessionUserId) return;
+    // Marks recorded before the account id resolved were held in memory only.
+    const merged = mergeReadMarks(loadReadMarks(sessionUserId), readMarksRef.current);
+    readMarksRef.current = merged;
+    saveReadMarks(sessionUserId, merged);
+    setPhoneNotifications(prev => applyReadMarks(prev, merged));
+  }, [sessionUserId]);
+  const recordAlertsRead = useCallback((cards: readonly PhoneNotification[]) => {
+    if (cards.length === 0) return;
+    readMarksRef.current = mergeReadMarks(readMarksRef.current, cards.map(readMarkOf));
+    saveReadMarks(alertUserIdRef.current, readMarksRef.current);
+  }, []);
 
   // WebSocket ref. Dispatch #32 (2026-05-25): reconnectTimeoutRef and
   // phoneUrlRef are GONE. There is no auto-reconnect anymore — if the relay
@@ -2817,6 +2842,8 @@ export function usePhoneBridge() {
       case 'NOTIFICATION_REPLY_SENT': {
         const { notificationKey } = payload as { notificationKey?: string };
         if (notificationKey) {
+          // Replying is reading. Recorded so a replay after reconnect stays read.
+          recordAlertsRead(phoneNotificationsRef.current.filter(n => n.notificationKey === notificationKey));
           setPhoneNotifications(prev =>
             prev.map(n => n.notificationKey === notificationKey ? { ...n, read: true } : n)
           );
@@ -3597,6 +3624,9 @@ export function usePhoneBridge() {
     // Those wipe the message caches, and when the caches refill the threads the
     // user already opened must still look opened.
     clearThreadReadStateForCurrentUser();
+    // Alert read marks too (item 8): per account, gone at the identity boundary.
+    clearAllReadMarks();
+    readMarksRef.current = [];
     // App icons go with the account too: the set of icons is the set of apps
     // installed on the user's phone. Sign-out only — Forget keeps them, the
     // same account is still signed in and still owns that knowledge.
@@ -4518,13 +4548,25 @@ export function usePhoneBridge() {
   // disconnect by design, so there is nothing to queue for.
   const clearNotification = useCallback((notifId: string) => {
     const target = phoneNotificationsRef.current.find(n => n.id === notifId);
+    // Dismissed is read: if the phone's replay beats its own cancel, or the
+    // same content is re-posted, it must not come back unread.
+    if (target) recordAlertsRead([target]);
     if (target?.notificationKey) sendNotificationDismiss(target.notificationKey);
     setPhoneNotifications(prev => prev.filter(n => n.id !== notifId));
-  }, [sendNotificationDismiss]);
+  }, [sendNotificationDismiss, recordAlertsRead]);
 
   const markAllNotificationsRead = useCallback(() => {
+    recordAlertsRead(phoneNotificationsRef.current.filter(n => !n.read));
     setPhoneNotifications(prev => prev.map(n => ({ ...n, read: true })));
-  }, []);
+  }, [recordAlertsRead]);
+
+  // Item 8: the user OPENED one alert (extension Alerts tab, tap on the card).
+  const markNotificationRead = useCallback((notifId: string) => {
+    const target = phoneNotificationsRef.current.find(n => n.id === notifId);
+    if (!target || target.read) return;
+    recordAlertsRead([target]);
+    setPhoneNotifications(prev => prev.map(n => (n.id === notifId ? { ...n, read: true } : n)));
+  }, [recordAlertsRead]);
 
   // Clear the whole mirrored list and cancel each one on the phone. One
   // NOTIFICATION_DISMISS per notification that carries a key — the list is
@@ -4532,11 +4574,12 @@ export function usePhoneBridge() {
   // clearNotification: the NOTIFICATION_REMOVED frames Android sends back land
   // on an already-empty list and no-op.
   const clearAllNotifications = useCallback(() => {
+    recordAlertsRead(phoneNotificationsRef.current);
     for (const n of phoneNotificationsRef.current) {
       if (n.notificationKey) sendNotificationDismiss(n.notificationKey);
     }
     setPhoneNotifications([]);
-  }, [sendNotificationDismiss]);
+  }, [sendNotificationDismiss, recordAlertsRead]);
 
   /**
    * Request the full media payload (image / audio / video) for a previously-
@@ -4860,7 +4903,9 @@ export function usePhoneBridge() {
       notifPendingRef.current = [];
       // The merge rules (both dedup axes, backfill ordering, the 50-card cap)
       // live in lib/notificationMerge.ts and are unit-tested there.
-      setPhoneNotifications(prev => applyNotifEvents(prev, pending));
+      // Item 8: then the persisted read marks, so a replayed (backfill) alert
+      // the user already opened or dismissed arrives read.
+      setPhoneNotifications(prev => applyReadMarks(applyNotifEvents(prev, pending), readMarksRef.current));
     }, 200);
     return () => window.clearInterval(id);
   }, []); // stable — no deps needed, setPhoneNotifications is a stable useState setter
@@ -5033,6 +5078,7 @@ export function usePhoneBridge() {
     sendNotificationReply,
     clearNotification,
     markAllNotificationsRead,
+    markNotificationRead,
     clearAllNotifications,
 
     // Dual-SIM. simList comes from the phone after HELLO; selectedSimId is

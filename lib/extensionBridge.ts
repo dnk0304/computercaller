@@ -37,6 +37,8 @@
 import { useEffect, useState } from 'react';
 
 import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
+import type { AlertRecord } from '@/lib/alertUnread.mjs';
+import { clearAllReadMarks } from '@/lib/alertReadStore';
 
 export const WEBAPP_DASHBOARD_URL = '/app';
 export const WEBAPP_SETTINGS_URL = '/app/settings';
@@ -66,6 +68,8 @@ type OutboundType =
   // that zeroes one unread counter in the service worker.
   | 'dock'
   | 'tab-viewed'
+  // Item 8: the unread alert set + read marks; the worker's badge is its size.
+  | 'alerts-state'
   // Embedded sign-in (2026-09-15, forge/ext-embedded-login). Posted by
   // /extension/login from inside the shell's #cc-login-frame, NOT by the phone
   // surface. The shell tells the two frames apart by contentWindow identity and
@@ -125,8 +129,21 @@ export function notifyTabViewed(tab: ExtensionTab): void {
   postToShell('tab-viewed', { tab });
 }
 
+/**
+ * Item 8. Report the unread alert SET and the read marks to the extension, so
+ * its toolbar badge is exactly the number of dotted cards (one definition,
+ * lib/alertUnread.mjs). Records only (key, content hash, time), never text.
+ */
+export function reportAlertsState(state: { unread: AlertRecord[]; read: AlertRecord[] }): void {
+  postToShell('alerts-state', { unread: state.unread, read: state.read });
+}
+
 /** Sign out — re-triggers shell.js's signOut(); we own no auth state here. */
 export function requestSignOut(): void {
+  // Item 8: the alert read marks are per account and go at sign-out. Every
+  // extension sign-out (menu, idle timeout) passes through here, and none of
+  // them runs the bridge's signOutEverywhere.
+  clearAllReadMarks();
   postToShell('sign-out');
 }
 
