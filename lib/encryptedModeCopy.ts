@@ -85,11 +85,13 @@ export const SETTING_LABEL = 'Encrypted mode';
  * on or off: keys are exchanged either way. What it adds is the one-time code
  * check. The old line ("Scrambles messages…") described the switch as the
  * thing that encrypts, which is what made OFF read as "unprotected". Mirrors
- * the phone's confirm copy ("…there is no code check."); Pixel/Pilot copy
- * review before the #18 gate.
+ * the phone's confirm copy ("…there is no code check."). #18 copy align: the
+ * text is the phone's Pilot-approved row_encrypted_mode_sub verbatim. The old
+ * "always encrypted between your phone and this computer" was false on a
+ * Standard (TLS) legacy pair, where the relay decrypts.
  */
 export const SETTING_DESCRIPTION =
-  'Messages and call details are always encrypted between your phone and this computer. Turn this on to also check a one-time code on both screens when you connect.';
+  "Always encrypted. Turn on to also match a code on both screens, so you know it's really your computer.";
 /**
  * Shown when the switch is ON and the devices are already paired. §12.2 makes
  * the SAS a pairing-time step, so changing the setting cannot apply to a pair

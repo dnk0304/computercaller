@@ -269,7 +269,7 @@ eq('mode on but state unencrypted is NOT sealed', pairTruth(V({ mode: 'on', stat
 
 // ── 10. copy + wiring pins ──────────────────────────────────────────────────
 check('setting description: no longer "Scrambles"', !/Scrambl/i.test(SETTING_DESCRIPTION), SETTING_DESCRIPTION);
-check('setting description: always encrypted + one-time code', /always encrypted/i.test(SETTING_DESCRIPTION) && /one-time code/i.test(SETTING_DESCRIPTION));
+check('setting description: phone row_encrypted_mode_sub verbatim', SETTING_DESCRIPTION === "Always encrypted. Turn on to also match a code on both screens, so you know it's really your computer.", SETTING_DESCRIPTION);
 const chipSrc = read('components/EncryptionStatus.tsx');
 check('chip reads useConnectionTruth', /useConnectionTruth\(\)/.test(chipSrc));
 check('chip is aria-live polite', /aria-live="polite"\s+aria-atomic="true"/.test(chipSrc));
