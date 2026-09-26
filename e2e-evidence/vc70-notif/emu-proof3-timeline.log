@@ -1,0 +1,154 @@
+--------- beginning of main
+09-26 14:37:08.818 I/NOTIF-PROOF( 6695): registry GET /api/devicekeys/list
+09-26 14:37:09.331 I/NOTIF-PROOF( 6695): posted tag=enc1 title=true
+09-26 14:37:09.354 I/NOTIF-PROOF( 6695): posted tag=enc2 title=true
+09-26 14:37:10.858 I/NOTIF-PROOF( 6695): enc start counters={notif.drop.group_summary=1, notif.drop.own_pkg=2, notif.fwd=2}
+09-26 14:37:10.898 I/NOTIF-PROOF( 6695): relay open conn=1 open=1
+09-26 14:37:10.969 I/NOTIF-PROOF( 6695): relay <- conn=1 DEVICE_INFO bytes=43 
+09-26 14:37:10.976 I/NOTIF-PROOF( 6695): relay -> PAIRING_REQUEST:{"pairingId":"proof-enc-1","ua":"Proof","ip":"127.0.0.1","e2e":{"v":1,"mode":1,"recips":[{"kind":"web","deviceId":"dev-web-proof","pub"
+09-26 14:37:11.827 I/NOTIF-PROOF( 6695): registry GET /api/devicekeys/list
+09-26 14:37:12.042 I/NOTIF-PROOF( 6695): relay <- conn=1 ACCEPT_PAIRING bytes=649 
+09-26 14:37:12.045 I/NOTIF-PROOF( 6695): SAS prompt received
+09-26 14:37:12.049 I/NOTIF-PROOF( 6695): relay -> PAIRING_ACTIVE:{}
+09-26 14:37:15.051 I/NOTIF-PROOF( 6695): between ACTIVE and confirm: frames=0 defer=1
+09-26 14:37:15.052 I/NOTIF-PROOF( 6695): SAS confirmed (fake UI)
+09-26 14:37:15.210 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=13726 sealed
+09-26 14:37:15.283 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=13726 sealed
+09-26 14:37:15.376 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=19187 sealed
+09-26 14:37:15.431 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=19187 sealed
+09-26 14:37:16.859 I/NOTIF-PROOF( 6695): after confirm: frames=4 firstAfterConfirmMs=145 sealed=true
+09-26 14:37:16.860 I/NOTIF-PROOF( 6695): relay -> GET_NOTIFICATIONS:{}
+09-26 14:37:19.865 I/NOTIF-PROOF( 6695): web re-request: frames=0 skipDupe=1
+09-26 14:37:19.865 I/NOTIF-PROOF( 6695): gate drops during test=0
+09-26 14:37:19.866 I/NOTIF-PROOF( 6695): enc end counters={backfill.defer_sas=1, backfill.run=1, backfill.skip_dupe=1, notif.drop.group_summary=3, notif.drop.ongoing=2, notif.drop.own_pkg=8, notif.fwd=6}
+09-26 14:37:19.867 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.148Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:19.867 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.335Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:19.868 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.792Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=live
+09-26 14:37:19.868 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.165Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:19.868 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.243Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:19.868 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.468Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:19.868 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.088Z | D | NotifFwd | PAIRING_ACTIVE edge sasPending=true
+09-26 14:37:19.869 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.090Z | D | NotifFwd | backfill deferred trigger=active cause=sas_pending epoch=7498c3
+09-26 14:37:19.869 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.303Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:19.869 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.069Z | D | PhoneService | e2e sas confirmed — data plane open
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.072Z | D | NotifFwd | backfill start trigger=sas_confirm epoch=7498c3
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.075Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.079Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=backfill
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.084Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.085Z | D | NotifFwd | notif drop reason=group_summary pkg=f60e_d56a path=backfill
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.102Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.103Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.407Z | D | NotifFwd | backfill finish trigger=sas_confirm count=4 epoch=7498c3
+09-26 14:37:19.870 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:16.866Z | D | NotifFwd | backfill_skipped_dupe trigger=web_request epoch=7498c3
+09-26 14:37:19.890 I/NOTIF-PROOF( 6695): relay close conn=1 code=1001 open=0
+09-26 14:37:20.773 I/NOTIF-PROOF( 6695): registry GET /api/devicekeys/list
+09-26 14:37:21.091 I/NOTIF-PROOF( 6695): start counters={backfill.defer_sas=1, backfill.run=1, backfill.skip_dupe=1, notif.drop.group_summary=3, notif.drop.ongoing=2, notif.drop.own_pkg=11, notif.fwd=6}
+09-26 14:37:21.114 I/NOTIF-PROOF( 6695): posted tag=pre1 title=true
+09-26 14:37:21.132 I/NOTIF-PROOF( 6695): posted tag=pre2 title=true
+09-26 14:37:22.648 I/NOTIF-PROOF( 6695): relay open conn=1 open=1
+09-26 14:37:22.712 I/NOTIF-PROOF( 6695): relay <- conn=1 DEVICE_INFO bytes=43 
+09-26 14:37:22.739 I/NOTIF-PROOF( 6695): relay -> PAIRING_REQUEST:{"pairingId":"proof-plain-1","ua":"Proof","ip":"127.0.0.1"}
+09-26 14:37:23.447 I/NOTIF-PROOF( 6695): relay <- conn=1 ACCEPT_PAIRING bytes=29 
+09-26 14:37:23.459 I/NOTIF-PROOF( 6695): relay -> PAIRING_ACTIVE:{}
+09-26 14:37:23.698 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=8751 pkg=com.android.shell backfill=true titleIsLabel=false
+09-26 14:37:23.754 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=8751 pkg=com.android.shell backfill=true titleIsLabel=false
+09-26 14:37:23.832 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=12536 pkg=android backfill=true titleIsLabel=false
+09-26 14:37:23.889 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=12396 pkg=android backfill=true titleIsLabel=false
+09-26 14:37:25.904 I/NOTIF-PROOF( 6695): backfill frames total=4 shell=2 gapsMs=[47, 56, 83]
+09-26 14:37:25.936 I/NOTIF-PROOF( 6695): posted tag=bank1 title=true
+09-26 14:37:26.183 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=8717 pkg=com.android.shell backfill=false titleIsLabel=false
+09-26 14:37:28.973 I/NOTIF-PROOF( 6695): posted tag=nt1 title=false
+09-26 14:37:29.213 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=8707 pkg=com.android.shell backfill=false titleIsLabel=true
+09-26 14:37:31.995 I/NOTIF-PROOF( 6695): posted tag=bank2 title=true
+09-26 14:37:32.340 I/NOTIF-PROOF( 6695): relay <- conn=1 PHONE_NOTIFICATION bytes=8715 pkg=com.android.shell backfill=false titleIsLabel=false
+09-26 14:37:35.998 I/NOTIF-PROOF( 6695): post#4 frames=1 groupSummaryDrops=0
+09-26 14:37:38.001 I/NOTIF-PROOF( 6695): P4 extra dial decision=redial_skipped_open conns before=1 after=1 open=1
+09-26 14:37:38.001 I/NOTIF-PROOF( 6695): end counters={backfill.defer_sas=1, backfill.run=2, backfill.skip_dupe=1, notif.drop.group_summary=6, notif.drop.ongoing=4, notif.drop.own_pkg=18, notif.fwd=15, redial_skipped_open=1}
+09-26 14:37:38.006 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.148Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.335Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.792Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.165Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.243Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.468Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.088Z | D | NotifFwd | PAIRING_ACTIVE edge sasPending=true
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.090Z | D | NotifFwd | backfill deferred trigger=active cause=sas_pending epoch=7498c3
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.303Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.069Z | D | PhoneService | e2e sas confirmed — data plane open
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.072Z | D | NotifFwd | backfill start trigger=sas_confirm epoch=7498c3
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.075Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.079Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.084Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.085Z | D | NotifFwd | notif drop reason=group_summary pkg=f60e_d56a path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.102Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.103Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.407Z | D | NotifFwd | backfill finish trigger=sas_confirm count=4 epoch=7498c3
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:16.866Z | D | NotifFwd | backfill_skipped_dupe trigger=web_request epoch=7498c3
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:20.248Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:20.375Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:20.945Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:21.139Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:21.669Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:22.916Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:22.984Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.192Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.581Z | D | NotifFwd | PAIRING_ACTIVE edge sasPending=false
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.585Z | D | NotifFwd | backfill start trigger=active epoch=6d2c96
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.590Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.596Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.598Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.602Z | D | NotifFwd | notif drop reason=group_summary pkg=f60e_d56a path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.605Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.608Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.790Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.836Z | D | NotifFwd | backfill finish trigger=active count=4 epoch=6d2c96
+09-26 14:37:38.020 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:35.998Z | D | PhoneService | redial_skipped_open trigger=proof_extra
+09-26 14:37:38.041 I/NOTIF-PROOF( 6695): relay close conn=1 code=1001 open=0
+09-26 14:37:39.135 I/NOTIF-PROOF( 6695): registry GET /api/devicekeys/list
+09-26 14:37:45.778 I/NOTIF-PROOF( 6695): wifi start counters={backfill.defer_sas=1, backfill.run=2, backfill.skip_dupe=1, notif.drop.group_summary=6, notif.drop.ongoing=4, notif.drop.own_pkg=23, notif.fwd=15, redial_skipped_open=1}
+09-26 14:37:45.778 I/NOTIF-PROOF( 6695): wifi disable
+09-26 14:37:47.429 I/NOTIF-PROOF( 6695): wifi off: net_redial=1 reopenMs=1651 phase=OPEN
+09-26 14:37:50.431 I/NOTIF-PROOF( 6695): wifi enable
+09-26 14:37:58.455 I/NOTIF-PROOF( 6695): wifi on: phase=OPEN net_redial=1 sinceOnMs=8023
+09-26 14:37:58.456 I/NOTIF-PROOF( 6695): wifi end counters={backfill.defer_sas=1, backfill.run=2, backfill.skip_dupe=1, net_redial=1, notif.drop.group_summary=6, notif.drop.ongoing=4, notif.drop.own_pkg=26, notif.fwd=15, redial_skipped_open=2}
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.148Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.335Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:09.792Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=live
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.165Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.243Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:11.468Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.088Z | D | NotifFwd | PAIRING_ACTIVE edge sasPending=true
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.090Z | D | NotifFwd | backfill deferred trigger=active cause=sas_pending epoch=7498c3
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:12.303Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.069Z | D | PhoneService | e2e sas confirmed — data plane open
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.072Z | D | NotifFwd | backfill start trigger=sas_confirm epoch=7498c3
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.075Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.079Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=backfill
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.084Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:58.459 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.085Z | D | NotifFwd | notif drop reason=group_summary pkg=f60e_d56a path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.102Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.103Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:15.407Z | D | NotifFwd | backfill finish trigger=sas_confirm count=4 epoch=7498c3
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:16.866Z | D | NotifFwd | backfill_skipped_dupe trigger=web_request epoch=7498c3
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:20.248Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:20.375Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:20.945Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:21.139Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:21.669Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:22.916Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:22.984Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.192Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.581Z | D | NotifFwd | PAIRING_ACTIVE edge sasPending=false
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.585Z | D | NotifFwd | backfill start trigger=active epoch=6d2c96
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.590Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.596Z | D | NotifFwd | notif drop reason=group_summary pkg=ce27_353c path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.598Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.602Z | D | NotifFwd | notif drop reason=group_summary pkg=f60e_d56a path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.605Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.608Z | D | NotifFwd | notif drop reason=ongoing pkg=f60e_d56a path=backfill
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.790Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:23.836Z | D | NotifFwd | backfill finish trigger=active count=4 epoch=6d2c96
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:35.998Z | D | PhoneService | redial_skipped_open trigger=proof_extra
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:38.567Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:38.748Z | D | NotifFwd | notif drop reason=own_pkg pkg=fe0d_8249 path=live
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:47.290Z | D | PhoneService | net_redial lostEvent=true
+09-26 14:37:58.460 I/NOTIF-PROOF( 6695): diag> 2026-09-26T12:37:56.374Z | D | PhoneService | redial_skipped_open trigger=net

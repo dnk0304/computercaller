@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<testsuite name="com.dnkdialer.companion.NotifForwardingProofTest" tests="3" failures="0" errors="0" skipped="0" time="52.011" timestamp="2026-09-26T12:38:00" hostname="localhost">
+  <properties>
+    <property name="device" value="bat3_api34(AVD) - 14" />
+    <property name="flavor" value="" />
+    <property name="project" value=":app" />
+  </properties>
+  <testcase name="b_encrypted_pair_backfills_after_sas_confirm" classname="com.dnkdialer.companion.NotifForwardingProofTest" time="12.072" />
+  <testcase name="a_plain_pair_backfill_live_posts_and_dial_guard" classname="com.dnkdialer.companion.NotifForwardingProofTest" time="18.29" />
+  <testcase name="c_wifi_off_on_redials_once_on_a_single_socket" classname="com.dnkdialer.companion.NotifForwardingProofTest" time="20.284" />
+</testsuite>
