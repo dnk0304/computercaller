@@ -11,18 +11,21 @@ package com.dnkdialer.companion
  * (SPEC-PLAIN-PRIVACY-9).
  *
  * Counters always increment; the per-event LINES are rate-limited (20/min per
- * family) so a chatty app cannot flood the 200-line ring and push out the
- * lines that explain an incident.
+ * drop reason, 20/min for gate drops) so a chatty app cannot flood the
+ * 200-line ring and push out the lines that explain an incident.
  */
 object ForwardDiag {
     private const val TAG = "NotifFwd"
 
-    private val dropLines = DiagRateLimiter()
+    // One budget PER REASON: on a live phone our own foreground notification
+    // is re-posted on every connection change, and with a shared budget those
+    // own_pkg lines starved the one line that matters (emulator proof, vc70).
+    private val dropLines = java.util.concurrent.ConcurrentHashMap<NotificationBackfill.DropReason, DiagRateLimiter>()
     private val gateLines = DiagRateLimiter()
 
     fun notifDrop(reason: NotificationBackfill.DropReason, pkg: String?, backfill: Boolean) {
         DiagLog.counter("notif.drop.${reason.key}")
-        if (dropLines.tryAcquire()) {
+        if (dropLines.getOrPut(reason) { DiagRateLimiter() }.tryAcquire()) {
             DiagLog.d(
                 TAG,
                 "notif drop reason=${reason.key} pkg=${pkg?.let { NotificationBackfill.pkgHash(it) } ?: "none"} " +
