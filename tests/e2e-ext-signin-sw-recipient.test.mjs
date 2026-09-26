@@ -146,8 +146,15 @@ console.log('1. why the prod surface was the extension (source facts the verdict
   const closes = code.match(/ws\s*&&\s*ws\.close\(\)|ws\.close\(/g) || [];
   eq('background.js has exactly ONE listener ws.close(), status-less (-> relay logs 1005)', closes, ['ws && ws.close()']);
   const so = code.slice(code.indexOf("message?.type === 'signed-out'"), code.indexOf("message?.type === 'signed-out'") + 2500);
-  check("...and it sits in the 'signed-out' handler, which also clears the registration",
-    /clearDeviceKeyRegistered\(\)/.test(so) && /swRegistered = false;/.test(so) && /ws && ws\.close\(\)/.test(so));
+  // #18 fold (pin moved, behaviour unchanged): EXT/WEB DUAL SESSION 36928b1
+  // moved the handler's inline teardown into dropLocalSession(), shared with
+  // the relay 4001 kick. The facts this verdict rests on are unchanged: the
+  // 'signed-out' handler runs dropLocalSession(), and THAT clears the
+  // registration and closes the listener.
+  const dlsAt = code.indexOf('function dropLocalSession() {');
+  const dls = dlsAt < 0 ? '' : code.slice(dlsAt, code.indexOf('\n}\n', dlsAt));
+  check("...and it sits in the 'signed-out' handler (via dropLocalSession()), which also clears the registration",
+    /dropLocalSession\(\);/.test(so) && /clearDeviceKeyRegistered\(\)/.test(dls) && /swRegistered = false;/.test(dls) && /ws && ws\.close\(\)/.test(dls));
   const shell = read('chrome-extension/shell.js');
   check("'signed-out' is sent only by the extension shell's own signOut()",
     (shell.match(/type: 'signed-out'/g) || []).length === 1 && /async function signOut\(\)[\s\S]{0,1400}type: 'signed-out'/.test(shell));

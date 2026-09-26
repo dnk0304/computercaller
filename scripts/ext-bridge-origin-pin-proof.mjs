@@ -21,7 +21,7 @@
  *     stops a SECOND, unpinned post site from being added next to it.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, copyFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -56,7 +56,15 @@ execFileSync(process.execPath, [join(ROOT, 'node_modules/typescript/bin/tsc'), '
 // tsc emits the '@/...' specifier verbatim; node has no such alias. Rewrite the
 // one alias import to the sibling it actually resolves to at build time.
 const emitted = join(out, 'js/lib/extensionBridge.js');
-writeFileSync(emitted, readFileSync(emitted, 'utf8').replace('@/lib/extension', './extension.js'));
+// #18 fold (5c, test-config only): item 8 added '@/lib/alertReadStore' to the
+// web file this proof compiles in isolation (Next resolves '@/' at build; the
+// extension bundle itself has no '@/' import). Rewrite EVERY '@/lib/x' alias to
+// its emitted sibling, and place the .mjs siblings tsc does not emit.
+writeFileSync(emitted, readFileSync(emitted, 'utf8').replace(/(['"])@\/lib\/([A-Za-z0-9_-]+)(\.mjs)?\1/g,
+  (m, q, name, mjs) => q + './' + name + (mjs ? '.mjs' : '.js') + q));
+for (const f of readdirSync(join(ROOT, 'lib')).filter((n) => n.endsWith('.mjs'))) {
+  copyFileSync(join(ROOT, 'lib', f), join(out, 'js/lib', f));
+}
 
 const OURS = 'chrome-extension://helkcjjlidcceiifjccolmppanfmcjjg';
 const parent = { name: 'shell' };

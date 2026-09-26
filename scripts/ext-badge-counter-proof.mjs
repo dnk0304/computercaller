@@ -792,14 +792,21 @@ try {
   // signing back in as the same uid flips nothing to unread, and an explicit
   // sign-out removes them.
   await reset();
-  const UID17 = 'u-item8-kick-proof';
+  // The worker caches its account id in module scope (localUserId); section 15
+  // already signed this worker in as u-item8-proof, so the SAME account is used.
+  const UID17 = 'u-item8-proof';
   const setUid = (u) => sw.evaluate((uid) => new Promise((r) => chrome.storage.session.set({ cc_e2e_user_id: uid }, r)), u);
   const readMarks = () => sw.evaluate(() => new Promise((r) => chrome.storage.session.get('cc_alert_read', (o) => r(o.cc_alert_read || null))));
   await setUid(UID17);
   const t17 = Date.now() - 1_800_000;
   const shade17 = [951, 952, 953].map((id, i) => BACKFILL(id, t17 + i * 60_000));
   await feed(shade17);
-  await pageSays([keyOf(951)]);
+  const recs17 = await sw.evaluate(() => readAlertKeys());
+  await sw.evaluate(async ([recs, id]) => {
+    presenceCount = 1;
+    await applyAlertsState({ unread: recs.filter((r) => r.k !== id), read: recs.filter((r) => r.k === id) });
+    await new Promise((r) => setTimeout(r, 150));
+  }, [recs17, keyOf(951)]);
   b = await badge();
   check('17: setup, 3 in the shade, 1 opened ⇒ "2"', b === '2', b);
   const marksBefore = await readMarks();

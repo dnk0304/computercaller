@@ -362,7 +362,10 @@ test('the relay resolves the ticket against the User table and then the paywall'
     /claims\.purpose !== 'relay-ticket'/.test(src));
   check('validateTicket resolves userId against the User table and returns null if absent',
     /db\.user\.findUnique\(\{\s*where: \{ id: claims\.userId \}/.test(src)
-    && /return user \? \{ userId: user\.id, phoneToken: user\.phoneToken \} : null;/.test(src));
+    // #18 fold (pin moved, behaviour unchanged): 36928b1 added ticketVer /
+    // currentVer / supersedeSeqAtRead to the returned object; the userId +
+    // phoneToken resolution and the null-if-absent branch are the same.
+    && /return user\s*\?\s*\{\s*userId: user\.id,\s*phoneToken: user\.phoneToken,[\s\S]{0,400}?\}\s*:\s*null;/.test(src));
   check('every admission path then passes the entitlement chokepoint',
     /const ent = await evaluateUserEntitlement\(db, userId\);/.test(src)
     && /ws\.close\(4403, 'subscription_required'\)/.test(src));

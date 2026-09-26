@@ -217,13 +217,15 @@ async function scenario({ phone, order = 'phone-first', webResend = true, decide
   eq('vc69: every shade card arrived SEALED and opened on the page', r.opened, SHADE.length);
   check('vc69: the wire carried envelopes, never the plaintext title', r.wire.length === SHADE.length && !r.leaked);
   eq('vc69: Alerts renders the whole shade', r.alerts.map((n) => n.notificationKey).sort(), SHADE.map((n) => n.notificationKey).sort());
-  eq('vc69: backfill is history, not news (unread 0)', r.alerts.filter(isUnreadAlert).length, 0);
+  // #18 fold: ITEM 8 (2619df0, Dennis 2026-09-26) - backfilled cards count as
+  // UNREAD until opened/dismissed. Only this unread expectation moved.
+  eq('vc69: item 8 - the backfilled shade is UNREAD until opened (unread = shade size)', r.alerts.filter(isUnreadAlert).length, SHADE.length);
 }
 {
   const r = await scenario({ phone: 'vc70' });
   eq('vc70 (backfills on its own confirm too): the shade crossed the wire TWICE', r.wire.length, SHADE.length * 2);
   eq('vc70: ...and Alerts still holds each card ONCE (no duplicate rows)', r.alerts.length, SHADE.length);
-  eq('vc70: no double badge (unread 0)', r.alerts.filter(isUnreadAlert).length, 0);
+  eq('vc70: no double badge (unread = shade size, never 2x)', r.alerts.filter(isUnreadAlert).length, SHADE.length);
   eq('vc70: still exactly one web re-send', r.requestsAtPhone.filter((t) => t === 'GET_NOTIFICATIONS').length, 1);
 }
 {
@@ -233,7 +235,9 @@ async function scenario({ phone, order = 'phone-first', webResend = true, decide
   const r = await scenario({ phone: 'vc70' });
   const merged = applyNotifEvents([live], r.alerts.map((notif) => ({ type: 'add', notif, backfill: true })));
   eq('a replayed card matching a live one is discarded (live keeps its slot + unread)',
-    [merged.length, merged[0].backfill, merged.filter(isUnreadAlert).length], [SHADE.length, false, 1]);
+    // Item 8: the live card keeps its slot; the replay adds no extra unread -
+    // unread = the live card + the other backfilled cards = shade size.
+    [merged.length, merged[0].backfill, merged.filter(isUnreadAlert).length], [SHADE.length, false, SHADE.length]);
 }
 
 // ── 4. controls — the harness can go red ────────────────────────────────────

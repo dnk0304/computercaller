@@ -78,7 +78,6 @@ function makeRelay(db) {
   const WebSocket = { OPEN, CLOSED };
   const quiet = { log() {}, error() {} };
   function safeSend(ws, msg) { if (ws.readyState !== OPEN) return false; ws.sent.push(msg); return true; }
-  // eslint-disable-next-line no-new-func
   const factory = new Function('WebSocket', 'safeSend', 'console', 'jwt', 'db', 'process', `
     ${INDEX_BLOCK}
     ${VALIDATE_TICKET}
@@ -367,7 +366,7 @@ async function openSock(token) {
   await sleep(5);
   const s = sockets[sockets.length - 1];
   s.readyState = 1;
-  s.onopen && s.onopen();
+  if (s.onopen) s.onopen();
   return s;
 }
 
@@ -453,7 +452,6 @@ check('8.17 shouldHonourKick', KICK.shouldHonourKick('a', 'a') && !KICK.shouldHo
   check('9.1 config KICKED_KEY equals session-kick KICKED_KEY', config.includes(`KICKED_KEY: '${KICK.KICKED_KEY}'`));
   // The shell's inline view rule is the module's, evaluated over a table.
   const fnSrc = between(shell, 'function kickedViewOf(record) {', '\n}\n', { includeEnd: true });
-  // eslint-disable-next-line no-new-func
   const shellView = new Function(`${fnSrc}; return kickedViewOf;`)();
   const table = [null, undefined, 'x', {}, { reason: 'superseded' }, { reason: 'signed_out' }, { reason: 'other' }];
   check('9.2 shell kickedViewOf == session-kick kickedView', table.every((r) => shellView(r) === KICK.kickedView(r)));
