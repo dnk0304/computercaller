@@ -785,6 +785,56 @@ try {
   await sw.evaluate(async () => { deliverFrame('PHONE_NOTIFICATION', null); await new Promise((r) => setTimeout(r, 300)); });
   b = await badge();
   check('16: an unopenable sealed alert still counts ⇒ "1"', b === '1', b);
+  // ---- 17. item 8 x dual session (Ken ruling 2026-09-26, #18 fold) ---------
+  // The read marks are uid-scoped. dropLocalSession() is shared by the explicit
+  // sign-out AND the relay 4001 kick, so the ALERT_READ removal lives ONLY in
+  // the 'signed-out' branch. Three checks: a same-account kick keeps the marks,
+  // signing back in as the same uid flips nothing to unread, and an explicit
+  // sign-out removes them.
+  await reset();
+  const UID17 = 'u-item8-kick-proof';
+  const setUid = (u) => sw.evaluate((uid) => new Promise((r) => chrome.storage.session.set({ cc_e2e_user_id: uid }, r)), u);
+  const readMarks = () => sw.evaluate(() => new Promise((r) => chrome.storage.session.get('cc_alert_read', (o) => r(o.cc_alert_read || null))));
+  await setUid(UID17);
+  const t17 = Date.now() - 1_800_000;
+  const shade17 = [951, 952, 953].map((id, i) => BACKFILL(id, t17 + i * 60_000));
+  await feed(shade17);
+  await pageSays([keyOf(951)]);
+  b = await badge();
+  check('17: setup, 3 in the shade, 1 opened ⇒ "2"', b === '2', b);
+  const marksBefore = await readMarks();
+  check('17: setup, one read mark stored under the uid',
+    !!marksBefore && marksBefore.uid === UID17 && marksBefore.marks.length === 1 && marksBefore.marks[0].k === keyOf(951), marksBefore);
+  // Simulated relay 4001 kick through the SHIPPED handler (token matches → honoured).
+  const kicked = await sw.evaluate(async () => {
+    const tok = 'tok-item8-kick-' + Date.now();
+    await new Promise((r) => chrome.storage.local.set({ [self.CC.TOKEN_KEY]: tok }, r));
+    const ok = await handleSessionKick(tok, 'superseded');
+    await new Promise((r) => setTimeout(r, 300));
+    return ok;
+  });
+  check('17: simulated 4001 kick honoured by handleSessionKick', kicked === true, kicked);
+  const marksAfterKick = await readMarks();
+  check('17: (2) kick ⇒ cc_alert_read SURVIVES, same uid, same mark',
+    !!marksAfterKick && marksAfterKick.uid === UID17 && marksAfterKick.marks.length === 1
+    && marksAfterKick.marks[0].k === keyOf(951), marksAfterKick);
+  // Sign back in as the SAME account; the phone replays its whole shade.
+  await setUid(UID17);
+  await sw.evaluate(() => { presenceCount = 0; });
+  await feed(shade17);
+  b = await badge();
+  const keys17 = (await sw.evaluate(() => readAlertKeys())).map((r) => r.k).sort();
+  check('17: (3) re-sign-in same uid after kick + full replay ⇒ still "2", opened alert stays read',
+    b === '2' && keys17.length === 2 && !keys17.includes(keyOf(951)), { b, keys17 });
+  // Explicit sign-out, sent from a PAGE (a worker never receives its own message).
+  const page17 = await ctx.newPage();
+  await page17.goto(`chrome-extension://${extId}/popup.html`);
+  await page17.evaluate(() => new Promise((r) => chrome.runtime.sendMessage({ type: 'signed-out' }, () => r())));
+  await new Promise((r) => setTimeout(r, 400));
+  await page17.close();
+  const marksAfterSignOut = await readMarks();
+  check('17: (1) explicit sign-out ⇒ cc_alert_read GONE', marksAfterSignOut === null, marksAfterSignOut);
+  await sw.evaluate(() => new Promise((r) => chrome.storage.local.remove(['cc_kicked', self.CC.TOKEN_KEY], r)));
 } finally {
   await ctx.close();
   reaper.reapAndReport('ext-badge-counter-proof');
