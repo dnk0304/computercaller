@@ -72,6 +72,17 @@ import {
   PENDING_OFFER_TTL_MS,
   CtxRefused,
 } from './e2e/sw-session.js';
+// Item 8: THE unread rule for alerts, a byte-identical copy of
+// lib/alertUnread.mjs, so the badge here and the dots on the page cannot
+// disagree (tests/alert-unread.test.mjs fails on drift).
+import {
+  alertEntryOf,
+  cleanRecords,
+  foldAlert,
+  dropAlertKey,
+  READ_MARK_CAP,
+  UNREAD_SET_CAP,
+} from './alert-unread.js';
 
 // ── State ──────────────────────────────────────────────────────────────────
 let ws = null;
@@ -171,10 +182,19 @@ const UNREAD_ZERO = { missedCalls: 0, newSms: 0, alerts: 0 };
 // cleared at the sign-out and unpair sites below alongside the counters.
 const BATTERY_KEY = 'cc_battery';
 const BATTERY_RECORD_VERSION = 1;
-// Companion row to UNREAD_KEY: the notificationKeys behind the current
-// `alerts` count, so a phone-side dismissal can decrement exactly the bumps it
-// owns. See bumpAlert/dropAlert.
+// Companion row to UNREAD_KEY: the unread alert SET behind the `alerts`
+// count, as records {k, h, t} (lib/alertUnread.mjs). Item 8: `alerts` is
+// always the SIZE of this set, never a per-frame counter, so a backfill replay
+// plus a live post of the same alert is one, not two. See noteAlert/dropAlert.
 const ALERT_KEYS = 'cc_alert_keys';
+// Item 8: what the user has READ (opened / dismissed on a surface), as
+// {uid, marks}. The page is the author (it pushes its per-account marks with
+// every 'alerts-state') and the worker applies them to frames that arrive
+// while every surface is closed, so a replay on reconnect cannot relight an
+// alert the user already read. storage.session like the counters (survives a
+// worker respawn, never on disk), scoped to the signed-in account id and
+// cleared at sign-out.
+const ALERT_READ = 'cc_alert_read';
 
 const GREEN = '#16a34a';
 const GREY = '#9ca3af';
@@ -1017,23 +1037,38 @@ function broadcastBattery(battery) {
 }
 
 /**
- * The notificationKeys whose `alerts` bump is still standing.
+ * The unread alert set, read back from storage.session.
  *
- * Kept in storage.session next to the counter rather than in a module-level
- * Set: the worker is routinely evicted between a notification arriving and the
- * phone-side dismissal that takes it back, and a decrement that lands on a
- * respawned worker with an empty Set would be silently dropped — leaving the
- * badge permanently one too high, which is the bug this exists to prevent.
+ * Kept in storage.session rather than a module-level Set: the worker is
+ * routinely evicted between an alert arriving and the dismissal that takes it
+ * back, and a respawned worker with an empty Set would drop the decrement.
+ * A legacy row of plain key strings (pre item 8) is read as keys with no hash.
  */
 function readAlertKeys() {
   return new Promise((resolve) => {
     try {
       chrome.storage.session.get(ALERT_KEYS, (o) => {
         const v = o && o[ALERT_KEYS];
-        resolve(Array.isArray(v) ? v.slice() : []);
+        const list = Array.isArray(v)
+          ? v.map((x) => (typeof x === 'string' ? { k: x, h: '', t: 0 } : x))
+          : [];
+        resolve(cleanRecords(list, UNREAD_SET_CAP));
       });
     } catch { resolve([]); }
   });
+}
+
+/** The read marks for the signed-in account, or [] (none, or another account's). */
+async function readAlertMarks() {
+  const rec = await new Promise((resolve) => {
+    try { chrome.storage.session.get(ALERT_READ, (o) => resolve((o && o[ALERT_READ]) || null)); }
+    catch { resolve(null); }
+  });
+  if (!rec || typeof rec !== 'object') return [];
+  const uid = await localUserId();
+  // Scoped: marks written under one account never apply under another.
+  if (!uid || rec.uid !== uid) return [];
+  return cleanRecords(rec.marks, READ_MARK_CAP);
 }
 
 /** The phone's identity for one notification, across the spellings the APK uses. */
@@ -1044,53 +1079,97 @@ function notifKeyOf(data) {
 }
 
 /**
- * bumpUnread('alerts'), plus a record of WHICH notification the bump was for.
+ * The set record for one PHONE_NOTIFICATION frame, built from the SAME fields
+ * the page builds its card from (usePhoneBridge PHONE_NOTIFICATION case), so
+ * the worker's identity for an alert is the page's.
  *
- * Same serialize() queue and the same presence gate as bumpUnread, and the two
- * writes go out as ONE storage.session.set: if the counter and the key set
- * could be written separately an eviction between them would leave a count
- * nothing can decrement, or a key that decrements a count it never raised.
+ * A sealed frame we could not open (`sealed`) has no key and no content: it
+ * still counts, once, under an opaque key nothing can collide with (the same
+ * "a count, not a crash" rule the rest of deliverFrame follows).
  */
-function bumpAlert(notificationKey) {
-  return serialize(async () => {
-    if (presenceCount > 0) return;
-    const cur = await readUnread();
-    const next = Object.assign({}, cur, { alerts: (cur.alerts || 0) + 1 });
-    const keys = await readAlertKeys();
-    if (notificationKey && keys.indexOf(notificationKey) === -1) keys.push(notificationKey);
-    // Bounded. A phone that posts hundreds of notifications behind a closed
-    // panel must not grow this row without limit; the oldest keys are the ones
-    // least likely to still be dismissible.
-    await writeSession({ [UNREAD_KEY]: next, [ALERT_KEYS]: keys.slice(-200) });
-    paintBadge(next);
-    broadcastUnread(next);
+let sealedAlertSeq = 0;
+function alertEntryOfFrame(data, sealed) {
+  const now = Date.now();
+  if (sealed) {
+    sealedAlertSeq += 1;
+    return { k: 'sealed:' + now + ':' + sealedAlertSeq, h: '', t: now };
+  }
+  const backfill = data.backfill === true;
+  return alertEntryOf({
+    notificationKey: typeof data.notificationKey === 'string' ? data.notificationKey : '',
+    id: data.id == null ? '' : String(data.id),
+    packageName: data.packageName || '',
+    title: data.title || '',
+    body: data.body || '',
+    timestamp: (backfill ? data.postedAt : undefined) ?? data.timestamp ?? now,
   });
 }
 
 /**
- * A notification was dismissed ON THE PHONE (NOTIFICATION_REMOVED). Take the
- * `alerts` bump back — but ONLY if this exact key is one we actually counted.
+ * Fold one alert into the unread set (item 8). Backfill and live take the
+ * same path (a backfilled alert is unread until opened or dismissed) and
+ * neither makes a sound or a toast (none exist since 2026-09-25).
  *
- * The guard is the whole point. A dismissal can arrive for a notification that
- * was never counted here: it landed while the panel was open (bumpUnread's
- * presence gate declined it), or it arrived as a v58 backfill replay, or its
- * bump was already cleared by the user viewing the Alerts tab. Decrementing
- * blind on any of those drives the badge below the number of things actually
- * waiting — a badge that undercounts is worse than one that is merely stale,
- * because it hides real messages.
+ * Only while nothing is watching: an open surface is the authority on the set
+ * and reports it with 'alerts-state' (applyAlertsState), which replaces
+ * whatever the worker had. The count and the set go out as ONE write, so an
+ * eviction between them cannot leave a count nothing can decrement.
+ */
+function noteAlert(entry, backfill) {
+  return serialize(async () => {
+    if (presenceCount > 0) return;
+    const keys = await readAlertKeys();
+    const next = foldAlert(keys, entry, backfill, await readAlertMarks());
+    if (next === keys) return;
+    const cur = await readUnread();
+    const unread = Object.assign({}, cur, { alerts: next.length });
+    await writeSession({ [UNREAD_KEY]: unread, [ALERT_KEYS]: next });
+    paintBadge(unread);
+    broadcastUnread(unread);
+  });
+}
+
+/**
+ * A notification was dismissed ON THE PHONE (NOTIFICATION_REMOVED). It leaves
+ * the set by its exact key (the list's rule) and the count follows the set.
+ * A key that was never in the set changes nothing, so a dismissal can never
+ * push the badge below what is actually waiting.
  */
 function dropAlert(notificationKey) {
   if (!notificationKey) return Promise.resolve();
   return serialize(async () => {
     const keys = await readAlertKeys();
-    const i = keys.indexOf(notificationKey);
-    if (i === -1) return;            // never counted ⇒ badge unchanged
-    keys.splice(i, 1);
+    const next = dropAlertKey(keys, notificationKey);
+    if (next.length === keys.length) return;
     const cur = await readUnread();
-    const next = Object.assign({}, cur, { alerts: Math.max(0, (cur.alerts || 0) - 1) });
-    await writeSession({ [UNREAD_KEY]: next, [ALERT_KEYS]: keys });
-    paintBadge(next);
-    broadcastUnread(next);
+    const unread = Object.assign({}, cur, { alerts: next.length });
+    await writeSession({ [UNREAD_KEY]: unread, [ALERT_KEYS]: next });
+    paintBadge(unread);
+    broadcastUnread(unread);
+  });
+}
+
+/**
+ * An open surface reports its unread alert set and its read marks (item 8).
+ * The page is the authority while it is open (it holds the list, the dedup
+ * and the user's opens/dismissals), so its set REPLACES the worker's and the
+ * badge becomes its size: badge and dots are one number by construction.
+ * Resolves to the counts after the write (the shell's fallback path applies them).
+ */
+function applyAlertsState(msg) {
+  return serialize(async () => {
+    const unreadSet = cleanRecords(msg && msg.unread, UNREAD_SET_CAP);
+    const marks = cleanRecords(msg && msg.read, READ_MARK_CAP);
+    const uid = await localUserId();
+    const cur = await readUnread();
+    const unread = Object.assign({}, cur, { alerts: unreadSet.length });
+    const write = { [UNREAD_KEY]: unread, [ALERT_KEYS]: unreadSet };
+    // No account id, no marks: they would be scoped to nobody.
+    if (uid) write[ALERT_READ] = { uid, marks };
+    await writeSession(write);
+    paintBadge(unread);
+    broadcastUnread(unread);
+    return unread;
   });
 }
 
@@ -1122,14 +1201,16 @@ function clearUnread(tab) {
   // old value back on top of it.
   return serialize(async () => {
     const cur = await readUnread();
+    // Item 8: looking at the Alerts TAB is no longer reading the alerts. Each
+    // stays unread until opened or dismissed, and the page reports that with
+    // 'alerts-state'. Zeroing here would put the badge below the dots.
+    if (key === 'alerts') return cur;
     if (!cur[key]) return cur;
     const next = Object.assign({}, cur, { [key]: 0 });
     // Zeroing `alerts` retires every bump behind it, so the key set has to go
     // with it — otherwise a later phone-side dismissal would find its key
     // still listed and decrement a count that is already 0.
-    const write = { [UNREAD_KEY]: next };
-    if (key === 'alerts') write[ALERT_KEYS] = [];
-    await writeSession(write);
+    await writeSession({ [UNREAD_KEY]: next });
     paintBadge(next);
     broadcastUnread(next);
     return next;
@@ -2328,17 +2409,14 @@ function deliverFrame(type, data) {
       return;
     }
     case 'PHONE_NOTIFICATION': {
-      // v58 BACKFILL. On sync the phone replays everything currently in its
-      // shade under this same frame type, tagged `backfill:true` with the
-      // original `postedAt`. That is history the user has already seen on the
-      // phone, so it reaches the Alerts list (the page merges it chronologically)
-      // and NOTHING else here: no badge bump, no sound. A bump per
-      // card for a shade of twenty would be a badge storm on every sync.
-      //
-      // Only an explicit `true` takes this path. Unknown or absent — every APK
-      // before v58 — falls through to today's live behaviour unchanged.
-      if (data && data.backfill === true) return;
-      bumpAlert(notifKeyOf(data));
+      // v58 BACKFILL replays the phone's shade on sync, tagged `backfill:true`
+      // with the original `postedAt`. Item 8 (Dennis 2026-09-26) REVERSES the
+      // old "no badge for backfill": those alerts are unread until opened or
+      // dismissed. What keeps a sync from being a badge storm is the SET: a
+      // replay of an alert already counted changes nothing, and one the user
+      // already read stays read (noteAlert, lib/alertUnread.mjs). No sound.
+      // Only an explicit `true` is backfill; it changes only the tie rule.
+      noteAlert(alertEntryOfFrame(data, sealed), !sealed && data.backfill === true);
       return;
     }
     case 'NOTIFICATION_REMOVED': {
@@ -2438,6 +2516,7 @@ chrome.runtime.onConnect.addListener((port) => {
     // thing that zeroes a counter — the SW never guesses that a message was
     // read because a window happened to be open.
     if (msg && msg.type === 'tab-viewed') clearUnread(msg.tab);
+    if (msg && msg.type === 'alerts-state') applyAlertsState(msg);
   });
   port.onDisconnect.addListener(() => {
     presencePorts.delete(port);
@@ -2723,6 +2802,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     readUnread().then((unread) => sendResponse?.({ ok: true, unread }));
   } else if (message?.type === 'tab-viewed') {
     clearUnread(message.tab).then((unread) => sendResponse?.({ ok: true, unread }));
+  } else if (message?.type === 'alerts-state') {
+    applyAlertsState(message).then((unread) => sendResponse?.({ ok: true, unread }));
   } else if (message?.type === 'sign-in-complete') {
     // Embedded (password) sign-in finished in the popup's login frame.
     // `return true` below keeps the channel open for this async reply.
@@ -2746,6 +2827,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // retires any kick record — serialised behind a kick that may be landing
     // right now (this extension's own logout kicks its own listener).
     dropLocalSession();
+    // Item 8 (Ken ruling 2026-09-26): the account's read marks go on an EXPLICIT
+    // sign-out only — NOT in dropLocalSession(), which the relay 4001 kick shares:
+    // marks are uid-scoped, and a same-account kick must not flip alerts unread.
+    try { chrome.storage.session.remove(ALERT_READ); } catch { /* best effort */ }
     serialize(clearKicked).catch(() => {});
     sendResponse?.({ ok: true });
   }
@@ -2808,6 +2893,9 @@ Object.assign(self, {
   applyIndicator,
   bumpUnread,
   clearUnread,
+  // Item 8: the alert set, reachable by the badge proofs.
+  applyAlertsState,
+  readAlertKeys,
   composeIcon,
   connect,
   handleFrame,

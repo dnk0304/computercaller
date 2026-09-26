@@ -78,6 +78,8 @@ try {
       cc_unread: { missedCalls: 0, newSms: 0, alerts: 0 },
       cc_alert_keys: [],
     }, r));
+    // Item 8: no read marks carried between sections either.
+    await new Promise((r) => chrome.storage.session.remove('cc_alert_read', r));
     paintBadge({ missedCalls: 0, newSms: 0, alerts: 0 });
   });
   const badge = () => sw.evaluate(() => chrome.action.getBadgeText({}));
@@ -132,7 +134,12 @@ try {
   check('viewing Texts drops the 2 texts ⇒ "2"', b === '2', b);
   await sw.evaluate(async () => { await clearUnread('dial'); await clearUnread('alerts'); await new Promise((r) => setTimeout(r, 300)); });
   b = await badge();
-  check('viewing the rest clears the badge entirely', b === '', b);
+  // Item 8 (Dennis 2026-09-26): an alert is read when OPENED or DISMISSED,
+  // not when its tab is looked at. The page reports that as 'alerts-state'.
+  check('item 8: viewing Dial clears the call; viewing the Alerts TAB does not read the alert ⇒ "1"', b === '1', b);
+  await sw.evaluate(async () => { await applyAlertsState({ unread: [], read: [] }); await new Promise((r) => setTimeout(r, 200)); });
+  b = await badge();
+  check('the page reporting the alert opened clears the badge entirely', b === '', b);
 
   // ---- 5. an open surface is the read receipt — it must not count ----------
   await reset();
@@ -560,7 +567,13 @@ try {
   check('HELD pair + panel CLOSED: OUTGOING sms still silent',
     b === '' && (await notifCount()) === 0, { badge: b, notifs: await notifCount() });
 
-  // ---- 13. v58: a BACKFILL notification must be silent -------------------
+  // ---- 13. v58 BACKFILL: counted (item 8), but silent ---------------------
+  //
+  // ITEM 8 (Dennis 2026-09-26) REVERSES the original rule below: a replayed
+  // alert IS unread until opened or dismissed, so it reaches the badge. What
+  // stays true is "no toast, no sound", and what prevents the badge storm the
+  // original text feared is the SET: a replay of an alert already counted
+  // changes nothing. Original rationale kept for the record:
   //
   // Dennis 2026-09-17: "when we sync phone, it should fetch all notifications
   // that currently are visible on the phone as well." The phone answers by
@@ -580,12 +593,14 @@ try {
     type: 'PHONE_NOTIFICATION', backfill: true, postedAt,
     id, notificationKey: `0|com.whatsapp|${id}`,
     packageName: 'com.whatsapp', appName: 'WhatsApp',
-    title: 'Ana', body: 'hei', text: 'hei', hasReply: true, replyKey: `rk-${id}`,
+    title: 'Ana', body: `hei ${id}`, text: `hei ${id}`, hasReply: true, replyKey: `rk-${id}`,
   });
   const LIVE_NOTIF = (id) => 'PHONE_NOTIFICATION:' + JSON.stringify({
     type: 'PHONE_NOTIFICATION', id, notificationKey: `0|com.whatsapp|${id}`,
     packageName: 'com.whatsapp', appName: 'WhatsApp',
-    title: 'Ana', body: 'hei', text: 'hei',
+    // Distinct bodies: two IDENTICAL alerts within 10 s are one card on the
+    // page (composite dedup) and therefore one in the set.
+    title: 'Ana', body: `hei ${id}`, text: `hei ${id}`,
   });
 
   await reset();
@@ -593,8 +608,17 @@ try {
   await armNotifSpy();
   await feed([BACKFILL(401, Date.now() - 3_600_000), BACKFILL(402, Date.now() - 60_000), BACKFILL(403, Date.now())]);
   b = await badge();
-  check('3 backfill frames, panel CLOSED ⇒ badge stays empty', b === '', b);
+  check('item 8: 3 backfill frames, panel CLOSED ⇒ badge "3"', b === '3', b);
   check('3 backfill frames ⇒ ZERO notifications raised', (await notifCount()) === 0, await notifCount());
+  // 13a2. trap 2: the next sync replays the same shade — a set, not a counter.
+  await feed([BACKFILL(401, Date.now() - 3_600_000), BACKFILL(402, Date.now() - 60_000), BACKFILL(403, Date.now())]);
+  b = await badge();
+  check('item 8: the same shade replayed again ⇒ still "3" (set, not counter)', b === '3', b);
+  // 13a3. trap 2: backfill + live post of the SAME key is one alert.
+  await reset();
+  await feed([BACKFILL(410, Date.now() - 1_000), LIVE_NOTIF(410)]);
+  b = await badge();
+  check('item 8: backfill + live post of the same key ⇒ "1"', b === '1', b);
 
   // 13b. the control arm. Without it, a guard that swallowed the whole frame
   // type would pass 13a trivially — and silently break live alerts.
@@ -667,23 +691,100 @@ try {
   await reset();
   await feed([LIVE_NOTIF(601), BACKFILL(602, Date.now() - 60_000)]);
   b = await badge();
-  check('one live + one backfill ⇒ badge "1"', b === '1', b);
+  check('item 8: one live + one backfill ⇒ badge "2"', b === '2', b);
   await feed([REMOVED('0|com.whatsapp|602')]);
   b = await badge();
-  check('dismissing the BACKFILLED card leaves the live count alone', b === '1', b);
+  check('dismissing the BACKFILLED card takes exactly it ⇒ "1"', b === '1', b);
   await feed([REMOVED('0|com.whatsapp|601')]);
   b = await badge();
   check('dismissing the LIVE card clears it', b === '', b);
 
-  // 14e. viewing the Alerts tab retires every outstanding bump, so a dismissal
-  // arriving afterwards must not decrement a counter that is already zero.
+  // 14e. item 8: viewing the Alerts tab no longer retires the alert; the
+  // phone-side dismissal that follows takes it, once, and never below zero.
   await reset();
   await feed([LIVE_NOTIF(701)]);
   await sw.evaluate(async () => { await clearUnread('alerts'); await new Promise((r) => setTimeout(r, 200)); });
-  await feed([REMOVED('0|com.whatsapp|701')]);
+  check('item 8: viewing the Alerts tab leaves the alert counted', (await badge()) === '1', await badge());
+  await feed([REMOVED('0|com.whatsapp|701'), REMOVED('0|com.whatsapp|701')]);
   cnt = await sw.evaluate(() => readUnread());
-  check('a dismissal after the tab was viewed cannot push alerts negative',
+  check('the dismissal takes it exactly once, never negative',
     cnt.alerts === 0 && (await badge()) === '', cnt);
+
+  // ---- 15. item 8, trap 1 + 3 on the REAL worker: Ken's timeline ----------
+  //
+  // connect with 5 in the shade ⇒ 5 → open 1 ⇒ 4 → dismiss 1 ⇒ 3 → reconnect
+  // (replay while the panel is CLOSED) ⇒ still 3 → phone removes 1 ⇒ 2.
+  // The page's half (the list, the dots, persisted marks) is proved in
+  // tests/alert-unread.test.ts with the same timeline; here the worker gets
+  // exactly what the page sends it ('alerts-state') and nothing else.
+  await reset();
+  await sw.evaluate(() => new Promise((r) => chrome.storage.session.set({ cc_e2e_user_id: 'u-item8-proof' }, r)));
+  const SHADE = [801, 802, 803, 804, 805];
+  const t0 = Date.now() - 3_600_000;
+  const shadeFrames = SHADE.map((id, i) => BACKFILL(id, t0 + i * 60_000));
+  await feed(shadeFrames);
+  b = await badge();
+  check('15: connect, panel CLOSED, 5 in the shade ⇒ "5"', b === '5', b);
+  // Panel opens; the page reports what it shows. Open one, then dismiss one.
+  const records = await sw.evaluate(() => readAlertKeys());
+  check('15: worker holds 5 records with a content hash each',
+    records.length === 5 && records.every((r) => typeof r.h === 'string' && r.h.length === 14), records.length);
+  const keyOf = (id) => `0|com.whatsapp|${id}`;
+  const pageSays = (readIds) => sw.evaluate(async ([recs, ids]) => {
+    presenceCount = 1;
+    const read = recs.filter((r) => ids.includes(r.k));
+    const unread = recs.filter((r) => !ids.includes(r.k));
+    await applyAlertsState({ unread, read });
+    await new Promise((r) => setTimeout(r, 150));
+  }, [records, readIds]);
+  await pageSays([keyOf(801)]);
+  b = await badge();
+  check('15: page reports 1 opened ⇒ "4"', b === '4', b);
+  await pageSays([keyOf(801), keyOf(803)]);
+  b = await badge();
+  check('15: page reports 1 dismissed ⇒ "3"', b === '3', b);
+  // Tab round trips Dial ↔ Texts ↔ Alerts do not move it.
+  await sw.evaluate(async () => { await clearUnread('dial'); await clearUnread('texts'); await clearUnread('alerts'); await clearUnread('dial'); });
+  b = await badge();
+  check('15: tab round-trips Dial↔Texts↔Alerts ⇒ still "3"', b === '3', b);
+  // Panel closes; relay drops; the phone replays its WHOLE shade on reconnect
+  // (803's cancel not applied yet). The worker alone must hold 3.
+  await sw.evaluate(() => { presenceCount = 0; });
+  await feed(shadeFrames);
+  b = await badge();
+  check('15: reconnect replay with the panel CLOSED ⇒ still "3" (trap 1)', b === '3', b);
+  // The read state is storage, not worker memory: a respawned worker reads it back.
+  const stored = await sw.evaluate(() => new Promise((r) => chrome.storage.session.get(['cc_alert_read', 'cc_alert_keys'], r)));
+  check('15: read marks live in storage.session under the account id (survive a worker respawn)',
+    stored.cc_alert_read && stored.cc_alert_read.uid === 'u-item8-proof' && stored.cc_alert_read.marks.length === 2
+    && Array.isArray(stored.cc_alert_keys) && stored.cc_alert_keys.length === 3, stored);
+  await feed([REMOVED(keyOf(805))]);
+  b = await badge();
+  check('15: phone removes 1 ⇒ "2"', b === '2', b);
+  // Counter and set never disagree.
+  const agree = await sw.evaluate(async () => ({ n: (await readUnread()).alerts, set: (await readAlertKeys()).length }));
+  check('15: alerts counter === set size', agree.n === agree.set && agree.n === 2, agree);
+
+  // ---- 16. item 8, trap 4: sealed and plain take the same path ------------
+  // A sealed frame the worker OPENS is handed to deliverFrame as the parsed
+  // object; a plain frame reaches the same deliverFrame through handleFrame.
+  await reset();
+  await feed([LIVE_NOTIF(901)]);
+  const viaPlain = await sw.evaluate(() => readAlertKeys());
+  await reset();
+  await sw.evaluate(async (raw) => {
+    deliverFrame('PHONE_NOTIFICATION', JSON.parse(raw.slice(raw.indexOf(':') + 1)));
+    await new Promise((r) => setTimeout(r, 300));
+  }, LIVE_NOTIF(901));
+  const viaOpened = await sw.evaluate(() => readAlertKeys());
+  check('16: an opened sealed frame builds the SAME record as the plain frame',
+    viaPlain.length === 1 && viaOpened.length === 1
+    && viaPlain[0].k === viaOpened[0].k && viaPlain[0].h === viaOpened[0].h, { viaPlain, viaOpened });
+  // An UNOPENABLE sealed frame (data === null) still counts, once.
+  await reset();
+  await sw.evaluate(async () => { deliverFrame('PHONE_NOTIFICATION', null); await new Promise((r) => setTimeout(r, 300)); });
+  b = await badge();
+  check('16: an unopenable sealed alert still counts ⇒ "1"', b === '1', b);
 } finally {
   await ctx.close();
   reaper.reapAndReport('ext-badge-counter-proof');

@@ -8,6 +8,7 @@
 // `node --experimental-strip-types`.
 
 import type { PhoneNotification } from '@/hooks/usePhoneBridge';
+import { alertEntryOf, isMarkedRead, type AlertRecord } from './alertUnread.mjs';
 
 /**
  * Composite dedup window for mirrored phone notifications. Mirrors the SMS
@@ -45,14 +46,45 @@ export function notificationCompositeSig(n: PhoneNotification): string {
 }
 
 /**
- * THE definition of an unread alert, shared by the tab badge and the in-list
- * unread dot (ALERTS-BADGE, 2026-09-25). A backfill card is the phone replaying
- * its shade on sync: the user already saw it on the phone, so it is history,
- * not news. Before this, the dot excluded backfill and the badge counted it,
- * so the badge could say "1" over a list with nothing marked.
+ * THE definition of an unread alert, shared by the tab badge, the in-list
+ * unread dot, and (via unreadAlertEntries) the extension worker's badge set.
+ *
+ * Item 8 (Dennis, 2026-09-26) REVERSES ALERTS-BADGE 2026-09-25: a backfill card
+ * (the phone replaying its shade on connect) IS unread until the user opens or
+ * dismisses it. What stops a replay of something already read from lighting up
+ * again is the persisted read marks (applyReadMarks), not the backfill flag.
+ * One predicate for badge and dot is still the phantom-"1" fix (d8c7aa4).
  */
-export function isUnreadAlert(n: Pick<PhoneNotification, 'read' | 'backfill'>): boolean {
-  return !n.read && !n.backfill;
+export function isUnreadAlert(n: Pick<PhoneNotification, 'read'>): boolean {
+  return !n.read;
+}
+
+/** The read receipt for one card: what gets persisted when the user reads it. */
+export function readMarkOf(n: PhoneNotification): AlertRecord {
+  return alertEntryOf(n);
+}
+
+/**
+ * Mark every card a stored read mark covers as read. Returns `list` itself
+ * when nothing changes, so a React setter handed it does not re-render.
+ */
+export function applyReadMarks(
+  list: PhoneNotification[],
+  marks: readonly AlertRecord[],
+): PhoneNotification[] {
+  if (marks.length === 0) return list;
+  let changed = false;
+  const out = list.map((n) => {
+    if (n.read || !isMarkedRead(alertEntryOf(n), marks)) return n;
+    changed = true;
+    return { ...n, read: true };
+  });
+  return changed ? out : list;
+}
+
+/** The unread SET the page reports to the extension worker (badge = its size). */
+export function unreadAlertEntries(list: readonly PhoneNotification[]): AlertRecord[] {
+  return list.filter(isUnreadAlert).map(alertEntryOf);
 }
 
 export type NotifEvent =

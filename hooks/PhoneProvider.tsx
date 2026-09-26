@@ -29,6 +29,8 @@ export function PhoneProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     markAllNotificationsRead: (phone as any).markAllNotificationsRead ?? (() => {}),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    markNotificationRead: (phone as any).markNotificationRead ?? (() => {}),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     clearAllNotifications: (phone as any).clearAllNotifications ?? (() => {}),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }), [(phone as any).phoneNotifications, phone]);

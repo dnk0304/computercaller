@@ -21,6 +21,15 @@
  * clears its count but the shell keeps its cached 1 forever: the phantom.
  * Measured on 2cb7526+title: {"sw":0,"shell":1,"port":false} on Texts and Dial.
  *
+ * ITEM 8 (Dennis 2026-09-26): visiting the Alerts TAB no longer reads the
+ * alerts; each is read when opened or dismissed, which the page reports as
+ * 'alerts-state' (its unread set + read marks). The receipt that clears the
+ * count is therefore that report, sent down the SAME two paths (port, or the
+ * fallback whose reply the shell must apply). The phantom this proof exists
+ * for is unchanged: after the port drops, the shell's cache must follow the
+ * worker. Arm D pins the reversal itself: a tab round trip neither clears a
+ * real unread alert nor invents one.
+ *
  * Headless new-mode Chromium by default; CC_HEADED=1 for a headed run.
  *
  *   node scripts/ext-alerts-badge-phantom-proof.mjs
@@ -103,7 +112,13 @@ try {
    * provoked through a real path — a Texts view zeroes a pending newSms and
    * broadcasts the whole record, alerts included.
    */
+  const ONE = [{ k: '0|com.whatsapp|1', h: '0123456789abcd', t: Date.now() }];
+  const setKeys = (keys) => shell.evaluate((k) => new Promise((r) =>
+    chrome.storage.session.set({ cc_alert_keys: k }, r)), keys);
+  /** The page's report: the user opened (or dismissed) the one waiting alert. */
+  const readAll = () => shell.evaluate(() => reportAlertsState({ unread: [], read: [] }));
   const alertWaiting = async () => {
+    await setKeys(ONE);
     await setSw({ missedCalls: 0, newSms: 1, alerts: 1 });
     await shell.evaluate(() => reportTabViewed('texts'));
     return until(shellAlerts, 1);
@@ -114,11 +129,15 @@ try {
   const open = await log('panel open on Texts, one alert waiting');
   check('control: shell holds the waiting count', seeded === 1 && open.sw === 1, open);
 
-  // ── Arm A: healthy port. Visit Alerts, both counts go to 0. ──────────────
+  // ── Arm A: healthy port. The alert is opened; both counts go to 0. ───────
   await shell.evaluate(() => reportTabViewed('alerts'));
+  await wait(400);
+  const a0 = await log('A: Alerts tab visited, nothing opened yet');
+  check('A (item 8): visiting the Alerts tab alone does NOT read the alert', a0.sw === 1 && a0.shell === 1, a0);
+  await readAll();
   await until(shellAlerts, 0);
-  const a = await log('A: Alerts visited, port live');
-  check('A: healthy port — worker AND shell cleared after visiting Alerts', a.sw === 0 && a.shell === 0, a);
+  const a = await log('A: alert opened, port live');
+  check('A: healthy port — worker AND shell cleared after the alert was opened', a.sw === 0 && a.shell === 0, a);
 
   // ── Arm B: the port drops with the panel still open. ──────────────────────
   // An MV3 worker restart disconnects every port; the shell's onDisconnect
@@ -131,10 +150,19 @@ try {
   const dropped = await log('B: port dropped, panel still open');
   check('B: precondition — shell holds 1 and has no presence port', dropped.port === false && dropped.shell === 1, dropped);
 
-  await shell.evaluate(() => reportTabViewed('alerts'));
+  // The port is gone, so the report takes the fallback path: the worker's
+  // reply is what must reach the shell's cache.
+  await shell.evaluate(() => { presencePort = null; });
+  await shell.evaluate(() => {
+    // Force the fallback: connectPresence() would re-open the port first.
+    const orig = connectPresence;
+    connectPresence = () => null;
+    reportAlertsState({ unread: [], read: [] });
+    connectPresence = orig;
+  });
   await until(swAlerts, 0);
   await until(shellAlerts, 0, 2500);
-  const b = await log('B: Alerts visited after the drop');
+  const b = await log('B: alert opened after the drop (fallback path)');
   check('B: worker cleared its count', b.sw === 0, b);
   check('B: THE PHANTOM — shell cache (page badge source) cleared too', b.shell === 0, b);
 
@@ -147,14 +175,38 @@ try {
   await wait(600);
   const d = await log('B: on Dial');
   check('B: on Dial the Alerts badge source is 0', d.shell === 0, d);
-  check('B: presence restored, so the worker stops counting behind an open panel', d.port === true, d);
+  // Presence comes back on the next report that finds no port.
+  await shell.evaluate(() => reportTabViewed('dial'));
+  await until(portUp, true);
+  check('B: presence restored, so the worker stops counting behind an open panel', (await portUp()) === true, d);
 
   // ── C: no over-correction. A new alert still shows, and still clears. ────
   const n1 = await alertWaiting();
   check('C: a new alert still reaches the badge as 1', n1 === 1, { shell: n1 });
-  await shell.evaluate(() => reportTabViewed('alerts'));
+  await readAll();
   const n0 = await until(shellAlerts, 0);
-  check('C: and clears after visiting Alerts', n0 === 0, { shell: n0, sw: await swAlerts() });
+  check('C: and clears once opened', n0 === 0, { shell: n0, sw: await swAlerts() });
+
+  // ── D: item 8 — tab round trips with one REAL unread alert ────────────────
+  // Dial ↔ Texts ↔ Alerts must neither clear it nor invent a second one.
+  await alertWaiting();
+  const seen = [];
+  for (const tab of ['dial', 'texts', 'alerts', 'dial', 'alerts', 'texts']) {
+    await shell.evaluate((t) => reportTabViewed(t), tab);
+    await wait(250);
+    seen.push({ tab, sw: await swAlerts(), shell: await shellAlerts() });
+  }
+  console.log('   ', JSON.stringify(seen));
+  check('D: through Dial↔Texts↔Alerts round trips the count stays exactly 1 (worker and shell)',
+    seen.every((r) => r.sw === 1 && r.shell === 1), seen);
+  await readAll();
+  const d0 = await until(shellAlerts, 0);
+  check('D: opened ⇒ 0 everywhere, and stays 0 on the next round trip',
+    d0 === 0 && (await swAlerts()) === 0, { shell: d0 });
+  for (const tab of ['texts', 'alerts', 'dial']) await shell.evaluate((t) => reportTabViewed(t), tab);
+  await wait(500);
+  check('D: no phantom after the round trip', (await swAlerts()) === 0 && (await shellAlerts()) === 0,
+    { sw: await swAlerts(), shell: await shellAlerts() });
 
   const failed = results.filter((r) => !r.pass);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

@@ -8,6 +8,8 @@ export interface NotificationContextValue {
   sendNotificationReply: (notifId: string, replyKey: string, text: string) => void;
   clearNotification: (id: string) => void;
   markAllNotificationsRead: () => void;
+  /** Item 8: one alert was opened. Persisted, so a replay stays read. */
+  markNotificationRead: (id: string) => void;
   clearAllNotifications: () => void;
 }
 

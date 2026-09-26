@@ -1004,6 +1004,46 @@ function reportTabViewed(tab) {
   } catch {}
 }
 
+/**
+ * Item 8. The app reports its unread alert SET and its read marks; the worker
+ * makes the badge the size of that set (applyAlertsState). Validated and
+ * bounded HERE, because this verb is reachable from the app frame and nothing
+ * arriving on it goes to the worker unchecked: at most 50 unread records and
+ * 500 marks, each {k, h, t} with short strings and a finite number.
+ */
+const ALERTS_UNREAD_MAX = 50;
+const ALERTS_READ_MAX = 500;
+function cleanAlertRecords(list, max) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const x of list.slice(-max)) {
+    if (!x || typeof x.k !== 'string' || typeof x.h !== 'string') continue;
+    if (x.k.length > 512 || x.h.length > 64) continue;
+    const t = Number(x.t);
+    out.push({ k: x.k, h: x.h, t: Number.isFinite(t) ? t : 0 });
+  }
+  return out;
+}
+function reportAlertsState(data) {
+  const msg = {
+    type: 'alerts-state',
+    unread: cleanAlertRecords(data && data.unread, ALERTS_UNREAD_MAX),
+    read: cleanAlertRecords(data && data.read, ALERTS_READ_MAX),
+  };
+  // Same two paths as reportTabViewed, for the same reason: a recycled worker
+  // drops the port, and the fallback's reply is APPLIED, never discarded.
+  const port = presencePort || connectPresence();
+  if (port) {
+    try { port.postMessage(msg); return; } catch {}
+  }
+  try {
+    chrome.runtime.sendMessage(msg, (res) => {
+      void chrome.runtime.lastError;
+      if (res && res.ok) receiveUnread(res.unread);
+    });
+  } catch {}
+}
+
 // ---- Inbound from the hosted app -------------------------------------------
 window.addEventListener('message', (event) => {
   // Two independent gates. Origin alone is not enough (any frame we host could
@@ -1085,6 +1125,8 @@ window.addEventListener('message', (event) => {
     receiveFileDownload(data);
   } else if (data.type === 'tab-viewed') {
     reportTabViewed(data.tab);
+  } else if (data.type === 'alerts-state') {
+    reportAlertsState(data);
   } else if (data.type === 'sign-out') {
     signOut();
   } else if (data.type === 'sign-back-in') {
