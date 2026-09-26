@@ -59,7 +59,7 @@ import {
   sasSpokenLabel,
   encryptionIndicator,
 } from '../lib/encryptedModeCopy.ts';
-import { CONN_TRUTH_LABELS } from '../lib/connectionTruth.ts';
+import { CONN_TRUTH_LABELS, CONN_TRUTH_DETAILS } from '../lib/connectionTruth.ts';
 
 const DEV = process.env.DEV_URL || 'http://localhost:3123';
 
@@ -728,18 +728,22 @@ try {
 
   // ═══ (c) the indicator, and the independence rule ════════════════════════
   console.log('\n-- (c) indicator + independence --');
-  const unencrypted = encryptionIndicator({ state: 'unencrypted', peer: { supports: false } });
   let baselinePill = null;
   {
     const { ctx, page } = await open({ route: '/app' });
     const chip = page.locator('[data-cc-e2e-chip]');
     check('(c) /app header renders the encryption chip', await appears(chip));
-    check('(c) an unpaired/plaintext bridge reads "Not encrypted", in words',
-      (await chip.first().getAttribute('data-cc-e2e-label')) === unencrypted.label,
+    // #18 fold (pin moved, behaviour unchanged in kind): 18-CONN-STATUS (1bc38cc)
+    // labels a LIVE unsealed pair from the current pair — "Standard (TLS)" with
+    // its own sentence — instead of the P5a "Not encrypted" indicator copy. The
+    // stub auto-pairs plain, so this chip is exactly that state. Still words,
+    // still a full sentence for screen readers, still no padlock (next check).
+    check('(c) a plaintext (unsealed) pair reads "Standard (TLS)", in words',
+      (await chip.first().getAttribute('data-cc-e2e-label')) === CONN_TRUTH_LABELS.standard,
       await chip.first().getAttribute('data-cc-e2e-label'));
     check('(c) the chip carries a full sentence for screen readers, not just a glyph',
       (await chip.first().innerText()).length > 0
-      && (await chip.first().textContent()).includes(unencrypted.detail.slice(0, 24)));
+      && (await chip.first().textContent()).includes(CONN_TRUTH_DETAILS.standard.slice(0, 24)));
     check('(c) no padlock is drawn on an unencrypted pairing',
       (await chip.first().getAttribute('data-cc-e2e-chip')) === 'plain');
     baselinePill = await pillIdentity(page);
@@ -1295,7 +1299,17 @@ try {
       chromium,
       dev: DEV,
       repo,
-      cookies: SESSION_COOKIES,
+      // #18 fold: m2 (6105d2e) makes the light run's REAL /api/auth/logout bump
+      // sessionVersion, which revokes a cookie minted once at start. Each theme
+      // gets cookies minted at the CURRENT sessionVersion, as a fresh sign-in would.
+      cookies: async () => {
+        const u = await db.user.findUnique({ where: { id: dbUser.id }, select: { sessionVersion: true } });
+        const ver = u?.sessionVersion ?? 0;
+        return [
+          { ...SESSION_COOKIES[0], value: signAccessToken({ userId: dbUser.id, email: dbUser.email, ver }) },
+          { ...SESSION_COOKIES[1], value: signIdleToken(dbUser.id, process.env.JWT_SECRET) },
+        ];
+      },
       check,
       shots: SHOTS,
       reaper,

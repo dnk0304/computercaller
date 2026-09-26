@@ -245,7 +245,7 @@ export async function runExtIdleProof({
 
     try {
       trace(`${theme}: context up`);
-      await ctx.addCookies(cookies);
+      await ctx.addCookies(typeof cookies === 'function' ? await cookies() : cookies);
       await ctx.addInitScript({ content: clockShim(dev) });
       // The surface reads its theme from a blocking boot script, not from the
       // OS preference alone — seed it the way the product does.
