@@ -255,15 +255,6 @@ async function writePng(raw: Raw, file: string, width?: number, height?: number)
   note(file);
 }
 
-async function writePngFrom(src: string | Buffer, file: string, size: number) {
-  mkdirSync(dirname(file), { recursive: true });
-  await sharp(src)
-    .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .png({ compressionLevel: 9 })
-    .toFile(file);
-  note(file);
-}
-
 /** An SVG that *is* the artwork: geometry in the viewBox, pixels in <image>. */
 function svgLockup(
   markPngB64: string,
@@ -337,9 +328,9 @@ const PLAY_ICON_OUT = ARGS.find((a) => a.startsWith('--play-icon='))?.slice('--p
 /**
  * ICON-REVERT-ORIGINAL (Dennis 2026-09-25, variant B "viewport-max").
  *
- * The launcher is the original mark alone on WHITE (colors.xml
- * ic_launcher_background #FFFFFF; it was the artwork's pale blue #C6E9FB until
- * the ring rollout), enlarged as far as a launcher shows anything: the mark's
+ * The launcher is the original mark alone on the light-brand-blue ground (see
+ * GROUND below; it was white #FFFFFF until 2026-09-25, and the artwork's pale
+ * blue #C6E9FB before the ring rollout), enlarged as far as a launcher shows anything: the mark's
  * farthest opaque pixel lands 35.5 dp from the centre of the 108 dp canvas,
  * 0.5 dp inside the 72 dp visible viewport.
  *
@@ -356,7 +347,71 @@ const PLAY_ICON_OUT = ARGS.find((a) => a.startsWith('--play-icon='))?.slice('--p
  * mask cuts, and the radius bounds them.
  */
 const LAUNCHER_REACH_DP = 35.5;
-const LAUNCHER_BG = { r: 255, g: 255, b: 255, alpha: 1 };
+
+/**
+ * ICON-LIGHTBLUE (Dennis 2026-09-25, Vinci option 2 "light brand blue").
+ *
+ * Every icon ground is a soft top-left -> bottom-right fade through three
+ * stops. On Android it ships as a vector (res/drawable/ic_launcher_background.xml:
+ * linear gradient (18,18) -> (90,90) over the 108 dp layer, tileMode clamp), so
+ * the rasters below reproduce exactly that geometry: t is the projection on the
+ * diagonal, clamped outside [t0, t1]. A full-bleed tile (Play, extension, web)
+ * runs the ramp corner to corner (t0 = 0, t1 = 1).
+ *
+ * Computed per pixel rather than drawn through an SVG so the ramp is exact and
+ * independent of the rasteriser. The fade is linear between stops, so sampling
+ * at pixel centres equals the area average: no supersampling needed.
+ */
+const GROUND: ReadonlyArray<RGB> = [
+  [0xf9, 0xfc, 0xfd],
+  [0xd5, 0xea, 0xfd],
+  [0xba, 0xd5, 0xfa],
+];
+
+function ground(n: number, t0 = 0, t1 = 1): Raw {
+  const data = Buffer.alloc(n * n * 4);
+  for (let py = 0; py < n; py++) {
+    for (let px = 0; px < n; px++) {
+      let t = (px + 0.5 + (py + 0.5)) / (2 * n);
+      t = Math.min(1, Math.max(0, (t - t0) / (t1 - t0)));
+      const [a, b, u] = t < 0.5 ? [GROUND[0], GROUND[1], t / 0.5] : [GROUND[1], GROUND[2], (t - 0.5) / 0.5];
+      const o = (py * n + px) * 4;
+      for (let c = 0; c < 3; c++) data[o + c] = Math.round(a[c] + (b[c] - a[c]) * u);
+      data[o + 3] = 255;
+    }
+  }
+  return { data, width: n, height: n };
+}
+
+/** The adaptive background layer at n px: the ramp spans the 72 dp viewport (18..90 of 108). */
+const launcherGround = (n: number) => ground(n, 18 / 108, 90 / 108);
+
+/**
+ * A full-bleed square icon: the ramp corner to corner, the mark centred at
+ * `frac` of the width. Composed at 4x and Lanczos-reduced, like the approved
+ * stage-1 renders (0.80 for Play and apple-touch, 0.90 for extension/web).
+ */
+async function groundTile(mark: Raw, s: number, frac: number): Promise<Raw> {
+  const S = s * 4;
+  const w = Math.floor(S * frac);
+  const h = Math.floor((w * mark.height) / mark.width);
+  const layers = w
+    ? [
+        {
+          input: await png(mark).resize(w, h, { fit: 'fill', kernel: 'lanczos3' }).png().toBuffer(),
+          left: Math.floor((S - w) / 2),
+          top: Math.floor((S - h) / 2),
+        },
+      ]
+    : [];
+  const big = await png(ground(S)).composite(layers).png().toBuffer();
+  const { data } = await sharp(big)
+    .resize(s, s, { kernel: 'lanczos3' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data, width: s, height: s };
+}
 
 /** Farthest alpha>0 pixel (its outer corner) from the image centre, in px. */
 function farRadius(raw: Raw): number {
@@ -405,16 +460,16 @@ async function launcherForeground(mark: Raw, ppd: number): Promise<Buffer> {
 
 /**
  * The adaptive icon flattened the way a launcher shows it: foreground over the
- * white background, cropped to the central 72 dp viewport, `px` square. For the
- * legacy mipmaps (minSdk 26, so only non-adaptive hosts ever read these) and
- * the Play listing icon. `circle` masks to a circle with transparent corners;
- * `square` is opaque RGB.
+ * light-blue background layer, cropped to the central 72 dp viewport, `px`
+ * square. For the legacy mipmaps (minSdk 26, so only non-adaptive hosts ever
+ * read these). `circle` masks to a circle with transparent corners; `square` is
+ * opaque RGB.
  */
 async function launcherFlat(mark: Raw, px: number, shape: 'square' | 'circle'): Promise<Buffer> {
   const ppd = px / 72;
   const n = Math.round(108 * ppd);
   const off = Math.round(18 * ppd);
-  const full = await sharp({ create: { width: n, height: n, channels: 4, background: LAUNCHER_BG } })
+  const full = await png(launcherGround(n))
     .composite([{ input: await launcherForeground(mark, ppd), left: 0, top: 0 }])
     .png()
     .toBuffer();
@@ -533,6 +588,108 @@ async function writeSplitCuts(wordLight: Raw) {
   }
 }
 
+/* ------------------------------------------------ light-blue icon tiles */
+
+/**
+ * Rounded-square alpha (corner radius 0.2 of the side) replacing the tile's own:
+ * drawn at 4x and Lanczos-reduced, the stage-1 recipe.
+ */
+async function roundTile(tile: Raw): Promise<Raw> {
+  const n = tile.width;
+  const S = n * 4;
+  const R = Math.floor(S * 0.2);
+  const big = Buffer.alloc(S * S);
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const dx = x < R ? R - x - 0.5 : x >= S - R ? x + 0.5 - (S - R) : 0;
+      const dy = y < R ? R - y - 0.5 : y >= S - R ? y + 0.5 - (S - R) : 0;
+      big[y * S + x] = dx * dx + dy * dy <= R * R ? 255 : 0;
+    }
+  }
+  const alpha = await sharp(big, { raw: { width: S, height: S, channels: 1 } })
+    .resize(n, n, { kernel: 'lanczos3' })
+    .extractChannel(0) // sharp promotes 1-channel raw input to sRGB; keep one plane
+    .raw()
+    .toBuffer();
+  const data = Buffer.from(tile.data);
+  for (let i = 0; i < n * n; i++) data[i * 4 + 3] = alpha[i];
+  return { data, width: n, height: n };
+}
+
+/**
+ * ICON-LIGHTBLUE mark B (Dennis 2026-09-26 09:39Z: "16 px mark option B, handset
+ * on the monitor screen"). At 16 and 32 px a downscale of the mark turns the
+ * call arc into a grey-green smear, so these two sizes are drawn on the pixel
+ * grid instead: the same monitor + phone in the mark's green -> blue ramp, and
+ * the arc replaced by a handset glyph on the monitor screen (the Material "call"
+ * glyph rasterised by coverage, then hand-hinted). Exactly the approved stage-1
+ * pixels; the ground is the light-blue rounded tile.
+ */
+const B_INK = {
+  green: [0x2e, 0xb3, 0x6b],
+  teal: [0x1f, 0x9a, 0x96],
+  blue: [0x1e, 0x7f, 0xc0],
+  deep: [0x17, 0x6e, 0xa6],
+  white: [255, 255, 255],
+} as const;
+const HANDSET: Record<16 | 32, string[]> = {
+  32: ['11100000', '11100000', '11000000', '11000000', '01100000', '01111011', '00111111', '00001111'],
+  16: ['11000', '11000', '01000', '01101', '00111'],
+};
+
+/** Round half to even: the stage-1 pixels were authored with Python's round(). */
+function roundEven(v: number): number {
+  const f = Math.floor(v);
+  const d = v - f;
+  if (d !== 0.5) return d < 0.5 ? f : f + 1;
+  return f % 2 === 0 ? f : f + 1;
+}
+
+async function markSmall(size: 16 | 32): Promise<Raw> {
+  const t = await roundTile(ground(size));
+  const put = (x: number, y: number, c: RGB) => {
+    const o = (y * size + x) * 4;
+    t.data[o] = c[0];
+    t.data[o + 1] = c[1];
+    t.data[o + 2] = c[2];
+    t.data[o + 3] = 255;
+  };
+  const rect = (x0: number, y0: number, x1: number, y1: number, c: RGB) => {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) put(x, y, c);
+  };
+  const mix = (a: RGB, b: RGB, u: number): RGB => [0, 1, 2].map((i) => roundEven(a[i] + (b[i] - a[i]) * u));
+  // Vertical brand ramp, green top -> blue bottom, like the mark.
+  const ramp = (x0: number, y0: number, x1: number, y1: number, a: RGB, b: RGB) => {
+    for (let y = y0; y <= y1; y++) rect(x0, y, x1, y, mix(a, b, y / size));
+  };
+  const handset = (x0: number, y0: number, rows: number) =>
+    HANDSET[size].forEach((row, j) => {
+      for (let i = 0; i < row.length; i++) {
+        if (row[i] === '1') put(x0 + i, y0 + j, mix(B_INK.teal, B_INK.deep, j / rows));
+      }
+    });
+  const { green, teal, blue, deep, white } = B_INK;
+  if (size === 32) {
+    ramp(2, 7, 19, 20, green, blue); // monitor, 2 px bezel
+    rect(4, 9, 17, 18, white);
+    ramp(10, 21, 11, 22, teal, blue); // neck
+    ramp(6, 23, 15, 24, blue, deep); // base
+    ramp(21, 5, 29, 25, teal, deep); // phone, 2 px bezel + chin
+    rect(23, 7, 27, 21, white);
+    put(25, 23, white);
+    handset(7, 10, 8);
+  } else {
+    ramp(1, 3, 9, 11, green, blue); // monitor, 1 px bezel
+    rect(2, 4, 8, 10, white);
+    put(5, 12, blue); // neck
+    rect(3, 13, 7, 13, deep); // base
+    ramp(11, 2, 14, 13, teal, deep); // phone, 1 px bezel + chin
+    rect(12, 3, 13, 11, white);
+    handset(3, 5, 5);
+  }
+  return t;
+}
+
 /* --------------------------------------------------------------------- main */
 
 /** 1x display widths. 3x lands exactly on the artwork's native pixels. */
@@ -647,26 +804,26 @@ async function main() {
       svgInline(markInlineB64, wordLightB64, wordDarkB64),
     );
 
-    // --- extension action icons, FROM THE MARK -------------------------------
-    // PIXEL-S2 (b), Dennis 2026-09-17 13:26: "Use the same logo from the header
-    // as the official one for extension, the one that doesnt contain the
-    // computercaller text in the icon."
-    //
-    // These used to come from marketing/store/app-icon-512.png, which is the
-    // LAUNCHER icon: mark plus "ComputerCaller" set inside the tile. At 16px that
-    // wordmark is ~2px tall — an unreadable smudge under the mark that still
-    // costs the mark a third of its height. The header now shows the bare mark
-    // (deliverable (a)) and so does the toolbar, off the same cut.
-    //
-    // `contain` on a square canvas, not `cover`: the mark is 1.936:1, so it lands
-    // full-width and vertically centred with transparent bands above and below.
-    // Cropping it to fill the square would cut the monitor and the phone out of a
-    // mark whose whole subject is the two of them talking to each other — i.e. it
-    // would be redrawing the logo, which is the thing PIXEL-O exists to stop.
-    const markIconBuf = await png(mark).png({ compressionLevel: 9 }).toBuffer();
-    for (const size of [16, 32, 48, 128]) {
-      await writePngFrom(markIconBuf, join(extDir, `icon${size}.png`), size);
+    // --- extension action icons + web app icons, ON THE LIGHT-BLUE TILE -------
+    // ICON-LIGHTBLUE (Dennis 2026-09-25/26). Every square icon is the light-blue
+    // ground (see GROUND) with the unchanged mark centred on it:
+    //   icon48/128 + app/icon.png (Next's /icon.png favicon): rounded tile
+    //     (radius 0.2 of the side, transparent corners), mark at 0.90 wide.
+    //   app/apple-icon.png: opaque full-bleed, mark at 0.80 (iOS masks it).
+    //   icon16/32: the simplified mark B (markSmall), not a downscale.
+    // chrome-extension/background.js composeIcon() draws the status dot over
+    // icon${size}.png for each size, so the hand-set 16/32 survive connecting.
+    for (const size of [48, 128]) {
+      await writePng(await roundTile(await groundTile(mark, size, 0.9)), join(extDir, `icon${size}.png`));
     }
+    for (const size of [16, 32] as const) {
+      await writePng(await markSmall(size), join(extDir, `icon${size}.png`));
+    }
+    await writePng(await roundTile(await groundTile(mark, 256, 0.9)), P('app', 'icon.png'));
+    writeBuf(
+      P('app', 'apple-icon.png'),
+      await png(await groundTile(mark, 180, 0.8)).removeAlpha().png({ compressionLevel: 9 }).toBuffer(),
+    );
   }
 
   // --- Android ------------------------------------------------------------
@@ -718,7 +875,8 @@ async function main() {
     }
     // Launcher (ICON-REVERT-ORIGINAL, see launcherForeground): adaptive
     // foreground = the mark alone on transparency; ic_launcher/_round = the same
-    // composition flattened on white, for hosts that ignore adaptive icons.
+    // composition flattened on the light-blue ground, for hosts that ignore
+    // adaptive icons.
     writeBuf(
       join(androidRes, `mipmap-${density}`, 'ic_launcher_foreground.png'),
       await sharp(await launcherForeground(mark, factor)).png({ compressionLevel: 9 }).toBuffer(),
@@ -730,7 +888,11 @@ async function main() {
 
   // The Play listing icon is not a repo asset (marketing/store/app-icon-512.png
   // is the web/store artwork); it is written only on request, for upload.
-  if (PLAY_ICON_OUT) writeBuf(PLAY_ICON_OUT, await launcherFlat(mark, 512, 'square'));
+  // 512x512 opaque and full-bleed (Play applies its own mask): the light-blue
+  // ground corner to corner, the mark at 0.80 of the width.
+  if (PLAY_ICON_OUT) {
+    writeBuf(PLAY_ICON_OUT, await png(await groundTile(mark, 512, 0.8)).removeAlpha().png({ compressionLevel: 9 }).toBuffer());
+  }
 
   // eslint-disable-next-line no-console
   console.log(`build-brand-lockup: wrote ${written.length} files\n  ` + written.join('\n  '));

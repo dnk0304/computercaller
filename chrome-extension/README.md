@@ -28,7 +28,7 @@ badge even when the popup is closed. It raises no OS/desktop notifications.
 ### Connection indicator
 
 `background.js` composes the toolbar icon at runtime (OffscreenCanvas over
-`icon128.png`) and puts a dot in its bottom-right: **green** only when the
+`icon{16,32,48,128}.png`, each size from its own file) and puts a dot in its bottom-right: **green** only when the
 listener socket is open AND a phone is in the room, **grey** when signed in but
 either of those is missing, **nothing** when signed out. Chrome cannot draw
 above the icon, and `setBadgeText` only writes a text chip in the same corner —
@@ -82,8 +82,9 @@ and writes the web, extension and Android copies in one pass.
   `#cc-shell-header .cc-lockup`.
 - `lockup.svg` — the official STACKED composition, for the signed-out hero.
 - `mark.svg` — the mark alone.
-- `icon16/32/48/128.png` — the toolbar/side-panel-title icons, cut
-  from `marketing/store/app-icon-512.png`. Chrome also draws `icon16` in the
+- `icon16/32/48/128.png` — the toolbar/side-panel-title icons, written by
+  `scripts/build-brand-lockup.ts`: the mark on the light-blue rounded tile at
+  48/128, the pixel-set simplified mark B at 16/32. Chrome also draws `icon16` in the
   side panel's own title bar, which is why it had to change with the rest.
 
 They live **inside** the extension because an MV3 page declares no

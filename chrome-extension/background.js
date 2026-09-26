@@ -554,6 +554,11 @@ function broadcastE2eStatus() {
  * icon{16,32,48,128}-connected.png into chrome-extension/, load those instead of
  * calling composeIcon(); nothing else in this file changes.
  *
+ * Each size is drawn from ITS OWN file (icon16.png at 16, icon32.png at 32, ...),
+ * never a downscale of icon128.png: 16 and 32 are hand-set on the pixel grid
+ * (ICON-LIGHTBLUE mark B, Dennis 2026-09-26), and a shrunken 128 would swap them
+ * for a blurred arc the moment the phone connects.
+ *
  * setBadgeText is kept as a genuine fallback, not decoration: OffscreenCanvas
  * and createImageBitmap are both unavailable in a handful of Chromium builds,
  * and an extension that silently shows no connection state at all is worse than
@@ -567,13 +572,17 @@ async function composeIcon(color) {
   // `color === null` ⇒ the plain mark, no dot (signed out).
   const cached = iconCache.get(color || 'plain');
   if (cached) return cached;
-  const res = await fetch(chrome.runtime.getURL('icon128.png'));
-  const bitmap = await createImageBitmap(await res.blob());
+  const bitmaps = await Promise.all(
+    ICON_SIZES.map(async (size) => {
+      const res = await fetch(chrome.runtime.getURL(`icon${size}.png`));
+      return createImageBitmap(await res.blob());
+    }),
+  );
   const out = {};
-  for (const size of ICON_SIZES) {
+  for (const [i, size] of ICON_SIZES.entries()) {
     const canvas = new OffscreenCanvas(size, size);
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(bitmap, 0, 0, size, size);
+    ctx.drawImage(bitmaps[i], 0, 0, size, size);
     if (color) {
       // Bottom-right, because that is where every OS puts a presence dot and
       // because the top of our mark carries artwork. The ring around the dot is
@@ -595,7 +604,7 @@ async function composeIcon(color) {
     }
     out[size] = ctx.getImageData(0, 0, size, size);
   }
-  if (bitmap.close) bitmap.close();
+  for (const bitmap of bitmaps) if (bitmap.close) bitmap.close();
   iconCache.set(color || 'plain', out);
   return out;
 }
