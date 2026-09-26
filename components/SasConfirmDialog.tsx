@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { Lock, ShieldAlert } from 'lucide-react';
 
 import { usePhone } from '@/hooks';
+import { useConnectionTruth } from '@/hooks/useConnectionTruth';
 import {
   SAS_TITLE,
   SAS_BODY,
@@ -108,7 +109,13 @@ export function SasConfirmDialog() {
   );
 
   const blocking = e2e ? sasIsBlocking(e2e) : false;
-  const open = Boolean(digits) && (decision === 'refused' || (blocking && decision === 'pending'));
+  // #18 CONN-STATUS. `blocking` says the effective mode wants this code
+  // answered; `sasApplies` adds that the code belongs to the pair that is up
+  // RIGHT NOW (sealed, settled, not switching). A 4010 reset leaves the old
+  // pair's digits on the view, and without this the question for a pair that
+  // no longer exists stayed on screen through the reconnect.
+  const { sasApplies } = useConnectionTruth();
+  const open = Boolean(digits) && (decision === 'refused' || (blocking && sasApplies && decision === 'pending'));
 
   const onDecide = useCallback(
     (matches: boolean) => {

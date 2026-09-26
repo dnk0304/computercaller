@@ -80,8 +80,16 @@ export type PeerSupport = true | false | 'unknown';
 // ── the setting ─────────────────────────────────────────────────────────────
 
 export const SETTING_LABEL = 'Encrypted mode';
+/**
+ * #18 CONN-STATUS (Dennis 09:37Z, option a). The switch never turns encryption
+ * on or off: keys are exchanged either way. What it adds is the one-time code
+ * check. The old line ("Scrambles messages…") described the switch as the
+ * thing that encrypts, which is what made OFF read as "unprotected". Mirrors
+ * the phone's confirm copy ("…there is no code check."); Pixel/Pilot copy
+ * review before the #18 gate.
+ */
 export const SETTING_DESCRIPTION =
-  'Scrambles messages and call details so only your phone and this computer can read them. You confirm a short code on both devices when you pair.';
+  'Messages and call details are always encrypted between your phone and this computer. Turn this on to also check a one-time code on both screens when you connect.';
 /**
  * Shown when the switch is ON and the devices are already paired. §12.2 makes
  * the SAS a pairing-time step, so changing the setting cannot apply to a pair

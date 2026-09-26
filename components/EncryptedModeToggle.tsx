@@ -4,6 +4,8 @@ import React, { useCallback, useId, useState } from 'react';
 import { Lock } from 'lucide-react';
 
 import { usePhone } from '@/hooks';
+import { useConnectionTruth } from '@/hooks/useConnectionTruth';
+import { CONN_TRUTH_ROW_PREFIX } from '@/lib/connectionTruth';
 import { EncryptedModeConfirmDialog } from '@/components/EncryptedModeConfirmDialog';
 import {
   clearAccountPrefError,
@@ -88,6 +90,10 @@ export function EncryptedModeToggle({ variant = 'row' }: EncryptedModeToggleProp
   const phonePresent = Boolean(phone?.phonePresentInLobby) || phone?.lobbyState === 'active';
 
   const account = useAccountE2ePref();
+  // #18 CONN-STATUS: what the CURRENT pair is, beside what the setting asks
+  // for next. Never derived from `mode` below — that is the preference.
+  const { truth } = useConnectionTruth();
+  const truthId = useId();
   const resolved = account.mirror?.resolved ?? null;
   const mode: E2ePrefValue = resolved?.preference ?? 'off';
   const paused = resolved?.pausedByServer === true;
@@ -132,6 +138,7 @@ export function EncryptedModeToggle({ variant = 'row' }: EncryptedModeToggleProp
 
   const describedBy = [
     statusId,
+    truth ? truthId : null,
     availability.reason ? descId : null,
     showRepairNotice && !paused ? noticeId : null,
   ].filter(Boolean).join(' ');
@@ -153,6 +160,16 @@ export function EncryptedModeToggle({ variant = 'row' }: EncryptedModeToggleProp
       </span>
       {activity && (
         <span className="block text-slate-500" data-cc-e2e-activity="">{activity}</span>
+      )}
+      {truth && (
+        <span
+          id={truthId}
+          className={`block ${truth.tone === 'encrypted' ? 'text-emerald-700' : 'text-slate-600'}`}
+          data-cc-conn-truth={truth.key}
+          title={truth.detail}
+        >
+          {CONN_TRUTH_ROW_PREFIX} {truth.label}
+        </span>
       )}
       {account.error && (
         <span className="block text-red-700" data-cc-e2e-error="">{account.error}</span>
