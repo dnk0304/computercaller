@@ -636,6 +636,17 @@ const MIN_CHECKS_OVERRIDE = {
   // Planted red: rev<= drop (8 fails), seed on local OFF (3), shared mirror
   // key (10). Measured at the commit that adds it: 129.
   'relay:e2e-account-pref-web.test.mjs': 129,
+  // #18 WEB E2E fixes (DISPATCH-BRIEF-FORGE-18-WEB-E2E-FIXES). Three suites,
+  // auto-discovered by the tests/e2e-*.test.mjs sweep; what they need here is
+  // the FLOOR. Each has a control that must go red (pre-fix page / closure
+  // read / pre-fix sign-in) and a planted-mutant proof at the commit that adds
+  // it. Measured at that commit:
+  //   A  SAS-confirm re-send, sealed backfill -> Alerts, vc70 no duplicates: 36
+  //   B  pushed E2E_PREF applied before the next request, both ways + race:  27
+  //   C  ext sign-in re-registers the SW key -> recipients=2, SW opens sealed: 24
+  'relay:e2e-sas-confirm-backfill.test.mjs': 36,
+  'relay:e2e-pref-reconnect-mode.test.mjs': 27,
+  'relay:e2e-ext-signin-sw-recipient.test.mjs': 24,
   // E2E-P2.6. The A3-M2 admission rule after A6-P61D-RESUME-TEARDOWN. Auto-
   // discovered by the tests/e2e-*.test.mjs sweep, so what it needs from this
   // table is a FLOOR — and it needs one more than most: the suite's whole job

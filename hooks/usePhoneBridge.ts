@@ -27,6 +27,8 @@ import { useE2e } from './useE2e';
 import { runRevokingTeardown } from '@/lib/e2e/signOutEverywhere';
 // T-E2E-ACCOUNT-PREF step 3: the account Encrypted-mode store (pushes + 4010).
 import { applyE2ePrefPush, noteRelayRoomReset } from '@/lib/e2eAccountPref';
+// #18 Fix A: re-request the backfill the phone's SAS gate dropped, once per confirm.
+import { sasConfirmBackfillDecision } from '@/lib/sasConfirmBackfill';
 import { clearThreadReadStateForCurrentUser } from '@/hooks/useThreadReadState';
 import { setNotificationIcon, clearNotificationIcons } from '@/lib/notifIconStore';
 import { useFileTransfer } from './useFileTransfer';
@@ -3664,6 +3666,39 @@ export function usePhoneBridge() {
       { reason: 'sas-mismatch', signOut: false },
     );
   }, [resetRoom]);
+
+  // #18 Fix A (NOTIF-DIAG 3). A vc69 phone replays its shade on PAIRING_ACTIVE,
+  // BEFORE the short code is confirmed, and its sealed-frame gate drops every
+  // one of those frames; nothing asked again, so an encrypted pair opened with
+  // an empty Alerts list. On the confirmed edge for the CURRENT pair - the
+  // user's answer here, or an accept that published an already-confirmed code -
+  // ask once more. The decision (effective ON only, once per digits) is pure in
+  // lib/sasConfirmBackfill.ts; the ref makes a re-render or a StrictMode double
+  // effect a no-op. This is deliberately NOT routed through
+  // estimateRequestedRef: that guard is once per CONNECTION and has already
+  // fired (into the closed gate) by the time a code can be confirmed.
+  // A duplicate shade from a vc70 phone (which also backfills on its own
+  // confirm) is absorbed by applyNotifEvents' backfill dedupe.
+  const sasBackfillFiredForRef = useRef<string | null>(null);
+  const e2eSasDigits = e2eApi.e2e.sas.digits;
+  const e2eSasConfirmed = e2eApi.e2e.sas.confirmed;
+  const e2eEffective = e2eApi.e2e.effective;
+  useEffect(() => {
+    const d = sasConfirmBackfillDecision(
+      { effective: e2eEffective, digits: e2eSasDigits, confirmed: e2eSasConfirmed },
+      sasBackfillFiredForRef.current,
+    );
+    sasBackfillFiredForRef.current = d.firedFor;
+    if (d.frames.length === 0) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      for (const frame of d.frames) ws.send(frame);
+      console.log('[PhoneBridge] SAS confirmed - re-requested notification backfill + sync estimate (once for this pair)');
+    } catch (e) {
+      console.warn('[PhoneBridge] SAS-confirm re-send failed:', e);
+    }
+  }, [e2eEffective, e2eSasDigits, e2eSasConfirmed]);
 
   const makeCall = useCallback((number: string, speaker: boolean = false): boolean => {
     // Check if WebSocket is connected before making call

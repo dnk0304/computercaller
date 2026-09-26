@@ -99,7 +99,7 @@ import {
   type RevocationVerdict,
   type SwKeyResult,
 } from './phoneE2e';
-import { useAccountE2ePref, wipeAccountPrefOnSignOut } from '@/lib/e2eAccountPref';
+import { currentAdvertisedMode, useAccountE2ePref, wipeAccountPrefOnSignOut } from '@/lib/e2eAccountPref';
 import { advertisedMode } from '@/lib/e2eAccountPref-core';
 import {
   isMalformedRelayMark, isRelayMintedAbort,
@@ -439,6 +439,11 @@ export function useE2e(): E2eApi {
   /** One store instance for the life of the hook, so the floor write and the
    *  key read cannot end up on two different IndexedDB handles. */
   const keyStoreRef = useRef<WebKeyStore>(indexedDbWebKeyStore());
+  /**
+   * #18 Fix B. The mode the last BROWSER_REQUEST_PAIRING advertised, written by
+   * buildRequestE2e as it returns the block. onPairingActive decides against it.
+   */
+  const advertisedModeRef = useRef<LocalMode | null>(null);
 
   // ── the extension bridge: P3 emits, P2 consumes (agreed via Ken) ─────────
   //
@@ -633,10 +638,21 @@ export function useE2e(): E2eApi {
         // (13.2 row 2, counts-only badges), just a worse one.
       }
     }
+    // The registry read for the INC-0923 B-1 backstop below. It is hoisted above
+    // the mode read (it was inside the try, after the block was built) so that
+    // NO await separates reading the mode from sending the block. It never
+    // throws: fetchDeviceKeyList catches, and `null` means "could not read".
+    const live = liveRegisteredDeviceIds(await fetchDeviceKeyList());
     const answer = swBridgeAnswer(swRef.current, framed);
     setView((v) => ({ ...v, peer: { ...v.peer, kind: swRef.current.status } }));
+    // #18 Fix B (item 10). The mode is read from the account store NOW - after
+    // every await in this function - never from this callback's render-time
+    // `localMode`. An E2E_PREF push that landed during those awaits (the
+    // pref-change reset race) is already in the store; a closure would still
+    // carry the old mode.
+    const mode: LocalMode = currentAdvertisedMode();
     try {
-      const block = buildRequestBlock({ localMode, webKey: key, sw: swRef.current });
+      const block = buildRequestBlock({ localMode: mode, webKey: key, sw: swRef.current });
       /**
        * INC-0923 B-1 (web). The LAST thing before the advert leaves: no
        * recipient goes out without a live row in the §13.6 pin registry.
@@ -653,7 +669,6 @@ export function useE2e(): E2eApi {
        * updated on Chrome's schedule and the web app on ours, so this page will
        * meet older SW builds that still advertise one.
        */
-      const live = liveRegisteredDeviceIds(await fetchDeviceKeyList());
       const filtered = filterRecipsToLiveRows(block.recips, live, key.deviceId);
       if (filtered.dropped.length > 0) {
         block.recips = filtered.recips;
@@ -692,14 +707,15 @@ export function useE2e(): E2eApi {
         `[e2e] advert recipients=${advertisedRecipients} swBridge=${answer}`
         + (answer === 'key' ? '' : ' — the extension key is NOT in this transcript'),
       );
+      advertisedModeRef.current = mode;
       return block;
     } catch (e) {
       // An unsendable block is not a reason to pair in the clear while the user
       // believes they asked for encryption.
-      if (localMode === 'on') { fail('e2e-setup-failed', (e as Error).message); return null; }
+      if (mode === 'on') { fail('e2e-setup-failed', (e as Error).message); return null; }
       return null;
     }
-  }, [fail, localMode, fetchDeviceKeyList]);
+  }, [fail, fetchDeviceKeyList]);
 
   // ── (c) + (d) ───────────────────────────────────────────────────────────
   const onPairingActive = useCallback(async (payload: Record<string, unknown>): Promise<boolean> => {
@@ -831,8 +847,14 @@ export function useE2e(): E2eApi {
     const phoneRowPublicKey: string | null = verdict.live ? verdict.publicKey : null;
     const phoneDeviceId: string | null = verdict.live ? verdict.deviceId : null;
 
+    // #18 Fix B. The Accept is decided against the mode THIS page ADVERTISED
+    // for the pairing (the phone ORs its own setting with that advert), not
+    // against whatever the store says now: a push between request and accept
+    // must not make the two ends compute different effective modes. A resumed
+    // accept with no request from this page load falls back to the live value.
     const decision = decideAccept({
-      localMode, block, ourDeviceId, phoneRowPublicKey,
+      localMode: advertisedModeRef.current ?? currentAdvertisedMode(),
+      block, ourDeviceId, phoneRowPublicKey,
       latched: latchedRef.current,
       sealedLatched: sealedLatchedRef.current,
     });
@@ -1141,7 +1163,7 @@ export function useE2e(): E2eApi {
       fail('e2e-setup-failed', `could not open our wrap: ${(e as Error).message}`);
       return true;
     }
-  }, [fail, fetchRevocationVerdict, localMode]);
+  }, [fail, fetchRevocationVerdict]);
 
   const onE2eUnavailable = useCallback(() => {
     // Terminal. The relay's kill switch refused mode 1; retrying in a loop
@@ -1290,6 +1312,7 @@ export function useE2e(): E2eApi {
     sasPendingRef.current = false;
     confirmedSasRef.current = null;
     currentSasRef.current = null;
+    advertisedModeRef.current = null;
     // M-A5-1 (a): sign-out is a REVOKING act on this side. The SK goes here and
     // the SK-bound counters go with it; usePhoneBridge sends RESET_ROOM. The
     // sticky refusal is cleared because sign-out is one of the explicit user

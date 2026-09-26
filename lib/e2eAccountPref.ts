@@ -2,8 +2,11 @@
 
 import { useEffect, useSyncExternalStore } from 'react';
 
-import { CC_EXTENSION_ORIGIN } from '@/lib/extension';
+// Relative + explicit extension (not '@/'): keeps this store importable by the
+// node gate suites (tests/e2e-pref-reconnect-mode.test.mjs) as well as Next.
+import { CC_EXTENSION_ORIGIN } from './extension.ts';
 import {
+  advertisedMode,
   applyIncoming,
   classifyWriteResponse,
   legacyConsumed,
@@ -25,7 +28,7 @@ import {
   type IncomingSource,
   type ResolvedE2ePref,
   type WriteOutcome,
-} from '@/lib/e2eAccountPref-core';
+} from './e2eAccountPref-core.ts';
 
 /**
  * lib/e2eAccountPref.ts — the ONE client store for the account's Encrypted-mode
@@ -384,6 +387,32 @@ function subscribe(onChange: () => void): () => void {
     listeners.delete(onChange);
     if (listeners.size === 0 && typeof window !== 'undefined') window.removeEventListener('storage', onStorage);
   };
+}
+
+/**
+ * #18 Fix B (item 10). The mode the NEXT pairing request carries, read from the
+ * store AT THE MOMENT the request block is built.
+ *
+ * Why a synchronous getter and not the hook's `localMode`: the hook value is a
+ * render-time snapshot, and useE2e's buildRequestE2e awaits the device key, the
+ * extension bridge (up to ~1.3 s) and the DeviceKey list before it assembles
+ * the block. An E2E_PREF push that lands inside that window - which is exactly
+ * when it lands on a pref-change reset, because the relay pushes on the new
+ * socket's connect - was applied to the store but not to the closure, so the
+ * request went out in the OLD mode (prod 2026-09-26 08:21:28Z: SET_E2E_PREF off
+ * rev 2, next request still mode1, codes refused). Reading here closes that.
+ *
+ * A push that arrived before /api/auth/me answered is held in `bufferedPush`
+ * (it cannot be persisted without the userId); it is still the newest word
+ * from the server, so it counts here under the same rev rule `apply` uses.
+ */
+export function currentAdvertisedMode(): E2ePrefValue {
+  let mirror = snapshot.mirror;
+  if (bufferedPush) {
+    const r = applyIncoming({ current: mirror, incoming: bufferedPush, source: 'push', pendingOwnWrite });
+    if (r.applied) mirror = r.mirror;
+  }
+  return advertisedMode(mirror);
 }
 
 const getSnapshot = () => snapshot;

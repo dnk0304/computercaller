@@ -354,8 +354,12 @@ const M = (resolved, notice = null) => ({ resolved, notice });
   check('pin: useE2e advertises the ACCOUNT value', /const localMode: LocalMode = advertisedMode\(accountPref\.mirror\);/.test(useE2e));
   check('pin: useE2e no longer reads or writes the email-keyed switch',
     !/readEncryptedMode|writeEncryptedMode/.test(useE2e));
-  check('pin: the pairing block is still built from localMode (OR rule untouched)',
-    /buildRequestBlock\(\{ localMode, webKey: key, sw: swRef\.current \}\)/.test(useE2e));
+  // #18 Fix B: the block's mode is the account value read at BUILD time
+  // (currentAdvertisedMode, after every await), not the render-time closure;
+  // tests/e2e-pref-reconnect-mode.test.mjs holds the race. Same OR rule.
+  check('pin: the pairing block is still built from the advertised account mode (OR rule untouched)',
+    /const mode: LocalMode = currentAdvertisedMode\(\);/.test(useE2e)
+    && /buildRequestBlock\(\{ localMode: mode, webKey: key, sw: swRef\.current \}\)/.test(useE2e));
   const onSignOut = useE2e.slice(useE2e.indexOf('const onSignOut = useCallback'));
   check('pin: web sign-out (onSignOut) wipes the account mirror',
     /wipeAccountPrefOnSignOut\(\);/.test(onSignOut.slice(0, onSignOut.indexOf('}, []);') + 10)));
